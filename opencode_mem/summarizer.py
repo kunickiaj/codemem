@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import textwrap
+from dataclasses import dataclass
+from typing import List, Optional
+
+from .utils import redact
+
+LOW_SIGNAL_PATTERNS = [
+    re.compile(r"opencode", re.IGNORECASE),
+    re.compile(r"\bcontext left\b", re.IGNORECASE),
+    re.compile(r"esc to interrupt", re.IGNORECASE),
+    re.compile(r"^tip:\s", re.IGNORECASE),
+    re.compile(r"\bmodel:\s", re.IGNORECASE),
+    re.compile(r"\bdirectory:\s", re.IGNORECASE),
+    re.compile(r"^>_\s"),
+    re.compile(r"^/new\b", re.IGNORECASE),
+    re.compile(r"^/model\b", re.IGNORECASE),
+    re.compile(r"/model\b", re.IGNORECASE),
+    re.compile(r"^/help\b", re.IGNORECASE),
+    re.compile(r"^/settings\b", re.IGNORECASE),
+    re.compile(r"^/quit\b", re.IGNORECASE),
+    re.compile(r"^/exit\b", re.IGNORECASE),
+    re.compile(r"^/chat\b", re.IGNORECASE),
+    re.compile(r"^/clear\b", re.IGNORECASE),
+    re.compile(r"^/history\b", re.IGNORECASE),
+    re.compile(r"^/report\b", re.IGNORECASE),
+    re.compile(r"^/run\b", re.IGNORECASE),
+]
+LOW_SIGNAL_OBSERVATION_PATTERNS = [
+    re.compile(
+        r"^(list\s+)?(ls|pwd|cd|rg|cat|head|tail|less|more|which|whoami|date|clear|exit|history)(\s|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(opencode-)?mem\.memory_(pack|search|recent|get|remember|forget)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
+@dataclass
+class Summary:
+    session_summary: str
+    observations: List[str]
+    entities: List[str]
+
+
+class _LLMClient:
+    def __init__(self, model: str, api_key: str, base_url: Optional[str]) -> None:
+        try:
+            from openai import OpenAI
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(
+                "openai package is required for model summaries"
+            ) from exc
+        self.model = model
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def summarize(
+        self, transcript: str, diff_summary: str, recent_files: str, max_obs: int
+    ) -> Summary:
+        prompt = (
+            "Summarize the following terminal session for a developer journal. "
+            "Include a concise session summary, up to {max_obs} short observations, "
+            "and any notable entities (names of services, components, or domains). "
+            "Return JSON with keys: session_summary (string), observations (list of strings), "
+            "entities (list of strings).\n"
+            "Diff summary:\n{diff}\nRecent files:\n{files}\nTranscript:\n{transcript}"
+        ).format(
+            max_obs=max_obs,
+            diff=diff_summary or "n/a",
+            files=recent_files or "n/a",
+            transcript=transcript[:6000],
+        )
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a concise assistant for session journaling.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=320,
+            temperature=0,
+        )
+        content = resp.choices[0].message.content or ""
+        try:
+            data = json.loads(content)
+        except Exception:
+            data = {
+                "session_summary": content.strip() or "Session summary unavailable",
+                "observations": [],
+                "entities": [],
+            }
+        return Summary(
+            session_summary=data.get("session_summary", "").strip()
+            or "Session summary unavailable",
+            observations=list(data.get("observations", []))[:max_obs],
+            entities=list(data.get("entities", []))[:max_obs],
+        )
+
+
+class Summarizer:
+    def __init__(
+        self, max_observations: int = 5, force_heuristic: bool = False
+    ) -> None:
+        self.max_observations = max_observations
+        model = os.getenv("OPENCODE_MEM_SUMMARY_MODEL")
+        api_key = (
+            os.getenv("OPENCODE_MEM_SUMMARY_API_KEY")
+            or os.getenv("OPENCODE_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+        )
+        base_url = (
+            os.getenv("OPENCODE_MEM_SUMMARY_BASE_URL")
+            or os.getenv("OPENCODE_API_BASE")
+            or os.getenv("OPENAI_BASE_URL")
+        )
+        self.llm: Optional[_LLMClient] = None
+        if (not force_heuristic) and model and api_key:
+            try:
+                self.llm = _LLMClient(model=model, api_key=api_key, base_url=base_url)
+            except Exception:
+                self.llm = None
+
+    def summarize(
+        self, transcript: str, diff_summary: str, recent_files: str
+    ) -> Summary:
+        transcript = redact(transcript)
+        diff_summary = redact(diff_summary)
+        filtered_lines = self._filter_transcript_lines(transcript)
+        filtered_transcript = (
+            "\n".join(filtered_lines) if filtered_lines else transcript
+        )
+        heuristic = self._heuristic_summary(
+            filtered_transcript, diff_summary, recent_files
+        )
+        if self.llm:
+            try:
+                summary = self.llm.summarize(
+                    filtered_transcript,
+                    diff_summary,
+                    recent_files,
+                    self.max_observations,
+                )
+                return self._filter_summary_observations(summary)
+            except Exception:
+                return self._filter_summary_observations(heuristic)
+        return self._filter_summary_observations(heuristic)
+
+    def _filter_transcript_lines(self, transcript: str) -> List[str]:
+        lines: List[str] = []
+        for raw in transcript.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if not re.search(r"[A-Za-z0-9]", line):
+                continue
+            if any(pattern.search(line) for pattern in LOW_SIGNAL_PATTERNS):
+                continue
+            lines.append(line)
+        return lines
+
+    def _filter_summary_observations(self, summary: Summary) -> Summary:
+        observations = [
+            obs for obs in summary.observations if not is_low_signal_observation(obs)
+        ]
+        return Summary(
+            session_summary=summary.session_summary,
+            observations=observations[: self.max_observations],
+            entities=summary.entities,
+        )
+
+    def _format_diff_summary(self, diff_summary: str) -> str:
+        lines = [line.strip() for line in diff_summary.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        limit = 8
+        if len(lines) > limit:
+            lines = lines[:limit] + [f"... (+{len(lines) - limit} more)"]
+        return "; ".join(lines)
+
+    def _format_recent_files(self, recent_files: str) -> str:
+        files = [line.strip() for line in recent_files.splitlines() if line.strip()]
+        if not files:
+            return ""
+        limit = 5
+        if len(files) > limit:
+            files = files[:limit] + [f"... (+{len(files) - limit} more)"]
+        return ", ".join(files)
+
+    def _heuristic_summary(
+        self, transcript: str, diff_summary: str, recent_files: str
+    ) -> Summary:
+        lines = self._filter_transcript_lines(transcript)
+        if len(lines) > 200:
+            head = lines[:50]
+            tail = lines[-150:]
+            lines = head + tail
+
+        notes: List[str] = []
+        diff_text = self._format_diff_summary(diff_summary)
+        if diff_text:
+            notes.append(f"Code changes: {diff_text}")
+        files_text = self._format_recent_files(recent_files)
+        if files_text:
+            notes.append(f"Touched files: {files_text}")
+
+        transcript_lines = lines
+        important = transcript_lines[: self.max_observations]
+        observations = (notes + important)[: self.max_observations]
+        session_summary = textwrap.shorten(
+            " ".join(transcript_lines), width=480, placeholder="..."
+        )
+        entities = self._extract_entities(transcript_lines)
+        return Summary(
+            session_summary=session_summary,
+            observations=observations,
+            entities=entities,
+        )
+
+    def _extract_entities(self, lines: List[str]) -> List[str]:
+        entities: List[str] = []
+        for line in lines:
+            if "service" in line.lower() and len(entities) < self.max_observations:
+                entities.append(line)
+            if "component" in line.lower() and len(entities) < self.max_observations:
+                entities.append(line)
+        return entities
+
+
+def normalize_observation(text: str) -> str:
+    cleaned = re.sub(r"^[\s\-\u2022\u2514\u203a>$]+", "", text.strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def is_low_signal_observation(text: str) -> bool:
+    normalized = normalize_observation(text)
+    if not normalized:
+        return True
+    if any(pattern.search(normalized) for pattern in LOW_SIGNAL_PATTERNS):
+        return True
+    if any(pattern.search(normalized) for pattern in LOW_SIGNAL_OBSERVATION_PATTERNS):
+        return True
+    return False

@@ -1,0 +1,22 @@
+[project]
+name = "opencode-mem"
+version = "0.1.0"
+description = "Persistent memory layer for OpenCode CLI with MCP server and wrapper capture"
+authors = [{name = "OpenCode", email = "hello@opencode.dev"}]
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "typer>=0.12",
+  "rich>=13.7",
+  "mcp>=1.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+semantic = ["fastembed>=0.3.6"]
+
+[project.scripts]
+opencode-mem = "opencode_mem.cli:main"
+opencode-mem-mcp = "opencode_mem.mcp_server:run"
+
+[tool.pytest.ini_options]
+addopts = "-q"
