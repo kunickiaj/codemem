@@ -248,7 +248,11 @@ export const OpencodeMemPlugin = async ({
     event: async ({ event }) => {
       const eventType = event?.type || 'unknown';
       await logLine(`event ${eventType}`);
-      if (eventType === 'message.updated') {
+      if (
+        ['message.updated', 'message.created', 'message.appended'].includes(
+          eventType
+        )
+      ) {
         const promptText = extractPromptText(event);
         if (promptText && promptText !== lastPromptText) {
           promptCounter += 1;
@@ -267,6 +271,7 @@ export const OpencodeMemPlugin = async ({
           'session.idle',
           'session.error',
           'session.compacted',
+          'session.compacting',
           'experimental.session.compacting',
         ].includes(eventType)
       ) {

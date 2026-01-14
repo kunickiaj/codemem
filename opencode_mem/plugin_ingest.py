@@ -59,6 +59,21 @@ LOW_SIGNAL_OUTPUTS = {
 }
 
 
+def _is_low_signal_output(output: str) -> bool:
+    if not output:
+        return True
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return True
+    for line in lines:
+        if line.lower() in LOW_SIGNAL_OUTPUTS:
+            continue
+        if is_low_signal_observation(line):
+            continue
+        return False
+    return True
+
+
 def _truncate_text(text: str, max_bytes: int) -> str:
     if max_bytes <= 0:
         return ""
@@ -120,8 +135,9 @@ def _format_event(event: dict[str, Any]) -> str | None:
     if tool == "bash":
         command = args.get("command") or args.get("cmd") or ""
         header = f"[{stamp}] bash {command}".strip()
-        output = _summarize_output(str(result))
-        if output and output.lower().strip() not in LOW_SIGNAL_OUTPUTS:
+        raw_output = str(result)
+        output = _summarize_output(raw_output)
+        if output and not _is_low_signal_output(raw_output):
             return f"{header} :: {output}".strip()
         return header
 
@@ -137,8 +153,9 @@ def _format_event(event: dict[str, Any]) -> str | None:
 
     if tool in HIGH_SIGNAL_TOOLS:
         header = f"[{stamp}] {tool}".strip()
-        output = _summarize_output(str(result))
-        if output and output.lower().strip() not in LOW_SIGNAL_OUTPUTS:
+        raw_output = str(result)
+        output = _summarize_output(raw_output)
+        if output and not _is_low_signal_output(raw_output):
             return f"{header} :: {output}".strip()
         return header
 
