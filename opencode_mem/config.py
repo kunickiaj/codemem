@@ -17,7 +17,7 @@ class OpencodeMemConfig:
     use_opencode_run: bool = False
     opencode_model: str = "openai/gpt-5.1-codex-mini"
     opencode_agent: str | None = None
-    classifier_fallback_heuristic: bool = False
+    classifier_fallback_heuristic: bool = True
     classifier_max_chars: int = 6000
     summary_max_chars: int = 6000
     store_typed: bool = True
