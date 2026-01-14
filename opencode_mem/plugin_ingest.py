@@ -7,45 +7,35 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .capture import (
-    DEFAULT_MAX_TRANSCRIPT_BYTES,
     TRUNCATION_NOTICE,
-    _max_transcript_bytes,
     build_artifact_bundle,
     capture_post_context,
     capture_pre_context,
 )
-from .classifier import ObservationClassifier
 from .config import load_config
 from . import db
+from .observer import ObserverClient
+from .observer_prompts import ObserverContext, ToolEvent
 from .store import MemoryStore
-from .summarizer import Summarizer, is_low_signal_observation
+from .summarizer import is_low_signal_observation
+from .xml_parser import ParsedSummary, has_meaningful_observation
 
 
 CONFIG = load_config()
-CLASSIFIER = ObservationClassifier()
+OBSERVER = ObserverClient()
 
 STORE_SUMMARY = CONFIG.store_summary
-STORE_OBSERVATIONS = CONFIG.store_observations
-STORE_ENTITIES = CONFIG.store_entities
 STORE_TYPED = CONFIG.store_typed
 
 LOW_SIGNAL_TOOLS = {
-    "read",
-    "edit",
-    "write",
-    "glob",
-    "grep",
     "tui",
     "shell",
     "cmd",
     "task",
-}
-
-HIGH_SIGNAL_TOOLS = {
-    "bash",
-    "webfetch",
-    "fetch",
-    "mcp",
+    "slashcommand",
+    "skill",
+    "todowrite",
+    "askuserquestion",
 }
 
 LOW_SIGNAL_OUTPUTS = {
@@ -84,15 +74,6 @@ def _truncate_text(text: str, max_bytes: int) -> str:
     return f"{truncated}{TRUNCATION_NOTICE}"
 
 
-def _summarize_output(value: str, limit: int = 360) -> str:
-    if not value:
-        return ""
-    cleaned = " ".join(line.strip() for line in value.splitlines() if line.strip())
-    if len(cleaned) > limit:
-        return f"{cleaned[:limit]}…"
-    return cleaned
-
-
 def _normalize_tool_name(event: dict[str, Any]) -> str:
     tool = str(event.get("tool") or event.get("type") or "tool").lower()
     if "." in tool:
@@ -102,79 +83,85 @@ def _normalize_tool_name(event: dict[str, Any]) -> str:
     return tool
 
 
-def _has_high_signal_events(events: Iterable[dict[str, Any]]) -> bool:
+def _extract_assistant_messages(events: Iterable[dict[str, Any]]) -> list[str]:
+    messages: list[str] = []
     for event in events:
-        tool = _normalize_tool_name(event)
-        if tool in HIGH_SIGNAL_TOOLS:
-            return True
-    return False
-
-
-def _filter_events(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    filtered: list[dict[str, Any]] = []
-    for event in events:
-        if event.get("type") == "user_prompt":
+        if event.get("type") != "assistant_message":
             continue
-        tool = _normalize_tool_name(event)
-        if tool in LOW_SIGNAL_TOOLS:
-            continue
-        filtered.append(event)
-    return filtered
+        text = str(event.get("assistant_text") or "").strip()
+        if text:
+            messages.append(text)
+    return messages
 
 
-def _format_event(event: dict[str, Any]) -> str | None:
+def _sanitize_payload(value: Any, max_chars: int) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _truncate_text(value, max_chars)
+    try:
+        serialized = json.dumps(value, ensure_ascii=False)
+    except Exception:
+        serialized = str(value)
+    if max_chars > 0 and len(serialized) > max_chars:
+        return _truncate_text(serialized, max_chars)
+    return value
+
+
+def _sanitize_tool_output(tool: str, output: Any, max_chars: int) -> Any:
+    if output is None:
+        return None
+    if tool in {"read", "write", "edit"}:
+        return ""
+    sanitized = _sanitize_payload(output, max_chars)
+    text = str(sanitized or "")
+    if _is_low_signal_output(text):
+        return ""
+    return sanitized
+
+
+def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | None:
+    if event.get("type") != "tool.execute.after":
+        return None
     tool = _normalize_tool_name(event)
-    stamp = event.get("timestamp") or ""
-    args = event.get("args") or {}
-    result = event.get("result") or ""
-    error = event.get("error") or ""
-
     if tool in LOW_SIGNAL_TOOLS:
         return None
-
-    if tool == "bash":
-        command = args.get("command") or args.get("cmd") or ""
-        header = f"[{stamp}] bash {command}".strip()
-        raw_output = str(result)
-        output = _summarize_output(raw_output)
-        if output and not _is_low_signal_output(raw_output):
-            return f"{header} :: {output}".strip()
-        return header
-
-    if tool in {"webfetch", "fetch"}:
-        url = args.get("url") or args.get("uri") or args.get("href") or ""
-        header = f"[{stamp}] {tool} {url}".strip()
-        return header
-
-    if tool == "mcp":
-        name = args.get("name") or args.get("tool") or ""
-        header = f"[{stamp}] mcp {name}".strip()
-        return header
-
-    if tool in HIGH_SIGNAL_TOOLS:
-        header = f"[{stamp}] {tool}".strip()
-        raw_output = str(result)
-        output = _summarize_output(raw_output)
-        if output and not _is_low_signal_output(raw_output):
-            return f"{header} :: {output}".strip()
-        return header
-
-    if error:
-        return f"[{stamp}] {tool} error: {_summarize_output(str(error))}".strip()
-
-    return None
+    args = event.get("args") or {}
+    result = _sanitize_tool_output(tool, event.get("result"), max_chars)
+    error = _sanitize_payload(event.get("error"), max_chars)
+    return ToolEvent(
+        tool_name=tool,
+        tool_input=_sanitize_payload(args, max_chars),
+        tool_output=result,
+        tool_error=error,
+        timestamp=event.get("timestamp"),
+        cwd=event.get("cwd") or args.get("cwd"),
+    )
 
 
-def _build_transcript(
-    events: Iterable[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]], list[str]]:
-    filtered = _filter_events(events)
-    lines: list[str] = []
-    for event in filtered:
-        line = _format_event(event)
-        if line:
-            lines.append(line)
-    return "\n".join(lines).strip(), filtered, lines
+def _extract_tool_events(
+    events: Iterable[dict[str, Any]], max_chars: int
+) -> list[ToolEvent]:
+    tool_events: list[ToolEvent] = []
+    for event in events:
+        tool_event = _event_to_tool_event(event, max_chars)
+        if tool_event:
+            tool_events.append(tool_event)
+    return tool_events
+
+
+def _summary_body(summary: ParsedSummary) -> str:
+    for value in (
+        summary.completed,
+        summary.request,
+        summary.learned,
+        summary.investigated,
+        summary.next_steps,
+        summary.notes,
+    ):
+        if value:
+            return value
+    return ""
 
 
 def _extract_prompts(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -232,137 +219,123 @@ def ingest(payload: dict[str, Any]) -> None:
             prompt_number=prompt.get("prompt_number"),
             metadata={"source": "plugin"},
         )
-    max_bytes = _max_transcript_bytes()
-    transcript, filtered_events, transcript_lines = _build_transcript(events)
-    transcript = _truncate_text(transcript, max_bytes)
-    allow_memories = _has_high_signal_events(events) or bool(diff_summary.strip())
-    if prompts:
-        allow_memories = True
-    if not transcript.strip():
-        if not allow_memories:
-            store.end_session(
-                session_id,
-                metadata={
-                    "post": post,
-                    "source": "plugin",
-                    "event_count": len(events),
-                },
-            )
-            store.close()
-            return
-        if diff_summary.strip():
-            transcript = _truncate_text(f"Diff summary:\n{diff_summary}", max_bytes)
-        elif prompts:
-            latest_prompt = prompts[-1]["prompt_text"]
-            transcript = _truncate_text(f"User prompt:\n{latest_prompt}", max_bytes)
-    artifacts = build_artifact_bundle(pre, post, transcript)
+    max_chars = CONFIG.summary_max_chars
+    tool_events = _extract_tool_events(events, max_chars)
+    assistant_messages = _extract_assistant_messages(events)
+    last_assistant_message = assistant_messages[-1] if assistant_messages else None
+    latest_prompt = prompts[-1]["prompt_text"] if prompts else None
+    should_process = (
+        bool(tool_events)
+        or bool(latest_prompt)
+        or (STORE_SUMMARY and last_assistant_message)
+    )
+    if not should_process:
+        store.end_session(
+            session_id,
+            metadata={
+                "post": post,
+                "source": "plugin",
+                "event_count": len(events),
+            },
+        )
+        store.close()
+        return
+    artifacts = build_artifact_bundle(pre, post, "")
     for kind, body, path in artifacts:
         store.add_artifact(session_id, kind=kind, path=path, content_text=body)
-    events_json = json.dumps(filtered_events, ensure_ascii=False)
-    events_json = _truncate_text(events_json, max_bytes or DEFAULT_MAX_TRANSCRIPT_BYTES)
-    store.add_artifact(
-        session_id,
-        kind="tool_events",
-        path=None,
-        content_text=events_json,
-        metadata={"source": "plugin"},
+    observer_context = ObserverContext(
+        project=project,
+        user_prompt=latest_prompt,
+        prompt_number=prompt_number,
+        tool_events=tool_events,
+        last_assistant_message=last_assistant_message if STORE_SUMMARY else None,
+        include_summary=STORE_SUMMARY,
+        diff_summary=diff_summary,
+        recent_files=post.get("recent_files") or "",
     )
-    summary = None
-    if transcript.strip():
-        summarizer = Summarizer(force_heuristic=True)
-        summary = summarizer.summarize(
-            transcript=transcript,
-            diff_summary=diff_summary,
-            recent_files=post.get("recent_files") or "",
-        )
-        if STORE_SUMMARY and (
-            summary.session_summary
-            and len(summary.session_summary.strip()) >= 40
-            and not is_low_signal_observation(summary.session_summary)
-        ):
-            store.remember(
+    response = OBSERVER.observe(observer_context)
+    parsed = response.parsed
+    if STORE_TYPED and has_meaningful_observation(parsed.observations):
+        allowed_kinds = {
+            "bugfix",
+            "feature",
+            "refactor",
+            "change",
+            "discovery",
+            "decision",
+        }
+        for obs in parsed.observations:
+            kind = obs.kind.strip().lower()
+            if kind not in allowed_kinds:
+                continue
+            if not (obs.title or obs.narrative):
+                continue
+            if is_low_signal_observation(obs.title) or is_low_signal_observation(
+                obs.narrative
+            ):
+                continue
+            store.remember_observation(
                 session_id,
-                kind="session_summary",
-                title="Session summary",
-                body_text=summary.session_summary,
+                kind=kind,
+                title=obs.title or obs.narrative[:80],
+                narrative=obs.narrative,
+                subtitle=obs.subtitle,
+                facts=obs.facts,
+                concepts=obs.concepts,
+                files_read=obs.files_read,
+                files_modified=obs.files_modified,
+                prompt_number=prompt_number,
                 confidence=0.6,
+                metadata={"source": "observer"},
             )
-        if STORE_OBSERVATIONS:
-            for obs in summary.observations:
-                if is_low_signal_observation(obs):
-                    continue
-                if len(obs.strip()) < 20:
-                    continue
-                store.remember(
-                    session_id,
-                    kind="observation",
-                    title=obs[:80],
-                    body_text=obs,
-                    confidence=0.5,
-                )
-        if STORE_ENTITIES and summary.entities:
-            filtered_entities = [
-                ent for ent in summary.entities if not is_low_signal_observation(ent)
+    if STORE_SUMMARY and parsed.summary and not parsed.skip_summary_reason:
+        summary = parsed.summary
+        if any(
+            [
+                summary.request,
+                summary.investigated,
+                summary.learned,
+                summary.completed,
+                summary.next_steps,
+                summary.notes,
             ]
-            if filtered_entities:
+        ):
+            summary_metadata = {
+                "request": summary.request,
+                "investigated": summary.investigated,
+                "learned": summary.learned,
+                "completed": summary.completed,
+                "next_steps": summary.next_steps,
+                "notes": summary.notes,
+                "files_read": summary.files_read,
+                "files_modified": summary.files_modified,
+                "prompt_number": prompt_number,
+                "source": "observer",
+            }
+            store.add_session_summary(
+                session_id,
+                project,
+                summary.request,
+                summary.investigated,
+                summary.learned,
+                summary.completed,
+                summary.next_steps,
+                summary.notes,
+                files_read=summary.files_read,
+                files_edited=summary.files_modified,
+                prompt_number=prompt_number,
+                metadata=summary_metadata,
+            )
+            body_text = _summary_body(summary)
+            if body_text and not is_low_signal_observation(body_text):
                 store.remember(
                     session_id,
-                    kind="entities",
-                    title="Entities",
-                    body_text="; ".join(filtered_entities),
-                    confidence=0.4,
+                    kind="session_summary",
+                    title="Session summary",
+                    body_text=body_text,
+                    confidence=0.6,
+                    metadata=summary_metadata,
                 )
-        if STORE_TYPED:
-            typed_memories = CLASSIFIER.classify(
-                transcript=transcript,
-                summary=summary,
-                events=filtered_events,
-                context={
-                    "diff_summary": diff_summary,
-                    "recent_files": post.get("recent_files") or "",
-                    "tool_events": "\n".join(transcript_lines[:20]),
-                },
-            )
-            for mem in typed_memories:
-                if is_low_signal_observation(mem.title) or is_low_signal_observation(
-                    mem.narrative
-                ):
-                    continue
-                metadata: dict[str, Any] = {"source": "classifier"}
-                if mem.metadata:
-                    metadata["detail"] = mem.metadata
-                store.remember_observation(
-                    session_id,
-                    kind=mem.category,
-                    title=mem.title,
-                    narrative=mem.narrative,
-                    subtitle=mem.subtitle,
-                    facts=mem.facts,
-                    concepts=mem.concepts,
-                    files_read=mem.files_read,
-                    files_modified=mem.files_modified,
-                    prompt_number=prompt_number,
-                    confidence=mem.confidence,
-                    metadata=metadata,
-                )
-    if summary:
-        transcript_tokens = store.estimate_tokens(transcript)
-        summary_tokens = store.estimate_tokens(summary.session_summary)
-        summary_tokens += sum(
-            store.estimate_tokens(obs) for obs in summary.observations
-        )
-        summary_tokens += sum(
-            store.estimate_tokens(entity) for entity in summary.entities
-        )
-        tokens_saved = max(0, transcript_tokens - summary_tokens)
-        store.record_usage(
-            "summarize",
-            session_id=session_id,
-            tokens_read=transcript_tokens,
-            tokens_written=summary_tokens,
-            tokens_saved=tokens_saved,
-            metadata={"mode": "plugin"},
-        )
     store.end_session(
         session_id,
         metadata={"post": post, "source": "plugin", "event_count": len(events)},

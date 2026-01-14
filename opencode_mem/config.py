@@ -17,13 +17,13 @@ class OpencodeMemConfig:
     use_opencode_run: bool = False
     opencode_model: str = "openai/gpt-5.1-codex-mini"
     opencode_agent: str | None = None
-    classifier_fallback_heuristic: bool = True
-    classifier_max_chars: int = 6000
+    observer_provider: str | None = None
+    observer_model: str | None = None
+    observer_api_key: str | None = None
+    observer_max_chars: int = 12000
     summary_max_chars: int = 6000
     store_typed: bool = True
     store_summary: bool = False
-    store_observations: bool = False
-    store_entities: bool = False
     viewer_auto: bool = True
     viewer_auto_stop: bool = True
     viewer_enabled: bool = True
@@ -72,11 +72,15 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     )
     cfg.opencode_model = os.getenv("OPENCODE_MEM_OPENCODE_MODEL", cfg.opencode_model)
     cfg.opencode_agent = os.getenv("OPENCODE_MEM_OPENCODE_AGENT", cfg.opencode_agent)
-    cfg.classifier_fallback_heuristic = _parse_bool(
-        os.getenv("OPENCODE_MEM_CLASSIFIER_FALLBACK"), cfg.classifier_fallback_heuristic
+    cfg.observer_provider = os.getenv(
+        "OPENCODE_MEM_OBSERVER_PROVIDER", cfg.observer_provider
     )
-    cfg.classifier_max_chars = int(
-        os.getenv("OPENCODE_MEM_CLASSIFIER_MAX_CHARS", cfg.classifier_max_chars)
+    cfg.observer_model = os.getenv("OPENCODE_MEM_OBSERVER_MODEL", cfg.observer_model)
+    cfg.observer_api_key = os.getenv(
+        "OPENCODE_MEM_OBSERVER_API_KEY", cfg.observer_api_key
+    )
+    cfg.observer_max_chars = int(
+        os.getenv("OPENCODE_MEM_OBSERVER_MAX_CHARS", cfg.observer_max_chars)
     )
     cfg.summary_max_chars = int(
         os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS", cfg.summary_max_chars)
@@ -86,12 +90,6 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     )
     cfg.store_summary = _parse_bool(
         os.getenv("OPENCODE_MEM_PLUGIN_SUMMARY"), cfg.store_summary
-    )
-    cfg.store_observations = _parse_bool(
-        os.getenv("OPENCODE_MEM_PLUGIN_OBSERVATIONS"), cfg.store_observations
-    )
-    cfg.store_entities = _parse_bool(
-        os.getenv("OPENCODE_MEM_PLUGIN_ENTITIES"), cfg.store_entities
     )
     cfg.viewer_auto = _parse_bool(
         os.getenv("OPENCODE_MEM_VIEWER_AUTO"), cfg.viewer_auto

@@ -71,6 +71,7 @@ export const OpencodeMemPlugin = async ({
   let viewerStarted = false;
   let promptCounter = 0;
   let lastPromptText = null;
+  let lastAssistantText = null;
 
   const extractPromptText = (event) => {
     if (!event) {
@@ -79,6 +80,37 @@ export const OpencodeMemPlugin = async ({
     const message = event.message || event.payload?.message || event.content || null;
     const role = message?.role || event.role || null;
     if (role && role !== 'user') {
+      return null;
+    }
+    if (typeof message === 'string') {
+      return message.trim() || null;
+    }
+    const content = message?.content || event.content;
+    if (typeof content === 'string') {
+      return content.trim() || null;
+    }
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        const text = part?.text || part?.content;
+        if (typeof text === 'string' && text.trim()) {
+          return text.trim();
+        }
+      }
+    }
+    const text = message?.text || event.text;
+    if (typeof text === 'string' && text.trim()) {
+      return text.trim();
+    }
+    return null;
+  };
+
+  const extractAssistantText = (event) => {
+    if (!event) {
+      return null;
+    }
+    const message = event.message || event.payload?.message || event.content || null;
+    const role = message?.role || event.role || null;
+    if (role && role !== 'assistant') {
       return null;
     }
     if (typeof message === 'string') {
@@ -265,6 +297,16 @@ export const OpencodeMemPlugin = async ({
           });
           await logLine(`user_prompt captured #${promptCounter}`);
         }
+        const assistantText = extractAssistantText(event);
+        if (assistantText && assistantText !== lastAssistantText) {
+          lastAssistantText = assistantText;
+          events.push({
+            type: 'assistant_message',
+            assistant_text: assistantText,
+            timestamp: new Date().toISOString(),
+          });
+          await logLine('assistant_message captured');
+        }
       }
       if (
         [
@@ -284,6 +326,7 @@ export const OpencodeMemPlugin = async ({
         sessionStartedAt = new Date().toISOString();
         promptCounter = 0;
         lastPromptText = null;
+        lastAssistantText = null;
         startViewer();
       }
       if (eventType === 'session.deleted') {
