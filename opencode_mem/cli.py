@@ -428,6 +428,26 @@ def prune_observations(
 
 
 @app.command()
+def purge(
+    limit: Optional[int] = typer.Option(
+        None, help="Max memories to scan (defaults to all)"
+    ),
+    dry_run: bool = typer.Option(False, help="Report without deactivating"),
+    kinds: Optional[List[str]] = typer.Option(
+        None, help="Memory kinds to purge (defaults to common low-signal kinds)"
+    ),
+    db_path: str = typer.Option(None),
+) -> None:
+    """Deactivate low-signal memories across multiple kinds."""
+    store = _store(db_path)
+    result = store.deactivate_low_signal_memories(
+        kinds=kinds, limit=limit, dry_run=dry_run
+    )
+    action = "Would deactivate" if dry_run else "Deactivated"
+    print(f"{action} {result['deactivated']} of {result['checked']} memories")
+
+
+@app.command()
 def pack(
     context: str,
     limit: int = typer.Option(8),
@@ -552,6 +572,22 @@ def stats(db_path: str = typer.Option(None, help="Path to SQLite database")) -> 
         f"(read ~{_format_tokens(totals['tokens_read'])} tokens, "
         f"est. saved ~{_format_tokens(totals['tokens_saved'])} tokens)"
     )
+
+
+@app.command()
+def mcp() -> None:
+    """Run the MCP server for OpenCode."""
+    from .mcp_server import run as mcp_run
+
+    mcp_run()
+
+
+@app.command()
+def ingest() -> None:
+    """Ingest plugin events from stdin."""
+    from .plugin_ingest import main as ingest_main
+
+    ingest_main()
 
 
 @app.command()
