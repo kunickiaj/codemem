@@ -52,7 +52,7 @@ Restart OpenCode and the MCP tools will be available to the model.
 When OpenCode starts inside this repo (or when the plugin is copied into `~/.config/opencode/plugin/`), `.opencode/plugin/opencode-mem.js` loads automatically. It:
 
 1. Tracks every tool invocation (`tool.execute.after`).
-2. Flushes captured events when the session idles, errors, or compacts (`session.compacted` and `experimental.session.compacting`).
+2. Flushes captured events when the session idles, errors, or compacts (`session.compacting`, `session.compacted`, and `experimental.session.compacting`).
 3. Auto-starts the viewer by default (set `OPENCODE_MEM_VIEWER_AUTO=0` to disable).
 4. Posts payloads into `uvx opencode-mem ingest` by default.
 

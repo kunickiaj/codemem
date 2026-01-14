@@ -105,8 +105,14 @@ class _LLMClient:
                 "observations": [],
                 "entities": [],
             }
+        if not isinstance(data, dict):
+            data = {
+                "session_summary": content.strip() or "Session summary unavailable",
+                "observations": [],
+                "entities": [],
+            }
         return Summary(
-            session_summary=data.get("session_summary", "").strip()
+            session_summary=str(data.get("session_summary", "")).strip()
             or "Session summary unavailable",
             observations=list(data.get("observations", []))[:max_obs],
             entities=list(data.get("entities", []))[:max_obs],

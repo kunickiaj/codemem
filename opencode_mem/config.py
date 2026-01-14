@@ -21,7 +21,7 @@ class OpencodeMemConfig:
     classifier_max_chars: int = 6000
     summary_max_chars: int = 6000
     store_typed: bool = True
-    store_summary: bool = True
+    store_summary: bool = False
     store_observations: bool = False
     store_entities: bool = False
     viewer_auto: bool = True
