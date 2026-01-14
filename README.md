@@ -4,11 +4,32 @@ A lightweight persistent-memory companion for OpenCode. Captures terminal sessio
 
 ## Quick setup
 
+### For Development (Recommended)
+
 ```bash
-uv pip install -e .
-# or
-pip install -e .
+# Create virtual environment and install with dependencies
+uv sync --dev
+
+# Run commands via the venv
+.venv/bin/opencode-mem --help
+
+# Or activate the venv first
+source .venv/bin/activate  # bash/zsh
+source .venv/bin/activate.fish  # fish
+opencode-mem --help
 ```
+
+### Via uvx (No Installation)
+
+```bash
+# Run directly from the repo
+uvx --from . opencode-mem stats
+
+# Or install globally
+uv pip install -e . --system
+```
+
+### Configuration
 
 Optionally point the SQLite store somewhere else:
 
@@ -61,15 +82,15 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 1. Tracks every tool invocation (`tool.execute.after`).
 2. Flushes captured events when the session idles, errors, or compacts (`session.compacting`, `session.compacted`, and `experimental.session.compacting`).
 3. Auto-starts the viewer by default (set `OPENCODE_MEM_VIEWER_AUTO=0` to disable).
-4. Posts payloads into `uvx opencode-mem ingest` by default.
+4. Posts payloads into `uv run opencode-mem ingest` by default.
 5. Injects a memory pack into the system prompt (disable with `OPENCODE_MEM_INJECT_CONTEXT=0`).
 
 ### Environment hints for the plugin
 
 | Env var | Description |
 | --- | --- |
-| `OPENCODE_MEM_RUNNER` | Override the runner used by the plugin (defaults to `opencode-mem` if available, otherwise `uvx`). |
-| `OPENCODE_MEM_RUNNER_FROM` | Path used with `uvx --from` (defaults to repo root). |
+| `OPENCODE_MEM_RUNNER` | Override the runner used by the plugin (defaults to `uv`, supports `uv`, `uvx`, or direct binary). |
+| `OPENCODE_MEM_RUNNER_FROM` | Path used with `uv run --directory` or `uvx --from` (defaults to repo root). |
 | `OPENCODE_MEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
 | `OPENCODE_MEM_VIEWER_HOST`, `OPENCODE_MEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
 | `OPENCODE_MEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
