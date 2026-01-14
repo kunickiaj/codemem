@@ -60,7 +60,7 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 
 | Env var | Description |
 | --- | --- |
-| `OPENCODE_MEM_RUNNER` | Override the runner used by the plugin (defaults to `uvx`). |
+| `OPENCODE_MEM_RUNNER` | Override the runner used by the plugin (defaults to `opencode-mem` if available, otherwise `uvx`). |
 | `OPENCODE_MEM_RUNNER_FROM` | Path used with `uvx --from` (defaults to repo root). |
 | `OPENCODE_MEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
 | `OPENCODE_MEM_VIEWER_HOST`, `OPENCODE_MEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
