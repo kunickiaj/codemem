@@ -49,9 +49,7 @@ export const OpencodeMemPlugin = async ({
       // ignore logging failures
     }
   };
-  const resolvedRunner = process.env.OPENCODE_MEM_RUNNER;
-  const defaultRunner = Bun.which('opencode-mem') ? 'opencode-mem' : 'uvx';
-  const runner = resolvedRunner || defaultRunner;
+  const runner = process.env.OPENCODE_MEM_RUNNER || 'uvx';
   const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || cwd;
   const runnerArgs = runner === 'uvx' ? ['--from', runnerFrom, 'opencode-mem'] : [];
   const viewerEnabled = !['0', 'false', 'off'].includes(
