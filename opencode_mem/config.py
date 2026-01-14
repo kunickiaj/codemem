@@ -9,6 +9,49 @@ from typing import Any
 
 DEFAULT_CONFIG_PATH = Path("~/.config/opencode-mem/config.json").expanduser()
 
+CONFIG_ENV_OVERRIDES = {
+    "observer_provider": "OPENCODE_MEM_OBSERVER_PROVIDER",
+    "observer_model": "OPENCODE_MEM_OBSERVER_MODEL",
+    "observer_max_chars": "OPENCODE_MEM_OBSERVER_MAX_CHARS",
+}
+
+
+def get_config_path(path: Path | None = None) -> Path:
+    candidate = path or Path(os.getenv("OPENCODE_MEM_CONFIG", DEFAULT_CONFIG_PATH))
+    return candidate.expanduser()
+
+
+def read_config_file(path: Path | None = None) -> dict[str, Any]:
+    config_path = get_config_path(path)
+    if not config_path.exists():
+        return {}
+    raw = config_path.read_text()
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid config json") from exc
+    if not isinstance(data, dict):
+        raise ValueError("config must be an object")
+    return data
+
+
+def write_config_file(data: dict[str, Any], path: Path | None = None) -> Path:
+    config_path = get_config_path(path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return config_path
+
+
+def get_env_overrides() -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for key, env_var in CONFIG_ENV_OVERRIDES.items():
+        value = os.getenv(env_var)
+        if value is not None:
+            overrides[key] = value
+    return overrides
+
 
 @dataclass
 class OpencodeMemConfig:
@@ -43,7 +86,7 @@ def _parse_bool(value: str | None, default: bool) -> bool:
 
 def load_config(path: Path | None = None) -> OpencodeMemConfig:
     cfg = OpencodeMemConfig()
-    config_path = path or Path(os.getenv("OPENCODE_MEM_CONFIG", DEFAULT_CONFIG_PATH))
+    config_path = get_config_path(path)
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text())

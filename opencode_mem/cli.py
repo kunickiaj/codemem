@@ -163,6 +163,27 @@ def _port_open(host: str, port: int) -> bool:
             return False
 
 
+def _pid_for_port(port: int) -> int | None:
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return int(line)
+        except ValueError:
+            continue
+    return None
+
+
 @app.command()
 def init_db(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
     store = _store(db_path)
@@ -609,6 +630,10 @@ def serve(
 
     if stop or restart:
         pid = _read_pid(pid_path)
+        if pid is None and _port_open(host, port):
+            pid = _pid_for_port(port)
+            if pid is not None:
+                print(f"[yellow]Found viewer pid {pid} by port scan[/yellow]")
         if pid is None:
             if _port_open(host, port):
                 print("[yellow]Viewer is running but no PID file was found[/yellow]")

@@ -516,6 +516,57 @@ class MemoryStore:
         )
         return results
 
+    def recent_by_kinds(
+        self,
+        kinds: Iterable[str],
+        limit: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        filters = filters or {}
+        kinds_list = [str(kind) for kind in kinds if kind]
+        if not kinds_list:
+            return []
+        params: list[Any] = list(kinds_list)
+        where = [
+            "active = 1",
+            "kind IN ({})".format(", ".join("?" for _ in kinds_list)),
+        ]
+        join_sessions = False
+        if filters.get("project"):
+            clause, clause_params = self._project_clause(filters["project"])
+            if clause:
+                where.append(clause)
+                params.extend(clause_params)
+            join_sessions = True
+        where_clause = " AND ".join(where)
+        from_clause = "memory_items"
+        if join_sessions:
+            from_clause = (
+                "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
+            )
+        rows = self.conn.execute(
+            f"SELECT memory_items.* FROM {from_clause} WHERE {where_clause} ORDER BY created_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        results = db.rows_to_dicts(rows)
+        for item in results:
+            item["metadata_json"] = db.from_json(item.get("metadata_json"))
+        tokens_read = sum(
+            self.estimate_tokens(f"{item.get('title', '')} {item.get('body_text', '')}")
+            for item in results
+        )
+        self.record_usage(
+            "recent_kinds",
+            tokens_read=tokens_read,
+            metadata={
+                "limit": limit,
+                "results": len(results),
+                "kinds": kinds_list,
+                "project": filters.get("project"),
+            },
+        )
+        return results
+
     def search_index(
         self, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
