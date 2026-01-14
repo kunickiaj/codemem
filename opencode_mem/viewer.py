@@ -85,6 +85,23 @@ VIEWER_HTML = """<!doctype html>
         gap: 12px;
         align-items: center;
       }
+      .project-filter {
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.7);
+        font-size: 13px;
+        cursor: pointer;
+        transition: border-color 0.2s ease, background 0.2s ease;
+      }
+      .project-filter:hover {
+        border-color: rgba(31, 111, 92, 0.3);
+        background: rgba(255, 255, 255, 0.9);
+      }
+      .project-filter:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
       h1 {
         margin: 0 0 8px;
         font-family: "Fraunces", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
@@ -489,7 +506,12 @@ VIEWER_HTML = """<!doctype html>
         <div class="header-right">
           <div class="meta" id="metaLine">Loading stats…</div>
           <div class="meta">signal: <strong>memory</strong> · window: <strong>recent</strong></div>
-          <button class="settings-button" id="settingsButton">Settings</button>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <select class="project-filter" id="projectFilter">
+              <option value="">All Projects</option>
+            </select>
+            <button class="settings-button" id="settingsButton">Settings</button>
+          </div>
         </div>
       </div>
     </header>
@@ -567,9 +589,11 @@ VIEWER_HTML = """<!doctype html>
       const observerModelInput = document.getElementById("observerModel");
       const observerMaxCharsInput = document.getElementById("observerMaxChars");
       const observerMaxCharsHint = document.getElementById("observerMaxCharsHint");
+      const projectFilter = document.getElementById("projectFilter");
 
       let configDefaults = {};
       let configPath = "";
+      let currentProject = "";
 
       function formatDate(value) {
         if (!value) return "n/a";
@@ -791,13 +815,41 @@ VIEWER_HTML = """<!doctype html>
         }
       });
 
+      async function loadProjects() {
+        try {
+          const response = await fetch("/api/projects");
+          const data = await response.json();
+          const projects = data.projects || [];
+          projectFilter.innerHTML = '<option value="">All Projects</option>';
+          projects.forEach(project => {
+            const option = document.createElement("option");
+            option.value = project;
+            const displayName = project.split("/").pop() || project;
+            option.textContent = displayName;
+            option.title = project;
+            if (project === currentProject) {
+              option.selected = true;
+            }
+            projectFilter.appendChild(option);
+          });
+        } catch (err) {
+          console.error("Failed to load projects:", err);
+        }
+      }
+
+      projectFilter?.addEventListener("change", () => {
+        currentProject = projectFilter.value;
+        refresh();
+      });
+
       async function refresh() {
         refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
         try {
+          const projectParam = currentProject ? `&project=${encodeURIComponent(currentProject)}` : "";
           const [stats, summaries, observations, usage] = await Promise.all([
             fetch("/api/stats").then(r => r.json()),
-            fetch("/api/memory?kind=session_summary&limit=20").then(r => r.json()),
-            fetch("/api/observations?limit=40").then(r => r.json()),
+            fetch(`/api/memory?kind=session_summary&limit=20${projectParam}`).then(r => r.json()),
+            fetch(`/api/observations?limit=40${projectParam}`).then(r => r.json()),
             fetch("/api/usage").then(r => r.json()),
           ]);
           renderStats(stats);
@@ -832,6 +884,7 @@ VIEWER_HTML = """<!doctype html>
         }
       }
 
+      loadProjects();
       refresh();
       setInterval(refresh, 5000);
     </script>
@@ -888,9 +941,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     item["metadata_json"] = from_json(item.get("metadata_json"))
                 self._send_json({"items": sessions})
                 return
+            if parsed.path == "/api/projects":
+                sessions = store.all_sessions()
+                projects = sorted({s["project"] for s in sessions if s.get("project")})
+                self._send_json({"projects": projects})
+                return
             if parsed.path == "/api/observations":
                 params = parse_qs(parsed.query)
                 limit = int(params.get("limit", ["20"])[0])
+                project = params.get("project", [None])[0]
                 kinds = [
                     "bugfix",
                     "change",
@@ -899,7 +958,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     "feature",
                     "refactor",
                 ]
-                items = store.recent_by_kinds(limit=limit, kinds=kinds)
+                filters = {"project": project} if project else None
+                items = store.recent_by_kinds(limit=limit, kinds=kinds, filters=filters)
                 self._send_json({"items": items})
                 return
             if parsed.path == "/api/pack":
@@ -938,9 +998,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 params = parse_qs(parsed.query)
                 limit = int(params.get("limit", ["20"])[0])
                 kind = params.get("kind", [None])[0]
-                items = store.recent(
-                    limit=limit, filters={"kind": kind} if kind else None
-                )
+                project = params.get("project", [None])[0]
+                filters = {}
+                if kind:
+                    filters["kind"] = kind
+                if project:
+                    filters["project"] = project
+                items = store.recent(limit=limit, filters=filters if filters else None)
                 self._send_json({"items": items})
                 return
             if parsed.path == "/api/artifacts":
