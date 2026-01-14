@@ -1240,6 +1240,32 @@ class MemoryStore:
                 running += est
                 trimmed.append(m)
             matches = trimmed
+
+        def get_metadata(item: MemoryResult | Dict[str, Any]) -> Dict[str, Any]:
+            if isinstance(item, MemoryResult):
+                return item.metadata or {}
+            metadata = item.get("metadata_json")
+            if isinstance(metadata, str):
+                return db.from_json(metadata)
+            if isinstance(metadata, dict):
+                return metadata
+            return {}
+
+        def estimate_work_tokens(item: MemoryResult | Dict[str, Any]) -> int:
+            metadata = get_metadata(item)
+            discovery_tokens = metadata.get("discovery_tokens")
+            if isinstance(discovery_tokens, (int, float)) and discovery_tokens > 0:
+                return int(discovery_tokens)
+            title = (
+                item.title if isinstance(item, MemoryResult) else item.get("title", "")
+            )
+            body = (
+                item.body_text
+                if isinstance(item, MemoryResult)
+                else item.get("body_text", "")
+            )
+            return self.estimate_tokens(f"{title} {body}".strip())
+
         formatted = [
             {
                 "id": m.id if isinstance(m, MemoryResult) else m.get("id"),
@@ -1262,17 +1288,8 @@ class MemoryStore:
         ]
         pack_text = "\n".join(text_parts)
         pack_tokens = self.estimate_tokens(pack_text)
-        tokens_saved = 0
-        if token_budget:
-            full_tokens = sum(
-                self.estimate_tokens(
-                    f"{m.title} {m.body_text}"
-                    if isinstance(m, MemoryResult)
-                    else f"{m.get('title', '')} {m.get('body_text', '')}"
-                )
-                for m in full_matches
-            )
-            tokens_saved = max(0, full_tokens - pack_tokens)
+        work_tokens = sum(estimate_work_tokens(m) for m in matches)
+        tokens_saved = max(0, work_tokens - pack_tokens)
         self.record_usage(
             "pack",
             tokens_read=pack_tokens,
@@ -1283,6 +1300,7 @@ class MemoryStore:
                 "token_budget": token_budget,
                 "project": (filters or {}).get("project"),
                 "fallback": "recent" if fallback_used else None,
+                "work_tokens": work_tokens,
             },
         )
         return {

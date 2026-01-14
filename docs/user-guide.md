@@ -27,7 +27,7 @@
   - `OPENCODE_MEM_INJECT_CONTEXT=0` disables injection.
   - `OPENCODE_MEM_INJECT_LIMIT` caps memory items (default 8).
   - `OPENCODE_MEM_INJECT_TOKEN_BUDGET` caps pack size (default 800).
-- Savings are tracked when a token budget is provided.
+- Reuse savings estimate discovery work versus pack read size.
 
 ## Troubleshooting
 - If sessions are missing, confirm the viewer and plugin share the same DB path.

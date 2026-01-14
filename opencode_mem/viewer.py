@@ -537,7 +537,7 @@ VIEWER_HTML = """<!doctype html>
           <div class="grid-2" id="statsGrid"></div>
         </section>
         <section>
-          <h2>Usage (token impact)</h2>
+          <h2>Usage (reuse impact)</h2>
           <ul id="usageList"></ul>
         </section>
       </div>
@@ -620,7 +620,7 @@ VIEWER_HTML = """<!doctype html>
           { label: "Active items", value: db.active_memory_items || 0 },
           { label: "Artifacts", value: db.artifacts || 0 },
           { label: "Tokens read", value: usage.tokens_read || 0 },
-          { label: "Est. savings", value: usage.tokens_saved || 0 },
+          { label: "Reuse savings", value: usage.tokens_saved || 0 },
         ];
         statsGrid.textContent = "";
         items.forEach(item => {
@@ -821,7 +821,7 @@ VIEWER_HTML = """<!doctype html>
             const meta = createElement(
               "div",
               "small",
-              `read ~${item.tokens_read.toLocaleString()} · est. saved ~${item.tokens_saved.toLocaleString()}`
+              `read ~${item.tokens_read.toLocaleString()} · reuse saved ~${item.tokens_saved.toLocaleString()}`
             );
             li.append(title, meta);
             return li;

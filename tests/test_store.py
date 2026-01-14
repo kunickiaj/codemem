@@ -81,7 +81,7 @@ def test_usage_stats(tmp_path: Path) -> None:
     assert usage["pack"]["tokens_read"] > 0
 
 
-def test_pack_tokens_saved_with_budget(tmp_path: Path) -> None:
+def test_pack_reuse_savings(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
         cwd="/tmp",
@@ -91,21 +91,24 @@ def test_pack_tokens_saved_with_budget(tmp_path: Path) -> None:
         tool_version="test",
         project="/tmp/project-a",
     )
+    metadata = {"discovery_tokens": 120}
     store.remember(
         session,
         kind="note",
         title="Alpha",
         body_text="Shared body content one",
+        metadata=metadata,
     )
     store.remember(
         session,
         kind="note",
         title="Beta",
         body_text="Shared body content two",
+        metadata=metadata,
     )
     store.end_session(session)
 
-    store.build_memory_pack("Shared body", limit=5, token_budget=1)
+    store.build_memory_pack("Shared body", limit=5)
 
     stats = store.stats()
     usage = {event["event"]: event for event in stats["usage"]["events"]}

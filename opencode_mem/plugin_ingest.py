@@ -255,6 +255,17 @@ def ingest(payload: dict[str, Any]) -> None:
     )
     response = OBSERVER.observe(observer_context)
     parsed = response.parsed
+    discovery_parts = []
+    if latest_prompt:
+        discovery_parts.append(latest_prompt)
+    if last_assistant_message:
+        discovery_parts.append(last_assistant_message)
+    if tool_events:
+        discovery_parts.append(json.dumps(tool_events, ensure_ascii=False))
+    discovery_text = "\n".join(discovery_parts)
+    discovery_tokens = store.estimate_tokens(discovery_text)
+
+    observations_to_store = []
     if STORE_TYPED and has_meaningful_observation(parsed.observations):
         allowed_kinds = {
             "bugfix",
@@ -274,20 +285,9 @@ def ingest(payload: dict[str, Any]) -> None:
                 obs.narrative
             ):
                 continue
-            store.remember_observation(
-                session_id,
-                kind=kind,
-                title=obs.title or obs.narrative[:80],
-                narrative=obs.narrative,
-                subtitle=obs.subtitle,
-                facts=obs.facts,
-                concepts=obs.concepts,
-                files_read=obs.files_read,
-                files_modified=obs.files_modified,
-                prompt_number=prompt_number,
-                confidence=0.6,
-                metadata={"source": "observer"},
-            )
+            observations_to_store.append(obs)
+
+    summary_to_store = None
     if STORE_SUMMARY and parsed.summary and not parsed.skip_summary_reason:
         summary = parsed.summary
         if any(
@@ -300,42 +300,71 @@ def ingest(payload: dict[str, Any]) -> None:
                 summary.notes,
             ]
         ):
-            summary_metadata = {
-                "request": summary.request,
-                "investigated": summary.investigated,
-                "learned": summary.learned,
-                "completed": summary.completed,
-                "next_steps": summary.next_steps,
-                "notes": summary.notes,
-                "files_read": summary.files_read,
-                "files_modified": summary.files_modified,
-                "prompt_number": prompt_number,
-                "source": "observer",
-            }
-            store.add_session_summary(
+            summary_to_store = summary
+
+    total_items = len(observations_to_store) + (1 if summary_to_store else 0)
+    per_item_tokens = 0
+    if discovery_tokens > 0 and total_items > 0:
+        per_item_tokens = max(1, discovery_tokens // total_items)
+
+    for obs in observations_to_store:
+        metadata = {"source": "observer"}
+        if per_item_tokens:
+            metadata["discovery_tokens"] = per_item_tokens
+        store.remember_observation(
+            session_id,
+            kind=obs.kind.strip().lower(),
+            title=obs.title or obs.narrative[:80],
+            narrative=obs.narrative,
+            subtitle=obs.subtitle,
+            facts=obs.facts,
+            concepts=obs.concepts,
+            files_read=obs.files_read,
+            files_modified=obs.files_modified,
+            prompt_number=prompt_number,
+            confidence=0.6,
+            metadata=metadata,
+        )
+
+    if summary_to_store:
+        summary_metadata = {
+            "request": summary_to_store.request,
+            "investigated": summary_to_store.investigated,
+            "learned": summary_to_store.learned,
+            "completed": summary_to_store.completed,
+            "next_steps": summary_to_store.next_steps,
+            "notes": summary_to_store.notes,
+            "files_read": summary_to_store.files_read,
+            "files_modified": summary_to_store.files_modified,
+            "prompt_number": prompt_number,
+            "source": "observer",
+        }
+        if per_item_tokens:
+            summary_metadata["discovery_tokens"] = per_item_tokens
+        store.add_session_summary(
+            session_id,
+            project,
+            summary_to_store.request,
+            summary_to_store.investigated,
+            summary_to_store.learned,
+            summary_to_store.completed,
+            summary_to_store.next_steps,
+            summary_to_store.notes,
+            files_read=summary_to_store.files_read,
+            files_edited=summary_to_store.files_modified,
+            prompt_number=prompt_number,
+            metadata=summary_metadata,
+        )
+        body_text = _summary_body(summary_to_store)
+        if body_text and not is_low_signal_observation(body_text):
+            store.remember(
                 session_id,
-                project,
-                summary.request,
-                summary.investigated,
-                summary.learned,
-                summary.completed,
-                summary.next_steps,
-                summary.notes,
-                files_read=summary.files_read,
-                files_edited=summary.files_modified,
-                prompt_number=prompt_number,
+                kind="session_summary",
+                title="Session summary",
+                body_text=body_text,
+                confidence=0.6,
                 metadata=summary_metadata,
             )
-            body_text = _summary_body(summary)
-            if body_text and not is_low_signal_observation(body_text):
-                store.remember(
-                    session_id,
-                    kind="session_summary",
-                    title="Session summary",
-                    body_text=body_text,
-                    confidence=0.6,
-                    metadata=summary_metadata,
-                )
     store.end_session(
         session_id,
         metadata={"post": post, "source": "plugin", "event_count": len(events)},

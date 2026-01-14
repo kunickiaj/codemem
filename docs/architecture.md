@@ -34,3 +34,4 @@
 ## Context injection
 - The plugin injects a memory pack into the system prompt using OpenCode hook APIs.
 - Injection is per session and bounded by a configurable token budget.
+- Reuse savings compare observer discovery tokens to pack read size.
