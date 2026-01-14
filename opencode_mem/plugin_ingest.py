@@ -24,8 +24,8 @@ from .xml_parser import ParsedSummary, has_meaningful_observation
 CONFIG = load_config()
 OBSERVER = ObserverClient()
 
-STORE_SUMMARY = CONFIG.store_summary
-STORE_TYPED = CONFIG.store_typed
+STORE_SUMMARY = True
+STORE_TYPED = True
 
 LOW_SIGNAL_TOOLS = {
     "tui",

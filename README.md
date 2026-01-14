@@ -69,8 +69,6 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 | `OPENCODE_MEM_PLUGIN_LOG` | Path for the plugin log file (defaults to `~/.opencode-mem/plugin.log`, set `0` to disable). |
 | `OPENCODE_MEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `1500`). |
 | `OPENCODE_MEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events via `client.app.log`. |
-| `OPENCODE_MEM_PLUGIN_SUMMARY` | Store session summaries from plugin ingest (default off). |
-| `OPENCODE_MEM_PLUGIN_TYPED` | Store typed memories (default on). |
 | `OPENCODE_MEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |
 | `OPENCODE_MEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
 | `OPENCODE_MEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |
@@ -87,7 +85,7 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 
 ## Observer model
 
-The ingest pipeline uses an observer agent to emit XML observations and summaries. The defaults are:
+The ingest pipeline uses an observer agent to emit XML observations and summaries. Summaries are generated on session end by default; use `<skip_summary/>` in observer output to skip. The defaults are:
 
 - **OpenAI**: `gpt-5.1-codex-mini` (uses `OPENCODE_MEM_OBSERVER_API_KEY`, or `OPENCODE_API_KEY` / `OPENAI_API_KEY`).
 - **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVER_PROVIDER=anthropic` and provide `OPENCODE_MEM_OBSERVER_API_KEY` or `ANTHROPIC_API_KEY`).

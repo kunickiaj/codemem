@@ -22,8 +22,6 @@ class OpencodeMemConfig:
     observer_api_key: str | None = None
     observer_max_chars: int = 12000
     summary_max_chars: int = 6000
-    store_typed: bool = True
-    store_summary: bool = False
     viewer_auto: bool = True
     viewer_auto_stop: bool = True
     viewer_enabled: bool = True
@@ -84,12 +82,6 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     )
     cfg.summary_max_chars = int(
         os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS", cfg.summary_max_chars)
-    )
-    cfg.store_typed = _parse_bool(
-        os.getenv("OPENCODE_MEM_PLUGIN_TYPED"), cfg.store_typed
-    )
-    cfg.store_summary = _parse_bool(
-        os.getenv("OPENCODE_MEM_PLUGIN_SUMMARY"), cfg.store_summary
     )
     cfg.viewer_auto = _parse_bool(
         os.getenv("OPENCODE_MEM_VIEWER_AUTO"), cfg.viewer_auto
