@@ -28,6 +28,13 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 
 Configuration is stored in `~/.config/opencode-mem/config.json` (override with `OPENCODE_MEM_CONFIG`). Environment variables always take precedence.
 
+The viewer includes a Settings modal for the observer provider, model, and max chars. Changes write to the config file; environment variables still override those values.
+
+## Docs
+
+- `docs/architecture.md` covers the data flow and components.
+- `docs/user-guide.md` covers viewer usage and troubleshooting.
+
 ## OpenCode MCP setup
 
 To let the LLM call memory tools (search/timeline/pack), add this to your global OpenCode config at `~/.config/opencode/opencode.json`:
