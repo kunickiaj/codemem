@@ -263,7 +263,12 @@ export const OpencodeMemPlugin = async ({
         }
       }
       if (
-        ['session.idle', 'session.error', 'session.compacted'].includes(eventType)
+        [
+          'session.idle',
+          'session.error',
+          'session.compacted',
+          'experimental.session.compacting',
+        ].includes(eventType)
       ) {
         await flushEvents();
       }

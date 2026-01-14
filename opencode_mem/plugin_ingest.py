@@ -219,6 +219,8 @@ def ingest(payload: dict[str, Any]) -> None:
     transcript, filtered_events, transcript_lines = _build_transcript(events)
     transcript = _truncate_text(transcript, max_bytes)
     allow_memories = _has_high_signal_events(events) or bool(diff_summary.strip())
+    if prompts:
+        allow_memories = True
     if not transcript.strip():
         if not allow_memories:
             store.end_session(
@@ -233,6 +235,9 @@ def ingest(payload: dict[str, Any]) -> None:
             return
         if diff_summary.strip():
             transcript = _truncate_text(f"Diff summary:\n{diff_summary}", max_bytes)
+        elif prompts:
+            latest_prompt = prompts[-1]["prompt_text"]
+            transcript = _truncate_text(f"User prompt:\n{latest_prompt}", max_bytes)
     artifacts = build_artifact_bundle(pre, post, transcript)
     for kind, body, path in artifacts:
         store.add_artifact(session_id, kind=kind, path=path, content_text=body)
