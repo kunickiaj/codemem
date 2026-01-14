@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import textwrap
 from dataclasses import dataclass
 from typing import List, Optional
@@ -39,6 +40,13 @@ LOW_SIGNAL_OBSERVATION_PATTERNS = [
         r"^(opencode-)?mem\.memory_(pack|search|recent|get|remember|forget)\b",
         re.IGNORECASE,
     ),
+    re.compile(r"^\[[0-9]{4}-[0-9]{2}-[0-9]{2}t", re.IGNORECASE),
+    re.compile(r"^\d{2,}\|", re.IGNORECASE),
+    re.compile(r"^result:\s*<file>", re.IGNORECASE),
+    re.compile(r"^args:\s*{", re.IGNORECASE),
+    re.compile(r"^/[^\s]+$"),
+    re.compile(r"^[A-Za-z]:\\\\[^\s]+$"),
+    re.compile(r"^session\s+#\d+\b", re.IGNORECASE),
 ]
 
 
@@ -110,6 +118,13 @@ class Summarizer:
         self, max_observations: int = 5, force_heuristic: bool = False
     ) -> None:
         self.max_observations = max_observations
+        self.force_heuristic = force_heuristic
+        from .config import load_config
+
+        cfg = load_config()
+        self.use_opencode_run = cfg.use_opencode_run
+        self.opencode_model = cfg.opencode_model
+        self.opencode_agent = cfg.opencode_agent
         model = os.getenv("OPENCODE_MEM_SUMMARY_MODEL")
         api_key = (
             os.getenv("OPENCODE_MEM_SUMMARY_API_KEY")
@@ -140,7 +155,13 @@ class Summarizer:
         heuristic = self._heuristic_summary(
             filtered_transcript, diff_summary, recent_files
         )
-        if self.llm:
+        if not self.force_heuristic and self.use_opencode_run:
+            summary = self._summarize_with_opencode_run(
+                filtered_transcript, diff_summary, recent_files
+            )
+            if summary:
+                return self._filter_summary_observations(summary)
+        if not self.force_heuristic and self.llm:
             try:
                 summary = self.llm.summarize(
                     filtered_transcript,
@@ -152,6 +173,87 @@ class Summarizer:
             except Exception:
                 return self._filter_summary_observations(heuristic)
         return self._filter_summary_observations(heuristic)
+
+    def _build_summary_prompt(
+        self, transcript: str, diff_summary: str, recent_files: str
+    ) -> str:
+        return (
+            "Summarize the following terminal session for a developer journal. "
+            "Include a concise session summary, up to {max_obs} short observations, "
+            "and any notable entities (names of services, components, or domains). "
+            "Return JSON with keys: session_summary (string), observations (list of strings), "
+            "entities (list of strings).\n"
+            "Diff summary:\n{diff}\nRecent files:\n{files}\nTranscript:\n{transcript}"
+        ).format(
+            max_obs=self.max_observations,
+            diff=diff_summary or "n/a",
+            files=recent_files or "n/a",
+            transcript=transcript[:6000],
+        )
+
+    def _parse_summary_payload(self, content: str) -> Summary:
+        try:
+            data = json.loads(content)
+        except Exception:
+            data = {
+                "session_summary": content.strip() or "Session summary unavailable",
+                "observations": [],
+                "entities": [],
+            }
+        return Summary(
+            session_summary=data.get("session_summary", "").strip()
+            or "Session summary unavailable",
+            observations=list(data.get("observations", []))[: self.max_observations],
+            entities=list(data.get("entities", []))[: self.max_observations],
+        )
+
+    def _summarize_with_opencode_run(
+        self, transcript: str, diff_summary: str, recent_files: str
+    ) -> Optional[Summary]:
+        prompt = self._build_summary_prompt(transcript, diff_summary, recent_files)
+        text = self._call_opencode_run(prompt)
+        if not text:
+            return None
+        return self._parse_summary_payload(text)
+
+    def _call_opencode_run(self, prompt: str) -> Optional[str]:
+        cmd = ["opencode", "run", "--format", "json", "--model", self.opencode_model]
+        if self.opencode_agent:
+            cmd.extend(["--agent", self.opencode_agent])
+        cmd.append(prompt)
+        try:
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except Exception:  # pragma: no cover
+            return None
+        if result.returncode != 0:
+            return None
+        text = self._extract_opencode_text(result.stdout)
+        return text or None
+
+    def _extract_opencode_text(self, output: str) -> str:
+        if not output:
+            return ""
+        lines = output.splitlines()
+        parts: List[str] = []
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if payload.get("type") == "text":
+                part = payload.get("part") or {}
+                text = part.get("text") if isinstance(part, dict) else None
+                if text:
+                    parts.append(text)
+        if parts:
+            return "\n".join(parts).strip()
+        return output.strip()
 
     def _filter_transcript_lines(self, transcript: str) -> List[str]:
         lines: List[str] = []
