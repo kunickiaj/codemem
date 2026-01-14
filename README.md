@@ -21,7 +21,31 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 - `opencode-mem init-db` – initialize the database.
 - `opencode-mem run -- <cmd>` – run any command while automatically capturing transcripts and artifacts.
 - `opencode-mem stats` / `opencode-mem recent` / `opencode-mem search` – inspect stored memories.
+- `opencode-mem purge` – deactivate low-signal observations (use `--dry-run` to preview).
 - `opencode-mem serve` – launch the web viewer (the plugin also auto-starts it).
+
+## Configuration
+
+Configuration is stored in `~/.config/opencode-mem/config.json` (override with `OPENCODE_MEM_CONFIG`). Environment variables always take precedence.
+
+## OpenCode MCP setup
+
+To let the LLM call memory tools (search/timeline/pack), add this to your global OpenCode config at `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "opencode_mem": {
+      "type": "local",
+      "command": ["uvx", "opencode-mem", "mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Restart OpenCode and the MCP tools will be available to the model.
 
 ## Plugin mode
 
@@ -29,26 +53,46 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 
 1. Tracks every tool invocation (`tool.execute.after`).
 2. Flushes captured events when the session idles, errors, or before compaction (`experimental.session.compacting`).
-3. Starts the viewer automatically and prints startup stats with a link.
-4. Posts payloads into `python -m opencode_mem.plugin_ingest` (uses `python3` by default).
+3. Auto-starts the viewer by default (set `OPENCODE_MEM_VIEWER_AUTO=0` to disable).
+4. Posts payloads into `uvx opencode-mem ingest` by default.
 
 ### Environment hints for the plugin
 
 | Env var | Description |
 | --- | --- |
-| `OPENCODE_MEM_PYTHON` | Override the Python binary the plugin spawns (defaults to `python3`). |
-| `OPENCODE_MEM_VIEWER` | Set to `0`, `false`, or `off` to skip auto-starting the viewer. |
+| `OPENCODE_MEM_RUNNER` | Override the runner used by the plugin (defaults to `uvx`). |
+| `OPENCODE_MEM_RUNNER_FROM` | Path used with `uvx --from` (defaults to repo root). |
+| `OPENCODE_MEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
 | `OPENCODE_MEM_VIEWER_HOST`, `OPENCODE_MEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
+| `OPENCODE_MEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
+| `OPENCODE_MEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
+| `OPENCODE_MEM_PLUGIN_LOG` | Path for the plugin log file (defaults to `~/.opencode-mem/plugin.log`, set `0` to disable). |
+| `OPENCODE_MEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `1500`). |
 | `OPENCODE_MEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events via `client.app.log`. |
+| `OPENCODE_MEM_PLUGIN_SUMMARY` | Store session summaries from plugin ingest (default off). |
+| `OPENCODE_MEM_PLUGIN_OBSERVATIONS` | Store heuristic observations from plugin ingest (default off). |
+| `OPENCODE_MEM_PLUGIN_ENTITIES` | Store entity lists from plugin ingest (default off). |
+| `OPENCODE_MEM_PLUGIN_TYPED` | Store typed memories (default on). |
+| `OPENCODE_MEM_USE_OPENCODE_RUN` | Use `opencode run` for classification (default off). |
+| `OPENCODE_MEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
+| `OPENCODE_MEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |
+
+### Plugin slash commands
+
+- `/mem-status` – show viewer URL, log path, stats, and recent entries.
+- `/mem-stats` – show just the stats block.
+- `/mem-recent` – show recent items (defaults to 5).
 
 ## Observation classification model
 
-The ingest pipeline now classifies memories into categories (`prompt`, `discovery`, `change`, `decision`). The defaults are:
+The ingest pipeline now classifies memories into categories (`discovery`, `change`, `feature`, `bugfix`, `refactor`, `decision`). The defaults are:
 
-- **OpenAI**: `gpt-5.1-codex-mini` (requires `OPENCODE_MEM_OBSERVATION_API_KEY`).
-- **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVATION_PROVIDER=anthropic` along with `OPENCODE_MEM_OBSERVATION_API_KEY`).
+- **OpenAI**: `gpt-5.1-codex-mini` (uses `OPENCODE_MEM_OBSERVATION_API_KEY`, or `OPENCODE_API_KEY` / `OPENAI_API_KEY`).
+- **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVATION_PROVIDER=anthropic` and provide `OPENCODE_MEM_OBSERVATION_API_KEY` or `ANTHROPIC_API_KEY`).
 
 If no API key is provided, a faster keyword-based heuristic runs instead. Override the exact model with `OPENCODE_MEM_OBSERVATION_MODEL`.
+
+If you’re authenticated via OpenCode OAuth and want to avoid API keys, set `OPENCODE_MEM_USE_OPENCODE_RUN=1` to run `opencode run` for classification. Configure the model with `OPENCODE_MEM_OPENCODE_MODEL`.
 
 ## Running OpenCode with the plugin
 
