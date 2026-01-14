@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from .config import load_config
@@ -13,12 +14,49 @@ from .xml_parser import ParsedOutput, parse_observer_output
 
 DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
-custom-gateway_BASE_URL = "https://custom-gateway.a.example.com/openai/v1"
 
 
 def _get_iap_token() -> Optional[str]:
     """Get IAP token from environment (set by iap-auth plugin)."""
     return os.getenv("IAP_AUTH_TOKEN")
+
+
+def _load_opencode_config() -> dict:
+    """Load OpenCode config from ~/.config/opencode/opencode.json"""
+    config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text())
+    except Exception:
+        return {}
+
+
+def _resolve_custom-gateway_model(model_name: str) -> tuple[str, str]:
+    """
+    Resolve custom-gateway/model-name to (base_url, model_id).
+
+    Args:
+        model_name: e.g., "custom-gateway/claude-haiku"
+
+    Returns:
+        (base_url, model_id) e.g., ("https://custom-gateway.a.example.com/v1", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+    """
+    config = _load_opencode_config()
+    provider_config = config.get("provider", {}).get("custom-gateway", {})
+    base_url = provider_config.get("options", {}).get(
+        "baseURL", "https://custom-gateway.a.example.com/v1"
+    )
+
+    # Strip custom-gateway/ prefix
+    short_name = model_name.replace("custom-gateway/", "")
+
+    # Look up model ID from config
+    models = provider_config.get("models", {})
+    model_config = models.get(short_name, {})
+    model_id = model_config.get("id", short_name)
+
+    return base_url, model_id
 
 
 @dataclass
@@ -66,14 +104,13 @@ class ObserverClient:
             try:
                 from openai import OpenAI  # type: ignore
 
+                base_url, model_id = _resolve_custom-gateway_model(self.model)
                 self.client = OpenAI(
                     api_key="unused",  # custom-gateway uses IAP, not API key
-                    base_url=custom-gateway_BASE_URL,
+                    base_url=base_url,
                     default_headers={"Authorization": f"Bearer {iap_token}"},
                 )
-                # Strip custom-gateway/ prefix from model name
-                if self.model.startswith("custom-gateway/"):
-                    self.model = self.model[len("custom-gateway/") :]
+                self.model = model_id
             except Exception:  # pragma: no cover
                 self.client = None
         elif provider == "anthropic":
