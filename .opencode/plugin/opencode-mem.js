@@ -68,7 +68,7 @@ export const OpencodeMemPlugin = async ({
     (process.env.OPENCODE_MEM_VIEWER_AUTO_STOP || '1').toLowerCase()
   );
   const viewerHost = process.env.OPENCODE_MEM_VIEWER_HOST || '127.0.0.1';
-  const viewerPort = process.env.OPENCODE_MEM_VIEWER_PORT || '37777';
+  const viewerPort = process.env.OPENCODE_MEM_VIEWER_PORT || '38888';
   const commandTimeout = Number.parseInt(
     process.env.OPENCODE_MEM_PLUGIN_CMD_TIMEOUT || '1500',
     10
@@ -453,25 +453,7 @@ export const OpencodeMemPlugin = async ({
           return lines.join('\n');
         },
       }),
-      mem_status: tool({
-        description: 'Show opencode-mem stats and recent entries (alias)',
-        args: {},
-        async execute() {
-          const stats = await runCli(['stats']);
-          const recent = await runCli(['recent', '--limit', '5']);
-          const lines = [
-            `viewer: http://${viewerHost}:${viewerPort}`,
-            `log: ${logPath || 'disabled'}`,
-          ];
-          if (stats.exitCode === 0 && stats.stdout.trim()) {
-            lines.push('', 'stats:', stats.stdout.trim());
-          }
-          if (recent.exitCode === 0 && recent.stdout.trim()) {
-            lines.push('', 'recent:', recent.stdout.trim());
-          }
-          return lines.join('\n');
-        },
-      }),
+
       'mem-recent': tool({
         description: 'Show recent opencode-mem entries',
         args: {
@@ -486,20 +468,7 @@ export const OpencodeMemPlugin = async ({
           return `Failed to fetch recent: ${recent.stderr || recent.exitCode}`;
         },
       }),
-      mem_recent: tool({
-        description: 'Show recent opencode-mem entries (alias)',
-        args: {
-          limit: tool.schema.number().optional(),
-        },
-        async execute({ limit }) {
-          const safeLimit = Number.isFinite(limit) ? String(limit) : '5';
-          const recent = await runCli(['recent', '--limit', safeLimit]);
-          if (recent.exitCode === 0) {
-            return recent.stdout.trim() || 'No recent memories.';
-          }
-          return `Failed to fetch recent: ${recent.stderr || recent.exitCode}`;
-        },
-      }),
+
       'mem-stats': tool({
         description: 'Show opencode-mem stats',
         args: {},
@@ -511,17 +480,7 @@ export const OpencodeMemPlugin = async ({
           return `Failed to fetch stats: ${stats.stderr || stats.exitCode}`;
         },
       }),
-      mem_stats: tool({
-        description: 'Show opencode-mem stats (alias)',
-        args: {},
-        async execute() {
-          const stats = await runCli(['stats']);
-          if (stats.exitCode === 0) {
-            return stats.stdout.trim() || 'No stats yet.';
-          }
-          return `Failed to fetch stats: ${stats.stderr || stats.exitCode}`;
-        },
-      }),
+
     },
   };
 };
