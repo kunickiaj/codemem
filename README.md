@@ -70,12 +70,14 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 | `OPENCODE_MEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `1500`). |
 | `OPENCODE_MEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events via `client.app.log`. |
 | `OPENCODE_MEM_PLUGIN_SUMMARY` | Store session summaries from plugin ingest (default off). |
-| `OPENCODE_MEM_PLUGIN_OBSERVATIONS` | Store heuristic observations from plugin ingest (default off). |
-| `OPENCODE_MEM_PLUGIN_ENTITIES` | Store entity lists from plugin ingest (default off). |
 | `OPENCODE_MEM_PLUGIN_TYPED` | Store typed memories (default on). |
-| `OPENCODE_MEM_USE_OPENCODE_RUN` | Use `opencode run` for classification (default off). |
+| `OPENCODE_MEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |
 | `OPENCODE_MEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
 | `OPENCODE_MEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |
+| `OPENCODE_MEM_OBSERVER_PROVIDER` | Force `openai` or `anthropic` (optional). |
+| `OPENCODE_MEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
+| `OPENCODE_MEM_OBSERVER_API_KEY` | API key for observer model (optional). |
+| `OPENCODE_MEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
 
 ### Plugin slash commands
 
@@ -83,16 +85,14 @@ When OpenCode starts inside this repo (or when the plugin is copied into `~/.con
 - `/mem-stats` – show just the stats block.
 - `/mem-recent` – show recent items (defaults to 5).
 
-## Observation classification model
+## Observer model
 
-The ingest pipeline now classifies memories into categories (`discovery`, `change`, `feature`, `bugfix`, `refactor`, `decision`). The defaults are:
+The ingest pipeline uses an observer agent to emit XML observations and summaries. The defaults are:
 
-- **OpenAI**: `gpt-5.1-codex-mini` (uses `OPENCODE_MEM_OBSERVATION_API_KEY`, or `OPENCODE_API_KEY` / `OPENAI_API_KEY`).
-- **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVATION_PROVIDER=anthropic` and provide `OPENCODE_MEM_OBSERVATION_API_KEY` or `ANTHROPIC_API_KEY`).
+- **OpenAI**: `gpt-5.1-codex-mini` (uses `OPENCODE_MEM_OBSERVER_API_KEY`, or `OPENCODE_API_KEY` / `OPENAI_API_KEY`).
+- **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVER_PROVIDER=anthropic` and provide `OPENCODE_MEM_OBSERVER_API_KEY` or `ANTHROPIC_API_KEY`).
 
-If no API key is provided, a faster keyword-based heuristic runs instead (disable with `OPENCODE_MEM_CLASSIFIER_FALLBACK=0`). Override the exact model with `OPENCODE_MEM_OBSERVATION_MODEL`.
-
-If you’re authenticated via OpenCode OAuth and want to avoid API keys, set `OPENCODE_MEM_USE_OPENCODE_RUN=1` to run `opencode run` for classification. Configure the model with `OPENCODE_MEM_OPENCODE_MODEL`.
+Override the model with `OPENCODE_MEM_OBSERVER_MODEL` or use `OPENCODE_MEM_USE_OPENCODE_RUN=1` with `OPENCODE_MEM_OPENCODE_MODEL` for OAuth-backed runs.
 
 ## Running OpenCode with the plugin
 
