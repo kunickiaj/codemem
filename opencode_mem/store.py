@@ -199,16 +199,206 @@ class MemoryStore:
         self.conn.commit()
         return int(cur.lastrowid)
 
+    def remember_observation(
+        self,
+        session_id: int,
+        kind: str,
+        title: str,
+        narrative: str,
+        subtitle: Optional[str] = None,
+        facts: Optional[list[str]] = None,
+        concepts: Optional[list[str]] = None,
+        files_read: Optional[list[str]] = None,
+        files_modified: Optional[list[str]] = None,
+        prompt_number: Optional[int] = None,
+        confidence: float = 0.5,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        created_at = dt.datetime.now(dt.UTC).isoformat()
+        tags_text = ""
+        metadata_payload = dict(metadata or {})
+        detail = {
+            "subtitle": subtitle,
+            "facts": facts or [],
+            "narrative": narrative,
+            "concepts": concepts or [],
+            "files_read": files_read or [],
+            "files_modified": files_modified or [],
+            "prompt_number": prompt_number,
+        }
+        for key, value in detail.items():
+            if key in metadata_payload:
+                continue
+            if value is None:
+                continue
+            metadata_payload[key] = value
+        cur = self.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id,
+                kind,
+                title,
+                body_text,
+                confidence,
+                tags_text,
+                active,
+                created_at,
+                updated_at,
+                metadata_json,
+                subtitle,
+                facts,
+                narrative,
+                concepts,
+                files_read,
+                files_modified,
+                prompt_number
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                kind,
+                title,
+                narrative,
+                confidence,
+                tags_text,
+                created_at,
+                created_at,
+                db.to_json(metadata_payload),
+                subtitle,
+                db.to_json(facts or []),
+                narrative,
+                db.to_json(concepts or []),
+                db.to_json(files_read or []),
+                db.to_json(files_modified or []),
+                prompt_number,
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def add_user_prompt(
+        self,
+        session_id: int,
+        project: Optional[str],
+        prompt_text: str,
+        prompt_number: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        created_at = dt.datetime.now(dt.UTC).isoformat()
+        created_at_epoch = int(dt.datetime.now(dt.UTC).timestamp() * 1000)
+        cur = self.conn.execute(
+            """
+            INSERT INTO user_prompts(session_id, project, prompt_text, prompt_number, created_at, created_at_epoch, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                project,
+                prompt_text,
+                prompt_number,
+                created_at,
+                created_at_epoch,
+                db.to_json(metadata),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def add_session_summary(
+        self,
+        session_id: int,
+        project: Optional[str],
+        request: str,
+        investigated: str,
+        learned: str,
+        completed: str,
+        next_steps: str,
+        notes: str,
+        files_read: Optional[list[str]] = None,
+        files_edited: Optional[list[str]] = None,
+        prompt_number: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        created_at = dt.datetime.now(dt.UTC).isoformat()
+        created_at_epoch = int(dt.datetime.now(dt.UTC).timestamp() * 1000)
+        cur = self.conn.execute(
+            """
+            INSERT INTO session_summaries(
+                session_id,
+                project,
+                request,
+                investigated,
+                learned,
+                completed,
+                next_steps,
+                notes,
+                files_read,
+                files_edited,
+                prompt_number,
+                created_at,
+                created_at_epoch,
+                metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                project,
+                request,
+                investigated,
+                learned,
+                completed,
+                next_steps,
+                notes,
+                db.to_json(files_read or []),
+                db.to_json(files_edited or []),
+                prompt_number,
+                created_at,
+                created_at_epoch,
+                db.to_json(metadata),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
     def deactivate_low_signal_observations(
         self, limit: Optional[int] = None, dry_run: bool = False
     ) -> Dict[str, int]:
+        return self.deactivate_low_signal_memories(
+            kinds=["observation"], limit=limit, dry_run=dry_run
+        )
+
+    def deactivate_low_signal_memories(
+        self,
+        kinds: Optional[Iterable[str]] = None,
+        limit: Optional[int] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, int]:
+        selected_kinds = [k.strip() for k in (kinds or []) if k.strip()]
+        if not selected_kinds:
+            selected_kinds = [
+                "observation",
+                "discovery",
+                "change",
+                "feature",
+                "bugfix",
+                "refactor",
+                "decision",
+                "note",
+                "entities",
+                "session_summary",
+            ]
+        kind_placeholders = ",".join("?" for _ in selected_kinds)
         clause = "LIMIT ?" if limit else ""
-        params: tuple[Any, ...] = (limit,) if limit else ()
+        params: list[Any] = [*selected_kinds]
+        if limit:
+            params.append(limit)
         rows = self.conn.execute(
             f"""
             SELECT id, title, body_text
             FROM memory_items
-            WHERE kind = 'observation' AND active = 1
+            WHERE kind IN ({kind_placeholders}) AND active = 1
             ORDER BY id DESC
             {clause}
             """,

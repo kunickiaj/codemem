@@ -99,9 +99,51 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_usage_events_event_created ON usage_events(event, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id);
+
+        CREATE TABLE IF NOT EXISTS user_prompts (
+            id INTEGER PRIMARY KEY,
+            session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+            project TEXT,
+            prompt_text TEXT NOT NULL,
+            prompt_number INTEGER,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL,
+            metadata_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_project ON user_prompts(project);
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts(created_at_epoch DESC);
+
+        CREATE TABLE IF NOT EXISTS session_summaries (
+            id INTEGER PRIMARY KEY,
+            session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+            project TEXT,
+            request TEXT,
+            investigated TEXT,
+            learned TEXT,
+            completed TEXT,
+            next_steps TEXT,
+            notes TEXT,
+            files_read TEXT,
+            files_edited TEXT,
+            prompt_number INTEGER,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL,
+            metadata_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_summaries(session_id);
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
         """
     )
     _ensure_column(conn, "sessions", "project", "TEXT")
+    _ensure_column(conn, "memory_items", "subtitle", "TEXT")
+    _ensure_column(conn, "memory_items", "facts", "TEXT")
+    _ensure_column(conn, "memory_items", "narrative", "TEXT")
+    _ensure_column(conn, "memory_items", "concepts", "TEXT")
+    _ensure_column(conn, "memory_items", "files_read", "TEXT")
+    _ensure_column(conn, "memory_items", "files_modified", "TEXT")
+    _ensure_column(conn, "memory_items", "prompt_number", "INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)")
     conn.commit()
 
@@ -117,8 +159,12 @@ def _ensure_column(
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
-def to_json(data: Optional[Dict[str, Any]]) -> str:
-    return json.dumps(data or {}, ensure_ascii=False)
+def to_json(data: Any) -> str:
+    if data is None:
+        payload: Any = {}
+    else:
+        payload = data
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def from_json(text: Optional[str]) -> Dict[str, Any]:

@@ -216,8 +216,29 @@ def build_server() -> FastMCP:
     @mcp.tool()
     def memory_schema() -> Dict[str, Any]:
         return {
-            "kinds": ["session_summary", "observation", "entities", "note", "decision"],
-            "fields": {"title": "short text", "body": "long text"},
+            "kinds": [
+                "session_summary",
+                "observation",
+                "entities",
+                "note",
+                "decision",
+                "discovery",
+                "change",
+                "feature",
+                "bugfix",
+                "refactor",
+            ],
+            "fields": {
+                "title": "short text",
+                "body": "long text",
+                "subtitle": "short text",
+                "facts": "list<string>",
+                "narrative": "long text",
+                "concepts": "list<string>",
+                "files_read": "list<string>",
+                "files_modified": "list<string>",
+                "prompt_number": "int",
+            },
             "filters": ["kind", "session_id", "since", "project"],
         }
 
