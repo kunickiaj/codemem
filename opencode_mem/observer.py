@@ -17,19 +17,8 @@ custom-gateway_BASE_URL = "https://custom-gateway.a.example.com/openai/v1"
 
 
 def _get_iap_token() -> Optional[str]:
-    """Get IAP token from gcloud for custom-gateway auth."""
-    try:
-        result = subprocess.run(
-            ["gcloud", "auth", "print-identity-token"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return None
+    """Get IAP token from environment (set by iap-auth plugin)."""
+    return os.getenv("IAP_AUTH_TOKEN")
 
 
 @dataclass
