@@ -69,7 +69,7 @@ class OpencodeMemConfig:
     viewer_auto_stop: bool = True
     viewer_enabled: bool = True
     viewer_host: str = "127.0.0.1"
-    viewer_port: int = 37777
+    viewer_port: int = 38888
     plugin_log: str | None = "~/.opencode-mem/plugin.log"
     plugin_cmd_timeout_ms: int = 1500
 
