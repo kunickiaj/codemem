@@ -55,9 +55,19 @@ export const OpencodeMemPlugin = async ({
   if (pluginIgnored) {
     return {};
   }
-  const runner = process.env.OPENCODE_MEM_RUNNER || 'uvx';
+  const runner = process.env.OPENCODE_MEM_RUNNER || 'uv';
   const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || cwd;
-  const runnerArgs = runner === 'uvx' ? ['--from', runnerFrom, 'opencode-mem'] : [];
+  const buildRunnerArgs = () => {
+    if (runner === 'uvx') {
+      return ['--from', runnerFrom, 'opencode-mem'];
+    }
+    if (runner === 'uv') {
+      return ['run', '--directory', runnerFrom, 'opencode-mem'];
+    }
+    // For other runners (e.g., direct 'opencode-mem' binary), no extra args
+    return [];
+  };
+  const runnerArgs = buildRunnerArgs();
   const viewerEnabled = !['0', 'false', 'off'].includes(
     (process.env.OPENCODE_MEM_VIEWER || '1').toLowerCase()
   );
