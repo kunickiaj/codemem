@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -261,7 +262,9 @@ def ingest(payload: dict[str, Any]) -> None:
     if last_assistant_message:
         discovery_parts.append(last_assistant_message)
     if tool_events:
-        discovery_parts.append(json.dumps(tool_events, ensure_ascii=False))
+        discovery_parts.append(
+            json.dumps([asdict(e) for e in tool_events], ensure_ascii=False)
+        )
     discovery_text = "\n".join(discovery_parts)
     discovery_tokens = store.estimate_tokens(discovery_text)
 
