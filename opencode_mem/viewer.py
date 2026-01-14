@@ -20,7 +20,7 @@ from .db import DEFAULT_DB_PATH, from_json
 from .store import MemoryStore
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
-DEFAULT_VIEWER_PORT = 37777
+DEFAULT_VIEWER_PORT = 38888
 
 VIEWER_HTML = """<!doctype html>
 <html lang="en">
