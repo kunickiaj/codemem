@@ -186,6 +186,16 @@ def ingest(payload: dict[str, Any]) -> None:
     events = payload.get("events") or []
     if not isinstance(events, list) or not events:
         return
+
+    # Extract session context from plugin (for comprehensive memories)
+    session_context = payload.get("session_context") or {}
+    first_prompt = session_context.get("first_prompt")
+    prompt_count = session_context.get("prompt_count", 0)
+    tool_count = session_context.get("tool_count", 0)
+    duration_ms = session_context.get("duration_ms", 0)
+    files_modified = session_context.get("files_modified", [])
+    files_read = session_context.get("files_read", [])
+
     pre = capture_pre_context(cwd)
     post = capture_post_context(cwd)
     diff_summary = post.get("git_diff") or ""
@@ -205,6 +215,7 @@ def ingest(payload: dict[str, Any]) -> None:
             "source": "plugin",
             "event_count": len(events),
             "started_at": started_at,
+            "session_context": session_context,
         },
     )
     prompts = _extract_prompts(events)
@@ -222,7 +233,8 @@ def ingest(payload: dict[str, Any]) -> None:
     tool_events = _extract_tool_events(events, max_chars)
     assistant_messages = _extract_assistant_messages(events)
     last_assistant_message = assistant_messages[-1] if assistant_messages else None
-    latest_prompt = prompts[-1]["prompt_text"] if prompts else None
+    # Use first_prompt from session_context if available (more complete)
+    latest_prompt = first_prompt or (prompts[-1]["prompt_text"] if prompts else None)
     should_process = (
         bool(tool_events) or bool(latest_prompt) or (STORE_SUMMARY and last_assistant_message)
     )
@@ -233,6 +245,7 @@ def ingest(payload: dict[str, Any]) -> None:
                 "post": post,
                 "source": "plugin",
                 "event_count": len(events),
+                "session_context": session_context,
             },
         )
         store.close()
@@ -240,9 +253,30 @@ def ingest(payload: dict[str, Any]) -> None:
     artifacts = build_artifact_bundle(pre, post, "")
     for kind, body, path in artifacts:
         store.add_artifact(session_id, kind=kind, path=path, content_text=body)
+
+    # Build session context summary for observer
+    session_summary_parts = []
+    if prompt_count > 1:
+        session_summary_parts.append(f"Session had {prompt_count} prompts")
+    if tool_count > 0:
+        session_summary_parts.append(f"{tool_count} tool executions")
+    if duration_ms > 0:
+        duration_min = duration_ms / 60000
+        session_summary_parts.append(f"~{duration_min:.1f} minutes of work")
+    if files_modified:
+        session_summary_parts.append(f"Modified: {', '.join(files_modified[:5])}")
+    if files_read:
+        session_summary_parts.append(f"Read: {', '.join(files_read[:5])}")
+    session_info = "; ".join(session_summary_parts) if session_summary_parts else ""
+
+    # Prepend session info to user prompt for observer context
+    observer_prompt = latest_prompt or ""
+    if session_info:
+        observer_prompt = f"[Session context: {session_info}]\n\n{observer_prompt}"
+
     observer_context = ObserverContext(
         project=project,
-        user_prompt=latest_prompt,
+        user_prompt=observer_prompt,
         prompt_number=prompt_number,
         tool_events=tool_events,
         last_assistant_message=last_assistant_message if STORE_SUMMARY else None,
