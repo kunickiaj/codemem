@@ -978,13 +978,15 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+semantic = [
+    { name = "fastembed" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-]
-semantic = [
-    { name = "fastembed" },
 ]
 
 [package.metadata]
@@ -992,13 +994,17 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.3.6" },
     { name = "mcp", specifier = ">=1.2" },
     { name = "openai", specifier = ">=1.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "rich", specifier = ">=13.7" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["dev", "semantic"]
+provides-extras = ["semantic"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.2" },
+    { name = "pytest-cov", specifier = ">=5.0" },
+    { name = "ruff", specifier = ">=0.8" },
+]
 
 [[package]]
 name = "packaging"

@@ -348,6 +348,4 @@ def is_low_signal_observation(text: str) -> bool:
         return True
     if any(pattern.search(normalized) for pattern in LOW_SIGNAL_PATTERNS):
         return True
-    if any(pattern.search(normalized) for pattern in LOW_SIGNAL_OBSERVATION_PATTERNS):
-        return True
-    return False
+    return bool(any(pattern.search(normalized) for pattern in LOW_SIGNAL_OBSERVATION_PATTERNS))

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime as dt
 import getpass
 import json
 import os
@@ -221,7 +220,6 @@ def run(
     store = _store(db_path)
     pre = capture_pre_context(cwd)
     resolved_project = project or os.environ.get("OPENCODE_MEM_PROJECT") or pre.get("project")
-    started_at = dt.datetime.now(dt.UTC)
 
     injected = False
     if inject:
@@ -472,10 +470,7 @@ def compact(
     store = _store(db_path)
     summarizer = Summarizer()
     sessions = store.all_sessions()
-    if session_id:
-        sessions = [s for s in sessions if s["id"] == session_id]
-    else:
-        sessions = sessions[:limit]
+    sessions = [s for s in sessions if s["id"] == session_id] if session_id else sessions[:limit]
     if not sessions:
         print("[yellow]No sessions found to compact[/yellow]")
         return
@@ -573,7 +568,7 @@ def import_from_claude_mem(
         claude_conn.row_factory = sqlite3.Row
     except Exception as e:
         print(f"[red]Failed to open claude-mem database: {e}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     # Count records
     where_clause = ""
@@ -802,7 +797,7 @@ def import_from_claude_mem(
 
     # Close connections and end all sessions
     claude_conn.close()
-    for project, session_id in project_sessions.items():
+    for _project, session_id in project_sessions.items():
         store.end_session(
             session_id,
             metadata={

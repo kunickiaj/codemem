@@ -9,7 +9,7 @@
 
 ## Build / Install
 - Install (editable): `uv pip install -e .`
-- Install dev deps: `uv sync --extra dev`
+- Install dev deps: `uv sync` (dev group is included by default)
 - Alternate: `pip install -e .`
 
 ## Runtime Commands
