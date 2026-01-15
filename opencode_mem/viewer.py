@@ -40,23 +40,83 @@ VIEWER_HTML = """<!doctype html>
         --accent-3: #223a5e;
         --border: #e0d4c3;
         --shadow: 0 18px 40px rgba(24, 23, 18, 0.12);
+        --header-bg: rgba(255, 250, 243, 0.86);
+        --input-bg: rgba(255, 255, 255, 0.7);
+        --item-bg: rgba(255, 255, 255, 0.6);
+        --item-hover-bg: rgba(255, 255, 255, 0.85);
+        --stat-bg: #fffdf7;
+        --body-grad-1: rgba(31, 111, 92, 0.16);
+        --body-grad-2: rgba(230, 126, 77, 0.2);
+        --body-grad-3: rgba(34, 58, 94, 0.12);
+        --body-base-start: #fff6ea;
+        --body-base-mid: #f3eadc;
+        --body-base-end: #efe3d2;
+        --dot-color: rgba(0, 0, 0, 0.03);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #1a1918;
+          --ink: #e8e4df;
+          --muted: #9a9590;
+          --card: #252423;
+          --accent: #3db89a;
+          --accent-2: #f0956a;
+          --accent-3: #6b8fc7;
+          --border: #3a3836;
+          --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+          --header-bg: rgba(37, 36, 35, 0.92);
+          --input-bg: rgba(50, 48, 46, 0.8);
+          --item-bg: rgba(45, 43, 41, 0.6);
+          --item-hover-bg: rgba(55, 53, 51, 0.85);
+          --stat-bg: #2a2827;
+          --body-grad-1: rgba(61, 184, 154, 0.12);
+          --body-grad-2: rgba(240, 149, 106, 0.12);
+          --body-grad-3: rgba(107, 143, 199, 0.1);
+          --body-base-start: #1a1918;
+          --body-base-mid: #1e1d1c;
+          --body-base-end: #222120;
+          --dot-color: rgba(255, 255, 255, 0.03);
+        }
+      }
+      [data-theme="dark"] {
+        --bg: #1a1918;
+        --ink: #e8e4df;
+        --muted: #9a9590;
+        --card: #252423;
+        --accent: #3db89a;
+        --accent-2: #f0956a;
+        --accent-3: #6b8fc7;
+        --border: #3a3836;
+        --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+        --header-bg: rgba(37, 36, 35, 0.92);
+        --input-bg: rgba(50, 48, 46, 0.8);
+        --item-bg: rgba(45, 43, 41, 0.6);
+        --item-hover-bg: rgba(55, 53, 51, 0.85);
+        --stat-bg: #2a2827;
+        --body-grad-1: rgba(61, 184, 154, 0.12);
+        --body-grad-2: rgba(240, 149, 106, 0.12);
+        --body-grad-3: rgba(107, 143, 199, 0.1);
+        --body-base-start: #1a1918;
+        --body-base-mid: #1e1d1c;
+        --body-base-end: #222120;
+        --dot-color: rgba(255, 255, 255, 0.03);
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         font-family: "Space Grotesk", "Avenir Next", "Avenir", "Futura", "Gill Sans", "Optima", "Trebuchet MS", sans-serif;
         background:
-          radial-gradient(circle at 12% 12%, rgba(31, 111, 92, 0.16), transparent 45%),
-          radial-gradient(circle at 82% 18%, rgba(230, 126, 77, 0.2), transparent 42%),
-          radial-gradient(circle at 70% 85%, rgba(34, 58, 94, 0.12), transparent 40%),
-          linear-gradient(180deg, #fff6ea 0%, #f3eadc 65%, #efe3d2 100%);
+          radial-gradient(circle at 12% 12%, var(--body-grad-1), transparent 45%),
+          radial-gradient(circle at 82% 18%, var(--body-grad-2), transparent 42%),
+          radial-gradient(circle at 70% 85%, var(--body-grad-3), transparent 40%),
+          linear-gradient(180deg, var(--body-base-start) 0%, var(--body-base-mid) 65%, var(--body-base-end) 100%);
         color: var(--ink);
       }
       body::before {
         content: "";
         position: fixed;
         inset: 0;
-        background-image: radial-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 0);
+        background-image: radial-gradient(var(--dot-color) 1px, transparent 0);
         background-size: 18px 18px;
         opacity: 0.35;
         pointer-events: none;
@@ -66,7 +126,7 @@ VIEWER_HTML = """<!doctype html>
         content: "";
         position: fixed;
         inset: 0;
-        background: conic-gradient(from 120deg at 50% 20%, rgba(31, 111, 92, 0.08), transparent 40%, rgba(230, 126, 77, 0.08));
+        background: conic-gradient(from 120deg at 50% 20%, var(--body-grad-1), transparent 40%, var(--body-grad-2));
         opacity: 0.35;
         pointer-events: none;
         z-index: 0;
@@ -77,7 +137,7 @@ VIEWER_HTML = """<!doctype html>
         z-index: 2;
         padding: 26px 28px 18px;
         border-bottom: 1px solid var(--border);
-        background: rgba(255, 250, 243, 0.86);
+        background: var(--header-bg);
         backdrop-filter: blur(6px);
       }
       .header-grid {
@@ -90,14 +150,15 @@ VIEWER_HTML = """<!doctype html>
         padding: 6px 10px;
         border-radius: 10px;
         border: 1px solid var(--border);
-        background: rgba(255, 255, 255, 0.7);
+        background: var(--input-bg);
+        color: var(--ink);
         font-size: 13px;
         cursor: pointer;
         transition: border-color 0.2s ease, background 0.2s ease;
       }
       .project-filter:hover {
-        border-color: rgba(31, 111, 92, 0.3);
-        background: rgba(255, 255, 255, 0.9);
+        border-color: var(--accent);
+        background: var(--item-hover-bg);
       }
       .project-filter:focus {
         outline: none;
@@ -188,15 +249,15 @@ VIEWER_HTML = """<!doctype html>
         border: 1px solid transparent;
         border-radius: 12px;
         margin-bottom: 8px;
-        background: rgba(255, 255, 255, 0.6);
+        background: var(--item-bg);
         transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
         font-size: 14px;
       }
       li:last-child { margin-bottom: 0; }
       li:hover {
         transform: translateY(-1px);
-        border-color: rgba(31, 111, 92, 0.2);
-        background: rgba(255, 255, 255, 0.85);
+        border-color: var(--accent);
+        background: var(--item-hover-bg);
       }
       .small { color: var(--muted); font-size: 12px; }
       .mono { font-family: "SF Mono", "Menlo", "Courier New", monospace; font-size: 12px; }
@@ -209,7 +270,7 @@ VIEWER_HTML = """<!doctype html>
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 12px;
-        background: #fffdf7;
+        background: var(--stat-bg);
       }
       .stat .value {
         font-weight: 600;
@@ -419,10 +480,10 @@ VIEWER_HTML = """<!doctype html>
       }
       .feed-item {
         border: 1px solid var(--border);
-        border-left: 6px solid rgba(31, 111, 92, 0.3);
+        border-left: 6px solid var(--accent);
         border-radius: 16px;
         padding: 14px 16px;
-        background: rgba(255, 255, 255, 0.7);
+        background: var(--input-bg);
         display: flex;
         flex-direction: column;
         gap: 8px;
@@ -430,8 +491,8 @@ VIEWER_HTML = """<!doctype html>
       }
       .feed-item:hover {
         transform: translateY(-1px);
-        border-color: rgba(31, 111, 92, 0.4);
-        background: rgba(255, 255, 255, 0.9);
+        border-left-color: var(--accent-2);
+        background: var(--item-hover-bg);
       }
       .feed-header {
         display: flex;
@@ -511,6 +572,7 @@ VIEWER_HTML = """<!doctype html>
             <select class="project-filter" id="projectFilter">
               <option value="">All Projects</option>
             </select>
+            <button class="settings-button" id="themeToggle" title="Toggle dark/light mode">☀️</button>
             <button class="settings-button" id="settingsButton">Settings</button>
           </div>
         </div>
@@ -591,10 +653,34 @@ VIEWER_HTML = """<!doctype html>
       const observerMaxCharsInput = document.getElementById("observerMaxChars");
       const observerMaxCharsHint = document.getElementById("observerMaxCharsHint");
       const projectFilter = document.getElementById("projectFilter");
+      const themeToggle = document.getElementById("themeToggle");
 
       let configDefaults = {};
       let configPath = "";
       let currentProject = "";
+
+      // Theme management
+      function getTheme() {
+        const saved = localStorage.getItem("opencode-mem-theme");
+        if (saved) return saved;
+        return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+
+      function setTheme(theme) {
+        document.documentElement.setAttribute("data-theme", theme);
+        localStorage.setItem("opencode-mem-theme", theme);
+        themeToggle.textContent = theme === "dark" ? "☀️" : "🌙";
+        themeToggle.title = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+      }
+
+      function toggleTheme() {
+        const current = getTheme();
+        setTheme(current === "dark" ? "light" : "dark");
+      }
+
+      // Initialize theme
+      setTheme(getTheme());
+      themeToggle?.addEventListener("click", toggleTheme);
 
       function formatDate(value) {
         if (!value) return "n/a";
