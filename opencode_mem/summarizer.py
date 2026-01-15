@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from .utils import redact
 
 LOW_SIGNAL_PATTERNS = [
-    re.compile(r"opencode", re.IGNORECASE),
+    # UI/status messages, not technical content
+    re.compile(r"^opencode\s+(is\s+)?ready", re.IGNORECASE),
+    re.compile(r"^opencode\s+says", re.IGNORECASE),
     re.compile(r"\bcontext left\b", re.IGNORECASE),
     re.compile(r"esc to interrupt", re.IGNORECASE),
     re.compile(r"^tip:\s", re.IGNORECASE),
