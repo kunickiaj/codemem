@@ -22,26 +22,29 @@ opencode-mem --help
 ### Via uvx (No Installation)
 
 ```bash
-# Run directly from the repo
+# Run directly from local clone
 uvx --from . opencode-mem stats
 
-# Or install globally
-uv pip install -e . --system
+# Run from GitHub (SSH, for private repo)
+uvx --from "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git" opencode-mem stats
+
+# Run specific version/tag
+uvx --from "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0" opencode-mem stats
 ```
 
-### Install from GitHub Releases
+### Install from GitHub
 
 For released versions, install directly from GitHub:
 
 ```bash
-# Install specific version from GitHub release
-pip install https://github.com/kunickiaj/opencode-mem/releases/download/v0.1.0/opencode_mem-0.1.0-py3-none-any.whl
+# Install from git (SSH, for private repo)
+uv pip install "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git"
 
-# Or use uv
-uv pip install https://github.com/kunickiaj/opencode-mem/releases/download/v0.1.0/opencode_mem-0.1.0-py3-none-any.whl
+# Install specific version/tag
+uv pip install "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0"
 
-# Install latest from repo (development)
-pip install git+https://github.com/kunickiaj/opencode-mem.git
+# Or with pip
+pip install "git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0"
 ```
 
 ### Configuration
