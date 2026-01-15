@@ -55,7 +55,13 @@ def detect_git_info(cwd: str) -> Dict[str, Optional[str]]:
     )
     status = run_command(["git", "status", "--short"], cwd=cwd)
     diff_summary = run_command(["git", "diff", "--stat"], cwd=cwd)
+    # Filter out lockfile noise from diff summary
+    if diff_summary:
+        diff_summary = filter_lockfiles_from_diff(diff_summary)
     recent_files = run_command(["git", "diff", "--name-only", "HEAD"], cwd=cwd)
+    # Filter out lockfiles from recent files
+    if recent_files:
+        recent_files = filter_lockfiles_from_list(recent_files)
     return {
         "repo_root": repo_root,
         "branch": branch,
@@ -64,6 +70,38 @@ def detect_git_info(cwd: str) -> Dict[str, Optional[str]]:
         "diff": diff_summary,
         "recent_files": recent_files,
     }
+
+
+LOCKFILE_PATTERNS = [
+    "uv.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "Cargo.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "Pipfile.lock",
+]
+
+
+def filter_lockfiles_from_diff(diff_output: str) -> str:
+    """Filter lockfile changes from git diff --stat output"""
+    lines = []
+    for line in diff_output.splitlines():
+        # Skip lines that mention lockfiles
+        if not any(pattern in line for pattern in LOCKFILE_PATTERNS):
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def filter_lockfiles_from_list(files_output: str) -> str:
+    """Filter lockfiles from file list"""
+    lines = []
+    for line in files_output.splitlines():
+        # Skip lockfiles
+        if not any(pattern in line for pattern in LOCKFILE_PATTERNS):
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def resolve_project(cwd: str, override: Optional[str] = None) -> Optional[str]:

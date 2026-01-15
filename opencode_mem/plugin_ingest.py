@@ -112,8 +112,8 @@ def _sanitize_payload(value: Any, max_chars: int) -> Any:
 def _sanitize_tool_output(tool: str, output: Any, max_chars: int) -> Any:
     if output is None:
         return None
-    if tool in {"read", "write", "edit"}:
-        return ""
+    # Keep outputs for read/write/edit - observer needs to see file contents
+    # Only sanitize/truncate, don't blank
     sanitized = _sanitize_payload(output, max_chars)
     text = str(sanitized or "")
     if _is_low_signal_output(text):
