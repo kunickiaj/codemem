@@ -1,25 +1,49 @@
 # Architecture
 
 ## Overview
-- **CLI (`opencode-mem`)** runs ingestion, MCP server, and the viewer.
+- **CLI (`opencode-mem`)** runs ingestion, MCP server, viewer, and export/import.
 - **Plugin** captures OpenCode events and posts them to `opencode-mem ingest`.
-- **Ingest pipeline** builds session context, calls the observer, and writes memories.
+- **Ingest pipeline** builds transcript from events, calls the observer, and writes memories.
 - **Observer** returns typed observations and a session summary.
 - **Store** persists sessions, memories, and artifacts in SQLite.
 - **Viewer** serves a static HTML dashboard backed by JSON APIs.
 - **MCP server** exposes memory tools to OpenCode.
 
 ## Data flow
-1. Plugin collects events during an OpenCode session.
-2. `opencode-mem ingest` starts a session in SQLite.
-3. Observer creates observations + summary from the tool transcript.
-4. Store writes artifacts, observations, and session summary memory.
-5. Viewer and MCP server read from SQLite.
+1. Plugin collects events during an OpenCode session (user prompts, assistant messages, tool calls).
+2. Plugin flushes events to `opencode-mem ingest` based on adaptive strategy.
+3. Ingest builds transcript from user_prompt/assistant_message events.
+4. Observer creates observations + summary from transcript and tool events.
+5. Store writes artifacts (transcript, pre/post context), observations, and session summary.
+6. Viewer and MCP server read from SQLite.
+
+## Plugin Flush Strategy
+The plugin uses an adaptive flush strategy optimized for OpenCode's multi-session environment:
+
+### Idle-based Flush (scheduled on `session.idle`)
+- **Light work:** 2 minute delay
+- **Heavy work** (10+ tools OR 5+ prompts): 60 second delay
+- **Very heavy work** (30+ tools OR 10+ prompts): 30 second delay
+
+### Threshold-based Force Flush (immediate)
+- 50+ tool executions OR 15+ prompts
+- 10+ minutes continuous work
+
+### Event-based Flush (immediate)
+- `session.error` event
+
+**Note:** In OpenCode's multi-session world, `/new` command and `session.created` events don't trigger flushes. The adaptive strategy compensates by using work-based heuristics.
 
 ## Sessions and memory persistence
 - A **session** is created per ingest payload (one plugin flush).
 - Memory items persist when the observer returns meaningful content.
 - Low‑signal observations are filtered before writing to SQLite.
+- Transcripts are built from captured user_prompt and assistant_message events.
+
+## Export/Import
+- **Export:** Serialize sessions, memory_items, session_summaries, user_prompts to versioned JSON
+- **Import:** Restore memories with optional project path remapping for team sharing
+- Use cases: knowledge transfer, backup/restore, team onboarding
 
 ## Configuration
 - File config lives at `~/.config/opencode-mem/config.json`.
