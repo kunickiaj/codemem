@@ -762,12 +762,17 @@ VIEWER_HTML = """<!doctype html>
           { label: "Memory items", value: db.memory_items || 0 },
           { label: "Active items", value: db.active_memory_items || 0 },
           { label: "Artifacts", value: db.artifacts || 0 },
-          { label: "Tokens read", value: usage.tokens_read || 0 },
-          { label: "Reuse savings", value: usage.tokens_saved || 0 },
+          { label: "Work investment", value: usage.tokens_written || 0, tooltip: "Tokens spent creating memories (observer LLM calls)" },
+          { label: "Read cost", value: usage.tokens_read || 0, tooltip: "Tokens to read memories when injected into context" },
+          { label: "Savings", value: usage.tokens_saved || 0, tooltip: "Tokens saved by reusing compressed memories instead of raw context" },
         ];
         statsGrid.textContent = "";
         items.forEach(item => {
           const stat = createElement("div", "stat");
+          if (item.tooltip) {
+            stat.title = item.tooltip;
+            stat.style.cursor = "help";
+          }
           const value = createElement("div", "value", item.value.toLocaleString());
           const label = createElement("div", "label", item.label);
           stat.append(value, label);
@@ -992,7 +997,7 @@ VIEWER_HTML = """<!doctype html>
             const meta = createElement(
               "div",
               "small",
-              `read ~${item.tokens_read.toLocaleString()} · reuse saved ~${item.tokens_saved.toLocaleString()}`
+              `read cost ~${item.tokens_read.toLocaleString()} · savings ~${item.tokens_saved.toLocaleString()}`
             );
             li.append(title, meta);
             return li;
