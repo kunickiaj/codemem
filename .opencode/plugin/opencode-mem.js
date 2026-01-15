@@ -1,6 +1,6 @@
-import { appendFile, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { tool } from '@opencode-ai/plugin';
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+import { tool } from "@opencode-ai/plugin";
 
 export const OpencodeMemPlugin = async ({
   project,
@@ -10,30 +10,33 @@ export const OpencodeMemPlugin = async ({
 }) => {
   const events = [];
   const maxEvents = Number.parseInt(
-    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENTS || '200',
+    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENTS || "200",
     10
   );
   const maxChars = Number.parseInt(
-    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENT_CHARS || '8000',
+    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENT_CHARS || "8000",
     10
   );
   const cwd = worktree || directory || process.cwd();
-  const debug = ['1', 'true', 'yes'].includes(
-    (process.env.OPENCODE_MEM_PLUGIN_DEBUG || '').toLowerCase()
+  const debug = ["1", "true", "yes"].includes(
+    (process.env.OPENCODE_MEM_PLUGIN_DEBUG || "").toLowerCase()
+  );
+  const debugExtraction = ["1", "true", "yes"].includes(
+    (process.env.OPENCODE_MEM_DEBUG_EXTRACTION || "").toLowerCase()
   );
   const log = async (level, message, extra = {}) => {
     if (!debug) {
       return;
     }
     await client.app.log({
-      service: 'opencode-mem',
+      service: "opencode-mem",
       level,
       message,
       extra,
     });
   };
-  const logPathEnv = (process.env.OPENCODE_MEM_PLUGIN_LOG || '').toLowerCase();
-  const logEnabled = !['0', 'false', 'off'].includes(logPathEnv);
+  const logPathEnv = (process.env.OPENCODE_MEM_PLUGIN_LOG || "").toLowerCase();
+  const logEnabled = !["0", "false", "off"].includes(logPathEnv);
   const logPath = logEnabled
     ? process.env.OPENCODE_MEM_PLUGIN_LOG ||
       `${process.env.HOME || cwd}/.opencode-mem/plugin.log`
@@ -49,50 +52,53 @@ export const OpencodeMemPlugin = async ({
       // ignore logging failures
     }
   };
-  const pluginIgnored = ['1', 'true', 'yes'].includes(
-    (process.env.OPENCODE_MEM_PLUGIN_IGNORE || '').toLowerCase()
+  const pluginIgnored = ["1", "true", "yes"].includes(
+    (process.env.OPENCODE_MEM_PLUGIN_IGNORE || "").toLowerCase()
   );
   if (pluginIgnored) {
     return {};
   }
-  const runner = process.env.OPENCODE_MEM_RUNNER || 'uv';
+  const runner = process.env.OPENCODE_MEM_RUNNER || "uv";
   const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || cwd;
   const buildRunnerArgs = () => {
-    if (runner === 'uvx') {
-      return ['--from', runnerFrom, 'opencode-mem'];
+    if (runner === "uvx") {
+      return ["--from", runnerFrom, "opencode-mem"];
     }
-    if (runner === 'uv') {
-      return ['run', '--directory', runnerFrom, 'opencode-mem'];
+    if (runner === "uv") {
+      return ["run", "--directory", runnerFrom, "opencode-mem"];
     }
     // For other runners (e.g., direct 'opencode-mem' binary), no extra args
     return [];
   };
   const runnerArgs = buildRunnerArgs();
-  const viewerEnabled = !['0', 'false', 'off'].includes(
-    (process.env.OPENCODE_MEM_VIEWER || '1').toLowerCase()
+  const viewerEnabled = !["0", "false", "off"].includes(
+    (process.env.OPENCODE_MEM_VIEWER || "1").toLowerCase()
   );
-  const viewerAutoStart = !['0', 'false', 'off'].includes(
-    (process.env.OPENCODE_MEM_VIEWER_AUTO || '1').toLowerCase()
+  const viewerAutoStart = !["0", "false", "off"].includes(
+    (process.env.OPENCODE_MEM_VIEWER_AUTO || "1").toLowerCase()
   );
-  const viewerAutoStop = !['0', 'false', 'off'].includes(
-    (process.env.OPENCODE_MEM_VIEWER_AUTO_STOP || '1').toLowerCase()
+  const viewerAutoStop = !["0", "false", "off"].includes(
+    (process.env.OPENCODE_MEM_VIEWER_AUTO_STOP || "1").toLowerCase()
   );
-  const viewerHost = process.env.OPENCODE_MEM_VIEWER_HOST || '127.0.0.1';
-  const viewerPort = process.env.OPENCODE_MEM_VIEWER_PORT || '38888';
+  const viewerHost = process.env.OPENCODE_MEM_VIEWER_HOST || "127.0.0.1";
+  const viewerPort = process.env.OPENCODE_MEM_VIEWER_PORT || "38888";
   const commandTimeout = Number.parseInt(
-    process.env.OPENCODE_MEM_PLUGIN_CMD_TIMEOUT || '1500',
+    process.env.OPENCODE_MEM_PLUGIN_CMD_TIMEOUT || "1500",
     10
   );
   const parseNumber = (value, fallback) => {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) ? parsed : fallback;
   };
-  const injectEnabled = !['0', 'false', 'off'].includes(
-    (process.env.OPENCODE_MEM_INJECT_CONTEXT || '1').toLowerCase()
+  const injectEnabled = !["0", "false", "off"].includes(
+    (process.env.OPENCODE_MEM_INJECT_CONTEXT || "1").toLowerCase()
   );
-  const injectLimit = parseNumber(process.env.OPENCODE_MEM_INJECT_LIMIT || '8', 8);
+  const injectLimit = parseNumber(
+    process.env.OPENCODE_MEM_INJECT_LIMIT || "8",
+    8
+  );
   const injectTokenBudget = parseNumber(
-    process.env.OPENCODE_MEM_INJECT_TOKEN_BUDGET || '800',
+    process.env.OPENCODE_MEM_INJECT_TOKEN_BUDGET || "800",
     800
   );
   const injectedSessions = new Map();
@@ -106,46 +112,67 @@ export const OpencodeMemPlugin = async ({
   const messageRoles = new Map();
   const messageTexts = new Map();
   let debugLogCount = 0;
-  
+
   const extractPromptText = (event) => {
     if (!event) {
       return null;
     }
-    
+
     // For message.updated events, track the role and check if we have buffered text
-    if (event.type === 'message.updated' && event.properties?.info) {
+    if (event.type === "message.updated" && event.properties?.info) {
       const info = event.properties.info;
       if (info.id && info.role) {
         messageRoles.set(info.id, info.role);
-        
+
         // If we have buffered text for this message and it's a user message, return it
-        if (info.role === 'user' && messageTexts.has(info.id)) {
+        if (info.role === "user" && messageTexts.has(info.id)) {
           const text = messageTexts.get(info.id);
           messageTexts.delete(info.id); // Clean up
+          if (debugExtraction) {
+            logLine(
+              `user prompt captured from buffered text id=${info.id.slice(
+                -8
+              )} len=${text.length}`
+            );
+          }
           return text;
         }
       }
       return null;
     }
-    
+
     // For message.part.updated events, accumulate or return text based on known role
-    if (event.type === 'message.part.updated' && event.properties?.part) {
+    if (event.type === "message.part.updated" && event.properties?.part) {
       const part = event.properties.part;
-      if (part.type !== 'text' || !part.text) {
+      if (part.type !== "text" || !part.text) {
         return null;
       }
-      
+
       const role = messageRoles.get(part.messageID);
-      if (role === 'user') {
-        // We know it's a user message, return the text
+      if (role === "user") {
+        // We know it's a user message, return the text immediately
+        if (debugExtraction) {
+          logLine(
+            `user prompt captured immediately id=${part.messageID.slice(
+              -8
+            )} len=${part.text.length}`
+          );
+        }
         return part.text.trim() || null;
       } else if (!role) {
         // Buffer this text until we know the role
-        const existing = messageTexts.get(part.messageID) || '';
+        const existing = messageTexts.get(part.messageID) || "";
         messageTexts.set(part.messageID, existing + part.text);
+        if (debugExtraction) {
+          logLine(
+            `buffering text for unknown role id=${part.messageID.slice(
+              -8
+            )} len=${(existing + part.text).length}`
+          );
+        }
       }
     }
-    
+
     return null;
   };
 
@@ -153,15 +180,30 @@ export const OpencodeMemPlugin = async ({
     if (!event) {
       return null;
     }
-    
+
     // Only capture assistant messages when complete (message.updated with finish)
-    if (event.type === 'message.updated' && event.properties?.info) {
+    if (event.type === "message.updated" && event.properties?.info) {
       const info = event.properties.info;
       if (info.id && info.role) {
         messageRoles.set(info.id, info.role);
-        
+
+        // Log when we see an assistant message.updated (debug only)
+        if (debugExtraction && info.role === "assistant") {
+          logLine(
+            `assistant message.updated id=${info.id.slice(
+              -8
+            )} finish=${!!info.finish} hasText=${messageTexts.has(
+              info.id
+            )} textLen=${messageTexts.get(info.id)?.length || 0}`
+          );
+        }
+
         // Only return assistant text when message is finished
-        if (info.role === 'assistant' && info.finish && messageTexts.has(info.id)) {
+        if (
+          info.role === "assistant" &&
+          info.finish &&
+          messageTexts.has(info.id)
+        ) {
           const text = messageTexts.get(info.id);
           messageTexts.delete(info.id); // Clean up
           return text.trim() || null;
@@ -169,19 +211,27 @@ export const OpencodeMemPlugin = async ({
       }
       return null;
     }
-    
-    // For message.part.updated, just store the latest text (don't capture yet)
-    if (event.type === 'message.part.updated' && event.properties?.part) {
+
+    // For message.part.updated, store the latest text (don't capture yet)
+    // Store for ALL messages regardless of role - role might not be known yet
+    if (event.type === "message.part.updated" && event.properties?.part) {
       const part = event.properties.part;
-      if (part.type === 'text' && part.text) {
-        const role = messageRoles.get(part.messageID);
-        if (role === 'assistant') {
-          // Store latest accumulated text, will be captured on finish
-          messageTexts.set(part.messageID, part.text);
+      if (part.type === "text" && part.text) {
+        // Store latest text, will be captured on finish (for assistant) or on role discovery (for user)
+        if (debugExtraction) {
+          const prevLen = messageTexts.get(part.messageID)?.length || 0;
+          logLine(
+            `text part stored id=${part.messageID.slice(
+              -8
+            )} prevLen=${prevLen} newLen=${part.text.length} role=${
+              messageRoles.get(part.messageID) || "unknown"
+            }`
+          );
         }
+        messageTexts.set(part.messageID, part.text);
       }
     }
-    
+
     return null;
   };
 
@@ -190,13 +240,13 @@ export const OpencodeMemPlugin = async ({
       return;
     }
     viewerStarted = true;
-    log('info', 'starting opencode-mem viewer', { cwd });
+    log("info", "starting opencode-mem viewer", { cwd });
     Bun.spawn({
-      cmd: [runner, ...runnerArgs, 'serve', '--background'],
+      cmd: [runner, ...runnerArgs, "serve", "--background"],
       cwd,
       env: process.env,
-      stdout: 'pipe',
-      stderr: 'pipe',
+      stdout: "pipe",
+      stderr: "pipe",
     });
   };
 
@@ -205,8 +255,8 @@ export const OpencodeMemPlugin = async ({
       cmd: [runner, ...runnerArgs, ...args],
       cwd,
       env: process.env,
-      stdout: 'pipe',
-      stderr: 'pipe',
+      stdout: "pipe",
+      stderr: "pipe",
     });
     const resultPromise = Promise.all([
       proc.exited,
@@ -224,7 +274,7 @@ export const OpencodeMemPlugin = async ({
         } catch (err) {
           // ignore
         }
-        resolve({ exitCode: null, stdout: '', stderr: 'timeout' });
+        resolve({ exitCode: null, stdout: "", stderr: "timeout" });
       }, commandTimeout);
     });
     const result = await Promise.race([resultPromise, timeoutPromise]);
@@ -238,42 +288,42 @@ export const OpencodeMemPlugin = async ({
     if (lastPromptText && lastPromptText.trim()) {
       return lastPromptText.trim();
     }
-    return 'recent work';
+    return "recent work";
   };
 
   const buildPackArgs = (query) => {
-    const args = ['pack', query, '--limit', String(injectLimit)];
+    const args = ["pack", query, "--limit", String(injectLimit)];
     if (Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
-      args.push('--token-budget', String(injectTokenBudget));
+      args.push("--token-budget", String(injectTokenBudget));
     }
     const projectRoot = project?.root || project?.name;
     if (projectRoot) {
-      args.push('--project', projectRoot);
+      args.push("--project", projectRoot);
     }
     return args;
   };
 
   const parsePackText = (stdout) => {
     if (!stdout || !stdout.trim()) {
-      return '';
+      return "";
     }
     try {
       const payload = JSON.parse(stdout);
-      return (payload?.pack_text || '').trim();
+      return (payload?.pack_text || "").trim();
     } catch (err) {
-      return '';
+      return "";
     }
   };
 
   const buildInjectedContext = async (query) => {
     const result = await runCli(buildPackArgs(query));
     if (!result || result.exitCode !== 0) {
-      await logLine(`inject.pack.error ${result?.exitCode ?? 'unknown'}`);
-      return '';
+      await logLine(`inject.pack.error ${result?.exitCode ?? "unknown"}`);
+      return "";
     }
     const packText = parsePackText(result.stdout);
     if (!packText) {
-      return '';
+      return "";
     }
     return `[opencode-mem context]\n${packText}`;
   };
@@ -283,12 +333,32 @@ export const OpencodeMemPlugin = async ({
       return;
     }
     viewerStarted = false;
-    await logLine('viewer stop requested');
-    await runCli(['serve', '--stop']);
+    await logLine("viewer stop requested");
+    await runCli(["serve", "--stop"]);
   };
 
-  await log('info', 'opencode-mem plugin initialized', { cwd });
-  await logLine(`plugin initialized cwd=${cwd}`);
+  // Get version info (commit hash) for debugging
+  let version = "unknown";
+  try {
+    const gitProc = Bun.spawn({
+      cmd: ["git", "rev-parse", "--short", "HEAD"],
+      cwd: runnerFrom,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const gitResult = await Promise.race([
+      new Response(gitProc.stdout).text(),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 500)),
+    ]);
+    if (typeof gitResult === "string" && gitResult !== "timeout") {
+      version = gitResult.trim();
+    }
+  } catch (err) {
+    // Ignore - version will remain 'unknown'
+  }
+
+  await log("info", "opencode-mem plugin initialized", { cwd, version });
+  await logLine(`plugin initialized cwd=${cwd} version=${version}`);
 
   const truncate = (value) => {
     if (value === undefined || value === null) {
@@ -296,7 +366,7 @@ export const OpencodeMemPlugin = async ({
     }
     const text = String(value);
     if (Number.isNaN(maxChars) || maxChars <= 0) {
-      return '';
+      return "";
     }
     if (text.length <= maxChars) {
       return text;
@@ -308,7 +378,7 @@ export const OpencodeMemPlugin = async ({
     if (value === undefined || value === null) {
       return null;
     }
-    if (typeof value === 'string') {
+    if (typeof value === "string") {
       return value;
     }
     try {
@@ -331,7 +401,7 @@ export const OpencodeMemPlugin = async ({
 
   const flushEvents = async () => {
     if (!events.length) {
-      await logLine('flush.skip empty');
+      await logLine("flush.skip empty");
       return;
     }
     const payload = {
@@ -343,12 +413,12 @@ export const OpencodeMemPlugin = async ({
     await logLine(`flush.start count=${events.length}`);
     const input = JSON.stringify(payload);
     const proc = Bun.spawn({
-      cmd: [runner, ...runnerArgs, 'ingest'],
+      cmd: [runner, ...runnerArgs, "ingest"],
       cwd,
       env: process.env,
       stdin: new Blob([input]),
-      stdout: 'pipe',
-      stderr: 'pipe',
+      stdout: "pipe",
+      stderr: "pipe",
     });
     const [exitCode, stdout, stderr] = await Promise.all([
       proc.exited,
@@ -358,9 +428,9 @@ export const OpencodeMemPlugin = async ({
     if (exitCode !== 0) {
       await logLine(`flush.error exitCode=${exitCode} stderr=${stderr}`);
       await client.app.log({
-        service: 'opencode-mem',
-        level: 'error',
-        message: 'Failed to ingest opencode-mem plugin events',
+        service: "opencode-mem",
+        level: "error",
+        message: "Failed to ingest opencode-mem plugin events",
         extra: { exitCode, stdout, stderr },
       });
       return;
@@ -371,13 +441,13 @@ export const OpencodeMemPlugin = async ({
   };
 
   return {
-    'experimental.chat.system.transform': async (input, output) => {
+    "experimental.chat.system.transform": async (input, output) => {
       if (!injectEnabled) {
         return;
       }
       const query = resolveInjectQuery();
       const cached = injectedSessions.get(input.sessionID);
-      let contextText = cached?.text || '';
+      let contextText = cached?.text || "";
       if (!contextText || cached?.query !== query) {
         const injected = await buildInjectedContext(query);
         if (injected) {
@@ -394,26 +464,43 @@ export const OpencodeMemPlugin = async ({
       output.system.push(contextText);
     },
     event: async ({ event }) => {
-      const eventType = event?.type || 'unknown';
-      await logLine(`event ${eventType}`);
-      
-      // Debug: log event structure for message events
+      const eventType = event?.type || "unknown";
+      if (debugExtraction) {
+        await logLine(`event ${eventType}`);
+      }
+
+      // Debug: log event structure for message events (only when debug enabled)
       if (
-        ['message.updated', 'message.created', 'message.appended', 'message.part.updated'].includes(
-          eventType
-        )
+        debugExtraction &&
+        [
+          "message.updated",
+          "message.created",
+          "message.appended",
+          "message.part.updated",
+        ].includes(eventType)
       ) {
         // Log full event structure for debugging (only first few times per event type)
         if (!global.eventLogCount) global.eventLogCount = {};
-        if (!global.eventLogCount[eventType]) global.eventLogCount[eventType] = 0;
+        if (!global.eventLogCount[eventType])
+          global.eventLogCount[eventType] = 0;
         if (global.eventLogCount[eventType] < 2) {
           global.eventLogCount[eventType]++;
-          await logLine(`FULL EVENT (${eventType}): ${JSON.stringify(event, null, 2).substring(0, 3000)}`);
+          await logLine(
+            `FULL EVENT (${eventType}): ${JSON.stringify(
+              event,
+              null,
+              2
+            ).substring(0, 3000)}`
+          );
         }
-        
-        await logLine(`event payload keys: ${Object.keys(event || {}).join(', ')}`);
+
+        await logLine(
+          `event payload keys: ${Object.keys(event || {}).join(", ")}`
+        );
         if (event?.properties) {
-          await logLine(`event properties keys: ${Object.keys(event.properties).join(', ')}`);
+          await logLine(
+            `event properties keys: ${Object.keys(event.properties).join(", ")}`
+          );
           if (event.properties.role) {
             await logLine(`event role: ${event.properties.role}`);
           }
@@ -422,61 +509,76 @@ export const OpencodeMemPlugin = async ({
           }
           if (event.properties.info) {
             const infoKeys = Object.keys(event.properties.info);
-            await logLine(`event properties.info keys: ${infoKeys.join(', ')}`);
+            await logLine(`event properties.info keys: ${infoKeys.join(", ")}`);
             if (event.properties.info.role) {
               await logLine(`event info.role: ${event.properties.info.role}`);
             }
           }
         }
-        
+      }
+
+      if (
+        [
+          "message.updated",
+          "message.created",
+          "message.appended",
+          "message.part.updated",
+        ].includes(eventType)
+      ) {
         const promptText = extractPromptText(event);
         if (promptText) {
           // Check for /new command and flush before session reset
-          if (promptText.trim() === '/new' || promptText.trim().startsWith('/new ')) {
-            await logLine('detected /new command, flushing events');
+          if (
+            promptText.trim() === "/new" ||
+            promptText.trim().startsWith("/new ")
+          ) {
+            await logLine("detected /new command, flushing events");
             await flushEvents();
           }
-          
+
           if (promptText !== lastPromptText) {
             promptCounter += 1;
             lastPromptText = promptText;
             events.push({
-              type: 'user_prompt',
+              type: "user_prompt",
               prompt_number: promptCounter,
               prompt_text: promptText,
               timestamp: new Date().toISOString(),
             });
-            await logLine(`user_prompt captured #${promptCounter}: ${promptText.substring(0, 50)}`);
+            await logLine(
+              `user_prompt captured #${promptCounter}: ${promptText.substring(
+                0,
+                50
+              )}`
+            );
           }
-        } else {
-          await logLine(`extractPromptText returned null`);
         }
-        
+
         const assistantText = extractAssistantText(event);
         if (assistantText && assistantText !== lastAssistantText) {
           lastAssistantText = assistantText;
           events.push({
-            type: 'assistant_message',
+            type: "assistant_message",
             assistant_text: assistantText,
             timestamp: new Date().toISOString(),
           });
-          await logLine(`assistant_message captured: ${assistantText.substring(0, 50)}`);
-        } else if (!assistantText) {
-          await logLine(`extractAssistantText returned null`);
+          await logLine(
+            `assistant_message captured: ${assistantText.substring(0, 50)}`
+          );
         }
       }
       if (
         [
-          'session.idle',
-          'session.error',
-          'session.compacted',
-          'session.compacting',
-          'experimental.session.compacting',
+          "session.idle",
+          "session.error",
+          "session.compacted",
+          "session.compacting",
+          "experimental.session.compacting",
         ].includes(eventType)
       ) {
         await flushEvents();
       }
-      if (eventType === 'session.created') {
+      if (eventType === "session.created") {
         if (events.length) {
           await flushEvents();
         }
@@ -486,17 +588,17 @@ export const OpencodeMemPlugin = async ({
         lastAssistantText = null;
         startViewer();
       }
-      if (eventType === 'session.deleted') {
+      if (eventType === "session.deleted") {
         await stopViewer();
       }
     },
-    'tool.execute.after': async (input, output) => {
+    "tool.execute.after": async (input, output) => {
       const args = output?.args ?? input?.args ?? {};
       const result = output?.result ?? output?.output ?? output?.data ?? null;
       const error = output?.error ?? null;
-      const toolName = input?.tool || output?.tool || 'unknown';
+      const toolName = input?.tool || output?.tool || "unknown";
       recordEvent({
-        type: 'tool.execute.after',
+        type: "tool.execute.after",
         tool: toolName,
         args,
         result: truncate(safeStringify(result)),
@@ -506,53 +608,52 @@ export const OpencodeMemPlugin = async ({
       await logLine(`tool.execute.after ${toolName} queued=${events.length}`);
     },
     tool: {
-      'mem-status': tool({
-        description: 'Show opencode-mem stats and recent entries',
+      "mem-status": tool({
+        description: "Show opencode-mem stats and recent entries",
         args: {},
         async execute() {
-          const stats = await runCli(['stats']);
-          const recent = await runCli(['recent', '--limit', '5']);
+          const stats = await runCli(["stats"]);
+          const recent = await runCli(["recent", "--limit", "5"]);
           const lines = [
             `viewer: http://${viewerHost}:${viewerPort}`,
-            `log: ${logPath || 'disabled'}`,
+            `log: ${logPath || "disabled"}`,
           ];
           if (stats.exitCode === 0 && stats.stdout.trim()) {
-            lines.push('', 'stats:', stats.stdout.trim());
+            lines.push("", "stats:", stats.stdout.trim());
           }
           if (recent.exitCode === 0 && recent.stdout.trim()) {
-            lines.push('', 'recent:', recent.stdout.trim());
+            lines.push("", "recent:", recent.stdout.trim());
           }
-          return lines.join('\n');
+          return lines.join("\n");
         },
       }),
 
-      'mem-recent': tool({
-        description: 'Show recent opencode-mem entries',
+      "mem-recent": tool({
+        description: "Show recent opencode-mem entries",
         args: {
           limit: tool.schema.number().optional(),
         },
         async execute({ limit }) {
-          const safeLimit = Number.isFinite(limit) ? String(limit) : '5';
-          const recent = await runCli(['recent', '--limit', safeLimit]);
+          const safeLimit = Number.isFinite(limit) ? String(limit) : "5";
+          const recent = await runCli(["recent", "--limit", safeLimit]);
           if (recent.exitCode === 0) {
-            return recent.stdout.trim() || 'No recent memories.';
+            return recent.stdout.trim() || "No recent memories.";
           }
           return `Failed to fetch recent: ${recent.stderr || recent.exitCode}`;
         },
       }),
 
-      'mem-stats': tool({
-        description: 'Show opencode-mem stats',
+      "mem-stats": tool({
+        description: "Show opencode-mem stats",
         args: {},
         async execute() {
-          const stats = await runCli(['stats']);
+          const stats = await runCli(["stats"]);
           if (stats.exitCode === 0) {
-            return stats.stdout.trim() || 'No stats yet.';
+            return stats.stdout.trim() || "No stats yet.";
           }
           return `Failed to fetch stats: ${stats.stderr || stats.exitCode}`;
         },
       }),
-
     },
   };
 };
