@@ -69,7 +69,15 @@ OUTPUT_GUIDANCE = (
 OBSERVATION_SCHEMA = f"""
 <observation>
   <type>[ {OBSERVATION_TYPES} ]</type>
-  <!-- type MUST be exactly one of: bugfix, feature, refactor, change, discovery, decision -->
+  <!--
+    type MUST be EXACTLY one of these 6 options:
+      - bugfix: something was broken, now fixed
+      - feature: new capability or functionality added
+      - refactor: code restructured, behavior unchanged
+      - change: generic modification (docs, config, misc)
+      - discovery: learning about existing system, debugging insights
+      - decision: architectural/design choice with rationale
+  -->
 
   <title>[Short outcome-focused title - what was achieved or learned]</title>
   <!-- GOOD: "OAuth2 PKCE flow added to authentication" -->
@@ -85,21 +93,10 @@ OBSERVATION_SCHEMA = f"""
   </facts>
 
   <narrative>[
-    COMPREHENSIVE multi-paragraph narrative (200-800 words) covering:
-
-    CONTEXT: What was the situation? What problem or goal prompted this work?
-
-    INVESTIGATION: What was examined? What files, logs, or systems were explored?
-    What did you discover about how things work?
-
-    IMPLEMENTATION: What was changed? What does the code/config do now?
-    Include specific details: function names, file paths, key logic.
-
-    IMPACT: What's the result? What does the system do differently?
-    What's better now? Any caveats or limitations?
-
-    NEXT STEPS: What remains to be done? What should future sessions know?
-    Any follow-up tasks or potential improvements?
+    Full context: What was done, how it works, why it matters.
+    For discoveries/debugging: what was investigated, what was found, what it means.
+    Include specific details: file paths, function names, configuration values.
+    Aim for 100-500 words - enough to be useful, not overwhelming.
   ]</narrative>
 
   <concepts>
@@ -143,7 +140,11 @@ SUMMARY_SCHEMA = """
   </files_modified>
 </summary>
 
-Write comprehensive summaries (300-1000 words total across all fields).
+IMPORTANT: Always write at least a minimal summary explaining the current state,
+even if you didn't learn anything new or complete any work. This helps track progress
+across sessions. The summary is for tracking the PRIMARY session work, not your observation process.
+
+Write comprehensive summaries (200-600 words total across all fields).
 This summary helps future sessions understand where this work left off.
 """.strip()
 
