@@ -943,7 +943,7 @@ def install_plugin(
     print("\n[bold]Next steps:[/bold]")
     print("1. Restart OpenCode to load the plugin")
     print("2. The plugin will auto-detect installed mode and use SSH git URLs")
-    print(f"3. View logs at: [dim]~/.opencode-mem/plugin.log[/dim]")
+    print("3. View logs at: [dim]~/.opencode-mem/plugin.log[/dim]")
 
 
 def main() -> None:
