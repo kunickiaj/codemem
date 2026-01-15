@@ -89,6 +89,7 @@ class ObserverClient:
         )
         self.api_key = cfg.observer_api_key or os.getenv("OPENCODE_MEM_OBSERVER_API_KEY")
         self.max_chars = cfg.observer_max_chars
+        self.max_tokens = cfg.observer_max_tokens
         self.client: object | None = None
         if self.use_opencode_run:
             return
@@ -155,7 +156,7 @@ class ObserverClient:
                     model=self.model,
                     prompt=f"\nHuman: {prompt}\nAssistant:",
                     temperature=0,
-                    max_tokens_to_sample=800,
+                    max_tokens_to_sample=self.max_tokens,
                 )
                 return resp.completion
             # OpenAI and custom-gateway both use OpenAI-compatible API
@@ -166,7 +167,7 @@ class ObserverClient:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
-                max_tokens=800,
+                max_tokens=self.max_tokens,
             )
             return resp.choices[0].message.content
         except Exception:  # pragma: no cover
