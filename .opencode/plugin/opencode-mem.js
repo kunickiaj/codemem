@@ -58,8 +58,36 @@ export const OpencodeMemPlugin = async ({
   if (pluginIgnored) {
     return {};
   }
-  const runner = process.env.OPENCODE_MEM_RUNNER || "uv";
-  const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || cwd;
+
+  // Determine runner mode:
+  // - If OPENCODE_MEM_RUNNER is set, use that
+  // - If we're in a directory with pyproject.toml containing opencode-mem, use "uv" (dev mode)
+  // - Otherwise, use "uvx" with SSH git URL (installed mode)
+  const detectRunner = () => {
+    const envRunner = process.env.OPENCODE_MEM_RUNNER;
+    if (envRunner) {
+      return envRunner;
+    }
+    // Check if we're in the opencode-mem repo (dev mode)
+    try {
+      const pyproject = Bun.file(`${cwd}/pyproject.toml`);
+      if (pyproject.size > 0) {
+        const content = require("fs").readFileSync(`${cwd}/pyproject.toml`, "utf-8");
+        if (content.includes('name = "opencode-mem"')) {
+          return "uv";
+        }
+      }
+    } catch (err) {
+      // Not in dev mode
+    }
+    return "uvx";
+  };
+
+  const runner = detectRunner();
+  const defaultRunnerFrom = runner === "uvx" 
+    ? "git+ssh://git@github.com/kunickiaj/opencode-mem.git"
+    : cwd;
+  const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || defaultRunnerFrom;
   const buildRunnerArgs = () => {
     if (runner === "uvx") {
       return ["--from", runnerFrom, "opencode-mem"];

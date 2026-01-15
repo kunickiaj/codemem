@@ -148,20 +148,43 @@ Restart OpenCode and the MCP tools will be available to the model.
 
 ## Plugin mode
 
-When OpenCode starts inside this repo (or when the plugin is copied into `~/.config/opencode/plugin/`), `.opencode/plugin/opencode-mem.js` loads automatically. It:
+### Installation
 
-1. Tracks every tool invocation (`tool.execute.after`).
-2. Flushes captured events when the session idles, errors, or compacts (`session.compacting`, `session.compacted`, and `experimental.session.compacting`).
-3. Auto-starts the viewer by default (set `OPENCODE_MEM_VIEWER_AUTO=0` to disable).
-4. Posts payloads into `uv run opencode-mem ingest` by default.
-5. Injects a memory pack into the system prompt (disable with `OPENCODE_MEM_INJECT_CONTEXT=0`).
+**For end users** (no repo clone):
+
+1. Copy the plugin file to OpenCode's plugin directory:
+   ```bash
+   mkdir -p ~/.config/opencode/plugin
+   curl -o ~/.config/opencode/plugin/opencode-mem.js \
+     https://raw.githubusercontent.com/kunickiaj/opencode-mem/main/.opencode/plugin/opencode-mem.js
+   ```
+
+2. The plugin will automatically use `uvx` with SSH git URL to run commands
+
+**For development** (working on opencode-mem):
+
+1. Start OpenCode inside the repo directory
+2. Plugin auto-detects dev mode and uses `uv run` (picks up local changes)
+
+### How it works
+
+When OpenCode starts, `.opencode/plugin/opencode-mem.js` loads automatically and:
+
+1. **Auto-detects mode**:
+   - If in the `opencode-mem` repo → uses `uv run` (dev mode, picks up changes)
+   - Otherwise → uses `uvx --from git+ssh://...` (installed mode)
+
+2. Tracks every tool invocation (`tool.execute.after`)
+3. Flushes captured events when the session idles, errors, or compacts
+4. Auto-starts the viewer by default (set `OPENCODE_MEM_VIEWER_AUTO=0` to disable)
+5. Injects a memory pack into the system prompt (disable with `OPENCODE_MEM_INJECT_CONTEXT=0`)
 
 ### Environment hints for the plugin
 
 | Env var | Description |
 | --- | --- |
-| `OPENCODE_MEM_RUNNER` | Override the runner used by the plugin (defaults to `uv`, supports `uv`, `uvx`, or direct binary). |
-| `OPENCODE_MEM_RUNNER_FROM` | Path used with `uv run --directory` or `uvx --from` (defaults to repo root). |
+| `OPENCODE_MEM_RUNNER` | Override auto-detected runner: `uv` (dev mode), `uvx` (installed mode), or direct binary path. |
+| `OPENCODE_MEM_RUNNER_FROM` | Override source location: directory path for `uv run --directory`, or git URL/path for `uvx --from`. |
 | `OPENCODE_MEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
 | `OPENCODE_MEM_VIEWER_HOST`, `OPENCODE_MEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
 | `OPENCODE_MEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
