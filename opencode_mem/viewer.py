@@ -28,6 +28,7 @@ VIEWER_HTML = """<!doctype html>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>opencode-mem viewer</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%231f6f5c;stop-opacity:1' /%3E%3Cstop offset='100%25' style='stop-color:%23e67e4d;stop-opacity:1' /%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='15' y='35' width='60' height='45' rx='6' fill='%23223a5e' opacity='0.3' transform='rotate(-5 45 57.5)'/%3E%3Crect x='18' y='30' width='60' height='45' rx='6' fill='%23e67e4d' opacity='0.5' transform='rotate(-2 48 52.5)'/%3E%3Crect x='20' y='25' width='60' height='45' rx='6' fill='url(%23g1)'/%3E%3Ctext x='50' y='60' font-family='Arial,sans-serif' font-size='42' font-weight='bold' fill='white' text-anchor='middle'%3EM%3C/text%3E%3C/svg%3E" />
     <style>
       :root {
         --bg: #f7f1e7;
