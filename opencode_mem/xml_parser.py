@@ -134,7 +134,4 @@ def parse_observer_output(text: str) -> ParsedOutput:
 
 
 def has_meaningful_observation(observations: Iterable[ParsedObservation]) -> bool:
-    for obs in observations:
-        if obs.title or obs.narrative:
-            return True
-    return False
+    return any(obs.title or obs.narrative for obs in observations)

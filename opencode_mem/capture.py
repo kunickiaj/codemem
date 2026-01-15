@@ -29,6 +29,7 @@ def _max_transcript_bytes() -> int:
             warnings.warn(
                 "OPENCODE_MEM_MAX_TRANSCRIPT_BYTES must be an integer; using default.",
                 RuntimeWarning,
+                stacklevel=2,
             )
             value = DEFAULT_MAX_TRANSCRIPT_BYTES
     else:
@@ -37,6 +38,7 @@ def _max_transcript_bytes() -> int:
         warnings.warn(
             "OPENCODE_MEM_MAX_TRANSCRIPT_BYTES < 0 disables transcript capture.",
             RuntimeWarning,
+            stacklevel=2,
         )
         value = 0
     return value
