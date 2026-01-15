@@ -141,6 +141,58 @@ export const OpencodeMemPlugin = async ({
   const messageTexts = new Map();
   let debugLogCount = 0;
 
+  // === ACCUMULATION STATE ===
+  // Delayed flush strategy: accumulate events until meaningful idle period
+  const idleFlushDelayMs = parseNumber(
+    process.env.OPENCODE_MEM_IDLE_FLUSH_DELAY_MS || "300000", // 5 minutes default
+    300000
+  );
+  let lastActivityTime = Date.now();
+  let idleFlushTimeout = null;
+
+  // Session context tracking for comprehensive memories
+  const sessionContext = {
+    firstPrompt: null,
+    promptCount: 0,
+    toolCount: 0,
+    startTime: null,
+    filesModified: new Set(),
+    filesRead: new Set(),
+  };
+
+  const resetSessionContext = () => {
+    sessionContext.firstPrompt = null;
+    sessionContext.promptCount = 0;
+    sessionContext.toolCount = 0;
+    sessionContext.startTime = null;
+    sessionContext.filesModified = new Set();
+    sessionContext.filesRead = new Set();
+  };
+
+  const updateActivity = () => {
+    lastActivityTime = Date.now();
+    // Clear any pending idle flush when activity detected
+    if (idleFlushTimeout) {
+      clearTimeout(idleFlushTimeout);
+      idleFlushTimeout = null;
+    }
+  };
+
+  const scheduleIdleFlush = async () => {
+    // Don't schedule if already scheduled or no events to flush
+    if (idleFlushTimeout || events.length === 0) {
+      return;
+    }
+    idleFlushTimeout = setTimeout(async () => {
+      const idleMs = Date.now() - lastActivityTime;
+      if (idleMs >= idleFlushDelayMs && events.length > 0) {
+        await logLine(`flush.idle after ${Math.round(idleMs / 1000)}s idle, ${events.length} events`);
+        await flushEvents();
+      }
+      idleFlushTimeout = null;
+    }, idleFlushDelayMs);
+  };
+
   const extractPromptText = (event) => {
     if (!event) {
       return null;
@@ -428,17 +480,40 @@ export const OpencodeMemPlugin = async ({
   };
 
   const flushEvents = async () => {
+    // Clear any pending idle flush
+    if (idleFlushTimeout) {
+      clearTimeout(idleFlushTimeout);
+      idleFlushTimeout = null;
+    }
+
     if (!events.length) {
       await logLine("flush.skip empty");
       return;
     }
+
+    // Calculate session duration
+    const durationMs = sessionContext.startTime
+      ? Date.now() - sessionContext.startTime
+      : 0;
+
     const payload = {
       cwd,
       project: project?.root || project?.name || null,
       started_at: sessionStartedAt || new Date().toISOString(),
       events: [...events],
+      // Session context for comprehensive memories
+      session_context: {
+        first_prompt: sessionContext.firstPrompt,
+        prompt_count: sessionContext.promptCount,
+        tool_count: sessionContext.toolCount,
+        duration_ms: durationMs,
+        files_modified: Array.from(sessionContext.filesModified),
+        files_read: Array.from(sessionContext.filesRead),
+      },
     };
-    await logLine(`flush.start count=${events.length}`);
+    await logLine(
+      `flush.start count=${events.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
+    );
     const input = JSON.stringify(payload);
     const proc = Bun.spawn({
       cmd: [runner, ...runnerArgs, "ingest"],
@@ -466,6 +541,7 @@ export const OpencodeMemPlugin = async ({
     await logLine(`flush.ok count=${events.length}`);
     events.length = 0;
     sessionStartedAt = null;
+    resetSessionContext();
   };
 
   return {
@@ -555,6 +631,16 @@ export const OpencodeMemPlugin = async ({
       ) {
         const promptText = extractPromptText(event);
         if (promptText) {
+          // Update activity tracking
+          updateActivity();
+
+          // Track session context
+          if (!sessionContext.firstPrompt) {
+            sessionContext.firstPrompt = promptText;
+            sessionContext.startTime = Date.now();
+          }
+          sessionContext.promptCount++;
+
           // Check for /new command and flush before session reset
           if (
             promptText.trim() === "/new" ||
@@ -584,6 +670,7 @@ export const OpencodeMemPlugin = async ({
 
         const assistantText = extractAssistantText(event);
         if (assistantText && assistantText !== lastAssistantText) {
+          updateActivity();
           lastAssistantText = assistantText;
           events.push({
             type: "assistant_message",
@@ -595,17 +682,26 @@ export const OpencodeMemPlugin = async ({
           );
         }
       }
-      if (
-        [
-          "session.idle",
-          "session.error",
-          "session.compacted",
-          "session.compacting",
-          "experimental.session.compacting",
-        ].includes(eventType)
-      ) {
+
+      // NEW ACCUMULATION STRATEGY
+      // Only flush on:
+      // - session.error (immediate error boundary)
+      // - session.idle AFTER delay (scheduled via timeout)
+      // - /new command (handled above)
+      // - session.created (session boundary)
+      //
+      // REMOVED: session.compacted, session.compacting (too frequent)
+      if (eventType === "session.error") {
+        await logLine("session.error detected, flushing immediately");
         await flushEvents();
       }
+      
+      if (eventType === "session.idle") {
+        // Schedule delayed flush instead of immediate
+        await logLine(`session.idle detected, scheduling flush in ${Math.round(idleFlushDelayMs / 1000)}s`);
+        await scheduleIdleFlush();
+      }
+
       if (eventType === "session.created") {
         if (events.length) {
           await flushEvents();
@@ -614,6 +710,7 @@ export const OpencodeMemPlugin = async ({
         promptCounter = 0;
         lastPromptText = null;
         lastAssistantText = null;
+        resetSessionContext();
         startViewer();
       }
       if (eventType === "session.deleted") {
@@ -625,6 +722,22 @@ export const OpencodeMemPlugin = async ({
       const result = output?.result ?? output?.output ?? output?.data ?? null;
       const error = output?.error ?? null;
       const toolName = input?.tool || output?.tool || "unknown";
+
+      // Update activity and session context
+      updateActivity();
+      sessionContext.toolCount++;
+
+      // Track files from tool events
+      const filePath = args.filePath || args.path;
+      if (filePath) {
+        const lowerTool = toolName.toLowerCase();
+        if (lowerTool === "edit" || lowerTool === "write") {
+          sessionContext.filesModified.add(filePath);
+        } else if (lowerTool === "read") {
+          sessionContext.filesRead.add(filePath);
+        }
+      }
+
       recordEvent({
         type: "tool.execute.after",
         tool: toolName,
@@ -633,7 +746,7 @@ export const OpencodeMemPlugin = async ({
         error: truncate(safeStringify(error)),
         timestamp: new Date().toISOString(),
       });
-      await logLine(`tool.execute.after ${toolName} queued=${events.length}`);
+      await logLine(`tool.execute.after ${toolName} queued=${events.length} tools=${sessionContext.toolCount}`);
     },
     tool: {
       "mem-status": tool({
