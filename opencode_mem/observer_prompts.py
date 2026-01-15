@@ -11,55 +11,125 @@ OBSERVATION_CONCEPTS = (
 )
 
 SYSTEM_IDENTITY = (
-    "You are a memory observer for a live coding session. "
-    "Record what was built, fixed, configured, or learned. "
-    "Do not describe the observation process."
+    "You are a memory observer creating searchable records of development work "
+    "FOR FUTURE SESSIONS. Record what was BUILT/FIXED/DEPLOYED/CONFIGURED, "
+    "not what you (the observer) are doing. These memories help developers "
+    "recall past work, decisions, and learnings."
 )
 
-RECORDING_FOCUS = (
-    "Focus on concrete deliverables and outcomes: features shipped, bugs fixed, "
-    "docs updated, configs changed, or insights learned."
-)
+RECORDING_FOCUS = """\
+Focus on deliverables and capabilities:
+- What the system NOW DOES differently (new capabilities)
+- What shipped to users/production (features, fixes, configs, docs)
+- Changes in technical domains (auth, data, UI, infra, DevOps)
 
-SKIP_GUIDANCE = (
-    "Skip routine or low-value operations like empty listings, repeated checks, "
-    "or raw tool dumps. If nothing meaningful happened, output nothing."
-)
+Use outcome-focused verbs: implemented, fixed, deployed, configured, migrated, optimized, added, refactored
+
+GOOD examples (describes what was built):
+- "Authentication now supports OAuth2 with PKCE flow"
+- "Deployment pipeline runs canary releases with auto-rollback"
+- "Fixed race condition in session handler causing duplicate events"
+
+BAD examples (describes observation process - DO NOT DO THIS):
+- "Analyzed authentication implementation and stored findings"
+- "Tracked deployment steps and logged outcomes"
+- "Investigated race condition and recorded details\""""
+
+SKIP_GUIDANCE = """\
+Skip routine operations:
+- Empty status checks or listings
+- Package installations with no errors
+- Simple file reads with no insights
+- Repetitive operations already documented
+If nothing meaningful happened, output nothing."""
+
+NARRATIVE_GUIDANCE = """\
+Create COMPREHENSIVE narratives that tell the complete story:
+- Context: What was the problem or goal? What prompted this work?
+- Investigation: What was examined? What was discovered?
+- Learning: How does it work? Why does it exist? Any gotchas?
+- Implementation: What was changed? What does the code do now?
+- Impact: What's better? What does the system do differently?
+- Next steps: What remains? What should future sessions know?
+
+Aim for 200-800 words per significant work item.
+Combine related work into cohesive narratives instead of many small observations.
+Include specific details: file paths, function names, configuration values."""
 
 OUTPUT_GUIDANCE = (
     "Output only XML. Emit one or more <observation> blocks and optionally a "
-    "<summary> block. Do not include commentary outside XML."
+    "<summary> block. Do not include commentary outside XML. "
+    "Prefer fewer, more comprehensive observations over many small ones."
 )
 
 OBSERVATION_SCHEMA = f"""
 <observation>
   <type>[ {OBSERVATION_TYPES} ]</type>
-  <title>[short outcome-focused title]</title>
-  <subtitle>[one-sentence explanation]</subtitle>
+  <!-- type MUST be exactly one of: bugfix, feature, refactor, change, discovery, decision -->
+
+  <title>[Short outcome-focused title - what was achieved, not what was done]</title>
+  <!-- GOOD: "OAuth2 PKCE flow added to authentication" -->
+  <!-- BAD: "Analyzed authentication code" -->
+
+  <subtitle>[One sentence explanation of the outcome (max 24 words)]</subtitle>
+
   <facts>
-    <fact>[concise factual statement]</fact>
+    <fact>[Specific, self-contained statement with concrete details]</fact>
+    <fact>[Include: file paths, function names, config values, error messages]</fact>
+    <fact>[Each fact must stand alone - no pronouns like "it" or "this"]</fact>
   </facts>
-  <narrative>[what changed, how it works, why it matters]</narrative>
+
+  <narrative>[
+    COMPREHENSIVE multi-paragraph narrative (200-800 words) covering:
+
+    CONTEXT: What was the situation? What problem or goal prompted this work?
+
+    INVESTIGATION: What was examined? What files, logs, or systems were explored?
+    What did you discover about how things work?
+
+    IMPLEMENTATION: What was changed? What does the code/config do now?
+    Include specific details: function names, file paths, key logic.
+
+    IMPACT: What's the result? What does the system do differently?
+    What's better now? Any caveats or limitations?
+
+    NEXT STEPS: What remains to be done? What should future sessions know?
+    Any follow-up tasks or potential improvements?
+  ]</narrative>
+
   <concepts>
     <concept>[{OBSERVATION_CONCEPTS}]</concept>
   </concepts>
+  <!-- concepts: 2-5 knowledge categories from the list above -->
+
   <files_read>
-    <file>[path]</file>
+    <file>[full path from project root]</file>
   </files_read>
   <files_modified>
-    <file>[path]</file>
+    <file>[full path from project root]</file>
   </files_modified>
 </observation>
 """.strip()
 
 SUMMARY_SCHEMA = """
 <summary>
-  <request>[user request summary]</request>
-  <investigated>[what was examined]</investigated>
-  <learned>[key learnings]</learned>
-  <completed>[what was completed]</completed>
-  <next_steps>[current trajectory]</next_steps>
-  <notes>[extra context]</notes>
+  <request>[What did the user request? What was the goal of this work session?]</request>
+
+  <investigated>[What was explored or examined? What files, systems, logs were reviewed?
+  What questions were asked? What did you try to understand?]</investigated>
+
+  <learned>[What was learned about how things work? Any discoveries about the codebase,
+  architecture, or domain? Gotchas or surprises? Understanding gained?]</learned>
+
+  <completed>[What work was done? What shipped? What does the system do now that it
+  didn't before? Be specific: files changed, features added, bugs fixed.]</completed>
+
+  <next_steps>[What are the logical next steps? What remains to be done? What should
+  the next session pick up? Any blockers or dependencies?]</next_steps>
+
+  <notes>[Additional context, insights, or warnings. Anything future sessions should
+  know that doesn't fit above. Design decisions, trade-offs, alternatives considered.]</notes>
+
   <files_read>
     <file>[path]</file>
   </files_read>
@@ -67,6 +137,9 @@ SUMMARY_SCHEMA = """
     <file>[path]</file>
   </files_modified>
 </summary>
+
+Write comprehensive summaries (300-1000 words total across all fields).
+This summary helps future sessions understand where this work left off.
 """.strip()
 
 
@@ -126,14 +199,21 @@ def _format_tool_event(event: ToolEvent) -> str:
 def build_observer_prompt(context: ObserverContext) -> str:
     blocks: list[str] = [
         SYSTEM_IDENTITY,
+        "",
         RECORDING_FOCUS,
+        "",
         SKIP_GUIDANCE,
+        "",
+        NARRATIVE_GUIDANCE,
+        "",
         OUTPUT_GUIDANCE,
+        "",
         "Observation XML schema:",
         OBSERVATION_SCHEMA,
     ]
     if context.include_summary:
-        blocks.extend(["Summary XML schema:", SUMMARY_SCHEMA])
+        blocks.extend(["", "Summary XML schema:", SUMMARY_SCHEMA])
+    blocks.append("")
     blocks.append("Observed session context:")
     if context.user_prompt:
         prompt_block = ["<observed_from_primary_session>"]
