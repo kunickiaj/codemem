@@ -4,7 +4,72 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from opencode_mem.observer_prompts import ToolEvent
-from opencode_mem.plugin_ingest import ingest
+from opencode_mem.plugin_ingest import _build_transcript, ingest
+
+
+def test_build_transcript_from_events() -> None:
+    """Transcript should be built from user prompts and assistant messages in order."""
+    events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "What is 2 + 2?",
+            "prompt_number": 1,
+            "timestamp": "2026-01-14T19:00:00Z",
+        },
+        {
+            "type": "tool.execute.after",
+            "tool": "bash",
+            "args": {"command": "echo 4"},
+            "result": "4",
+            "timestamp": "2026-01-14T19:00:01Z",
+        },
+        {
+            "type": "assistant_message",
+            "assistant_text": "The answer is 4.",
+            "timestamp": "2026-01-14T19:00:02Z",
+        },
+        {
+            "type": "user_prompt",
+            "prompt_text": "Thanks!",
+            "prompt_number": 2,
+            "timestamp": "2026-01-14T19:00:03Z",
+        },
+        {
+            "type": "assistant_message",
+            "assistant_text": "You're welcome!",
+            "timestamp": "2026-01-14T19:00:04Z",
+        },
+    ]
+
+    transcript = _build_transcript(events)
+
+    assert "User: What is 2 + 2?" in transcript
+    assert "Assistant: The answer is 4." in transcript
+    assert "User: Thanks!" in transcript
+    assert "Assistant: You're welcome!" in transcript
+    # Tool events should NOT appear in transcript (they're separate)
+    assert "echo 4" not in transcript
+    # Order should be preserved
+    assert transcript.index("What is 2 + 2?") < transcript.index("The answer is 4.")
+    assert transcript.index("Thanks!") < transcript.index("You're welcome!")
+
+
+def test_build_transcript_empty_events() -> None:
+    """Empty events should produce empty transcript."""
+    assert _build_transcript([]) == ""
+
+
+def test_build_transcript_no_messages() -> None:
+    """Only tool events should produce empty transcript."""
+    events = [
+        {
+            "type": "tool.execute.after",
+            "tool": "bash",
+            "args": {"command": "ls"},
+            "result": "file.txt",
+        },
+    ]
+    assert _build_transcript(events) == ""
 
 
 def test_tool_events_are_json_serializable() -> None:

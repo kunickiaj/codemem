@@ -95,6 +95,22 @@ def _extract_assistant_messages(events: Iterable[dict[str, Any]]) -> list[str]:
     return messages
 
 
+def _build_transcript(events: Iterable[dict[str, Any]]) -> str:
+    """Build a transcript from user prompts and assistant messages in chronological order."""
+    transcript_parts: list[str] = []
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "user_prompt":
+            prompt_text = str(event.get("prompt_text") or "").strip()
+            if prompt_text:
+                transcript_parts.append(f"User: {prompt_text}")
+        elif event_type == "assistant_message":
+            assistant_text = str(event.get("assistant_text") or "").strip()
+            if assistant_text:
+                transcript_parts.append(f"Assistant: {assistant_text}")
+    return "\n\n".join(transcript_parts)
+
+
 def _sanitize_payload(value: Any, max_chars: int) -> Any:
     if value is None:
         return None
@@ -250,7 +266,8 @@ def ingest(payload: dict[str, Any]) -> None:
         )
         store.close()
         return
-    artifacts = build_artifact_bundle(pre, post, "")
+    transcript = _build_transcript(events)
+    artifacts = build_artifact_bundle(pre, post, transcript)
     for kind, body, path in artifacts:
         store.add_artifact(session_id, kind=kind, path=path, content_text=body)
 
