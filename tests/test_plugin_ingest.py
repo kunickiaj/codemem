@@ -76,15 +76,17 @@ def test_ingest_with_tool_events_does_not_crash(tmp_path: Path) -> None:
     mock_response.parsed.summary = None
     mock_response.parsed.skip_summary_reason = None
 
-    with patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}):
-        with patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer:
-            with patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre:
-                with patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post:
-                    mock_observer.observe.return_value = mock_response
-                    mock_pre.return_value = {"project": "test-project"}
-                    mock_post.return_value = {"git_diff": "", "recent_files": ""}
+    with (
+        patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}),
+        patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer,
+        patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre,
+        patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post,
+    ):
+        mock_observer.observe.return_value = mock_response
+        mock_pre.return_value = {"project": "test-project"}
+        mock_post.return_value = {"git_diff": "", "recent_files": ""}
 
-                    # This should not raise TypeError about ToolEvent not being JSON serializable
-                    ingest(payload)
+        # This should not raise TypeError about ToolEvent not being JSON serializable
+        ingest(payload)
 
     assert db_path.exists(), "Database should be created"

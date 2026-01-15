@@ -127,10 +127,7 @@ class MemoryStore:
 
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
-        if metadata is None:
-            metadata_text = None
-        else:
-            metadata_text = db.to_json(metadata)
+        metadata_text = None if metadata is None else db.to_json(metadata)
         self.conn.execute(
             "UPDATE sessions SET ended_at = ?, metadata_json = COALESCE(?, metadata_json) WHERE id = ?",
             (ended_at, metadata_text, session_id),
@@ -812,7 +809,7 @@ class MemoryStore:
         return [item for _, item in scored[:limit]]
 
     def _cosine_similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
-        dot = sum(a * b for a, b in zip(vec_a, vec_b))
+        dot = sum(a * b for a, b in zip(vec_a, vec_b, strict=False))
         norm_a = math.sqrt(sum(a * a for a in vec_a))
         norm_b = math.sqrt(sum(b * b for b in vec_b))
         if norm_a == 0.0 or norm_b == 0.0:
@@ -856,7 +853,7 @@ class MemoryStore:
         except Exception:
             return []
         scored = []
-        for item, vec in zip(candidates, doc_vecs):
+        for item, vec in zip(candidates, doc_vecs, strict=False):
             score = self._cosine_similarity(query_vec, vec)
             scored.append((score, item))
         scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -1095,22 +1092,22 @@ class MemoryStore:
             matches = self.search(
                 self._task_query_hint(), limit=limit, filters=filters, log_usage=False
             )
-            full_matches = list(matches)
+            list(matches)
             if not matches:
                 semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
                 if semantic_matches:
                     matches = semantic_matches
-                    full_matches = list(matches)
+                    list(matches)
                     fallback_used = True
                 else:
                     fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
                     if fuzzy_matches:
                         matches = fuzzy_matches
-                        full_matches = list(matches)
+                        list(matches)
                         fallback_used = True
                     else:
                         matches = self._task_fallback_recent(limit, filters)
-                        full_matches = list(matches)
+                        list(matches)
                         fallback_used = True
             else:
                 recent_matches = self._filter_recent_results(list(matches), self.TASK_RECENCY_DAYS)
@@ -1119,7 +1116,7 @@ class MemoryStore:
                         [m.__dict__ if isinstance(m, MemoryResult) else m for m in recent_matches],
                         limit,
                     )
-                    full_matches = list(recent_matches)
+                    list(recent_matches)
         elif self._query_looks_like_recall(context):
             recall_filters = dict(filters or {})
             recall_filters["kind"] = "session_summary"
@@ -1129,22 +1126,22 @@ class MemoryStore:
                 filters=recall_filters,
                 log_usage=False,
             )
-            full_matches = list(matches)
+            list(matches)
             if not matches:
                 semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
                 if semantic_matches:
                     matches = semantic_matches
-                    full_matches = list(matches)
+                    list(matches)
                     fallback_used = True
                 else:
                     fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
                     if fuzzy_matches:
                         matches = fuzzy_matches
-                        full_matches = list(matches)
+                        list(matches)
                         fallback_used = True
                     else:
                         matches = self._recall_fallback_recent(limit, filters)
-                        full_matches = list(matches)
+                        list(matches)
                         fallback_used = True
             else:
                 recent_matches = self._filter_recent_results(
@@ -1152,34 +1149,34 @@ class MemoryStore:
                 )
                 if recent_matches:
                     matches = self._prioritize_recall_results(list(recent_matches), limit)
-                    full_matches = list(recent_matches)
+                    list(recent_matches)
             if matches:
                 depth_before = max(0, limit // 2)
                 depth_after = max(0, limit - depth_before - 1)
                 timeline = self._timeline_around(matches[0], depth_before, depth_after, filters)
                 if timeline:
                     matches = timeline
-                    full_matches = list(matches)
+                    list(matches)
         else:
             matches = self.search(context, limit=limit, filters=filters, log_usage=False)
-            full_matches = list(matches)
+            list(matches)
             if not matches:
                 semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
                 if semantic_matches:
                     matches = semantic_matches
-                    full_matches = list(matches)
+                    list(matches)
                     fallback_used = True
                 else:
                     fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
                     if fuzzy_matches:
                         matches = fuzzy_matches
-                        full_matches = list(matches)
+                        list(matches)
                         fallback_used = True
             elif matches:
                 matches = self._rerank_results(
                     list(matches), limit=limit, recency_days=self.RECALL_RECENCY_DAYS
                 )
-                full_matches = list(matches)
+                list(matches)
         if token_budget:
             running = 0
             trimmed = []
