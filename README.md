@@ -2,6 +2,12 @@
 
 A lightweight persistent-memory companion for OpenCode. Captures terminal sessions (and tool calls) as memories, serves a viewer, and exposes an OpenCode plugin that records tool usage automatically.
 
+## Prerequisites
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- SSH access to this GitHub repository (for installation)
+
 ## Quick setup
 
 ### For Development (Recommended)
@@ -21,30 +27,27 @@ opencode-mem --help
 
 ### Via uvx (No Installation)
 
+Run directly without installing — requires SSH access to the repo:
+
 ```bash
-# Run directly from local clone
+# Run latest
+uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git opencode-mem stats
+
+# Run specific version
+uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0 opencode-mem stats
+
+# Run from local clone
 uvx --from . opencode-mem stats
-
-# Run from GitHub (SSH, for private repo)
-uvx --from "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git" opencode-mem stats
-
-# Run specific version/tag
-uvx --from "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0" opencode-mem stats
 ```
 
 ### Install from GitHub
 
-For released versions, install directly from GitHub:
-
 ```bash
-# Install from git (SSH, for private repo)
-uv pip install "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git"
+# Install latest
+uv pip install git+ssh://git@github.com/kunickiaj/opencode-mem.git
 
-# Install specific version/tag
-uv pip install "opencode-mem @ git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0"
-
-# Or with pip
-pip install "git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0"
+# Install specific version
+uv pip install git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0
 ```
 
 ### Configuration
