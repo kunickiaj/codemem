@@ -17,6 +17,7 @@
 - MCP server: `opencode-mem mcp`
 - Plugin ingest: `opencode-mem ingest` (stdin JSON)
 - Viewer: `opencode-mem serve --background`
+- Export/Import: `opencode-mem export-memories`, `opencode-mem import-memories`
 
 ## Test Commands
 - Run all tests: `pytest`
@@ -72,7 +73,11 @@
 ## Plugin Rules
 - Plugin file must export default (`export default OpencodeMemPlugin`).
 - Avoid startup banners or blocking CLI calls on load.
-- Flush events on `session.idle`, `session.error`, `session.compacted`, and `/new`.
+- Flush strategy is adaptive with multiple triggers:
+  - **Idle-based:** 2min base delay, reduces to 60s/30s with heavy work
+  - **Threshold-based:** Force flush at 50+ tools OR 15+ prompts OR 10+ min duration
+  - **Error-based:** Immediate flush on `session.error`
+  - Note: `/new` command and `session.created` don't trigger flushes in OpenCode's multi-session environment
 - If changes are made to plugin behavior, update the README.
 
 ## Testing Guidance
@@ -81,10 +86,12 @@
 - Add tests for new filters or memory‑quality logic.
 
 ## Files to Know
-- `opencode_mem/plugin_ingest.py`: filters tool events, builds transcript, persists memories.
+- `opencode_mem/plugin_ingest.py`: filters tool events, builds transcript from user_prompt and assistant_message events, persists memories.
 - `opencode_mem/classifier.py`: typed memory classification (API or `opencode run`).
 - `opencode_mem/summarizer.py`: heuristic summarization and low‑signal detection.
 - `opencode_mem/store.py`: SQLite operations and purge logic.
+- `opencode_mem/cli.py`: Typer-based CLI commands including export/import.
+- `.opencode/plugin/opencode-mem.js`: Plugin entrypoint with adaptive flush strategy.
 
 ## Design Principles
 - Favor pragmatic, minimal changes.
@@ -117,3 +124,9 @@
   - `opencode_mem/mcp_server.py` (`memory_schema`)
   - `README.md`
 - If you change CLI behavior, update `README.md` and tests.
+- If you change plugin flush behavior, update this file and `docs/architecture.md`.
+
+## Recent Improvements (Jan 2026)
+- **v0.3.0:** Export/import memories by project for team knowledge sharing
+- **v0.3.1:** Fixed transcript capture bug (was passing empty string, now builds from events)
+- **Latest:** Adaptive flush strategy (2min base, 60s/30s with heavy work, force flush at thresholds)
