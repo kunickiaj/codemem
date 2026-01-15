@@ -154,36 +154,31 @@ export const OpencodeMemPlugin = async ({
       return null;
     }
     
-    // For message.updated events, track the role and check if we have buffered text
+    // Only capture assistant messages when complete (message.updated with finish)
     if (event.type === 'message.updated' && event.properties?.info) {
       const info = event.properties.info;
       if (info.id && info.role) {
         messageRoles.set(info.id, info.role);
         
-        // If we have buffered text for this message and it's an assistant message, return it
-        if (info.role === 'assistant' && messageTexts.has(info.id)) {
+        // Only return assistant text when message is finished
+        if (info.role === 'assistant' && info.finish && messageTexts.has(info.id)) {
           const text = messageTexts.get(info.id);
           messageTexts.delete(info.id); // Clean up
-          return text;
+          return text.trim() || null;
         }
       }
       return null;
     }
     
-    // For message.part.updated events, accumulate or return text based on known role
+    // For message.part.updated, just store the latest text (don't capture yet)
     if (event.type === 'message.part.updated' && event.properties?.part) {
       const part = event.properties.part;
-      if (part.type !== 'text' || !part.text) {
-        return null;
-      }
-      
-      const role = messageRoles.get(part.messageID);
-      if (role === 'assistant') {
-        // We know it's an assistant message, return the text
-        return part.text.trim() || null;
-      } else if (!role) {
-        // Already buffered by extractPromptText
-        return null;
+      if (part.type === 'text' && part.text) {
+        const role = messageRoles.get(part.messageID);
+        if (role === 'assistant') {
+          // Store latest accumulated text, will be captured on finish
+          messageTexts.set(part.messageID, part.text);
+        }
       }
     }
     
