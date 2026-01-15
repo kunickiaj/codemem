@@ -27,7 +27,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
       
       - name: Run tests with coverage
         run: uv run pytest --cov=opencode_mem --cov-report=xml --cov-report=term
@@ -55,7 +55,7 @@ jobs:
         run: uv python install 3.14
       
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --extra dev --python 3.14
       
       - name: Run ruff check
         run: uv run ruff check opencode_mem tests

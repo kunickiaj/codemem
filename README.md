@@ -8,7 +8,7 @@ A lightweight persistent-memory companion for OpenCode. Captures terminal sessio
 
 ```bash
 # Create virtual environment and install with dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Run commands via the venv
 .venv/bin/opencode-mem --help
