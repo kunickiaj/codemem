@@ -9,7 +9,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
 
 import typer
 from rich import print
@@ -49,9 +48,7 @@ def _format_tokens(count: int) -> str:
     return f"{count:,}"
 
 
-def _resolve_project(
-    cwd: str, project: str | None, all_projects: bool = False
-) -> str | None:
+def _resolve_project(cwd: str, project: str | None, all_projects: bool = False) -> str | None:
     if all_projects:
         return None
     if project:
@@ -96,9 +93,7 @@ def _build_inject_query(pre: dict[str, str], cwd: str, project: str | None) -> s
     return " | ".join(parts).strip()
 
 
-def _inject_into_opencode_exec(
-    args: list[str], injected_text: str
-) -> tuple[list[str], bool]:
+def _inject_into_opencode_exec(args: list[str], injected_text: str) -> tuple[list[str], bool]:
     if not args:
         return args, False
     if args[0] != "opencode":
@@ -190,35 +185,25 @@ def init_db(db_path: str = typer.Option(None, help="Path to SQLite database")) -
     print(f"Initialized database at {store.db_path}")
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-)
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,
     db_path: str = typer.Option(None, help="Path to SQLite database"),
-    project: str = typer.Option(
-        None, help="Project identifier (defaults to git repo root)"
-    ),
+    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     inject: bool = typer.Option(
         True, "--inject/--no-inject", help="Auto-inject context from memories"
     ),
-    inject_query: str = typer.Option(
-        None, help="Override the context query used for auto-inject"
-    ),
+    inject_query: str = typer.Option(None, help="Override the context query used for auto-inject"),
     tool_version: str = typer.Option("dev", help="Version label to record"),
     auto_compact: bool = typer.Option(
         True, help="Re-summarize session at end using model if configured"
     ),
-    max_observations: int = typer.Option(
-        5, help="Max observations to store in summaries"
-    ),
+    max_observations: int = typer.Option(5, help="Max observations to store in summaries"),
 ) -> None:
     """Wrapper command that runs OpenCode (or any command) and writes memories."""
     extra = list(ctx.args)
     if not extra:
-        print(
-            "[red]No command provided. Usage: opencode-mem run -- opencode chat[/red]"
-        )
+        print("[red]No command provided. Usage: opencode-mem run -- opencode chat[/red]")
         raise typer.Exit(code=1)
     cwd = os.getcwd()
     user = getpass.getuser()
@@ -235,9 +220,7 @@ def run(
 
     store = _store(db_path)
     pre = capture_pre_context(cwd)
-    resolved_project = (
-        project or os.environ.get("OPENCODE_MEM_PROJECT") or pre.get("project")
-    )
+    resolved_project = project or os.environ.get("OPENCODE_MEM_PROJECT") or pre.get("project")
     started_at = dt.datetime.now(dt.UTC)
 
     injected = False
@@ -251,9 +234,7 @@ def run(
                 injected_text = f"[opencode-mem context]\n{pack_text}"
                 extra, injected = _inject_into_opencode_exec(extra, injected_text)
                 if not injected:
-                    print(
-                        "[yellow]opencode-mem context (paste into session if needed):[/yellow]"
-                    )
+                    print("[yellow]opencode-mem context (paste into session if needed):[/yellow]")
                     print(injected_text)
 
     session_id = store.start_session(
@@ -324,12 +305,8 @@ def run(
 
     transcript_tokens = store.estimate_tokens(transcript_for_store)
     summary_tokens = store.estimate_tokens(summary_for_stats.session_summary)
-    summary_tokens += sum(
-        store.estimate_tokens(obs) for obs in summary_for_stats.observations
-    )
-    summary_tokens += sum(
-        store.estimate_tokens(entity) for entity in summary_for_stats.entities
-    )
+    summary_tokens += sum(store.estimate_tokens(obs) for obs in summary_for_stats.observations)
+    summary_tokens += sum(store.estimate_tokens(entity) for entity in summary_for_stats.entities)
     tokens_saved = max(0, transcript_tokens - summary_tokens)
     store.record_usage(
         "summarize",
@@ -340,12 +317,8 @@ def run(
         metadata={"mode": "auto" if auto_compact else "heuristic"},
     )
 
-    store.end_session(
-        session_id, metadata={"post": post, "returncode": result.returncode}
-    )
-    print(
-        f"[green]Session {session_id} completed with code {result.returncode}[/green]"
-    )
+    store.end_session(session_id, metadata={"post": post, "returncode": result.returncode})
+    print(f"[green]Session {session_id} completed with code {result.returncode}[/green]")
 
 
 @app.command()
@@ -353,9 +326,7 @@ def search(
     query: str,
     limit: int = typer.Option(5),
     db_path: str = typer.Option(None),
-    project: str = typer.Option(
-        None, help="Project identifier (defaults to git repo root)"
-    ),
+    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     store = _store(db_path)
@@ -363,19 +334,15 @@ def search(
     filters = {"project": resolved_project} if resolved_project else None
     results = store.search(query, limit=limit, filters=filters)
     for item in results:
-        print(
-            f"[{item.id}] ({item.kind}) {item.title}\n{item.body_text}\nscore={item.score:.2f}\n"
-        )
+        print(f"[{item.id}] ({item.kind}) {item.title}\n{item.body_text}\nscore={item.score:.2f}\n")
 
 
 @app.command()
 def recent(
     limit: int = typer.Option(5),
-    kind: Optional[str] = typer.Option(None),
+    kind: str | None = typer.Option(None),
     db_path: str = typer.Option(None),
-    project: str = typer.Option(
-        None, help="Project identifier (defaults to git repo root)"
-    ),
+    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     store = _store(db_path)
@@ -403,11 +370,9 @@ def remember(
     kind: str,
     title: str,
     body: str,
-    tags: List[str] = typer.Option(None),
+    tags: list[str] = typer.Option(None),
     db_path: str = typer.Option(None),
-    project: str = typer.Option(
-        None, help="Project identifier (defaults to git repo root)"
-    ),
+    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
 ) -> None:
     store = _store(db_path)
     resolved_project = _resolve_project(os.getcwd(), project, all_projects=False)
@@ -420,9 +385,7 @@ def remember(
         tool_version="manual",
         metadata={"manual": True},
     )
-    mem_id = store.remember(
-        session_id, kind=kind, title=title, body_text=body, tags=tags
-    )
+    mem_id = store.remember(session_id, kind=kind, title=title, body_text=body, tags=tags)
     store.end_session(session_id, metadata={"manual": True})
     print(f"Stored memory {mem_id}")
 
@@ -436,9 +399,7 @@ def forget(memory_id: int, db_path: str = typer.Option(None)) -> None:
 
 @app.command()
 def prune_observations(
-    limit: Optional[int] = typer.Option(
-        None, help="Max observations to scan (defaults to all)"
-    ),
+    limit: int | None = typer.Option(None, help="Max observations to scan (defaults to all)"),
     dry_run: bool = typer.Option(False, help="Report without deactivating"),
     db_path: str = typer.Option(None),
 ) -> None:
@@ -450,20 +411,16 @@ def prune_observations(
 
 @app.command()
 def purge(
-    limit: Optional[int] = typer.Option(
-        None, help="Max memories to scan (defaults to all)"
-    ),
+    limit: int | None = typer.Option(None, help="Max memories to scan (defaults to all)"),
     dry_run: bool = typer.Option(False, help="Report without deactivating"),
-    kinds: Optional[List[str]] = typer.Option(
+    kinds: list[str] | None = typer.Option(
         None, help="Memory kinds to purge (defaults to common low-signal kinds)"
     ),
     db_path: str = typer.Option(None),
 ) -> None:
     """Deactivate low-signal memories across multiple kinds."""
     store = _store(db_path)
-    result = store.deactivate_low_signal_memories(
-        kinds=kinds, limit=limit, dry_run=dry_run
-    )
+    result = store.deactivate_low_signal_memories(kinds=kinds, limit=limit, dry_run=dry_run)
     action = "Would deactivate" if dry_run else "Deactivated"
     print(f"{action} {result['deactivated']} of {result['checked']} memories")
 
@@ -474,9 +431,7 @@ def pack(
     limit: int = typer.Option(8),
     token_budget: int = typer.Option(None, help="Approx token budget for pack"),
     db_path: str = typer.Option(None),
-    project: str = typer.Option(
-        None, help="Project identifier (defaults to git repo root)"
-    ),
+    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     store = _store(db_path)
@@ -494,9 +449,7 @@ def inject(
     limit: int = typer.Option(8),
     token_budget: int = typer.Option(None, help="Approx token budget for injection"),
     db_path: str = typer.Option(None),
-    project: str = typer.Option(
-        None, help="Project identifier (defaults to git repo root)"
-    ),
+    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     """Build a context block from memories for manual injection into prompts."""
@@ -511,12 +464,8 @@ def inject(
 
 @app.command()
 def compact(
-    session_id: Optional[int] = typer.Option(
-        None, help="Specific session id to compact"
-    ),
-    limit: int = typer.Option(
-        3, help="Number of recent sessions to compact when no id is given"
-    ),
+    session_id: int | None = typer.Option(None, help="Specific session id to compact"),
+    limit: int = typer.Option(3, help="Number of recent sessions to compact when no id is given"),
     db_path: str = typer.Option(None),
 ) -> None:
     """Re-run summarization for past sessions (uses model if configured)."""
@@ -533,22 +482,14 @@ def compact(
     for sess in sessions:
         transcript = store.latest_transcript(sess["id"])
         if not transcript:
-            print(
-                f"[yellow]Skipping session {sess['id']}: no transcript artifact[/yellow]"
-            )
+            print(f"[yellow]Skipping session {sess['id']}: no transcript artifact[/yellow]")
             continue
-        summary = summarizer.summarize(
-            transcript=transcript, diff_summary="", recent_files=""
-        )
+        summary = summarizer.summarize(transcript=transcript, diff_summary="", recent_files="")
         store.replace_session_summary(sess["id"], summary)
         transcript_tokens = store.estimate_tokens(transcript)
         summary_tokens = store.estimate_tokens(summary.session_summary)
-        summary_tokens += sum(
-            store.estimate_tokens(obs) for obs in summary.observations
-        )
-        summary_tokens += sum(
-            store.estimate_tokens(entity) for entity in summary.entities
-        )
+        summary_tokens += sum(store.estimate_tokens(obs) for obs in summary.observations)
+        summary_tokens += sum(store.estimate_tokens(entity) for entity in summary.entities)
         tokens_saved = max(0, transcript_tokens - summary_tokens)
         store.record_usage(
             "compact",
@@ -572,9 +513,7 @@ def stats(db_path: str = typer.Option(None, help="Path to SQLite database")) -> 
     print(f"- Path: {db_stats['path']}")
     print(f"- Size: {_format_bytes(db_stats['size_bytes'])}")
     print(f"- Sessions: {db_stats['sessions']}")
-    print(
-        f"- Memory items: {db_stats['memory_items']} (active {db_stats['active_memory_items']})"
-    )
+    print(f"- Memory items: {db_stats['memory_items']} (active {db_stats['active_memory_items']})")
     print(f"- Artifacts: {db_stats['artifacts']}")
 
     print("\n[bold]Usage[/bold]")
@@ -615,9 +554,7 @@ def ingest() -> None:
 def import_from_claude_mem(
     claude_db: str = typer.Argument(..., help="Path to claude-mem database"),
     db_path: str = typer.Option(None, help="Path to opencode-mem SQLite database"),
-    project_filter: str = typer.Option(
-        None, help="Only import memories from specific project"
-    ),
+    project_filter: str = typer.Option(None, help="Only import memories from specific project"),
     dry_run: bool = typer.Option(False, help="Preview import without writing"),
 ) -> None:
     """Import memories from claude-mem database."""
@@ -671,7 +608,7 @@ def import_from_claude_mem(
         f"SELECT COUNT(*) as count FROM user_prompts {prompts_where}", prompts_params
     ).fetchone()["count"]
 
-    print(f"[bold]Claude-mem Import Preview[/bold]")
+    print("[bold]Claude-mem Import Preview[/bold]")
     print(f"- Source: {claude_db_path}")
     if project_filter:
         print(f"- Project filter: {project_filter}")
@@ -726,9 +663,7 @@ def import_from_claude_mem(
             facts=json.loads(row["facts"]) if row["facts"] else None,
             concepts=json.loads(row["concepts"]) if row["concepts"] else None,
             files_read=json.loads(row["files_read"]) if row["files_read"] else None,
-            files_modified=json.loads(row["files_modified"])
-            if row["files_modified"]
-            else None,
+            files_modified=json.loads(row["files_modified"]) if row["files_modified"] else None,
             prompt_number=row["prompt_number"],
             confidence=0.7,
             metadata={
@@ -778,9 +713,7 @@ def import_from_claude_mem(
             next_steps=row["next_steps"] or "",
             notes=row["notes"] or "",
             files_read=json.loads(row["files_read"]) if row["files_read"] else None,
-            files_edited=json.loads(row["files_edited"])
-            if row["files_edited"]
-            else None,
+            files_edited=json.loads(row["files_edited"]) if row["files_edited"] else None,
             prompt_number=row["prompt_number"],
             metadata={
                 "source": "claude-mem",
@@ -879,7 +812,7 @@ def import_from_claude_mem(
             },
         )
 
-    print(f"\n[bold green]✓ Import complete![/bold green]")
+    print("\n[bold green]✓ Import complete![/bold green]")
     print(f"- Projects: {len(project_sessions)}")
     print(f"- Observations: {imported_obs}")
     print(f"- Session summaries: {imported_summaries}")

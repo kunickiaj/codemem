@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
+from . import db
 from .capture import (
     TRUNCATION_NOTICE,
     build_artifact_bundle,
@@ -14,13 +16,11 @@ from .capture import (
     capture_pre_context,
 )
 from .config import load_config
-from . import db
 from .observer import ObserverClient
 from .observer_prompts import ObserverContext, ToolEvent
 from .store import MemoryStore
 from .summarizer import is_low_signal_observation
 from .xml_parser import ParsedSummary, has_meaningful_observation
-
 
 CONFIG = load_config()
 OBSERVER = ObserverClient()
@@ -140,9 +140,7 @@ def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | N
     )
 
 
-def _extract_tool_events(
-    events: Iterable[dict[str, Any]], max_chars: int
-) -> list[ToolEvent]:
+def _extract_tool_events(events: Iterable[dict[str, Any]], max_chars: int) -> list[ToolEvent]:
     tool_events: list[ToolEvent] = []
     for event in events:
         tool_event = _event_to_tool_event(event, max_chars)
@@ -226,9 +224,7 @@ def ingest(payload: dict[str, Any]) -> None:
     last_assistant_message = assistant_messages[-1] if assistant_messages else None
     latest_prompt = prompts[-1]["prompt_text"] if prompts else None
     should_process = (
-        bool(tool_events)
-        or bool(latest_prompt)
-        or (STORE_SUMMARY and last_assistant_message)
+        bool(tool_events) or bool(latest_prompt) or (STORE_SUMMARY and last_assistant_message)
     )
     if not should_process:
         store.end_session(
@@ -262,9 +258,7 @@ def ingest(payload: dict[str, Any]) -> None:
     if last_assistant_message:
         discovery_parts.append(last_assistant_message)
     if tool_events:
-        discovery_parts.append(
-            json.dumps([asdict(e) for e in tool_events], ensure_ascii=False)
-        )
+        discovery_parts.append(json.dumps([asdict(e) for e in tool_events], ensure_ascii=False))
     discovery_text = "\n".join(discovery_parts)
     discovery_tokens = store.estimate_tokens(discovery_text)
 
@@ -284,9 +278,7 @@ def ingest(payload: dict[str, Any]) -> None:
                 continue
             if not (obs.title or obs.narrative):
                 continue
-            if is_low_signal_observation(obs.title) or is_low_signal_observation(
-                obs.narrative
-            ):
+            if is_low_signal_observation(obs.title) or is_low_signal_observation(obs.narrative):
                 continue
             observations_to_store.append(obs)
 

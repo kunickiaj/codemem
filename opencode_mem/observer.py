@@ -5,18 +5,16 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .config import load_config
 from .observer_prompts import ObserverContext, build_observer_prompt
 from .xml_parser import ParsedOutput, parse_observer_output
 
-
 DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
 
 
-def _get_iap_token() -> Optional[str]:
+def _get_iap_token() -> str | None:
     """Get IAP token from environment (set by iap-auth plugin)."""
     return os.getenv("IAP_AUTH_TOKEN")
 
@@ -61,7 +59,7 @@ def _resolve_custom-gateway_model(model_name: str) -> tuple[str, str]:
 
 @dataclass
 class ObserverResponse:
-    raw: Optional[str]
+    raw: str | None
     parsed: ParsedOutput
 
 
@@ -89,9 +87,7 @@ class ObserverClient:
         self.model = model or (
             DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else DEFAULT_OPENAI_MODEL
         )
-        self.api_key = cfg.observer_api_key or os.getenv(
-            "OPENCODE_MEM_OBSERVER_API_KEY"
-        )
+        self.api_key = cfg.observer_api_key or os.getenv("OPENCODE_MEM_OBSERVER_API_KEY")
         self.max_chars = cfg.observer_max_chars
         self.client: object | None = None
         if self.use_opencode_run:
@@ -148,7 +144,7 @@ class ObserverClient:
         parsed = parse_observer_output(raw or "")
         return ObserverResponse(raw=raw, parsed=parsed)
 
-    def _call(self, prompt: str) -> Optional[str]:
+    def _call(self, prompt: str) -> str | None:
         if self.use_opencode_run:
             return self._call_opencode_run(prompt)
         if not self.client:
@@ -176,7 +172,7 @@ class ObserverClient:
         except Exception:  # pragma: no cover
             return None
 
-    def _call_opencode_run(self, prompt: str) -> Optional[str]:
+    def _call_opencode_run(self, prompt: str) -> str | None:
         model = self.opencode_model or self.model
         cmd = ["opencode", "run", "--format", "json", "--model", model]
         if self.opencode_agent:

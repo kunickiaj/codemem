@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_CONFIG_PATH = Path("~/.config/opencode-mem/config.json").expanduser()
 
 CONFIG_ENV_OVERRIDES = {
@@ -113,28 +112,18 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     )
     cfg.opencode_model = os.getenv("OPENCODE_MEM_OPENCODE_MODEL", cfg.opencode_model)
     cfg.opencode_agent = os.getenv("OPENCODE_MEM_OPENCODE_AGENT", cfg.opencode_agent)
-    cfg.observer_provider = os.getenv(
-        "OPENCODE_MEM_OBSERVER_PROVIDER", cfg.observer_provider
-    )
+    cfg.observer_provider = os.getenv("OPENCODE_MEM_OBSERVER_PROVIDER", cfg.observer_provider)
     cfg.observer_model = os.getenv("OPENCODE_MEM_OBSERVER_MODEL", cfg.observer_model)
-    cfg.observer_api_key = os.getenv(
-        "OPENCODE_MEM_OBSERVER_API_KEY", cfg.observer_api_key
-    )
+    cfg.observer_api_key = os.getenv("OPENCODE_MEM_OBSERVER_API_KEY", cfg.observer_api_key)
     cfg.observer_max_chars = int(
         os.getenv("OPENCODE_MEM_OBSERVER_MAX_CHARS", cfg.observer_max_chars)
     )
-    cfg.summary_max_chars = int(
-        os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS", cfg.summary_max_chars)
-    )
-    cfg.viewer_auto = _parse_bool(
-        os.getenv("OPENCODE_MEM_VIEWER_AUTO"), cfg.viewer_auto
-    )
+    cfg.summary_max_chars = int(os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS", cfg.summary_max_chars))
+    cfg.viewer_auto = _parse_bool(os.getenv("OPENCODE_MEM_VIEWER_AUTO"), cfg.viewer_auto)
     cfg.viewer_auto_stop = _parse_bool(
         os.getenv("OPENCODE_MEM_VIEWER_AUTO_STOP"), cfg.viewer_auto_stop
     )
-    cfg.viewer_enabled = _parse_bool(
-        os.getenv("OPENCODE_MEM_VIEWER"), cfg.viewer_enabled
-    )
+    cfg.viewer_enabled = _parse_bool(os.getenv("OPENCODE_MEM_VIEWER"), cfg.viewer_enabled)
     cfg.viewer_host = os.getenv("OPENCODE_MEM_VIEWER_HOST", cfg.viewer_host)
     cfg.viewer_port = int(os.getenv("OPENCODE_MEM_VIEWER_PORT", cfg.viewer_port))
     cfg.plugin_log = os.getenv("OPENCODE_MEM_PLUGIN_LOG", cfg.plugin_log)

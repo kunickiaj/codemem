@@ -45,6 +45,55 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 - `opencode-mem purge` – deactivate low-signal observations (use `--dry-run` to preview).
 - `opencode-mem serve` – launch the web viewer (the plugin also auto-starts it).
 
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=opencode_mem --cov-report=term
+
+# Run specific test
+uv run pytest tests/test_store.py::test_store_roundtrip
+```
+
+### Code Quality
+
+```bash
+# Lint check
+uv run ruff check opencode_mem tests
+
+# Format check
+uv run ruff format --check opencode_mem tests
+
+# Auto-fix and format
+uv run ruff check --fix opencode_mem tests
+uv run ruff format opencode_mem tests
+```
+
+### CI/CD
+
+The project uses GitHub Actions for continuous integration and deployment:
+
+- **CI Pipeline** (`.github/workflows/ci.yml`): Runs on every push/PR to `main`
+  - Tests across Python 3.11-3.14
+  - Linting with `ruff`
+  - Code coverage reporting (via Codecov)
+
+- **Release Pipeline** (`.github/workflows/release.yml`): Triggered by version tags (`v*`)
+  - Builds distribution packages
+  - Publishes to GitHub Packages (when configured)
+  - Creates GitHub Release with auto-generated changelog
+
+To create a release:
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
 ## Configuration
 
 Configuration is stored in `~/.config/opencode-mem/config.json` (override with `OPENCODE_MEM_CONFIG`). Environment variables always take precedence.

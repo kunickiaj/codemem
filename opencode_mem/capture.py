@@ -12,10 +12,9 @@ import termios
 import tty
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from .utils import detect_git_info, find_agent_notes, redact, strip_ansi
-
 
 DEFAULT_MAX_TRANSCRIPT_BYTES = 200_000
 TRUNCATION_NOTICE = "\n[opencode-mem] transcript truncated\n"
@@ -49,7 +48,7 @@ class CommandResult:
         self.transcript = transcript
 
 
-def capture_pre_context(cwd: str) -> Dict[str, str]:
+def capture_pre_context(cwd: str) -> dict[str, str]:
     git_info = detect_git_info(cwd)
     project = git_info.get("repo_root")
     agents = find_agent_notes(cwd)
@@ -65,7 +64,7 @@ def capture_pre_context(cwd: str) -> Dict[str, str]:
     }
 
 
-def capture_post_context(cwd: str) -> Dict[str, str]:
+def capture_post_context(cwd: str) -> dict[str, str]:
     git_info = detect_git_info(cwd)
     return {
         "git_status": git_info.get("status") or "",
@@ -74,7 +73,7 @@ def capture_post_context(cwd: str) -> Dict[str, str]:
     }
 
 
-def run_command_with_capture(cmd: List[str], cwd: str | None = None) -> CommandResult:
+def run_command_with_capture(cmd: list[str], cwd: str | None = None) -> CommandResult:
     try:
         if sys.platform != "win32":
             master_fd, slave_fd = pty.openpty()
@@ -86,7 +85,7 @@ def run_command_with_capture(cmd: List[str], cwd: str | None = None) -> CommandR
                 stderr=slave_fd,
             )
             os.close(slave_fd)
-            transcript_parts: List[str] = []
+            transcript_parts: list[str] = []
             max_bytes = _max_transcript_bytes()
             captured_bytes = 0
             truncated = False
@@ -119,9 +118,7 @@ def run_command_with_capture(cmd: List[str], cwd: str | None = None) -> CommandR
                         if max_bytes > 0 and captured_bytes < max_bytes:
                             remaining = max_bytes - captured_bytes
                             if len(chunk) > remaining:
-                                transcript_parts.append(
-                                    chunk[:remaining].decode(errors="replace")
-                                )
+                                transcript_parts.append(chunk[:remaining].decode(errors="replace"))
                                 captured_bytes = max_bytes
                                 truncated = True
                             else:
@@ -162,9 +159,7 @@ def run_command_with_capture(cmd: List[str], cwd: str | None = None) -> CommandR
             remaining = max_bytes - captured_bytes
             line_bytes = line.encode("utf-8")
             if len(line_bytes) > remaining:
-                transcript_parts.append(
-                    line_bytes[:remaining].decode("utf-8", errors="replace")
-                )
+                transcript_parts.append(line_bytes[:remaining].decode("utf-8", errors="replace"))
                 captured_bytes = max_bytes
                 truncated = True
             else:
@@ -181,14 +176,14 @@ def run_command_with_capture(cmd: List[str], cwd: str | None = None) -> CommandR
 
 
 def build_artifact_bundle(
-    pre: Dict[str, str],
-    post: Dict[str, str],
+    pre: dict[str, str],
+    post: dict[str, str],
     transcript: str,
     session_path: Path | None = None,
-    session_meta: Dict[str, Any] | None = None,
-) -> List[Tuple[str, str, str | None]]:
+    session_meta: dict[str, Any] | None = None,
+) -> list[tuple[str, str, str | None]]:
     now = dt.datetime.now(dt.UTC).isoformat()
-    artifacts: List[Tuple[str, str, str | None]] = [
+    artifacts: list[tuple[str, str, str | None]] = [
         ("pre_context", json.dumps(pre, ensure_ascii=False), None),
         ("post_context", json.dumps(post, ensure_ascii=False), None),
         ("transcript", transcript, None),
@@ -196,9 +191,7 @@ def build_artifact_bundle(
     if session_path:
         artifacts.append(("session_path", str(session_path), str(session_path)))
     if session_meta:
-        artifacts.append(
-            ("session_meta", json.dumps(session_meta, ensure_ascii=False), None)
-        )
+        artifacts.append(("session_meta", json.dumps(session_meta, ensure_ascii=False), None))
     agents_payload = pre.get("agents")
     if agents_payload:
         try:

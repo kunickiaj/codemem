@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
 
 REDACTION_PATTERNS = [
     re.compile(r"api[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9_-]{20,}", re.IGNORECASE),
@@ -37,7 +35,7 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
-def run_command(cmd: list[str], cwd: Optional[str] = None) -> str:
+def run_command(cmd: list[str], cwd: str | None = None) -> str:
     try:
         out = subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.STDOUT, text=True)
         return out.strip()
@@ -47,12 +45,10 @@ def run_command(cmd: list[str], cwd: Optional[str] = None) -> str:
         return ""
 
 
-def detect_git_info(cwd: str) -> Dict[str, Optional[str]]:
+def detect_git_info(cwd: str) -> dict[str, str | None]:
     repo_root = run_command(["git", "rev-parse", "--show-toplevel"], cwd=cwd) or None
     branch = run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd) or None
-    remote = (
-        run_command(["git", "config", "--get", "remote.origin.url"], cwd=cwd) or None
-    )
+    remote = run_command(["git", "config", "--get", "remote.origin.url"], cwd=cwd) or None
     status = run_command(["git", "status", "--short"], cwd=cwd)
     diff_summary = run_command(["git", "diff", "--stat"], cwd=cwd)
     # Filter out lockfile noise from diff summary
@@ -104,7 +100,7 @@ def filter_lockfiles_from_list(files_output: str) -> str:
     return "\n".join(lines)
 
 
-def resolve_project(cwd: str, override: Optional[str] = None) -> Optional[str]:
+def resolve_project(cwd: str, override: str | None = None) -> str | None:
     if override:
         return override
     repo_root = detect_git_info(cwd).get("repo_root")
@@ -113,8 +109,8 @@ def resolve_project(cwd: str, override: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def find_agent_notes(cwd: str) -> Dict[str, str]:
-    notes: Dict[str, str] = {}
+def find_agent_notes(cwd: str) -> dict[str, str]:
+    notes: dict[str, str] = {}
     try:
         for path in Path(cwd).rglob("AGENTS.md"):
             try:

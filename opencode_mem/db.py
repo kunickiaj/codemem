@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any
 
 DEFAULT_DB_PATH = Path.home() / ".opencode-mem.sqlite"
 
@@ -148,12 +149,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _ensure_column(
-    conn: sqlite3.Connection, table: str, column: str, column_type: str
-) -> None:
-    existing = {
-        row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    }
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column in existing:
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
@@ -167,7 +164,7 @@ def to_json(data: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def from_json(text: Optional[str]) -> Dict[str, Any]:
+def from_json(text: str | None) -> dict[str, Any]:
     if not text:
         return {}
     try:
@@ -176,5 +173,5 @@ def from_json(text: Optional[str]) -> Dict[str, Any]:
         return {}
 
 
-def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[Dict[str, Any]]:
+def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]

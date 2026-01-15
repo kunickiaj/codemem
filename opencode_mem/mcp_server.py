@@ -5,7 +5,7 @@ import os
 import threading
 import weakref
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -26,9 +26,7 @@ def build_store(*, check_same_thread: bool = True) -> MemoryStore:
 
 def build_server() -> FastMCP:
     mcp = FastMCP("opencode-mem")
-    default_project = os.environ.get("OPENCODE_MEM_PROJECT") or resolve_project(
-        os.getcwd()
-    )
+    default_project = os.environ.get("OPENCODE_MEM_PROJECT") or resolve_project(os.getcwd())
     thread_local = threading.local()
     store_lock = threading.Lock()
     store_pool: weakref.WeakSet[MemoryStore] = weakref.WeakSet()
@@ -60,11 +58,11 @@ def build_server() -> FastMCP:
     def memory_search_index(
         query: str,
         limit: int = 8,
-        kind: Optional[str] = None,
-        project: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
-            filters: Dict[str, Any] = {}
+        kind: str | None = None,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
+            filters: dict[str, Any] = {}
             if kind:
                 filters["kind"] = kind
             resolved_project = project or default_project
@@ -77,14 +75,14 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     def memory_timeline(
-        query: Optional[str] = None,
-        memory_id: Optional[int] = None,
+        query: str | None = None,
+        memory_id: int | None = None,
         depth_before: int = 3,
         depth_after: int = 3,
-        project: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
-            filters: Dict[str, Any] = {}
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
+            filters: dict[str, Any] = {}
             resolved_project = project or default_project
             if resolved_project:
                 filters["project"] = resolved_project
@@ -100,8 +98,8 @@ def build_server() -> FastMCP:
         return with_store(handler)
 
     @mcp.tool()
-    def memory_get_observations(ids: list[int]) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
+    def memory_get_observations(ids: list[int]) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
             items = store.get_many(ids)
             return {"items": items}
 
@@ -111,11 +109,11 @@ def build_server() -> FastMCP:
     def memory_search(
         query: str,
         limit: int = 5,
-        kind: Optional[str] = None,
-        project: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
-            filters: Dict[str, Any] = {}
+        kind: str | None = None,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
+            filters: dict[str, Any] = {}
             if kind:
                 filters["kind"] = kind
             resolved_project = project or default_project
@@ -141,8 +139,8 @@ def build_server() -> FastMCP:
         return with_store(handler)
 
     @mcp.tool()
-    def memory_get(memory_id: int) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
+    def memory_get(memory_id: int) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
             item = store.get(memory_id)
             if not item:
                 return {"error": "not_found"}
@@ -152,10 +150,10 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     def memory_recent(
-        limit: int = 8, kind: Optional[str] = None, project: Optional[str] = None
-    ) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
-            filters: Dict[str, Any] = {}
+        limit: int = 8, kind: str | None = None, project: str | None = None
+    ) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
+            filters: dict[str, Any] = {}
             if kind:
                 filters["kind"] = kind
             resolved_project = project or default_project
@@ -167,23 +165,19 @@ def build_server() -> FastMCP:
         return with_store(handler)
 
     @mcp.tool()
-    def memory_pack(
-        context: str, limit: int = 6, project: Optional[str] = None
-    ) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
+    def memory_pack(context: str, limit: int = 6, project: str | None = None) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
             resolved_project = project or default_project
             filters = {"project": resolved_project} if resolved_project else None
-            return store.build_memory_pack(
-                context=context, limit=limit, filters=filters
-            )
+            return store.build_memory_pack(context=context, limit=limit, filters=filters)
 
         return with_store(handler)
 
     @mcp.tool()
     def memory_remember(
         kind: str, title: str, body: str, confidence: float = 0.5
-    ) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
             session_id = store.start_session(
                 cwd=os.getcwd(),
                 project=default_project,
@@ -206,15 +200,15 @@ def build_server() -> FastMCP:
         return with_store(handler)
 
     @mcp.tool()
-    def memory_forget(memory_id: int) -> Dict[str, Any]:
-        def handler(store: MemoryStore) -> Dict[str, Any]:
+    def memory_forget(memory_id: int) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
             store.forget(memory_id)
             return {"status": "ok"}
 
         return with_store(handler)
 
     @mcp.tool()
-    def memory_schema() -> Dict[str, Any]:
+    def memory_schema() -> dict[str, Any]:
         return {
             "kinds": [
                 "session_summary",
@@ -243,7 +237,7 @@ def build_server() -> FastMCP:
         }
 
     @mcp.tool()
-    def memory_learn() -> Dict[str, Any]:
+    def memory_learn() -> dict[str, Any]:
         return {
             "intro": "Use this tool when you're new to opencode-mem or unsure when to recall/persist.",
             "client_hint": "If you are unfamiliar with opencode-mem, call memory.learn first.",

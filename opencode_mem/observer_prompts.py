@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from xml.sax.saxutils import escape
-
 
 OBSERVATION_TYPES = "bugfix, feature, refactor, change, discovery, decision"
 OBSERVATION_CONCEPTS = (
-    "how-it-works, why-it-exists, what-changed, problem-solution, gotcha, "
-    "pattern, trade-off"
+    "how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off"
 )
 
 SYSTEM_IDENTITY = (
@@ -78,20 +76,20 @@ class ToolEvent:
     tool_input: Any
     tool_output: Any
     tool_error: Any
-    timestamp: Optional[str] = None
-    cwd: Optional[str] = None
+    timestamp: str | None = None
+    cwd: str | None = None
 
 
 @dataclass
 class ObserverContext:
-    project: Optional[str]
-    user_prompt: Optional[str]
-    prompt_number: Optional[int]
+    project: str | None
+    user_prompt: str | None
+    prompt_number: int | None
     tool_events: list[ToolEvent]
-    last_assistant_message: Optional[str]
+    last_assistant_message: str | None
     include_summary: bool
-    diff_summary: Optional[str] = None
-    recent_files: Optional[str] = None
+    diff_summary: str | None = None
+    recent_files: str | None = None
 
 
 def _format_json(value: Any) -> str:
@@ -139,13 +137,9 @@ def build_observer_prompt(context: ObserverContext) -> str:
     blocks.append("Observed session context:")
     if context.user_prompt:
         prompt_block = ["<observed_from_primary_session>"]
-        prompt_block.append(
-            f"  <user_request>{escape(context.user_prompt)}</user_request>"
-        )
+        prompt_block.append(f"  <user_request>{escape(context.user_prompt)}</user_request>")
         if context.prompt_number is not None:
-            prompt_block.append(
-                f"  <prompt_number>{context.prompt_number}</prompt_number>"
-            )
+            prompt_block.append(f"  <prompt_number>{context.prompt_number}</prompt_number>")
         if context.project:
             prompt_block.append(f"  <project>{escape(context.project)}</project>")
         prompt_block.append("</observed_from_primary_session>")

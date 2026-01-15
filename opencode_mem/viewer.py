@@ -602,7 +602,7 @@ VIEWER_HTML = """<!doctype html>
       }
 
       function normalize(text) {
-        return (text || "").replace(/\s+/g, " ").trim().toLowerCase();
+        return (text || "").replace(/\\s+/g, " ").trim().toLowerCase();
       }
 
       function isLowSignalObservation(item) {
@@ -980,9 +980,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     try:
                         token_budget_value = int(token_budget)
                     except ValueError:
-                        self._send_json(
-                            {"error": "token_budget must be int"}, status=400
-                        )
+                        self._send_json({"error": "token_budget must be int"}, status=400)
                         return
                 project = params.get("project", [None])[0]
                 filters = {"project": project} if project else None
@@ -1021,9 +1019,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 try:
                     config_data = read_config_file(config_path)
                 except ValueError as exc:
-                    self._send_json(
-                        {"error": str(exc), "path": str(config_path)}, status=500
-                    )
+                    self._send_json({"error": str(exc), "path": str(config_path)}, status=500)
                     return
                 effective = asdict(load_config(config_path))
                 self._send_json(
@@ -1078,9 +1074,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 continue
             if key == "observer_provider":
                 if not isinstance(value, str):
-                    self._send_json(
-                        {"error": "observer_provider must be string"}, status=400
-                    )
+                    self._send_json({"error": "observer_provider must be string"}, status=400)
                     return
                 provider = value.strip().lower()
                 if provider not in allowed_providers:
@@ -1093,9 +1087,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 continue
             if key == "observer_model":
                 if not isinstance(value, str):
-                    self._send_json(
-                        {"error": "observer_model must be string"}, status=400
-                    )
+                    self._send_json({"error": "observer_model must be string"}, status=400)
                     return
                 model_value = value.strip()
                 if not model_value:
@@ -1107,14 +1099,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 try:
                     value = int(value)
                 except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "observer_max_chars must be int"}, status=400
-                    )
+                    self._send_json({"error": "observer_max_chars must be int"}, status=400)
                     return
                 if value <= 0:
-                    self._send_json(
-                        {"error": "observer_max_chars must be positive"}, status=400
-                    )
+                    self._send_json({"error": "observer_max_chars must be positive"}, status=400)
                     return
                 config_data[key] = value
                 continue

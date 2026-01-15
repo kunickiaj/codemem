@@ -180,9 +180,7 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
             facts=json.loads(row["facts"]) if row["facts"] else None,
             concepts=json.loads(row["concepts"]) if row["concepts"] else None,
             files_read=json.loads(row["files_read"]) if row["files_read"] else None,
-            files_modified=json.loads(row["files_modified"])
-            if row["files_modified"]
-            else None,
+            files_modified=json.loads(row["files_modified"]) if row["files_modified"] else None,
             prompt_number=row["prompt_number"],
             confidence=0.7,
             metadata={
@@ -205,9 +203,7 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
             next_steps=row["next_steps"] or "",
             notes=row["notes"] or "",
             files_read=json.loads(row["files_read"]) if row["files_read"] else None,
-            files_edited=json.loads(row["files_edited"])
-            if row["files_edited"]
-            else None,
+            files_edited=json.loads(row["files_edited"]) if row["files_edited"] else None,
             prompt_number=row["prompt_number"],
             metadata={"source": "claude-mem"},
         )

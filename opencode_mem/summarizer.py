@@ -6,7 +6,6 @@ import re
 import subprocess
 import textwrap
 from dataclasses import dataclass
-from typing import List, Optional
 
 from .utils import redact
 
@@ -60,18 +59,16 @@ LOW_SIGNAL_OBSERVATION_PATTERNS = [
 @dataclass
 class Summary:
     session_summary: str
-    observations: List[str]
-    entities: List[str]
+    observations: list[str]
+    entities: list[str]
 
 
 class _LLMClient:
-    def __init__(self, model: str, api_key: str, base_url: Optional[str]) -> None:
+    def __init__(self, model: str, api_key: str, base_url: str | None) -> None:
         try:
             from openai import OpenAI
         except Exception as exc:  # pragma: no cover
-            raise RuntimeError(
-                "openai package is required for model summaries"
-            ) from exc
+            raise RuntimeError("openai package is required for model summaries") from exc
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
 
@@ -127,9 +124,7 @@ class _LLMClient:
 
 
 class Summarizer:
-    def __init__(
-        self, max_observations: int = 5, force_heuristic: bool = False
-    ) -> None:
+    def __init__(self, max_observations: int = 5, force_heuristic: bool = False) -> None:
         self.max_observations = max_observations
         self.force_heuristic = force_heuristic
         from .config import load_config
@@ -149,25 +144,19 @@ class Summarizer:
             or os.getenv("OPENCODE_API_BASE")
             or os.getenv("OPENAI_BASE_URL")
         )
-        self.llm: Optional[_LLMClient] = None
+        self.llm: _LLMClient | None = None
         if (not force_heuristic) and model and api_key:
             try:
                 self.llm = _LLMClient(model=model, api_key=api_key, base_url=base_url)
             except Exception:
                 self.llm = None
 
-    def summarize(
-        self, transcript: str, diff_summary: str, recent_files: str
-    ) -> Summary:
+    def summarize(self, transcript: str, diff_summary: str, recent_files: str) -> Summary:
         transcript = redact(transcript)
         diff_summary = redact(diff_summary)
         filtered_lines = self._filter_transcript_lines(transcript)
-        filtered_transcript = (
-            "\n".join(filtered_lines) if filtered_lines else transcript
-        )
-        heuristic = self._heuristic_summary(
-            filtered_transcript, diff_summary, recent_files
-        )
+        filtered_transcript = "\n".join(filtered_lines) if filtered_lines else transcript
+        heuristic = self._heuristic_summary(filtered_transcript, diff_summary, recent_files)
         if not self.force_heuristic and self.use_opencode_run:
             summary = self._summarize_with_opencode_run(
                 filtered_transcript, diff_summary, recent_files
@@ -187,9 +176,7 @@ class Summarizer:
                 return self._filter_summary_observations(heuristic)
         return self._filter_summary_observations(heuristic)
 
-    def _build_summary_prompt(
-        self, transcript: str, diff_summary: str, recent_files: str
-    ) -> str:
+    def _build_summary_prompt(self, transcript: str, diff_summary: str, recent_files: str) -> str:
         return (
             "Summarize the following terminal session for a developer journal. "
             "Include a concise session summary, up to {max_obs} short observations, "
@@ -228,14 +215,14 @@ class Summarizer:
 
     def _summarize_with_opencode_run(
         self, transcript: str, diff_summary: str, recent_files: str
-    ) -> Optional[Summary]:
+    ) -> Summary | None:
         prompt = self._build_summary_prompt(transcript, diff_summary, recent_files)
         text = self._call_opencode_run(prompt)
         if not text:
             return None
         return self._parse_summary_payload(text)
 
-    def _call_opencode_run(self, prompt: str) -> Optional[str]:
+    def _call_opencode_run(self, prompt: str) -> str | None:
         cmd = ["opencode", "run", "--format", "json", "--model", self.opencode_model]
         if self.opencode_agent:
             cmd.extend(["--agent", self.opencode_agent])
@@ -259,7 +246,7 @@ class Summarizer:
         if not output:
             return ""
         lines = output.splitlines()
-        parts: List[str] = []
+        parts: list[str] = []
         for line in lines:
             try:
                 payload = json.loads(line)
@@ -274,8 +261,8 @@ class Summarizer:
             return "\n".join(parts).strip()
         return output.strip()
 
-    def _filter_transcript_lines(self, transcript: str) -> List[str]:
-        lines: List[str] = []
+    def _filter_transcript_lines(self, transcript: str) -> list[str]:
+        lines: list[str] = []
         for raw in transcript.splitlines():
             line = raw.strip()
             if not line:
@@ -288,9 +275,7 @@ class Summarizer:
         return lines
 
     def _filter_summary_observations(self, summary: Summary) -> Summary:
-        observations = [
-            obs for obs in summary.observations if not is_low_signal_observation(obs)
-        ]
+        observations = [obs for obs in summary.observations if not is_low_signal_observation(obs)]
         return Summary(
             session_summary=summary.session_summary,
             observations=observations[: self.max_observations],
@@ -315,16 +300,14 @@ class Summarizer:
             files = files[:limit] + [f"... (+{len(files) - limit} more)"]
         return ", ".join(files)
 
-    def _heuristic_summary(
-        self, transcript: str, diff_summary: str, recent_files: str
-    ) -> Summary:
+    def _heuristic_summary(self, transcript: str, diff_summary: str, recent_files: str) -> Summary:
         lines = self._filter_transcript_lines(transcript)
         if len(lines) > 200:
             head = lines[:50]
             tail = lines[-150:]
             lines = head + tail
 
-        notes: List[str] = []
+        notes: list[str] = []
         diff_text = self._format_diff_summary(diff_summary)
         if diff_text:
             notes.append(f"Code changes: {diff_text}")
@@ -335,9 +318,7 @@ class Summarizer:
         transcript_lines = lines
         important = transcript_lines[: self.max_observations]
         observations = (notes + important)[: self.max_observations]
-        session_summary = textwrap.shorten(
-            " ".join(transcript_lines), width=480, placeholder="..."
-        )
+        session_summary = textwrap.shorten(" ".join(transcript_lines), width=480, placeholder="...")
         entities = self._extract_entities(transcript_lines)
         return Summary(
             session_summary=session_summary,
@@ -345,8 +326,8 @@ class Summarizer:
             entities=entities,
         )
 
-    def _extract_entities(self, lines: List[str]) -> List[str]:
-        entities: List[str] = []
+    def _extract_entities(self, lines: list[str]) -> list[str]:
+        entities: list[str] = []
         for line in lines:
             if "service" in line.lower() and len(entities) < self.max_observations:
                 entities.append(line)

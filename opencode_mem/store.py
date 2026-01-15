@@ -5,10 +5,10 @@ import difflib
 import hashlib
 import math
 import re
-import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 from . import db
 from .semantic import get_embedding_client
@@ -27,7 +27,7 @@ class MemoryResult:
     tags_text: str
     score: float
     session_id: int
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
 
 
 class MemoryStore:
@@ -103,7 +103,7 @@ class MemoryStore:
         user: str,
         tool_version: str,
         project: str | None = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         now = dt.datetime.now(dt.UTC).isoformat()
         cur = self.conn.execute(
@@ -125,9 +125,7 @@ class MemoryStore:
         self.conn.commit()
         return int(cur.lastrowid)
 
-    def end_session(
-        self, session_id: int, metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
+    def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
         if metadata is None:
             metadata_text = None
@@ -145,7 +143,7 @@ class MemoryStore:
         kind: str,
         path: str | None,
         content_text: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         content_hash = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
@@ -174,8 +172,8 @@ class MemoryStore:
         title: str,
         body_text: str,
         confidence: float = 0.5,
-        tags: Optional[Iterable[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        tags: Iterable[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         tags_text = " ".join(sorted(set(tags or [])))
@@ -205,14 +203,14 @@ class MemoryStore:
         kind: str,
         title: str,
         narrative: str,
-        subtitle: Optional[str] = None,
-        facts: Optional[list[str]] = None,
-        concepts: Optional[list[str]] = None,
-        files_read: Optional[list[str]] = None,
-        files_modified: Optional[list[str]] = None,
-        prompt_number: Optional[int] = None,
+        subtitle: str | None = None,
+        facts: list[str] | None = None,
+        concepts: list[str] | None = None,
+        files_read: list[str] | None = None,
+        files_modified: list[str] | None = None,
+        prompt_number: int | None = None,
         confidence: float = 0.5,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         tags_text = ""
@@ -280,10 +278,10 @@ class MemoryStore:
     def add_user_prompt(
         self,
         session_id: int,
-        project: Optional[str],
+        project: str | None,
         prompt_text: str,
-        prompt_number: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        prompt_number: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         created_at_epoch = int(dt.datetime.now(dt.UTC).timestamp() * 1000)
@@ -308,17 +306,17 @@ class MemoryStore:
     def add_session_summary(
         self,
         session_id: int,
-        project: Optional[str],
+        project: str | None,
         request: str,
         investigated: str,
         learned: str,
         completed: str,
         next_steps: str,
         notes: str,
-        files_read: Optional[list[str]] = None,
-        files_edited: Optional[list[str]] = None,
-        prompt_number: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        files_read: list[str] | None = None,
+        files_edited: list[str] | None = None,
+        prompt_number: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         created_at_epoch = int(dt.datetime.now(dt.UTC).timestamp() * 1000)
@@ -363,18 +361,18 @@ class MemoryStore:
         return int(cur.lastrowid)
 
     def deactivate_low_signal_observations(
-        self, limit: Optional[int] = None, dry_run: bool = False
-    ) -> Dict[str, int]:
+        self, limit: int | None = None, dry_run: bool = False
+    ) -> dict[str, int]:
         return self.deactivate_low_signal_memories(
             kinds=["observation"], limit=limit, dry_run=dry_run
         )
 
     def deactivate_low_signal_memories(
         self,
-        kinds: Optional[Iterable[str]] = None,
-        limit: Optional[int] = None,
+        kinds: Iterable[str] | None = None,
+        limit: int | None = None,
         dry_run: bool = False,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         selected_kinds = [k.strip() for k in (kinds or []) if k.strip()]
         if not selected_kinds:
             selected_kinds = [
@@ -405,7 +403,7 @@ class MemoryStore:
             params,
         ).fetchall()
         checked = len(rows)
-        ids: List[int] = []
+        ids: list[int] = []
         for row in rows:
             text = row["body_text"] or row["title"] or ""
             if is_low_signal_observation(text):
@@ -432,7 +430,7 @@ class MemoryStore:
         )
         self.conn.commit()
 
-    def get(self, memory_id: int) -> Optional[Dict[str, Any]]:
+    def get(self, memory_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM memory_items WHERE id = ?",
             (memory_id,),
@@ -442,13 +440,11 @@ class MemoryStore:
             return None
         data = dict(row)
         data["metadata_json"] = db.from_json(data.get("metadata_json"))
-        tokens_read = self.estimate_tokens(
-            f"{data.get('title', '')} {data.get('body_text', '')}"
-        )
+        tokens_read = self.estimate_tokens(f"{data.get('title', '')} {data.get('body_text', '')}")
         self.record_usage("get", tokens_read=tokens_read, metadata={"found": True})
         return data
 
-    def get_many(self, ids: Iterable[int]) -> List[Dict[str, Any]]:
+    def get_many(self, ids: Iterable[int]) -> list[dict[str, Any]]:
         id_list = [int(mid) for mid in ids]
         if not id_list:
             return []
@@ -472,8 +468,8 @@ class MemoryStore:
         return results
 
     def recent(
-        self, limit: int = 10, filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
+        self, limit: int = 10, filters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         filters = filters or {}
         params: list[Any] = []
         where = ["active = 1"]
@@ -490,9 +486,7 @@ class MemoryStore:
         where_clause = " AND ".join(where)
         from_clause = "memory_items"
         if join_sessions:
-            from_clause = (
-                "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
-            )
+            from_clause = "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
         rows = self.conn.execute(
             f"SELECT memory_items.* FROM {from_clause} WHERE {where_clause} ORDER BY created_at DESC LIMIT ?",
             (*params, limit),
@@ -520,8 +514,8 @@ class MemoryStore:
         self,
         kinds: Iterable[str],
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         filters = filters or {}
         kinds_list = [str(kind) for kind in kinds if kind]
         if not kinds_list:
@@ -541,9 +535,7 @@ class MemoryStore:
         where_clause = " AND ".join(where)
         from_clause = "memory_items"
         if join_sessions:
-            from_clause = (
-                "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
-            )
+            from_clause = "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
         rows = self.conn.execute(
             f"SELECT memory_items.* FROM {from_clause} WHERE {where_clause} ORDER BY created_at DESC LIMIT ?",
             (*params, limit),
@@ -568,8 +560,8 @@ class MemoryStore:
         return results
 
     def search_index(
-        self, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
+        self, query: str, limit: int = 10, filters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         results = self.search(query, limit=limit, filters=filters, log_usage=False)
         index_items = [
             {
@@ -596,13 +588,13 @@ class MemoryStore:
 
     def timeline(
         self,
-        query: Optional[str] = None,
-        memory_id: Optional[int] = None,
+        query: str | None = None,
+        memory_id: int | None = None,
         depth_before: int = 3,
         depth_after: int = 3,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
-        anchor: Optional[MemoryResult | Dict[str, Any]] = None
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        anchor: MemoryResult | dict[str, Any] | None = None
         if memory_id is not None:
             item = self.get(memory_id)
             if item:
@@ -719,15 +711,15 @@ class MemoryStore:
         return "session summary recap remember last time previous work"
 
     def _task_fallback_recent(
-        self, limit: int, filters: Optional[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, limit: int, filters: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
         expanded_limit = max(limit * 3, limit)
         results = self.recent(limit=expanded_limit, filters=filters)
         return self._prioritize_task_results(results, limit)
 
     def _recall_fallback_recent(
-        self, limit: int, filters: Optional[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, limit: int, filters: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
         summary_filters = dict(filters or {})
         summary_filters["kind"] = "session_summary"
         summaries = self.recent(limit=limit, filters=summary_filters)
@@ -740,12 +732,12 @@ class MemoryStore:
         remainder = self._prioritize_task_results(remainder, limit - len(summaries))
         return summaries + remainder
 
-    def _created_at_for(self, item: MemoryResult | Dict[str, Any]) -> str:
+    def _created_at_for(self, item: MemoryResult | dict[str, Any]) -> str:
         if isinstance(item, MemoryResult):
             return item.created_at
         return item.get("created_at", "")
 
-    def _parse_created_at(self, value: str) -> Optional[dt.datetime]:
+    def _parse_created_at(self, value: str) -> dt.datetime | None:
         if not value:
             return None
         try:
@@ -777,21 +769,21 @@ class MemoryStore:
         return 0.0
 
     def _filter_recent_results(
-        self, results: List[MemoryResult | Dict[str, Any]], days: int
-    ) -> List[MemoryResult | Dict[str, Any]]:
+        self, results: list[MemoryResult | dict[str, Any]], days: int
+    ) -> list[MemoryResult | dict[str, Any]]:
         cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(days=days)
-        filtered: List[MemoryResult | Dict[str, Any]] = []
+        filtered: list[MemoryResult | dict[str, Any]] = []
         for item in results:
             created_at = self._parse_created_at(self._created_at_for(item))
             if created_at and created_at >= cutoff:
                 filtered.append(item)
         return filtered
 
-    def _tokenize_query(self, query: str) -> List[str]:
+    def _tokenize_query(self, query: str) -> list[str]:
         tokens = [token.lower() for token in re.findall(r"[A-Za-z0-9_]+", query)]
         return [token for token in tokens if token not in self.STOPWORDS]
 
-    def _fuzzy_score(self, query_tokens: List[str], query: str, text: str) -> float:
+    def _fuzzy_score(self, query_tokens: list[str], query: str, text: str) -> float:
         text_lower = text.lower()
         if not text_lower.strip():
             return 0.0
@@ -803,14 +795,14 @@ class MemoryStore:
         return max(overlap, ratio)
 
     def _fuzzy_search(
-        self, query: str, limit: int, filters: Optional[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, query: str, limit: int, filters: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
         query_tokens = self._tokenize_query(query)
         if not query_tokens:
             return []
         candidate_limit = max(self.FUZZY_CANDIDATE_LIMIT, limit * 10)
         candidates = self.recent(limit=candidate_limit, filters=filters)
-        scored: List[tuple[float, Dict[str, Any]]] = []
+        scored: list[tuple[float, dict[str, Any]]] = []
         for item in candidates:
             text = f"{item.get('title', '')} {item.get('body_text', '')}"
             score = self._fuzzy_score(query_tokens, query, text)
@@ -819,7 +811,7 @@ class MemoryStore:
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in scored[:limit]]
 
-    def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
+    def _cosine_similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         dot = sum(a * b for a, b in zip(vec_a, vec_b))
         norm_a = math.sqrt(sum(a * a for a in vec_a))
         norm_b = math.sqrt(sum(b * b for b in vec_b))
@@ -828,8 +820,8 @@ class MemoryStore:
         return dot / (norm_a * norm_b)
 
     def _semantic_search(
-        self, query: str, limit: int, filters: Optional[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, query: str, limit: int, filters: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
         if len(query.strip()) < 3:
             return []
         client = get_embedding_client()
@@ -887,9 +879,9 @@ class MemoryStore:
         return results
 
     def _prioritize_task_results(
-        self, results: List[Dict[str, Any]], limit: int
-    ) -> List[Dict[str, Any]]:
-        def kind_rank(item: Dict[str, Any]) -> int:
+        self, results: list[dict[str, Any]], limit: int
+    ) -> list[dict[str, Any]]:
+        def kind_rank(item: dict[str, Any]) -> int:
             kind = item.get("kind")
             if kind == "note":
                 return 0
@@ -899,16 +891,14 @@ class MemoryStore:
                 return 2
             return 3
 
-        ordered = sorted(
-            results, key=lambda item: item.get("created_at") or "", reverse=True
-        )
+        ordered = sorted(results, key=lambda item: item.get("created_at") or "", reverse=True)
         ordered = sorted(ordered, key=kind_rank)
         return ordered[:limit]
 
     def _prioritize_recall_results(
-        self, results: List[MemoryResult | Dict[str, Any]], limit: int
-    ) -> List[MemoryResult | Dict[str, Any]]:
-        def kind_rank(item: MemoryResult | Dict[str, Any]) -> int:
+        self, results: list[MemoryResult | dict[str, Any]], limit: int
+    ) -> list[MemoryResult | dict[str, Any]]:
+        def kind_rank(item: MemoryResult | dict[str, Any]) -> int:
             kind = item.kind if isinstance(item, MemoryResult) else item.get("kind")
             if kind == "session_summary":
                 return 0
@@ -922,18 +912,16 @@ class MemoryStore:
                 return 4
             return 5
 
-        ordered = sorted(
-            results, key=lambda item: self._created_at_for(item) or "", reverse=True
-        )
+        ordered = sorted(results, key=lambda item: self._created_at_for(item) or "", reverse=True)
         ordered = sorted(ordered, key=kind_rank)
         return ordered[:limit]
 
     def _rerank_results(
         self,
-        results: List[MemoryResult],
+        results: list[MemoryResult],
         limit: int,
-        recency_days: Optional[int] = None,
-    ) -> List[MemoryResult]:
+        recency_days: int | None = None,
+    ) -> list[MemoryResult]:
         if recency_days:
             recent_results = self._filter_recent_results(results, recency_days)
             if recent_results:
@@ -951,21 +939,17 @@ class MemoryStore:
 
     def _timeline_around(
         self,
-        anchor: MemoryResult | Dict[str, Any],
+        anchor: MemoryResult | dict[str, Any],
         depth_before: int,
         depth_after: int,
-        filters: Optional[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        filters: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
         anchor_id = anchor.id if isinstance(anchor, MemoryResult) else anchor.get("id")
         anchor_created_at = (
-            anchor.created_at
-            if isinstance(anchor, MemoryResult)
-            else anchor.get("created_at")
+            anchor.created_at if isinstance(anchor, MemoryResult) else anchor.get("created_at")
         )
         anchor_session_id = (
-            anchor.session_id
-            if isinstance(anchor, MemoryResult)
-            else anchor.get("session_id")
+            anchor.session_id if isinstance(anchor, MemoryResult) else anchor.get("session_id")
         )
         if not anchor_id or not anchor_created_at:
             return []
@@ -984,9 +968,7 @@ class MemoryStore:
             params.append(anchor_session_id)
         where_clause = " AND ".join(where_base)
         join_clause = (
-            "JOIN sessions ON sessions.id = memory_items.session_id"
-            if join_sessions
-            else ""
+            "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
         )
 
         before_rows = self.conn.execute(
@@ -1028,9 +1010,9 @@ class MemoryStore:
         self,
         query: str,
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: dict[str, Any] | None = None,
         log_usage: bool = True,
-    ) -> List[MemoryResult]:
+    ) -> list[MemoryResult]:
         filters = filters or {}
         expanded_query = self._expand_query(query)
         if not expanded_query:
@@ -1055,9 +1037,7 @@ class MemoryStore:
             join_sessions = True
         where = " AND ".join(where_clauses)
         join_clause = (
-            "JOIN sessions ON sessions.id = memory_items.session_id"
-            if join_sessions
-            else ""
+            "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
         )
         sql = f"""
             SELECT memory_items.*, bm25(memory_fts, 1.0, 1.0, 0.25) AS score,
@@ -1071,7 +1051,7 @@ class MemoryStore:
         """
         params.append(limit)
         rows = self.conn.execute(sql, params).fetchall()
-        results: List[MemoryResult] = []
+        results: list[MemoryResult] = []
         for row in rows:
             metadata = db.from_json(row["metadata_json"])
             results.append(
@@ -1090,9 +1070,7 @@ class MemoryStore:
                 )
             )
         if log_usage:
-            tokens_read = sum(
-                self.estimate_tokens(f"{m.title} {m.body_text}") for m in results
-            )
+            tokens_read = sum(self.estimate_tokens(f"{m.title} {m.body_text}") for m in results)
             self.record_usage(
                 "search",
                 tokens_read=tokens_read,
@@ -1109,9 +1087,9 @@ class MemoryStore:
         self,
         context: str,
         limit: int = 8,
-        token_budget: Optional[int] = None,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        token_budget: int | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         fallback_used = False
         if self._query_looks_like_tasks(context):
             matches = self.search(
@@ -1119,17 +1097,13 @@ class MemoryStore:
             )
             full_matches = list(matches)
             if not matches:
-                semantic_matches = self._semantic_search(
-                    context, limit=limit, filters=filters
-                )
+                semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
                 if semantic_matches:
                     matches = semantic_matches
                     full_matches = list(matches)
                     fallback_used = True
                 else:
-                    fuzzy_matches = self._fuzzy_search(
-                        context, limit=limit, filters=filters
-                    )
+                    fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
                     if fuzzy_matches:
                         matches = fuzzy_matches
                         full_matches = list(matches)
@@ -1139,15 +1113,10 @@ class MemoryStore:
                         full_matches = list(matches)
                         fallback_used = True
             else:
-                recent_matches = self._filter_recent_results(
-                    list(matches), self.TASK_RECENCY_DAYS
-                )
+                recent_matches = self._filter_recent_results(list(matches), self.TASK_RECENCY_DAYS)
                 if recent_matches:
                     matches = self._prioritize_task_results(
-                        [
-                            m.__dict__ if isinstance(m, MemoryResult) else m
-                            for m in recent_matches
-                        ],
+                        [m.__dict__ if isinstance(m, MemoryResult) else m for m in recent_matches],
                         limit,
                     )
                     full_matches = list(recent_matches)
@@ -1162,17 +1131,13 @@ class MemoryStore:
             )
             full_matches = list(matches)
             if not matches:
-                semantic_matches = self._semantic_search(
-                    context, limit=limit, filters=filters
-                )
+                semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
                 if semantic_matches:
                     matches = semantic_matches
                     full_matches = list(matches)
                     fallback_used = True
                 else:
-                    fuzzy_matches = self._fuzzy_search(
-                        context, limit=limit, filters=filters
-                    )
+                    fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
                     if fuzzy_matches:
                         matches = fuzzy_matches
                         full_matches = list(matches)
@@ -1186,36 +1151,26 @@ class MemoryStore:
                     list(matches), self.RECALL_RECENCY_DAYS
                 )
                 if recent_matches:
-                    matches = self._prioritize_recall_results(
-                        list(recent_matches), limit
-                    )
+                    matches = self._prioritize_recall_results(list(recent_matches), limit)
                     full_matches = list(recent_matches)
             if matches:
                 depth_before = max(0, limit // 2)
                 depth_after = max(0, limit - depth_before - 1)
-                timeline = self._timeline_around(
-                    matches[0], depth_before, depth_after, filters
-                )
+                timeline = self._timeline_around(matches[0], depth_before, depth_after, filters)
                 if timeline:
                     matches = timeline
                     full_matches = list(matches)
         else:
-            matches = self.search(
-                context, limit=limit, filters=filters, log_usage=False
-            )
+            matches = self.search(context, limit=limit, filters=filters, log_usage=False)
             full_matches = list(matches)
             if not matches:
-                semantic_matches = self._semantic_search(
-                    context, limit=limit, filters=filters
-                )
+                semantic_matches = self._semantic_search(context, limit=limit, filters=filters)
                 if semantic_matches:
                     matches = semantic_matches
                     full_matches = list(matches)
                     fallback_used = True
                 else:
-                    fuzzy_matches = self._fuzzy_search(
-                        context, limit=limit, filters=filters
-                    )
+                    fuzzy_matches = self._fuzzy_search(context, limit=limit, filters=filters)
                     if fuzzy_matches:
                         matches = fuzzy_matches
                         full_matches = list(matches)
@@ -1229,11 +1184,7 @@ class MemoryStore:
             running = 0
             trimmed = []
             for m in matches:
-                body_text = (
-                    m.body_text
-                    if isinstance(m, MemoryResult)
-                    else m.get("body_text", "")
-                )
+                body_text = m.body_text if isinstance(m, MemoryResult) else m.get("body_text", "")
                 est = self.estimate_tokens(body_text)
                 if running + est > token_budget and trimmed:
                     break
@@ -1241,7 +1192,7 @@ class MemoryStore:
                 trimmed.append(m)
             matches = trimmed
 
-        def get_metadata(item: MemoryResult | Dict[str, Any]) -> Dict[str, Any]:
+        def get_metadata(item: MemoryResult | dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, MemoryResult):
                 return item.metadata or {}
             metadata = item.get("metadata_json")
@@ -1251,19 +1202,13 @@ class MemoryStore:
                 return metadata
             return {}
 
-        def estimate_work_tokens(item: MemoryResult | Dict[str, Any]) -> int:
+        def estimate_work_tokens(item: MemoryResult | dict[str, Any]) -> int:
             metadata = get_metadata(item)
             discovery_tokens = metadata.get("discovery_tokens")
             if isinstance(discovery_tokens, (int, float)) and discovery_tokens > 0:
                 return int(discovery_tokens)
-            title = (
-                item.title if isinstance(item, MemoryResult) else item.get("title", "")
-            )
-            body = (
-                item.body_text
-                if isinstance(item, MemoryResult)
-                else item.get("body_text", "")
-            )
+            title = item.title if isinstance(item, MemoryResult) else item.get("title", "")
+            body = item.body_text if isinstance(item, MemoryResult) else item.get("body_text", "")
             return self.estimate_tokens(f"{title} {body}".strip())
 
         formatted = [
@@ -1271,21 +1216,13 @@ class MemoryStore:
                 "id": m.id if isinstance(m, MemoryResult) else m.get("id"),
                 "kind": m.kind if isinstance(m, MemoryResult) else m.get("kind"),
                 "title": m.title if isinstance(m, MemoryResult) else m.get("title"),
-                "body": m.body_text
-                if isinstance(m, MemoryResult)
-                else m.get("body_text"),
-                "confidence": m.confidence
-                if isinstance(m, MemoryResult)
-                else m.get("confidence"),
-                "tags": m.tags_text
-                if isinstance(m, MemoryResult)
-                else m.get("tags_text"),
+                "body": m.body_text if isinstance(m, MemoryResult) else m.get("body_text"),
+                "confidence": m.confidence if isinstance(m, MemoryResult) else m.get("confidence"),
+                "tags": m.tags_text if isinstance(m, MemoryResult) else m.get("tags_text"),
             }
             for m in matches
         ]
-        text_parts = [
-            f"[{m['id']}] ({m['kind']}) {m['title']} - {m['body']}" for m in formatted
-        ]
+        text_parts = [f"[{m['id']}] ({m['kind']}) {m['title']} - {m['body']}" for m in formatted]
         pack_text = "\n".join(text_parts)
         pack_tokens = self.estimate_tokens(pack_text)
         work_tokens = sum(estimate_work_tokens(m) for m in matches)
@@ -1309,15 +1246,11 @@ class MemoryStore:
             "pack_text": pack_text,
         }
 
-    def all_sessions(self) -> List[Dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM sessions ORDER BY started_at DESC"
-        ).fetchall()
+    def all_sessions(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM sessions ORDER BY started_at DESC").fetchall()
         return db.rows_to_dicts(rows)
 
-    def session_artifacts(
-        self, session_id: int, limit: int = 100
-    ) -> List[Dict[str, Any]]:
+    def session_artifacts(self, session_id: int, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM artifacts WHERE session_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, limit),
@@ -1327,7 +1260,7 @@ class MemoryStore:
             item["metadata_json"] = db.from_json(item.get("metadata_json"))
         return results
 
-    def latest_transcript(self, session_id: int) -> Optional[str]:
+    def latest_transcript(self, session_id: int) -> str | None:
         row = self.conn.execute(
             """
             SELECT content_text FROM artifacts
@@ -1385,11 +1318,11 @@ class MemoryStore:
     def record_usage(
         self,
         event: str,
-        session_id: Optional[int] = None,
+        session_id: int | None = None,
         tokens_read: int = 0,
         tokens_written: int = 0,
         tokens_saved: int = 0,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         cur = self.conn.execute(
@@ -1410,7 +1343,7 @@ class MemoryStore:
         self.conn.commit()
         return int(cur.lastrowid)
 
-    def usage_summary(self) -> List[Dict[str, Any]]:
+    def usage_summary(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
             SELECT event,
@@ -1425,7 +1358,7 @@ class MemoryStore:
         ).fetchall()
         return db.rows_to_dicts(rows)
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
         totals = self.conn.execute(
             """
@@ -1443,15 +1376,9 @@ class MemoryStore:
                 "tokens_written": 0,
                 "tokens_saved": 0,
             }
-        sessions = self.conn.execute(
-            "SELECT COUNT(*) AS count FROM sessions"
-        ).fetchone()
-        artifacts = self.conn.execute(
-            "SELECT COUNT(*) AS count FROM artifacts"
-        ).fetchone()
-        memories = self.conn.execute(
-            "SELECT COUNT(*) AS count FROM memory_items"
-        ).fetchone()
+        sessions = self.conn.execute("SELECT COUNT(*) AS count FROM sessions").fetchone()
+        artifacts = self.conn.execute("SELECT COUNT(*) AS count FROM artifacts").fetchone()
+        memories = self.conn.execute("SELECT COUNT(*) AS count FROM memory_items").fetchone()
         active_memories = self.conn.execute(
             "SELECT COUNT(*) AS count FROM memory_items WHERE active = 1"
         ).fetchone()
@@ -1462,9 +1389,7 @@ class MemoryStore:
                 "sessions": int(sessions["count"]) if sessions else 0,
                 "artifacts": int(artifacts["count"]) if artifacts else 0,
                 "memory_items": int(memories["count"]) if memories else 0,
-                "active_memory_items": int(active_memories["count"])
-                if active_memories
-                else 0,
+                "active_memory_items": int(active_memories["count"]) if active_memories else 0,
             },
             "usage": {
                 "totals": {

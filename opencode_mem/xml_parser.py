@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional
 from xml.etree import ElementTree
-
 
 OBSERVATION_BLOCK_RE = re.compile(r"<observation>.*?</observation>", re.DOTALL)
 SUMMARY_BLOCK_RE = re.compile(r"<summary>.*?</summary>", re.DOTALL)
@@ -20,7 +19,7 @@ class ParsedObservation:
     kind: str
     title: str
     narrative: str
-    subtitle: Optional[str]
+    subtitle: str | None
     facts: list[str]
     concepts: list[str]
     files_read: list[str]
@@ -42,8 +41,8 @@ class ParsedSummary:
 @dataclass
 class ParsedOutput:
     observations: list[ParsedObservation]
-    summary: Optional[ParsedSummary]
-    skip_summary_reason: Optional[str]
+    summary: ParsedSummary | None
+    skip_summary_reason: str | None
 
 
 def _clean_xml_text(text: str) -> str:
@@ -55,13 +54,13 @@ def _extract_blocks(pattern: re.Pattern[str], text: str) -> list[str]:
     return [block.strip() for block in pattern.findall(text)]
 
 
-def _text(node: Optional[ElementTree.Element]) -> str:
+def _text(node: ElementTree.Element | None) -> str:
     if node is None or node.text is None:
         return ""
     return node.text.strip()
 
 
-def _child_texts(parent: Optional[ElementTree.Element], tag: str) -> list[str]:
+def _child_texts(parent: ElementTree.Element | None, tag: str) -> list[str]:
     if parent is None:
         return []
     items = []
@@ -72,7 +71,7 @@ def _child_texts(parent: Optional[ElementTree.Element], tag: str) -> list[str]:
     return items
 
 
-def _parse_observation_block(block: str) -> Optional[ParsedObservation]:
+def _parse_observation_block(block: str) -> ParsedObservation | None:
     try:
         root = ElementTree.fromstring(block)
     except ElementTree.ParseError:
@@ -97,7 +96,7 @@ def _parse_observation_block(block: str) -> Optional[ParsedObservation]:
     )
 
 
-def _parse_summary_block(block: str) -> Optional[ParsedSummary]:
+def _parse_summary_block(block: str) -> ParsedSummary | None:
     try:
         root = ElementTree.fromstring(block)
     except ElementTree.ParseError:
@@ -121,7 +120,7 @@ def parse_observer_output(text: str) -> ParsedOutput:
         parsed = _parse_observation_block(block)
         if parsed:
             observations.append(parsed)
-    summary: Optional[ParsedSummary] = None
+    summary: ParsedSummary | None = None
     summary_blocks = _extract_blocks(SUMMARY_BLOCK_RE, cleaned)
     if summary_blocks:
         summary = _parse_summary_block(summary_blocks[-1])

@@ -25,9 +25,10 @@
 - Pytest config: `pyproject.toml` sets `-q` (quiet) by default.
 
 ## Lint / Format
-- No linter configured.
-- No formatter configured.
-- Keep diffs tidy and consistent with existing style.
+- Linter: `ruff check opencode_mem tests`
+- Formatter: `ruff format opencode_mem tests`
+- Auto-fix: `ruff check --fix opencode_mem tests`
+- CI enforces linting and formatting on all PRs.
 
 ## Code Style
 ### Python

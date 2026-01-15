@@ -64,9 +64,7 @@ def test_usage_stats(tmp_path: Path) -> None:
         title="Alpha",
         body_text="Alpha body text that should count",
     )
-    store.remember(
-        session, kind="note", title="Beta", body_text="Beta body text that should count"
-    )
+    store.remember(session, kind="note", title="Beta", body_text="Beta body text that should count")
     store.end_session(session)
 
     store.search("Alpha", limit=5)
@@ -209,9 +207,7 @@ def test_pack_falls_back_to_recent_for_tasks(tmp_path: Path) -> None:
     store.remember(session, kind="note", title="Alpha", body_text="Alpha body")
     store.end_session(session)
 
-    pack = store.build_memory_pack(
-        "pending tasks", limit=5, filters={"project": "/tmp/project-a"}
-    )
+    pack = store.build_memory_pack("pending tasks", limit=5, filters={"project": "/tmp/project-a"})
 
     assert any(item["body"] == "Alpha body" for item in pack["items"])
 
@@ -253,14 +249,10 @@ def test_pack_fuzzy_fallback_on_typos(tmp_path: Path) -> None:
         tool_version="test",
         project="/tmp/project-a",
     )
-    store.remember(
-        session, kind="note", title="Memory pack", body_text="Memory pack improvements"
-    )
+    store.remember(session, kind="note", title="Memory pack", body_text="Memory pack improvements")
     store.end_session(session)
 
-    pack = store.build_memory_pack(
-        "memry pakc", limit=5, filters={"project": "/tmp/project-a"}
-    )
+    pack = store.build_memory_pack("memry pakc", limit=5, filters={"project": "/tmp/project-a"})
 
     assert any("Memory pack improvements" in item["body"] for item in pack["items"])
 
@@ -275,12 +267,8 @@ def test_pack_reranks_by_recency(tmp_path: Path) -> None:
         tool_version="test",
         project="/tmp/project-a",
     )
-    old_id = store.remember(
-        session, kind="note", title="Alpha", body_text="Update search ranking"
-    )
-    new_id = store.remember(
-        session, kind="note", title="Beta", body_text="Update search ranking"
-    )
+    old_id = store.remember(session, kind="note", title="Alpha", body_text="Update search ranking")
+    new_id = store.remember(session, kind="note", title="Beta", body_text="Update search ranking")
     store.conn.execute(
         "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id = ?",
         ("2020-01-01T00:00:00", "2020-01-01T00:00:00", old_id),
@@ -288,9 +276,7 @@ def test_pack_reranks_by_recency(tmp_path: Path) -> None:
     store.conn.commit()
     store.end_session(session)
 
-    pack = store.build_memory_pack(
-        "search ranking", limit=2, filters={"project": "/tmp/project-a"}
-    )
+    pack = store.build_memory_pack("search ranking", limit=2, filters={"project": "/tmp/project-a"})
 
     assert pack["items"][0]["id"] == new_id
 
@@ -305,18 +291,14 @@ def test_pack_recall_uses_timeline(tmp_path: Path) -> None:
         tool_version="test",
         project="/tmp/project-a",
     )
-    first_id = store.remember(
-        session, kind="note", title="First", body_text="Alpha task"
-    )
+    first_id = store.remember(session, kind="note", title="First", body_text="Alpha task")
     summary_id = store.remember(
         session,
         kind="session_summary",
         title="Session summary",
         body_text="Beta work completed",
     )
-    last_id = store.remember(
-        session, kind="note", title="Last", body_text="Gamma follow-up"
-    )
+    last_id = store.remember(session, kind="note", title="Last", body_text="Gamma follow-up")
     store.conn.execute(
         "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id = ?",
         ("2020-01-01T00:00:00", "2020-01-01T00:00:00", first_id),
@@ -332,9 +314,7 @@ def test_pack_recall_uses_timeline(tmp_path: Path) -> None:
     store.conn.commit()
     store.end_session(session)
 
-    pack = store.build_memory_pack(
-        "recap beta", limit=3, filters={"project": "/tmp/project-a"}
-    )
+    pack = store.build_memory_pack("recap beta", limit=3, filters={"project": "/tmp/project-a"})
 
     assert [item["id"] for item in pack["items"]] == [first_id, summary_id, last_id]
 
@@ -349,15 +329,9 @@ def test_search_index_and_timeline(tmp_path: Path) -> None:
         tool_version="test",
         project="/tmp/project-a",
     )
-    first_id = store.remember(
-        session, kind="note", title="Alpha", body_text="Alpha context"
-    )
-    anchor_id = store.remember(
-        session, kind="note", title="Beta", body_text="Beta context"
-    )
-    last_id = store.remember(
-        session, kind="note", title="Gamma", body_text="Gamma context"
-    )
+    first_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha context")
+    anchor_id = store.remember(session, kind="note", title="Beta", body_text="Beta context")
+    last_id = store.remember(session, kind="note", title="Gamma", body_text="Gamma context")
     store.end_session(session)
 
     index = store.search_index("Beta", limit=5, filters={"project": "/tmp/project-a"})
@@ -385,9 +359,7 @@ def test_pack_semantic_fallback(monkeypatch, tmp_path: Path) -> None:
                     vectors.append([0.0, 1.0])
             return vectors
 
-    monkeypatch.setattr(
-        store_module, "get_embedding_client", lambda: FakeEmbeddingClient()
-    )
+    monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
@@ -402,8 +374,6 @@ def test_pack_semantic_fallback(monkeypatch, tmp_path: Path) -> None:
     store.remember(session, kind="note", title="Beta memory", body_text="Beta recall")
     store.end_session(session)
 
-    pack = store.build_memory_pack(
-        "alfa", limit=1, filters={"project": "/tmp/project-a"}
-    )
+    pack = store.build_memory_pack("alfa", limit=1, filters={"project": "/tmp/project-a"})
 
     assert pack["items"][0]["title"] == "Alpha memory"

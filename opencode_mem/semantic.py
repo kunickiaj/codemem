@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 
 class _FastEmbedClient:
@@ -13,15 +13,15 @@ class _FastEmbedClient:
         self.model = model
         self._embedder = TextEmbedding(model_name=model)
 
-    def embed(self, texts: Iterable[str]) -> List[List[float]]:
+    def embed(self, texts: Iterable[str]) -> list[list[float]]:
         embeddings = self._embedder.embed(texts)
         return [list(vec) for vec in embeddings]
 
 
-_CLIENT: Optional[_FastEmbedClient] = None
+_CLIENT: _FastEmbedClient | None = None
 
 
-def get_embedding_client() -> Optional[_FastEmbedClient]:
+def get_embedding_client() -> _FastEmbedClient | None:
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
