@@ -143,9 +143,10 @@ export const OpencodeMemPlugin = async ({
 
   // === ACCUMULATION STATE ===
   // Delayed flush strategy: accumulate events until meaningful idle period
-  const idleFlushDelayMs = parseNumber(
-    process.env.OPENCODE_MEM_IDLE_FLUSH_DELAY_MS || "300000", // 5 minutes default
-    300000
+  // Base delay is 2 minutes, but flushes sooner with heavy activity
+  const baseIdleFlushDelayMs = parseNumber(
+    process.env.OPENCODE_MEM_IDLE_FLUSH_DELAY_MS || "120000", // 2 minutes default
+    120000
   );
   let lastActivityTime = Date.now();
   let idleFlushTimeout = null;
@@ -169,6 +170,38 @@ export const OpencodeMemPlugin = async ({
     sessionContext.filesRead = new Set();
   };
 
+  // Calculate flush delay based on accumulated work
+  const getFlushDelay = () => {
+    const { toolCount, promptCount } = sessionContext;
+    // Very heavy work: flush after 30s idle
+    if (toolCount >= 30 || promptCount >= 10) {
+      return 30000;
+    }
+    // Heavy work: flush after 60s idle
+    if (toolCount >= 10 || promptCount >= 5) {
+      return 60000;
+    }
+    // Light work: use base delay (2 min)
+    return baseIdleFlushDelayMs;
+  };
+
+  // Check if we should force flush immediately (threshold-based)
+  const shouldForceFlush = () => {
+    const { toolCount, promptCount } = sessionContext;
+    // Force flush if we've accumulated a lot of work
+    if (toolCount >= 50 || promptCount >= 15) {
+      return true;
+    }
+    // Force flush if session has been running for 10+ minutes
+    if (sessionContext.startTime) {
+      const sessionDurationMs = Date.now() - sessionContext.startTime;
+      if (sessionDurationMs >= 600000) { // 10 minutes
+        return true;
+      }
+    }
+    return false;
+  };
+
   const updateActivity = () => {
     lastActivityTime = Date.now();
     // Clear any pending idle flush when activity detected
@@ -183,14 +216,16 @@ export const OpencodeMemPlugin = async ({
     if (idleFlushTimeout || events.length === 0) {
       return;
     }
+    const flushDelay = getFlushDelay();
     idleFlushTimeout = setTimeout(async () => {
       const idleMs = Date.now() - lastActivityTime;
-      if (idleMs >= idleFlushDelayMs && events.length > 0) {
-        await logLine(`flush.idle after ${Math.round(idleMs / 1000)}s idle, ${events.length} events`);
+      const requiredDelay = getFlushDelay(); // Re-check in case more work accumulated
+      if (idleMs >= requiredDelay && events.length > 0) {
+        await logLine(`flush.idle after ${Math.round(idleMs / 1000)}s idle, ${events.length} events (tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount})`);
         await flushEvents();
       }
       idleFlushTimeout = null;
-    }, idleFlushDelayMs);
+    }, flushDelay);
   };
 
   const extractPromptText = (event) => {
@@ -569,6 +604,12 @@ export const OpencodeMemPlugin = async ({
     },
     event: async ({ event }) => {
       const eventType = event?.type || "unknown";
+      
+      // Always log session-related events for debugging /new
+      if (eventType.startsWith("session.")) {
+        await logLine(`SESSION EVENT: ${eventType}`);
+      }
+      
       if (debugExtraction) {
         await logLine(`event ${eventType}`);
       }
@@ -652,6 +693,7 @@ export const OpencodeMemPlugin = async ({
 
           if (promptText !== lastPromptText) {
             promptCounter += 1;
+            sessionContext.promptCount++;
             lastPromptText = promptText;
             events.push({
               type: "user_prompt",
@@ -665,6 +707,12 @@ export const OpencodeMemPlugin = async ({
                 50
               )}`
             );
+            
+            // Check if we should force flush due to threshold
+            if (shouldForceFlush()) {
+              await logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
+              await flushEvents();
+            }
           }
         }
 
@@ -698,7 +746,8 @@ export const OpencodeMemPlugin = async ({
       
       if (eventType === "session.idle") {
         // Schedule delayed flush instead of immediate
-        await logLine(`session.idle detected, scheduling flush in ${Math.round(idleFlushDelayMs / 1000)}s`);
+        const flushDelay = getFlushDelay();
+        await logLine(`session.idle detected, scheduling flush in ${Math.round(flushDelay / 1000)}s (tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount})`);
         await scheduleIdleFlush();
       }
 
@@ -747,6 +796,12 @@ export const OpencodeMemPlugin = async ({
         timestamp: new Date().toISOString(),
       });
       await logLine(`tool.execute.after ${toolName} queued=${events.length} tools=${sessionContext.toolCount}`);
+      
+      // Check if we should force flush due to threshold
+      if (shouldForceFlush()) {
+        await logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
+        await flushEvents();
+      }
     },
     tool: {
       "mem-status": tool({
