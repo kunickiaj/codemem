@@ -12,36 +12,40 @@ OBSERVATION_CONCEPTS = (
 
 SYSTEM_IDENTITY = (
     "You are a memory observer creating searchable records of development work "
-    "FOR FUTURE SESSIONS. Record what was BUILT/FIXED/DEPLOYED/CONFIGURED, "
+    "FOR FUTURE SESSIONS. Record what was BUILT/FIXED/DEPLOYED/CONFIGURED/LEARNED, "
     "not what you (the observer) are doing. These memories help developers "
-    "recall past work, decisions, and learnings."
+    "recall past work, decisions, learnings, and investigations."
 )
 
 RECORDING_FOCUS = """\
-Focus on deliverables and capabilities:
+Focus on deliverables, capabilities, AND learnings:
 - What the system NOW DOES differently (new capabilities)
 - What shipped to users/production (features, fixes, configs, docs)
+- What was LEARNED through debugging, investigation, or testing
+- How systems work and why they behave the way they do
 - Changes in technical domains (auth, data, UI, infra, DevOps)
 
-Use outcome-focused verbs: implemented, fixed, deployed, configured, migrated, optimized, added, refactored
+Use outcome-focused verbs: implemented, fixed, deployed, configured, migrated, optimized, added, refactored, discovered, learned, debugged
 
-GOOD examples (describes what was built):
+GOOD examples (describes what was built or learned):
 - "Authentication now supports OAuth2 with PKCE flow"
 - "Deployment pipeline runs canary releases with auto-rollback"
 - "Fixed race condition in session handler causing duplicate events"
+- "Discovered flush timing strategy needed adaptation for multi-session environment"
+- "Learned transcript building was broken - empty strings passed instead of conversation"
 
 BAD examples (describes observation process - DO NOT DO THIS):
-- "Analyzed authentication implementation and stored findings"
-- "Tracked deployment steps and logged outcomes"
-- "Investigated race condition and recorded details\""""
+- "Analyzed authentication implementation and stored findings in database"
+- "Tracked deployment steps and logged outcomes to memory system"
+- "Recorded investigation results for later reference\""""
 
 SKIP_GUIDANCE = """\
-Skip routine operations:
-- Empty status checks or listings
-- Package installations with no errors
-- Simple file reads with no insights
-- Repetitive operations already documented
-If nothing meaningful happened, output nothing."""
+Skip routine operations WITHOUT learnings:
+- Empty status checks or listings (unless revealing important state)
+- Package installations with no errors or insights
+- Simple file reads with no discoveries
+- Repetitive operations already documented with no new findings
+If nothing meaningful happened AND nothing was learned, output nothing."""
 
 NARRATIVE_GUIDANCE = """\
 Create COMPREHENSIVE narratives that tell the complete story:
@@ -67,9 +71,10 @@ OBSERVATION_SCHEMA = f"""
   <type>[ {OBSERVATION_TYPES} ]</type>
   <!-- type MUST be exactly one of: bugfix, feature, refactor, change, discovery, decision -->
 
-  <title>[Short outcome-focused title - what was achieved, not what was done]</title>
+  <title>[Short outcome-focused title - what was achieved or learned]</title>
   <!-- GOOD: "OAuth2 PKCE flow added to authentication" -->
-  <!-- BAD: "Analyzed authentication code" -->
+  <!-- GOOD: "Discovered flush strategy fails in multi-session environments" -->
+  <!-- BAD: "Analyzed authentication code" (too vague, no outcome) -->
 
   <subtitle>[One sentence explanation of the outcome (max 24 words)]</subtitle>
 
