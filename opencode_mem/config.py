@@ -63,6 +63,7 @@ class OpencodeMemConfig:
     observer_model: str | None = None
     observer_api_key: str | None = None
     observer_max_chars: int = 12000
+    observer_max_tokens: int = 4000
     summary_max_chars: int = 6000
     viewer_auto: bool = True
     viewer_auto_stop: bool = True
@@ -117,6 +118,9 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.observer_api_key = os.getenv("OPENCODE_MEM_OBSERVER_API_KEY", cfg.observer_api_key)
     cfg.observer_max_chars = int(
         os.getenv("OPENCODE_MEM_OBSERVER_MAX_CHARS", cfg.observer_max_chars)
+    )
+    cfg.observer_max_tokens = int(
+        os.getenv("OPENCODE_MEM_OBSERVER_MAX_TOKENS", cfg.observer_max_tokens)
     )
     cfg.summary_max_chars = int(os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS", cfg.summary_max_chars))
     cfg.viewer_auto = _parse_bool(os.getenv("OPENCODE_MEM_VIEWER_AUTO"), cfg.viewer_auto)
