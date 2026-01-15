@@ -150,25 +150,21 @@ Restart OpenCode and the MCP tools will be available to the model.
 
 ### Installation
 
-**For end users** (no repo clone):
+**One-liner install** (requires SSH access to the repo):
 
-1. Copy the plugin file to OpenCode's plugin directory:
-   ```bash
-   mkdir -p ~/.config/opencode/plugin
-   curl -o ~/.config/opencode/plugin/opencode-mem.js \
-     https://raw.githubusercontent.com/kunickiaj/opencode-mem/main/.opencode/plugin/opencode-mem.js
-   ```
+```bash
+uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git opencode-mem install-plugin
+```
 
-2. The plugin will automatically use `uvx` with SSH git URL to run commands
+That's it! Restart OpenCode and the plugin is active.
 
 **For development** (working on opencode-mem):
 
-1. Start OpenCode inside the repo directory
-2. Plugin auto-detects dev mode and uses `uv run` (picks up local changes)
+Just start OpenCode inside the repo directory — the plugin auto-loads from `.opencode/plugin/`.
 
 ### How it works
 
-When OpenCode starts, `.opencode/plugin/opencode-mem.js` loads automatically and:
+When OpenCode starts, the plugin loads and:
 
 1. **Auto-detects mode**:
    - If in the `opencode-mem` repo → uses `uv run` (dev mode, picks up changes)

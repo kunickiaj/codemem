@@ -900,6 +900,52 @@ def serve(
     start_viewer(host=host, port=port, background=False)
 
 
+@app.command()
+def install_plugin(
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing plugin file"),
+) -> None:
+    """Install the opencode-mem plugin to OpenCode's plugin directory."""
+    import shutil
+
+    # Determine plugin source path (relative to this CLI file)
+    # In installed package: opencode_mem/.opencode/plugin/opencode-mem.js
+    # In dev mode: .opencode/plugin/opencode-mem.js (relative to repo root)
+    cli_dir = Path(__file__).parent
+    plugin_source = cli_dir / ".opencode" / "plugin" / "opencode-mem.js"
+
+    # Fallback to repo root location for dev mode
+    if not plugin_source.exists():
+        plugin_source = cli_dir.parent / ".opencode" / "plugin" / "opencode-mem.js"
+
+    if not plugin_source.exists():
+        print("[red]Error: Plugin file not found in package[/red]")
+        print(f"[dim]Searched: {cli_dir / '.opencode' / 'plugin'}[/dim]")
+        print(f"[dim]Searched: {cli_dir.parent / '.opencode' / 'plugin'}[/dim]")
+        raise typer.Exit(code=1)
+
+    # Determine OpenCode plugin directory
+    opencode_config_dir = Path.home() / ".config" / "opencode"
+    plugin_dir = opencode_config_dir / "plugin"
+    plugin_dest = plugin_dir / "opencode-mem.js"
+
+    # Check if already exists
+    if plugin_dest.exists() and not force:
+        print(f"[yellow]Plugin already installed at {plugin_dest}[/yellow]")
+        print("[dim]Use --force to overwrite[/dim]")
+        return
+
+    # Create plugin directory if needed
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy plugin file
+    shutil.copy2(plugin_source, plugin_dest)
+    print(f"[green]✓ Plugin installed to {plugin_dest}[/green]")
+    print("\n[bold]Next steps:[/bold]")
+    print("1. Restart OpenCode to load the plugin")
+    print("2. The plugin will auto-detect installed mode and use SSH git URLs")
+    print(f"3. View logs at: [dim]~/.opencode-mem/plugin.log[/dim]")
+
+
 def main() -> None:
     app()
 
