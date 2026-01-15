@@ -9,52 +9,18 @@ from dataclasses import dataclass
 
 from .utils import redact
 
-LOW_SIGNAL_PATTERNS = [
-    # UI/status messages, not technical content
-    re.compile(r"^opencode\s+(is\s+)?ready", re.IGNORECASE),
-    re.compile(r"^opencode\s+says", re.IGNORECASE),
-    re.compile(r"\bcontext left\b", re.IGNORECASE),
-    re.compile(r"esc to interrupt", re.IGNORECASE),
-    re.compile(r"^tip:\s", re.IGNORECASE),
-    re.compile(r"\bmodel:\s", re.IGNORECASE),
-    re.compile(r"\bdirectory:\s", re.IGNORECASE),
-    re.compile(r"^>_\s"),
-    re.compile(r"^/new\b", re.IGNORECASE),
-    re.compile(r"^/model\b", re.IGNORECASE),
-    re.compile(r"/model\b", re.IGNORECASE),
-    re.compile(r"^/help\b", re.IGNORECASE),
-    re.compile(r"^/settings\b", re.IGNORECASE),
-    re.compile(r"^/quit\b", re.IGNORECASE),
-    re.compile(r"^/exit\b", re.IGNORECASE),
-    re.compile(r"^/chat\b", re.IGNORECASE),
-    re.compile(r"^/clear\b", re.IGNORECASE),
-    re.compile(r"^/history\b", re.IGNORECASE),
-    re.compile(r"^/report\b", re.IGNORECASE),
-    re.compile(r"^/run\b", re.IGNORECASE),
+LOW_SIGNAL_PATTERNS: list[re.Pattern[str]] = [
+    # Empty by default - trust the observer LLM to make nuanced decisions.
+    # Add specific patterns here only if we observe actual noise getting through
+    # that the observer consistently fails to filter.
+    #
+    # Previously had patterns like r"opencode" which caused false positives,
+    # filtering legitimate technical content about OpenCode.
 ]
-LOW_SIGNAL_OBSERVATION_PATTERNS = [
-    re.compile(
-        r"^(list\s+)?(ls|pwd|cd|rg|cat|head|tail|less|more|which|whoami|date|clear|exit|history)(\s|$)",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^(opencode-)?mem\.memory_(pack|search|recent|get|remember|forget)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"^\[[0-9]{4}-[0-9]{2}-[0-9]{2}t", re.IGNORECASE),
-    re.compile(r"^\d{2,}\|", re.IGNORECASE),
-    re.compile(r"^result:\s*<file>", re.IGNORECASE),
-    re.compile(r"^args:\s*{", re.IGNORECASE),
-    re.compile(r"^/[^\s]+$"),
-    re.compile(r"^[A-Za-z]:\\\\[^\s]+$"),
-    re.compile(r"^session\s+#\d+\b", re.IGNORECASE),
-    # Lockfile noise patterns - must mention specific lockfile names
-    re.compile(
-        r"\b(uv\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|Gemfile\.lock|poetry\.lock|pipfile\.lock)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"(lock\s*file|lockfile).*(updated?|regenerat|changed)", re.IGNORECASE),
-    re.compile(r"(updated?|regenerat|changed).*(lock\s*file|lockfile)", re.IGNORECASE),
+LOW_SIGNAL_OBSERVATION_PATTERNS: list[re.Pattern[str]] = [
+    # Empty by default - trust the observer LLM.
+    # Add patterns here only for content that consistently gets through
+    # despite observer guidance (e.g., tool output formatting noise).
 ]
 
 
