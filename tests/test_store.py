@@ -114,6 +114,7 @@ def test_pack_reuse_savings(tmp_path: Path) -> None:
 
 
 def test_deactivate_low_signal_observations(tmp_path: Path) -> None:
+    """Test the deactivation mechanism works - with empty patterns, nothing is deactivated."""
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
         cwd="/tmp",
@@ -132,15 +133,16 @@ def test_deactivate_low_signal_observations(tmp_path: Path) -> None:
     )
     store.end_session(session)
 
+    # With empty LOW_SIGNAL patterns, nothing should be deactivated
     preview = store.deactivate_low_signal_observations(dry_run=True)
-    assert preview["deactivated"] == 1
+    assert preview["deactivated"] == 0
 
     result = store.deactivate_low_signal_observations()
-    assert result["deactivated"] == 1
+    assert result["deactivated"] == 0
 
+    # Both observations should remain active
     observations = store.recent(limit=10, filters={"kind": "observation"})
-    assert len(observations) == 1
-    assert observations[0]["title"] == "Updated viewer"
+    assert len(observations) == 2
 
 
 def test_project_filters(tmp_path: Path) -> None:

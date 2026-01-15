@@ -381,20 +381,23 @@ class TestFullPipeline:
 
 
 class TestLowSignalFiltering:
-    """Test that low-signal content is properly filtered."""
+    """Test that low-signal filtering infrastructure works (patterns are empty by default)."""
 
-    def test_routine_commands_filtered(self) -> None:
-        """Routine shell commands should be filtered."""
+    def test_empty_patterns_by_default(self) -> None:
+        """Low-signal patterns should be empty - we trust the observer LLM."""
+        from opencode_mem.summarizer import (
+            LOW_SIGNAL_OBSERVATION_PATTERNS,
+            LOW_SIGNAL_PATTERNS,
+        )
+
+        assert len(LOW_SIGNAL_PATTERNS) == 0
+        assert len(LOW_SIGNAL_OBSERVATION_PATTERNS) == 0
+
+    def test_valuable_content_not_filtered(self) -> None:
+        """With empty patterns, nothing should be filtered."""
         from opencode_mem.summarizer import is_low_signal_observation
 
-        assert is_low_signal_observation("ls -la")
-        assert is_low_signal_observation("pwd")
-        assert is_low_signal_observation("cd /tmp")
-
-    def test_valuable_discoveries_not_filtered(self) -> None:
-        """Valuable debugging discoveries should NOT be filtered."""
-        from opencode_mem.summarizer import is_low_signal_observation
-
+        # These should all pass through now
         assert not is_low_signal_observation(
             "Found flush strategy issue in multi-session environments"
         )
@@ -404,6 +407,18 @@ class TestLowSignalFiltering:
         assert not is_low_signal_observation(
             "Fixed transcript building bug - was passing empty string"
         )
+        assert not is_low_signal_observation("In OpenCode, sessions can coexist")
+        # Even things that might seem routine - let the observer decide
+        assert not is_low_signal_observation("ls -la")
+        assert not is_low_signal_observation("pwd")
+
+    def test_empty_string_is_low_signal(self) -> None:
+        """Empty/whitespace-only content should still be filtered."""
+        from opencode_mem.summarizer import is_low_signal_observation
+
+        assert is_low_signal_observation("")
+        assert is_low_signal_observation("   ")
+        assert is_low_signal_observation("\n\t")
 
 
 class TestRegressionPrevention:
