@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   build:
@@ -32,30 +31,6 @@ jobs:
           name: python-package-distributions
           path: dist/
   
-  publish-github:
-    name: Publish to GitHub Packages
-    needs: build
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Download distribution packages
-        uses: actions/download-artifact@v4
-        with:
-          name: python-package-distributions
-          path: dist/
-      
-      - name: Publish to GitHub Packages
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          TWINE_REPOSITORY_URL: https://upload.pypi.org/legacy/
-        run: |
-          pip install twine
-          # TODO: Switch to GitHub Packages once configured
-          # For now, this is a placeholder - uncomment when ready to publish
-          # twine upload --repository-url https://upload.pypi.org/legacy/ dist/*
-          echo "Skipping publish - configure target repository first"
-  
   release:
     name: Create GitHub Release
     needs: build
@@ -78,3 +53,22 @@ jobs:
             --generate-notes \
             --title "Release ${{ github.ref_name }}" \
             dist/*
+  
+  # Uncomment to publish to PyPI when ready to go public
+  # publish-pypi:
+  #   name: Publish to PyPI
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   environment: release
+  #   permissions:
+  #     id-token: write  # for trusted publishing
+  #   
+  #   steps:
+  #     - name: Download distribution packages
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: python-package-distributions
+  #         path: dist/
+  #     
+  #     - name: Publish to PyPI
+  #       uses: pypa/gh-action-pypi-publish@release/v1

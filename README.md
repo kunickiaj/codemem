@@ -29,6 +29,21 @@ uvx --from . opencode-mem stats
 uv pip install -e . --system
 ```
 
+### Install from GitHub Releases
+
+For released versions, install directly from GitHub:
+
+```bash
+# Install specific version from GitHub release
+pip install https://github.com/kunickiaj/opencode-mem/releases/download/v0.1.0/opencode_mem-0.1.0-py3-none-any.whl
+
+# Or use uv
+uv pip install https://github.com/kunickiaj/opencode-mem/releases/download/v0.1.0/opencode_mem-0.1.0-py3-none-any.whl
+
+# Install latest from repo (development)
+pip install git+https://github.com/kunickiaj/opencode-mem.git
+```
+
 ### Configuration
 
 Optionally point the SQLite store somewhere else:
@@ -84,9 +99,10 @@ The project uses GitHub Actions for continuous integration and deployment:
   - Code coverage reporting (via Codecov)
 
 - **Release Pipeline** (`.github/workflows/release.yml`): Triggered by version tags (`v*`)
-  - Builds distribution packages
-  - Publishes to GitHub Packages (when configured)
+  - Builds distribution packages (wheel + sdist)
   - Creates GitHub Release with auto-generated changelog
+  - Attaches packages to release for distribution
+  - Optional PyPI publishing (commented out, enable when going public)
 
 To create a release:
 ```bash
