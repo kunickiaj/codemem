@@ -102,34 +102,50 @@ export const OpencodeMemPlugin = async ({
   let lastPromptText = null;
   let lastAssistantText = null;
 
+  // Track message roles and accumulated text by messageID
+  const messageRoles = new Map();
+  const messageTexts = new Map();
+  let debugLogCount = 0;
+  
   const extractPromptText = (event) => {
     if (!event) {
       return null;
     }
-    const message = event.message || event.payload?.message || event.content || null;
-    const role = message?.role || event.role || null;
-    if (role && role !== 'user') {
-      return null;
-    }
-    if (typeof message === 'string') {
-      return message.trim() || null;
-    }
-    const content = message?.content || event.content;
-    if (typeof content === 'string') {
-      return content.trim() || null;
-    }
-    if (Array.isArray(content)) {
-      for (const part of content) {
-        const text = part?.text || part?.content;
-        if (typeof text === 'string' && text.trim()) {
-          return text.trim();
+    
+    // For message.updated events, track the role and check if we have buffered text
+    if (event.type === 'message.updated' && event.properties?.info) {
+      const info = event.properties.info;
+      if (info.id && info.role) {
+        messageRoles.set(info.id, info.role);
+        
+        // If we have buffered text for this message and it's a user message, return it
+        if (info.role === 'user' && messageTexts.has(info.id)) {
+          const text = messageTexts.get(info.id);
+          messageTexts.delete(info.id); // Clean up
+          return text;
         }
       }
+      return null;
     }
-    const text = message?.text || event.text;
-    if (typeof text === 'string' && text.trim()) {
-      return text.trim();
+    
+    // For message.part.updated events, accumulate or return text based on known role
+    if (event.type === 'message.part.updated' && event.properties?.part) {
+      const part = event.properties.part;
+      if (part.type !== 'text' || !part.text) {
+        return null;
+      }
+      
+      const role = messageRoles.get(part.messageID);
+      if (role === 'user') {
+        // We know it's a user message, return the text
+        return part.text.trim() || null;
+      } else if (!role) {
+        // Buffer this text until we know the role
+        const existing = messageTexts.get(part.messageID) || '';
+        messageTexts.set(part.messageID, existing + part.text);
+      }
     }
+    
     return null;
   };
 
@@ -137,30 +153,40 @@ export const OpencodeMemPlugin = async ({
     if (!event) {
       return null;
     }
-    const message = event.message || event.payload?.message || event.content || null;
-    const role = message?.role || event.role || null;
-    if (role && role !== 'assistant') {
-      return null;
-    }
-    if (typeof message === 'string') {
-      return message.trim() || null;
-    }
-    const content = message?.content || event.content;
-    if (typeof content === 'string') {
-      return content.trim() || null;
-    }
-    if (Array.isArray(content)) {
-      for (const part of content) {
-        const text = part?.text || part?.content;
-        if (typeof text === 'string' && text.trim()) {
-          return text.trim();
+    
+    // For message.updated events, track the role and check if we have buffered text
+    if (event.type === 'message.updated' && event.properties?.info) {
+      const info = event.properties.info;
+      if (info.id && info.role) {
+        messageRoles.set(info.id, info.role);
+        
+        // If we have buffered text for this message and it's an assistant message, return it
+        if (info.role === 'assistant' && messageTexts.has(info.id)) {
+          const text = messageTexts.get(info.id);
+          messageTexts.delete(info.id); // Clean up
+          return text;
         }
       }
+      return null;
     }
-    const text = message?.text || event.text;
-    if (typeof text === 'string' && text.trim()) {
-      return text.trim();
+    
+    // For message.part.updated events, accumulate or return text based on known role
+    if (event.type === 'message.part.updated' && event.properties?.part) {
+      const part = event.properties.part;
+      if (part.type !== 'text' || !part.text) {
+        return null;
+      }
+      
+      const role = messageRoles.get(part.messageID);
+      if (role === 'assistant') {
+        // We know it's an assistant message, return the text
+        return part.text.trim() || null;
+      } else if (!role) {
+        // Already buffered by extractPromptText
+        return null;
+      }
     }
+    
     return null;
   };
 
@@ -375,23 +401,62 @@ export const OpencodeMemPlugin = async ({
     event: async ({ event }) => {
       const eventType = event?.type || 'unknown';
       await logLine(`event ${eventType}`);
+      
+      // Debug: log event structure for message events
       if (
-        ['message.updated', 'message.created', 'message.appended'].includes(
+        ['message.updated', 'message.created', 'message.appended', 'message.part.updated'].includes(
           eventType
         )
       ) {
-        const promptText = extractPromptText(event);
-        if (promptText && promptText !== lastPromptText) {
-          promptCounter += 1;
-          lastPromptText = promptText;
-          events.push({
-            type: 'user_prompt',
-            prompt_number: promptCounter,
-            prompt_text: promptText,
-            timestamp: new Date().toISOString(),
-          });
-          await logLine(`user_prompt captured #${promptCounter}`);
+        // Log full event structure for debugging (only first few times per event type)
+        if (!global.eventLogCount) global.eventLogCount = {};
+        if (!global.eventLogCount[eventType]) global.eventLogCount[eventType] = 0;
+        if (global.eventLogCount[eventType] < 2) {
+          global.eventLogCount[eventType]++;
+          await logLine(`FULL EVENT (${eventType}): ${JSON.stringify(event, null, 2).substring(0, 3000)}`);
         }
+        
+        await logLine(`event payload keys: ${Object.keys(event || {}).join(', ')}`);
+        if (event?.properties) {
+          await logLine(`event properties keys: ${Object.keys(event.properties).join(', ')}`);
+          if (event.properties.role) {
+            await logLine(`event role: ${event.properties.role}`);
+          }
+          if (event.properties.message) {
+            await logLine(`event has properties.message`);
+          }
+          if (event.properties.info) {
+            const infoKeys = Object.keys(event.properties.info);
+            await logLine(`event properties.info keys: ${infoKeys.join(', ')}`);
+            if (event.properties.info.role) {
+              await logLine(`event info.role: ${event.properties.info.role}`);
+            }
+          }
+        }
+        
+        const promptText = extractPromptText(event);
+        if (promptText) {
+          // Check for /new command and flush before session reset
+          if (promptText.trim() === '/new' || promptText.trim().startsWith('/new ')) {
+            await logLine('detected /new command, flushing events');
+            await flushEvents();
+          }
+          
+          if (promptText !== lastPromptText) {
+            promptCounter += 1;
+            lastPromptText = promptText;
+            events.push({
+              type: 'user_prompt',
+              prompt_number: promptCounter,
+              prompt_text: promptText,
+              timestamp: new Date().toISOString(),
+            });
+            await logLine(`user_prompt captured #${promptCounter}: ${promptText.substring(0, 50)}`);
+          }
+        } else {
+          await logLine(`extractPromptText returned null`);
+        }
+        
         const assistantText = extractAssistantText(event);
         if (assistantText && assistantText !== lastAssistantText) {
           lastAssistantText = assistantText;
@@ -400,7 +465,9 @@ export const OpencodeMemPlugin = async ({
             assistant_text: assistantText,
             timestamp: new Date().toISOString(),
           });
-          await logLine('assistant_message captured');
+          await logLine(`assistant_message captured: ${assistantText.substring(0, 50)}`);
+        } else if (!assistantText) {
+          await logLine(`extractAssistantText returned null`);
         }
       }
       if (
