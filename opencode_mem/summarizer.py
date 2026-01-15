@@ -47,6 +47,13 @@ LOW_SIGNAL_OBSERVATION_PATTERNS = [
     re.compile(r"^/[^\s]+$"),
     re.compile(r"^[A-Za-z]:\\\\[^\s]+$"),
     re.compile(r"^session\s+#\d+\b", re.IGNORECASE),
+    # Lockfile noise patterns - must mention specific lockfile names
+    re.compile(
+        r"\b(uv\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|Gemfile\.lock|poetry\.lock|pipfile\.lock)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(lock\s*file|lockfile).*(updated?|regenerat|changed)", re.IGNORECASE),
+    re.compile(r"(updated?|regenerat|changed).*(lock\s*file|lockfile)", re.IGNORECASE),
 ]
 
 
