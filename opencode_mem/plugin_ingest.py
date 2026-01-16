@@ -22,8 +22,8 @@ from .store import MemoryStore
 from .summarizer import is_low_signal_observation
 from .xml_parser import ParsedSummary, has_meaningful_observation
 
-CONFIG = load_config()
-OBSERVER = ObserverClient()
+CONFIG: object | None = None
+OBSERVER: ObserverClient | None = None
 
 STORE_SUMMARY = True
 STORE_TYPED = True
@@ -73,6 +73,20 @@ def _truncate_text(text: str, max_bytes: int) -> str:
         return text
     truncated = encoded[:max_bytes].decode("utf-8", errors="replace")
     return f"{truncated}{TRUNCATION_NOTICE}"
+
+
+def _get_observer() -> ObserverClient:
+    global OBSERVER
+    if OBSERVER is None:
+        OBSERVER = ObserverClient()
+    return OBSERVER
+
+
+def _get_config() -> Any:
+    global CONFIG
+    if CONFIG is None:
+        CONFIG = load_config()
+    return CONFIG
 
 
 def _normalize_tool_name(event: dict[str, Any]) -> str:
@@ -245,7 +259,7 @@ def ingest(payload: dict[str, Any]) -> None:
             prompt_number=prompt.get("prompt_number"),
             metadata={"source": "plugin"},
         )
-    max_chars = CONFIG.summary_max_chars
+    max_chars = _get_config().summary_max_chars
     tool_events = _extract_tool_events(events, max_chars)
     assistant_messages = _extract_assistant_messages(events)
     last_assistant_message = assistant_messages[-1] if assistant_messages else None
@@ -301,7 +315,7 @@ def ingest(payload: dict[str, Any]) -> None:
         diff_summary=diff_summary,
         recent_files=post.get("recent_files") or "",
     )
-    response = OBSERVER.observe(observer_context)
+    response = _get_observer().observe(observer_context)
     parsed = response.parsed
     discovery_parts = []
     if latest_prompt:
@@ -356,7 +370,7 @@ def ingest(payload: dict[str, Any]) -> None:
     for obs in observations_to_store:
         metadata = {"source": "observer"}
         if per_item_tokens:
-            metadata["discovery_tokens"] = per_item_tokens
+            metadata["discovery_tokens"] = str(per_item_tokens)
         store.remember_observation(
             session_id,
             kind=obs.kind.strip().lower(),

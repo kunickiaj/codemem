@@ -244,8 +244,9 @@ When OpenCode starts, the plugin loads and:
 | `OPENCODE_MEM_VIEWER_HOST`, `OPENCODE_MEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
 | `OPENCODE_MEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
 | `OPENCODE_MEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
-| `OPENCODE_MEM_PLUGIN_LOG` | Path for the plugin log file (defaults to `~/.opencode-mem/plugin.log`, set `0` to disable). |
+| `OPENCODE_MEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` to enable; defaults to off). |
 | `OPENCODE_MEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
+| `OPENCODE_MEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint (default `https://chatgpt.com/backend-api/codex/responses`). |
 | `OPENCODE_MEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events via `client.app.log`. |
 | `OPENCODE_MEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process (used to avoid observer feedback loops). |
 | `OPENCODE_MEM_INJECT_CONTEXT` | Set to `0` to disable memory pack injection (default on). |
