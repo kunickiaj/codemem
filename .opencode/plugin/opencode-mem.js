@@ -111,9 +111,10 @@ export const OpencodeMemPlugin = async ({
   const viewerHost = process.env.OPENCODE_MEM_VIEWER_HOST || "127.0.0.1";
   const viewerPort = process.env.OPENCODE_MEM_VIEWER_PORT || "38888";
   const commandTimeout = Number.parseInt(
-    process.env.OPENCODE_MEM_PLUGIN_CMD_TIMEOUT || "1500",
+    process.env.OPENCODE_MEM_PLUGIN_CMD_TIMEOUT || "20000",
     10
   );
+
   const parseNumber = (value, fallback) => {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) ? parsed : fallback;
@@ -431,9 +432,18 @@ export const OpencodeMemPlugin = async ({
   };
 
   const buildInjectedContext = async (query) => {
-    const result = await runCli(buildPackArgs(query));
+    const packArgs = buildPackArgs(query);
+    const result = await runCli(packArgs);
     if (!result || result.exitCode !== 0) {
-      await logLine(`inject.pack.error ${result?.exitCode ?? "unknown"}`);
+      const exitCode = result?.exitCode ?? "unknown";
+      const stderr = result?.stderr ? result.stderr.trim() : "";
+      const stdout = result?.stdout ? result.stdout.trim() : "";
+      const cmd = [runner, ...runnerArgs, ...packArgs].join(" ");
+      await logLine(
+        `inject.pack.error ${exitCode} cmd=${cmd}` +
+          `${stderr ? ` stderr=${stderr}` : ""}` +
+          `${stdout ? ` stdout=${stdout}` : ""}`
+      );
       return "";
     }
     const packText = parsePackText(result.stdout);

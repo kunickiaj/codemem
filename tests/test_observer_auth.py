@@ -7,7 +7,13 @@ from unittest.mock import Mock, patch
 import pytest
 
 from opencode_mem.config import OpencodeMemConfig
-from opencode_mem.observer import _load_opencode_oauth_cache, _resolve_oauth_provider
+from opencode_mem.observer import (
+    _build_codex_headers,
+    _extract_oauth_account_id,
+    _extract_oauth_expires,
+    _load_opencode_oauth_cache,
+    _resolve_oauth_provider,
+)
 
 
 class OpenAIStub:
@@ -25,6 +31,7 @@ def test_loads_openai_oauth_cache(tmp_path: Path) -> None:
                     "access": "oa-access",
                     "refresh": "oa-refresh",
                     "expires": 9999999999999,
+                    "accountId": "acc-123",
                 }
             }
         )
@@ -32,6 +39,8 @@ def test_loads_openai_oauth_cache(tmp_path: Path) -> None:
     with patch("opencode_mem.observer._get_opencode_auth_path", return_value=auth_path):
         data = _load_opencode_oauth_cache()
     assert data["openai"]["access"] == "oa-access"
+    assert _extract_oauth_account_id(data, "openai") == "acc-123"
+    assert _extract_oauth_expires(data, "openai") == 9999999999999
 
 
 def test_provider_resolves_from_model() -> None:
@@ -51,6 +60,10 @@ def test_oauth_provider_uses_model_when_config_missing() -> None:
 def test_oauth_provider_prefers_runtime_provider() -> None:
     assert _resolve_oauth_provider("anthropic", "gpt-5.1-codex-mini") == "anthropic"
     assert _resolve_oauth_provider("openai", "claude-4.5-haiku") == "openai"
+
+
+def test_oauth_provider_uses_model_when_provider_invalid() -> None:
+    assert _resolve_oauth_provider("unknown", "claude-4.5-haiku") == "anthropic"
 
 
 def test_openai_client_uses_oauth_token_when_api_key_missing(tmp_path: Path) -> None:
@@ -156,6 +169,28 @@ def test_extract_oauth_access(payload: dict, expected: str | None) -> None:
     from opencode_mem.observer import _extract_oauth_access
 
     assert _extract_oauth_access(payload, "openai") == expected
+
+
+def test_build_codex_headers_includes_account_id() -> None:
+    headers = _build_codex_headers("token", "acc-123")
+    assert headers["authorization"] == "Bearer token"
+    assert headers["ChatGPT-Account-Id"] == "acc-123"
+
+
+def test_build_codex_headers_without_account_id() -> None:
+    headers = _build_codex_headers("token", None)
+    assert headers == {"authorization": "Bearer token"}
+
+
+def test_codex_payload_uses_input_schema() -> None:
+    from opencode_mem.observer import _build_codex_payload
+
+    payload = _build_codex_payload("gpt-5.1-codex-mini", "hello", 42)
+    assert payload["model"] == "gpt-5.1-codex-mini"
+    assert payload["input"][0]["role"] == "user"
+    assert payload["input"][0]["content"][0]["text"] == "hello"
+    assert payload["store"] is False
+    assert payload["stream"] is True
 
 
 def test_opencode_run_enabled_when_no_auth(monkeypatch: pytest.MonkeyPatch) -> None:

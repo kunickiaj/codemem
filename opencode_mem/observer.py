@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from .xml_parser import ParsedOutput, parse_observer_output
 
 DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
+CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ def _load_opencode_oauth_cache() -> dict[str, Any]:
 
 
 def _resolve_oauth_provider(configured: str | None, model: str) -> str:
-    if configured:
+    if configured and configured.lower() in {"openai", "anthropic"}:
         return configured.lower()
     if model.lower().startswith("claude"):
         return "anthropic"
@@ -67,6 +69,76 @@ def _extract_oauth_access(cache: dict[str, Any], provider: str) -> str | None:
     access = entry.get("access")
     if isinstance(access, str) and access:
         return access
+    return None
+
+
+def _extract_oauth_account_id(cache: dict[str, Any], provider: str) -> str | None:
+    entry = cache.get(provider)
+    if not isinstance(entry, dict):
+        return None
+    account_id = entry.get("accountId")
+    if isinstance(account_id, str) and account_id:
+        return account_id
+    return None
+
+
+def _extract_oauth_expires(cache: dict[str, Any], provider: str) -> int | None:
+    entry = cache.get(provider)
+    if not isinstance(entry, dict):
+        return None
+    expires = entry.get("expires")
+    if isinstance(expires, int):
+        return expires
+    return None
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _build_codex_headers(access_token: str, account_id: str | None) -> dict[str, str]:
+    headers = {"authorization": f"Bearer {access_token}"}
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+    return headers
+
+
+def _build_codex_payload(model: str, prompt: str, max_tokens: int) -> dict[str, Any]:
+    return {
+        "model": model,
+        "instructions": "You are a memory observer.",
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }
+        ],
+        "store": False,
+        "stream": True,
+    }
+
+
+def _parse_codex_stream(response: Any) -> str | None:
+    text_parts: list[str] = []
+    for line in response.iter_lines():
+        if not line:
+            continue
+        decoded = line.decode("utf-8") if isinstance(line, (bytes, bytearray)) else str(line)
+        if not decoded.startswith("data:"):
+            continue
+        payload = decoded[len("data:") :].strip()
+        if not payload:
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "response.output_text.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta:
+                text_parts.append(delta)
+    if text_parts:
+        return "".join(text_parts).strip()
     return None
 
 
@@ -109,37 +181,45 @@ class ObserverClient:
         provider = (cfg.observer_provider or "").lower()
         model = cfg.observer_model or ""
 
-        # Auto-detect custom-gateway from model name
-        if not provider and model.startswith("custom-gateway/"):
-            provider = "custom-gateway"
+        if provider and provider not in {"openai", "anthropic", "custom-gateway"}:
+            provider = ""
 
-        if not provider:
-            if os.getenv("ANTHROPIC_API_KEY") and not os.getenv("OPENAI_API_KEY"):
-                provider = "anthropic"
-            else:
-                provider = "openai"
-        if provider not in {"openai", "anthropic", "custom-gateway"}:
-            provider = "openai"
-        self.provider = provider
+        resolved_provider = provider
+        if not resolved_provider and model.startswith("custom-gateway/"):
+            resolved_provider = "custom-gateway"
+        if not resolved_provider:
+            resolved_provider = _resolve_oauth_provider(None, model or DEFAULT_OPENAI_MODEL)
+        if resolved_provider not in {"openai", "anthropic", "custom-gateway"}:
+            resolved_provider = "openai"
+
+        self.provider = resolved_provider
         self.use_opencode_run = cfg.use_opencode_run
         self.opencode_model = cfg.opencode_model
         self.opencode_agent = cfg.opencode_agent
         self.model = model or (
-            DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else DEFAULT_OPENAI_MODEL
+            DEFAULT_ANTHROPIC_MODEL if resolved_provider == "anthropic" else DEFAULT_OPENAI_MODEL
         )
         self.api_key = cfg.observer_api_key or os.getenv("OPENCODE_MEM_OBSERVER_API_KEY")
         self.max_chars = cfg.observer_max_chars
         self.max_tokens = cfg.observer_max_tokens
         self.client: object | None = None
+        self.codex_access: str | None = None
+        self.codex_account_id: str | None = None
         oauth_cache = _load_opencode_oauth_cache()
-        oauth_provider = _resolve_oauth_provider(self.provider, self.model)
+        oauth_provider = _resolve_oauth_provider(provider or None, self.model)
         oauth_access = _extract_oauth_access(oauth_cache, oauth_provider)
+        oauth_expires = _extract_oauth_expires(oauth_cache, oauth_provider)
+        if oauth_access and (oauth_expires is None or oauth_expires > _now_ms()):
+            self.codex_access = oauth_access
+            self.codex_account_id = _extract_oauth_account_id(oauth_cache, oauth_provider)
         if self.use_opencode_run:
+            logger.info("observer auth: using opencode run")
             return
-        if provider == "custom-gateway":
+        if resolved_provider == "custom-gateway":
             # Use OpenAI client with custom-gateway base URL and IAP token
             iap_token = _get_iap_token()
             if not iap_token:
+                logger.warning("observer auth: missing IAP token for custom-gateway")
                 return
             try:
                 from openai import OpenAI  # type: ignore
@@ -151,18 +231,21 @@ class ObserverClient:
                     default_headers={"Authorization": f"Bearer {iap_token}"},
                 )
                 self.model = model_id
-            except Exception:  # pragma: no cover
+            except Exception as exc:  # pragma: no cover
+                logger.exception("observer auth: custom-gateway client init failed", exc_info=exc)
                 self.client = None
-        elif provider == "anthropic":
+        elif resolved_provider == "anthropic":
             if not self.api_key:
                 self.api_key = os.getenv("ANTHROPIC_API_KEY") or oauth_access
             if not self.api_key:
+                logger.warning("observer auth: missing anthropic api key")
                 return
             try:
                 import anthropic  # type: ignore
 
                 self.client = anthropic.Anthropic(api_key=self.api_key)
-            except Exception:  # pragma: no cover
+            except Exception as exc:  # pragma: no cover
+                logger.exception("observer auth: anthropic client init failed", exc_info=exc)
                 self.client = None
         else:
             if not self.api_key:
@@ -173,12 +256,14 @@ class ObserverClient:
                     or oauth_access
                 )
             if not self.api_key:
+                logger.warning("observer auth: missing openai api key")
                 return
             try:
                 from openai import OpenAI  # type: ignore
 
                 self.client = OpenAI(api_key=self.api_key)
-            except Exception:  # pragma: no cover
+            except Exception as exc:  # pragma: no cover
+                logger.exception("observer auth: openai client init failed", exc_info=exc)
                 self.client = None
 
     def observe(self, context: ObserverContext) -> ObserverResponse:
@@ -192,11 +277,14 @@ class ObserverClient:
     def _call(self, prompt: str) -> str | None:
         if self.use_opencode_run:
             return self._call_opencode_run(prompt)
+        if self.codex_access:
+            return self._call_codex(prompt)
         if not self.client:
+            logger.warning("observer auth: missing client and codex token")
             return None
         try:
             if self.provider == "anthropic":
-                resp = self.client.completions.create(
+                resp = self.client.completions.create(  # type: ignore[union-attr]
                     model=self.model,
                     prompt=f"\nHuman: {prompt}\nAssistant:",
                     temperature=0,
@@ -204,7 +292,7 @@ class ObserverClient:
                 )
                 return resp.completion
             # OpenAI and custom-gateway both use OpenAI-compatible API
-            resp = self.client.chat.completions.create(
+            resp = self.client.chat.completions.create(  # type: ignore[union-attr]
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a memory observer."},
@@ -214,7 +302,12 @@ class ObserverClient:
                 max_tokens=self.max_tokens,
             )
             return resp.choices[0].message.content
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
+            logger.exception(
+                "observer call failed",
+                extra={"provider": self.provider, "model": self.model},
+                exc_info=exc,
+            )
             return None
 
     def _call_opencode_run(self, prompt: str) -> str | None:
@@ -246,6 +339,41 @@ class ObserverClient:
         if result.returncode != 0:
             return None
         return self._extract_opencode_text(result.stdout)
+
+    def _call_codex(self, prompt: str) -> str | None:
+        if not self.codex_access:
+            logger.warning("observer auth: missing codex access token")
+            return None
+        headers = _build_codex_headers(self.codex_access, self.codex_account_id)
+        payload = _build_codex_payload(self.model, prompt, self.max_tokens)
+        try:
+            import httpx
+
+            with (
+                httpx.Client(timeout=20) as client,
+                client.stream(
+                    "POST",
+                    CODEX_API_ENDPOINT,
+                    json=payload,
+                    headers=headers,
+                ) as response,
+            ):
+                response.raise_for_status()
+                return _parse_codex_stream(response)
+        except Exception as exc:  # pragma: no cover
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            error_text = getattr(getattr(exc, "response", None), "text", None)
+            logger.exception(
+                "observer codex oauth call failed",
+                extra={
+                    "provider": self.provider,
+                    "model": self.model,
+                    "status": status_code,
+                    "error": error_text,
+                },
+                exc_info=exc,
+            )
+            return None
 
     def _extract_opencode_text(self, output: str) -> str:
         if not output:
