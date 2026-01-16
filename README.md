@@ -269,10 +269,10 @@ When OpenCode starts, the plugin loads and:
 
 The ingest pipeline uses an observer agent to emit XML observations and summaries. Summaries are generated on session end by default; use `<skip_summary/>` in observer output to skip. The defaults are:
 
-- **OpenAI**: `gpt-5.1-codex-mini` (uses `OPENCODE_MEM_OBSERVER_API_KEY`, or `OPENCODE_API_KEY` / `OPENAI_API_KEY`).
-- **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVER_PROVIDER=anthropic` and provide `OPENCODE_MEM_OBSERVER_API_KEY` or `ANTHROPIC_API_KEY`).
+- **OpenAI**: `gpt-5.1-codex-mini` (uses `OPENCODE_MEM_OBSERVER_API_KEY`, or `OPENCODE_API_KEY` / `OPENAI_API_KEY`; falls back to OpenCode OAuth cache at `~/.local/share/opencode/auth.json` when API keys are absent).
+- **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVER_PROVIDER=anthropic` and provide `OPENCODE_MEM_OBSERVER_API_KEY` or `ANTHROPIC_API_KEY`; falls back to OpenCode OAuth cache when API keys are absent).
 
-Override the model with `OPENCODE_MEM_OBSERVER_MODEL` or use `OPENCODE_MEM_USE_OPENCODE_RUN=1` with `OPENCODE_MEM_OPENCODE_MODEL` for OAuth-backed runs.
+Observer provider is selected from `OPENCODE_MEM_OBSERVER_PROVIDER` when set, otherwise inferred from the model (`claude*` → Anthropic, otherwise OpenAI). Override the model with `OPENCODE_MEM_OBSERVER_MODEL`, or use `OPENCODE_MEM_USE_OPENCODE_RUN=1` with `OPENCODE_MEM_OPENCODE_MODEL` as a fallback for OAuth-backed runs.
 
 ## Running OpenCode with the plugin
 

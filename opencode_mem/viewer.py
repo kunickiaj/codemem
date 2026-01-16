@@ -804,8 +804,8 @@ VIEWER_HTML = """<!doctype html>
       function setTheme(theme) {
         document.documentElement.setAttribute("data-theme", theme);
         localStorage.setItem("opencode-mem-theme", theme);
-        themeToggle.innerHTML = theme === "dark" 
-          ? '<i data-lucide="sun"></i>' 
+        themeToggle.innerHTML = theme === "dark"
+          ? '<i data-lucide="sun"></i>'
           : '<i data-lucide="moon"></i>';
         themeToggle.title = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
         if (typeof lucide !== "undefined") lucide.createIcons();
