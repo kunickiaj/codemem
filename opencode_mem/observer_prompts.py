@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from xml.sax.saxutils import escape
 
-OBSERVATION_TYPES = "bugfix, feature, refactor, change, discovery, decision"
+OBSERVATION_TYPES = "bugfix, feature, refactor, change, discovery, decision, exploration"
 OBSERVATION_CONCEPTS = (
     "how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off"
 )
@@ -70,18 +70,29 @@ OBSERVATION_SCHEMA = f"""
 <observation>
   <type>[ {OBSERVATION_TYPES} ]</type>
   <!--
-    type MUST be EXACTLY one of these 6 options:
+    type MUST be EXACTLY one of these 7 options:
       - bugfix: something was broken, now fixed
       - feature: new capability or functionality added
       - refactor: code restructured, behavior unchanged
       - change: generic modification (docs, config, misc)
       - discovery: learning about existing system, debugging insights
       - decision: architectural/design choice with rationale
+      - exploration: attempted approach that was tried but NOT shipped
+    
+    IMPORTANT: Use 'exploration' when:
+      - Multiple approaches were tried for the same problem
+      - An implementation was attempted but then replaced or reverted
+      - Something was tested/experimented with but not kept
+      - The attempt provides useful "why we didn't do X" context
+    
+    Exploration memories are valuable! They prevent repeating failed approaches.
+    Include what was tried AND why it didn't work out.
   -->
 
   <title>[Short outcome-focused title - what was achieved or learned]</title>
   <!-- GOOD: "OAuth2 PKCE flow added to authentication" -->
   <!-- GOOD: "Discovered flush strategy fails in multi-session environments" -->
+  <!-- GOOD (exploration): "Tried emoji theme toggle - poor contrast on light backgrounds" -->
   <!-- BAD: "Analyzed authentication code" (too vague, no outcome) -->
 
   <subtitle>[One sentence explanation of the outcome (max 24 words)]</subtitle>
@@ -95,6 +106,7 @@ OBSERVATION_SCHEMA = f"""
   <narrative>[
     Full context: What was done, how it works, why it matters.
     For discoveries/debugging: what was investigated, what was found, what it means.
+    For explorations: what was tried, why it didn't work, what was done instead.
     Include specific details: file paths, function names, configuration values.
     Aim for 100-500 words - enough to be useful, not overwhelming.
   ]</narrative>

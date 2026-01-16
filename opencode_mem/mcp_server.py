@@ -221,6 +221,7 @@ def build_server() -> FastMCP:
                 "feature",
                 "bugfix",
                 "refactor",
+                "exploration",
             ],
             "fields": {
                 "title": "short text",

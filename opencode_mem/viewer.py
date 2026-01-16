@@ -388,6 +388,10 @@ VIEWER_HTML = """<!doctype html>
         --pill-bg: rgba(70, 150, 200, 0.18);
         --pill-color: #2b5f7a;
       }
+      .kind-pill.exploration {
+        --pill-bg: rgba(140, 140, 140, 0.18);
+        --pill-color: #5a5a5a;
+      }
       /* Dark mode pill overrides - high contrast, vibrant colors */
       [data-theme="dark"] .kind-pill.feature { --pill-bg: rgba(77, 255, 200, 0.25); --pill-color: #4dffb8; }
       [data-theme="dark"] .kind-pill.change { --pill-bg: rgba(120, 180, 255, 0.20); --pill-color: #78b4ff; }
@@ -396,6 +400,7 @@ VIEWER_HTML = """<!doctype html>
       [data-theme="dark"] .kind-pill.discovery { --pill-bg: rgba(255, 210, 80, 0.25); --pill-color: #ffd250; }
       [data-theme="dark"] .kind-pill.decision { --pill-bg: rgba(255, 160, 160, 0.20); --pill-color: #ffa0a0; }
       [data-theme="dark"] .kind-pill.session_summary { --pill-bg: rgba(100, 220, 255, 0.20); --pill-color: #64dcff; }
+      [data-theme="dark"] .kind-pill.exploration { --pill-bg: rgba(180, 180, 180, 0.18); --pill-color: #b0b0b0; }
       @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) .kind-pill.feature { --pill-bg: rgba(77, 255, 200, 0.25); --pill-color: #4dffb8; }
         :root:not([data-theme="light"]) .kind-pill.change { --pill-bg: rgba(120, 180, 255, 0.20); --pill-color: #78b4ff; }
@@ -404,6 +409,7 @@ VIEWER_HTML = """<!doctype html>
         :root:not([data-theme="light"]) .kind-pill.discovery { --pill-bg: rgba(255, 210, 80, 0.25); --pill-color: #ffd250; }
         :root:not([data-theme="light"]) .kind-pill.decision { --pill-bg: rgba(255, 160, 160, 0.20); --pill-color: #ffa0a0; }
         :root:not([data-theme="light"]) .kind-pill.session_summary { --pill-bg: rgba(100, 220, 255, 0.20); --pill-color: #64dcff; }
+        :root:not([data-theme="light"]) .kind-pill.exploration { --pill-bg: rgba(180, 180, 180, 0.18); --pill-color: #b0b0b0; }
       }
       .kind-row {
         display: flex;
@@ -628,6 +634,7 @@ VIEWER_HTML = """<!doctype html>
       .feed-item.discovery { border-left-color: rgba(120, 153, 235, 0.6); }
       .feed-item.decision { border-left-color: rgba(94, 129, 172, 0.6); }
       .feed-item.session_summary { border-left-color: rgba(70, 150, 200, 0.6); }
+      .feed-item.exploration { border-left-color: rgba(140, 140, 140, 0.6); }
       /* Dark mode border overrides - vibrant, high contrast */
       [data-theme="dark"] .feed-item.feature { border-left-color: rgba(77, 255, 200, 0.9); }
       [data-theme="dark"] .feed-item.change { border-left-color: rgba(120, 180, 255, 0.9); }
@@ -636,6 +643,7 @@ VIEWER_HTML = """<!doctype html>
       [data-theme="dark"] .feed-item.discovery { border-left-color: rgba(255, 210, 80, 0.9); }
       [data-theme="dark"] .feed-item.decision { border-left-color: rgba(255, 180, 180, 0.9); }
       [data-theme="dark"] .feed-item.session_summary { border-left-color: rgba(100, 220, 255, 0.9); }
+      [data-theme="dark"] .feed-item.exploration { border-left-color: rgba(180, 180, 180, 0.7); }
       @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) .feed-item.feature { border-left-color: rgba(77, 255, 200, 0.9); }
         :root:not([data-theme="light"]) .feed-item.change { border-left-color: rgba(120, 180, 255, 0.9); }
@@ -644,6 +652,7 @@ VIEWER_HTML = """<!doctype html>
         :root:not([data-theme="light"]) .feed-item.discovery { border-left-color: rgba(255, 210, 80, 0.9); }
         :root:not([data-theme="light"]) .feed-item.decision { border-left-color: rgba(255, 180, 180, 0.9); }
         :root:not([data-theme="light"]) .feed-item.session_summary { border-left-color: rgba(100, 220, 255, 0.9); }
+        :root:not([data-theme="light"]) .feed-item.exploration { border-left-color: rgba(180, 180, 180, 0.7); }
       }
       section:hover {
         transform: translateY(0);
@@ -1220,6 +1229,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     "change",
                     "decision",
                     "discovery",
+                    "exploration",
                     "feature",
                     "refactor",
                 ]

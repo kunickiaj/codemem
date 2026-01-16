@@ -61,7 +61,8 @@
 ## Memory Quality Rules (Important)
 - Do not store raw tool logs as memories.
 - Filter low‑signal tool events (`read`, `edit`, `glob`, `grep`, etc.).
-- Prefer typed memories: `discovery`, `change`, `feature`, `bugfix`, `refactor`, `decision`.
+- Prefer typed memories: `discovery`, `change`, `feature`, `bugfix`, `refactor`, `decision`, `exploration`.
+- **Use `exploration` for attempts/experiments that were tried but NOT shipped** - these preserve "why we didn't do X" context.
 - Session summaries/observations are OFF by default; only enable via config.
 - Apply low‑signal filters before persisting any memory.
 
@@ -120,8 +121,10 @@
 
 ## Notes for Future Agents
 - If you change memory categories, update:
-  - `opencode_mem/classifier.py`
+  - `opencode_mem/observer_prompts.py` (OBSERVATION_TYPES and OBSERVATION_SCHEMA)
   - `opencode_mem/mcp_server.py` (`memory_schema`)
+  - `opencode_mem/viewer.py` (pill/border styling, /api/observations kinds list)
+  - `tests/test_e2e_pipeline.py` (test_observer_types_are_documented)
   - `README.md`
 - If you change CLI behavior, update `README.md` and tests.
 - If you change plugin flush behavior, update this file and `docs/architecture.md`.
@@ -129,4 +132,6 @@
 ## Recent Improvements (Jan 2026)
 - **v0.3.0:** Export/import memories by project for team knowledge sharing
 - **v0.3.1:** Fixed transcript capture bug (was passing empty string, now builds from events)
+- **v0.3.3:** Web UI improvements (markdown, icons, current session stats, dark mode colors)
+- **v0.3.4:** Added `exploration` memory kind for tracking attempted approaches that weren't shipped
 - **Latest:** Adaptive flush strategy (2min base, 60s/30s with heavy work, force flush at thresholds)

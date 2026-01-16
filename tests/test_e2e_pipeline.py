@@ -182,7 +182,15 @@ class TestObserverIntegration:
         """Observer prompt should document all valid observation types."""
         from opencode_mem.observer_prompts import OBSERVATION_SCHEMA
 
-        for obs_type in ["bugfix", "feature", "refactor", "change", "discovery", "decision"]:
+        for obs_type in [
+            "bugfix",
+            "feature",
+            "refactor",
+            "change",
+            "discovery",
+            "decision",
+            "exploration",
+        ]:
             assert obs_type in OBSERVATION_SCHEMA
 
 
