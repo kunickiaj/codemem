@@ -35,11 +35,14 @@ export const OpencodeMemPlugin = async ({
       extra,
     });
   };
-  const logPathEnv = (process.env.OPENCODE_MEM_PLUGIN_LOG || "").toLowerCase();
-  const logEnabled = !["0", "false", "off"].includes(logPathEnv);
+  const logPathEnvRaw = process.env.OPENCODE_MEM_PLUGIN_LOG || "";
+  const logPathEnv = logPathEnvRaw.toLowerCase();
+  const logEnabled =
+    !!logPathEnvRaw && !["0", "false", "off"].includes(logPathEnv);
   const logPath = logEnabled
-    ? process.env.OPENCODE_MEM_PLUGIN_LOG ||
-      `${process.env.HOME || cwd}/.opencode-mem/plugin.log`
+    ? ["true", "yes", "1"].includes(logPathEnv)
+      ? `${process.env.HOME || cwd}/.opencode-mem/plugin.log`
+      : logPathEnvRaw
     : null;
   const logLine = async (line) => {
     if (!logPath) {
@@ -431,13 +434,19 @@ export const OpencodeMemPlugin = async ({
     }
   };
 
+  const redactLog = (value, limit = 400) => {
+    if (!value) return "";
+    const masked = String(value).replace(/(Bearer\s+)[^\s]+/gi, "$1[redacted]");
+    return masked.length > limit ? `${masked.slice(0, limit)}…` : masked;
+  };
+
   const buildInjectedContext = async (query) => {
     const packArgs = buildPackArgs(query);
     const result = await runCli(packArgs);
     if (!result || result.exitCode !== 0) {
       const exitCode = result?.exitCode ?? "unknown";
-      const stderr = result?.stderr ? result.stderr.trim() : "";
-      const stdout = result?.stdout ? result.stdout.trim() : "";
+      const stderr = redactLog(result?.stderr ? result.stderr.trim() : "");
+      const stdout = redactLog(result?.stdout ? result.stdout.trim() : "");
       const cmd = [runner, ...runnerArgs, ...packArgs].join(" ");
       await logLine(
         `inject.pack.error ${exitCode} cmd=${cmd}` +
@@ -703,7 +712,8 @@ export const OpencodeMemPlugin = async ({
 
           if (promptText !== lastPromptText) {
             promptCounter += 1;
-            sessionContext.promptCount++;
+          // promptCount incremented when capturing user_prompt
+
             lastPromptText = promptText;
             events.push({
               type: "user_prompt",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -16,9 +17,16 @@ from .xml_parser import ParsedOutput, parse_observer_output
 DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
 CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+DEFAULT_CODEX_ENDPOINT = CODEX_API_ENDPOINT
 
 
 logger = logging.getLogger(__name__)
+
+
+_REDACT_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9]{10,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9._-]{10,}"),
+)
 
 
 def _get_iap_token() -> str | None:
@@ -104,7 +112,7 @@ def _build_codex_headers(access_token: str, account_id: str | None) -> dict[str,
 
 
 def _build_codex_payload(model: str, prompt: str, max_tokens: int) -> dict[str, Any]:
-    return {
+    payload = {
         "model": model,
         "instructions": "You are a memory observer.",
         "input": [
@@ -116,6 +124,22 @@ def _build_codex_payload(model: str, prompt: str, max_tokens: int) -> dict[str, 
         "store": False,
         "stream": True,
     }
+    if max_tokens > 0:
+        payload["max_output_tokens"] = max_tokens
+    return payload
+
+
+def _resolve_codex_endpoint() -> str:
+    return os.getenv("OPENCODE_MEM_CODEX_ENDPOINT", DEFAULT_CODEX_ENDPOINT)
+
+
+def _redact_text(text: str, limit: int = 400) -> str:
+    redacted = text
+    for pattern in _REDACT_PATTERNS:
+        redacted = pattern.sub("[redacted]", redacted)
+    if len(redacted) > limit:
+        return f"{redacted[:limit]}…"
+    return redacted
 
 
 def _parse_codex_stream(response: Any) -> str | None:
@@ -127,7 +151,7 @@ def _parse_codex_stream(response: Any) -> str | None:
         if not decoded.startswith("data:"):
             continue
         payload = decoded[len("data:") :].strip()
-        if not payload:
+        if not payload or payload == "[DONE]":
             continue
         try:
             event = json.loads(payload)
@@ -334,9 +358,14 @@ class ObserverClient:
                 timeout=20,
                 env=env,
             )
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
+            logger.exception("observer opencode run failed", exc_info=exc)
             return None
         if result.returncode != 0:
+            logger.warning(
+                "observer opencode run returned non-zero",
+                extra={"returncode": result.returncode},
+            )
             return None
         return self._extract_opencode_text(result.stdout)
 
@@ -346,6 +375,7 @@ class ObserverClient:
             return None
         headers = _build_codex_headers(self.codex_access, self.codex_account_id)
         payload = _build_codex_payload(self.model, prompt, self.max_tokens)
+        endpoint = _resolve_codex_endpoint()
         try:
             import httpx
 
@@ -353,7 +383,7 @@ class ObserverClient:
                 httpx.Client(timeout=20) as client,
                 client.stream(
                     "POST",
-                    CODEX_API_ENDPOINT,
+                    endpoint,
                     json=payload,
                     headers=headers,
                 ) as response,
@@ -368,8 +398,9 @@ class ObserverClient:
                 extra={
                     "provider": self.provider,
                     "model": self.model,
+                    "endpoint": endpoint,
                     "status": status_code,
-                    "error": error_text,
+                    "error": _redact_text(error_text or ""),
                 },
                 exc_info=exc,
             )

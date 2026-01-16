@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -17,6 +18,9 @@ LOW_SIGNAL_PATTERNS: list[re.Pattern[str]] = [
     # Previously had patterns like r"opencode" which caused false positives,
     # filtering legitimate technical content about OpenCode.
 ]
+logger = logging.getLogger(__name__)
+
+
 LOW_SIGNAL_OBSERVATION_PATTERNS: list[re.Pattern[str]] = [
     # Empty by default - trust the observer LLM.
     # Add patterns here only for content that consistently gets through
@@ -203,9 +207,14 @@ class Summarizer:
                 text=True,
                 timeout=20,
             )
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
+            logger.exception("summarizer opencode run failed", exc_info=exc)
             return None
         if result.returncode != 0:
+            logger.warning(
+                "summarizer opencode run returned non-zero",
+                extra={"returncode": result.returncode},
+            )
             return None
         text = self._extract_opencode_text(result.stdout)
         return text or None
