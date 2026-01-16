@@ -29,6 +29,8 @@ VIEWER_HTML = """<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>opencode-mem viewer</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%231f6f5c'/%3E%3Cstop offset='100%25' style='stop-color:%23e67e4d'/%3E%3C/linearGradient%3E%3Cfilter id='shadow'%3E%3CfeDropShadow dx='0' dy='2' stdDeviation='3' flood-color='%23000' flood-opacity='0.5'/%3E%3C/filter%3E%3C/defs%3E%3Crect x='5' y='5' width='90' height='90' rx='16' fill='%23fff' stroke='%23000' stroke-width='3' filter='url(%23shadow)'/%3E%3Crect x='8' y='8' width='84' height='84' rx='14' fill='url(%23g1)'/%3E%3Cpath d='M20 75V25h15l15 25 15-25h15v50h-15V45l-15 22-15-22v30z' fill='white'/%3E%3C/svg%3E" />
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
       :root {
         --bg: #f7f1e7;
@@ -278,6 +280,21 @@ VIEWER_HTML = """<!doctype html>
         border-radius: 12px;
         padding: 12px;
         background: var(--stat-bg);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .stat-icon {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+        stroke: var(--accent);
+        opacity: 0.7;
+      }
+      .stat-content {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
       }
       .stat .value {
         font-weight: 600;
@@ -345,7 +362,7 @@ VIEWER_HTML = """<!doctype html>
       }
       .kind-pill.feature {
         --pill-bg: rgba(31, 111, 92, 0.16);
-        --pill-color: #1f6f5c;
+        --pill-color: #1a5a4d;
       }
       .kind-pill.change {
         --pill-bg: rgba(34, 58, 94, 0.16);
@@ -368,25 +385,25 @@ VIEWER_HTML = """<!doctype html>
         --pill-color: #3c516f;
       }
       .kind-pill.session_summary {
-        --pill-bg: rgba(70, 150, 140, 0.18);
-        --pill-color: #2d5f58;
+        --pill-bg: rgba(70, 150, 200, 0.18);
+        --pill-color: #2b5f7a;
       }
-      /* Dark mode pill overrides - high contrast colors */
-      [data-theme="dark"] .kind-pill.feature { --pill-bg: rgba(77, 212, 180, 0.25); --pill-color: #7fffda; }
-      [data-theme="dark"] .kind-pill.change { --pill-bg: rgba(139, 179, 255, 0.25); --pill-color: #b3cfff; }
-      [data-theme="dark"] .kind-pill.bugfix { --pill-bg: rgba(255, 173, 122, 0.25); --pill-color: #ffcfaa; }
-      [data-theme="dark"] .kind-pill.refactor { --pill-bg: rgba(180, 150, 255, 0.25); --pill-color: #d4c4ff; }
-      [data-theme="dark"] .kind-pill.discovery { --pill-bg: rgba(150, 180, 255, 0.25); --pill-color: #c4d4ff; }
-      [data-theme="dark"] .kind-pill.decision { --pill-bg: rgba(140, 180, 220, 0.25); --pill-color: #b8d4f0; }
-      [data-theme="dark"] .kind-pill.session_summary { --pill-bg: rgba(100, 200, 180, 0.25); --pill-color: #9eeedd; }
+      /* Dark mode pill overrides - high contrast, vibrant colors */
+      [data-theme="dark"] .kind-pill.feature { --pill-bg: rgba(77, 255, 200, 0.25); --pill-color: #4dffb8; }
+      [data-theme="dark"] .kind-pill.change { --pill-bg: rgba(120, 180, 255, 0.20); --pill-color: #78b4ff; }
+      [data-theme="dark"] .kind-pill.bugfix { --pill-bg: rgba(255, 150, 100, 0.25); --pill-color: #ff9664; }
+      [data-theme="dark"] .kind-pill.refactor { --pill-bg: rgba(180, 120, 255, 0.18); --pill-color: #d4a0ff; }
+      [data-theme="dark"] .kind-pill.discovery { --pill-bg: rgba(255, 210, 80, 0.25); --pill-color: #ffd250; }
+      [data-theme="dark"] .kind-pill.decision { --pill-bg: rgba(255, 160, 160, 0.20); --pill-color: #ffa0a0; }
+      [data-theme="dark"] .kind-pill.session_summary { --pill-bg: rgba(100, 220, 255, 0.20); --pill-color: #64dcff; }
       @media (prefers-color-scheme: dark) {
-        :root:not([data-theme="light"]) .kind-pill.feature { --pill-bg: rgba(77, 212, 180, 0.25); --pill-color: #7fffda; }
-        :root:not([data-theme="light"]) .kind-pill.change { --pill-bg: rgba(139, 179, 255, 0.25); --pill-color: #b3cfff; }
-        :root:not([data-theme="light"]) .kind-pill.bugfix { --pill-bg: rgba(255, 173, 122, 0.25); --pill-color: #ffcfaa; }
-        :root:not([data-theme="light"]) .kind-pill.refactor { --pill-bg: rgba(180, 150, 255, 0.25); --pill-color: #d4c4ff; }
-        :root:not([data-theme="light"]) .kind-pill.discovery { --pill-bg: rgba(150, 180, 255, 0.25); --pill-color: #c4d4ff; }
-        :root:not([data-theme="light"]) .kind-pill.decision { --pill-bg: rgba(140, 180, 220, 0.25); --pill-color: #b8d4f0; }
-        :root:not([data-theme="light"]) .kind-pill.session_summary { --pill-bg: rgba(100, 200, 180, 0.25); --pill-color: #9eeedd; }
+        :root:not([data-theme="light"]) .kind-pill.feature { --pill-bg: rgba(77, 255, 200, 0.25); --pill-color: #4dffb8; }
+        :root:not([data-theme="light"]) .kind-pill.change { --pill-bg: rgba(120, 180, 255, 0.20); --pill-color: #78b4ff; }
+        :root:not([data-theme="light"]) .kind-pill.bugfix { --pill-bg: rgba(255, 150, 100, 0.25); --pill-color: #ff9664; }
+        :root:not([data-theme="light"]) .kind-pill.refactor { --pill-bg: rgba(180, 120, 255, 0.18); --pill-color: #d4a0ff; }
+        :root:not([data-theme="light"]) .kind-pill.discovery { --pill-bg: rgba(255, 210, 80, 0.25); --pill-color: #ffd250; }
+        :root:not([data-theme="light"]) .kind-pill.decision { --pill-bg: rgba(255, 160, 160, 0.20); --pill-color: #ffa0a0; }
+        :root:not([data-theme="light"]) .kind-pill.session_summary { --pill-bg: rgba(100, 220, 255, 0.20); --pill-color: #64dcff; }
       }
       .kind-row {
         display: flex;
@@ -407,6 +424,18 @@ VIEWER_HTML = """<!doctype html>
         transform: translateY(-1px);
         border-color: rgba(31, 111, 92, 0.5);
         background: rgba(31, 111, 92, 0.18);
+      }
+      /* Theme toggle icon sizing */
+      #themeToggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 8px;
+      }
+      #themeToggle svg {
+        width: 16px;
+        height: 16px;
+        stroke: currentColor;
       }
       .modal-backdrop {
         position: fixed;
@@ -542,8 +571,55 @@ VIEWER_HTML = """<!doctype html>
       }
       .feed-body {
         font-size: 13px;
-        line-height: 1.45;
-        white-space: pre-wrap;
+        line-height: 1.5;
+      }
+      .feed-body p { margin: 0 0 0.5em; }
+      .feed-body p:last-child { margin-bottom: 0; }
+      .feed-body ul, .feed-body ol { margin: 0.3em 0; padding-left: 1.3em; list-style: revert; }
+      .feed-body li {
+        margin: 0.15em 0;
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        background: none;
+        font-size: inherit;
+      }
+      .feed-body li:hover {
+        transform: none;
+        border-color: transparent;
+        background: none;
+      }
+      .feed-body code {
+        background: var(--stat-bg);
+        padding: 0.15em 0.35em;
+        border-radius: 4px;
+        font-family: "SF Mono", "Menlo", "Courier New", monospace;
+        font-size: 0.9em;
+      }
+      .feed-body pre {
+        background: var(--stat-bg);
+        padding: 0.6em 0.8em;
+        border-radius: 8px;
+        overflow-x: auto;
+        margin: 0.5em 0;
+      }
+      .feed-body pre code {
+        background: none;
+        padding: 0;
+      }
+      .feed-body strong { font-weight: 600; }
+      .feed-body em { font-style: italic; }
+      .feed-body a { color: var(--accent); text-decoration: underline; }
+      .feed-body h1, .feed-body h2, .feed-body h3, .feed-body h4 {
+        font-size: 1em;
+        font-weight: 600;
+        margin: 0.6em 0 0.3em;
+      }
+      .feed-body blockquote {
+        border-left: 3px solid var(--border);
+        margin: 0.5em 0;
+        padding-left: 0.8em;
+        color: var(--muted);
       }
       .feed-item.feature { border-left-color: rgba(31, 111, 92, 0.6); }
       .feed-item.change { border-left-color: rgba(34, 58, 94, 0.6); }
@@ -551,7 +627,24 @@ VIEWER_HTML = """<!doctype html>
       .feed-item.refactor { border-left-color: rgba(127, 89, 193, 0.6); }
       .feed-item.discovery { border-left-color: rgba(120, 153, 235, 0.6); }
       .feed-item.decision { border-left-color: rgba(94, 129, 172, 0.6); }
-      .feed-item.session_summary { border-left-color: rgba(70, 150, 140, 0.6); }
+      .feed-item.session_summary { border-left-color: rgba(70, 150, 200, 0.6); }
+      /* Dark mode border overrides - vibrant, high contrast */
+      [data-theme="dark"] .feed-item.feature { border-left-color: rgba(77, 255, 200, 0.9); }
+      [data-theme="dark"] .feed-item.change { border-left-color: rgba(120, 180, 255, 0.9); }
+      [data-theme="dark"] .feed-item.bugfix { border-left-color: rgba(255, 150, 100, 0.9); }
+      [data-theme="dark"] .feed-item.refactor { border-left-color: rgba(200, 150, 255, 0.9); }
+      [data-theme="dark"] .feed-item.discovery { border-left-color: rgba(255, 210, 80, 0.9); }
+      [data-theme="dark"] .feed-item.decision { border-left-color: rgba(255, 180, 180, 0.9); }
+      [data-theme="dark"] .feed-item.session_summary { border-left-color: rgba(100, 220, 255, 0.9); }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .feed-item.feature { border-left-color: rgba(77, 255, 200, 0.9); }
+        :root:not([data-theme="light"]) .feed-item.change { border-left-color: rgba(120, 180, 255, 0.9); }
+        :root:not([data-theme="light"]) .feed-item.bugfix { border-left-color: rgba(255, 150, 100, 0.9); }
+        :root:not([data-theme="light"]) .feed-item.refactor { border-left-color: rgba(200, 150, 255, 0.9); }
+        :root:not([data-theme="light"]) .feed-item.discovery { border-left-color: rgba(255, 210, 80, 0.9); }
+        :root:not([data-theme="light"]) .feed-item.decision { border-left-color: rgba(255, 180, 180, 0.9); }
+        :root:not([data-theme="light"]) .feed-item.session_summary { border-left-color: rgba(100, 220, 255, 0.9); }
+      }
       section:hover {
         transform: translateY(0);
         box-shadow: 0 22px 50px rgba(18, 25, 33, 0.16);
@@ -599,7 +692,6 @@ VIEWER_HTML = """<!doctype html>
         </div>
         <div class="header-right">
           <div class="meta" id="metaLine">Loading stats…</div>
-          <div class="meta">signal: <strong>memory</strong> · window: <strong>recent</strong></div>
           <div style="display: flex; gap: 8px; align-items: center;">
             <select class="project-filter" id="projectFilter">
               <option value="">All Projects</option>
@@ -654,8 +746,9 @@ VIEWER_HTML = """<!doctype html>
           <div class="grid-2" id="statsGrid"></div>
         </section>
         <section>
-          <h2>Usage (reuse impact)</h2>
-          <ul id="usageList"></ul>
+          <h2>Current session</h2>
+          <div class="section-meta" id="sessionMeta">No injections yet</div>
+          <div class="grid-2" id="sessionGrid"></div>
         </section>
       </div>
       <section class="feed-section" style="animation-delay: 0.1s;">
@@ -670,7 +763,8 @@ VIEWER_HTML = """<!doctype html>
       const metaLine = document.getElementById("metaLine");
       const feedList = document.getElementById("feedList");
       const feedMeta = document.getElementById("feedMeta");
-      const usageList = document.getElementById("usageList");
+      const sessionGrid = document.getElementById("sessionGrid");
+      const sessionMeta = document.getElementById("sessionMeta");
       const settingsButton = document.getElementById("settingsButton");
       const settingsBackdrop = document.getElementById("settingsBackdrop");
       const settingsModal = document.getElementById("settingsModal");
@@ -701,8 +795,11 @@ VIEWER_HTML = """<!doctype html>
       function setTheme(theme) {
         document.documentElement.setAttribute("data-theme", theme);
         localStorage.setItem("opencode-mem-theme", theme);
-        themeToggle.textContent = theme === "dark" ? "☀️" : "🌙";
+        themeToggle.innerHTML = theme === "dark" 
+          ? '<i data-lucide="sun"></i>' 
+          : '<i data-lucide="moon"></i>';
         themeToggle.title = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+        if (typeof lucide !== "undefined") lucide.createIcons();
       }
 
       function toggleTheme() {
@@ -758,13 +855,13 @@ VIEWER_HTML = """<!doctype html>
         const db = stats.database || {};
         const usage = stats.usage?.totals || {};
         const items = [
-          { label: "Sessions", value: db.sessions || 0 },
-          { label: "Memory items", value: db.memory_items || 0 },
-          { label: "Active items", value: db.active_memory_items || 0 },
-          { label: "Artifacts", value: db.artifacts || 0 },
-          { label: "Work investment", value: usage.tokens_written || 0, tooltip: "Tokens spent creating memories (observer LLM calls)" },
-          { label: "Read cost", value: usage.tokens_read || 0, tooltip: "Tokens to read memories when injected into context" },
-          { label: "Savings", value: usage.tokens_saved || 0, tooltip: "Tokens saved by reusing compressed memories instead of raw context" },
+          { label: "Sessions", value: db.sessions || 0, icon: "database" },
+          { label: "Memories", value: db.memory_items || 0, icon: "brain" },
+          { label: "Active memories", value: db.active_memory_items || 0, icon: "check-circle" },
+          { label: "Artifacts", value: db.artifacts || 0, icon: "package" },
+          { label: "Work investment", value: usage.tokens_written || 0, tooltip: "Tokens spent creating memories (observer LLM calls)", icon: "pencil" },
+          { label: "Read cost", value: usage.tokens_read || 0, tooltip: "Tokens to read memories when injected into context", icon: "book-open" },
+          { label: "Savings", value: usage.tokens_saved || 0, tooltip: "Tokens saved by reusing compressed memories instead of raw context", icon: "trending-up" },
         ];
         statsGrid.textContent = "";
         items.forEach(item => {
@@ -773,11 +870,17 @@ VIEWER_HTML = """<!doctype html>
             stat.title = item.tooltip;
             stat.style.cursor = "help";
           }
+          const icon = document.createElement("i");
+          icon.setAttribute("data-lucide", item.icon);
+          icon.className = "stat-icon";
+          const content = createElement("div", "stat-content");
           const value = createElement("div", "value", item.value.toLocaleString());
           const label = createElement("div", "label", item.label);
-          stat.append(value, label);
+          content.append(value, label);
+          stat.append(icon, content);
           statsGrid.appendChild(stat);
         });
+        if (typeof lucide !== "undefined") lucide.createIcons();
         metaLine.textContent = `DB: ${db.path || "unknown"} · ${Math.round((db.size_bytes || 0) / 1024)} KB`;
       }
 
@@ -831,10 +934,60 @@ VIEWER_HTML = """<!doctype html>
             metaParts.push(formatDate(item.created_at));
           }
           const meta = createElement("div", "feed-meta", metaParts.join(" · "));
-          const body = createElement("div", "feed-body", item.body_text || "");
+          const body = createElement("div", "feed-body");
+          const bodyText = item.body_text || "";
+          if (typeof marked !== "undefined" && bodyText) {
+            try {
+              body.innerHTML = marked.parse(bodyText);
+            } catch (e) {
+              body.textContent = bodyText;
+            }
+          } else {
+            body.textContent = bodyText;
+          }
           feedItem.append(header, meta, body);
           feedList.appendChild(feedItem);
         });
+      }
+
+      function renderSessionStats(recentPacks) {
+        sessionGrid.textContent = "";
+        if (!recentPacks || !recentPacks.length) {
+          sessionMeta.textContent = "No injections yet";
+          return;
+        }
+        const latest = recentPacks[0];
+        const metadata = latest.metadata_json || {};
+        const items = metadata.items || 0;
+        const workTokens = metadata.work_tokens || 0;
+        const packTokens = latest.tokens_read || 0;
+        const savedTokens = latest.tokens_saved || 0;
+        const savingsPercent = workTokens > 0 ? Math.round((savedTokens / workTokens) * 100) : 0;
+        const timeAgo = latest.created_at ? formatDate(latest.created_at) : "recently";
+        sessionMeta.textContent = `Last injection: ${timeAgo}`;
+        const stats = [
+          { label: "Memories packed", value: items, icon: "layers" },
+          { label: "Pack size", value: packTokens.toLocaleString(), tooltip: "Token cost to inject memories into context", icon: "file-text" },
+          { label: "Work saved", value: workTokens.toLocaleString(), tooltip: "Tokens you'd have spent rediscovering this context", icon: "zap" },
+          { label: "Savings", value: `${savedTokens.toLocaleString()} (${savingsPercent}%)`, tooltip: "Net savings from reusing compressed memories", icon: "arrow-down-circle" },
+        ];
+        stats.forEach(item => {
+          const stat = createElement("div", "stat");
+          if (item.tooltip) {
+            stat.title = item.tooltip;
+            stat.style.cursor = "help";
+          }
+          const icon = document.createElement("i");
+          icon.setAttribute("data-lucide", item.icon);
+          icon.className = "stat-icon";
+          const content = createElement("div", "stat-content");
+          const value = createElement("div", "value", item.value);
+          const label = createElement("div", "label", item.label);
+          content.append(value, label);
+          stat.append(icon, content);
+          sessionGrid.appendChild(stat);
+        });
+        if (typeof lucide !== "undefined") lucide.createIcons();
       }
 
       function setSettingsOpen(isOpen) {
@@ -977,6 +1130,7 @@ VIEWER_HTML = """<!doctype html>
             fetch("/api/usage").then(r => r.json()),
           ]);
           renderStats(stats);
+          renderSessionStats(usage.recent_packs || []);
           const summaryItems = summaries.items || [];
           const observationItems = observations.items || [];
           const filteredObservations = observationItems.filter(item => !isLowSignalObservation(item));
@@ -988,20 +1142,6 @@ VIEWER_HTML = """<!doctype html>
           });
           feedMeta.textContent = `${feedItems.length} items${filteredCount ? ` · ${filteredCount} observations filtered` : ""}`;
           renderFeed(feedItems);
-          renderList(usageList, usage.events || [], item => {
-            const li = document.createElement("li");
-            const title = createElement("div");
-            const strong = document.createElement("strong");
-            strong.textContent = item.event;
-            title.append(strong, document.createTextNode(` · ${item.count} events`));
-            const meta = createElement(
-              "div",
-              "small",
-              `read cost ~${item.tokens_read.toLocaleString()} · savings ~${item.tokens_saved.toLocaleString()}`
-            );
-            li.append(title, meta);
-            return li;
-          });
           refreshStatus.innerHTML = "<span class='dot'></span>updated " + new Date().toLocaleTimeString();
         } catch (err) {
           refreshStatus.innerHTML = "<span class='dot'></span>refresh failed";
@@ -1054,6 +1194,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     {
                         "events": store.usage_summary(),
                         "totals": store.stats()["usage"]["totals"],
+                        "recent_packs": store.recent_pack_events(limit=10),
                     }
                 )
                 return

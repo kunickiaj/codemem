@@ -1355,6 +1355,23 @@ class MemoryStore:
         ).fetchall()
         return db.rows_to_dicts(rows)
 
+    def recent_pack_events(self, limit: int = 10) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
+                   created_at, metadata_json
+            FROM usage_events
+            WHERE event = 'pack'
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        results = db.rows_to_dicts(rows)
+        for item in results:
+            item["metadata_json"] = db.from_json(item.get("metadata_json"))
+        return results
+
     def stats(self) -> dict[str, Any]:
         db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
         totals = self.conn.execute(
