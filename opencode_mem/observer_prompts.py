@@ -78,13 +78,13 @@ OBSERVATION_SCHEMA = f"""
       - discovery: learning about existing system, debugging insights
       - decision: architectural/design choice with rationale
       - exploration: attempted approach that was tried but NOT shipped
-    
+
     IMPORTANT: Use 'exploration' when:
       - Multiple approaches were tried for the same problem
       - An implementation was attempted but then replaced or reverted
       - Something was tested/experimented with but not kept
       - The attempt provides useful "why we didn't do X" context
-    
+
     Exploration memories are valuable! They prevent repeating failed approaches.
     Include what was tried AND why it didn't work out.
   -->
