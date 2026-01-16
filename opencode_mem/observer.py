@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .config import load_config
 from .observer_prompts import ObserverContext, build_observer_prompt
@@ -12,6 +14,9 @@ from .xml_parser import ParsedOutput, parse_observer_output
 
 DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
+
+
+logger = logging.getLogger(__name__)
 
 
 def _get_iap_token() -> str | None:
@@ -26,8 +31,43 @@ def _load_opencode_config() -> dict:
         return {}
     try:
         return json.loads(config_path.read_text())
-    except Exception:
+    except Exception as exc:
+        logger.warning("opencode config load failed", exc_info=exc)
         return {}
+
+
+def _get_opencode_auth_path() -> Path:
+    return Path.home() / ".local" / "share" / "opencode" / "auth.json"
+
+
+def _load_opencode_oauth_cache() -> dict[str, Any]:
+    path = _get_opencode_auth_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        logger.warning("opencode auth cache load failed", exc_info=exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_oauth_provider(configured: str | None, model: str) -> str:
+    if configured:
+        return configured.lower()
+    if model.lower().startswith("claude"):
+        return "anthropic"
+    return "openai"
+
+
+def _extract_oauth_access(cache: dict[str, Any], provider: str) -> str | None:
+    entry = cache.get(provider)
+    if not isinstance(entry, dict):
+        return None
+    access = entry.get("access")
+    if isinstance(access, str) and access:
+        return access
+    return None
 
 
 def _resolve_custom-gateway_model(model_name: str) -> tuple[str, str]:
@@ -91,6 +131,9 @@ class ObserverClient:
         self.max_chars = cfg.observer_max_chars
         self.max_tokens = cfg.observer_max_tokens
         self.client: object | None = None
+        oauth_cache = _load_opencode_oauth_cache()
+        oauth_provider = _resolve_oauth_provider(self.provider, self.model)
+        oauth_access = _extract_oauth_access(oauth_cache, oauth_provider)
         if self.use_opencode_run:
             return
         if provider == "custom-gateway":
@@ -112,7 +155,7 @@ class ObserverClient:
                 self.client = None
         elif provider == "anthropic":
             if not self.api_key:
-                self.api_key = os.getenv("ANTHROPIC_API_KEY")
+                self.api_key = os.getenv("ANTHROPIC_API_KEY") or oauth_access
             if not self.api_key:
                 return
             try:
@@ -127,6 +170,7 @@ class ObserverClient:
                     os.getenv("OPENCODE_API_KEY")
                     or os.getenv("OPENAI_API_KEY")
                     or os.getenv("CODEX_API_KEY")
+                    or oauth_access
                 )
             if not self.api_key:
                 return
