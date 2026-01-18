@@ -63,9 +63,18 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 - `opencode-mem init-db` – initialize the database.
 - `opencode-mem run -- <cmd>` – run any command while automatically capturing transcripts and artifacts.
 - `opencode-mem stats` / `opencode-mem recent` / `opencode-mem search` – inspect stored memories.
+- `opencode-mem embed` – backfill semantic embeddings for existing memories.
 - `opencode-mem purge` – deactivate low-signal observations (use `--dry-run` to preview).
 - `opencode-mem serve` – launch the web viewer (the plugin also auto-starts it).
 - `opencode-mem export-memories` / `opencode-mem import-memories` – export and import memories by project for sharing or backup.
+
+## Semantic recall
+
+Semantic recall stores vector embeddings for memory items using sqlite-vec and fastembed. Embeddings are written when memories are created; use `opencode-mem embed` to backfill existing memories.
+
+Notes:
+- Requires a Python SQLite build that supports extension loading (sqlite-vec).
+- If sqlite-vec cannot load, semantic recall is skipped and keyword search still works.
 
 ## Exporting and importing memories
 

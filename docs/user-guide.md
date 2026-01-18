@@ -29,6 +29,12 @@
   - `OPENCODE_MEM_INJECT_TOKEN_BUDGET` caps pack size (default 800).
 - Reuse savings estimate discovery work versus pack read size.
 
+## Semantic recall
+- Embeddings are stored via sqlite-vec + fastembed.
+- Embeddings are written automatically for new memories.
+- Backfill existing memories with: `opencode-mem embed --dry-run` then `opencode-mem embed`.
+- If sqlite-vec fails to load, semantic recall is skipped and keyword search remains.
+
 ## Troubleshooting
 - If sessions are missing, confirm the viewer and plugin share the same DB path.
 - Check `~/.opencode-mem/plugin.log` for plugin errors.

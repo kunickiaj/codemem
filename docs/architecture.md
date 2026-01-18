@@ -59,3 +59,8 @@ The plugin uses an adaptive flush strategy optimized for OpenCode's multi-sessio
 - The plugin injects a memory pack into the system prompt using OpenCode hook APIs.
 - Injection is per session and bounded by a configurable token budget.
 - Reuse savings compare observer discovery tokens to pack read size.
+
+## Semantic recall
+- Embeddings are stored in the `memory_vectors` sqlite-vec table.
+- Vectors are written when memories are created, or via `opencode-mem embed` for backfill.
+- Pack/inject can merge keyword and semantic results when embeddings are available.

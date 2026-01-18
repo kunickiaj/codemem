@@ -26,6 +26,9 @@ def test_insert_and_search(tmp_path: Path) -> None:
     assert results, "Expected search results"
     assert results[0].id == mid
     pack = store.build_memory_pack("login work", limit=3)
+    assert "## Summary" in pack["pack_text"]
+    assert "## Timeline" in pack["pack_text"]
+    assert "## Observations" in pack["pack_text"]
     assert any("login" in item["body"] for item in pack["items"])
 
 
@@ -211,6 +214,7 @@ def test_pack_falls_back_to_recent_for_tasks(tmp_path: Path) -> None:
 
     pack = store.build_memory_pack("pending tasks", limit=5, filters={"project": "/tmp/project-a"})
 
+    assert "## Timeline" in pack["pack_text"]
     assert any(item["body"] == "Alpha body" for item in pack["items"])
 
 
@@ -239,6 +243,7 @@ def test_pack_recall_prefers_recent_session_summaries(tmp_path: Path) -> None:
 
     assert pack["items"]
     assert pack["items"][0]["kind"] == "session_summary"
+    assert "## Summary" in pack["pack_text"]
 
 
 def test_pack_fuzzy_fallback_on_typos(tmp_path: Path) -> None:
@@ -256,6 +261,7 @@ def test_pack_fuzzy_fallback_on_typos(tmp_path: Path) -> None:
 
     pack = store.build_memory_pack("memry pakc", limit=5, filters={"project": "/tmp/project-a"})
 
+    assert "## Observations" in pack["pack_text"]
     assert any("Memory pack improvements" in item["body"] for item in pack["items"])
 
 

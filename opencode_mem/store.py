@@ -123,7 +123,10 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        lastrowid = cur.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Failed to create session")
+        return int(lastrowid)
 
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
@@ -160,7 +163,10 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        lastrowid = cur.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Failed to add session summary")
+        return int(lastrowid)
 
     def remember(
         self,
@@ -192,7 +198,10 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        memory_id = int(cur.lastrowid)
+        lastrowid = cur.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Failed to create memory item")
+        memory_id = int(lastrowid)
         self._store_vectors(memory_id, title, body_text)
         return memory_id
 
@@ -272,7 +281,10 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        memory_id = int(cur.lastrowid)
+        lastrowid = cur.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Failed to create observation")
+        memory_id = int(lastrowid)
         self._store_vectors(memory_id, title, narrative)
         return memory_id
 
@@ -406,7 +418,10 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        lastrowid = cur.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Failed to add prompt")
+        return int(lastrowid)
 
     def add_session_summary(
         self,
@@ -463,7 +478,10 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        lastrowid = cur.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Failed to add session summary")
+        return int(lastrowid)
 
     def deactivate_low_signal_observations(
         self, limit: int | None = None, dry_run: bool = False
@@ -874,7 +892,7 @@ class MemoryStore:
         return 0.0
 
     def _filter_recent_results(
-        self, results: list[MemoryResult | dict[str, Any]], days: int
+        self, results: Sequence[MemoryResult | dict[str, Any]], days: int
     ) -> list[MemoryResult | dict[str, Any]]:
         cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(days=days)
         filtered: list[MemoryResult | dict[str, Any]] = []
@@ -1279,6 +1297,7 @@ class MemoryStore:
     ) -> dict[str, Any]:
         fallback_used = False
         merge_results = False
+        recall_mode = False
         if self._query_looks_like_tasks(context):
             matches = self.search(
                 self._task_query_hint(), limit=limit, filters=filters, log_usage=False
@@ -1309,6 +1328,7 @@ class MemoryStore:
                     )
                     list(recent_matches)
         elif self._query_looks_like_recall(context):
+            recall_mode = True
             recall_filters = dict(filters or {})
             recall_filters["kind"] = "session_summary"
             matches = self.search(
@@ -1374,17 +1394,6 @@ class MemoryStore:
         if merge_results:
             semantic_candidates = len(self._semantic_search(context, limit=limit, filters=filters))
             matches = self._merge_ranked_results(matches, context, limit, filters)
-        if token_budget:
-            running = 0
-            trimmed = []
-            for m in matches:
-                body_text = m.body_text if isinstance(m, MemoryResult) else m.get("body_text", "")
-                est = self.estimate_tokens(body_text)
-                if running + est > token_budget and trimmed:
-                    break
-                running += est
-                trimmed.append(m)
-            matches = trimmed
 
         def get_metadata(item: MemoryResult | dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, MemoryResult):
@@ -1405,21 +1414,207 @@ class MemoryStore:
             body = item.body_text if isinstance(item, MemoryResult) else item.get("body_text", "")
             return self.estimate_tokens(f"{title} {body}".strip())
 
+        def item_value(item: MemoryResult | dict[str, Any], key: str, default: Any = "") -> Any:
+            if isinstance(item, MemoryResult):
+                return getattr(item, key, default)
+            return item.get(key, default)
+
+        def item_id(item: MemoryResult | dict[str, Any]) -> int | None:
+            value = item_value(item, "id")
+            return int(value) if value is not None else None
+
+        def item_kind(item: MemoryResult | dict[str, Any]) -> str:
+            return str(item_value(item, "kind", "") or "")
+
+        def item_created_at(item: MemoryResult | dict[str, Any]) -> str:
+            return str(item_value(item, "created_at", "") or "")
+
+        def item_body(item: MemoryResult | dict[str, Any]) -> str:
+            return str(item_value(item, "body_text", "") or "")
+
+        def item_title(item: MemoryResult | dict[str, Any]) -> str:
+            return str(item_value(item, "title", "") or "")
+
+        def item_confidence(item: MemoryResult | dict[str, Any]) -> float | None:
+            value = item_value(item, "confidence")
+            return float(value) if value is not None else None
+
+        def item_tags(item: MemoryResult | dict[str, Any]) -> str:
+            return str(item_value(item, "tags_text", "") or "")
+
+        def sort_recent(
+            items: Sequence[MemoryResult | dict[str, Any]],
+        ) -> list[MemoryResult | dict[str, Any]]:
+            return sorted(list(items), key=item_created_at, reverse=True)
+
+        def sort_oldest(
+            items: Sequence[MemoryResult | dict[str, Any]],
+        ) -> list[MemoryResult | dict[str, Any]]:
+            return sorted(list(items), key=item_created_at)
+
+        def normalize_items(
+            items: Sequence[MemoryResult | dict[str, Any]] | None,
+        ) -> list[MemoryResult | dict[str, Any]]:
+            if not items:
+                return []
+            return list(items)
+
+        summary_candidates = [m for m in matches if item_kind(m) == "session_summary"]
+        summary_item: MemoryResult | dict[str, Any] | None = None
+        if summary_candidates:
+            summary_item = sort_recent(summary_candidates)[0]
+        else:
+            summary_filters = dict(filters or {})
+            summary_filters["kind"] = "session_summary"
+            recent_summary = normalize_items(self.recent(limit=1, filters=summary_filters))
+            if recent_summary:
+                summary_item = recent_summary[0]
+
+        timeline_candidates = [m for m in matches if item_kind(m) != "session_summary"]
+        if not timeline_candidates:
+            timeline_candidates = [
+                m
+                for m in normalize_items(self.recent(limit=limit, filters=filters))
+                if item_kind(m) != "session_summary"
+            ]
+        if not merge_results:
+            timeline_candidates = sort_recent(timeline_candidates)
+
+        observation_kinds = [
+            "decision",
+            "feature",
+            "bugfix",
+            "refactor",
+            "change",
+            "discovery",
+            "exploration",
+            "note",
+        ]
+        observation_rank = {kind: index for index, kind in enumerate(observation_kinds)}
+        observation_candidates = [m for m in matches if item_kind(m) in observation_kinds]
+        if not observation_candidates:
+            observation_candidates = normalize_items(
+                self.recent_by_kinds(
+                    observation_kinds,
+                    limit=max(limit * 3, 10),
+                    filters=filters,
+                )
+            )
+        if not observation_candidates:
+            observation_candidates = list(timeline_candidates)
+        observation_candidates = sort_recent(observation_candidates)
+        observation_candidates = sorted(
+            observation_candidates,
+            key=lambda item: observation_rank.get(item_kind(item), len(observation_kinds)),
+        )
+
+        remaining = max(0, limit)
+        summary_items: list[MemoryResult | dict[str, Any]] = []
+        if summary_item is not None:
+            summary_items = [summary_item]
+            remaining = max(0, remaining - 1)
+        timeline_limit = min(3, remaining)
+        remaining = max(0, remaining - timeline_limit)
+        observation_limit = remaining
+
+        if merge_results:
+            timeline_items = list(timeline_candidates)
+        else:
+            timeline_items = timeline_candidates[:timeline_limit]
+        observation_items = observation_candidates[:observation_limit]
+
+        selected_ids: set[int] = set()
+        sections: list[tuple[str, list[MemoryResult | dict[str, Any]]]] = []
+
+        def add_section(
+            title: str,
+            items: list[MemoryResult | dict[str, Any]],
+            allow_duplicates: bool = False,
+        ) -> None:
+            section_items: list[MemoryResult | dict[str, Any]] = []
+            for item in items:
+                candidate_id = item_id(item)
+                if candidate_id is None:
+                    continue
+                if not allow_duplicates and candidate_id in selected_ids:
+                    continue
+                selected_ids.add(candidate_id)
+                section_items.append(item)
+            if section_items:
+                sections.append((title, section_items))
+
+        add_section("Summary", summary_items)
+        add_section("Timeline", timeline_items)
+        if observation_items:
+            add_section("Observations", observation_items, allow_duplicates=True)
+        elif timeline_items:
+            add_section("Observations", timeline_items, allow_duplicates=True)
+
+        if token_budget:
+            running = 0
+            trimmed_sections: list[tuple[str, list[MemoryResult | dict[str, Any]]]] = []
+            budget_exhausted = False
+            for title, items in sections:
+                section_items: list[MemoryResult | dict[str, Any]] = []
+                for item in items:
+                    est = self.estimate_tokens(item_body(item))
+                    if running + est > token_budget and trimmed_sections:
+                        budget_exhausted = True
+                        break
+                    running += est
+                    section_items.append(item)
+                if section_items:
+                    trimmed_sections.append((title, section_items))
+                if budget_exhausted:
+                    break
+            sections = trimmed_sections
+
+        final_items: list[MemoryResult | dict[str, Any]] = []
+        if merge_results:
+            final_items = list(timeline_items)
+        else:
+            for title, items in sections:
+                if title == "Observations":
+                    continue
+                final_items.extend(items)
+
+        if recall_mode:
+            recall_items: list[MemoryResult | dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            for item in timeline_items:
+                candidate_id = item_id(item)
+                if candidate_id is None or candidate_id in seen_ids:
+                    continue
+                seen_ids.add(candidate_id)
+                recall_items.append(item)
+            if summary_item is not None:
+                summary_id = item_id(summary_item)
+                if summary_id is not None and summary_id not in seen_ids:
+                    recall_items.append(summary_item)
+            final_items = sort_oldest(recall_items)
+
         formatted = [
             {
-                "id": m.id if isinstance(m, MemoryResult) else m.get("id"),
-                "kind": m.kind if isinstance(m, MemoryResult) else m.get("kind"),
-                "title": m.title if isinstance(m, MemoryResult) else m.get("title"),
-                "body": m.body_text if isinstance(m, MemoryResult) else m.get("body_text"),
-                "confidence": m.confidence if isinstance(m, MemoryResult) else m.get("confidence"),
-                "tags": m.tags_text if isinstance(m, MemoryResult) else m.get("tags_text"),
+                "id": item_id(m),
+                "kind": item_kind(m),
+                "title": item_title(m),
+                "body": item_body(m),
+                "confidence": item_confidence(m),
+                "tags": item_tags(m),
             }
-            for m in matches
+            for m in final_items
         ]
-        text_parts = [f"[{m['id']}] ({m['kind']}) {m['title']} - {m['body']}" for m in formatted]
-        pack_text = "\n".join(text_parts)
+
+        section_blocks = []
+        for title, items in sections:
+            lines = [
+                f"[{item_id(m)}] ({item_kind(m)}) {item_title(m)} - {item_body(m)}" for m in items
+            ]
+            if lines:
+                section_blocks.append(f"## {title}\n" + "\n".join(lines))
+        pack_text = "\n\n".join(section_blocks)
         pack_tokens = self.estimate_tokens(pack_text)
-        work_tokens = sum(estimate_work_tokens(m) for m in matches)
+        work_tokens = sum(estimate_work_tokens(m) for m in final_items)
         tokens_saved = max(0, work_tokens - pack_tokens)
         semantic_hits = 0
         if merge_results:
@@ -1546,7 +1741,10 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        lastrowid = cur.lastrowid
+        if lastrowid is None:
+            raise RuntimeError("Failed to record usage")
+        return int(lastrowid)
 
     def usage_summary(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
