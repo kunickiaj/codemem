@@ -25,7 +25,9 @@ Focus on deliverables, capabilities, AND learnings:
 - How systems work and why they behave the way they do
 - Changes in technical domains (auth, data, UI, infra, DevOps)
 
-Use outcome-focused verbs: implemented, fixed, deployed, configured, migrated, optimized, added, refactored, discovered, learned, debugged
+Use outcome-focused verbs: implemented, fixed, deployed, configured, migrated, optimized, added, refactored, discovered, learned, debugged.
+Only describe actions that are clearly supported by the observed context.
+Never invent file changes, API behavior, or code edits that are not explicitly present in the session evidence.
 
 GOOD examples (describes what was built or learned):
 - "Authentication now supports OAuth2 with PKCE flow"
@@ -153,11 +155,14 @@ SUMMARY_SCHEMA = """
 </summary>
 
 IMPORTANT: Always write at least a minimal summary explaining the current state,
-even if you didn't learn anything new or complete any work. This helps track progress
-across sessions. The summary is for tracking the PRIMARY session work, not your observation process.
-
-Write comprehensive summaries (200-600 words total across all fields).
-This summary helps future sessions understand where this work left off.
+ even if you didn't learn anything new or complete any work. This helps track progress
+ across sessions. The summary is for tracking the PRIMARY session work, not your observation process.
+ 
+ Only summarize what is evidenced in the session context. Do not infer or fabricate
+ file edits, behaviors, or outcomes that are not explicitly observed.
+ 
+ Write comprehensive summaries (200-600 words total across all fields).
+ This summary helps future sessions understand where this work left off.
 """.strip()
 
 

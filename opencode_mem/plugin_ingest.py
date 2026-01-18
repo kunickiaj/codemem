@@ -180,17 +180,19 @@ def _extract_tool_events(events: Iterable[dict[str, Any]], max_chars: int) -> li
 
 
 def _summary_body(summary: ParsedSummary) -> str:
-    for value in (
-        summary.completed,
-        summary.request,
-        summary.learned,
-        summary.investigated,
-        summary.next_steps,
-        summary.notes,
-    ):
+    sections = [
+        ("Request", summary.request),
+        ("Completed", summary.completed),
+        ("Learned", summary.learned),
+        ("Investigated", summary.investigated),
+        ("Next steps", summary.next_steps),
+        ("Notes", summary.notes),
+    ]
+    parts = []
+    for label, value in sections:
         if value:
-            return value
-    return ""
+            parts.append(f"## {label}\n{value}")
+    return "\n\n".join(parts)
 
 
 def _extract_prompts(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

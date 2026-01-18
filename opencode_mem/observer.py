@@ -124,8 +124,6 @@ def _build_codex_payload(model: str, prompt: str, max_tokens: int) -> dict[str, 
         "store": False,
         "stream": True,
     }
-    if max_tokens > 0:
-        payload["max_output_tokens"] = max_tokens
     return payload
 
 
@@ -380,7 +378,7 @@ class ObserverClient:
             import httpx
 
             with (
-                httpx.Client(timeout=20) as client,
+                httpx.Client(timeout=60) as client,
                 client.stream(
                     "POST",
                     endpoint,
@@ -388,19 +386,52 @@ class ObserverClient:
                     headers=headers,
                 ) as response,
             ):
+                if response.status_code >= 400:
+                    error_text = None
+                    try:
+                        response.read()
+                        error_text = response.text
+                    except Exception:
+                        error_text = None
+                    error_summary = _redact_text(error_text or "")
+                    message = "observer codex oauth call failed"
+                    if error_summary:
+                        message = f"{message}: {error_summary}"
+                    logger.error(
+                        message,
+                        extra={
+                            "provider": self.provider,
+                            "model": self.model,
+                            "endpoint": endpoint,
+                            "status": response.status_code,
+                            "error": error_summary,
+                        },
+                    )
+                    return None
                 response.raise_for_status()
                 return _parse_codex_stream(response)
         except Exception as exc:  # pragma: no cover
-            status_code = getattr(getattr(exc, "response", None), "status_code", None)
-            error_text = getattr(getattr(exc, "response", None), "text", None)
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+            error_text = None
+            if response is not None:
+                try:
+                    response.read()
+                    error_text = response.text
+                except Exception:
+                    error_text = None
+            error_summary = _redact_text(error_text or "")
+            message = "observer codex oauth call failed"
+            if error_summary:
+                message = f"{message}: {error_summary}"
             logger.exception(
-                "observer codex oauth call failed",
+                message,
                 extra={
                     "provider": self.provider,
                     "model": self.model,
                     "endpoint": endpoint,
                     "status": status_code,
-                    "error": _redact_text(error_text or ""),
+                    "error": error_summary,
                 },
                 exc_info=exc,
             )
