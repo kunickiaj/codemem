@@ -5,13 +5,13 @@ import difflib
 import hashlib
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import db
-from .semantic import get_embedding_client
+from .semantic import chunk_text, embed_texts, get_embedding_client, hash_text
 from .summarizer import Summary, is_low_signal_observation
 
 
@@ -192,7 +192,9 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        memory_id = int(cur.lastrowid)
+        self._store_vectors(memory_id, title, body_text)
+        return memory_id
 
     def remember_observation(
         self,
@@ -270,7 +272,113 @@ class MemoryStore:
             ),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        memory_id = int(cur.lastrowid)
+        self._store_vectors(memory_id, title, narrative)
+        return memory_id
+
+    def backfill_vectors(
+        self,
+        limit: int | None = None,
+        since: str | None = None,
+        project: str | None = None,
+        active_only: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
+        client = get_embedding_client()
+        if not client:
+            return {"checked": 0, "embedded": 0, "inserted": 0, "skipped": 0}
+        params: list[Any] = []
+        where_clauses = []
+        join_sessions = False
+        if active_only:
+            where_clauses.append("memory_items.active = 1")
+        if since:
+            where_clauses.append("memory_items.created_at >= ?")
+            params.append(since)
+        if project:
+            clause, clause_params = self._project_clause(project)
+            if clause:
+                where_clauses.append(clause)
+                params.extend(clause_params)
+            join_sessions = True
+        where = " AND ".join(where_clauses) if where_clauses else "1=1"
+        join_clause = (
+            "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
+        )
+        limit_clause = "LIMIT ?" if limit else ""
+        if limit:
+            params.append(limit)
+        rows = self.conn.execute(
+            f"""
+            SELECT memory_items.id, memory_items.title, memory_items.body_text
+            FROM memory_items
+            {join_clause}
+            WHERE {where}
+            ORDER BY memory_items.created_at ASC
+            {limit_clause}
+            """,
+            params,
+        ).fetchall()
+        checked = 0
+        embedded = 0
+        inserted = 0
+        skipped = 0
+        model = client.model
+        for row in rows:
+            checked += 1
+            memory_id = int(row["id"])
+            title = row["title"] or ""
+            body_text = row["body_text"] or ""
+            text = f"{title}\n{body_text}".strip()
+            chunks = chunk_text(text)
+            if not chunks:
+                continue
+            existing = self.conn.execute(
+                """
+                SELECT content_hash
+                FROM memory_vectors
+                WHERE memory_id = ? AND model = ?
+                """,
+                (memory_id, model),
+            ).fetchall()
+            existing_hashes = {row["content_hash"] for row in existing if row["content_hash"]}
+            pending_chunks: list[str] = []
+            pending_hashes: list[str] = []
+            for chunk in chunks:
+                content_hash = hash_text(chunk)
+                if content_hash in existing_hashes:
+                    skipped += 1
+                    continue
+                pending_chunks.append(chunk)
+                pending_hashes.append(content_hash)
+            if not pending_chunks:
+                continue
+            embeddings = embed_texts(pending_chunks)
+            if not embeddings:
+                continue
+            embedded += len(embeddings)
+            if dry_run:
+                inserted += len(embeddings)
+                continue
+            for index, (vector, content_hash) in enumerate(
+                zip(embeddings, pending_hashes, strict=False)
+            ):
+                self.conn.execute(
+                    """
+                    INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (vector, memory_id, index, content_hash, model),
+                )
+                inserted += 1
+        if not dry_run:
+            self.conn.commit()
+        return {
+            "checked": checked,
+            "embedded": embedded,
+            "inserted": inserted,
+            "skipped": skipped,
+        }
 
     def add_user_prompt(
         self,
@@ -821,59 +929,86 @@ class MemoryStore:
     ) -> list[dict[str, Any]]:
         if len(query.strip()) < 3:
             return []
-        client = get_embedding_client()
-        if not client:
+        embeddings = embed_texts([query])
+        if not embeddings:
             return []
-        candidates = self.search(query, limit=50, filters=filters, log_usage=False)
-        if not candidates:
-            candidates = []
-            recent = self.recent(limit=self.SEMANTIC_CANDIDATE_LIMIT, filters=filters)
-            for item in recent:
-                candidates.append(
-                    MemoryResult(
-                        id=item["id"],
-                        kind=item["kind"],
-                        title=item["title"],
-                        body_text=item["body_text"],
-                        confidence=item["confidence"],
-                        created_at=item["created_at"],
-                        updated_at=item["updated_at"],
-                        tags_text=item.get("tags_text", ""),
-                        score=0.0,
-                        session_id=item["session_id"],
-                        metadata=item.get("metadata_json") or {},
-                    )
-                )
-        texts = [f"{item.title}\n{item.body_text}" for item in candidates]
-        if not texts:
-            return []
-        try:
-            query_vec = client.embed([query])[0]
-            doc_vecs = client.embed(texts)
-        except Exception:
-            return []
-        scored = []
-        for item, vec in zip(candidates, doc_vecs, strict=False):
-            score = self._cosine_similarity(query_vec, vec)
-            scored.append((score, item))
-        scored.sort(key=lambda pair: pair[0], reverse=True)
+        query_embedding = embeddings[0]
+        params: list[Any] = [query_embedding]
+        where_clauses = ["memory_items.active = 1"]
+        join_sessions = False
+        if filters:
+            if filters.get("kind"):
+                where_clauses.append("memory_items.kind = ?")
+                params.append(filters["kind"])
+            if filters.get("session_id"):
+                where_clauses.append("memory_items.session_id = ?")
+                params.append(filters["session_id"])
+            if filters.get("since"):
+                where_clauses.append("memory_items.created_at >= ?")
+                params.append(filters["since"])
+            if filters.get("project"):
+                clause, clause_params = self._project_clause(filters["project"])
+                if clause:
+                    where_clauses.append(clause)
+                    params.extend(clause_params)
+                join_sessions = True
+        where = " AND ".join(where_clauses)
+        join_clause = (
+            "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
+        )
+        params.append(limit)
+        sql = f"""
+            SELECT memory_items.*, memory_vectors.distance
+            FROM memory_vectors
+            JOIN memory_items ON memory_items.id = memory_vectors.memory_id
+            {join_clause}
+            WHERE memory_vectors.embedding MATCH ?
+              AND k = ?
+              AND {where}
+            ORDER BY memory_vectors.distance ASC
+        """
+        rows = self.conn.execute(sql, params).fetchall()
         results = []
-        for score, item in scored[:limit]:
+        for row in rows:
             results.append(
                 {
-                    "id": item.id,
-                    "kind": item.kind,
-                    "title": item.title,
-                    "body_text": item.body_text,
-                    "confidence": item.confidence,
-                    "tags_text": item.tags_text,
-                    "created_at": item.created_at,
-                    "updated_at": item.updated_at,
-                    "session_id": item.session_id,
-                    "score": score,
+                    "id": row["id"],
+                    "kind": row["kind"],
+                    "title": row["title"],
+                    "body_text": row["body_text"],
+                    "confidence": row["confidence"],
+                    "tags_text": row["tags_text"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "session_id": row["session_id"],
+                    "score": 1.0 / (1.0 + float(row["distance"])),
                 }
             )
         return results
+
+    def _store_vectors(self, memory_id: int, title: str, body_text: str) -> None:
+        client = get_embedding_client()
+        if not client:
+            return
+        text = f"{title}\n{body_text}".strip()
+        chunks = chunk_text(text)
+        if not chunks:
+            return
+        embeddings = embed_texts(chunks)
+        if not embeddings:
+            return
+        model = getattr(client, "model", "unknown")
+        for index, (chunk, vector) in enumerate(zip(chunks, embeddings, strict=False)):
+            if not vector:
+                continue
+            self.conn.execute(
+                """
+                INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (vector, memory_id, index, hash_text(chunk), model),
+            )
+        self.conn.commit()
 
     def _prioritize_task_results(
         self, results: list[dict[str, Any]], limit: int
@@ -922,7 +1057,7 @@ class MemoryStore:
         if recency_days:
             recent_results = self._filter_recent_results(results, recency_days)
             if recent_results:
-                results = list(recent_results)
+                results = cast(list[MemoryResult], list(recent_results))
 
         def score(item: MemoryResult) -> float:
             return (
@@ -933,6 +1068,61 @@ class MemoryStore:
 
         ordered = sorted(results, key=score, reverse=True)
         return ordered[:limit]
+
+    def _merge_ranked_results(
+        self,
+        results: Sequence[MemoryResult | dict[str, Any]],
+        query: str,
+        limit: int,
+        filters: dict[str, Any] | None,
+    ) -> list[MemoryResult]:
+        fts_ids = {
+            item.id if isinstance(item, MemoryResult) else item.get("id")
+            for item in results
+            if item is not None
+        }
+        vector_results = self._semantic_search(query, limit=limit, filters=filters)
+        merged: list[MemoryResult | dict[str, Any]] = list(results)
+        for item in vector_results:
+            if item.get("id") in fts_ids:
+                continue
+            merged.append(item)
+        if not merged:
+            return []
+        reranked: list[MemoryResult] = []
+        for item in merged:
+            if isinstance(item, MemoryResult):
+                reranked.append(item)
+                continue
+            memory_id = item.get("id")
+            kind = item.get("kind")
+            title = item.get("title")
+            body_text = item.get("body_text")
+            created_at = item.get("created_at")
+            updated_at = item.get("updated_at")
+            session_id = item.get("session_id")
+            confidence = item.get("confidence")
+            if memory_id is None or kind is None or title is None or body_text is None:
+                continue
+            if created_at is None or updated_at is None or session_id is None:
+                continue
+            metadata = db.from_json(item.get("metadata_json"))
+            reranked.append(
+                MemoryResult(
+                    id=int(memory_id),
+                    kind=str(kind),
+                    title=str(title),
+                    body_text=str(body_text),
+                    confidence=float(confidence or 0.0),
+                    created_at=str(created_at),
+                    updated_at=str(updated_at),
+                    tags_text=str(item.get("tags_text") or ""),
+                    score=float(item.get("score") or 0.0),
+                    session_id=int(session_id),
+                    metadata=metadata,
+                )
+            )
+        return self._rerank_results(reranked, limit=limit, recency_days=self.RECALL_RECENCY_DAYS)
 
     def _timeline_around(
         self,
@@ -1088,6 +1278,7 @@ class MemoryStore:
         filters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         fallback_used = False
+        merge_results = False
         if self._query_looks_like_tasks(context):
             matches = self.search(
                 self._task_query_hint(), limit=limit, filters=filters, log_usage=False
@@ -1177,6 +1368,12 @@ class MemoryStore:
                     list(matches), limit=limit, recency_days=self.RECALL_RECENCY_DAYS
                 )
                 list(matches)
+            merge_results = True
+
+        semantic_candidates = 0
+        if merge_results:
+            semantic_candidates = len(self._semantic_search(context, limit=limit, filters=filters))
+            matches = self._merge_ranked_results(matches, context, limit, filters)
         if token_budget:
             running = 0
             trimmed = []
@@ -1224,6 +1421,15 @@ class MemoryStore:
         pack_tokens = self.estimate_tokens(pack_text)
         work_tokens = sum(estimate_work_tokens(m) for m in matches)
         tokens_saved = max(0, work_tokens - pack_tokens)
+        semantic_hits = 0
+        if merge_results:
+            semantic_ids = {
+                item.get("id") for item in self._semantic_search(context, limit, filters)
+            }
+            for item in formatted:
+                if item.get("id") in semantic_ids:
+                    semantic_hits += 1
+
         self.record_usage(
             "pack",
             tokens_read=pack_tokens,
@@ -1235,6 +1441,8 @@ class MemoryStore:
                 "project": (filters or {}).get("project"),
                 "fallback": "recent" if fallback_used else None,
                 "work_tokens": work_tokens,
+                "semantic_candidates": semantic_candidates,
+                "semantic_hits": semantic_hits,
             },
         )
         return {
@@ -1373,45 +1581,49 @@ class MemoryStore:
         return results
 
     def stats(self) -> dict[str, Any]:
-        db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
-        totals = self.conn.execute(
-            """
-            SELECT COUNT(*) AS events,
-                   COALESCE(SUM(tokens_read), 0) AS tokens_read,
-                   COALESCE(SUM(tokens_written), 0) AS tokens_written,
-                   COALESCE(SUM(tokens_saved), 0) AS tokens_saved
-            FROM usage_events
-            """
-        ).fetchone()
-        if not totals:
-            totals = {
-                "events": 0,
-                "tokens_read": 0,
-                "tokens_written": 0,
-                "tokens_saved": 0,
-            }
-        sessions = self.conn.execute("SELECT COUNT(*) AS count FROM sessions").fetchone()
-        artifacts = self.conn.execute("SELECT COUNT(*) AS count FROM artifacts").fetchone()
-        memories = self.conn.execute("SELECT COUNT(*) AS count FROM memory_items").fetchone()
+        total_memories = self.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
         active_memories = self.conn.execute(
-            "SELECT COUNT(*) AS count FROM memory_items WHERE active = 1"
-        ).fetchone()
+            "SELECT COUNT(*) FROM memory_items WHERE active = 1"
+        ).fetchone()[0]
+        sessions = self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        artifacts = self.conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+        db_path = str(self.db_path)
+        size_bytes = Path(db_path).stat().st_size if Path(db_path).exists() else 0
+
+        vector_rows = self.conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()
+        vector_count = vector_rows[0] if vector_rows else 0
+        vector_coverage = 0.0
+        if active_memories:
+            vector_coverage = min(1.0, float(vector_count) / float(active_memories))
+
+        usage_rows = self.conn.execute(
+            """
+            SELECT event, COUNT(*) as count, SUM(tokens_read) as tokens_read,
+                   SUM(tokens_saved) as tokens_saved
+            FROM usage_events
+            GROUP BY event
+            ORDER BY count DESC
+            """
+        ).fetchall()
+        usage = {
+            "events": [dict(row) for row in usage_rows],
+            "totals": {
+                "events": sum(row["count"] for row in usage_rows),
+                "tokens_read": sum(row["tokens_read"] or 0 for row in usage_rows),
+                "tokens_saved": sum(row["tokens_saved"] or 0 for row in usage_rows),
+            },
+        }
+
         return {
             "database": {
-                "path": str(self.db_path),
-                "size_bytes": db_size,
-                "sessions": int(sessions["count"]) if sessions else 0,
-                "artifacts": int(artifacts["count"]) if artifacts else 0,
-                "memory_items": int(memories["count"]) if memories else 0,
-                "active_memory_items": int(active_memories["count"]) if active_memories else 0,
+                "path": db_path,
+                "size_bytes": size_bytes,
+                "sessions": sessions,
+                "memory_items": total_memories,
+                "active_memory_items": active_memories,
+                "artifacts": artifacts,
+                "vector_rows": vector_count,
+                "vector_coverage": vector_coverage,
             },
-            "usage": {
-                "totals": {
-                    "events": int(totals["events"]) if totals else 0,
-                    "tokens_read": int(totals["tokens_read"]) if totals else 0,
-                    "tokens_written": int(totals["tokens_written"]) if totals else 0,
-                    "tokens_saved": int(totals["tokens_saved"]) if totals else 0,
-                },
-                "events": self.usage_summary(),
-            },
+            "usage": usage,
         }

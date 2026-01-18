@@ -533,6 +533,33 @@ def stats(db_path: str = typer.Option(None, help="Path to SQLite database")) -> 
 
 
 @app.command()
+def embed(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit: int | None = typer.Option(None, help="Max memories to embed"),
+    since: str | None = typer.Option(None, help="Only embed memories since this date"),
+    project: str | None = typer.Option(None, help="Project identifier (defaults to git repo root)"),
+    all_projects: bool = typer.Option(False, help="Embed across all projects"),
+    inactive: bool = typer.Option(False, help="Include inactive memories"),
+    dry_run: bool = typer.Option(False, help="Report without writing"),
+) -> None:
+    store = _store(db_path)
+    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
+    result = store.backfill_vectors(
+        limit=limit,
+        since=since,
+        project=resolved_project,
+        active_only=not inactive,
+        dry_run=dry_run,
+    )
+    action = "Would embed" if dry_run else "Embedded"
+    print(
+        f"{action} {result['embedded']} vectors "
+        f"({result['inserted']} inserted, {result['skipped']} skipped)"
+    )
+    print(f"Checked {result['checked']} memories")
+
+
+@app.command()
 def mcp() -> None:
     """Run the MCP server for OpenCode."""
     from .mcp_server import run as mcp_run

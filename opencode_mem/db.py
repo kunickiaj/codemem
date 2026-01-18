@@ -6,7 +6,43 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import sqlite_vec
+
 DEFAULT_DB_PATH = Path.home() / ".opencode-mem.sqlite"
+
+
+def sqlite_vec_version(conn: sqlite3.Connection) -> str | None:
+    try:
+        row = conn.execute("select vec_version()").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row[0] is None:
+        return None
+    return str(row[0])
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
+    try:
+        conn.enable_load_extension(True)
+    except AttributeError as exc:
+        raise RuntimeError(
+            "sqlite-vec requires a Python SQLite build that supports extension loading. "
+            "Install a Python build with enable_load_extension (mise/homebrew) and try again."
+        ) from exc
+    try:
+        sqlite_vec.load(conn)
+        if sqlite_vec_version(conn) is None:
+            raise RuntimeError("sqlite-vec loaded but version check failed")
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "Failed to load sqlite-vec extension. "
+            "Install sqlite-vec with 'pip install sqlite-vec' and try again."
+        ) from exc
+    finally:
+        try:
+            conn.enable_load_extension(False)
+        except AttributeError:
+            return
 
 
 def connect(db_path: Path | str, check_same_thread: bool = True) -> sqlite3.Connection:
@@ -146,6 +182,19 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memory_items", "files_modified", "TEXT")
     _ensure_column(conn, "memory_items", "prompt_number", "INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)")
+
+    _load_sqlite_vec(conn)
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+            embedding float[384],
+            memory_id INTEGER,
+            chunk_index INTEGER,
+            content_hash TEXT,
+            model TEXT
+        );
+        """
+    )
     conn.commit()
 
 
