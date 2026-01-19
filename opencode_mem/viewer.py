@@ -738,6 +738,16 @@ VIEWER_HTML = """<!doctype html>
             <input id="observerMaxChars" type="number" min="1" />
             <div class="small" id="observerMaxCharsHint"></div>
           </div>
+          <div class="field">
+            <label for="packObservationLimit">Pack observation limit</label>
+            <input id="packObservationLimit" type="number" min="1" />
+            <div class="small">Default number of observations to include in a pack.</div>
+          </div>
+          <div class="field">
+            <label for="packSessionLimit">Pack session limit</label>
+            <input id="packSessionLimit" type="number" min="1" />
+            <div class="small">Default number of session summaries to include in a pack.</div>
+          </div>
           <div class="small mono" id="settingsPath"></div>
           <div class="small" id="settingsEffective"></div>
           <div class="settings-note" id="settingsOverrides">Environment variables override file settings.</div>
@@ -787,6 +797,8 @@ VIEWER_HTML = """<!doctype html>
       const observerModelInput = document.getElementById("observerModel");
       const observerMaxCharsInput = document.getElementById("observerMaxChars");
       const observerMaxCharsHint = document.getElementById("observerMaxCharsHint");
+      const packObservationLimitInput = document.getElementById("packObservationLimit");
+      const packSessionLimitInput = document.getElementById("packSessionLimit");
       const projectFilter = document.getElementById("projectFilter");
       const themeToggle = document.getElementById("themeToggle");
 
@@ -959,20 +971,37 @@ VIEWER_HTML = """<!doctype html>
         });
       }
 
-      function renderSessionStats(recentPacks) {
+      function renderSessionStats(recentPacks, isAllProjects) {
         sessionGrid.textContent = "";
         if (!recentPacks || !recentPacks.length) {
           sessionMeta.textContent = "No injections yet";
           return;
         }
-        const latest = recentPacks[0];
-        const metadata = latest.metadata_json || {};
-        const items = metadata.items || 0;
-        const workTokens = metadata.work_tokens || 0;
-        const packTokens = latest.tokens_read || 0;
-        const savedTokens = latest.tokens_saved || 0;
+        let items, workTokens, packTokens, savedTokens, semanticCandidates, semanticHits, timeAgo;
+        if (isAllProjects && recentPacks.length > 1) {
+          // Aggregate stats across recent packs
+          items = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).items || 0), 0);
+          workTokens = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).work_tokens || 0), 0);
+          packTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_read || 0), 0);
+          savedTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_saved || 0), 0);
+          semanticCandidates = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_candidates || 0), 0);
+          semanticHits = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_hits || 0), 0);
+          timeAgo = `${recentPacks.length} recent packs`;
+        } else {
+          const latest = recentPacks[0];
+          const metadata = latest.metadata_json || {};
+          items = metadata.items || 0;
+          workTokens = metadata.work_tokens || 0;
+          packTokens = latest.tokens_read || 0;
+          savedTokens = latest.tokens_saved || 0;
+          semanticCandidates = metadata.semantic_candidates || 0;
+          semanticHits = metadata.semantic_hits || 0;
+          timeAgo = latest.created_at ? formatDate(latest.created_at) : "recently";
+        }
         const savingsPercent = workTokens > 0 ? Math.round((savedTokens / workTokens) * 100) : 0;
-        const timeAgo = latest.created_at ? formatDate(latest.created_at) : "recently";
+        const semanticRate = semanticCandidates > 0
+          ? Math.round((semanticHits / semanticCandidates) * 100)
+          : 0;
         sessionMeta.textContent = `Last injection: ${timeAgo}`;
         const stats = [
           { label: "Memories packed", value: items, icon: "layers" },
@@ -980,6 +1009,12 @@ VIEWER_HTML = """<!doctype html>
           { label: "Work saved", value: workTokens.toLocaleString(), tooltip: "Tokens you'd have spent rediscovering this context", icon: "zap" },
           { label: "Savings", value: `${savedTokens.toLocaleString()} (${savingsPercent}%)`, tooltip: "Net savings from reusing compressed memories", icon: "arrow-down-circle" },
         ];
+        if (semanticCandidates > 0) {
+          stats.push(
+            { label: "Semantic candidates", value: semanticCandidates.toLocaleString(), tooltip: "Vector search results considered for this pack", icon: "scan-search" },
+            { label: "Semantic hits", value: `${semanticHits.toLocaleString()} (${semanticRate}%)`, tooltip: "Vector matches that made it into the final pack", icon: "sparkles" },
+          );
+        }
         stats.forEach(item => {
           const stat = createElement("div", "stat");
           if (item.tooltip) {
@@ -1020,7 +1055,11 @@ VIEWER_HTML = """<!doctype html>
           observerProviderInput.value = config.observer_provider ?? "";
           observerModelInput.value = config.observer_model ?? "";
           const defaultMax = configDefaults.observer_max_chars ?? 12000;
+          const defaultPackObservationLimit = configDefaults.pack_observation_limit ?? 50;
+          const defaultPackSessionLimit = configDefaults.pack_session_limit ?? 10;
           observerMaxCharsInput.value = config.observer_max_chars ?? defaultMax;
+          packObservationLimitInput.value = config.pack_observation_limit ?? defaultPackObservationLimit;
+          packSessionLimitInput.value = config.pack_session_limit ?? defaultPackSessionLimit;
           observerMaxCharsHint.textContent = `Default: ${defaultMax.toLocaleString()} characters.`;
           settingsPath.textContent = configPath ? `config: ${configPath}` : "config path unavailable";
           const effectiveProvider = effective.observer_provider || "auto";
@@ -1044,6 +1083,8 @@ VIEWER_HTML = """<!doctype html>
         const provider = observerProviderInput.value.trim();
         const model = observerModelInput.value.trim();
         const maxValue = observerMaxCharsInput.value.trim();
+        const packObservationValue = packObservationLimitInput.value.trim();
+        const packSessionValue = packSessionLimitInput.value.trim();
         let maxChars = null;
         if (maxValue) {
           maxChars = Number(maxValue);
@@ -1053,11 +1094,31 @@ VIEWER_HTML = """<!doctype html>
             return;
           }
         }
+        let packObservationLimit = null;
+        if (packObservationValue) {
+          packObservationLimit = Number(packObservationValue);
+          if (!Number.isInteger(packObservationLimit) || packObservationLimit <= 0) {
+            settingsStatus.textContent = "Pack observation limit must be a positive integer";
+            settingsSave.disabled = false;
+            return;
+          }
+        }
+        let packSessionLimit = null;
+        if (packSessionValue) {
+          packSessionLimit = Number(packSessionValue);
+          if (!Number.isInteger(packSessionLimit) || packSessionLimit <= 0) {
+            settingsStatus.textContent = "Pack session limit must be a positive integer";
+            settingsSave.disabled = false;
+            return;
+          }
+        }
         const payload = {
           config: {
             observer_provider: provider || null,
             observer_model: model || null,
             observer_max_chars: maxChars,
+            pack_observation_limit: packObservationLimit,
+            pack_session_limit: packSessionLimit,
           },
         };
         settingsStatus.textContent = "Saving…";
@@ -1132,14 +1193,15 @@ VIEWER_HTML = """<!doctype html>
         refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
         try {
           const projectParam = currentProject ? `&project=${encodeURIComponent(currentProject)}` : "";
+          const usageProjectParam = currentProject ? `?project=${encodeURIComponent(currentProject)}` : "";
           const [stats, summaries, observations, usage] = await Promise.all([
             fetch("/api/stats").then(r => r.json()),
             fetch(`/api/memory?kind=session_summary&limit=20${projectParam}`).then(r => r.json()),
             fetch(`/api/observations?limit=40${projectParam}`).then(r => r.json()),
-            fetch("/api/usage").then(r => r.json()),
+            fetch(`/api/usage${usageProjectParam}`).then(r => r.json()),
           ]);
           renderStats(stats);
-          renderSessionStats(usage.recent_packs || []);
+          renderSessionStats(usage.recent_packs || [], !currentProject);
           const summaryItems = summaries.items || [];
           const observationItems = observations.items || [];
           const filteredObservations = observationItems.filter(item => !isLowSignalObservation(item));
@@ -1199,11 +1261,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self._send_json(store.stats())
                 return
             if parsed.path == "/api/usage":
+                params = parse_qs(parsed.query)
+                project_filter = params.get("project", [None])[0]
                 self._send_json(
                     {
                         "events": store.usage_summary(),
                         "totals": store.stats()["usage"]["totals"],
-                        "recent_packs": store.recent_pack_events(limit=10),
+                        "recent_packs": store.recent_pack_events(limit=10, project=project_filter),
                     }
                 )
                 return
@@ -1243,8 +1307,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 if not context:
                     self._send_json({"error": "context required"}, status=400)
                     return
+                config = load_config()
                 try:
-                    limit = int(params.get("limit", ["8"])[0])
+                    limit = int(params.get("limit", [str(config.pack_observation_limit)])[0])
                 except ValueError:
                     self._send_json({"error": "limit must be int"}, status=400)
                     return
@@ -1332,7 +1397,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if not isinstance(updates, dict):
             self._send_json({"error": "config must be an object"}, status=400)
             return
-        allowed_keys = {"observer_provider", "observer_model", "observer_max_chars"}
+        allowed_keys = {
+            "observer_provider",
+            "observer_model",
+            "observer_max_chars",
+            "pack_observation_limit",
+            "pack_session_limit",
+        }
         allowed_providers = {"openai", "anthropic"}
         config_path = get_config_path()
         try:
@@ -1378,6 +1449,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     return
                 if value <= 0:
                     self._send_json({"error": "observer_max_chars must be positive"}, status=400)
+                    return
+                config_data[key] = value
+                continue
+            if key in {"pack_observation_limit", "pack_session_limit"}:
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    self._send_json({"error": f"{key} must be int"}, status=400)
+                    return
+                if value <= 0:
+                    self._send_json({"error": f"{key} must be positive"}, status=400)
                     return
                 config_data[key] = value
                 continue
