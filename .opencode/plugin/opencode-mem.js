@@ -150,14 +150,11 @@ export const OpencodeMemPlugin = async ({
   const injectEnabled = !["0", "false", "off"].includes(
     (process.env.OPENCODE_MEM_INJECT_CONTEXT || "1").toLowerCase()
   );
-  const injectLimit = parseNumber(
-    process.env.OPENCODE_MEM_INJECT_LIMIT || "8",
-    8
-  );
-  const injectTokenBudget = parseNumber(
-    process.env.OPENCODE_MEM_INJECT_TOKEN_BUDGET || "800",
-    800
-  );
+  // Only use env overrides if explicitly set; otherwise CLI uses config defaults
+  const injectLimitEnv = process.env.OPENCODE_MEM_INJECT_LIMIT;
+  const injectLimit = injectLimitEnv ? parseNumber(injectLimitEnv, null) : null;
+  const injectTokenBudgetEnv = process.env.OPENCODE_MEM_INJECT_TOKEN_BUDGET;
+  const injectTokenBudget = injectTokenBudgetEnv ? parseNumber(injectTokenBudgetEnv, null) : null;
   const injectedSessions = new Map();
   let sessionStartedAt = null;
   let viewerStarted = false;
@@ -436,8 +433,11 @@ export const OpencodeMemPlugin = async ({
   };
 
   const buildPackArgs = (query) => {
-    const args = ["pack", query, "--limit", String(injectLimit)];
-    if (Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
+    const args = ["pack", query];
+    if (injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0) {
+      args.push("--limit", String(injectLimit));
+    }
+    if (injectTokenBudget !== null && Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
       args.push("--token-budget", String(injectTokenBudget));
     }
     const projectRoot = project?.root || project?.name;
