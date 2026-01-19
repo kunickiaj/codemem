@@ -14,6 +14,7 @@ except Exception as exc:  # pragma: no cover
         "mcp package is required for the MCP server. Install with `uv pip install -e .`"
     ) from exc
 
+from .config import load_config
 from .db import DEFAULT_DB_PATH
 from .store import MemoryStore
 from .utils import resolve_project
@@ -165,11 +166,18 @@ def build_server() -> FastMCP:
         return with_store(handler)
 
     @mcp.tool()
-    def memory_pack(context: str, limit: int = 6, project: str | None = None) -> dict[str, Any]:
+    def memory_pack(
+        context: str, limit: int | None = None, project: str | None = None
+    ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
             resolved_project = project or default_project
             filters = {"project": resolved_project} if resolved_project else None
-            return store.build_memory_pack(context=context, limit=limit, filters=filters)
+            config = load_config()
+            return store.build_memory_pack(
+                context=context,
+                limit=limit or config.pack_observation_limit,
+                filters=filters,
+            )
 
         return with_store(handler)
 

@@ -15,12 +15,7 @@ import typer
 from rich import print
 
 from . import db
-from .capture import (
-    build_artifact_bundle,
-    capture_post_context,
-    capture_pre_context,
-    run_command_with_capture,
-)
+from .config import load_config
 from .db import DEFAULT_DB_PATH
 from .store import MemoryStore
 from .summarizer import Summarizer
@@ -77,36 +72,6 @@ def _compact_list(text: str, limit: int) -> str:
     if len(items) > limit:
         items = items[:limit] + [f"... (+{len(items) - limit} more)"]
     return ", ".join(items)
-
-
-def _build_inject_query(pre: dict[str, str], cwd: str, project: str | None) -> str:
-    project_label = project or pre.get("project") or ""
-    project_name = Path(project_label).name if project_label else Path(cwd).name
-    branch = pre.get("git_branch") or ""
-    diff_summary = _compact_lines(pre.get("git_diff") or "", limit=6)
-    recent_files = _compact_list(pre.get("recent_files") or "", limit=6)
-    parts = [project_name]
-    if branch:
-        parts.append(f"branch {branch}")
-    if recent_files:
-        parts.append(f"files {recent_files}")
-    if diff_summary:
-        parts.append(f"diff {diff_summary}")
-    return " | ".join(parts).strip()
-
-
-def _inject_into_opencode_exec(args: list[str], injected_text: str) -> tuple[list[str], bool]:
-    if not args:
-        return args, False
-    if args[0] != "opencode":
-        return args, False
-    if "exec" not in args:
-        return args, False
-    if len(args) < 2:
-        return args, False
-    updated = list(args)
-    updated[-1] = f"{injected_text}\n\n{updated[-1]}"
-    return updated, True
 
 
 def _viewer_pid_path() -> Path:
@@ -185,141 +150,6 @@ def _pid_for_port(port: int) -> int | None:
 def init_db(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
     store = _store(db_path)
     print(f"Initialized database at {store.db_path}")
-
-
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def run(
-    ctx: typer.Context,
-    db_path: str = typer.Option(None, help="Path to SQLite database"),
-    project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
-    inject: bool = typer.Option(
-        True, "--inject/--no-inject", help="Auto-inject context from memories"
-    ),
-    inject_query: str = typer.Option(None, help="Override the context query used for auto-inject"),
-    tool_version: str = typer.Option("dev", help="Version label to record"),
-    auto_compact: bool = typer.Option(
-        True, help="Re-summarize session at end using model if configured"
-    ),
-    max_observations: int = typer.Option(5, help="Max observations to store in summaries"),
-) -> None:
-    """Wrapper command that runs OpenCode (or any command) and writes memories."""
-    extra = list(ctx.args)
-    if not extra:
-        print("[red]No command provided. Usage: opencode-mem run -- opencode chat[/red]")
-        raise typer.Exit(code=1)
-    cwd = os.getcwd()
-    user = getpass.getuser()
-    viewer_enabled = os.environ.get("OPENCODE_MEM_VIEWER", "1").lower() not in {
-        "0",
-        "false",
-        "off",
-    }
-    if viewer_enabled:
-        host = os.environ.get("OPENCODE_MEM_VIEWER_HOST", DEFAULT_VIEWER_HOST)
-        port = int(os.environ.get("OPENCODE_MEM_VIEWER_PORT", str(DEFAULT_VIEWER_PORT)))
-        start_viewer(host=host, port=port, background=True)
-        print(f"[green]Viewer running at http://{host}:{port}[/green]")
-
-    store = _store(db_path)
-    pre = capture_pre_context(cwd)
-    resolved_project = project or os.environ.get("OPENCODE_MEM_PROJECT") or pre.get("project")
-
-    injected = False
-    if inject:
-        query = inject_query or _build_inject_query(pre, cwd, resolved_project)
-        if query:
-            filters = {"project": resolved_project} if resolved_project else None
-            pack = store.build_memory_pack(context=query, limit=12, filters=filters)
-            pack_text = pack.get("pack_text", "").strip()
-            if pack_text:
-                injected_text = f"[opencode-mem context]\n{pack_text}"
-                extra, injected = _inject_into_opencode_exec(extra, injected_text)
-                if not injected:
-                    print("[yellow]opencode-mem context (paste into session if needed):[/yellow]")
-                    print(injected_text)
-
-    session_id = store.start_session(
-        cwd=cwd,
-        project=resolved_project,
-        git_remote=pre.get("git_remote"),
-        git_branch=pre.get("git_branch"),
-        user=user,
-        tool_version=tool_version,
-        metadata={"pre": pre},
-    )
-    print(f"[green]Started session {session_id}[/green]")
-
-    result = run_command_with_capture(extra, cwd=cwd)
-    post = capture_post_context(cwd)
-
-    transcript_for_store = result.transcript
-    artifacts = build_artifact_bundle(
-        pre,
-        post,
-        transcript_for_store,
-    )
-    for kind, body, path in artifacts:
-        store.add_artifact(session_id, kind=kind, path=path, content_text=body)
-
-    summarizer = Summarizer(max_observations=max_observations, force_heuristic=True)
-    summary = summarizer.summarize(
-        transcript=transcript_for_store,
-        diff_summary=post.get("git_diff") or "",
-        recent_files=post.get("recent_files") or "",
-    )
-
-    store.remember(
-        session_id,
-        kind="session_summary",
-        title="Session summary",
-        body_text=summary.session_summary,
-        confidence=0.7,
-    )
-    for obs in summary.observations:
-        store.remember(
-            session_id,
-            kind="observation",
-            title=obs[:80],
-            body_text=obs,
-            confidence=0.6,
-        )
-    if summary.entities:
-        store.remember(
-            session_id,
-            kind="entities",
-            title="Entities",
-            body_text="; ".join(summary.entities),
-            confidence=0.4,
-        )
-
-    summary_for_stats = summary
-    if auto_compact:
-        rich_summarizer = Summarizer(max_observations=max_observations)
-        rich_summary = rich_summarizer.summarize(
-            transcript=transcript_for_store,
-            diff_summary=post.get("git_diff") or "",
-            recent_files=post.get("recent_files") or "",
-        )
-        store.replace_session_summary(session_id, rich_summary)
-        summary_for_stats = rich_summary
-        print(f"[green]Session {session_id} auto-compacted[/green]")
-
-    transcript_tokens = store.estimate_tokens(transcript_for_store)
-    summary_tokens = store.estimate_tokens(summary_for_stats.session_summary)
-    summary_tokens += sum(store.estimate_tokens(obs) for obs in summary_for_stats.observations)
-    summary_tokens += sum(store.estimate_tokens(entity) for entity in summary_for_stats.entities)
-    tokens_saved = max(0, transcript_tokens - summary_tokens)
-    store.record_usage(
-        "summarize",
-        session_id=session_id,
-        tokens_read=transcript_tokens,
-        tokens_written=summary_tokens,
-        tokens_saved=tokens_saved,
-        metadata={"mode": "auto" if auto_compact else "heuristic"},
-    )
-
-    store.end_session(session_id, metadata={"post": post, "returncode": result.returncode})
-    print(f"[green]Session {session_id} completed with code {result.returncode}[/green]")
 
 
 @app.command()
@@ -429,7 +259,7 @@ def purge(
 @app.command()
 def pack(
     context: str,
-    limit: int = typer.Option(8),
+    limit: int = typer.Option(None),
     token_budget: int = typer.Option(None, help="Approx token budget for pack"),
     db_path: str = typer.Option(None),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
@@ -437,9 +267,13 @@ def pack(
 ) -> None:
     store = _store(db_path)
     resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
+    config = load_config()
     filters = {"project": resolved_project} if resolved_project else None
     pack = store.build_memory_pack(
-        context=context, limit=limit, token_budget=token_budget, filters=filters
+        context=context,
+        limit=limit or config.pack_observation_limit,
+        token_budget=token_budget,
+        filters=filters,
     )
     print(json.dumps(pack, indent=2))
 
@@ -447,7 +281,7 @@ def pack(
 @app.command()
 def inject(
     context: str,
-    limit: int = typer.Option(8),
+    limit: int = typer.Option(None),
     token_budget: int = typer.Option(None, help="Approx token budget for injection"),
     db_path: str = typer.Option(None),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
@@ -456,9 +290,13 @@ def inject(
     """Build a context block from memories for manual injection into prompts."""
     store = _store(db_path)
     resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
+    config = load_config()
     filters = {"project": resolved_project} if resolved_project else None
     pack = store.build_memory_pack(
-        context=context, limit=limit, token_budget=token_budget, filters=filters
+        context=context,
+        limit=limit or config.pack_observation_limit,
+        token_budget=token_budget,
+        filters=filters,
     )
     print(pack.get("pack_text", ""))
 
