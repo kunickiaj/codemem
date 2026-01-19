@@ -1408,8 +1408,13 @@ class MemoryStore:
         def estimate_work_tokens(item: MemoryResult | dict[str, Any]) -> int:
             metadata = get_metadata(item)
             discovery_tokens = metadata.get("discovery_tokens")
-            if isinstance(discovery_tokens, (int, float)) and discovery_tokens > 0:
-                return int(discovery_tokens)
+            if discovery_tokens is not None:
+                try:
+                    tokens = int(discovery_tokens)
+                    if tokens > 0:
+                        return tokens
+                except (TypeError, ValueError):
+                    pass
             title = item.title if isinstance(item, MemoryResult) else item.get("title", "")
             body = item.body_text if isinstance(item, MemoryResult) else item.get("body_text", "")
             return self.estimate_tokens(f"{title} {body}".strip())
@@ -1761,18 +1766,34 @@ class MemoryStore:
         ).fetchall()
         return db.rows_to_dicts(rows)
 
-    def recent_pack_events(self, limit: int = 10) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
-                   created_at, metadata_json
-            FROM usage_events
-            WHERE event = 'pack'
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+    def recent_pack_events(
+        self, limit: int = 10, project: str | None = None
+    ) -> list[dict[str, Any]]:
+        if project:
+            rows = self.conn.execute(
+                """
+                SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
+                       created_at, metadata_json
+                FROM usage_events
+                WHERE event = 'pack'
+                  AND json_extract(metadata_json, '$.project') = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (project, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
+                       created_at, metadata_json
+                FROM usage_events
+                WHERE event = 'pack'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
         results = db.rows_to_dicts(rows)
         for item in results:
             item["metadata_json"] = db.from_json(item.get("metadata_json"))
@@ -1797,7 +1818,7 @@ class MemoryStore:
         usage_rows = self.conn.execute(
             """
             SELECT event, COUNT(*) as count, SUM(tokens_read) as tokens_read,
-                   SUM(tokens_saved) as tokens_saved
+                   SUM(tokens_written) as tokens_written, SUM(tokens_saved) as tokens_saved
             FROM usage_events
             GROUP BY event
             ORDER BY count DESC
@@ -1808,6 +1829,7 @@ class MemoryStore:
             "totals": {
                 "events": sum(row["count"] for row in usage_rows),
                 "tokens_read": sum(row["tokens_read"] or 0 for row in usage_rows),
+                "tokens_written": sum(row["tokens_written"] or 0 for row in usage_rows),
                 "tokens_saved": sum(row["tokens_saved"] or 0 for row in usage_rows),
             },
         }
