@@ -12,6 +12,8 @@ CONFIG_ENV_OVERRIDES = {
     "observer_provider": "OPENCODE_MEM_OBSERVER_PROVIDER",
     "observer_model": "OPENCODE_MEM_OBSERVER_MODEL",
     "observer_max_chars": "OPENCODE_MEM_OBSERVER_MAX_CHARS",
+    "pack_observation_limit": "OPENCODE_MEM_PACK_OBSERVATION_LIMIT",
+    "pack_session_limit": "OPENCODE_MEM_PACK_SESSION_LIMIT",
 }
 
 
@@ -65,6 +67,8 @@ class OpencodeMemConfig:
     observer_max_chars: int = 12000
     observer_max_tokens: int = 4000
     summary_max_chars: int = 6000
+    pack_observation_limit: int = 50
+    pack_session_limit: int = 10
     viewer_auto: bool = True
     viewer_auto_stop: bool = True
     viewer_enabled: bool = True
@@ -123,6 +127,12 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
         os.getenv("OPENCODE_MEM_OBSERVER_MAX_TOKENS", cfg.observer_max_tokens)
     )
     cfg.summary_max_chars = int(os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS", cfg.summary_max_chars))
+    cfg.pack_observation_limit = int(
+        os.getenv("OPENCODE_MEM_PACK_OBSERVATION_LIMIT", cfg.pack_observation_limit)
+    )
+    cfg.pack_session_limit = int(
+        os.getenv("OPENCODE_MEM_PACK_SESSION_LIMIT", cfg.pack_session_limit)
+    )
     cfg.viewer_auto = _parse_bool(os.getenv("OPENCODE_MEM_VIEWER_AUTO"), cfg.viewer_auto)
     cfg.viewer_auto_stop = _parse_bool(
         os.getenv("OPENCODE_MEM_VIEWER_AUTO_STOP"), cfg.viewer_auto_stop
