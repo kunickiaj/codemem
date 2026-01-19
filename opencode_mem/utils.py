@@ -104,8 +104,46 @@ def resolve_project(cwd: str, override: str | None = None) -> str | None:
     if override:
         return override
     repo_root = detect_git_info(cwd).get("repo_root")
-    if repo_root:
+    # Check if repo_root is a valid path (not a git error message)
+    if repo_root and not repo_root.startswith("fatal:") and Path(repo_root).is_dir():
+        # Check if we're in a worktree and resolve to main repo
+        main_repo = _resolve_worktree_parent(cwd)
+        if main_repo:
+            return main_repo
         return repo_root
+    # Fall back to directory name
+    return str(Path(cwd).resolve())
+
+
+def _resolve_worktree_parent(cwd: str) -> str | None:
+    """If cwd is a git worktree, return the main repo root. Otherwise return None."""
+    try:
+        # Get the common git dir (shared across worktrees)
+        common_dir = subprocess.check_output(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        # Get the current git dir
+        git_dir = subprocess.check_output(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        # If they differ, we're in a worktree
+        common_path = Path(common_dir).resolve()
+        git_path = Path(git_dir).resolve()
+        if common_path != git_path:
+            # common_dir is typically <main-repo>/.git
+            # So the main repo root is its parent
+            if common_path.name == ".git":
+                return str(common_path.parent)
+            # Handle bare repos or unusual layouts
+            return str(common_path)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
     return None
 
 
