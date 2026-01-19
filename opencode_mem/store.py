@@ -1550,16 +1550,26 @@ class MemoryStore:
 
         add_section("Summary", summary_items)
         add_section("Timeline", timeline_items)
+        if not summary_items:
+            sections.append(("Summary", []))
+        if not timeline_items:
+            sections.append(("Timeline", []))
         if observation_items:
             add_section("Observations", observation_items, allow_duplicates=True)
         elif timeline_items:
             add_section("Observations", timeline_items, allow_duplicates=True)
+        else:
+            sections.append(("Observations", []))
 
+        required_titles = {"Summary", "Timeline", "Observations"}
         if token_budget:
             running = 0
             trimmed_sections: list[tuple[str, list[MemoryResult | dict[str, Any]]]] = []
             budget_exhausted = False
             for title, items in sections:
+                if not items and title in required_titles:
+                    trimmed_sections.append((title, []))
+                    continue
                 section_items: list[MemoryResult | dict[str, Any]] = []
                 for item in items:
                     est = self.estimate_tokens(item_body(item))
@@ -1617,6 +1627,8 @@ class MemoryStore:
             ]
             if lines:
                 section_blocks.append(f"## {title}\n" + "\n".join(lines))
+            else:
+                section_blocks.append(f"## {title}\n")
         pack_text = "\n\n".join(section_blocks)
         pack_tokens = self.estimate_tokens(pack_text)
         work_tokens = sum(estimate_work_tokens(m) for m in final_items)

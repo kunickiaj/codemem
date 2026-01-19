@@ -155,14 +155,16 @@ SUMMARY_SCHEMA = """
 </summary>
 
 IMPORTANT: Always write at least a minimal summary explaining the current state,
- even if you didn't learn anything new or complete any work. This helps track progress
- across sessions. The summary is for tracking the PRIMARY session work, not your observation process.
- 
- Only summarize what is evidenced in the session context. Do not infer or fabricate
- file edits, behaviors, or outcomes that are not explicitly observed.
- 
- Write comprehensive summaries (200-600 words total across all fields).
- This summary helps future sessions understand where this work left off.
+even if you didn't learn anything new or complete any work. This helps track progress
+across sessions. The summary is for tracking the PRIMARY session work, not your observation process.
+
+Only summarize what is evidenced in the session context. Do not infer or fabricate
+file edits, behaviors, or outcomes that are not explicitly observed.
+
+Write detailed summaries (200-600 words total across all fields).
+
+This summary helps future sessions understand where this work left off.
+
 """.strip()
 
 
