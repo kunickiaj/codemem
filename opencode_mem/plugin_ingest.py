@@ -370,9 +370,9 @@ def ingest(payload: dict[str, Any]) -> None:
         per_item_tokens = max(1, discovery_tokens // total_items)
 
     for obs in observations_to_store:
-        metadata = {"source": "observer"}
+        metadata: dict[str, str | int] = {"source": "observer"}
         if per_item_tokens:
-            metadata["discovery_tokens"] = str(per_item_tokens)
+            metadata["discovery_tokens"] = per_item_tokens
         store.remember_observation(
             session_id,
             kind=obs.kind.strip().lower(),
