@@ -427,6 +427,21 @@ def ingest(payload: dict[str, Any]) -> None:
                 confidence=0.6,
                 metadata=summary_metadata,
             )
+    # Record observer work investment (tokens spent creating memories)
+    observer_output_tokens = store.estimate_tokens(response.raw or "")
+    observer_input_tokens = store.estimate_tokens(transcript)
+    store.record_usage(
+        "observe",
+        session_id=session_id,
+        tokens_read=observer_input_tokens,
+        tokens_written=observer_output_tokens,
+        metadata={
+            "project": project,
+            "observations": len(observations_to_store),
+            "has_summary": summary_to_store is not None,
+        },
+    )
+
     store.end_session(
         session_id,
         metadata={"post": post, "source": "plugin", "event_count": len(events)},
