@@ -121,6 +121,9 @@ opencode-mem export-memories recent.json --project myproject --since 2025-01-01
 
 ### Import memories
 
+Imports are idempotent. You can safely re-run the same import file to pick up
+new entries without duplicating existing data.
+
 ```bash
 # Preview what will be imported (dry run)
 opencode-mem import-memories myproject.json --dry-run
@@ -133,6 +136,15 @@ opencode-mem import-memories myproject.json --remap-project /Users/teammate/work
 
 # Import from compressed file
 gunzip -c myproject.json.gz | opencode-mem import-memories -
+```
+
+### Import from claude-mem
+
+Use the claude-mem SQLite database directly (not the JSON export).
+Imports are idempotent, so re-running is safe.
+
+```bash
+opencode-mem import-from-claude-mem ~/.claude-mem/claude-mem.db
 ```
 
 ### Use case: sharing knowledge with teammates
