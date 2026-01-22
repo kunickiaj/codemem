@@ -275,6 +275,29 @@ def _derive_request(summary: ParsedSummary) -> str:
     return ""
 
 
+def _normalize_path(path: str, repo_root: str | None) -> str:
+    if not path:
+        return ""
+    cleaned = path.strip()
+    if not repo_root:
+        return cleaned
+    root = repo_root.rstrip("/")
+    if cleaned == root:
+        return "."
+    if cleaned.startswith(root + "/"):
+        return cleaned[len(root) + 1 :]
+    return cleaned
+
+
+def _normalize_paths(paths: list[str], repo_root: str | None) -> list[str]:
+    normalized: list[str] = []
+    for value in paths:
+        cleaned = _normalize_path(value, repo_root)
+        if cleaned:
+            normalized.append(cleaned)
+    return normalized
+
+
 def _extract_prompts(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     prompts: list[dict[str, Any]] = []
     for event in events:
@@ -312,6 +335,7 @@ def ingest(payload: dict[str, Any]) -> None:
     post = capture_post_context(cwd)
     diff_summary = post.get("git_diff") or ""
     project = payload.get("project") or pre.get("project")
+    repo_root = pre.get("project") or None
     db_path = os.environ.get("OPENCODE_MEM_DB")
     store = MemoryStore(Path(db_path) if db_path else db.DEFAULT_DB_PATH)
     started_at = payload.get("started_at")
@@ -432,6 +456,8 @@ def ingest(payload: dict[str, Any]) -> None:
                 continue
             if is_low_signal_observation(obs.title) or is_low_signal_observation(obs.narrative):
                 continue
+            obs.files_read = _normalize_paths(obs.files_read, repo_root)
+            obs.files_modified = _normalize_paths(obs.files_modified, repo_root)
             observations_to_store.append(obs)
 
     summary_to_store = None
@@ -448,6 +474,8 @@ def ingest(payload: dict[str, Any]) -> None:
                 summary.notes,
             ]
         ):
+            summary.files_read = _normalize_paths(summary.files_read, repo_root)
+            summary.files_modified = _normalize_paths(summary.files_modified, repo_root)
             derived_request = summary.request
             if _is_trivial_request(summary.request):
                 derived_request = _derive_request(summary)
