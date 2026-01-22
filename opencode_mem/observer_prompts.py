@@ -158,6 +158,9 @@ IMPORTANT: Always write at least a minimal summary explaining the current state,
 even if you didn't learn anything new or complete any work. This helps track progress
 across sessions. The summary is for tracking the PRIMARY session work, not your observation process.
 
+If the user prompt is a short approval or acknowledgement ("yes", "ok", "approved"),
+infer the request from the observed work and the completed/learned sections instead.
+
 Only summarize what is evidenced in the session context. Do not infer or fabricate
 file edits, behaviors, or outcomes that are not explicitly observed.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -47,6 +48,22 @@ LOW_SIGNAL_OUTPUTS = {
     "read file successfully",
     "<file>",
     "<image>",
+}
+
+TRIVIAL_REQUESTS = {
+    "yes",
+    "y",
+    "ok",
+    "okay",
+    "approved",
+    "approve",
+    "looks good",
+    "lgtm",
+    "ship it",
+    "sounds good",
+    "sure",
+    "go ahead",
+    "proceed",
 }
 
 
@@ -222,6 +239,42 @@ def _summary_body(summary: ParsedSummary) -> str:
     return "\n\n".join(parts)
 
 
+def _normalize_request_text(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned = text.strip().strip("\"'").strip()
+    cleaned = " ".join(cleaned.split())
+    return cleaned.lower()
+
+
+def _is_trivial_request(text: str | None) -> bool:
+    normalized = _normalize_request_text(text)
+    if not normalized:
+        return True
+    return normalized in TRIVIAL_REQUESTS
+
+
+def _first_sentence(text: str) -> str:
+    cleaned = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    cleaned = re.sub(r"^[#*\-\d\.\s]+", "", cleaned)
+    match = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)
+    return (match[0] if match else cleaned).strip()
+
+
+def _derive_request(summary: ParsedSummary) -> str:
+    candidates = [
+        summary.completed,
+        summary.learned,
+        summary.investigated,
+        summary.next_steps,
+        summary.notes,
+    ]
+    for candidate in candidates:
+        if candidate:
+            return _first_sentence(candidate)
+    return ""
+
+
 def _extract_prompts(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     prompts: list[dict[str, Any]] = []
     for event in events:
@@ -382,6 +435,7 @@ def ingest(payload: dict[str, Any]) -> None:
             observations_to_store.append(obs)
 
     summary_to_store = None
+    request_original = None
     if STORE_SUMMARY and parsed.summary and not parsed.skip_summary_reason:
         summary = parsed.summary
         if any(
@@ -394,6 +448,12 @@ def ingest(payload: dict[str, Any]) -> None:
                 summary.notes,
             ]
         ):
+            derived_request = summary.request
+            if _is_trivial_request(summary.request):
+                derived_request = _derive_request(summary)
+            if derived_request and derived_request != summary.request:
+                request_original = summary.request
+                summary.request = derived_request
             summary_to_store = summary
 
     total_items = len(observations_to_store) + (1 if summary_to_store else 0)
@@ -422,7 +482,7 @@ def ingest(payload: dict[str, Any]) -> None:
         )
 
     if summary_to_store:
-        summary_metadata = {
+        summary_metadata: dict[str, Any] = {
             "request": summary_to_store.request,
             "investigated": summary_to_store.investigated,
             "learned": summary_to_store.learned,
@@ -434,6 +494,8 @@ def ingest(payload: dict[str, Any]) -> None:
             "prompt_number": prompt_number,
             "source": "observer",
         }
+        if request_original:
+            summary_metadata["request_original"] = request_original
         if per_item_tokens:
             summary_metadata["discovery_tokens"] = per_item_tokens
             summary_metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
