@@ -34,15 +34,62 @@ def _get_iap_token() -> str | None:
     return os.getenv("IAP_AUTH_TOKEN")
 
 
+def _strip_json_comments(text: str) -> str:
+    """Strip JavaScript-style comments from JSON (JSONC support)."""
+    lines = []
+    for line in text.splitlines():
+        # Strip single-line comments (// ...) but not inside strings
+        # Simple approach: find // not inside quotes
+        result = []
+        in_string = False
+        escape_next = False
+        i = 0
+        while i < len(line):
+            char = line[i]
+            if escape_next:
+                result.append(char)
+                escape_next = False
+                i += 1
+                continue
+            if char == "\\" and in_string:
+                result.append(char)
+                escape_next = True
+                i += 1
+                continue
+            if char == '"':
+                in_string = not in_string
+                result.append(char)
+                i += 1
+                continue
+            if not in_string and char == "/" and i + 1 < len(line) and line[i + 1] == "/":
+                # Found comment, stop here
+                break
+            result.append(char)
+            i += 1
+        lines.append("".join(result))
+    return "\n".join(lines)
+
+
 def _load_opencode_config() -> dict:
     """Load OpenCode config from ~/.config/opencode/opencode.json"""
     config_path = Path.home() / ".config" / "opencode" / "opencode.json"
     if not config_path.exists():
         return {}
     try:
-        return json.loads(config_path.read_text())
+        text = config_path.read_text()
     except Exception as exc:
-        logger.warning("opencode config load failed", exc_info=exc)
+        logger.warning("opencode config read failed", exc_info=exc)
+        return {}
+    # Try standard JSON first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try stripping comments (JSONC support)
+    try:
+        return json.loads(_strip_json_comments(text))
+    except Exception as exc:
+        logger.warning("opencode config load failed after comment strip", exc_info=exc)
         return {}
 
 

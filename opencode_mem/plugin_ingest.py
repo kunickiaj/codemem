@@ -447,6 +447,7 @@ def ingest(payload: dict[str, Any]) -> None:
             "change",
             "discovery",
             "decision",
+            "exploration",
         }
         for obs in parsed.observations:
             kind = obs.kind.strip().lower()

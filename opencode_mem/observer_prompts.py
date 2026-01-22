@@ -63,8 +63,10 @@ Combine related work into cohesive narratives instead of many small observations
 Include specific details: file paths, function names, configuration values."""
 
 OUTPUT_GUIDANCE = (
-    "Output only XML. Emit one or more <observation> blocks and optionally a "
-    "<summary> block. Do not include commentary outside XML. "
+    "Output only XML. Do not include commentary outside XML.\n\n"
+    "ALWAYS emit at least one <observation> block for any meaningful work. "
+    "Observations are the PRIMARY output - they capture what was built, fixed, learned, or decided. "
+    "Also emit a <summary> block to track session progress.\n\n"
     "Prefer fewer, more comprehensive observations over many small ones."
 )
 
