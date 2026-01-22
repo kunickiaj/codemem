@@ -161,6 +161,7 @@ export const OpencodeMemPlugin = async ({
   let promptCounter = 0;
   let lastPromptText = null;
   let lastAssistantText = null;
+  const assistantUsageCaptured = new Set();
 
   // Track message roles and accumulated text by messageID
   const messageRoles = new Map();
@@ -374,6 +375,47 @@ export const OpencodeMemPlugin = async ({
     }
 
     return null;
+  };
+
+  const normalizeUsage = (usage) => {
+    if (!usage || typeof usage !== "object") {
+      return null;
+    }
+    const inputTokens = Number(usage.input_tokens || 0);
+    const outputTokens = Number(usage.output_tokens || 0);
+    const cacheCreationTokens = Number(usage.cache_creation_input_tokens || 0);
+    const cacheReadTokens = Number(usage.cache_read_input_tokens || 0);
+    const total = inputTokens + outputTokens + cacheCreationTokens;
+    if (!Number.isFinite(total) || total <= 0) {
+      return null;
+    }
+    return {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_creation_input_tokens: cacheCreationTokens,
+      cache_read_input_tokens: cacheReadTokens,
+    };
+  };
+
+  const extractAssistantUsage = (event) => {
+    if (!event || event.type !== "message.updated" || !event.properties?.info) {
+      return null;
+    }
+    const info = event.properties.info;
+    if (!info.id || info.role !== "assistant" || !info.finish) {
+      return null;
+    }
+    if (assistantUsageCaptured.has(info.id)) {
+      return null;
+    }
+    const usage = normalizeUsage(
+      info.usage || event.properties?.usage || event.usage
+    );
+    if (!usage) {
+      return null;
+    }
+    assistantUsageCaptured.add(info.id);
+    return { usage, id: info.id };
   };
 
   const startViewer = () => {
@@ -772,6 +814,20 @@ export const OpencodeMemPlugin = async ({
           });
           await logLine(
             `assistant_message captured: ${assistantText.substring(0, 50)}`
+          );
+        }
+
+        const assistantUsage = extractAssistantUsage(event);
+        if (assistantUsage) {
+          updateActivity();
+          events.push({
+            type: "assistant_usage",
+            message_id: assistantUsage.id,
+            usage: assistantUsage.usage,
+            timestamp: new Date().toISOString(),
+          });
+          await logLine(
+            `assistant_usage captured id=${assistantUsage.id.slice(-8)}`
           );
         }
       }

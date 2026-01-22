@@ -1419,6 +1419,12 @@ class MemoryStore:
             body = item.body_text if isinstance(item, MemoryResult) else item.get("body_text", "")
             return self.estimate_tokens(f"{title} {body}".strip())
 
+        def work_source(item: MemoryResult | dict[str, Any]) -> str:
+            metadata = get_metadata(item)
+            if metadata.get("discovery_source") == "usage":
+                return "usage"
+            return "estimate"
+
         def item_value(item: MemoryResult | dict[str, Any], key: str, default: Any = "") -> Any:
             if isinstance(item, MemoryResult):
                 return getattr(item, key, default)
@@ -1633,6 +1639,15 @@ class MemoryStore:
         pack_tokens = self.estimate_tokens(pack_text)
         work_tokens = sum(estimate_work_tokens(m) for m in final_items)
         tokens_saved = max(0, work_tokens - pack_tokens)
+        work_sources = [work_source(m) for m in final_items]
+        usage_items = sum(1 for source in work_sources if source == "usage")
+        estimate_items = sum(1 for source in work_sources if source != "usage")
+        if usage_items and estimate_items:
+            work_source_label = "mixed"
+        elif usage_items:
+            work_source_label = "usage"
+        else:
+            work_source_label = "estimate"
         semantic_hits = 0
         if merge_results:
             semantic_ids = {
@@ -1653,6 +1668,9 @@ class MemoryStore:
                 "project": (filters or {}).get("project"),
                 "fallback": "recent" if fallback_used else None,
                 "work_tokens": work_tokens,
+                "work_source": work_source_label,
+                "work_usage_items": usage_items,
+                "work_estimate_items": estimate_items,
                 "semantic_candidates": semantic_candidates,
                 "semantic_hits": semantic_hits,
             },

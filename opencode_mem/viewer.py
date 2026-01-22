@@ -556,6 +556,13 @@ VIEWER_HTML = """<!doctype html>
         gap: 8px;
         transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
       }
+      .feed-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
       .feed-item:hover {
         transform: translateY(-1px);
         border-left-color: var(--accent-2);
@@ -571,6 +578,43 @@ VIEWER_HTML = """<!doctype html>
         font-weight: 600;
         font-size: 15px;
       }
+      .feed-project {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .feed-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.02);
+      }
+      [data-theme="dark"] .feed-toggle {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .toggle-button {
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+      .toggle-button.active {
+        background: rgba(31, 111, 92, 0.18);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      [data-theme="dark"] .toggle-button.active {
+        background: rgba(77, 212, 180, 0.25);
+      }
       .feed-meta {
         color: var(--muted);
         font-size: 12px;
@@ -578,6 +622,11 @@ VIEWER_HTML = """<!doctype html>
       .feed-body {
         font-size: 13px;
         line-height: 1.5;
+      }
+      .feed-body.facts {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
       }
       .feed-body p { margin: 0 0 0.5em; }
       .feed-body p:last-child { margin-bottom: 0; }
@@ -626,6 +675,54 @@ VIEWER_HTML = """<!doctype html>
         margin: 0.5em 0;
         padding-left: 0.8em;
         color: var(--muted);
+      }
+      .summary-section {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .summary-section:last-child {
+        border-bottom: none;
+      }
+      .summary-section-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--muted);
+      }
+      .summary-section-content {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text);
+      }
+      .feed-footer {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .feed-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .tag-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        background: rgba(34, 58, 94, 0.12);
+        color: var(--accent-3);
+        font-size: 11px;
+        font-weight: 600;
+      }
+      [data-theme="dark"] .tag-chip {
+        background: rgba(139, 179, 255, 0.2);
       }
       .feed-item.feature { border-left-color: rgba(31, 111, 92, 0.6); }
       .feed-item.change { border-left-color: rgba(34, 58, 94, 0.6); }
@@ -805,6 +902,7 @@ VIEWER_HTML = """<!doctype html>
       let configDefaults = {};
       let configPath = "";
       let currentProject = "";
+      const itemViewState = new Map();
 
       // Theme management
       function getTheme() {
@@ -840,6 +938,28 @@ VIEWER_HTML = """<!doctype html>
 
       function normalize(text) {
         return (text || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      }
+
+      function parseJsonArray(value) {
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        if (typeof value === "string") {
+          try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (e) {
+            return [];
+          }
+        }
+        return [];
+      }
+
+      function extractFactsFromBody(text) {
+        if (!text) return [];
+        const lines = text.split("\\n").map(line => line.trim()).filter(Boolean);
+        const bulletLines = lines.filter(line => /^[-*•]\\s+/.test(line) || /^\\d+\\./.test(line));
+        if (!bulletLines.length) return [];
+        return bulletLines.map(line => line.replace(/^[-*•]\\s+/, "").replace(/^\\d+\\.\\s+/, ""));
       }
 
       function isLowSignalObservation(item) {
@@ -940,10 +1060,23 @@ VIEWER_HTML = """<!doctype html>
         items.forEach(item => {
           const kindValue = (item.kind || "session_summary").toLowerCase();
           const feedItem = createElement("div", `feed-item ${kindValue}`);
+          const headerRow = createElement("div", "feed-card-header");
           const header = createElement("div", "feed-header");
           const kindTag = createElement("span", `kind-pill ${kindValue}`, kindValue.replace(/_/g, " "));
-          const title = createElement("div", "feed-title", item.title || "Memory entry");
+          const metadata = item.metadata_json || {};
+          const isSessionSummary = kindValue === "session_summary";
+          const defaultTitle = item.title || "Memory entry";
+          const displayTitle = isSessionSummary && metadata.request ? metadata.request : defaultTitle;
+          const title = createElement("div", "feed-title", displayTitle);
           header.append(kindTag, title);
+          if (item.project) {
+            header.append(createElement("span", "feed-project", item.project));
+          }
+          const toggle = createElement("div", "feed-toggle");
+          const summaryButton = createElement("button", "toggle-button", "summary");
+          const factsButton = createElement("button", "toggle-button", "facts");
+          const narrativeButton = createElement("button", "toggle-button", "narrative");
+          headerRow.append(header, toggle);
           const metaParts = [];
           if (item.session_id) {
             metaParts.push(`session #${item.session_id}`);
@@ -956,17 +1089,153 @@ VIEWER_HTML = """<!doctype html>
           }
           const meta = createElement("div", "feed-meta", metaParts.join(" · "));
           const body = createElement("div", "feed-body");
-          const bodyText = item.body_text || "";
-          if (typeof marked !== "undefined" && bodyText) {
-            try {
-              body.innerHTML = marked.parse(bodyText);
-            } catch (e) {
-              body.textContent = bodyText;
+          const facts = parseJsonArray(item.facts);
+          const summary = (item.subtitle || item.body_text || "").trim();
+          const narrative = (item.narrative || "").trim();
+          const normalizedSummary = normalize(summary);
+          const normalizedNarrative = normalize(narrative);
+          const narrativeDistinct = Boolean(narrative) && normalizedNarrative !== normalizedSummary;
+          const fallbackFacts = facts.length ? facts : extractFactsFromBody(summary || narrative);
+          const hasFacts = fallbackFacts.length > 0;
+          const hasSummary = Boolean(summary);
+          const hasNarrative = narrativeDistinct;
+          const availableViews = [];
+          if (hasSummary) availableViews.push("summary");
+          if (hasFacts) availableViews.push("facts");
+          if (hasNarrative) availableViews.push("narrative");
+          const defaultView = hasSummary ? "summary" : hasFacts ? "facts" : "narrative";
+
+          function renderNarrative() {
+            body.classList.remove("facts");
+            body.textContent = "";
+            if (typeof marked !== "undefined" && narrative) {
+              try {
+                body.innerHTML = marked.parse(narrative);
+              } catch (e) {
+                body.textContent = narrative;
+              }
+            } else {
+              body.textContent = narrative || "No narrative available";
+            }
+          }
+
+          function renderSummary() {
+            body.classList.remove("facts");
+            body.textContent = "";
+            if (typeof marked !== "undefined" && summary) {
+              try {
+                body.innerHTML = marked.parse(summary);
+              } catch (e) {
+                body.textContent = summary;
+              }
+            } else {
+              body.textContent = summary || "No summary available";
+            }
+          }
+
+          function renderFacts() {
+            body.classList.add("facts");
+            body.textContent = "";
+            if (!fallbackFacts.length) {
+              body.textContent = "No facts captured";
+              return;
+            }
+            const list = document.createElement("ul");
+            fallbackFacts.forEach(fact => {
+              const li = document.createElement("li");
+              li.textContent = fact;
+              list.appendChild(li);
+            });
+            body.appendChild(list);
+          }
+
+          const itemId = item.id || item.session_id || `${kindValue}-${title.textContent}`;
+          const storedView = itemViewState.get(itemId);
+
+          function setActive(view) {
+            if (!availableViews.includes(view)) {
+              view = defaultView;
+            }
+            summaryButton.classList.toggle("active", view === "summary");
+            factsButton.classList.toggle("active", view === "facts");
+            narrativeButton.classList.toggle("active", view === "narrative");
+            if (view === "facts") {
+              renderFacts();
+            } else if (view === "narrative") {
+              renderNarrative();
+            } else {
+              renderSummary();
+            }
+            itemViewState.set(itemId, view);
+          }
+
+          if (isSessionSummary) {
+            toggle.style.display = "none";
+            body.classList.remove("facts");
+            body.textContent = "";
+            const summarySections = [
+              ["Investigated", metadata.investigated],
+              ["Learned", metadata.learned],
+              ["Completed", metadata.completed],
+              ["Next steps", metadata.next_steps],
+              ["Notes", metadata.notes],
+            ];
+            const fragment = document.createDocumentFragment();
+            summarySections.forEach(([label, content]) => {
+              if (!content) {
+                return;
+              }
+              const section = createElement("div", "summary-section");
+              const header = createElement("div", "summary-section-header");
+              header.append(createElement("span", "summary-section-label", label));
+              const bodyText = createElement("div", "summary-section-content");
+              if (typeof marked !== "undefined") {
+                try {
+                  bodyText.innerHTML = marked.parse(content);
+                } catch (e) {
+                  bodyText.textContent = content;
+                }
+              } else {
+                bodyText.textContent = content;
+              }
+              section.append(header, bodyText);
+              fragment.appendChild(section);
+            });
+            if (!fragment.childNodes.length) {
+              body.textContent = summary || "No summary available";
+            } else {
+              body.appendChild(fragment);
             }
           } else {
-            body.textContent = bodyText;
+            toggle.textContent = "";
+            if (hasSummary) toggle.appendChild(summaryButton);
+            if (hasFacts) toggle.appendChild(factsButton);
+            if (hasNarrative) toggle.appendChild(narrativeButton);
+            if (!availableViews.length || availableViews.length === 1) {
+              toggle.style.display = "none";
+            }
+            summaryButton.addEventListener("click", () => setActive("summary"));
+            factsButton.addEventListener("click", () => setActive("facts"));
+            narrativeButton.addEventListener("click", () => setActive("narrative"));
+            setActive(storedView || defaultView);
           }
-          feedItem.append(header, meta, body);
+
+          const footer = createElement("div", "feed-footer");
+          const tagRow = createElement("div", "feed-tags");
+          const tags = (item.tags_text || "").split(/\\s+/).filter(Boolean);
+          const concepts = parseJsonArray(metadata.concepts);
+          const filesRead = parseJsonArray(metadata.files_read);
+          const filesModified = parseJsonArray(metadata.files_modified);
+          const combinedTags = [...tags, ...concepts, ...filesRead, ...filesModified];
+          combinedTags.slice(0, 4).forEach(tag => {
+            tagRow.appendChild(createElement("span", "tag-chip", tag));
+          });
+          if (combinedTags.length > 4) {
+            tagRow.appendChild(createElement("span", "tag-chip", `+${combinedTags.length - 4}`));
+          }
+          footer.append(tagRow, meta);
+
+          feedItem.append(headerRow, body, footer);
           feedList.appendChild(feedItem);
         });
       }
@@ -978,6 +1247,9 @@ VIEWER_HTML = """<!doctype html>
           return;
         }
         let items, workTokens, packTokens, savedTokens, semanticCandidates, semanticHits, timeAgo;
+        let workSource = "estimate";
+        let workUsageItems = 0;
+        let workEstimateItems = 0;
         if (isAllProjects) {
           // Aggregate stats across latest pack per project
           items = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).items || 0), 0);
@@ -986,6 +1258,13 @@ VIEWER_HTML = """<!doctype html>
           savedTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_saved || 0), 0);
           semanticCandidates = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_candidates || 0), 0);
           semanticHits = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_hits || 0), 0);
+          workUsageItems = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).work_usage_items || 0), 0);
+          workEstimateItems = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).work_estimate_items || 0), 0);
+          if (workUsageItems && workEstimateItems) {
+            workSource = "mixed";
+          } else if (workUsageItems) {
+            workSource = "usage";
+          }
           timeAgo = recentPacks.length === 1 ? "1 project" : `${recentPacks.length} projects`;
         } else {
           const latest = recentPacks[0];
@@ -996,6 +1275,9 @@ VIEWER_HTML = """<!doctype html>
           savedTokens = latest.tokens_saved || 0;
           semanticCandidates = metadata.semantic_candidates || 0;
           semanticHits = metadata.semantic_hits || 0;
+          workSource = metadata.work_source || "estimate";
+          workUsageItems = metadata.work_usage_items || 0;
+          workEstimateItems = metadata.work_estimate_items || 0;
           timeAgo = latest.created_at ? formatDate(latest.created_at) : "recently";
         }
         const savingsPercent = workTokens > 0 ? Math.round((savedTokens / workTokens) * 100) : 0;
@@ -1003,10 +1285,23 @@ VIEWER_HTML = """<!doctype html>
           ? Math.round((semanticHits / semanticCandidates) * 100)
           : 0;
         sessionMeta.textContent = `Last injection: ${timeAgo}`;
+        const workLabel = workSource === "usage"
+          ? "Work saved (usage)"
+          : workSource === "mixed"
+            ? "Work saved (mixed)"
+            : "Work saved (estimate)";
+        let workTooltip = "Tokens you'd have spent rediscovering this context.";
+        if (workSource === "usage") {
+          workTooltip = `Tokens you'd have spent rediscovering this context (usage-based, ${workUsageItems} items).`;
+        } else if (workSource === "mixed") {
+          workTooltip = `Tokens you'd have spent rediscovering this context (${workUsageItems} usage, ${workEstimateItems} estimated).`;
+        } else {
+          workTooltip = "Tokens you'd have spent rediscovering this context (estimated from memory length).";
+        }
         const stats = [
           { label: "Memories packed", value: items, icon: "layers" },
           { label: "Pack size", value: packTokens.toLocaleString(), tooltip: "Token cost to inject memories into context", icon: "file-text" },
-          { label: "Work saved", value: workTokens.toLocaleString(), tooltip: "Tokens you'd have spent rediscovering this context", icon: "zap" },
+          { label: workLabel, value: workTokens.toLocaleString(), tooltip: workTooltip, icon: "zap" },
           { label: "Savings", value: `${savedTokens.toLocaleString()} (${savingsPercent}%)`, tooltip: "Net savings from reusing compressed memories", icon: "arrow-down-circle" },
         ];
         if (semanticCandidates > 0) {
@@ -1211,7 +1506,7 @@ VIEWER_HTML = """<!doctype html>
             const right = new Date(b.created_at || 0).getTime();
             return right - left;
           });
-          feedMeta.textContent = `${feedItems.length} items${filteredCount ? ` · ${filteredCount} observations filtered` : ""}`;
+          feedMeta.textContent = `${feedItems.length} items${filteredCount ? " · " + filteredCount + " observations filtered" : ""}`;
           renderFeed(feedItems);
           refreshStatus.innerHTML = "<span class='dot'></span>updated " + new Date().toLocaleTimeString();
         } catch (err) {

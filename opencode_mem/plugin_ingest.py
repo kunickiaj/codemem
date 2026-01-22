@@ -109,6 +109,33 @@ def _extract_assistant_messages(events: Iterable[dict[str, Any]]) -> list[str]:
     return messages
 
 
+def _extract_assistant_usage(events: Iterable[dict[str, Any]]) -> list[dict[str, int]]:
+    usage_events: list[dict[str, int]] = []
+    for event in events:
+        if event.get("type") != "assistant_usage":
+            continue
+        usage = event.get("usage") or {}
+        if not isinstance(usage, dict):
+            continue
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        total = input_tokens + output_tokens + cache_creation
+        if total <= 0:
+            continue
+        usage_events.append(
+            {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
+                "total_tokens": total,
+            }
+        )
+    return usage_events
+
+
 def _build_transcript(events: Iterable[dict[str, Any]]) -> str:
     """Build a transcript from user prompts and assistant messages in chronological order."""
     transcript_parts: list[str] = []
@@ -264,6 +291,7 @@ def ingest(payload: dict[str, Any]) -> None:
     max_chars = _get_config().summary_max_chars
     tool_events = _extract_tool_events(events, max_chars)
     assistant_messages = _extract_assistant_messages(events)
+    assistant_usage_events = _extract_assistant_usage(events)
     last_assistant_message = assistant_messages[-1] if assistant_messages else None
     # Use first_prompt from session_context if available (more complete)
     latest_prompt = first_prompt or (prompts[-1]["prompt_text"] if prompts else None)
@@ -327,7 +355,11 @@ def ingest(payload: dict[str, Any]) -> None:
     if tool_events:
         discovery_parts.append(json.dumps([asdict(e) for e in tool_events], ensure_ascii=False))
     discovery_text = "\n".join(discovery_parts)
-    discovery_tokens = store.estimate_tokens(discovery_text)
+    usage_token_total = sum(event["total_tokens"] for event in assistant_usage_events)
+    if usage_token_total > 0:
+        discovery_tokens = usage_token_total
+    else:
+        discovery_tokens = store.estimate_tokens(discovery_text)
 
     observations_to_store = []
     if STORE_TYPED and has_meaningful_observation(parsed.observations):
@@ -373,6 +405,7 @@ def ingest(payload: dict[str, Any]) -> None:
         metadata: dict[str, str | int] = {"source": "observer"}
         if per_item_tokens:
             metadata["discovery_tokens"] = per_item_tokens
+            metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
         store.remember_observation(
             session_id,
             kind=obs.kind.strip().lower(),
@@ -403,6 +436,7 @@ def ingest(payload: dict[str, Any]) -> None:
         }
         if per_item_tokens:
             summary_metadata["discovery_tokens"] = per_item_tokens
+            summary_metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
         store.add_session_summary(
             session_id,
             project,
