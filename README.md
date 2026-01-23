@@ -303,6 +303,13 @@ When OpenCode starts, the plugin loads and:
 | `OPENCODE_MEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `OPENCODE_MEM_OBSERVER_API_KEY` | API key for observer model (optional). |
 | `OPENCODE_MEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
+| `OPENCODE_MEM_DISABLE_CLI_INGEST` | Set to `1` to disable the plugin spawning `opencode-mem ingest` and rely on raw event streaming + Python auto-flush. |
+| `OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flushing of streamed raw events (default off). |
+| `OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
+| `OPENCODE_MEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
+| `OPENCODE_MEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` | Sweeper tick interval (default `30000`). |
+| `OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS` | Consider session idle if no events since this many ms (default `120000`). |
+| `OPENCODE_MEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
 
 ### Plugin slash commands
 
@@ -333,3 +340,23 @@ When `OPENCODE_MEM_OBSERVER_PROVIDER` is set to a custom provider, `OPENCODE_MEM
 2. Every tooling session now creates a memory entry and pushes typed artifacts into SQLite.
 3. Use `opencode-mem stats` / `recent` to see sessions and confirm the plugin ingested them.
 4. Browse the viewer at the printed URL.
+
+### Stream-only mode (advanced)
+
+If you want maximum reliability ("stream now, flush later"), you can disable CLI ingest in the plugin and let Python decide when to flush:
+
+```bash
+export OPENCODE_MEM_DISABLE_CLI_INGEST=1
+export OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH=1
+export OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS=60000
+export OPENCODE_MEM_RAW_EVENTS_SWEEPER=1
+export OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS=120000
+# optional retention
+# export OPENCODE_MEM_RAW_EVENTS_RETENTION_MS=$((7*24*60*60*1000))
+```
+
+To monitor backlog:
+
+```bash
+opencode-mem raw-events-status
+```
