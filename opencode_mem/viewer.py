@@ -18,11 +18,77 @@ from .config import (
 )
 from .db import DEFAULT_DB_PATH, from_json
 from .observer import _load_opencode_config
+from .raw_event_flush import flush_raw_events
 from .store import MemoryStore
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
 DEFAULT_PROVIDER_OPTIONS = ("openai", "anthropic")
+
+
+class RawEventAutoFlusher:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._timers: dict[str, threading.Timer] = {}
+        self._flushing: set[str] = set()
+
+    def enabled(self) -> bool:
+        return os.environ.get("OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH") == "1"
+
+    def debounce_ms(self) -> int:
+        value = os.environ.get("OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS", "60000")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 60000
+
+    def note_activity(self, opencode_session_id: str) -> None:
+        if not opencode_session_id:
+            return
+        if not self.enabled():
+            return
+        delay_ms = self.debounce_ms()
+        if delay_ms <= 0:
+            self.flush_now(opencode_session_id)
+            return
+        with self._lock:
+            existing = self._timers.pop(opencode_session_id, None)
+            if existing:
+                existing.cancel()
+            timer = threading.Timer(delay_ms / 1000.0, self.flush_now, args=(opencode_session_id,))
+            timer.daemon = True
+            self._timers[opencode_session_id] = timer
+            timer.start()
+
+    def flush_now(self, opencode_session_id: str) -> None:
+        if not opencode_session_id:
+            return
+        with self._lock:
+            if opencode_session_id in self._flushing:
+                return
+            self._flushing.add(opencode_session_id)
+            timer = self._timers.pop(opencode_session_id, None)
+        if timer:
+            timer.cancel()
+        try:
+            store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+            try:
+                flush_raw_events(
+                    store,
+                    opencode_session_id=opencode_session_id,
+                    cwd=None,
+                    project=None,
+                    started_at=None,
+                    max_events=None,
+                )
+            finally:
+                store.close()
+        finally:
+            with self._lock:
+                self._flushing.discard(opencode_session_id)
+
+
+RAW_EVENT_FLUSHER = RawEventAutoFlusher()
 
 
 def _load_provider_options() -> list[str]:
@@ -1888,11 +1954,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         return
                     opencode_session_id = str(item.get("opencode_session_id") or "")
                     event_type = str(item.get("event_type") or "")
-                    if "event_seq" not in item:
+                    event_seq_value = item.get("event_seq")
+                    if event_seq_value is None:
                         self._send_json({"error": "event_seq required"}, status=400)
                         return
                     try:
-                        event_seq = int(item.get("event_seq"))
+                        event_seq = int(str(event_seq_value))
                     except (TypeError, ValueError):
                         self._send_json({"error": "event_seq must be int"}, status=400)
                         return
@@ -1939,6 +2006,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         started_at=started_at,
                         last_seen_ts_wall_ms=last_seen_ts_wall_ms,
                     )
+                    RAW_EVENT_FLUSHER.note_activity(opencode_session_id)
                 self._send_json({"inserted": inserted, "received": len(items)})
                 return
             finally:

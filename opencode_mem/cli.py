@@ -498,7 +498,7 @@ def backfill_tags(
 def flush_raw_events(
     opencode_session_id: str = typer.Argument(..., help="OpenCode session id"),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
-    cwd: str = typer.Option(".", help="Working directory for capture context"),
+    cwd: str | None = typer.Option(None, help="Working directory for capture context"),
     project: str | None = typer.Option(None, help="Project identifier"),
     started_at: str | None = typer.Option(None, help="ISO timestamp for session start"),
     max_events: int | None = typer.Option(None, help="Max events to flush"),

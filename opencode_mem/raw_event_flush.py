@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Any
 
 from .plugin_ingest import ingest
@@ -64,11 +65,19 @@ def flush_raw_events(
     store: MemoryStore,
     *,
     opencode_session_id: str,
-    cwd: str,
+    cwd: str | None,
     project: str | None,
     started_at: str | None,
     max_events: int | None = None,
 ) -> dict[str, int]:
+    meta = store.raw_event_session_meta(opencode_session_id)
+    if cwd is None:
+        cwd = meta.get("cwd") or os.getcwd()
+    if project is None:
+        project = meta.get("project")
+    if started_at is None:
+        started_at = meta.get("started_at")
+
     last_flushed = store.raw_event_flush_state(opencode_session_id)
     events = store.raw_events_since(
         opencode_session_id=opencode_session_id,
