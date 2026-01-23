@@ -578,6 +578,13 @@ def test_record_raw_event_is_idempotent(tmp_path: Path) -> None:
     assert int(row["n"]) == 1
 
 
+def test_raw_event_flush_state_roundtrip(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    assert store.raw_event_flush_state("sess") == -1
+    store.update_raw_event_flush_state("sess", 12)
+    assert store.raw_event_flush_state("sess") == 12
+
+
 def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))

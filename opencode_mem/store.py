@@ -271,6 +271,72 @@ class MemoryStore:
         self.conn.commit()
         return True
 
+    def raw_event_flush_state(self, opencode_session_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT last_flushed_event_seq FROM raw_event_sessions WHERE opencode_session_id = ?",
+            (opencode_session_id,),
+        ).fetchone()
+        if row is None:
+            return -1
+        return int(row["last_flushed_event_seq"])
+
+    def update_raw_event_flush_state(self, opencode_session_id: str, last_flushed: int) -> None:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO raw_event_sessions(opencode_session_id, last_flushed_event_seq, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(opencode_session_id) DO UPDATE SET
+                last_flushed_event_seq = excluded.last_flushed_event_seq,
+                updated_at = excluded.updated_at
+            """,
+            (opencode_session_id, last_flushed, now),
+        )
+        self.conn.commit()
+
+    def max_raw_event_seq(self, opencode_session_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT MAX(event_seq) AS max_seq FROM raw_events WHERE opencode_session_id = ?",
+            (opencode_session_id,),
+        ).fetchone()
+        if row is None:
+            return -1
+        value = row["max_seq"]
+        return int(value) if value is not None else -1
+
+    def raw_events_since(
+        self,
+        *,
+        opencode_session_id: str,
+        after_event_seq: int,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        limit_clause = "LIMIT ?" if limit else ""
+        params: list[Any] = [opencode_session_id, after_event_seq]
+        if limit:
+            params.append(limit)
+        rows = self.conn.execute(
+            f"""
+            SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json
+            FROM raw_events
+            WHERE opencode_session_id = ? AND event_seq > ?
+            ORDER BY event_seq ASC
+            {limit_clause}
+            """,
+            params,
+        ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            payload = db.from_json(row["payload_json"])
+            if not isinstance(payload, dict):
+                payload = {}
+            payload["type"] = payload.get("type") or row["event_type"]
+            payload["timestamp_wall_ms"] = row["ts_wall_ms"]
+            payload["timestamp_mono_ms"] = row["ts_mono_ms"]
+            payload["event_seq"] = row["event_seq"]
+            results.append(payload)
+        return results
+
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
         metadata_text = None if metadata is None else db.to_json(metadata)
