@@ -47,10 +47,12 @@ Skip routine operations WITHOUT learnings:
 - Package installations with no errors or insights
 - Simple file reads with no discoveries
 - Repetitive operations already documented with no new findings
-If nothing meaningful happened AND nothing was learned, output nothing."""
+If nothing meaningful happened AND nothing was learned:
+- Output no <observation> blocks
+- Output <skip_summary reason="low-signal"/> instead of a <summary> block."""
 
 NARRATIVE_GUIDANCE = """\
-Create COMPREHENSIVE narratives that tell the complete story:
+Create narratives that tell the complete story:
 - Context: What was the problem or goal? What prompted this work?
 - Investigation: What was examined? What was discovered?
 - Learning: How does it work? Why does it exist? Any gotchas?
@@ -58,9 +60,9 @@ Create COMPREHENSIVE narratives that tell the complete story:
 - Impact: What's better? What does the system do differently?
 - Next steps: What remains? What should future sessions know?
 
-Aim for 200-800 words per significant work item.
-Combine related work into cohesive narratives instead of many small observations.
-Include specific details: file paths, function names, configuration values."""
+Aim for ~120-400 words per significant work item.
+Prefer fewer, higher-signal observations over many small ones.
+Include specific details when present: file paths, function names, configuration values."""
 
 OUTPUT_GUIDANCE = (
     "Output only XML. Do not include commentary outside XML.\n\n"
@@ -156,9 +158,8 @@ SUMMARY_SCHEMA = """
   </files_modified>
 </summary>
 
-IMPORTANT: Always write at least a minimal summary explaining the current state,
-even if you didn't learn anything new or complete any work. This helps track progress
-across sessions. The summary is for tracking the PRIMARY session work, not your observation process.
+If nothing meaningful happened, emit <skip_summary reason="low-signal"/> and do not emit <summary>.
+Otherwise, write a summary that explains the current state of the PRIMARY work (not your observation process).
 
 If the user prompt is a short approval or acknowledgement ("yes", "ok", "approved"),
 infer the request from the observed work and the completed/learned sections instead.
@@ -166,7 +167,7 @@ infer the request from the observed work and the completed/learned sections inst
 Only summarize what is evidenced in the session context. Do not infer or fabricate
 file edits, behaviors, or outcomes that are not explicitly observed.
 
-Write detailed summaries (200-600 words total across all fields).
+Keep summaries concise (aim for ~150-450 words total across all fields).
 
 This summary helps future sessions understand where this work left off.
 
