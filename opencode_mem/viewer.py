@@ -17,10 +17,25 @@ from .config import (
     write_config_file,
 )
 from .db import DEFAULT_DB_PATH, from_json
+from .observer import _load_opencode_config
 from .store import MemoryStore
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
+DEFAULT_PROVIDER_OPTIONS = ("openai", "anthropic")
+
+
+def _load_provider_options() -> list[str]:
+    config = _load_opencode_config()
+    provider_config = config.get("provider", {})
+    providers: list[str] = []
+    if isinstance(provider_config, dict):
+        providers = [key for key in provider_config if isinstance(key, str) and key]
+    if not providers:
+        return list(DEFAULT_PROVIDER_OPTIONS)
+    combined = sorted(set(providers) | set(DEFAULT_PROVIDER_OPTIONS))
+    return combined
+
 
 VIEWER_HTML = """<!doctype html>
 <html lang="en">
@@ -850,15 +865,13 @@ VIEWER_HTML = """<!doctype html>
             <label for="observerProvider">Observer provider</label>
             <select id="observerProvider">
               <option value="">auto (default)</option>
-              <option value="openai">openai</option>
-              <option value="anthropic">anthropic</option>
             </select>
             <div class="small">Leave blank to use defaults.</div>
           </div>
           <div class="field">
             <label for="observerModel">Observer model</label>
             <input id="observerModel" placeholder="leave empty for default" />
-            <div class="small">Override the observer model when set.</div>
+            <div class="small">Override the observer model. For custom providers, use provider/model (or set provider explicitly).</div>
           </div>
           <div class="field">
             <label for="observerMaxChars">Observer max chars</label>
@@ -1468,6 +1481,20 @@ VIEWER_HTML = """<!doctype html>
         settingsModal.hidden = !isOpen;
       }
 
+      function renderProviderOptions(providers) {
+        if (!observerProviderInput) {
+          return;
+        }
+        const options = ["", ...(providers || [])];
+        observerProviderInput.innerHTML = "";
+        options.forEach(provider => {
+          const option = document.createElement("option");
+          option.value = provider;
+          option.textContent = provider || "auto (default)";
+          observerProviderInput.appendChild(option);
+        });
+      }
+
       async function loadSettings() {
         settingsStatus.textContent = "Loading…";
         try {
@@ -1481,6 +1508,7 @@ VIEWER_HTML = """<!doctype html>
           const config = data.config || {};
           const effective = data.effective || {};
           const overrides = data.env_overrides || {};
+          renderProviderOptions(data.providers || []);
           observerProviderInput.value = config.observer_provider ?? "";
           observerModelInput.value = config.observer_model ?? "";
           const defaultMax = configDefaults.observer_max_chars ?? 12000;
@@ -1806,6 +1834,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         "defaults": asdict(OpencodeMemConfig()),
                         "effective": effective,
                         "env_overrides": get_env_overrides(),
+                        "providers": _load_provider_options(),
                     }
                 )
                 return
@@ -1841,7 +1870,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             "pack_observation_limit",
             "pack_session_limit",
         }
-        allowed_providers = {"openai", "anthropic"}
+        allowed_providers = set(_load_provider_options())
         config_path = get_config_path()
         try:
             config_data = read_config_file(config_path)
@@ -1862,7 +1891,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 provider = value.strip().lower()
                 if provider not in allowed_providers:
                     self._send_json(
-                        {"error": "observer_provider must be openai or anthropic"},
+                        {"error": "observer_provider must match a configured provider"},
                         status=400,
                     )
                     return

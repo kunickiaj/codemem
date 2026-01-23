@@ -299,7 +299,7 @@ When OpenCode starts, the plugin loads and:
 | `OPENCODE_MEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |
 | `OPENCODE_MEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
 | `OPENCODE_MEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |
-| `OPENCODE_MEM_OBSERVER_PROVIDER` | Force `openai` or `anthropic` (optional). |
+| `OPENCODE_MEM_OBSERVER_PROVIDER` | Force `openai`, `anthropic`, or a custom provider key (optional). |
 | `OPENCODE_MEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `OPENCODE_MEM_OBSERVER_API_KEY` | API key for observer model (optional). |
 | `OPENCODE_MEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
@@ -318,6 +318,14 @@ The ingest pipeline uses an observer agent to emit XML observations and summarie
 - **Anthropic**: `claude-4.5-haiku` (set `OPENCODE_MEM_OBSERVER_PROVIDER=anthropic` and provide `OPENCODE_MEM_OBSERVER_API_KEY` or `ANTHROPIC_API_KEY`; falls back to OpenCode OAuth cache when API keys are absent).
 
 Observer provider is selected from `OPENCODE_MEM_OBSERVER_PROVIDER` when set, otherwise inferred from the model (`claude*` → Anthropic, otherwise OpenAI). Override the model with `OPENCODE_MEM_OBSERVER_MODEL`, or use `OPENCODE_MEM_USE_OPENCODE_RUN=1` with `OPENCODE_MEM_OPENCODE_MODEL` as a fallback for OAuth-backed runs.
+
+### Custom providers (OpenCode config)
+
+Custom providers are loaded from `~/.config/opencode/opencode.json` (or JSONC). opencode-mem reads the same config for provider names, base URLs, headers, and model mappings. The viewer settings modal populates provider options from this config.
+
+To set a default model for a custom provider, add `defaultModel` under that provider. If omitted, opencode-mem falls back to the first model listed under `models`.
+
+When `OPENCODE_MEM_OBSERVER_PROVIDER` is set to a custom provider, `OPENCODE_MEM_OBSERVER_MODEL` can be the short model key (e.g. `claude-haiku`) or `provider/model`. If provider is left as auto, use the `provider/model` form so the custom provider can be inferred.
 
 ## Running OpenCode with the plugin
 

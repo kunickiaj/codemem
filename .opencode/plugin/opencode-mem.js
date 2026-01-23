@@ -846,10 +846,10 @@ export const OpencodeMemPlugin = async ({
       }
       
       if (eventType === "session.idle") {
-        // Schedule delayed flush instead of immediate
-        const flushDelay = getFlushDelay();
-        await logLine(`session.idle detected, scheduling flush in ${Math.round(flushDelay / 1000)}s (tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount})`);
-        await scheduleIdleFlush();
+        await logLine(
+          `session.idle detected, flushing immediately (tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount})`
+        );
+        await flushEvents();
       }
 
       if (eventType === "session.created") {

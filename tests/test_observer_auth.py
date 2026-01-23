@@ -11,6 +11,8 @@ from opencode_mem.observer import (
     _build_codex_headers,
     _extract_oauth_account_id,
     _extract_oauth_expires,
+    _get_provider_api_key,
+    _get_provider_headers,
     _load_opencode_oauth_cache,
     _resolve_oauth_provider,
 )
@@ -180,6 +182,28 @@ def test_build_codex_headers_includes_account_id() -> None:
 def test_build_codex_headers_without_account_id() -> None:
     headers = _build_codex_headers("token", None)
     assert headers == {"authorization": "Bearer token"}
+
+
+def test_provider_headers_resolve_file_placeholders(tmp_path: Path) -> None:
+    token_path = tmp_path / "token.txt"
+    token_path.write_text("secret-token")
+    provider_config = {
+        "options": {
+            "headers": {"Authorization": f"Bearer {{file:{token_path}}}"},
+        }
+    }
+    headers = _get_provider_headers(provider_config)
+    assert headers["Authorization"] == "Bearer secret-token"
+
+
+def test_provider_api_key_resolves_file_placeholders(tmp_path: Path) -> None:
+    token_path = tmp_path / "token.txt"
+    token_path.write_text("secret-token")
+    provider_config = {
+        "options": {"apiKey": f"{{file:{token_path}}}"},
+    }
+    api_key = _get_provider_api_key(provider_config)
+    assert api_key == "secret-token"
 
 
 def test_codex_payload_uses_input_schema() -> None:
