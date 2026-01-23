@@ -277,3 +277,25 @@ def test_import_from_claude_mem_idempotent(tmp_path: Path) -> None:
     assert store.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 2
     assert store.conn.execute("SELECT COUNT(*) FROM session_summaries").fetchone()[0] == 1
     assert store.conn.execute("SELECT COUNT(*) FROM user_prompts").fetchone()[0] == 1
+
+
+def test_import_from_claude_mem_preserves_discovery_tokens(tmp_path: Path) -> None:
+    claude_db = _create_claude_db(tmp_path)
+    opencode_db = tmp_path / "opencode-mem.db"
+    result = runner.invoke(
+        app,
+        [
+            "import-from-claude-mem",
+            str(claude_db),
+            "--db-path",
+            str(opencode_db),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    store = MemoryStore(opencode_db)
+    row = store.conn.execute(
+        "SELECT metadata_json FROM memory_items WHERE kind = 'session_summary' LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    meta = json.loads(row["metadata_json"])
+    assert meta.get("discovery_tokens") == 2222
