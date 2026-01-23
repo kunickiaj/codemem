@@ -44,6 +44,7 @@ def _create_claude_db(tmp_path: Path) -> Path:
             prompt_number INTEGER,
             created_at TEXT NOT NULL,
             created_at_epoch INTEGER NOT NULL,
+            discovery_tokens INTEGER,
             text TEXT
         )
         """
@@ -65,7 +66,8 @@ def _create_claude_db(tmp_path: Path) -> Path:
             files_edited TEXT,
             prompt_number INTEGER,
             created_at TEXT NOT NULL,
-            created_at_epoch INTEGER NOT NULL
+            created_at_epoch INTEGER NOT NULL,
+            discovery_tokens INTEGER
         )
         """
     )
@@ -101,9 +103,9 @@ def _create_claude_db(tmp_path: Path) -> Path:
         """
         INSERT INTO observations (
             memory_session_id, project, type, title, subtitle, facts, narrative,
-            concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch, text
+            concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch, discovery_tokens, text
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "mem-session-1",
@@ -119,6 +121,7 @@ def _create_claude_db(tmp_path: Path) -> Path:
             1,
             "2024-01-01T00:00:00Z",
             1704067200000,
+            1234,
             None,
         ),
     )
@@ -127,9 +130,9 @@ def _create_claude_db(tmp_path: Path) -> Path:
         """
         INSERT INTO session_summaries (
             memory_session_id, project, request, investigated, learned, completed,
-            next_steps, notes, files_read, files_edited, prompt_number, created_at, created_at_epoch
+            next_steps, notes, files_read, files_edited, prompt_number, created_at, created_at_epoch, discovery_tokens
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "mem-session-1",
@@ -145,6 +148,7 @@ def _create_claude_db(tmp_path: Path) -> Path:
             1,
             "2024-01-01T00:00:00Z",
             1704067200000,
+            2222,
         ),
     )
 

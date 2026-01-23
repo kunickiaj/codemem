@@ -623,6 +623,7 @@ def import_from_claude_mem(
     claude_db: str = typer.Argument(..., help="Path to claude-mem database"),
     db_path: str = typer.Option(None, help="Path to opencode-mem SQLite database"),
     project_filter: str = typer.Option(None, help="Only import memories from specific project"),
+    update_existing: bool = typer.Option(False, help="Update previously imported rows"),
     dry_run: bool = typer.Option(False, help="Preview import without writing"),
 ) -> None:
     """Import memories from claude-mem database."""
@@ -731,6 +732,8 @@ def import_from_claude_mem(
     imported_obs = 0
     imported_summaries = 0
     imported_prompts = 0
+    updated_obs = 0
+    updated_summaries = 0
 
     # Import observations
     print("\n[bold]Importing observations...[/bold]")
@@ -750,32 +753,51 @@ def import_from_claude_mem(
             created_at=row["created_at"],
             source_db=source_db,
         )
-        if store.find_imported_id("memory_items", import_key):
+        existing_obs_id = store.find_imported_id("memory_items", import_key)
+        if existing_obs_id and not update_existing:
             continue
 
-        store.remember_observation(
-            session_id,
-            kind=row["type"],
-            title=row["title"] or "Untitled",
-            narrative=row["narrative"] or row["text"] or "",
-            subtitle=row["subtitle"],
-            facts=json.loads(row["facts"]) if row["facts"] else None,
-            concepts=json.loads(row["concepts"]) if row["concepts"] else None,
-            files_read=json.loads(row["files_read"]) if row["files_read"] else None,
-            files_modified=json.loads(row["files_modified"]) if row["files_modified"] else None,
-            prompt_number=row["prompt_number"],
-            confidence=0.7,
-            metadata={
-                "source": "claude-mem",
-                "original_session_id": row["memory_session_id"],
-                "original_observation_id": row["id"],
-                "created_at": row["created_at"],
-                "created_at_epoch": row["created_at_epoch"],
-                "source_db": source_db,
-                "import_key": import_key,
-            },
-        )
-        imported_obs += 1
+        discovery_tokens = 0
+        discovery_source = "claude-mem"
+        if "discovery_tokens" in row:
+            discovery_tokens = int(row["discovery_tokens"] or 0)
+        else:
+            discovery_source = "claude-mem-missing"
+
+        obs_meta = {
+            "source": "claude-mem",
+            "original_session_id": row["memory_session_id"],
+            "original_observation_id": row["id"],
+            "created_at": row["created_at"],
+            "created_at_epoch": row["created_at_epoch"],
+            "source_db": source_db,
+            "import_key": import_key,
+            "discovery_tokens": discovery_tokens,
+            "discovery_source": discovery_source,
+        }
+        if existing_obs_id:
+            store.conn.execute(
+                "UPDATE memory_items SET metadata_json = ? WHERE id = ?",
+                (db.to_json(obs_meta), existing_obs_id),
+            )
+            store.conn.commit()
+            updated_obs += 1
+        else:
+            store.remember_observation(
+                session_id,
+                kind=row["type"],
+                title=row["title"] or "Untitled",
+                narrative=row["narrative"] or row["text"] or "",
+                subtitle=row["subtitle"],
+                facts=json.loads(row["facts"]) if row["facts"] else None,
+                concepts=json.loads(row["concepts"]) if row["concepts"] else None,
+                files_read=json.loads(row["files_read"]) if row["files_read"] else None,
+                files_modified=json.loads(row["files_modified"]) if row["files_modified"] else None,
+                prompt_number=row["prompt_number"],
+                confidence=0.7,
+                metadata=obs_meta,
+            )
+            imported_obs += 1
         if imported_obs % 100 == 0:
             print(f"  Imported {imported_obs}/{obs_count} observations...")
 
@@ -799,31 +821,50 @@ def import_from_claude_mem(
             created_at=row["created_at"],
             source_db=source_db,
         )
-        if store.find_imported_id("session_summaries", import_key):
+        if store.find_imported_id("session_summaries", import_key) and not update_existing:
             continue
 
-        store.add_session_summary(
-            session_id,
-            project=row["project"],
-            request=row["request"] or "",
-            investigated=row["investigated"] or "",
-            learned=row["learned"] or "",
-            completed=row["completed"] or "",
-            next_steps=row["next_steps"] or "",
-            notes=row["notes"] or "",
-            files_read=json.loads(row["files_read"]) if row["files_read"] else None,
-            files_edited=json.loads(row["files_edited"]) if row["files_edited"] else None,
-            prompt_number=row["prompt_number"],
-            metadata={
-                "source": "claude-mem",
-                "original_session_id": row["memory_session_id"],
-                "original_summary_id": row["id"],
-                "created_at": row["created_at"],
-                "created_at_epoch": row["created_at_epoch"],
-                "source_db": source_db,
-                "import_key": import_key,
-            },
-        )
+        summary_discovery_tokens = 0
+        summary_discovery_source = "claude-mem"
+        if "discovery_tokens" in row:
+            summary_discovery_tokens = int(row["discovery_tokens"] or 0)
+        else:
+            summary_discovery_source = "claude-mem-missing"
+
+        summary_meta = {
+            "source": "claude-mem",
+            "original_session_id": row["memory_session_id"],
+            "original_summary_id": row["id"],
+            "created_at": row["created_at"],
+            "created_at_epoch": row["created_at_epoch"],
+            "source_db": source_db,
+            "import_key": import_key,
+            "discovery_tokens": summary_discovery_tokens,
+            "discovery_source": summary_discovery_source,
+        }
+        existing_summary_id = store.find_imported_id("session_summaries", import_key)
+        if existing_summary_id:
+            store.conn.execute(
+                "UPDATE session_summaries SET metadata_json = ? WHERE id = ?",
+                (db.to_json(summary_meta), existing_summary_id),
+            )
+            store.conn.commit()
+            updated_summaries += 1
+        else:
+            store.add_session_summary(
+                session_id,
+                project=row["project"],
+                request=row["request"] or "",
+                investigated=row["investigated"] or "",
+                learned=row["learned"] or "",
+                completed=row["completed"] or "",
+                next_steps=row["next_steps"] or "",
+                notes=row["notes"] or "",
+                files_read=json.loads(row["files_read"]) if row["files_read"] else None,
+                files_edited=json.loads(row["files_edited"]) if row["files_edited"] else None,
+                prompt_number=row["prompt_number"],
+                metadata=summary_meta,
+            )
         # Also add as memory item for searchability
         summary_text = " ".join(
             filter(
@@ -862,7 +903,7 @@ def import_from_claude_mem(
                         "import_key": summary_memory_key,
                     },
                 )
-        imported_summaries += 1
+        imported_summaries += 0 if existing_summary_id else 1
         if imported_summaries % 50 == 0:
             print(f"  Imported {imported_summaries}/{summaries_count} summaries...")
 
@@ -929,6 +970,9 @@ def import_from_claude_mem(
     print(f"- Observations: {imported_obs}")
     print(f"- Session summaries: {imported_summaries}")
     print(f"- User prompts: {imported_prompts}")
+    if update_existing:
+        print(f"- Updated observations: {updated_obs}")
+        print(f"- Updated summaries: {updated_summaries}")
 
 
 @app.command()
