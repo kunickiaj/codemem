@@ -1653,6 +1653,7 @@ class MemoryStore:
                     "body_text": row["body_text"],
                     "confidence": row["confidence"],
                     "tags_text": row["tags_text"],
+                    "metadata_json": row["metadata_json"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                     "session_id": row["session_id"],
