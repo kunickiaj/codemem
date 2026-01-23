@@ -587,6 +587,18 @@ class MemoryStore:
         import_key = None
         if metadata and metadata.get("import_key"):
             import_key = metadata.get("import_key")
+        if metadata and metadata.get("flush_batch"):
+            meta_text = db.to_json(metadata)
+            row = self.conn.execute(
+                """
+                SELECT id FROM memory_items
+                WHERE session_id = ? AND kind = ? AND title = ? AND body_text = ? AND metadata_json = ?
+                LIMIT 1
+                """,
+                (session_id, kind, title, body_text, meta_text),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
         cur = self.conn.execute(
             """
             INSERT INTO memory_items(
@@ -651,6 +663,18 @@ class MemoryStore:
             )
         )
         metadata_payload = dict(metadata or {})
+        if metadata_payload.get("flush_batch"):
+            meta_text = db.to_json(metadata_payload)
+            row = self.conn.execute(
+                """
+                SELECT id FROM memory_items
+                WHERE session_id = ? AND kind = ? AND title = ? AND body_text = ? AND metadata_json = ?
+                LIMIT 1
+                """,
+                (session_id, kind, title, narrative, meta_text),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
         detail = {
             "subtitle": subtitle,
             "facts": facts or [],
