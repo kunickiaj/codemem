@@ -1845,6 +1845,73 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/raw-events":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8") if length else ""
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json({"error": "invalid json"}, status=400)
+                return
+            if not isinstance(payload, dict):
+                self._send_json({"error": "payload must be an object"}, status=400)
+                return
+
+            store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+            try:
+                items = payload.get("events")
+                if items is None:
+                    items = [payload]
+                if not isinstance(items, list):
+                    self._send_json({"error": "events must be a list"}, status=400)
+                    return
+
+                inserted = 0
+                for item in items:
+                    if not isinstance(item, dict):
+                        self._send_json({"error": "event must be an object"}, status=400)
+                        return
+                    opencode_session_id = str(item.get("opencode_session_id") or "")
+                    event_type = str(item.get("event_type") or "")
+                    try:
+                        event_seq = int(item.get("event_seq"))
+                    except (TypeError, ValueError):
+                        self._send_json({"error": "event_seq must be int"}, status=400)
+                        return
+                    ts_wall_ms = item.get("ts_wall_ms")
+                    if ts_wall_ms is not None:
+                        try:
+                            ts_wall_ms = int(ts_wall_ms)
+                        except (TypeError, ValueError):
+                            self._send_json({"error": "ts_wall_ms must be int"}, status=400)
+                            return
+                    ts_mono_ms = item.get("ts_mono_ms")
+                    if ts_mono_ms is not None:
+                        try:
+                            ts_mono_ms = float(ts_mono_ms)
+                        except (TypeError, ValueError):
+                            self._send_json({"error": "ts_mono_ms must be number"}, status=400)
+                            return
+                    event_payload = item.get("payload")
+                    if event_payload is None:
+                        event_payload = {}
+                    if not isinstance(event_payload, dict):
+                        self._send_json({"error": "payload must be an object"}, status=400)
+                        return
+                    if store.record_raw_event(
+                        opencode_session_id=opencode_session_id,
+                        event_seq=event_seq,
+                        event_type=event_type,
+                        payload=event_payload,
+                        ts_wall_ms=ts_wall_ms,
+                        ts_mono_ms=ts_mono_ms,
+                    ):
+                        inserted += 1
+                self._send_json({"inserted": inserted, "received": len(items)})
+                return
+            finally:
+                store.close()
+
         if parsed.path != "/api/config":
             self.send_response(404)
             self.end_headers()

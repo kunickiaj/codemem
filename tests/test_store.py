@@ -1,7 +1,12 @@
+import http.client
+import json
+import threading
+from http.server import HTTPServer
 from pathlib import Path
 
 from opencode_mem import store as store_module
 from opencode_mem.store import MemoryStore
+from opencode_mem.viewer import ViewerHandler
 
 
 def test_insert_and_search(tmp_path: Path) -> None:
@@ -568,3 +573,57 @@ def test_record_raw_event_is_idempotent(tmp_path: Path) -> None:
     ).fetchone()
     assert row is not None
     assert int(row["n"]) == 1
+
+
+def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = {
+            "opencode_session_id": "sess-1",
+            "event_seq": 1,
+            "event_type": "tool.execute.after",
+            "payload": {"tool": "read"},
+            "ts_wall_ms": 123,
+            "ts_mono_ms": 456.0,
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert data["inserted"] == 1
+
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp2 = conn.getresponse()
+        data2 = json.loads(resp2.read().decode("utf-8"))
+        assert resp2.status == 200
+        assert data2["inserted"] == 0
+        conn.close()
+
+        store = MemoryStore(db_path)
+        try:
+            row = store.conn.execute(
+                "SELECT COUNT(*) AS n FROM raw_events WHERE opencode_session_id = ?",
+                ("sess-1",),
+            ).fetchone()
+            assert row is not None
+            assert int(row["n"]) == 1
+        finally:
+            store.close()
+    finally:
+        server.shutdown()
