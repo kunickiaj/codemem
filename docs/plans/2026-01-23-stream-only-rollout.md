@@ -51,6 +51,12 @@ CLI:
 uv run opencode-mem raw-events-status
 ```
 
+If it shows error batches for a session (`batches=error:N`), retry them:
+
+```bash
+uv run opencode-mem raw-events-retry <opencode_session_id>
+```
+
 Viewer:
 
 - open viewer

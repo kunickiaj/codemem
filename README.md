@@ -360,3 +360,11 @@ To monitor backlog:
 ```bash
 opencode-mem raw-events-status
 ```
+
+### Troubleshooting
+
+If `raw-events-status` shows `batches=error:N` for a session, retry those batches:
+
+```bash
+opencode-mem raw-events-retry <opencode_session_id>
+```
