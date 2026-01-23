@@ -257,3 +257,27 @@ def test_tool_event_budget_dedupes_and_preserves_errors() -> None:
     # error preserved
     assert any(e.tool_error for e in budgeted)
     assert len(budgeted) <= 3
+
+
+def test_tool_event_budget_keeps_latest_git_status() -> None:
+    events = [
+        ToolEvent(
+            tool_name="bash",
+            tool_input={"command": "git status"},
+            tool_output="clean",
+            tool_error=None,
+            timestamp="2026-01-14T19:18:05.811Z",
+            cwd="/tmp",
+        ),
+        ToolEvent(
+            tool_name="bash",
+            tool_input={"command": "git status"},
+            tool_output="dirty",
+            tool_error=None,
+            timestamp="2026-01-14T19:18:06.811Z",
+            cwd="/tmp",
+        ),
+    ]
+    budgeted = _budget_tool_events(events, max_total_chars=5000, max_events=10)
+    assert len(budgeted) == 1
+    assert budgeted[0].tool_output == "dirty"

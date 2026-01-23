@@ -228,7 +228,15 @@ def _compact_bash_output(text: str, *, max_lines: int = 80, max_chars: int = 200
     return _compact_read_output(text, max_lines=max_lines, max_chars=max_chars)
 
 
+def _compact_list_output(text: str, *, max_lines: int = 120, max_chars: int = 2400) -> str:
+    return _compact_read_output(text, max_lines=max_lines, max_chars=max_chars)
+
+
 def _tool_event_signature(event: ToolEvent) -> str:
+    if event.tool_name == "bash" and isinstance(event.tool_input, dict):
+        cmd = str(event.tool_input.get("command") or "").strip().lower()
+        if cmd in {"git status", "git diff"} and not event.tool_error:
+            return f"bash:{cmd}"
     parts = [event.tool_name]
     try:
         parts.append(json.dumps(event.tool_input, sort_keys=True, ensure_ascii=False))
@@ -270,15 +278,16 @@ def _budget_tool_events(
     if max_events <= 0:
         return []
 
-    # De-dup identical tool events, keep first occurrence.
+    # De-dup tool events by signature, keeping the most recent occurrence.
     deduped: list[ToolEvent] = []
     seen: set[str] = set()
-    for event in tool_events:
+    for event in reversed(tool_events):
         signature = _tool_event_signature(event)
         if signature in seen:
             continue
         seen.add(signature)
         deduped.append(event)
+    deduped.reverse()
 
     if len(deduped) > max_events:
         ranked = sorted(
@@ -332,6 +341,8 @@ def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | N
         result = _compact_read_output(result)
     if tool == "bash" and isinstance(result, str):
         result = _compact_bash_output(result)
+    if tool in {"glob", "grep"} and isinstance(result, str):
+        result = _compact_list_output(result)
     error = _sanitize_payload(event.get("error"), max_chars)
     return ToolEvent(
         tool_name=tool,
