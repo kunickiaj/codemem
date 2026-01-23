@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -89,6 +90,85 @@ class RawEventAutoFlusher:
 
 
 RAW_EVENT_FLUSHER = RawEventAutoFlusher()
+
+
+class RawEventSweeper:
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def enabled(self) -> bool:
+        return os.environ.get("OPENCODE_MEM_RAW_EVENTS_SWEEPER") == "1"
+
+    def interval_ms(self) -> int:
+        value = os.environ.get("OPENCODE_MEM_RAW_EVENTS_SWEEPER_INTERVAL_MS", "30000")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 30000
+
+    def idle_ms(self) -> int:
+        value = os.environ.get("OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS", "120000")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 120000
+
+    def limit(self) -> int:
+        value = os.environ.get("OPENCODE_MEM_RAW_EVENTS_SWEEPER_LIMIT", "25")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 25
+
+    def retention_ms(self) -> int:
+        value = os.environ.get("OPENCODE_MEM_RAW_EVENTS_RETENTION_MS", "0")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def tick(self) -> None:
+        if not self.enabled():
+            return
+        now_ms = int(time.time() * 1000)
+        idle_before = now_ms - self.idle_ms()
+        store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+        try:
+            retention_ms = self.retention_ms()
+            if retention_ms > 0:
+                store.purge_raw_events(retention_ms)
+            session_ids = store.raw_event_sessions_pending_idle_flush(
+                idle_before_ts_wall_ms=idle_before,
+                limit=self.limit(),
+            )
+            for opencode_session_id in session_ids:
+                flush_raw_events(
+                    store,
+                    opencode_session_id=opencode_session_id,
+                    cwd=None,
+                    project=None,
+                    started_at=None,
+                    max_events=None,
+                )
+        finally:
+            store.close()
+
+    def start(self) -> None:
+        if not self.enabled():
+            return
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        interval_ms = max(1000, self.interval_ms())
+        while not self._stop.wait(interval_ms / 1000.0):
+            self.tick()
+
+
+RAW_EVENT_SWEEPER = RawEventSweeper()
 
 
 def _load_provider_options() -> list[str]:
@@ -2105,6 +2185,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
 
 def _serve(host: str, port: int) -> None:
+    RAW_EVENT_SWEEPER.start()
     server = HTTPServer((host, port), ViewerHandler)
     server.serve_forever()
 
