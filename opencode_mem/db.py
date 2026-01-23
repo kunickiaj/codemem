@@ -143,6 +143,20 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_usage_events_event_created ON usage_events(event, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id);
 
+        CREATE TABLE IF NOT EXISTS raw_events (
+            id INTEGER PRIMARY KEY,
+            opencode_session_id TEXT NOT NULL,
+            event_seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            ts_wall_ms INTEGER,
+            ts_mono_ms REAL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(opencode_session_id, event_seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_raw_events_session_seq ON raw_events(opencode_session_id, event_seq);
+        CREATE INDEX IF NOT EXISTS idx_raw_events_created_at ON raw_events(created_at DESC);
+
         CREATE TABLE IF NOT EXISTS user_prompts (
             id INTEGER PRIMARY KEY,
             session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,

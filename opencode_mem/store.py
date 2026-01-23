@@ -221,6 +221,56 @@ class MemoryStore:
             raise RuntimeError("Failed to create session")
         return int(lastrowid)
 
+    def record_raw_event(
+        self,
+        *,
+        opencode_session_id: str,
+        event_seq: int,
+        event_type: str,
+        payload: dict[str, Any],
+        ts_wall_ms: int | None = None,
+        ts_mono_ms: float | None = None,
+    ) -> bool:
+        if not opencode_session_id.strip():
+            raise ValueError("opencode_session_id is required")
+        if event_seq < 0:
+            raise ValueError("event_seq must be >= 0")
+        if not event_type.strip():
+            raise ValueError("event_type is required")
+        created_at = dt.datetime.now(dt.UTC).isoformat()
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO raw_events(
+                    opencode_session_id,
+                    event_seq,
+                    event_type,
+                    ts_wall_ms,
+                    ts_mono_ms,
+                    payload_json,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    opencode_session_id,
+                    event_seq,
+                    event_type,
+                    ts_wall_ms,
+                    ts_mono_ms,
+                    db.to_json(payload),
+                    created_at,
+                ),
+            )
+        except Exception as exc:
+            import sqlite3
+
+            if isinstance(exc, sqlite3.IntegrityError):
+                return False
+            raise
+        self.conn.commit()
+        return True
+
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
         metadata_text = None if metadata is None else db.to_json(metadata)

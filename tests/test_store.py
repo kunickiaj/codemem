@@ -539,3 +539,32 @@ def test_backfill_tags_text_dry_run_does_not_modify(tmp_path: Path) -> None:
     ).fetchone()
     assert row is not None
     assert str(row["tags_text"] or "") == ""
+
+
+def test_record_raw_event_is_idempotent(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    inserted = store.record_raw_event(
+        opencode_session_id="sess-123",
+        event_seq=1,
+        event_type="tool.execute.after",
+        payload={"hello": "world"},
+        ts_wall_ms=123,
+        ts_mono_ms=456.0,
+    )
+    assert inserted is True
+    inserted2 = store.record_raw_event(
+        opencode_session_id="sess-123",
+        event_seq=1,
+        event_type="tool.execute.after",
+        payload={"hello": "world"},
+        ts_wall_ms=124,
+        ts_mono_ms=457.0,
+    )
+    assert inserted2 is False
+
+    row = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM raw_events WHERE opencode_session_id = ?",
+        ("sess-123",),
+    ).fetchone()
+    assert row is not None
+    assert int(row["n"]) == 1
