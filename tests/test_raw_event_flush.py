@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from opencode_mem.raw_event_flush import EXTRACTOR_VERSION, flush_raw_events
 from opencode_mem.store import MemoryStore
+from opencode_mem.xml_parser import ParsedSummary
 
 
 def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
@@ -28,7 +29,16 @@ def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
 
     mock_response = MagicMock()
     mock_response.parsed.observations = []
-    mock_response.parsed.summary = None
+    mock_response.parsed.summary = ParsedSummary(
+        request="Test request",
+        investigated="",
+        learned="",
+        completed="",
+        next_steps="",
+        notes="",
+        files_read=[],
+        files_modified=[],
+    )
     mock_response.parsed.skip_summary_reason = None
 
     with (
@@ -54,6 +64,16 @@ def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
 
             session_rows = store.conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()[0]
             assert int(session_rows) == 1
+
+            memory_rows = store.conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_items WHERE session_id = ?",
+                (
+                    store.get_or_create_opencode_session(
+                        opencode_session_id="sess", cwd=str(tmp_path), project="test"
+                    ),
+                ),
+            ).fetchone()[0]
+            assert int(memory_rows) >= 1
 
             result2 = flush_raw_events(
                 store,
