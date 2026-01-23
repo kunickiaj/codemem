@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +13,7 @@ def test_raw_event_sweeper_flushes_idle_sessions(monkeypatch, tmp_path: Path) ->
     monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_SWEEPER", "1")
     monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS", "0")
     monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_SWEEPER_LIMIT", "10")
+    monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_RETENTION_MS", "0")
 
     store = MemoryStore(db_path)
     try:
@@ -38,7 +38,7 @@ def test_raw_event_sweeper_flushes_idle_sessions(monkeypatch, tmp_path: Path) ->
             cwd=str(tmp_path),
             project="test-project",
             started_at="2026-01-01T00:00:00Z",
-            last_seen_ts_wall_ms=int(time.time() * 1000),
+            last_seen_ts_wall_ms=0,
         )
         assert store.raw_event_flush_state("sess-sweep") == -1
     finally:

@@ -535,6 +535,38 @@ class MemoryStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def raw_event_batch_status_counts(self, opencode_session_id: str) -> dict[str, int]:
+        rows = self.conn.execute(
+            """
+            SELECT status, COUNT(*) AS n
+            FROM raw_event_flush_batches
+            WHERE opencode_session_id = ?
+            GROUP BY status
+            """,
+            (opencode_session_id,),
+        ).fetchall()
+        counts = {"started": 0, "completed": 0, "error": 0}
+        for row in rows:
+            status = str(row["status"] or "")
+            if status in counts:
+                counts[status] = int(row["n"])
+        return counts
+
+    def raw_event_error_batches(
+        self, opencode_session_id: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, start_event_seq, end_event_seq, extractor_version, status, updated_at
+            FROM raw_event_flush_batches
+            WHERE opencode_session_id = ? AND status = 'error'
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (opencode_session_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
         metadata_text = None if metadata is None else db.to_json(metadata)
