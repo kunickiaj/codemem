@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -387,6 +388,47 @@ class MemoryStore:
             payload["event_seq"] = row["event_seq"]
             results.append(payload)
         return results
+
+    def raw_event_sessions_pending_idle_flush(
+        self,
+        *,
+        idle_before_ts_wall_ms: int,
+        limit: int = 25,
+    ) -> list[str]:
+        rows = self.conn.execute(
+            """
+            WITH max_events AS (
+                SELECT opencode_session_id, MAX(event_seq) AS max_seq
+                FROM raw_events
+                GROUP BY opencode_session_id
+            )
+            SELECT s.opencode_session_id
+            FROM raw_event_sessions s
+            JOIN max_events e ON e.opencode_session_id = s.opencode_session_id
+            WHERE s.last_seen_ts_wall_ms IS NOT NULL
+              AND s.last_seen_ts_wall_ms <= ?
+              AND e.max_seq > s.last_flushed_event_seq
+            ORDER BY s.last_seen_ts_wall_ms ASC
+            LIMIT ?
+            """,
+            (idle_before_ts_wall_ms, limit),
+        ).fetchall()
+        return [str(row["opencode_session_id"]) for row in rows if row["opencode_session_id"]]
+
+    def purge_raw_events_before(self, cutoff_ts_wall_ms: int) -> int:
+        cur = self.conn.execute(
+            "DELETE FROM raw_events WHERE ts_wall_ms IS NOT NULL AND ts_wall_ms < ?",
+            (cutoff_ts_wall_ms,),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    def purge_raw_events(self, max_age_ms: int) -> int:
+        if max_age_ms <= 0:
+            return 0
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - max_age_ms
+        return self.purge_raw_events_before(cutoff)
 
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
