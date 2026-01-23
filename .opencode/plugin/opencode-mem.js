@@ -172,6 +172,9 @@ export const OpencodeMemPlugin = async ({
     (process.env.OPENCODE_MEM_RAW_EVENTS || "1").toLowerCase()
   );
   const rawEventsUrl = `http://${viewerHost}:${viewerPort}/api/raw-events`;
+  const disableCliIngest = ["1", "true", "on"].includes(
+    (process.env.OPENCODE_MEM_DISABLE_CLI_INGEST || "0").toLowerCase()
+  );
   const eventSeqBySession = new Map();
 
   const nextEventSeq = (sessionID) => {
@@ -614,6 +617,14 @@ export const OpencodeMemPlugin = async ({
   const flushEvents = async () => {
     if (!events.length) {
       await logLine("flush.skip empty");
+      return;
+    }
+
+    if (disableCliIngest) {
+      await logLine(`flush.skip cli_ingest_disabled count=${events.length}`);
+      events.length = 0;
+      sessionStartedAt = null;
+      resetSessionContext();
       return;
     }
 
