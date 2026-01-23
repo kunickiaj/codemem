@@ -168,15 +168,56 @@ export const OpencodeMemPlugin = async ({
   const messageTexts = new Map();
   let debugLogCount = 0;
 
-  // === ACCUMULATION STATE ===
-  // Delayed flush strategy: accumulate events until meaningful idle period
-  // Base delay is 2 minutes, but flushes sooner with heavy activity
-  const baseIdleFlushDelayMs = parseNumber(
-    process.env.OPENCODE_MEM_IDLE_FLUSH_DELAY_MS || "120000", // 2 minutes default
-    120000
+  const rawEventsEnabled = !["0", "false", "off"].includes(
+    (process.env.OPENCODE_MEM_RAW_EVENTS || "1").toLowerCase()
   );
-  let lastActivityTime = Date.now();
-  let idleFlushTimeout = null;
+  const rawEventsUrl = `http://${viewerHost}:${viewerPort}/api/raw-events`;
+  const eventSeqBySession = new Map();
+
+  const nextEventSeq = (sessionID) => {
+    const current = eventSeqBySession.get(sessionID) || 0;
+    eventSeqBySession.set(sessionID, current + 1);
+    return current;
+  };
+
+  const emitRawEvent = async ({ sessionID, type, payload }) => {
+    if (!rawEventsEnabled || !sessionID || !type) {
+      return;
+    }
+    try {
+      const body = {
+        opencode_session_id: sessionID,
+        event_seq: nextEventSeq(sessionID),
+        event_type: type,
+        ts_wall_ms: Date.now(),
+        ts_mono_ms:
+          typeof performance !== "undefined" && performance.now
+            ? performance.now()
+            : null,
+        payload,
+      };
+      await fetch(rawEventsUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      // best-effort only
+    }
+  };
+
+  const extractSessionID = (event) => {
+    if (!event) {
+      return null;
+    }
+    return (
+      event?.properties?.sessionID ||
+      event?.properties?.info?.id ||
+      event?.properties?.info?.sessionID ||
+      event?.properties?.part?.sessionID ||
+      null
+    );
+  };
 
   // Session context tracking for comprehensive memories
   const sessionContext = {
@@ -197,21 +238,6 @@ export const OpencodeMemPlugin = async ({
     sessionContext.filesRead = new Set();
   };
 
-  // Calculate flush delay based on accumulated work
-  const getFlushDelay = () => {
-    const { toolCount, promptCount } = sessionContext;
-    // Very heavy work: flush after 30s idle
-    if (toolCount >= 30 || promptCount >= 10) {
-      return 30000;
-    }
-    // Heavy work: flush after 60s idle
-    if (toolCount >= 10 || promptCount >= 5) {
-      return 60000;
-    }
-    // Light work: use base delay (2 min)
-    return baseIdleFlushDelayMs;
-  };
-
   // Check if we should force flush immediately (threshold-based)
   const shouldForceFlush = () => {
     const { toolCount, promptCount } = sessionContext;
@@ -229,31 +255,8 @@ export const OpencodeMemPlugin = async ({
     return false;
   };
 
-  const updateActivity = () => {
-    lastActivityTime = Date.now();
-    // Clear any pending idle flush when activity detected
-    if (idleFlushTimeout) {
-      clearTimeout(idleFlushTimeout);
-      idleFlushTimeout = null;
-    }
-  };
 
-  const scheduleIdleFlush = async () => {
-    // Don't schedule if already scheduled or no events to flush
-    if (idleFlushTimeout || events.length === 0) {
-      return;
-    }
-    const flushDelay = getFlushDelay();
-    idleFlushTimeout = setTimeout(async () => {
-      const idleMs = Date.now() - lastActivityTime;
-      const requiredDelay = getFlushDelay(); // Re-check in case more work accumulated
-      if (idleMs >= requiredDelay && events.length > 0) {
-        await logLine(`flush.idle after ${Math.round(idleMs / 1000)}s idle, ${events.length} events (tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount})`);
-        await flushEvents();
-      }
-      idleFlushTimeout = null;
-    }, flushDelay);
-  };
+  const updateActivity = () => {};
 
   const extractPromptText = (event) => {
     if (!event) {
@@ -600,13 +603,12 @@ export const OpencodeMemPlugin = async ({
     }
   };
 
-  const flushEvents = async () => {
-    // Clear any pending idle flush
-    if (idleFlushTimeout) {
-      clearTimeout(idleFlushTimeout);
-      idleFlushTimeout = null;
-    }
+  const captureEvent = (sessionID, event) => {
+    recordEvent(event);
+    void emitRawEvent({ sessionID, type: event?.type || "unknown", payload: event });
+  };
 
+  const flushEvents = async () => {
     if (!events.length) {
       await logLine("flush.skip empty");
       return;
@@ -690,7 +692,8 @@ export const OpencodeMemPlugin = async ({
     },
     event: async ({ event }) => {
       const eventType = event?.type || "unknown";
-      
+      const sessionID = extractSessionID(event);
+       
       // Always log session-related events for debugging /new
       if (eventType.startsWith("session.")) {
         await logLine(`SESSION EVENT: ${eventType}`);
@@ -782,7 +785,7 @@ export const OpencodeMemPlugin = async ({
           // promptCount incremented when capturing user_prompt
 
             lastPromptText = promptText;
-            events.push({
+            captureEvent(sessionID, {
               type: "user_prompt",
               prompt_number: promptCounter,
               prompt_text: promptText,
@@ -807,7 +810,7 @@ export const OpencodeMemPlugin = async ({
         if (assistantText && assistantText !== lastAssistantText) {
           updateActivity();
           lastAssistantText = assistantText;
-          events.push({
+          captureEvent(sessionID, {
             type: "assistant_message",
             assistant_text: assistantText,
             timestamp: new Date().toISOString(),
@@ -820,7 +823,7 @@ export const OpencodeMemPlugin = async ({
         const assistantUsage = extractAssistantUsage(event);
         if (assistantUsage) {
           updateActivity();
-          events.push({
+          captureEvent(sessionID, {
             type: "assistant_usage",
             message_id: assistantUsage.id,
             usage: assistantUsage.usage,
@@ -888,7 +891,7 @@ export const OpencodeMemPlugin = async ({
         }
       }
 
-      recordEvent({
+      captureEvent(input?.sessionID || null, {
         type: "tool.execute.after",
         tool: toolName,
         args,
