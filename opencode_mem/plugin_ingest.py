@@ -357,6 +357,9 @@ def ingest(payload: dict[str, Any]) -> None:
 
     # Extract session context from plugin (for comprehensive memories)
     session_context = payload.get("session_context") or {}
+    flush_batch = session_context.get("flush_batch")
+    if not isinstance(flush_batch, dict):
+        flush_batch = None
     first_prompt = session_context.get("first_prompt")
     prompt_count = session_context.get("prompt_count", 0)
     tool_count = session_context.get("tool_count", 0)
@@ -445,7 +448,10 @@ def ingest(payload: dict[str, Any]) -> None:
     transcript = _build_transcript(events)
     artifacts = build_artifact_bundle(pre, post, transcript)
     for kind, body, path in artifacts:
-        store.add_artifact(session_id, kind=kind, path=path, content_text=body)
+        artifact_meta: dict[str, Any] | None = {"flush_batch": flush_batch} if flush_batch else None
+        store.add_artifact(
+            session_id, kind=kind, path=path, content_text=body, metadata=artifact_meta
+        )
 
     # Build session context summary for observer
     session_summary_parts = []
