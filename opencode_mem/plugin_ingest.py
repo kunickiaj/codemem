@@ -372,21 +372,36 @@ def ingest(payload: dict[str, Any]) -> None:
     db_path = os.environ.get("OPENCODE_MEM_DB")
     store = MemoryStore(Path(db_path) if db_path else db.DEFAULT_DB_PATH)
     started_at = payload.get("started_at")
-    session_id = store.start_session(
-        cwd=cwd,
-        project=project,
-        git_remote=pre.get("git_remote"),
-        git_branch=pre.get("git_branch"),
-        user=os.environ.get("USER", "unknown"),
-        tool_version="plugin",
-        metadata={
-            "pre": pre,
-            "source": "plugin",
-            "event_count": len(events),
-            "started_at": started_at,
-            "session_context": session_context,
-        },
-    )
+    opencode_session_id = session_context.get("opencode_session_id")
+    if isinstance(opencode_session_id, str) and opencode_session_id.strip():
+        session_id = store.get_or_create_opencode_session(
+            opencode_session_id=opencode_session_id,
+            cwd=cwd,
+            project=project,
+            metadata={
+                "pre": pre,
+                "source": "plugin",
+                "event_count": len(events),
+                "started_at": started_at,
+                "session_context": session_context,
+            },
+        )
+    else:
+        session_id = store.start_session(
+            cwd=cwd,
+            project=project,
+            git_remote=pre.get("git_remote"),
+            git_branch=pre.get("git_branch"),
+            user=os.environ.get("USER", "unknown"),
+            tool_version="plugin",
+            metadata={
+                "pre": pre,
+                "source": "plugin",
+                "event_count": len(events),
+                "started_at": started_at,
+                "session_context": session_context,
+            },
+        )
     prompts = _extract_prompts(events)
     prompt_number = None
     for prompt in prompts:
