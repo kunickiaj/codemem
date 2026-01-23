@@ -567,6 +567,25 @@ class MemoryStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def mark_stuck_raw_event_batches_as_error(
+        self,
+        *,
+        older_than_iso: str,
+        limit: int = 100,
+    ) -> int:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        cur = self.conn.execute(
+            """
+            UPDATE raw_event_flush_batches
+            SET status = 'error', updated_at = ?
+            WHERE status = 'started' AND updated_at < ?
+            LIMIT ?
+            """,
+            (now, older_than_iso, limit),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0)
+
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
         metadata_text = None if metadata is None else db.to_json(metadata)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import socket
@@ -128,6 +129,13 @@ class RawEventSweeper:
         except (TypeError, ValueError):
             return 0
 
+    def stuck_batch_ms(self) -> int:
+        value = os.environ.get("OPENCODE_MEM_RAW_EVENTS_STUCK_BATCH_MS", "300000")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 300000
+
     def tick(self) -> None:
         if not self.enabled():
             return
@@ -138,6 +146,15 @@ class RawEventSweeper:
             retention_ms = self.retention_ms()
             if retention_ms > 0:
                 store.purge_raw_events(retention_ms)
+
+            stuck_ms = self.stuck_batch_ms()
+            if stuck_ms > 0:
+                cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(milliseconds=stuck_ms)
+                store.mark_stuck_raw_event_batches_as_error(
+                    older_than_iso=cutoff.isoformat(),
+                    limit=100,
+                )
+
             session_ids = store.raw_event_sessions_pending_idle_flush(
                 idle_before_ts_wall_ms=idle_before,
                 limit=self.limit(),
