@@ -2171,6 +2171,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         self._send_json({"error": "event must be an object"}, status=400)
                         return
                     opencode_session_id = str(item.get("opencode_session_id") or "")
+                    if opencode_session_id.startswith("msg_"):
+                        self._send_json({"error": "invalid opencode_session_id"}, status=400)
+                        return
                     event_type = str(item.get("event_type") or "")
                     event_seq_value = item.get("event_seq")
                     if event_seq_value is None:

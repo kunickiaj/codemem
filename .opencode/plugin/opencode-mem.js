@@ -216,13 +216,7 @@ export const OpencodeMemPlugin = async ({
     if (!event) {
       return null;
     }
-    return (
-      event?.properties?.sessionID ||
-      event?.properties?.info?.id ||
-      event?.properties?.info?.sessionID ||
-      event?.properties?.part?.sessionID ||
-      null
-    );
+    return event?.properties?.sessionID || null;
   };
 
   // Session context tracking for comprehensive memories

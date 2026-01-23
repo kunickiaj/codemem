@@ -687,3 +687,36 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
             store.close()
     finally:
         server.shutdown()
+
+
+def test_viewer_rejects_message_id_as_session_id(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = {
+            "opencode_session_id": "msg_123",
+            "event_seq": 1,
+            "event_type": "tool.execute.after",
+            "payload": {"tool": "read"},
+            "ts_wall_ms": 123,
+            "cwd": str(tmp_path),
+            "project": "test-project",
+            "started_at": "2026-01-01T00:00:00Z",
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+        conn.close()
+    finally:
+        server.shutdown()

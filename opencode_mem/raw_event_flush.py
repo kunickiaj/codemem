@@ -91,6 +91,8 @@ def flush_raw_events(
 
     start_event_seq = int(events[0].get("event_seq") or (last_flushed + 1))
     last_event_seq = int(events[-1].get("event_seq") or last_flushed)
+    if last_event_seq < start_event_seq:
+        return {"flushed": 0, "updated_state": 0}
     batch_id, status = store.get_or_create_raw_event_flush_batch(
         opencode_session_id=opencode_session_id,
         start_event_seq=start_event_seq,
