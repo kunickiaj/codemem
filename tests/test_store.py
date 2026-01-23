@@ -438,6 +438,77 @@ def test_semantic_search_respects_project_filter(monkeypatch, tmp_path: Path) ->
     assert b_id not in ids
 
 
+def test_semantic_search_respects_kind_filter(monkeypatch, tmp_path: Path) -> None:
+    class FakeEmbeddingClient:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    note_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha")
+    obs_id = store.remember_observation(
+        session,
+        kind="discovery",
+        title="Alpha obs",
+        narrative="Alpha",
+    )
+    store.end_session(session)
+
+    results = store._semantic_search("alpha", limit=10, filters={"kind": "note"})
+    ids = {item["id"] for item in results}
+    assert note_id in ids
+    assert obs_id not in ids
+
+
+def test_semantic_search_respects_project_and_kind_filter(monkeypatch, tmp_path: Path) -> None:
+    class FakeEmbeddingClient:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    a = store.start_session(
+        cwd="/tmp/a",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    a_note = store.remember(a, kind="note", title="Alpha", body_text="Alpha")
+    store.end_session(a)
+
+    b = store.start_session(
+        cwd="/tmp/b",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-b",
+    )
+    b_note = store.remember(b, kind="note", title="Alpha", body_text="Alpha")
+    store.end_session(b)
+
+    results = store._semantic_search(
+        "alpha",
+        limit=10,
+        filters={"project": "/tmp/project-a", "kind": "note"},
+    )
+    ids = {item["id"] for item in results}
+    assert a_note in ids
+    assert b_note not in ids
+
+
 def test_pack_limit_is_per_project(tmp_path: Path) -> None:
     """Ensure pack limit applies independently to each project."""
     store = MemoryStore(tmp_path / "mem.sqlite")
