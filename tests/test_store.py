@@ -627,6 +627,69 @@ def test_raw_event_backlog(tmp_path: Path) -> None:
     assert items[0]["pending"] == 1
 
 
+def test_pack_prefers_tag_overlap(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    a = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    id_relevant = store.remember(
+        a,
+        kind="discovery",
+        title="Vector search scoring",
+        body_text="Notes on retrieval.",
+        tags=["sqlite", "fts", "vector"],
+    )
+    store.remember(
+        a,
+        kind="discovery",
+        title="Unrelated",
+        body_text="Nothing about databases.",
+        tags=["frontend"],
+    )
+    store.end_session(a)
+
+    pack = store.build_memory_pack("sqlite vector", limit=3)
+    ids = [item.get("id") for item in pack.get("items", [])]
+    assert id_relevant in ids
+    assert len(ids) > 0
+
+
+def test_pack_dedupes_similar_titles(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    a = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        a,
+        kind="discovery",
+        title="Investigated flushing",
+        body_text="A",
+        tags=["flush"],
+    )
+    store.remember(
+        a,
+        kind="discovery",
+        title="Investigated flushing (again)",
+        body_text="B",
+        tags=["flush"],
+    )
+    store.end_session(a)
+
+    pack = store.build_memory_pack("flush", limit=5)
+    titles = [item.get("title") for item in pack.get("items", [])]
+    assert len(titles) == len(set(t[:48].lower() for t in titles if t))
+
+
 def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))

@@ -2115,6 +2115,23 @@ class MemoryStore:
         ) -> list[MemoryResult | dict[str, Any]]:
             return sorted(list(items), key=item_created_at, reverse=True)
 
+        def sort_by_tag_overlap(
+            items: Sequence[MemoryResult | dict[str, Any]],
+            query: str,
+        ) -> list[MemoryResult | dict[str, Any]]:
+            tokens = {t for t in re.findall(r"[a-z0-9_]+", query.lower()) if t}
+            if not tokens:
+                return list(items)
+
+            def overlap(item: MemoryResult | dict[str, Any]) -> int:
+                tags = item_tags(item)
+                tag_tokens = {t for t in tags.split() if t}
+                return len(tokens.intersection(tag_tokens))
+
+            return sorted(
+                list(items), key=lambda item: (overlap(item), item_created_at(item)), reverse=True
+            )
+
         def sort_oldest(
             items: Sequence[MemoryResult | dict[str, Any]],
         ) -> list[MemoryResult | dict[str, Any]]:
@@ -2176,6 +2193,9 @@ class MemoryStore:
             key=lambda item: observation_rank.get(item_kind(item), len(observation_kinds)),
         )
 
+        # Prefer items whose tags overlap the request context.
+        observation_candidates = sort_by_tag_overlap(observation_candidates, context)
+
         remaining = max(0, limit)
         summary_items: list[MemoryResult | dict[str, Any]] = []
         if summary_item is not None:
@@ -2190,6 +2210,20 @@ class MemoryStore:
         else:
             timeline_items = timeline_candidates[:timeline_limit]
         observation_items = observation_candidates[:observation_limit]
+
+        # Avoid same-y packs: allow only one session_summary per unique title prefix.
+        if not merge_results and observation_items:
+            seen = set()
+            deduped: list[MemoryResult | dict[str, Any]] = []
+            for item in observation_items:
+                title = item_title(item)
+                key = title.strip().lower()[:48]
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                deduped.append(item)
+            observation_items = deduped[:observation_limit]
 
         selected_ids: set[int] = set()
         sections: list[tuple[str, list[MemoryResult | dict[str, Any]]]] = []
