@@ -663,10 +663,16 @@ def import_from_claude_mem(
         f"SELECT COUNT(*) as count FROM sdk_sessions {where_clause}", params
     ).fetchone()["count"]
 
-    prompts_where = ""
+    prompts_count_where = ""
+    prompts_query_where = ""
     prompts_params: list[str] = []
     if project_filter:
-        prompts_where = """
+        prompts_count_where = """
+        WHERE content_session_id IN (
+            SELECT content_session_id FROM sdk_sessions WHERE project = ?
+        )
+        """
+        prompts_query_where = """
         WHERE p.content_session_id IN (
             SELECT content_session_id FROM sdk_sessions WHERE project = ?
         )
@@ -674,7 +680,7 @@ def import_from_claude_mem(
         prompts_params = [project_filter]
 
     prompts_count = claude_conn.execute(
-        f"SELECT COUNT(*) as count FROM user_prompts {prompts_where}", prompts_params
+        f"SELECT COUNT(*) as count FROM user_prompts {prompts_count_where}", prompts_params
     ).fetchone()["count"]
 
     print("[bold]Claude-mem Import Preview[/bold]")
@@ -915,7 +921,7 @@ def import_from_claude_mem(
         SELECT p.*, s.project
         FROM user_prompts p
         LEFT JOIN sdk_sessions s ON s.content_session_id = p.content_session_id
-        {prompts_where}
+        {prompts_query_where}
         ORDER BY p.created_at_epoch ASC
     """
     for row in claude_conn.execute(prompts_query, prompts_params):
