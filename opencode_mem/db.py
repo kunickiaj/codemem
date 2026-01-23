@@ -116,14 +116,18 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             VALUES (new.id, new.title, new.body_text, new.tags_text);
         END;
 
-        CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items BEGIN
-            DELETE FROM memory_fts WHERE rowid = old.id;
+        DROP TRIGGER IF EXISTS memory_items_au;
+        CREATE TRIGGER memory_items_au AFTER UPDATE ON memory_items BEGIN
+            INSERT INTO memory_fts(memory_fts, rowid, title, body_text, tags_text)
+            VALUES('delete', old.id, old.title, old.body_text, old.tags_text);
             INSERT INTO memory_fts(rowid, title, body_text, tags_text)
             VALUES (new.id, new.title, new.body_text, new.tags_text);
         END;
 
-        CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items BEGIN
-            DELETE FROM memory_fts WHERE rowid = old.id;
+        DROP TRIGGER IF EXISTS memory_items_ad;
+        CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
+            INSERT INTO memory_fts(memory_fts, rowid, title, body_text, tags_text)
+            VALUES('delete', old.id, old.title, old.body_text, old.tags_text);
         END;
 
         CREATE TABLE IF NOT EXISTS usage_events (

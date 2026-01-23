@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import difflib
 import hashlib
+import json
 import math
 import re
 from collections.abc import Iterable, Sequence
@@ -84,6 +85,92 @@ class MemoryStore:
         "you",
         "your",
     }
+
+    def _normalize_tag(self, value: str) -> str:
+        lowered = (value or "").strip().lower()
+        if not lowered:
+            return ""
+        lowered = re.sub(r"[^a-z0-9_]+", "-", lowered)
+        lowered = re.sub(r"-+", "-", lowered).strip("-")
+        if not lowered or lowered in self.STOPWORDS:
+            return ""
+        if len(lowered) > 40:
+            lowered = lowered[:40].rstrip("-")
+        return lowered
+
+    def _file_tags(self, path_value: str) -> list[str]:
+        raw = (path_value or "").strip()
+        if not raw:
+            return []
+        parts = re.split(r"[\\/]+", raw)
+        parts = [p for p in parts if p and p not in {".", ".."}]
+        if not parts:
+            return []
+        tags: list[str] = []
+        basename = self._normalize_tag(parts[-1])
+        if basename:
+            tags.append(basename)
+        if len(parts) >= 2:
+            parent = self._normalize_tag(parts[-2])
+            if parent:
+                tags.append(parent)
+        if len(parts) >= 3:
+            top = self._normalize_tag(parts[0])
+            if top:
+                tags.append(top)
+        return tags
+
+    def _derive_tags(
+        self,
+        *,
+        kind: str,
+        title: str = "",
+        concepts: list[str] | None = None,
+        files_read: list[str] | None = None,
+        files_modified: list[str] | None = None,
+    ) -> list[str]:
+        tags: list[str] = []
+        kind_tag = self._normalize_tag(kind)
+        if kind_tag:
+            tags.append(kind_tag)
+        for concept in concepts or []:
+            normalized = self._normalize_tag(concept)
+            if normalized:
+                tags.append(normalized)
+        for path_value in (files_read or []) + (files_modified or []):
+            tags.extend(self._file_tags(path_value))
+
+        if not tags and title:
+            for token in re.findall(r"[A-Za-z0-9_]+", title.lower()):
+                normalized = self._normalize_tag(token)
+                if normalized:
+                    tags.append(normalized)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for tag in tags:
+            if tag in seen:
+                continue
+            seen.add(tag)
+            deduped.append(tag)
+            if len(deduped) >= 20:
+                break
+        return deduped
+
+    def _safe_json_list(self, value: str | None) -> list[str]:
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        items: list[str] = []
+        for item in parsed:
+            if isinstance(item, str) and item.strip():
+                items.append(item.strip())
+        return items
 
     def __init__(
         self,
@@ -255,7 +342,15 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
-        tags_text = ""
+        tags_text = " ".join(
+            self._derive_tags(
+                kind=kind,
+                title=title,
+                concepts=concepts,
+                files_read=files_read,
+                files_modified=files_modified,
+            )
+        )
         metadata_payload = dict(metadata or {})
         detail = {
             "subtitle": subtitle,
@@ -326,6 +421,88 @@ class MemoryStore:
         memory_id = int(lastrowid)
         self._store_vectors(memory_id, title, narrative)
         return memory_id
+
+    def backfill_tags_text(
+        self,
+        limit: int | None = None,
+        since: str | None = None,
+        project: str | None = None,
+        active_only: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
+        params: list[Any] = []
+        where_clauses = ["(memory_items.tags_text IS NULL OR TRIM(memory_items.tags_text) = '')"]
+        join_sessions = False
+        if active_only:
+            where_clauses.append("memory_items.active = 1")
+        if since:
+            where_clauses.append("memory_items.created_at >= ?")
+            params.append(since)
+        if project:
+            clause, clause_params = self._project_clause(project)
+            if clause:
+                where_clauses.append(clause)
+                params.extend(clause_params)
+            join_sessions = True
+        where = " AND ".join(where_clauses)
+        join_clause = (
+            "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
+        )
+        limit_clause = "LIMIT ?" if limit else ""
+        if limit:
+            params.append(limit)
+
+        rows = self.conn.execute(
+            f"""
+            SELECT memory_items.id,
+                   memory_items.kind,
+                   memory_items.title,
+                   memory_items.concepts,
+                   memory_items.files_read,
+                   memory_items.files_modified
+            FROM memory_items
+            {join_clause}
+            WHERE {where}
+            ORDER BY memory_items.created_at ASC
+            {limit_clause}
+            """,
+            params,
+        ).fetchall()
+
+        checked = 0
+        updated = 0
+        skipped = 0
+        now = dt.datetime.now(dt.UTC).isoformat()
+
+        for row in rows:
+            checked += 1
+            memory_id = int(row["id"])
+            kind = str(row["kind"] or "")
+            title = str(row["title"] or "")
+            concepts = self._safe_json_list(row["concepts"])
+            files_read = self._safe_json_list(row["files_read"])
+            files_modified = self._safe_json_list(row["files_modified"])
+            tags = self._derive_tags(
+                kind=kind,
+                title=title,
+                concepts=concepts,
+                files_read=files_read,
+                files_modified=files_modified,
+            )
+            tags_text = " ".join(tags)
+            if not tags_text:
+                skipped += 1
+                continue
+            if not dry_run:
+                self.conn.execute(
+                    "UPDATE memory_items SET tags_text = ?, updated_at = ? WHERE id = ?",
+                    (tags_text, now, memory_id),
+                )
+            updated += 1
+
+        if not dry_run:
+            self.conn.commit()
+        return {"checked": checked, "updated": updated, "skipped": skipped}
 
     def backfill_vectors(
         self,
