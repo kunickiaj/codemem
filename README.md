@@ -303,7 +303,7 @@ When OpenCode starts, the plugin loads and:
 | `OPENCODE_MEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `OPENCODE_MEM_OBSERVER_API_KEY` | API key for observer model (optional). |
 | `OPENCODE_MEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
-| `OPENCODE_MEM_DISABLE_CLI_INGEST` | Set to `1` to disable the plugin spawning `opencode-mem ingest` and rely on raw event streaming + Python auto-flush. |
+| `OPENCODE_MEM_ENABLE_CLI_INGEST` | Set to `1` to allow the plugin to spawn `opencode-mem ingest` (legacy path). Default is stream-only. |
 | `OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flushing of streamed raw events (default off). |
 | `OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
 | `OPENCODE_MEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
@@ -343,10 +343,10 @@ When `OPENCODE_MEM_OBSERVER_PROVIDER` is set to a custom provider, `OPENCODE_MEM
 
 ### Stream-only mode (advanced)
 
-If you want maximum reliability ("stream now, flush later"), you can disable CLI ingest in the plugin and let Python decide when to flush:
+If you want maximum reliability ("stream now, flush later"), run stream-only and let Python decide when to flush:
 
 ```bash
-export OPENCODE_MEM_DISABLE_CLI_INGEST=1
+export OPENCODE_MEM_ENABLE_CLI_INGEST=0
 export OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH=1
 export OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS=60000
 export OPENCODE_MEM_RAW_EVENTS_SWEEPER=1
