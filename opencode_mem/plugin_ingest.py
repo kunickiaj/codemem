@@ -40,6 +40,17 @@ LOW_SIGNAL_TOOLS = {
     "askuserquestion",
 }
 
+
+def _is_internal_memory_tool(tool: str) -> bool:
+    """Return True for opencode-mem memory retrieval tools.
+
+    These tools surface previously stored memory. Treating their outputs as
+    new evidence can create feedback loops and noisy, self-referential memories.
+    """
+
+    return tool.startswith("opencode_mem_memory_")
+
+
 LOW_SIGNAL_OUTPUTS = {
     "wrote file successfully.",
     "wrote file successfully",
@@ -199,6 +210,8 @@ def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | N
     if event.get("type") != "tool.execute.after":
         return None
     tool = _normalize_tool_name(event)
+    if _is_internal_memory_tool(tool):
+        return None
     if tool in LOW_SIGNAL_TOOLS:
         return None
     args = event.get("args") or {}
@@ -375,6 +388,13 @@ def ingest(payload: dict[str, Any]) -> None:
     should_process = (
         bool(tool_events) or bool(latest_prompt) or (STORE_SUMMARY and last_assistant_message)
     )
+    if (
+        latest_prompt
+        and _is_trivial_request(latest_prompt)
+        and not tool_events
+        and not last_assistant_message
+    ):
+        should_process = False
     if not should_process:
         store.end_session(
             session_id,
@@ -407,10 +427,13 @@ def ingest(payload: dict[str, Any]) -> None:
         session_summary_parts.append(f"Read: {', '.join(files_read[:5])}")
     session_info = "; ".join(session_summary_parts) if session_summary_parts else ""
 
-    # Prepend session info to user prompt for observer context
+    # Provide user request first; keep session_info as trailing context.
     observer_prompt = latest_prompt or ""
     if session_info:
-        observer_prompt = f"[Session context: {session_info}]\n\n{observer_prompt}"
+        if observer_prompt:
+            observer_prompt = f"{observer_prompt}\n\n[Session context: {session_info}]"
+        else:
+            observer_prompt = f"[Session context: {session_info}]"
 
     observer_context = ObserverContext(
         project=project,
@@ -544,10 +567,11 @@ def ingest(payload: dict[str, Any]) -> None:
         )
         body_text = _summary_body(summary_to_store)
         if body_text and not is_low_signal_observation(body_text):
+            summary_title = _first_sentence(summary_to_store.request) or "Session summary"
             store.remember(
                 session_id,
                 kind="session_summary",
-                title="Session summary",
+                title=summary_title,
                 body_text=body_text,
                 confidence=0.6,
                 metadata=summary_metadata,
