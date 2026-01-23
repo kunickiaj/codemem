@@ -65,6 +65,16 @@ def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
             )
             assert result2["flushed"] == 0
 
+            artifact_rows = store.conn.execute(
+                "SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?",
+                (
+                    store.get_or_create_opencode_session(
+                        opencode_session_id="sess", cwd=str(tmp_path), project="test"
+                    ),
+                ),
+            ).fetchone()[0]
+            assert int(artifact_rows) > 0
+
     row = store.conn.execute(
         "SELECT status FROM raw_event_flush_batches WHERE opencode_session_id = ? AND extractor_version = ?",
         ("sess", EXTRACTOR_VERSION),

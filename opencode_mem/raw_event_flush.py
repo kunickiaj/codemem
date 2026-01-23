@@ -105,6 +105,12 @@ def flush_raw_events(
     session_context["start_event_seq"] = int(events[0].get("event_seq") or 0)
     session_context["end_event_seq"] = last_event_seq
     session_context["flusher"] = "raw_events"
+    session_context["extractor_version"] = EXTRACTOR_VERSION
+    session_context["flush_batch"] = {
+        "batch_id": batch_id,
+        "start_event_seq": start_event_seq,
+        "end_event_seq": last_event_seq,
+    }
 
     payload = {
         "cwd": cwd,

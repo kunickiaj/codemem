@@ -539,6 +539,18 @@ class MemoryStore:
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         content_hash = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
+        if metadata and metadata.get("flush_batch"):
+            meta_text = db.to_json(metadata)
+            row = self.conn.execute(
+                """
+                SELECT id FROM artifacts
+                WHERE session_id = ? AND kind = ? AND content_hash = ? AND metadata_json = ?
+                LIMIT 1
+                """,
+                (session_id, kind, content_hash, meta_text),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
         cur = self.conn.execute(
             """
             INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
