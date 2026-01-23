@@ -369,6 +369,38 @@ VIEWER_HTML = """<!doctype html>
         grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
         gap: 20px;
       }
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      .section-header h2 {
+        margin: 0;
+      }
+      .diag-list {
+        margin-top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .diag-line {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: var(--item-bg);
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .diag-line .left {
+        min-width: 0;
+      }
+      .diag-line .right {
+        flex-shrink: 0;
+        color: var(--muted);
+      }
       section {
         background: var(--card);
         border: 1px solid var(--border);
@@ -1056,6 +1088,17 @@ VIEWER_HTML = """<!doctype html>
           <div class="grid-2" id="sessionGrid"></div>
         </section>
       </div>
+      <section style="animation-delay: 0.06s;">
+        <div class="section-header">
+          <h2>Diagnostics</h2>
+          <button class="settings-button" id="diagnosticsToggle">Show</button>
+        </div>
+        <div id="diagnosticsBody" hidden>
+          <div class="section-meta" id="rawEventsMeta">Loading raw event backlog…</div>
+          <div class="grid-2" id="rawEventsGrid"></div>
+          <div class="diag-list" id="rawEventsList"></div>
+        </div>
+      </section>
         <section class="feed-section" style="animation-delay: 0.1s;">
           <h2>Memory feed</h2>
           <div class="feed-controls">
@@ -1078,6 +1121,11 @@ VIEWER_HTML = """<!doctype html>
       const feedTypeToggle = document.getElementById("feedTypeToggle");
       const sessionGrid = document.getElementById("sessionGrid");
       const sessionMeta = document.getElementById("sessionMeta");
+      const diagnosticsToggle = document.getElementById("diagnosticsToggle");
+      const diagnosticsBody = document.getElementById("diagnosticsBody");
+      const rawEventsMeta = document.getElementById("rawEventsMeta");
+      const rawEventsGrid = document.getElementById("rawEventsGrid");
+      const rawEventsList = document.getElementById("rawEventsList");
       const settingsButton = document.getElementById("settingsButton");
       const settingsBackdrop = document.getElementById("settingsBackdrop");
       const settingsModal = document.getElementById("settingsModal");
@@ -1102,6 +1150,7 @@ VIEWER_HTML = """<!doctype html>
       const itemViewState = new Map();
       const FEED_FILTER_KEY = "opencode-mem-feed-filter";
       const FEED_FILTERS = ["all", "observations", "summaries"];
+      const DIAGNOSTICS_KEY = "opencode-mem-diagnostics";
       let feedTypeFilter = "all";
 
       // Theme management
@@ -1129,6 +1178,15 @@ VIEWER_HTML = """<!doctype html>
       // Initialize theme
       setTheme(getTheme());
       themeToggle?.addEventListener("click", toggleTheme);
+
+      setDiagnosticsOpen(isDiagnosticsOpen());
+      diagnosticsToggle?.addEventListener("click", () => {
+        const next = !isDiagnosticsOpen();
+        setDiagnosticsOpen(next);
+        if (next) {
+          refresh();
+        }
+      });
 
       feedTypeFilter = getFeedTypeFilter();
       updateFeedTypeToggle();
@@ -1166,6 +1224,19 @@ VIEWER_HTML = """<!doctype html>
       function getFeedTypeFilter() {
         const saved = localStorage.getItem(FEED_FILTER_KEY) || "all";
         return FEED_FILTERS.includes(saved) ? saved : "all";
+      }
+
+      function isDiagnosticsOpen() {
+        return localStorage.getItem(DIAGNOSTICS_KEY) === "1";
+      }
+
+      function setDiagnosticsOpen(open) {
+        if (!diagnosticsBody) return;
+        diagnosticsBody.hidden = !open;
+        if (diagnosticsToggle) {
+          diagnosticsToggle.textContent = open ? "Hide" : "Show";
+        }
+        localStorage.setItem(DIAGNOSTICS_KEY, open ? "1" : "0");
       }
 
       function setFeedTypeFilter(value) {
@@ -1622,6 +1693,57 @@ VIEWER_HTML = """<!doctype html>
         if (typeof lucide !== "undefined") lucide.createIcons();
       }
 
+      function renderRawEventsStatus(items) {
+        if (!rawEventsGrid || !rawEventsMeta || !rawEventsList) {
+          return;
+        }
+        rawEventsGrid.textContent = "";
+        rawEventsList.textContent = "";
+        const list = Array.isArray(items) ? items : [];
+        const sessions = list.length;
+        const pendingTotal = list.reduce((sum, item) => sum + (Number(item.pending) || 0), 0);
+        rawEventsMeta.textContent = sessions
+          ? `Pending: ${sessions} sessions, ${pendingTotal} events`
+          : "No pending raw events";
+
+        const stats = [
+          { label: "Pending sessions", value: sessions, icon: "inbox" },
+          { label: "Pending events", value: pendingTotal.toLocaleString(), icon: "activity" },
+        ];
+        stats.forEach(item => {
+          const stat = createElement("div", "stat");
+          const icon = document.createElement("i");
+          icon.setAttribute("data-lucide", item.icon);
+          icon.className = "stat-icon";
+          const content = createElement("div", "stat-content");
+          const value = createElement("div", "value", String(item.value));
+          const label = createElement("div", "label", item.label);
+          content.append(value, label);
+          stat.append(icon, content);
+          rawEventsGrid.appendChild(stat);
+        });
+
+        list.slice(0, 10).forEach(item => {
+          const line = createElement("div", "diag-line");
+          const left = createElement("div", "left");
+          const right = createElement("div", "right mono");
+          const sid = String(item.opencode_session_id || "");
+          const shortId = sid.length > 10 ? `…${sid.slice(-10)}` : sid;
+          const project = String(item.project || "");
+          left.appendChild(createElement("div", "mono", `${shortId} · pending ${item.pending}`));
+          if (project) {
+            left.appendChild(createElement("div", "small", project));
+          }
+          const lastSeen = item.last_seen_ts_wall_ms
+            ? new Date(Number(item.last_seen_ts_wall_ms)).toLocaleString()
+            : "";
+          right.textContent = lastSeen;
+          line.append(left, right);
+          rawEventsList.appendChild(line);
+        });
+        if (typeof lucide !== "undefined") lucide.createIcons();
+      }
+
       function setSettingsOpen(isOpen) {
         settingsBackdrop.hidden = !isOpen;
         settingsModal.hidden = !isOpen;
@@ -1805,6 +1927,17 @@ VIEWER_HTML = """<!doctype html>
           ]);
           renderStats(stats);
           renderSessionStats(usage.recent_packs || [], !currentProject);
+
+          if (isDiagnosticsOpen()) {
+            try {
+              const raw = await fetch("/api/raw-events/status?limit=25").then(r => r.json());
+              renderRawEventsStatus(raw.items || []);
+            } catch (err) {
+              if (rawEventsMeta) {
+                rawEventsMeta.textContent = "Failed to load raw event status";
+              }
+            }
+          }
           const summaryItems = summaries.items || [];
           const observationItems = observations.items || [];
           const filteredObservations = observationItems.filter(item => !isLowSignalObservation(item));
