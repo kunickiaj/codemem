@@ -54,6 +54,26 @@ def test_build_transcript_from_events() -> None:
     assert transcript.index("Thanks!") < transcript.index("You're welcome!")
 
 
+def test_build_transcript_strips_private_blocks() -> None:
+    events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "Hello <private>secret</private> world",
+            "prompt_number": 1,
+            "timestamp": "2026-01-14T19:00:00Z",
+        },
+        {
+            "type": "assistant_message",
+            "assistant_text": "Ack <private>hidden</private>",
+            "timestamp": "2026-01-14T19:00:01Z",
+        },
+    ]
+    transcript = _build_transcript(events)
+    assert "secret" not in transcript
+    assert "hidden" not in transcript
+    assert "Hello" in transcript
+
+
 def test_build_transcript_empty_events() -> None:
     """Empty events should produce empty transcript."""
     assert _build_transcript([]) == ""
