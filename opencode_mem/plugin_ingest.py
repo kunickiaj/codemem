@@ -206,6 +206,18 @@ def _sanitize_tool_output(tool: str, output: Any, max_chars: int) -> Any:
     return sanitized
 
 
+def _compact_read_output(text: str, *, max_lines: int = 80, max_chars: int = 2000) -> str:
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"... (+{len(text.splitlines()) - max_lines} more lines)"]
+    compacted = "\n".join(lines)
+    if max_chars > 0 and len(compacted) > max_chars:
+        compacted = f"{compacted[:max_chars]}\n... (truncated)"
+    return compacted
+
+
 def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | None:
     if event.get("type") != "tool.execute.after":
         return None
@@ -216,6 +228,8 @@ def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | N
         return None
     args = event.get("args") or {}
     result = _sanitize_tool_output(tool, event.get("result"), max_chars)
+    if tool == "read" and isinstance(result, str):
+        result = _compact_read_output(result)
     error = _sanitize_payload(event.get("error"), max_chars)
     return ToolEvent(
         tool_name=tool,
