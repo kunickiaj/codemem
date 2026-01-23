@@ -280,6 +280,57 @@ class MemoryStore:
             return -1
         return int(row["last_flushed_event_seq"])
 
+    def update_raw_event_session_meta(
+        self,
+        *,
+        opencode_session_id: str,
+        cwd: str | None = None,
+        project: str | None = None,
+        started_at: str | None = None,
+        last_seen_ts_wall_ms: int | None = None,
+    ) -> None:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO raw_event_sessions(
+                opencode_session_id,
+                cwd,
+                project,
+                started_at,
+                last_seen_ts_wall_ms,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(opencode_session_id) DO UPDATE SET
+                cwd = COALESCE(excluded.cwd, raw_event_sessions.cwd),
+                project = COALESCE(excluded.project, raw_event_sessions.project),
+                started_at = COALESCE(excluded.started_at, raw_event_sessions.started_at),
+                last_seen_ts_wall_ms = COALESCE(excluded.last_seen_ts_wall_ms, raw_event_sessions.last_seen_ts_wall_ms),
+                updated_at = excluded.updated_at
+            """,
+            (opencode_session_id, cwd, project, started_at, last_seen_ts_wall_ms, now),
+        )
+        self.conn.commit()
+
+    def raw_event_session_meta(self, opencode_session_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            """
+            SELECT cwd, project, started_at, last_seen_ts_wall_ms, last_flushed_event_seq
+            FROM raw_event_sessions
+            WHERE opencode_session_id = ?
+            """,
+            (opencode_session_id,),
+        ).fetchone()
+        if row is None:
+            return {}
+        return {
+            "cwd": row["cwd"],
+            "project": row["project"],
+            "started_at": row["started_at"],
+            "last_seen_ts_wall_ms": row["last_seen_ts_wall_ms"],
+            "last_flushed_event_seq": row["last_flushed_event_seq"],
+        }
+
     def update_raw_event_flush_state(self, opencode_session_id: str, last_flushed: int) -> None:
         now = dt.datetime.now(dt.UTC).isoformat()
         self.conn.execute(
