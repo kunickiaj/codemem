@@ -65,6 +65,16 @@ def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
             session_rows = store.conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()[0]
             assert int(session_rows) == 1
 
+            summary_rows = store.conn.execute(
+                "SELECT COUNT(*) AS n FROM session_summaries WHERE session_id = ?",
+                (
+                    store.get_or_create_opencode_session(
+                        opencode_session_id="sess", cwd=str(tmp_path), project="test"
+                    ),
+                ),
+            ).fetchone()[0]
+            assert int(summary_rows) == 1
+
             memory_rows = store.conn.execute(
                 "SELECT COUNT(*) AS n FROM memory_items WHERE session_id = ?",
                 (
