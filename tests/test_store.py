@@ -667,7 +667,7 @@ def test_record_raw_event_is_idempotent(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     inserted = store.record_raw_event(
         opencode_session_id="sess-123",
-        event_seq=1,
+        event_id="evt-1",
         event_type="tool.execute.after",
         payload={"hello": "world"},
         ts_wall_ms=123,
@@ -676,7 +676,7 @@ def test_record_raw_event_is_idempotent(tmp_path: Path) -> None:
     assert inserted is True
     inserted2 = store.record_raw_event(
         opencode_session_id="sess-123",
-        event_seq=1,
+        event_id="evt-1",
         event_type="tool.execute.after",
         payload={"hello": "world"},
         ts_wall_ms=124,
@@ -690,6 +690,15 @@ def test_record_raw_event_is_idempotent(tmp_path: Path) -> None:
     ).fetchone()
     assert row is not None
     assert int(row["n"]) == 1
+
+    seqs = [
+        r[0]
+        for r in store.conn.execute(
+            "SELECT event_seq FROM raw_events WHERE opencode_session_id = ? ORDER BY event_seq",
+            ("sess-123",),
+        ).fetchall()
+    ]
+    assert seqs == [0]
 
 
 def test_raw_event_flush_state_roundtrip(tmp_path: Path) -> None:
@@ -722,7 +731,7 @@ def test_raw_event_backlog(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     store.record_raw_event(
         opencode_session_id="sess",
-        event_seq=0,
+        event_id="evt-0",
         event_type="user_prompt",
         payload={"type": "user_prompt", "prompt_text": "A"},
         ts_wall_ms=100,
@@ -840,6 +849,7 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         body = {
             "opencode_session_id": "sess-1",
+            "event_id": "evt-1",
             "event_seq": 1,
             "event_type": "tool.execute.after",
             "payload": {"tool": "read"},
@@ -902,6 +912,7 @@ def test_viewer_rejects_message_id_as_session_id(monkeypatch, tmp_path: Path) ->
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         body = {
             "opencode_session_id": "msg_123",
+            "event_id": "evt-1",
             "event_seq": 1,
             "event_type": "tool.execute.after",
             "payload": {"tool": "read"},

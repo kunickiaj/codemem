@@ -304,7 +304,7 @@ class MemoryStore:
         self,
         *,
         opencode_session_id: str,
-        event_seq: int,
+        event_id: str,
         event_type: str,
         payload: dict[str, Any],
         ts_wall_ms: int | None = None,
@@ -312,41 +312,73 @@ class MemoryStore:
     ) -> bool:
         if not opencode_session_id.strip():
             raise ValueError("opencode_session_id is required")
-        if event_seq < 0:
-            raise ValueError("event_seq must be >= 0")
+        if not event_id.strip():
+            raise ValueError("event_id is required")
         if not event_type.strip():
             raise ValueError("event_type is required")
-        created_at = dt.datetime.now(dt.UTC).isoformat()
-        try:
+
+        # Server-assigned sequencing. This avoids event_seq collisions when the plugin reloads.
+        cur = self.conn.execute(
+            "SELECT 1 FROM raw_events WHERE opencode_session_id = ? AND event_id = ?",
+            (opencode_session_id, event_id),
+        ).fetchone()
+        if cur is not None:
+            return False
+
+        existing = self.conn.execute(
+            "SELECT 1 FROM raw_event_sessions WHERE opencode_session_id = ?",
+            (opencode_session_id,),
+        ).fetchone()
+        if existing is None:
+            now = dt.datetime.now(dt.UTC).isoformat()
             self.conn.execute(
                 """
-                INSERT INTO raw_events(
-                    opencode_session_id,
-                    event_seq,
-                    event_type,
-                    ts_wall_ms,
-                    ts_mono_ms,
-                    payload_json,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO raw_event_sessions(opencode_session_id, updated_at)
+                VALUES (?, ?)
                 """,
-                (
-                    opencode_session_id,
-                    event_seq,
-                    event_type,
-                    ts_wall_ms,
-                    ts_mono_ms,
-                    db.to_json(payload),
-                    created_at,
-                ),
+                (opencode_session_id, now),
             )
-        except Exception as exc:
-            import sqlite3
 
-            if isinstance(exc, sqlite3.IntegrityError):
-                return False
-            raise
+        row = self.conn.execute(
+            """
+            UPDATE raw_event_sessions
+            SET last_received_event_seq = last_received_event_seq + 1,
+                updated_at = ?
+            WHERE opencode_session_id = ?
+            RETURNING last_received_event_seq
+            """,
+            (dt.datetime.now(dt.UTC).isoformat(), opencode_session_id),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to allocate raw event seq")
+        event_seq = int(row["last_received_event_seq"])
+
+        created_at = dt.datetime.now(dt.UTC).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO raw_events(
+                opencode_session_id,
+                event_id,
+                event_seq,
+                event_type,
+                ts_wall_ms,
+                ts_mono_ms,
+                payload_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                opencode_session_id,
+                event_id,
+                event_seq,
+                event_type,
+                ts_wall_ms,
+                ts_mono_ms,
+                db.to_json(payload),
+                created_at,
+            ),
+        )
         self.conn.commit()
         return True
 

@@ -176,12 +176,11 @@ export const OpencodeMemPlugin = async ({
     (process.env.OPENCODE_MEM_ENABLE_CLI_INGEST || "0").toLowerCase()
   );
   const disableCliIngest = !enableCliIngest;
-  const eventSeqBySession = new Map();
-
-  const nextEventSeq = (sessionID) => {
-    const current = eventSeqBySession.get(sessionID) || 0;
-    eventSeqBySession.set(sessionID, current + 1);
-    return current;
+  const nextEventId = () => {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `${Date.now()}-${Math.random()}`;
   };
 
   const emitRawEvent = async ({ sessionID, type, payload }) => {
@@ -191,7 +190,7 @@ export const OpencodeMemPlugin = async ({
     try {
       const body = {
         opencode_session_id: sessionID,
-        event_seq: nextEventSeq(sessionID),
+        event_id: nextEventId(),
         event_type: type,
         ts_wall_ms: Date.now(),
         ts_mono_ms:

@@ -19,7 +19,7 @@ def test_raw_event_sweeper_flushes_idle_sessions(monkeypatch, tmp_path: Path) ->
     try:
         store.record_raw_event(
             opencode_session_id="sess-sweep",
-            event_seq=0,
+            event_id="evt-0",
             event_type="user_prompt",
             payload={"type": "user_prompt", "prompt_text": "Hello"},
             ts_wall_ms=100,
@@ -27,9 +27,13 @@ def test_raw_event_sweeper_flushes_idle_sessions(monkeypatch, tmp_path: Path) ->
         )
         store.record_raw_event(
             opencode_session_id="sess-sweep",
-            event_seq=1,
+            event_id="evt-1",
             event_type="tool.execute.after",
-            payload={"type": "tool.execute.after", "tool": "read", "args": {"filePath": "x"}},
+            payload={
+                "type": "tool.execute.after",
+                "tool": "read",
+                "args": {"filePath": "x"},
+            },
             ts_wall_ms=200,
             ts_mono_ms=2.0,
         )
@@ -54,7 +58,7 @@ def test_purge_raw_events_before(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     store.record_raw_event(
         opencode_session_id="sess",
-        event_seq=0,
+        event_id="evt-0",
         event_type="user_prompt",
         payload={"type": "user_prompt", "prompt_text": "A"},
         ts_wall_ms=100,
@@ -62,7 +66,7 @@ def test_purge_raw_events_before(tmp_path: Path) -> None:
     )
     store.record_raw_event(
         opencode_session_id="sess",
-        event_seq=1,
+        event_id="evt-1",
         event_type="user_prompt",
         payload={"type": "user_prompt", "prompt_text": "B"},
         ts_wall_ms=200,

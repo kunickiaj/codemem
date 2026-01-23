@@ -2191,16 +2191,18 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if opencode_session_id.startswith("msg_"):
                         self._send_json({"error": "invalid opencode_session_id"}, status=400)
                         return
+                    event_id = str(item.get("event_id") or "")
+                    if not event_id:
+                        self._send_json({"error": "event_id required"}, status=400)
+                        return
                     event_type = str(item.get("event_type") or "")
                     event_seq_value = item.get("event_seq")
-                    if event_seq_value is None:
-                        self._send_json({"error": "event_seq required"}, status=400)
-                        return
-                    try:
-                        event_seq = int(str(event_seq_value))
-                    except (TypeError, ValueError):
-                        self._send_json({"error": "event_seq must be int"}, status=400)
-                        return
+                    if event_seq_value is not None:
+                        try:
+                            int(str(event_seq_value))
+                        except (TypeError, ValueError):
+                            self._send_json({"error": "event_seq must be int"}, status=400)
+                            return
                     ts_wall_ms = item.get("ts_wall_ms")
                     if ts_wall_ms is not None:
                         try:
@@ -2224,7 +2226,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         return
                     if store.record_raw_event(
                         opencode_session_id=opencode_session_id,
-                        event_seq=event_seq,
+                        event_id=event_id,
                         event_type=event_type,
                         payload=event_payload,
                         ts_wall_ms=ts_wall_ms,

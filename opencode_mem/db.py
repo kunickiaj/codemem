@@ -156,6 +156,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS raw_events (
             id INTEGER PRIMARY KEY,
             opencode_session_id TEXT NOT NULL,
+            event_id TEXT,
             event_seq INTEGER NOT NULL,
             event_type TEXT NOT NULL,
             ts_wall_ms INTEGER,
@@ -166,6 +167,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_raw_events_session_seq ON raw_events(opencode_session_id, event_seq);
         CREATE INDEX IF NOT EXISTS idx_raw_events_created_at ON raw_events(created_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_events_event_id ON raw_events(opencode_session_id, event_id);
 
         CREATE TABLE IF NOT EXISTS raw_event_sessions (
             opencode_session_id TEXT PRIMARY KEY,
@@ -173,6 +175,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             project TEXT,
             started_at TEXT,
             last_seen_ts_wall_ms INTEGER,
+            last_received_event_seq INTEGER NOT NULL DEFAULT -1,
             last_flushed_event_seq INTEGER NOT NULL DEFAULT -1,
             updated_at TEXT NOT NULL
         );
@@ -252,6 +255,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "raw_event_sessions", "project", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "started_at", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "last_seen_ts_wall_ms", "INTEGER")
+    _ensure_column(conn, "raw_event_sessions", "last_received_event_seq", "INTEGER")
+    _ensure_column(conn, "raw_events", "event_id", "TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_events_event_id ON raw_events(opencode_session_id, event_id)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_import_key ON sessions(import_key)")
     conn.execute(

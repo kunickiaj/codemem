@@ -40,6 +40,7 @@ def test_raw_events_autoflush_updates_flush_state(monkeypatch, tmp_path: Path) -
             events = [
                 {
                     "opencode_session_id": "sess-af",
+                    "event_id": "evt-0",
                     "event_seq": 0,
                     "event_type": "user_prompt",
                     "payload": {"type": "user_prompt", "prompt_text": "Hello"},
@@ -47,6 +48,7 @@ def test_raw_events_autoflush_updates_flush_state(monkeypatch, tmp_path: Path) -
                 },
                 {
                     "opencode_session_id": "sess-af",
+                    "event_id": "evt-1",
                     "event_seq": 1,
                     "event_type": "tool.execute.after",
                     "payload": {
