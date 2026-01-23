@@ -1859,6 +1859,19 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
             store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
             try:
+                cwd = payload.get("cwd")
+                if cwd is not None and not isinstance(cwd, str):
+                    self._send_json({"error": "cwd must be string"}, status=400)
+                    return
+                project = payload.get("project")
+                if project is not None and not isinstance(project, str):
+                    self._send_json({"error": "project must be string"}, status=400)
+                    return
+                started_at = payload.get("started_at")
+                if started_at is not None and not isinstance(started_at, str):
+                    self._send_json({"error": "started_at must be string"}, status=400)
+                    return
+
                 items = payload.get("events")
                 if items is None:
                     items = [payload]
@@ -1867,12 +1880,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     return
 
                 inserted = 0
+                last_seen_ts_wall_ms = None
+                session_ids: set[str] = set()
                 for item in items:
                     if not isinstance(item, dict):
                         self._send_json({"error": "event must be an object"}, status=400)
                         return
                     opencode_session_id = str(item.get("opencode_session_id") or "")
                     event_type = str(item.get("event_type") or "")
+                    if "event_seq" not in item:
+                        self._send_json({"error": "event_seq required"}, status=400)
+                        return
                     try:
                         event_seq = int(item.get("event_seq"))
                     except (TypeError, ValueError):
@@ -1885,6 +1903,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         except (TypeError, ValueError):
                             self._send_json({"error": "ts_wall_ms must be int"}, status=400)
                             return
+                        last_seen_ts_wall_ms = ts_wall_ms
                     ts_mono_ms = item.get("ts_mono_ms")
                     if ts_mono_ms is not None:
                         try:
@@ -1907,6 +1926,19 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         ts_mono_ms=ts_mono_ms,
                     ):
                         inserted += 1
+
+                    if opencode_session_id:
+                        session_ids.add(opencode_session_id)
+
+                if len(session_ids) == 1:
+                    opencode_session_id = next(iter(session_ids))
+                    store.update_raw_event_session_meta(
+                        opencode_session_id=opencode_session_id,
+                        cwd=cwd,
+                        project=project,
+                        started_at=started_at,
+                        last_seen_ts_wall_ms=last_seen_ts_wall_ms,
+                    )
                 self._send_json({"inserted": inserted, "received": len(items)})
                 return
             finally:

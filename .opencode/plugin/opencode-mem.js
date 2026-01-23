@@ -195,6 +195,9 @@ export const OpencodeMemPlugin = async ({
             ? performance.now()
             : null,
         payload,
+        cwd,
+        project: project?.root || project?.name || null,
+        started_at: sessionStartedAt,
       };
       await fetch(rawEventsUrl, {
         method: "POST",

@@ -601,6 +601,9 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
             "payload": {"tool": "read"},
             "ts_wall_ms": 123,
             "ts_mono_ms": 456.0,
+            "cwd": str(tmp_path),
+            "project": "test-project",
+            "started_at": "2026-01-01T00:00:00Z",
         }
         conn.request(
             "POST",
@@ -633,6 +636,11 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
             ).fetchone()
             assert row is not None
             assert int(row["n"]) == 1
+
+            meta = store.raw_event_session_meta("sess-1")
+            assert meta.get("cwd") == str(tmp_path)
+            assert meta.get("project") == "test-project"
+            assert meta.get("started_at") == "2026-01-01T00:00:00Z"
         finally:
             store.close()
     finally:

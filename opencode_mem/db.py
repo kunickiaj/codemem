@@ -159,6 +159,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS raw_event_sessions (
             opencode_session_id TEXT PRIMARY KEY,
+            cwd TEXT,
+            project TEXT,
+            started_at TEXT,
+            last_seen_ts_wall_ms INTEGER,
             last_flushed_event_seq INTEGER NOT NULL DEFAULT -1,
             updated_at TEXT NOT NULL
         );
@@ -213,6 +217,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memory_items", "import_key", "TEXT")
     _ensure_column(conn, "user_prompts", "import_key", "TEXT")
     _ensure_column(conn, "session_summaries", "import_key", "TEXT")
+    _ensure_column(conn, "raw_event_sessions", "cwd", "TEXT")
+    _ensure_column(conn, "raw_event_sessions", "project", "TEXT")
+    _ensure_column(conn, "raw_event_sessions", "started_at", "TEXT")
+    _ensure_column(conn, "raw_event_sessions", "last_seen_ts_wall_ms", "INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_import_key ON sessions(import_key)")
     conn.execute(
