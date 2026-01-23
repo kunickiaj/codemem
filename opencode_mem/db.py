@@ -167,6 +167,27 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS opencode_sessions (
+            opencode_session_id TEXT PRIMARY KEY,
+            session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_opencode_sessions_session_id ON opencode_sessions(session_id);
+
+        CREATE TABLE IF NOT EXISTS raw_event_flush_batches (
+            id INTEGER PRIMARY KEY,
+            opencode_session_id TEXT NOT NULL,
+            start_event_seq INTEGER NOT NULL,
+            end_event_seq INTEGER NOT NULL,
+            extractor_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(opencode_session_id, start_event_seq, end_event_seq, extractor_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_session ON raw_event_flush_batches(opencode_session_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_status ON raw_event_flush_batches(status, updated_at DESC);
+
         CREATE TABLE IF NOT EXISTS user_prompts (
             id INTEGER PRIMARY KEY,
             session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,

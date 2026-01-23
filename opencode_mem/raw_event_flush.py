@@ -7,6 +7,8 @@ from typing import Any
 from .plugin_ingest import ingest
 from .store import MemoryStore
 
+EXTRACTOR_VERSION = "raw_events_v1"
+
 
 def build_session_context(events: list[dict[str, Any]]) -> dict[str, Any]:
     prompt_count = sum(1 for e in events if e.get("type") == "user_prompt")
@@ -87,7 +89,17 @@ def flush_raw_events(
     if not events:
         return {"flushed": 0, "updated_state": 0}
 
+    start_event_seq = int(events[0].get("event_seq") or (last_flushed + 1))
     last_event_seq = int(events[-1].get("event_seq") or last_flushed)
+    batch_id, status = store.get_or_create_raw_event_flush_batch(
+        opencode_session_id=opencode_session_id,
+        start_event_seq=start_event_seq,
+        end_event_seq=last_event_seq,
+        extractor_version=EXTRACTOR_VERSION,
+    )
+    if status == "completed":
+        store.update_raw_event_flush_state(opencode_session_id, last_event_seq)
+        return {"flushed": 0, "updated_state": 1}
     session_context = build_session_context(events)
     session_context["opencode_session_id"] = opencode_session_id
     session_context["start_event_seq"] = int(events[0].get("event_seq") or 0)
@@ -101,6 +113,11 @@ def flush_raw_events(
         "events": events,
         "session_context": session_context,
     }
-    ingest(payload)
+    try:
+        ingest(payload)
+    except Exception:
+        store.update_raw_event_flush_batch_status(batch_id, "error")
+        raise
+    store.update_raw_event_flush_batch_status(batch_id, "completed")
     store.update_raw_event_flush_state(opencode_session_id, last_event_seq)
     return {"flushed": len(events), "updated_state": 1}

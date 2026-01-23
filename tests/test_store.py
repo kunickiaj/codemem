@@ -585,6 +585,25 @@ def test_raw_event_flush_state_roundtrip(tmp_path: Path) -> None:
     assert store.raw_event_flush_state("sess") == 12
 
 
+def test_get_or_create_raw_event_flush_batch_is_idempotent(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    batch_id, status = store.get_or_create_raw_event_flush_batch(
+        opencode_session_id="sess",
+        start_event_seq=0,
+        end_event_seq=2,
+        extractor_version="v1",
+    )
+    assert status == "started"
+    batch_id2, status2 = store.get_or_create_raw_event_flush_batch(
+        opencode_session_id="sess",
+        start_event_seq=0,
+        end_event_seq=2,
+        extractor_version="v1",
+    )
+    assert batch_id2 == batch_id
+    assert status2 == "started"
+
+
 def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))

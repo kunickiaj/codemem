@@ -5,6 +5,7 @@ import difflib
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from collections.abc import Iterable, Sequence
@@ -221,6 +222,83 @@ class MemoryStore:
         if lastrowid is None:
             raise RuntimeError("Failed to create session")
         return int(lastrowid)
+
+    def get_or_create_opencode_session(
+        self,
+        *,
+        opencode_session_id: str,
+        cwd: str,
+        project: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        row = self.conn.execute(
+            "SELECT session_id FROM opencode_sessions WHERE opencode_session_id = ?",
+            (opencode_session_id,),
+        ).fetchone()
+        if row is not None and row["session_id"] is not None:
+            return int(row["session_id"])
+
+        session_id = self.start_session(
+            cwd=cwd,
+            project=project,
+            git_remote=None,
+            git_branch=None,
+            user=os.environ.get("USER", "unknown"),
+            tool_version="raw_events",
+            metadata=metadata,
+        )
+        created_at = dt.datetime.now(dt.UTC).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO opencode_sessions(opencode_session_id, session_id, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(opencode_session_id) DO UPDATE SET session_id = excluded.session_id
+            """,
+            (opencode_session_id, session_id, created_at),
+        )
+        self.conn.commit()
+        return session_id
+
+    def get_or_create_raw_event_flush_batch(
+        self,
+        *,
+        opencode_session_id: str,
+        start_event_seq: int,
+        end_event_seq: int,
+        extractor_version: str,
+    ) -> tuple[int, str]:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        cur = self.conn.execute(
+            """
+            INSERT INTO raw_event_flush_batches(
+                opencode_session_id,
+                start_event_seq,
+                end_event_seq,
+                extractor_version,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, 'started', ?, ?)
+            ON CONFLICT(opencode_session_id, start_event_seq, end_event_seq, extractor_version)
+            DO UPDATE SET updated_at = excluded.updated_at
+            RETURNING id, status
+            """,
+            (opencode_session_id, start_event_seq, end_event_seq, extractor_version, now, now),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("Failed to create flush batch")
+        self.conn.commit()
+        return int(row["id"]), str(row["status"])
+
+    def update_raw_event_flush_batch_status(self, batch_id: int, status: str) -> None:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        self.conn.execute(
+            "UPDATE raw_event_flush_batches SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, batch_id),
+        )
+        self.conn.commit()
 
     def record_raw_event(
         self,

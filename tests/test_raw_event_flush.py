@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from opencode_mem.raw_event_flush import flush_raw_events
+from opencode_mem.raw_event_flush import EXTRACTOR_VERSION, flush_raw_events
 from opencode_mem.store import MemoryStore
 
 
@@ -64,3 +64,10 @@ def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
         )
         assert result2["flushed"] == 0
         ingest_mock.assert_not_called()
+
+    row = store.conn.execute(
+        "SELECT status FROM raw_event_flush_batches WHERE opencode_session_id = ? AND extractor_version = ?",
+        ("sess", EXTRACTOR_VERSION),
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "completed"
