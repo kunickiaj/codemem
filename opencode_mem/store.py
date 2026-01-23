@@ -2152,6 +2152,15 @@ class MemoryStore:
         if active_memories:
             vector_coverage = min(1.0, float(vector_count) / float(active_memories))
 
+        tags_filled = self.conn.execute(
+            "SELECT COUNT(*) FROM memory_items WHERE active = 1 AND TRIM(tags_text) != ''"
+        ).fetchone()[0]
+        tags_coverage = 0.0
+        if active_memories:
+            tags_coverage = min(1.0, float(tags_filled) / float(active_memories))
+
+        raw_events = self.conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0]
+
         usage_rows = self.conn.execute(
             """
             SELECT event, COUNT(*) as count, SUM(tokens_read) as tokens_read,
@@ -2181,6 +2190,9 @@ class MemoryStore:
                 "artifacts": artifacts,
                 "vector_rows": vector_count,
                 "vector_coverage": vector_coverage,
+                "tags_filled": tags_filled,
+                "tags_coverage": tags_coverage,
+                "raw_events": raw_events,
             },
             "usage": usage,
         }
