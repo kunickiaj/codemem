@@ -81,6 +81,9 @@ def test_usage_stats(tmp_path: Path) -> None:
     stats = store.stats()
     usage = {event["event"]: event for event in stats["usage"]["events"]}
 
+    assert "tags_coverage" in stats["database"]
+    assert "raw_events" in stats["database"]
+
     assert usage["search"]["count"] == 1
     assert usage["pack"]["count"] == 1
     assert usage["search"]["tokens_read"] > 0

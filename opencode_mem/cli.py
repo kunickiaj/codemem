@@ -416,7 +416,12 @@ def stats(db_path: str = typer.Option(None, help="Path to SQLite database")) -> 
     print(f"- Size: {_format_bytes(db_stats['size_bytes'])}")
     print(f"- Sessions: {db_stats['sessions']}")
     print(f"- Memory items: {db_stats['memory_items']} (active {db_stats['active_memory_items']})")
+    print(
+        f"- Tags: {db_stats['tags_filled']} filled "
+        f"(~{db_stats['tags_coverage'] * 100:.0f}% of active)"
+    )
     print(f"- Artifacts: {db_stats['artifacts']}")
+    print(f"- Raw events: {db_stats['raw_events']}")
 
     print("\n[bold]Usage[/bold]")
     if not usage["events"]:
