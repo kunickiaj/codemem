@@ -395,6 +395,49 @@ def test_pack_semantic_fallback(monkeypatch, tmp_path: Path) -> None:
     assert pack["items"][0]["title"] == "Alpha memory"
 
 
+def test_semantic_search_respects_project_filter(monkeypatch, tmp_path: Path) -> None:
+    class FakeEmbeddingClient:
+        def embed(self, texts):
+            vectors = []
+            for text in texts:
+                lowered = text.lower()
+                if "alpha" in lowered:
+                    vectors.append([1.0, 0.0])
+                else:
+                    vectors.append([0.0, 1.0])
+            return vectors
+
+    monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session_a = store.start_session(
+        cwd="/tmp/a",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    a_id = store.remember(session_a, kind="note", title="Alpha", body_text="Alpha A")
+    store.end_session(session_a)
+
+    session_b = store.start_session(
+        cwd="/tmp/b",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-b",
+    )
+    b_id = store.remember(session_b, kind="note", title="Alpha", body_text="Alpha B")
+    store.end_session(session_b)
+
+    results = store._semantic_search("alpha", limit=5, filters={"project": "/tmp/project-a"})
+    ids = {item["id"] for item in results}
+    assert a_id in ids
+    assert b_id not in ids
+
+
 def test_pack_limit_is_per_project(tmp_path: Path) -> None:
     """Ensure pack limit applies independently to each project."""
     store = MemoryStore(tmp_path / "mem.sqlite")

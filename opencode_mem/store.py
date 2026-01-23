@@ -1608,7 +1608,7 @@ class MemoryStore:
         if not embeddings:
             return []
         query_embedding = embeddings[0]
-        params: list[Any] = [query_embedding]
+        params: list[Any] = [query_embedding, limit]
         where_clauses = ["memory_items.active = 1"]
         join_sessions = False
         if filters:
@@ -1631,7 +1631,6 @@ class MemoryStore:
         join_clause = (
             "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
         )
-        params.append(limit)
         sql = f"""
             SELECT memory_items.*, memory_vectors.distance
             FROM memory_vectors
