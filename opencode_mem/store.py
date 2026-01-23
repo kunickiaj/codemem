@@ -995,6 +995,28 @@ class MemoryStore:
         import_key = None
         if metadata and metadata.get("import_key"):
             import_key = metadata.get("import_key")
+        if metadata and metadata.get("flush_batch"):
+            meta_text = db.to_json(metadata)
+            row = self.conn.execute(
+                """
+                SELECT id FROM session_summaries
+                WHERE session_id = ? AND request = ? AND investigated = ? AND learned = ?
+                  AND completed = ? AND next_steps = ? AND notes = ? AND metadata_json = ?
+                LIMIT 1
+                """,
+                (
+                    session_id,
+                    request,
+                    investigated,
+                    learned,
+                    completed,
+                    next_steps,
+                    notes,
+                    meta_text,
+                ),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
         cur = self.conn.execute(
             """
             INSERT INTO session_summaries(
