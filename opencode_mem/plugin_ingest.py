@@ -170,21 +170,27 @@ def _build_transcript(events: Iterable[dict[str, Any]]) -> str:
     for event in events:
         event_type = event.get("type")
         if event_type == "user_prompt":
-            prompt_text = str(event.get("prompt_text") or "").strip()
+            prompt_text = _strip_private(str(event.get("prompt_text") or "")).strip()
             if prompt_text:
                 transcript_parts.append(f"User: {prompt_text}")
         elif event_type == "assistant_message":
-            assistant_text = str(event.get("assistant_text") or "").strip()
+            assistant_text = _strip_private(str(event.get("assistant_text") or "")).strip()
             if assistant_text:
                 transcript_parts.append(f"Assistant: {assistant_text}")
     return "\n\n".join(transcript_parts)
+
+
+def _strip_private(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(r"<private>.*?</private>", "", text, flags=re.DOTALL | re.IGNORECASE)
 
 
 def _sanitize_payload(value: Any, max_chars: int) -> Any:
     if value is None:
         return None
     if isinstance(value, str):
-        return _truncate_text(value, max_chars)
+        return _truncate_text(_strip_private(value), max_chars)
     try:
         serialized = json.dumps(value, ensure_ascii=False)
     except Exception:
