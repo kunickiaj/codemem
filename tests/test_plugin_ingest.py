@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from opencode_mem.observer_prompts import ToolEvent
-from opencode_mem.plugin_ingest import _build_transcript, ingest
+from opencode_mem.plugin_ingest import _build_transcript, _event_to_tool_event, ingest
 
 
 def test_build_transcript_from_events() -> None:
@@ -155,3 +155,20 @@ def test_ingest_with_tool_events_does_not_crash(tmp_path: Path) -> None:
         ingest(payload)
 
     assert db_path.exists(), "Database should be created"
+
+
+def test_read_tool_output_is_compacted() -> None:
+    huge = "\n".join([f"{i:04d}: line" for i in range(500)])
+    event = {
+        "type": "tool.execute.after",
+        "tool": "read",
+        "args": {"filePath": "/tmp/foo.py"},
+        "result": huge,
+        "timestamp": "2026-01-14T19:00:03Z",
+    }
+    tool_event = _event_to_tool_event(event, max_chars=50000)
+    assert tool_event is not None
+    assert tool_event.tool_name == "read"
+    assert isinstance(tool_event.tool_output, str)
+    assert "(+" in tool_event.tool_output
+    assert len(tool_event.tool_output.splitlines()) <= 81
