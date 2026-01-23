@@ -690,6 +690,31 @@ def test_pack_dedupes_similar_titles(tmp_path: Path) -> None:
     assert len(titles) == len(set(t[:48].lower() for t in titles if t))
 
 
+def test_pack_reports_avoided_work_metrics(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember_observation(
+        session,
+        kind="discovery",
+        title="Expensive debug",
+        narrative="Did a lot of work.",
+        metadata={"discovery_tokens": 5000, "discovery_source": "usage"},
+    )
+    store.end_session(session)
+    pack = store.build_memory_pack("debug", limit=5)
+    metrics = pack.get("metrics")
+    assert isinstance(metrics, dict)
+    assert metrics.get("avoided_work_tokens") == 5000
+    assert metrics.get("avoided_work_known_items") == 1
+
+
 def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))

@@ -52,3 +52,4 @@ def test_pack_benchmark_does_not_record_usage(tmp_path: Path) -> None:
     assert result["summary"]["queries"] == 1
     assert result["results"][0]["query"] == "sqlite vector"
     assert "compression_ratio" in result["summary"]
+    assert "avoided_work_saved" in result["summary"]

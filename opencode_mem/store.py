@@ -2077,6 +2077,19 @@ class MemoryStore:
             body = item.body_text if isinstance(item, MemoryResult) else item.get("body_text", "")
             return self.estimate_tokens(f"{title} {body}".strip())
 
+        def avoided_work_tokens(item: MemoryResult | dict[str, Any]) -> tuple[int, str]:
+            metadata = get_metadata(item)
+            discovery_tokens = metadata.get("discovery_tokens")
+            discovery_source = metadata.get("discovery_source")
+            if discovery_tokens is not None:
+                try:
+                    tokens = int(discovery_tokens)
+                    if tokens > 0:
+                        return tokens, str(discovery_source or "known")
+                except (TypeError, ValueError):
+                    pass
+            return 0, "unknown"
+
         def work_source(item: MemoryResult | dict[str, Any]) -> str:
             metadata = get_metadata(item)
             if metadata.get("discovery_source") == "usage":
@@ -2330,7 +2343,20 @@ class MemoryStore:
         pack_text = "\n\n".join(section_blocks)
         pack_tokens = self.estimate_tokens(pack_text)
         work_tokens = sum(estimate_work_tokens(m) for m in final_items)
+        avoided_tokens_total = 0
+        avoided_known = 0
+        avoided_unknown = 0
+        avoided_sources: dict[str, int] = {}
+        for item in final_items:
+            tokens, source = avoided_work_tokens(item)
+            if tokens > 0:
+                avoided_tokens_total += tokens
+                avoided_known += 1
+                avoided_sources[source] = avoided_sources.get(source, 0) + 1
+            else:
+                avoided_unknown += 1
         tokens_saved = max(0, work_tokens - pack_tokens)
+        avoided_work_saved = max(0, avoided_tokens_total - pack_tokens)
         work_sources = [work_source(m) for m in final_items]
         usage_items = sum(1 for source in work_sources if source == "usage")
         estimate_items = sum(1 for source in work_sources if source != "usage")
@@ -2355,6 +2381,10 @@ class MemoryStore:
             compression_ratio = float(pack_tokens) / float(work_tokens)
             overhead_tokens = int(pack_tokens) - int(work_tokens)
 
+        avoided_work_ratio = None
+        if avoided_tokens_total > 0:
+            avoided_work_ratio = float(avoided_tokens_total) / float(pack_tokens or 1)
+
         metrics = {
             "limit": limit,
             "items": len(formatted),
@@ -2366,6 +2396,12 @@ class MemoryStore:
             "tokens_saved": tokens_saved,
             "compression_ratio": compression_ratio,
             "overhead_tokens": overhead_tokens,
+            "avoided_work_tokens": avoided_tokens_total,
+            "avoided_work_saved": avoided_work_saved,
+            "avoided_work_ratio": avoided_work_ratio,
+            "avoided_work_known_items": avoided_known,
+            "avoided_work_unknown_items": avoided_unknown,
+            "avoided_work_sources": avoided_sources,
             "work_source": work_source_label,
             "work_usage_items": usage_items,
             "work_estimate_items": estimate_items,
