@@ -494,6 +494,31 @@ def backfill_tags(
     print(f"Checked {result['checked']} memories")
 
 
+@app.command("flush-raw-events")
+def flush_raw_events(
+    opencode_session_id: str = typer.Argument(..., help="OpenCode session id"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    cwd: str = typer.Option(".", help="Working directory for capture context"),
+    project: str | None = typer.Option(None, help="Project identifier"),
+    started_at: str | None = typer.Option(None, help="ISO timestamp for session start"),
+    max_events: int | None = typer.Option(None, help="Max events to flush"),
+) -> None:
+    """Flush spooled raw events into the normal ingest pipeline."""
+
+    from .raw_event_flush import flush_raw_events as flush
+
+    store = _store(db_path)
+    result = flush(
+        store,
+        opencode_session_id=opencode_session_id,
+        cwd=cwd,
+        project=project,
+        started_at=started_at,
+        max_events=max_events,
+    )
+    print(f"Flushed {result['flushed']} events")
+
+
 @app.command()
 def mcp() -> None:
     """Run the MCP server for OpenCode."""
