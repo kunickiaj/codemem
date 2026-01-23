@@ -519,6 +519,26 @@ def flush_raw_events(
     print(f"Flushed {result['flushed']} events")
 
 
+@app.command("raw-events-status")
+def raw_events_status(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit: int = typer.Option(25, help="Max sessions to show"),
+) -> None:
+    """Show pending raw-event backlog by OpenCode session."""
+
+    store = _store(db_path)
+    items = store.raw_event_backlog(limit=limit)
+    if not items:
+        print("No pending raw events")
+        return
+    for item in items:
+        print(
+            f"- {item['opencode_session_id']} pending={item['pending']} "
+            f"max_seq={item['max_seq']} last_flushed={item['last_flushed_event_seq']} "
+            f"project={item.get('project') or ''}"
+        )
+
+
 @app.command()
 def mcp() -> None:
     """Run the MCP server for OpenCode."""

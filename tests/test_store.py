@@ -604,6 +604,29 @@ def test_get_or_create_raw_event_flush_batch_is_idempotent(tmp_path: Path) -> No
     assert status2 == "started"
 
 
+def test_raw_event_backlog(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    store.record_raw_event(
+        opencode_session_id="sess",
+        event_seq=0,
+        event_type="user_prompt",
+        payload={"type": "user_prompt", "prompt_text": "A"},
+        ts_wall_ms=100,
+        ts_mono_ms=1.0,
+    )
+    store.update_raw_event_session_meta(
+        opencode_session_id="sess",
+        cwd="/tmp",
+        project="p",
+        started_at="2026-01-01T00:00:00Z",
+        last_seen_ts_wall_ms=100,
+    )
+    items = store.raw_event_backlog(limit=10)
+    assert len(items) == 1
+    assert items[0]["opencode_session_id"] == "sess"
+    assert items[0]["pending"] == 1
+
+
 def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))

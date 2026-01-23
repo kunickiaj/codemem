@@ -1882,6 +1882,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+            if parsed.path == "/api/raw-events/status":
+                params = parse_qs(parsed.query)
+                limit = int(params.get("limit", ["25"])[0])
+                self._send_json({"items": store.raw_event_backlog(limit=limit)})
+                return
             if parsed.path == "/api/sessions":
                 params = parse_qs(parsed.query)
                 limit = int(params.get("limit", ["20"])[0])

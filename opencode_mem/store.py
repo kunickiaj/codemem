@@ -508,6 +508,33 @@ class MemoryStore:
         cutoff = now_ms - max_age_ms
         return self.purge_raw_events_before(cutoff)
 
+    def raw_event_backlog(self, *, limit: int = 25) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            WITH max_events AS (
+                SELECT opencode_session_id, MAX(event_seq) AS max_seq
+                FROM raw_events
+                GROUP BY opencode_session_id
+            )
+            SELECT
+              s.opencode_session_id,
+              s.project,
+              s.cwd,
+              s.started_at,
+              s.last_seen_ts_wall_ms,
+              s.last_flushed_event_seq,
+              e.max_seq,
+              (e.max_seq - s.last_flushed_event_seq) AS pending
+            FROM raw_event_sessions s
+            JOIN max_events e ON e.opencode_session_id = s.opencode_session_id
+            WHERE e.max_seq > s.last_flushed_event_seq
+            ORDER BY s.last_seen_ts_wall_ms DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def end_session(self, session_id: int, metadata: dict[str, Any] | None = None) -> None:
         ended_at = dt.datetime.now(dt.UTC).isoformat()
         metadata_text = None if metadata is None else db.to_json(metadata)
