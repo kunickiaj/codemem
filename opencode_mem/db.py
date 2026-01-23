@@ -34,10 +34,20 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
         if sqlite_vec_version(conn) is None:
             raise RuntimeError("sqlite-vec loaded but version check failed")
     except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
+        message = (
             "Failed to load sqlite-vec extension. "
-            "Install sqlite-vec with 'pip install sqlite-vec' and try again."
-        ) from exc
+            "Semantic recall requires sqlite-vec; see README for platform-specific setup. "
+            "If you need to run without embeddings temporarily, set OPENCODE_MEM_EMBEDDING_DISABLED=1."
+        )
+        text = str(exc)
+        if "ELFCLASS32" in text:
+            message = (
+                "Failed to load sqlite-vec extension (ELFCLASS32). "
+                "On Linux aarch64, PyPI may ship a 32-bit vec0.so; replace it with the 64-bit aarch64 loadable. "
+                "See README section: 'sqlite-vec on aarch64 (Linux)'. "
+                "If you need to run without embeddings temporarily, set OPENCODE_MEM_EMBEDDING_DISABLED=1."
+            )
+        raise RuntimeError(message) from exc
     finally:
         try:
             conn.enable_load_extension(False)

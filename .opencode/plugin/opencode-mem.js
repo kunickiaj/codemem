@@ -172,9 +172,10 @@ export const OpencodeMemPlugin = async ({
     (process.env.OPENCODE_MEM_RAW_EVENTS || "1").toLowerCase()
   );
   const rawEventsUrl = `http://${viewerHost}:${viewerPort}/api/raw-events`;
-  const disableCliIngest = ["1", "true", "on"].includes(
-    (process.env.OPENCODE_MEM_DISABLE_CLI_INGEST || "0").toLowerCase()
+  const enableCliIngest = ["1", "true", "on"].includes(
+    (process.env.OPENCODE_MEM_ENABLE_CLI_INGEST || "0").toLowerCase()
   );
+  const disableCliIngest = !enableCliIngest;
   const eventSeqBySession = new Map();
 
   const nextEventSeq = (sessionID) => {
