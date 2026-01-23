@@ -556,6 +556,8 @@ def ingest(payload: dict[str, Any]) -> None:
 
     for obs in observations_to_store:
         metadata: dict[str, str | int] = {"source": "observer"}
+        if flush_batch:
+            metadata["flush_batch"] = flush_batch
         if per_item_tokens:
             metadata["discovery_tokens"] = per_item_tokens
             metadata["discovery_source"] = "usage" if usage_token_total > 0 else "estimate"
@@ -587,6 +589,8 @@ def ingest(payload: dict[str, Any]) -> None:
             "prompt_number": prompt_number,
             "source": "observer",
         }
+        if flush_batch:
+            summary_metadata["flush_batch"] = flush_batch
         if request_original:
             summary_metadata["request_original"] = request_original
         if per_item_tokens:
