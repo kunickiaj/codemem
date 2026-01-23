@@ -463,6 +463,32 @@ def embed(
     print(f"Checked {result['checked']} memories")
 
 
+@app.command("backfill-tags")
+def backfill_tags(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit: int | None = typer.Option(None, help="Max memories to update"),
+    since: str | None = typer.Option(None, help="Only update memories since this date"),
+    project: str | None = typer.Option(None, help="Project identifier (defaults to git repo root)"),
+    all_projects: bool = typer.Option(False, help="Update across all projects"),
+    inactive: bool = typer.Option(False, help="Include inactive memories"),
+    dry_run: bool = typer.Option(False, help="Report without writing"),
+) -> None:
+    """Populate tags_text for memories missing tags."""
+
+    store = _store(db_path)
+    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
+    result = store.backfill_tags_text(
+        limit=limit,
+        since=since,
+        project=resolved_project,
+        active_only=not inactive,
+        dry_run=dry_run,
+    )
+    action = "Would update" if dry_run else "Updated"
+    print(f"{action} {result['updated']} memories (skipped {result['skipped']})")
+    print(f"Checked {result['checked']} memories")
+
+
 @app.command()
 def mcp() -> None:
     """Run the MCP server for OpenCode."""

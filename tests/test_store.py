@@ -436,3 +436,106 @@ def test_pack_limit_is_per_project(tmp_path: Path) -> None:
     all_items = pack_all["items"]
     assert len(all_items) <= 50, f"Expected at most 50 items total, got {len(all_items)}"
     assert len(all_items) > 0, "Expected some items in unfiltered pack"
+
+
+def test_remember_observation_populates_tags_text(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember_observation(
+        session,
+        kind="discovery",
+        title="Investigated tagging",
+        narrative="Found that tags_text was empty.",
+        concepts=["postgres indexing"],
+        files_modified=["opencode_mem/store.py"],
+    )
+    store.end_session(session)
+
+    row = store.conn.execute(
+        "SELECT tags_text FROM memory_items WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+    assert row is not None
+    tags_text = str(row["tags_text"] or "")
+    assert "postgres-indexing" in tags_text
+
+
+def test_search_finds_by_tag_only(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(
+        session,
+        kind="note",
+        title="Unrelated",
+        body_text="Nothing about databases here.",
+        tags=["postgres"],
+    )
+    store.end_session(session)
+
+    results = store.search("postgres", limit=5)
+    assert any(result.id == memory_id for result in results)
+
+
+def test_backfill_tags_text_is_idempotent(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha body")
+    store.end_session(session)
+
+    result = store.backfill_tags_text()
+    assert result["updated"] == 1
+
+    result2 = store.backfill_tags_text()
+    assert result2["updated"] == 0
+
+    row = store.conn.execute(
+        "SELECT tags_text FROM memory_items WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+    assert row is not None
+    assert str(row["tags_text"] or "") != ""
+
+
+def test_backfill_tags_text_dry_run_does_not_modify(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha body")
+    store.end_session(session)
+
+    result = store.backfill_tags_text(dry_run=True)
+    assert result["updated"] == 1
+
+    row = store.conn.execute(
+        "SELECT tags_text FROM memory_items WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+    assert row is not None
+    assert str(row["tags_text"] or "") == ""
