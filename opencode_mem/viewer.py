@@ -118,7 +118,8 @@ class RawEventSweeper:
         self._stop = threading.Event()
 
     def enabled(self) -> bool:
-        return os.environ.get("OPENCODE_MEM_RAW_EVENTS_SWEEPER") == "1"
+        value = (os.environ.get("OPENCODE_MEM_RAW_EVENTS_SWEEPER") or "1").strip().lower()
+        return value not in {"0", "false", "off"}
 
     def interval_ms(self) -> int:
         value = os.environ.get("OPENCODE_MEM_RAW_EVENTS_SWEEPER_INTERVAL_MS", "30000")
@@ -1946,8 +1947,7 @@ VIEWER_HTML = """<!doctype html>
           projects.forEach(project => {
             const option = document.createElement("option");
             option.value = project;
-            const displayName = project.split("/").pop() || project;
-            option.textContent = displayName;
+            option.textContent = project;
             option.title = project;
             if (project === currentProject) {
               option.selected = true;
@@ -2082,7 +2082,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/projects":
                 sessions = store.all_sessions()
-                projects = sorted({s["project"] for s in sessions if s.get("project")})
+                projects = sorted(
+                    {
+                        p.strip()
+                        for s in sessions
+                        if (p := s.get("project"))
+                        and isinstance(p, str)
+                        and p.strip()
+                        and not p.strip().lower().startswith("fatal:")
+                    }
+                )
                 self._send_json({"projects": projects})
                 return
             if parsed.path == "/api/observations":

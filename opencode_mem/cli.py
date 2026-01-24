@@ -1335,6 +1335,8 @@ def import_memories(
     for sess_data in sessions_data:
         old_session_id = sess_data["id"]
         project = remap_project if remap_project else sess_data.get("project")
+        if (not remap_project) and isinstance(project, str) and ("/" in project or "\\" in project):
+            project = project.replace("\\", "/").rstrip("/").split("/")[-1]
 
         import_key = _build_import_key(
             "export",
@@ -1443,6 +1445,8 @@ def import_memories(
             continue
 
         project = remap_project if remap_project else summ_data.get("project")
+        if (not remap_project) and isinstance(project, str) and ("/" in project or "\\" in project):
+            project = project.replace("\\", "/").rstrip("/").split("/")[-1]
         import_key = _build_import_key(
             "export",
             "summary",
@@ -1515,6 +1519,31 @@ def import_memories(
             print(f"  Imported {imported_prompts}/{len(prompts_data)} prompts...")
 
     print(f"[green]✓ Imported {imported_prompts} user prompts[/green]")
+
+
+@app.command()
+def normalize_projects(
+    db_path: str = typer.Option(None, help="Path to opencode-mem SQLite database"),
+    apply: bool = typer.Option(False, help="Apply changes (default is dry-run)"),
+) -> None:
+    """Normalize project identifiers in the DB.
+
+    This rewrites legacy basename projects (e.g. "opencode-mem") to a stable
+    full-path project, and replaces obvious git error strings ("fatal: ...") with
+    the session cwd when available.
+    """
+
+    store = _store(db_path)
+    preview = store.normalize_projects(dry_run=not apply)
+    mapping = preview.get("rewritten_paths") or {}
+    print("[bold]Project normalization[/bold]")
+    print(f"- Dry run: {preview.get('dry_run')}")
+    print(f"- Sessions to update: {preview.get('sessions_to_update')}")
+    print(f"- Raw event sessions to update: {preview.get('raw_event_sessions_to_update')}")
+    if mapping:
+        print("- Rewritten paths:")
+        for source in sorted(mapping):
+            print(f"  - {source} -> {mapping[source]}")
 
 
 @app.command()

@@ -101,18 +101,19 @@ def filter_lockfiles_from_list(files_output: str) -> str:
 
 
 def resolve_project(cwd: str, override: str | None = None) -> str | None:
-    if override:
-        return override
+    if override is not None:
+        override = override.strip()
+        return override or None
+
     repo_root = detect_git_info(cwd).get("repo_root")
     # Check if repo_root is a valid path (not a git error message)
     if repo_root and not repo_root.startswith("fatal:") and Path(repo_root).is_dir():
-        # Check if we're in a worktree and resolve to main repo
         main_repo = _resolve_worktree_parent(cwd)
         if main_repo:
-            return main_repo
-        return repo_root
-    # Fall back to directory name
-    return str(Path(cwd).resolve())
+            repo_root = main_repo
+        return Path(repo_root).name
+
+    return Path(cwd).resolve().name
 
 
 def _resolve_worktree_parent(cwd: str) -> str | None:

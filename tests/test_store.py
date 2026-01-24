@@ -209,6 +209,70 @@ def test_project_basename_filters(tmp_path: Path) -> None:
     assert len(recent_results) == 1
 
 
+def test_project_full_path_filter_matches_basename_sessions(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp/project-a",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="project-a",
+    )
+    store.remember(session, kind="note", title="Note", body_text="Alpha only")
+    store.end_session(session)
+
+    recent_results = store.recent(limit=5, filters={"project": "/tmp/project-a"})
+    assert len(recent_results) == 1
+    assert recent_results[0]["body_text"] == "Alpha only"
+
+
+def test_normalize_projects_rewrites_basenames_and_git_errors(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+
+    full = store.start_session(
+        cwd="/tmp/opencode-mem",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/opencode-mem",
+    )
+    short = store.start_session(
+        cwd="/tmp/opencode-mem",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="opencode-mem",
+    )
+    fatal = store.start_session(
+        cwd="/tmp/not-a-repo",
+        git_remote=None,
+        git_branch=None,
+        user="tester",
+        tool_version="test",
+        project="fatal: not a git repository",
+    )
+    store.end_session(full)
+    store.end_session(short)
+    store.end_session(fatal)
+
+    store.normalize_projects(dry_run=False)
+
+    short_row = store.conn.execute("SELECT project FROM sessions WHERE id = ?", (short,)).fetchone()
+    assert short_row is not None
+    assert short_row["project"] == "opencode-mem"
+
+    full_row = store.conn.execute("SELECT project FROM sessions WHERE id = ?", (full,)).fetchone()
+    assert full_row is not None
+    assert full_row["project"] == "opencode-mem"
+
+    fatal_row = store.conn.execute("SELECT project FROM sessions WHERE id = ?", (fatal,)).fetchone()
+    assert fatal_row is not None
+    assert fatal_row["project"] == "not-a-repo"
+
+
 def test_pack_falls_back_to_recent_for_tasks(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

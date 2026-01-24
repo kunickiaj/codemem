@@ -72,6 +72,14 @@ def flush_raw_events(
     started_at: str | None,
     max_events: int | None = None,
 ) -> dict[str, int]:
+    def _event_seq(value: Any, fallback: int) -> int:
+        if value is None:
+            return fallback
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
     meta = store.raw_event_session_meta(opencode_session_id)
     if cwd is None:
         cwd = meta.get("cwd") or os.getcwd()
@@ -89,8 +97,8 @@ def flush_raw_events(
     if not events:
         return {"flushed": 0, "updated_state": 0}
 
-    start_event_seq = int(events[0].get("event_seq") or (last_flushed + 1))
-    last_event_seq = int(events[-1].get("event_seq") or last_flushed)
+    start_event_seq = _event_seq(events[0].get("event_seq"), last_flushed + 1)
+    last_event_seq = _event_seq(events[-1].get("event_seq"), last_flushed)
     if last_event_seq < start_event_seq:
         return {"flushed": 0, "updated_state": 0}
     batch_id, status = store.get_or_create_raw_event_flush_batch(
@@ -107,7 +115,7 @@ def flush_raw_events(
         return {"flushed": 0, "updated_state": 0}
     session_context = build_session_context(events)
     session_context["opencode_session_id"] = opencode_session_id
-    session_context["start_event_seq"] = int(events[0].get("event_seq") or 0)
+    session_context["start_event_seq"] = _event_seq(events[0].get("event_seq"), 0)
     session_context["end_event_seq"] = last_event_seq
     session_context["flusher"] = "raw_events"
     session_context["extractor_version"] = EXTRACTOR_VERSION

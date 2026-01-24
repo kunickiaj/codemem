@@ -20,10 +20,15 @@
 - Export/Import: `opencode-mem export-memories`, `opencode-mem import-memories`
 
 ## Test Commands
-- Run all tests: `pytest`
-- Run a single file: `pytest tests/test_store.py`
-- Run a single test: `pytest tests/test_store.py::test_store_roundtrip`
+- Run all tests: `uv run pytest`
+- Run a single file: `uv run pytest tests/test_store.py`
+- Run a single test: `uv run pytest tests/test_store.py::test_store_roundtrip`
 - Pytest config: `pyproject.toml` sets `-q` (quiet) by default.
+
+## Releases
+- Update `pyproject.toml` version (semver) and `opencode_mem/__init__.py` `__version__`
+- Ensure `uv run pytest` and `uv run ruff check opencode_mem tests` pass
+- Tag and push (e.g. `git tag v0.8.1` then `git push origin main --tags`) to trigger release
 
 ## Lint / Format
 - Linter: `ruff check opencode_mem tests`

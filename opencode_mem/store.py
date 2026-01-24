@@ -1590,11 +1590,114 @@ class MemoryStore:
         if not project:
             return "", []
         if "/" in project or "\\" in project:
-            return "sessions.project = ?", [project]
+            base = self._project_basename(project)
+            if not base:
+                return "", []
+            return (
+                "(sessions.project = ? OR sessions.project LIKE ? OR sessions.project LIKE ?)",
+                [base, f"%/{base}", f"%\\{base}"],
+            )
         return (
             "(sessions.project = ? OR sessions.project LIKE ? OR sessions.project LIKE ?)",
             [project, f"%/{project}", f"%\\{project}"],
         )
+
+    @staticmethod
+    def _project_basename(value: str) -> str:
+        normalized = value.replace("\\", "/").rstrip("/")
+        if not normalized:
+            return ""
+        return normalized.split("/")[-1]
+
+    def normalize_projects(self, *, dry_run: bool = True) -> dict[str, Any]:
+        """Normalize project values in the DB.
+
+        - Rewrites path-like projects ("/Users/.../repo") to their basename ("repo")
+          to avoid machine-specific anchoring.
+        - Rewrites obvious git error strings ("fatal: ...") to the session cwd basename
+          when available.
+        - Rewrites project="/" to the session cwd basename when possible.
+
+        This is intended as a one-time cleanup when imports or older versions stored
+        inconsistent project identifiers.
+        """
+
+        session_rows = self.conn.execute(
+            "SELECT id, cwd, project FROM sessions ORDER BY started_at DESC"
+        ).fetchall()
+        raw_rows = self.conn.execute(
+            "SELECT opencode_session_id, cwd, project FROM raw_event_sessions"
+        ).fetchall()
+
+        rewritten_paths: dict[str, str] = {}
+
+        session_updates: list[tuple[str | None, int]] = []
+        for row in session_rows:
+            session_id = int(row["id"])
+            cwd = row["cwd"]
+            project = row["project"]
+            if not project or not isinstance(project, str):
+                continue
+            proj = project.strip()
+            if not proj:
+                continue
+            new_value: str | None = None
+
+            if proj == "/" or proj.lower().startswith("fatal:"):
+                if isinstance(cwd, str) and cwd.strip() and cwd.strip() != "/":
+                    new_value = self._project_basename(cwd.strip())
+            elif "/" in proj or "\\" in proj:
+                base = self._project_basename(proj)
+                if base and base != proj:
+                    new_value = base
+                    rewritten_paths.setdefault(proj, base)
+
+            if new_value is not None and new_value != proj:
+                session_updates.append((new_value, session_id))
+
+        raw_updates: list[tuple[str | None, str]] = []
+        for row in raw_rows:
+            opencode_session_id = str(row["opencode_session_id"])
+            cwd = row["cwd"]
+            project = row["project"]
+            if not project or not isinstance(project, str):
+                continue
+            proj = project.strip()
+            if not proj:
+                continue
+            new_value: str | None = None
+            if proj == "/" or proj.lower().startswith("fatal:"):
+                if isinstance(cwd, str) and cwd.strip() and cwd.strip() != "/":
+                    new_value = self._project_basename(cwd.strip())
+            elif "/" in proj or "\\" in proj:
+                base = self._project_basename(proj)
+                if base and base != proj:
+                    new_value = base
+                    rewritten_paths.setdefault(proj, base)
+            if new_value is not None and new_value != proj:
+                raw_updates.append((new_value, opencode_session_id))
+
+        preview = {
+            "dry_run": dry_run,
+            "rewritten_paths": rewritten_paths,
+            "sessions_to_update": len(session_updates),
+            "raw_event_sessions_to_update": len(raw_updates),
+        }
+        if dry_run:
+            return preview
+
+        for project, session_id in session_updates:
+            self.conn.execute(
+                "UPDATE sessions SET project = ? WHERE id = ?",
+                (project, session_id),
+            )
+        for project, opencode_session_id in raw_updates:
+            self.conn.execute(
+                "UPDATE raw_event_sessions SET project = ? WHERE opencode_session_id = ?",
+                (project, opencode_session_id),
+            )
+        self.conn.commit()
+        return preview
 
     def _query_looks_like_tasks(self, query: str) -> bool:
         lowered = query.lower()

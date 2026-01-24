@@ -211,7 +211,7 @@ export const OpencodeMemPlugin = async ({
             : null,
         payload,
         cwd,
-        project: project?.root || project?.name || null,
+        project: project?.name || (project?.root ? String(project.root).split(/[/\\]/).filter(Boolean).pop() : null) || null,
         started_at: sessionStartedAt,
       };
       await fetch(rawEventsUrl, {
@@ -521,10 +521,6 @@ export const OpencodeMemPlugin = async ({
     }
     if (injectTokenBudget !== null && Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
       args.push("--token-budget", String(injectTokenBudget));
-    }
-    const projectRoot = project?.root || project?.name;
-    if (projectRoot) {
-      args.push("--project", projectRoot);
     }
     return args;
   };
