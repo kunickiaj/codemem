@@ -1011,6 +1011,80 @@ def test_viewer_accepts_multi_session_legacy_event_ids(monkeypatch, tmp_path: Pa
         server.shutdown()
 
 
+def test_viewer_legacy_seq_event_id_does_not_collide_on_restart(
+    monkeypatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body1 = {
+            "opencode_session_id": "sess-1",
+            "event_seq": 1,
+            "event_type": "tool.execute.after",
+            "payload": {"tool": "read", "args": {"filePath": "a"}},
+            "ts_wall_ms": 123,
+            "ts_mono_ms": 456.0,
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body1).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp1 = conn.getresponse()
+        data1 = json.loads(resp1.read().decode("utf-8"))
+        assert resp1.status == 200
+        assert data1["inserted"] == 1
+
+        # Simulate legacy sender restart: same event_seq, different payload.
+        body2 = {
+            "opencode_session_id": "sess-1",
+            "event_seq": 1,
+            "event_type": "tool.execute.after",
+            "payload": {"tool": "read", "args": {"filePath": "b"}},
+            "ts_wall_ms": 124,
+            "ts_mono_ms": 457.0,
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body2).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp2 = conn.getresponse()
+        data2 = json.loads(resp2.read().decode("utf-8"))
+        assert resp2.status == 200
+        assert data2["inserted"] == 1
+        conn.close()
+
+        store = MemoryStore(db_path)
+        try:
+            row = store.conn.execute(
+                "SELECT COUNT(*) AS n FROM raw_events WHERE opencode_session_id = ?",
+                ("sess-1",),
+            ).fetchone()
+            assert row is not None
+            assert int(row["n"]) == 2
+
+            ids = [
+                r["event_id"]
+                for r in store.conn.execute(
+                    "SELECT event_id FROM raw_events WHERE opencode_session_id = ? ORDER BY id",
+                    ("sess-1",),
+                ).fetchall()
+            ]
+            assert ids[0] != ids[1]
+        finally:
+            store.close()
+    finally:
+        server.shutdown()
+
+
 def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_path: Path) -> None:
     import opencode_mem.viewer as viewer_module
 

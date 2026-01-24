@@ -2238,7 +2238,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     return
 
                 inserted = 0
-                last_seen_ts_wall_ms = None
                 last_seen_by_session: dict[str, int] = {}
                 meta_by_session: dict[str, dict[str, str]] = {}
                 session_ids: set[str] = set()
@@ -2277,7 +2276,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         except (TypeError, ValueError):
                             self._send_json({"error": "ts_wall_ms must be int"}, status=400)
                             return
-                        last_seen_ts_wall_ms = ts_wall_ms
                         last_seen_by_session[opencode_session_id] = max(
                             last_seen_by_session.get(opencode_session_id, ts_wall_ms),
                             ts_wall_ms,
@@ -2314,7 +2312,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if not event_id:
                         # Backwards-compat: derive a stable id for legacy senders.
                         if event_seq_value is not None:
-                            event_id = f"legacy-seq-{event_seq_value}"
+                            raw_id = json.dumps(
+                                {"s": event_seq_value, "t": event_type, "p": event_payload},
+                                sort_keys=True,
+                                ensure_ascii=False,
+                            )
+                            event_hash = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:16]
+                            event_id = f"legacy-seq-{event_seq_value}-{event_hash}"
                         else:
                             raw_id = json.dumps(
                                 {

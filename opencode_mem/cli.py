@@ -1520,6 +1520,8 @@ def normalize_imported_metadata(
     now = dt.datetime.now(dt.UTC).isoformat()
     for row in rows:
         metadata = db.from_json(row["metadata_json"])
+        if not isinstance(metadata, dict):
+            metadata = {}
         import_metadata = metadata.get("import_metadata")
         merged = _merge_summary_metadata(metadata, import_metadata)
         if merged == metadata:
