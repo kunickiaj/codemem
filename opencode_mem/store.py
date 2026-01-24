@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -438,31 +439,35 @@ class MemoryStore:
                     raise RuntimeError("Failed to allocate raw event seq")
                 event_seq = int(row["last_received_event_seq"])
 
-                self.conn.execute(
-                    """
-                    INSERT INTO raw_events(
-                        opencode_session_id,
-                        event_id,
-                        event_seq,
-                        event_type,
-                        ts_wall_ms,
-                        ts_mono_ms,
-                        payload_json,
-                        created_at
+                try:
+                    self.conn.execute(
+                        """
+                        INSERT INTO raw_events(
+                            opencode_session_id,
+                            event_id,
+                            event_seq,
+                            event_type,
+                            ts_wall_ms,
+                            ts_mono_ms,
+                            payload_json,
+                            created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            opencode_session_id,
+                            event_id,
+                            event_seq,
+                            event_type,
+                            ts_wall_ms,
+                            ts_mono_ms,
+                            db.to_json(payload),
+                            now,
+                        ),
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        opencode_session_id,
-                        event_id,
-                        event_seq,
-                        event_type,
-                        ts_wall_ms,
-                        ts_mono_ms,
-                        db.to_json(payload),
-                        now,
-                    ),
-                )
+                except sqlite3.IntegrityError:
+                    skipped += 1
+                    continue
                 inserted += 1
         return {"inserted": inserted, "skipped": skipped}
 
@@ -563,10 +568,10 @@ class MemoryStore:
             params.append(limit)
         rows = self.conn.execute(
             f"""
-            SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json
+            SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
             FROM raw_events
             WHERE opencode_session_id = ? AND event_seq > ?
-            ORDER BY event_seq ASC
+            ORDER BY (ts_mono_ms IS NULL) ASC, ts_mono_ms ASC, event_seq ASC
             {limit_clause}
             """,
             params,
@@ -580,6 +585,7 @@ class MemoryStore:
             payload["timestamp_wall_ms"] = row["ts_wall_ms"]
             payload["timestamp_mono_ms"] = row["ts_mono_ms"]
             payload["event_seq"] = row["event_seq"]
+            payload["event_id"] = row["event_id"]
             results.append(payload)
         return results
 
