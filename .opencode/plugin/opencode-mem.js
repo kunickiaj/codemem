@@ -737,6 +737,9 @@ export const OpencodeMemPlugin = async ({
         return;
       }
       const query = resolveInjectQuery();
+      await logLine(
+        `inject.transform sessionID=${input.sessionID} query_len=${query ? query.length : 0} tui_toast=${Boolean(client.tui?.showToast)}`
+      );
       const cached = injectedSessions.get(input.sessionID);
       let contextText = cached?.text || "";
       if (!contextText || cached?.query !== query) {
