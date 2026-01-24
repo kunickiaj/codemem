@@ -379,6 +379,44 @@ def test_normalize_imported_metadata_updates_session_summary(tmp_path: Path) -> 
     assert metadata.get("investigated") == "Checked"
 
 
+def test_normalize_imported_metadata_fills_empty_strings(tmp_path: Path) -> None:
+    db_path = tmp_path / "dest.sqlite"
+    store = MemoryStore(db_path)
+    session_id = store.start_session(
+        cwd="/tmp/project",
+        project="/tmp/project",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+    )
+    store.remember(
+        session_id,
+        kind="session_summary",
+        title="Session summary",
+        body_text="## Request\nDo the thing",
+        confidence=0.7,
+        metadata={
+            "source": "export",
+            "request": "",
+            "import_metadata": {"request": "Do the thing"},
+        },
+    )
+    store.end_session(session_id)
+    store.close()
+
+    result = runner.invoke(app, ["normalize-imported-metadata", "--db-path", str(db_path)])
+    assert result.exit_code == 0, result.output
+
+    updated_store = MemoryStore(db_path)
+    row = updated_store.conn.execute(
+        "SELECT metadata_json FROM memory_items WHERE kind = 'session_summary'"
+    ).fetchone()
+    assert row is not None
+    metadata = db.from_json(row["metadata_json"])
+    assert metadata.get("request") == "Do the thing"
+
+
 def test_export_project_filter(tmp_path: Path) -> None:
     """Test that project filter works correctly during export."""
     db_path = tmp_path / "test.sqlite"

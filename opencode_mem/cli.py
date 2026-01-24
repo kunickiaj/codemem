@@ -130,7 +130,20 @@ def _merge_summary_metadata(metadata: dict[str, Any], import_metadata: Any) -> d
         return metadata
     merged = dict(metadata)
     for key in SUMMARY_METADATA_KEYS:
-        if key not in merged and key in parsed_import_metadata:
+        if key not in parsed_import_metadata:
+            continue
+        current = merged.get(key)
+        should_fill = key not in merged
+        if not should_fill:
+            if key in {"discovery_tokens", "prompt_number"}:
+                should_fill = current is None
+            elif isinstance(current, str):
+                should_fill = not current.strip()
+            elif isinstance(current, list):
+                should_fill = len(current) == 0
+            else:
+                should_fill = current is None
+        if should_fill:
             merged[key] = parsed_import_metadata[key]
     merged["import_metadata"] = import_metadata
     return merged

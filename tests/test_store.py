@@ -1005,6 +1005,144 @@ def test_viewer_accepts_multi_session_legacy_event_ids(monkeypatch, tmp_path: Pa
         server.shutdown()
 
 
+def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_path: Path) -> None:
+    import opencode_mem.viewer as viewer_module
+
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+
+    noted: list[str] = []
+
+    class DummyFlusher:
+        def note_activity(self, opencode_session_id: str) -> None:
+            noted.append(opencode_session_id)
+
+    monkeypatch.setattr(viewer_module, "RAW_EVENT_FLUSHER", DummyFlusher())
+
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = {
+            "cwd": str(tmp_path),
+            "project": "test-project",
+            "started_at": "2026-01-01T00:00:00Z",
+            "events": [
+                {
+                    "opencode_session_id": "sess-a",
+                    "event_seq": 1,
+                    "event_type": "tool.execute.after",
+                    "payload": {"tool": "read"},
+                    "ts_wall_ms": 123,
+                    "ts_mono_ms": 456.0,
+                },
+                {
+                    "opencode_session_id": "sess-b",
+                    "event_seq": 2,
+                    "event_type": "tool.execute.after",
+                    "payload": {"tool": "write"},
+                    "ts_wall_ms": 124,
+                    "ts_mono_ms": 457.0,
+                },
+            ],
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert data["inserted"] == 2
+        conn.close()
+
+        store = MemoryStore(db_path)
+        try:
+            meta_a = store.raw_event_session_meta("sess-a")
+            assert meta_a.get("cwd") == str(tmp_path)
+            assert meta_a.get("project") == "test-project"
+            assert meta_a.get("started_at") == "2026-01-01T00:00:00Z"
+            assert int(meta_a.get("last_seen_ts_wall_ms") or 0) == 123
+
+            meta_b = store.raw_event_session_meta("sess-b")
+            assert int(meta_b.get("last_seen_ts_wall_ms") or 0) == 124
+        finally:
+            store.close()
+
+        assert set(noted) == {"sess-a", "sess-b"}
+    finally:
+        server.shutdown()
+
+
+def test_viewer_rejects_missing_session_id(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = {
+            "events": [
+                {
+                    "event_seq": 1,
+                    "event_type": "tool.execute.after",
+                    "payload": {"tool": "read"},
+                    "ts_wall_ms": 123,
+                    "ts_mono_ms": 456.0,
+                }
+            ]
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+        conn.close()
+    finally:
+        server.shutdown()
+
+
+def test_viewer_rejects_missing_event_type(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = {
+            "opencode_session_id": "sess-1",
+            "event_id": "evt-1",
+            "event_seq": 1,
+            "payload": {"tool": "read"},
+            "ts_wall_ms": 123,
+            "ts_mono_ms": 456.0,
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+        conn.close()
+    finally:
+        server.shutdown()
+
+
 def test_viewer_stats_migrates_legacy_raw_events_table(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "legacy.sqlite"
     conn = sqlite3.connect(db_path)

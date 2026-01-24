@@ -2232,8 +2232,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "events must be a list"}, status=400)
                     return
 
+                default_session_id = str(payload.get("opencode_session_id") or "")
+                if default_session_id.startswith("msg_"):
+                    self._send_json({"error": "invalid opencode_session_id"}, status=400)
+                    return
+
                 inserted = 0
                 last_seen_ts_wall_ms = None
+                last_seen_by_session: dict[str, int] = {}
                 session_ids: set[str] = set()
                 batch: list[dict[str, Any]] = []
                 batch_by_session: dict[str, list[dict[str, Any]]] = {}
@@ -2241,12 +2247,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if not isinstance(item, dict):
                         self._send_json({"error": "event must be an object"}, status=400)
                         return
-                    opencode_session_id = str(item.get("opencode_session_id") or "")
+                    opencode_session_id = str(
+                        item.get("opencode_session_id") or default_session_id or ""
+                    )
+                    if not opencode_session_id:
+                        self._send_json({"error": "opencode_session_id required"}, status=400)
+                        return
                     if opencode_session_id.startswith("msg_"):
                         self._send_json({"error": "invalid opencode_session_id"}, status=400)
                         return
                     event_id = str(item.get("event_id") or "")
                     event_type = str(item.get("event_type") or "")
+                    if not event_type:
+                        self._send_json({"error": "event_type required"}, status=400)
+                        return
                     event_seq_value = item.get("event_seq")
                     if event_seq_value is not None:
                         try:
@@ -2263,6 +2277,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
                             self._send_json({"error": "ts_wall_ms must be int"}, status=400)
                             return
                         last_seen_ts_wall_ms = ts_wall_ms
+                        last_seen_by_session[opencode_session_id] = max(
+                            last_seen_by_session.get(opencode_session_id, ts_wall_ms),
+                            ts_wall_ms,
+                        )
                     ts_mono_ms = item.get("ts_mono_ms")
                     if ts_mono_ms is not None:
                         try:
@@ -2306,11 +2324,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     }
                     batch.append(event_entry)
 
-                    if opencode_session_id:
-                        session_ids.add(opencode_session_id)
-                        batch_by_session.setdefault(opencode_session_id, []).append(
-                            dict(event_entry)
-                        )
+                    session_ids.add(opencode_session_id)
+                    batch_by_session.setdefault(opencode_session_id, []).append(dict(event_entry))
 
                 if len(session_ids) == 1:
                     single_session_id = next(iter(session_ids))
@@ -2328,14 +2343,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         )
                         inserted += int(result["inserted"])
 
-                if len(session_ids) == 1:
-                    meta_session_id = next(iter(session_ids))
+                for meta_session_id in session_ids:
                     store.update_raw_event_session_meta(
                         opencode_session_id=meta_session_id,
                         cwd=cwd,
                         project=project,
                         started_at=started_at,
-                        last_seen_ts_wall_ms=last_seen_ts_wall_ms,
+                        last_seen_ts_wall_ms=last_seen_by_session.get(meta_session_id),
                     )
                     RAW_EVENT_FLUSHER.note_activity(meta_session_id)
                 self._send_json({"inserted": inserted, "received": len(items)})
