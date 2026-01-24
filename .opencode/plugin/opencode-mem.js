@@ -156,6 +156,7 @@ export const OpencodeMemPlugin = async ({
   const injectTokenBudgetEnv = process.env.OPENCODE_MEM_INJECT_TOKEN_BUDGET;
   const injectTokenBudget = injectTokenBudgetEnv ? parseNumber(injectTokenBudgetEnv, null) : null;
   const injectedSessions = new Map();
+  const injectionToastShown = new Set();
   let sessionStartedAt = null;
   let viewerStarted = false;
   let promptCounter = 0;
@@ -540,6 +541,18 @@ export const OpencodeMemPlugin = async ({
     }
   };
 
+  const parsePackMetrics = (stdout) => {
+    if (!stdout || !stdout.trim()) {
+      return null;
+    }
+    try {
+      const payload = JSON.parse(stdout);
+      return payload?.metrics || null;
+    } catch (err) {
+      return null;
+    }
+  };
+
   const redactLog = (value, limit = 400) => {
     if (!value) return "";
     const masked = String(value).replace(/(Bearer\s+)[^\s]+/gi, "$1[redacted]");
@@ -565,7 +578,14 @@ export const OpencodeMemPlugin = async ({
     if (!packText) {
       return "";
     }
-    return `[opencode-mem context]\n${packText}`;
+    const metrics = parsePackMetrics(result.stdout);
+    if (metrics) {
+      return {
+        text: `[opencode-mem context]\n${packText}`,
+        metrics,
+      };
+    }
+    return { text: `[opencode-mem context]\n${packText}` };
   };
 
   const stopViewer = async () => {
@@ -721,9 +741,35 @@ export const OpencodeMemPlugin = async ({
       let contextText = cached?.text || "";
       if (!contextText || cached?.query !== query) {
         const injected = await buildInjectedContext(query);
-        if (injected) {
-          injectedSessions.set(input.sessionID, { query, text: injected });
-          contextText = injected;
+        if (injected?.text) {
+          injectedSessions.set(input.sessionID, {
+            query,
+            text: injected.text,
+            metrics: injected.metrics || null,
+          });
+          contextText = injected.text;
+
+          if (!injectionToastShown.has(input.sessionID) && client.tui?.showToast) {
+            injectionToastShown.add(input.sessionID);
+            try {
+              const items = injected.metrics?.items;
+              const packTokens = injected.metrics?.pack_tokens;
+              const avoided = injected.metrics?.avoided_work_tokens;
+              const messageParts = ["opencode-mem injected"];
+              if (typeof items === "number") messageParts.push(`${items} items`);
+              if (typeof packTokens === "number") messageParts.push(`~${packTokens} tokens`);
+              if (typeof avoided === "number" && avoided > 0)
+                messageParts.push(`avoided work ~${avoided} tokens`);
+              await client.tui.showToast({
+                body: {
+                  message: messageParts.join(" · "),
+                  variant: "info",
+                },
+              });
+            } catch (toastErr) {
+              // best-effort only
+            }
+          }
         }
       }
       if (!contextText) {
