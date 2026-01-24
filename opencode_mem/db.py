@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
@@ -61,6 +62,7 @@ def connect(db_path: Path | str, check_same_thread: bool = True) -> sqlite3.Conn
     conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         conn.execute("PRAGMA journal_mode = WAL")
     except sqlite3.OperationalError:
@@ -272,18 +274,19 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_user_prompts_import_key ON user_prompts(import_key)"
     )
 
-    _load_sqlite_vec(conn)
-    conn.execute(
-        """
-        CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
-            embedding float[384],
-            memory_id INTEGER,
-            chunk_index INTEGER,
-            content_hash TEXT,
-            model TEXT
-        );
-        """
-    )
+    if os.getenv("OPENCODE_MEM_EMBEDDING_DISABLED", "").lower() not in {"1", "true", "yes"}:
+        _load_sqlite_vec(conn)
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+                embedding float[384],
+                memory_id INTEGER,
+                chunk_index INTEGER,
+                content_hash TEXT,
+                model TEXT
+            );
+            """
+        )
     conn.commit()
 
 
