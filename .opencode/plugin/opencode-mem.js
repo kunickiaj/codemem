@@ -112,8 +112,8 @@ export const OpencodeMemPlugin = async ({
   };
 
   const runner = detectRunner();
-  const defaultRunnerFrom = runner === "uvx" 
-    ? "git+ssh://git@github.com/kunickiaj/opencode-mem.git"
+  const defaultRunnerFrom = runner === "uvx"
+    ? "git+https://github.com/kunickiaj/opencode-mem.git"
     : cwd;
   const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || defaultRunnerFrom;
   const buildRunnerArgs = () => {
