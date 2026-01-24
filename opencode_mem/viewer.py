@@ -2236,6 +2236,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 last_seen_ts_wall_ms = None
                 session_ids: set[str] = set()
                 batch: list[dict[str, Any]] = []
+                batch_by_session: dict[str, list[dict[str, Any]]] = {}
                 for item in items:
                     if not isinstance(item, dict):
                         self._send_json({"error": "event must be an object"}, status=400)
@@ -2296,18 +2297,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
                             event_id = (
                                 "legacy-" + hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:16]
                             )
-                    batch.append(
-                        {
-                            "event_id": event_id,
-                            "event_type": event_type,
-                            "payload": event_payload,
-                            "ts_wall_ms": ts_wall_ms,
-                            "ts_mono_ms": ts_mono_ms,
-                        }
-                    )
+                    event_entry = {
+                        "event_id": event_id,
+                        "event_type": event_type,
+                        "payload": event_payload,
+                        "ts_wall_ms": ts_wall_ms,
+                        "ts_mono_ms": ts_mono_ms,
+                    }
+                    batch.append(event_entry)
 
                     if opencode_session_id:
                         session_ids.add(opencode_session_id)
+                        batch_by_session.setdefault(opencode_session_id, []).append(
+                            dict(event_entry)
+                        )
 
                 if len(session_ids) == 1:
                     single_session_id = next(iter(session_ids))
@@ -2318,21 +2321,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     inserted = int(result["inserted"])
                 else:
                     # Fallback: handle multiple sessions individually.
-                    by_session: dict[str, list[dict[str, Any]]] = {}
-                    for item in items:
-                        sid = str(item.get("opencode_session_id") or "")
-                        if not sid or sid.startswith("msg_"):
-                            continue
-                        by_session.setdefault(sid, []).append(
-                            {
-                                "event_id": str(item.get("event_id") or ""),
-                                "event_type": str(item.get("event_type") or ""),
-                                "payload": item.get("payload") or {},
-                                "ts_wall_ms": item.get("ts_wall_ms"),
-                                "ts_mono_ms": item.get("ts_mono_ms"),
-                            }
-                        )
-                    for sid, sid_events in by_session.items():
+                    for sid, sid_events in batch_by_session.items():
                         result = store.record_raw_events_batch(
                             opencode_session_id=sid,
                             events=sid_events,

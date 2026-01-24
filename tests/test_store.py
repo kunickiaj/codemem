@@ -942,6 +942,69 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
         server.shutdown()
 
 
+def test_viewer_accepts_multi_session_legacy_event_ids(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = {
+            "events": [
+                {
+                    "opencode_session_id": "sess-a",
+                    "event_seq": 1,
+                    "event_type": "tool.execute.after",
+                    "payload": {"tool": "read"},
+                    "ts_wall_ms": 123,
+                    "ts_mono_ms": 456.0,
+                },
+                {
+                    "opencode_session_id": "sess-b",
+                    "event_id": "evt-b",
+                    "event_seq": 2,
+                    "event_type": "tool.execute.after",
+                    "payload": {"tool": "write"},
+                    "ts_wall_ms": 124,
+                    "ts_mono_ms": 457.0,
+                },
+            ]
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert data["inserted"] == 2
+        conn.close()
+
+        store = MemoryStore(db_path)
+        try:
+            row = store.conn.execute(
+                "SELECT event_id FROM raw_events WHERE opencode_session_id = ?",
+                ("sess-a",),
+            ).fetchone()
+            assert row is not None
+            assert row["event_id"].startswith("legacy-seq-")
+
+            row_b = store.conn.execute(
+                "SELECT event_id FROM raw_events WHERE opencode_session_id = ?",
+                ("sess-b",),
+            ).fetchone()
+            assert row_b is not None
+            assert row_b["event_id"] == "evt-b"
+        finally:
+            store.close()
+    finally:
+        server.shutdown()
+
+
 def test_viewer_stats_migrates_legacy_raw_events_table(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "legacy.sqlite"
     conn = sqlite3.connect(db_path)
