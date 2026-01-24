@@ -1517,6 +1517,7 @@ def normalize_imported_metadata(
         "SELECT id, metadata_json FROM memory_items WHERE kind = 'session_summary'"
     ).fetchall()
     updated = 0
+    now = dt.datetime.now(dt.UTC).isoformat()
     for row in rows:
         metadata = db.from_json(row["metadata_json"])
         import_metadata = metadata.get("import_metadata")
@@ -1527,8 +1528,8 @@ def normalize_imported_metadata(
         if dry_run:
             continue
         store.conn.execute(
-            "UPDATE memory_items SET metadata_json = ? WHERE id = ?",
-            (db.to_json(merged), row["id"]),
+            "UPDATE memory_items SET metadata_json = ?, updated_at = ? WHERE id = ?",
+            (db.to_json(merged), now, row["id"]),
         )
     if not dry_run:
         store.conn.commit()
