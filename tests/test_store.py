@@ -721,6 +721,19 @@ def test_record_raw_events_batch_assigns_monotonic_seqs(tmp_path: Path) -> None:
     assert seqs == [0, 1]
 
 
+def test_raw_events_since_orders_by_ts_mono(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    store.record_raw_events_batch(
+        opencode_session_id="sess",
+        events=[
+            {"event_id": "a", "event_type": "t", "payload": {}, "ts_mono_ms": 2.0},
+            {"event_id": "b", "event_type": "t", "payload": {}, "ts_mono_ms": 1.0},
+        ],
+    )
+    events = store.raw_events_since(opencode_session_id="sess", after_event_seq=-1)
+    assert [e["event_id"] for e in events] == ["b", "a"]
+
+
 def test_raw_event_flush_state_roundtrip(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     assert store.raw_event_flush_state("sess") == -1

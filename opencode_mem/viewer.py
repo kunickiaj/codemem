@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import socket
@@ -2194,9 +2195,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         self._send_json({"error": "invalid opencode_session_id"}, status=400)
                         return
                     event_id = str(item.get("event_id") or "")
-                    if not event_id:
-                        self._send_json({"error": "event_id required"}, status=400)
-                        return
                     event_type = str(item.get("event_type") or "")
                     event_seq_value = item.get("event_seq")
                     if event_seq_value is not None:
@@ -2205,6 +2203,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         except (TypeError, ValueError):
                             self._send_json({"error": "event_seq must be int"}, status=400)
                             return
+
                     ts_wall_ms = item.get("ts_wall_ms")
                     if ts_wall_ms is not None:
                         try:
@@ -2226,6 +2225,25 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if not isinstance(event_payload, dict):
                         self._send_json({"error": "payload must be an object"}, status=400)
                         return
+
+                    if not event_id:
+                        # Backwards-compat: derive a stable id for legacy senders.
+                        if event_seq_value is not None:
+                            event_id = f"legacy-seq-{event_seq_value}"
+                        else:
+                            raw_id = json.dumps(
+                                {
+                                    "t": event_type,
+                                    "p": event_payload,
+                                    "w": ts_wall_ms,
+                                    "m": ts_mono_ms,
+                                },
+                                sort_keys=True,
+                                ensure_ascii=False,
+                            )
+                            event_id = (
+                                "legacy-" + hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:16]
+                            )
                     batch.append(
                         {
                             "event_id": event_id,
