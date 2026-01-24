@@ -208,7 +208,19 @@ export const OpencodeMemPlugin = async ({
         body: JSON.stringify(body),
       });
     } catch (err) {
-      // best-effort only
+      await logLine(`raw_events.error sessionID=${sessionID} type=${type} err=${String(err).slice(0, 200)}`);
+      await client.app.log({
+        service: "opencode-mem",
+        level: "error",
+        message: "Failed to stream raw events to opencode-mem viewer",
+        extra: {
+          sessionID,
+          type,
+          viewerHost,
+          viewerPort,
+          error: String(err),
+        },
+      });
     }
   };
 

@@ -343,7 +343,9 @@ When `OPENCODE_MEM_OBSERVER_PROVIDER` is set to a custom provider, `OPENCODE_MEM
 
 ### Stream-only mode (advanced)
 
-If you want maximum reliability ("stream now, flush later"), run stream-only and let Python decide when to flush:
+If you want maximum reliability ("stream now, flush later"), run stream-only and let Python decide when to flush.
+
+Important: stream-only requires the viewer to be running and reachable. If the plugin cannot POST to the viewer, it will log an error and events may be dropped.
 
 ```bash
 export OPENCODE_MEM_ENABLE_CLI_INGEST=0
