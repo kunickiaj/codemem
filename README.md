@@ -309,6 +309,8 @@ When OpenCode starts, the plugin loads and:
 | `OPENCODE_MEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
 | `OPENCODE_MEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` | Sweeper tick interval (default `30000`). |
 | `OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS` | Consider session idle if no events since this many ms (default `120000`). |
+| `OPENCODE_MEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
+| `OPENCODE_MEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `OPENCODE_MEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
 
 ### Plugin slash commands
@@ -353,6 +355,8 @@ export OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH=1
 export OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS=60000
 export OPENCODE_MEM_RAW_EVENTS_SWEEPER=1
 export OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS=120000
+export OPENCODE_MEM_RAW_EVENTS_SWEEPER_LIMIT=25
+export OPENCODE_MEM_RAW_EVENTS_STUCK_BATCH_MS=300000
 # optional retention
 # export OPENCODE_MEM_RAW_EVENTS_RETENTION_MS=$((7*24*60*60*1000))
 ```

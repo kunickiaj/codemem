@@ -13,7 +13,7 @@
 
 ## Settings modal
 - Open via the Settings button in the header.
-- Writes `observer_provider`, `observer_model`, and `observer_max_chars`.
+- Writes `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
 - Environment variables still override file values.
 
 ## Memory persistence

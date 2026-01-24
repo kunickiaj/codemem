@@ -81,6 +81,9 @@
   - Note: `/new` command and `session.created` don't trigger flushes in OpenCode's multi-session environment
 - If changes are made to plugin behavior, update the README.
 
+## Viewer Notes
+- The settings modal writes both observer settings and pack limits; if you change viewer settings behavior, update `docs/user-guide.md` and the env var table in `README.md`.
+
 ## Testing Guidance
 - Prefer fast unit tests in `tests/`.
 - Use `tmp_path` fixtures for DB or filesystem tests.

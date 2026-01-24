@@ -270,6 +270,7 @@ def _write_opencode_config(path: Path, payload: dict[str, Any]) -> None:
 
 @app.command()
 def init_db(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
+    """Create the SQLite database (no-op if it already exists)."""
     store = _store(db_path)
     print(f"Initialized database at {store.db_path}")
 
@@ -277,11 +278,12 @@ def init_db(db_path: str = typer.Option(None, help="Path to SQLite database")) -
 @app.command()
 def search(
     query: str,
-    limit: int = typer.Option(5),
-    db_path: str = typer.Option(None),
+    limit: int = typer.Option(5, help="Max results"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
+    """Search memories by keyword or semantic recall."""
     store = _store(db_path)
     resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
     filters = {"project": resolved_project} if resolved_project else None
@@ -292,12 +294,13 @@ def search(
 
 @app.command()
 def recent(
-    limit: int = typer.Option(5),
-    kind: str | None = typer.Option(None),
-    db_path: str = typer.Option(None),
+    limit: int = typer.Option(5, help="Max results"),
+    kind: str | None = typer.Option(None, help="Filter by kind"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
+    """Show recent memories."""
     store = _store(db_path)
     resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
     filters = {"kind": kind} if kind else {}
@@ -309,7 +312,8 @@ def recent(
 
 
 @app.command()
-def show(memory_id: int, db_path: str = typer.Option(None)) -> None:
+def show(memory_id: int, db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
+    """Print a memory item as JSON."""
     store = _store(db_path)
     item = store.get(memory_id)
     if not item:
@@ -323,10 +327,11 @@ def remember(
     kind: str,
     title: str,
     body: str,
-    tags: list[str] = typer.Option(None),
-    db_path: str = typer.Option(None),
+    tags: list[str] = typer.Option(None, help="Repeat for multiple tags"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
 ) -> None:
+    """Manually add a memory item."""
     store = _store(db_path)
     resolved_project = _resolve_project(os.getcwd(), project, all_projects=False)
     session_id = store.start_session(
@@ -344,7 +349,10 @@ def remember(
 
 
 @app.command()
-def forget(memory_id: int, db_path: str = typer.Option(None)) -> None:
+def forget(
+    memory_id: int, db_path: str = typer.Option(None, help="Path to SQLite database")
+) -> None:
+    """Deactivate a memory item by id."""
     store = _store(db_path)
     store.forget(memory_id)
     print(f"Memory {memory_id} marked inactive")
@@ -354,8 +362,9 @@ def forget(memory_id: int, db_path: str = typer.Option(None)) -> None:
 def prune_observations(
     limit: int | None = typer.Option(None, help="Max observations to scan (defaults to all)"),
     dry_run: bool = typer.Option(False, help="Report without deactivating"),
-    db_path: str = typer.Option(None),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
+    """Deactivate low-signal observations."""
     store = _store(db_path)
     result = store.deactivate_low_signal_observations(limit=limit, dry_run=dry_run)
     action = "Would deactivate" if dry_run else "Deactivated"
@@ -381,12 +390,13 @@ def purge(
 @app.command()
 def pack(
     context: str,
-    limit: int = typer.Option(None),
+    limit: int = typer.Option(None, help="Max memory items in the pack"),
     token_budget: int = typer.Option(None, help="Approx token budget for pack"),
-    db_path: str = typer.Option(None),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
+    """Build a JSON memory pack for a query/context string."""
     store = _store(db_path)
     resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
     config = load_config()
@@ -403,9 +413,9 @@ def pack(
 @app.command()
 def inject(
     context: str,
-    limit: int = typer.Option(None),
+    limit: int = typer.Option(None, help="Max memory items in the pack"),
     token_budget: int = typer.Option(None, help="Approx token budget for injection"),
-    db_path: str = typer.Option(None),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
@@ -427,7 +437,7 @@ def inject(
 def compact(
     session_id: int | None = typer.Option(None, help="Specific session id to compact"),
     limit: int = typer.Option(3, help="Number of recent sessions to compact when no id is given"),
-    db_path: str = typer.Option(None),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Re-run summarization for past sessions (uses model if configured)."""
     store = _store(db_path)
@@ -1058,6 +1068,7 @@ def serve(
     stop: bool = typer.Option(False, help="Stop background viewer"),
     restart: bool = typer.Option(False, help="Restart background viewer"),
 ) -> None:
+    """Run the viewer server (foreground or background)."""
     if stop and restart:
         print("[red]Use only one of --stop or --restart[/red]")
         raise typer.Exit(code=1)
