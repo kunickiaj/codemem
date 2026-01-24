@@ -667,12 +667,26 @@ class MemoryStore:
             """,
             (opencode_session_id,),
         ).fetchall()
-        counts = {"started": 0, "completed": 0, "error": 0}
+        counts = {"started": 0, "running": 0, "completed": 0, "error": 0}
         for row in rows:
             status = str(row["status"] or "")
             if status in counts:
                 counts[status] = int(row["n"])
         return counts
+
+    def claim_raw_event_flush_batch(self, batch_id: int) -> bool:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        row = self.conn.execute(
+            """
+            UPDATE raw_event_flush_batches
+            SET status = 'running', updated_at = ?
+            WHERE id = ? AND status IN ('started', 'error')
+            RETURNING id
+            """,
+            (now, batch_id),
+        ).fetchone()
+        self.conn.commit()
+        return row is not None
 
     def raw_event_error_batches(
         self, opencode_session_id: str, limit: int = 10
@@ -700,7 +714,7 @@ class MemoryStore:
             """
             UPDATE raw_event_flush_batches
             SET status = 'error', updated_at = ?
-            WHERE status = 'started' AND updated_at < ?
+            WHERE status IN ('started', 'running') AND updated_at < ?
             LIMIT ?
             """,
             (now, older_than_iso, limit),

@@ -536,7 +536,7 @@ def raw_events_status(
         print(
             f"- {item['opencode_session_id']} pending={item['pending']} "
             f"max_seq={item['max_seq']} last_flushed={item['last_flushed_event_seq']} "
-            f"batches=started:{counts['started']} error:{counts['error']} completed:{counts['completed']} "
+            f"batches=started:{counts['started']} running:{counts['running']} error:{counts['error']} completed:{counts['completed']} "
             f"project={item.get('project') or ''}"
         )
 
