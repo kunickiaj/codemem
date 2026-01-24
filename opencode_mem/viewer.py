@@ -2032,8 +2032,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._send_html()
             return
 
-        store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+        is_api = parsed.path.startswith("/api/")
+        store: MemoryStore | None = None
         try:
+            store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
             if parsed.path == "/api/stats":
                 self._send_json(store.stats())
                 return
@@ -2163,8 +2165,18 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             self.send_response(404)
             self.end_headers()
+        except Exception as exc:  # pragma: no cover
+            if is_api:
+                payload: dict[str, Any] = {"error": "internal server error"}
+                if os.environ.get("OPENCODE_MEM_VIEWER_DEBUG") == "1":
+                    payload["detail"] = str(exc)
+                self._send_json(payload, status=500)
+                return
+            self.send_response(500)
+            self.end_headers()
         finally:
-            store.close()
+            if store is not None:
+                store.close()
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -2180,7 +2192,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "payload must be an object"}, status=400)
                 return
 
-            store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+            try:
+                store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+            except Exception as exc:  # pragma: no cover
+                response: dict[str, Any] = {"error": "internal server error"}
+                if os.environ.get("OPENCODE_MEM_VIEWER_DEBUG") == "1":
+                    response["detail"] = str(exc)
+                self._send_json(response, status=500)
+                return
             try:
                 cwd = payload.get("cwd")
                 if cwd is not None and not isinstance(cwd, str):
@@ -2321,6 +2340,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     RAW_EVENT_FLUSHER.note_activity(meta_session_id)
                 self._send_json({"inserted": inserted, "received": len(items)})
                 return
+            except Exception as exc:  # pragma: no cover
+                response: dict[str, Any] = {"error": "internal server error"}
+                if os.environ.get("OPENCODE_MEM_VIEWER_DEBUG") == "1":
+                    response["detail"] = str(exc)
+                self._send_json(response, status=500)
             finally:
                 store.close()
 

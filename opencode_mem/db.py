@@ -169,7 +169,6 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_raw_events_session_seq ON raw_events(opencode_session_id, event_seq);
         CREATE INDEX IF NOT EXISTS idx_raw_events_created_at ON raw_events(created_at DESC);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_events_event_id ON raw_events(opencode_session_id, event_id);
 
         CREATE TABLE IF NOT EXISTS raw_event_sessions (
             opencode_session_id TEXT PRIMARY KEY,

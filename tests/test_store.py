@@ -1,10 +1,12 @@
 import http.client
 import json
+import sqlite3
 import threading
 from http.server import HTTPServer
 from pathlib import Path
 
 from opencode_mem import store as store_module
+from opencode_mem import viewer as viewer_module
 from opencode_mem.store import MemoryStore
 from opencode_mem.viewer import ViewerHandler
 
@@ -936,6 +938,66 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
             assert meta.get("started_at") == "2026-01-01T00:00:00Z"
         finally:
             store.close()
+    finally:
+        server.shutdown()
+
+
+def test_viewer_stats_migrates_legacy_raw_events_table(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.sqlite"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE raw_events (
+                id INTEGER PRIMARY KEY,
+                opencode_session_id TEXT NOT NULL,
+                event_seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(opencode_session_id, event_seq)
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        http_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        http_conn.request("GET", "/api/stats")
+        resp = http_conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert isinstance(data, dict)
+        assert "database" in data
+    finally:
+        server.shutdown()
+
+
+def test_viewer_api_returns_json_500_on_store_init_failure(monkeypatch, tmp_path: Path) -> None:
+    class BoomStore:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(viewer_module, "MemoryStore", BoomStore)
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(tmp_path / "mem.sqlite"))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        http_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        http_conn.request("GET", "/api/stats")
+        resp = http_conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 500
+        assert data.get("error") == "internal server error"
     finally:
         server.shutdown()
 
