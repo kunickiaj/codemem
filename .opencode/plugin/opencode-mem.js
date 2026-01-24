@@ -183,6 +183,17 @@ export const OpencodeMemPlugin = async ({
     return `${Date.now()}-${Math.random()}`;
   };
 
+  const lastToastAtBySession = new Map();
+  const shouldToast = (sessionID) => {
+    const now = Date.now();
+    const last = lastToastAtBySession.get(sessionID) || 0;
+    if (now - last < 60000) {
+      return false;
+    }
+    lastToastAtBySession.set(sessionID, now);
+    return true;
+  };
+
   const emitRawEvent = async ({ sessionID, type, payload }) => {
     if (!rawEventsEnabled || !sessionID || !type) {
       return;
@@ -221,6 +232,19 @@ export const OpencodeMemPlugin = async ({
           error: String(err),
         },
       });
+
+      if (client.tui?.showToast && shouldToast(sessionID)) {
+        try {
+          await client.tui.showToast({
+            body: {
+              message: `opencode-mem: failed to stream events to viewer (${viewerHost}:${viewerPort})`,
+              variant: "error",
+            },
+          });
+        } catch (toastErr) {
+          // best-effort only
+        }
+      }
     }
   };
 
