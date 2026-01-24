@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -28,6 +29,22 @@ from .store import MemoryStore
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
 DEFAULT_PROVIDER_OPTIONS = ("openai", "anthropic")
+
+
+def _strip_private(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(r"<private>.*?</private>", "", text, flags=re.DOTALL | re.IGNORECASE)
+
+
+def _strip_private_obj(value: Any) -> Any:
+    if isinstance(value, str):
+        return _strip_private(value)
+    if isinstance(value, list):
+        return [_strip_private_obj(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _strip_private_obj(v) for k, v in value.items()}
+    return value
 
 
 class RawEventAutoFlusher:
@@ -162,14 +179,17 @@ class RawEventSweeper:
                 limit=self.limit(),
             )
             for opencode_session_id in session_ids:
-                flush_raw_events(
-                    store,
-                    opencode_session_id=opencode_session_id,
-                    cwd=None,
-                    project=None,
-                    started_at=None,
-                    max_events=None,
-                )
+                try:
+                    flush_raw_events(
+                        store,
+                        opencode_session_id=opencode_session_id,
+                        cwd=None,
+                        project=None,
+                        started_at=None,
+                        max_events=None,
+                    )
+                except Exception:
+                    continue
         finally:
             store.close()
 
@@ -2225,6 +2245,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if not isinstance(event_payload, dict):
                         self._send_json({"error": "payload must be an object"}, status=400)
                         return
+
+                    event_payload = _strip_private_obj(event_payload)
 
                     if not event_id:
                         # Backwards-compat: derive a stable id for legacy senders.

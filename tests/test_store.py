@@ -885,7 +885,7 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
             "event_id": "evt-1",
             "event_seq": 1,
             "event_type": "tool.execute.after",
-            "payload": {"tool": "read"},
+            "payload": {"tool": "read", "text": "hi <private>secret</private>"},
             "ts_wall_ms": 123,
             "ts_mono_ms": 456.0,
             "cwd": str(tmp_path),
@@ -923,6 +923,12 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
             ).fetchone()
             assert row is not None
             assert int(row["n"]) == 1
+
+            payload_json = store.conn.execute(
+                "SELECT payload_json FROM raw_events WHERE opencode_session_id = ?",
+                ("sess-1",),
+            ).fetchone()[0]
+            assert "secret" not in str(payload_json)
 
             meta = store.raw_event_session_meta("sess-1")
             assert meta.get("cwd") == str(tmp_path)
