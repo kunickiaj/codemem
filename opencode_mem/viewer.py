@@ -2240,6 +2240,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 inserted = 0
                 last_seen_ts_wall_ms = None
                 last_seen_by_session: dict[str, int] = {}
+                meta_by_session: dict[str, dict[str, str]] = {}
                 session_ids: set[str] = set()
                 batch: list[dict[str, Any]] = []
                 batch_by_session: dict[str, list[dict[str, Any]]] = {}
@@ -2295,6 +2296,19 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         self._send_json({"error": "payload must be an object"}, status=400)
                         return
 
+                    item_cwd = item.get("cwd")
+                    if item_cwd is not None and not isinstance(item_cwd, str):
+                        self._send_json({"error": "cwd must be string"}, status=400)
+                        return
+                    item_project = item.get("project")
+                    if item_project is not None and not isinstance(item_project, str):
+                        self._send_json({"error": "project must be string"}, status=400)
+                        return
+                    item_started_at = item.get("started_at")
+                    if item_started_at is not None and not isinstance(item_started_at, str):
+                        self._send_json({"error": "started_at must be string"}, status=400)
+                        return
+
                     event_payload = _strip_private_obj(event_payload)
 
                     if not event_id:
@@ -2327,6 +2341,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     session_ids.add(opencode_session_id)
                     batch_by_session.setdefault(opencode_session_id, []).append(dict(event_entry))
 
+                    if item_cwd or item_project or item_started_at:
+                        per_session = meta_by_session.setdefault(opencode_session_id, {})
+                        if item_cwd:
+                            per_session["cwd"] = item_cwd
+                        if item_project:
+                            per_session["project"] = item_project
+                        if item_started_at:
+                            per_session["started_at"] = item_started_at
+
                 if len(session_ids) == 1:
                     single_session_id = next(iter(session_ids))
                     result = store.record_raw_events_batch(
@@ -2344,11 +2367,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         inserted += int(result["inserted"])
 
                 for meta_session_id in session_ids:
+                    session_meta = meta_by_session.get(meta_session_id, {})
+                    apply_request_meta = (
+                        len(session_ids) == 1 or meta_session_id == default_session_id
+                    )
                     store.update_raw_event_session_meta(
                         opencode_session_id=meta_session_id,
-                        cwd=cwd,
-                        project=project,
-                        started_at=started_at,
+                        cwd=session_meta.get("cwd") or (cwd if apply_request_meta else None),
+                        project=session_meta.get("project")
+                        or (project if apply_request_meta else None),
+                        started_at=session_meta.get("started_at")
+                        or (started_at if apply_request_meta else None),
                         last_seen_ts_wall_ms=last_seen_by_session.get(meta_session_id),
                     )
                     RAW_EVENT_FLUSHER.note_activity(meta_session_id)

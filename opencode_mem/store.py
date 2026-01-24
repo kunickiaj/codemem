@@ -405,6 +405,8 @@ class MemoryStore:
                     (opencode_session_id, now),
                 )
 
+            normalized: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
             for event in events:
                 event_id = str(event.get("event_id") or "")
                 event_type = str(event.get("event_type") or "")
@@ -416,29 +418,56 @@ class MemoryStore:
                 if not event_id or not event_type:
                     skipped += 1
                     continue
-
-                cur = self.conn.execute(
-                    "SELECT 1 FROM raw_events WHERE opencode_session_id = ? AND event_id = ?",
-                    (opencode_session_id, event_id),
-                ).fetchone()
-                if cur is not None:
+                if event_id in seen_ids:
                     skipped += 1
                     continue
+                seen_ids.add(event_id)
+                normalized.append(
+                    {
+                        "event_id": event_id,
+                        "event_type": event_type,
+                        "payload": payload,
+                        "ts_wall_ms": ts_wall_ms,
+                        "ts_mono_ms": ts_mono_ms,
+                    }
+                )
 
-                row = self.conn.execute(
-                    """
-                    UPDATE raw_event_sessions
-                    SET last_received_event_seq = last_received_event_seq + 1,
-                        updated_at = ?
-                    WHERE opencode_session_id = ?
-                    RETURNING last_received_event_seq
-                    """,
-                    (now, opencode_session_id),
-                ).fetchone()
-                if row is None:
-                    raise RuntimeError("Failed to allocate raw event seq")
-                event_seq = int(row["last_received_event_seq"])
+            if not normalized:
+                return {"inserted": 0, "skipped": skipped}
 
+            existing_ids: set[str] = set()
+            chunk_size = 500
+            for i in range(0, len(normalized), chunk_size):
+                chunk = normalized[i : i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = self.conn.execute(
+                    f"SELECT event_id FROM raw_events WHERE opencode_session_id = ? AND event_id IN ({placeholders})",
+                    [opencode_session_id, *[e["event_id"] for e in chunk]],
+                ).fetchall()
+                for row in rows:
+                    existing_ids.add(str(row["event_id"]))
+
+            new_events = [event for event in normalized if event["event_id"] not in existing_ids]
+            skipped += len(normalized) - len(new_events)
+            if not new_events:
+                return {"inserted": 0, "skipped": skipped}
+
+            row = self.conn.execute(
+                """
+                UPDATE raw_event_sessions
+                SET last_received_event_seq = last_received_event_seq + ?,
+                    updated_at = ?
+                WHERE opencode_session_id = ?
+                RETURNING last_received_event_seq
+                """,
+                (len(new_events), now, opencode_session_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Failed to allocate raw event seq")
+            end_seq = int(row["last_received_event_seq"])
+            start_seq = end_seq - len(new_events) + 1
+
+            for offset, event in enumerate(new_events):
                 try:
                     self.conn.execute(
                         """
@@ -456,12 +485,12 @@ class MemoryStore:
                         """,
                         (
                             opencode_session_id,
-                            event_id,
-                            event_seq,
-                            event_type,
-                            ts_wall_ms,
-                            ts_mono_ms,
-                            db.to_json(payload),
+                            event["event_id"],
+                            start_seq + offset,
+                            event["event_type"],
+                            event["ts_wall_ms"],
+                            event["ts_mono_ms"],
+                            db.to_json(event["payload"]),
                             now,
                         ),
                     )

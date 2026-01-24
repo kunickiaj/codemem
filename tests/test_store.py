@@ -936,6 +936,12 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
             assert meta.get("cwd") == str(tmp_path)
             assert meta.get("project") == "test-project"
             assert meta.get("started_at") == "2026-01-01T00:00:00Z"
+
+            last_received = store.conn.execute(
+                "SELECT last_received_event_seq FROM raw_event_sessions WHERE opencode_session_id = ?",
+                ("sess-1",),
+            ).fetchone()[0]
+            assert int(last_received) == 0
         finally:
             store.close()
     finally:
@@ -1026,15 +1032,15 @@ def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_p
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         body = {
-            "cwd": str(tmp_path),
-            "project": "test-project",
-            "started_at": "2026-01-01T00:00:00Z",
             "events": [
                 {
                     "opencode_session_id": "sess-a",
                     "event_seq": 1,
                     "event_type": "tool.execute.after",
                     "payload": {"tool": "read"},
+                    "cwd": str(tmp_path),
+                    "project": "test-project",
+                    "started_at": "2026-01-01T00:00:00Z",
                     "ts_wall_ms": 123,
                     "ts_mono_ms": 456.0,
                 },
@@ -1043,6 +1049,9 @@ def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_p
                     "event_seq": 2,
                     "event_type": "tool.execute.after",
                     "payload": {"tool": "write"},
+                    "cwd": str(tmp_path),
+                    "project": "test-project",
+                    "started_at": "2026-01-01T00:00:00Z",
                     "ts_wall_ms": 124,
                     "ts_mono_ms": 457.0,
                 },
