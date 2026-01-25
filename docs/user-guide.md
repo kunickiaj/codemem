@@ -14,6 +14,7 @@
 ## Settings modal
 - Open via the Settings button in the header.
 - Writes `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
+- Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 
 ## Memory persistence
@@ -35,7 +36,7 @@
 - Backfill existing memories with: `opencode-mem embed --dry-run` then `opencode-mem embed`.
 - If sqlite-vec fails to load, semantic recall is skipped and keyword search remains.
 
-## Sync (Phase 1)
+## Sync (Phase 2)
 
 ### Enable + run
 
@@ -45,8 +46,9 @@
 
 ### Pair devices
 
-1. On device A, run `opencode-mem sync pair` and copy the payload.
-2. On device B, run `opencode-mem sync pair --accept '<payload>'`.
+1. In the viewer, open the Sync panel and scan/copy the QR payload (recommended).
+2. Or run `opencode-mem sync pair` and copy the payload.
+3. On the other device, run `opencode-mem sync pair --accept '<payload>'`.
 
 ### One-off sync
 
@@ -58,6 +60,15 @@
 - macOS: `opencode-mem sync install` then `launchctl load -w ~/Library/LaunchAgents/com.opencode-mem.sync.plist`.
 - Linux (user service): `opencode-mem sync install --user` then `systemctl --user enable --now opencode-mem-sync.service`.
 - Linux (system service): `opencode-mem sync install --system` then `systemctl enable --now opencode-mem-sync.service`.
+
+### Service helpers
+
+- `opencode-mem sync service status|start|stop|restart` for user services.
+
+### Keychain (optional)
+
+- `sync_key_store=keychain` (or `OPENCODE_MEM_SYNC_KEY_STORE=keychain`) stores the private key in Secret Service (Linux) or Keychain (macOS).
+- Falls back to file-based storage if the platform tooling is unavailable.
 
 ## Troubleshooting
 - If sessions are missing, confirm the viewer and plugin share the same DB path.
