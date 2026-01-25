@@ -24,11 +24,14 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
 
-    class DummyProc:
-        pid = 12345
-
     monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: False)
-    monkeypatch.setattr("opencode_mem.cli.subprocess.Popen", lambda *a, **k: DummyProc())
+    monkeypatch.setattr("opencode_mem.cli.spawn_daemon", lambda *a, **k: 12345)
+    monkeypatch.setattr(
+        "opencode_mem.cli.effective_status",
+        lambda host, port: type(
+            "S", (), {"running": True, "mechanism": "pidfile", "detail": "running", "pid": 12345}
+        )(),
+    )
 
     result = runner.invoke(
         app,
@@ -65,7 +68,8 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
 def test_sync_enable_no_start(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
     monkeypatch.setattr(
-        "opencode_mem.cli.subprocess.Popen", lambda *a, **k: (_ for _ in ()).throw(Exception("no"))
+        "opencode_mem.cli.spawn_daemon",
+        lambda *a, **k: (_ for _ in ()).throw(Exception("no")),
     )
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
@@ -222,6 +226,12 @@ def test_sync_service_stop_prints_success(monkeypatch) -> None:
     result = runner.invoke(app, ["sync", "service", "stop"])
     assert result.exit_code == 0
     assert "Stopped sync service" in result.stdout
+
+
+def test_sync_uninstall_runs(monkeypatch) -> None:
+    monkeypatch.setattr("opencode_mem.cli._sync_uninstall_impl", lambda user: None)
+    result = runner.invoke(app, ["sync", "uninstall"])
+    assert result.exit_code == 0
 
 
 def test_sync_service_stop_falls_back_to_pid(monkeypatch) -> None:
