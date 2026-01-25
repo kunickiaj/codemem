@@ -25,6 +25,8 @@ from .db import DEFAULT_DB_PATH, from_json
 from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events
 from .store import MemoryStore
+from .sync_daemon import sync_once
+from .sync_discovery import load_peer_addresses
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
@@ -2033,6 +2035,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json(self) -> dict[str, Any] | None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        raw = self.rfile.read(length).decode("utf-8") if length else ""
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         if os.environ.get("OPENCODE_MEM_VIEWER_LOGS") == "1":
             super().log_message(format, *args)
@@ -2183,6 +2196,77 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+            if parsed.path == "/api/sync/status":
+                config = load_config()
+                device_row = store.conn.execute(
+                    "SELECT device_id, fingerprint FROM sync_device LIMIT 1"
+                ).fetchone()
+                peer_count = store.conn.execute(
+                    "SELECT COUNT(1) AS total FROM sync_peers"
+                ).fetchone()
+                last_attempt = store.conn.execute(
+                    """
+                    SELECT peer_device_id, ok, error, finished_at
+                    FROM sync_attempts
+                    ORDER BY finished_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                last_sync = store.conn.execute(
+                    "SELECT MAX(last_sync_at) AS last_sync_at FROM sync_peers"
+                ).fetchone()
+                self._send_json(
+                    {
+                        "enabled": config.sync_enabled,
+                        "device_id": device_row["device_id"] if device_row else None,
+                        "fingerprint": device_row["fingerprint"] if device_row else None,
+                        "bind": f"{config.sync_host}:{config.sync_port}",
+                        "interval_s": config.sync_interval_s,
+                        "peer_count": int(peer_count["total"]) if peer_count else 0,
+                        "last_sync_at": last_sync["last_sync_at"] if last_sync else None,
+                        "last_attempt": dict(last_attempt) if last_attempt else None,
+                    }
+                )
+                return
+            if parsed.path == "/api/sync/peers":
+                rows = store.conn.execute(
+                    """
+                    SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
+                           last_seen_at, last_sync_at, last_error
+                    FROM sync_peers
+                    ORDER BY name, peer_device_id
+                    """
+                ).fetchall()
+                peers = []
+                for row in rows:
+                    addresses = load_peer_addresses(store.conn, row["peer_device_id"])
+                    peers.append(
+                        {
+                            "peer_device_id": row["peer_device_id"],
+                            "name": row["name"],
+                            "fingerprint": row["pinned_fingerprint"],
+                            "addresses": addresses,
+                            "last_seen_at": row["last_seen_at"],
+                            "last_sync_at": row["last_sync_at"],
+                            "last_error": row["last_error"],
+                        }
+                    )
+                self._send_json({"items": peers})
+                return
+            if parsed.path == "/api/sync/attempts":
+                params = parse_qs(parsed.query)
+                limit = int(params.get("limit", ["25"])[0])
+                rows = store.conn.execute(
+                    """
+                    SELECT peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out
+                    FROM sync_attempts
+                    ORDER BY finished_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+                self._send_json({"items": [dict(row) for row in rows]})
+                return
             self.send_response(404)
             self.end_headers()
         except Exception as exc:  # pragma: no cover
@@ -2200,6 +2284,59 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/sync/peers/rename":
+            payload = self._read_json()
+            if payload is None:
+                self._send_json({"error": "invalid json"}, status=400)
+                return
+            peer_device_id = payload.get("peer_device_id")
+            name = payload.get("name")
+            if not isinstance(peer_device_id, str) or not peer_device_id:
+                self._send_json({"error": "peer_device_id required"}, status=400)
+                return
+            if not isinstance(name, str) or not name.strip():
+                self._send_json({"error": "name required"}, status=400)
+                return
+            store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+            try:
+                row = store.conn.execute(
+                    "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
+                    (peer_device_id,),
+                ).fetchone()
+                if row is None:
+                    self._send_json({"error": "peer not found"}, status=404)
+                    return
+                store.conn.execute(
+                    "UPDATE sync_peers SET name = ? WHERE peer_device_id = ?",
+                    (name.strip(), peer_device_id),
+                )
+                store.conn.commit()
+                self._send_json({"ok": True})
+                return
+            finally:
+                store.close()
+        if parsed.path == "/api/sync/actions/sync-now":
+            payload = self._read_json() or {}
+            peer_device_id = payload.get("peer_device_id")
+            store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+            try:
+                rows = []
+                if isinstance(peer_device_id, str) and peer_device_id:
+                    rows = store.conn.execute(
+                        "SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?",
+                        (peer_device_id,),
+                    ).fetchall()
+                else:
+                    rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
+                results = []
+                for row in rows:
+                    peer_id = row["peer_device_id"]
+                    addresses = load_peer_addresses(store.conn, peer_id)
+                    results.append(sync_once(store, peer_id, addresses))
+                self._send_json({"items": results})
+                return
+            finally:
+                store.close()
         if parsed.path == "/api/raw-events":
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8") if length else ""
@@ -2494,6 +2631,34 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "failed to write config"}, status=500)
             return
         self._send_json({"path": str(config_path), "config": config_data})
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if not parsed.path.startswith("/api/sync/peers/"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        peer_device_id = parsed.path.split("/api/sync/peers/", 1)[1].strip()
+        if not peer_device_id:
+            self._send_json({"error": "peer_device_id required"}, status=400)
+            return
+        store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
+        try:
+            row = store.conn.execute(
+                "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
+                (peer_device_id,),
+            ).fetchone()
+            if row is None:
+                self._send_json({"error": "peer not found"}, status=404)
+                return
+            store.conn.execute(
+                "DELETE FROM sync_peers WHERE peer_device_id = ?",
+                (peer_device_id,),
+            )
+            store.conn.commit()
+            self._send_json({"ok": True})
+        finally:
+            store.close()
 
 
 def _serve(host: str, port: int) -> None:
