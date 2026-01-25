@@ -4,6 +4,7 @@ import base64
 import binascii
 import datetime as dt
 import hashlib
+import os
 import secrets
 import shutil
 import sqlite3
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .sync_identity import resolve_key_paths
+from .sync_identity import load_private_key, resolve_key_paths
 
 SIGNATURE_VERSION = "v1"
 DEFAULT_TIME_WINDOW_S = 300
@@ -61,11 +62,19 @@ def sign_request(
         body_bytes=body_bytes,
     )
     private_key_path, _ = resolve_key_paths(keys_dir)
+    key_override: bytes | None = None
     if not private_key_path.exists():
-        raise RuntimeError("private key missing")
+        key_override = load_private_key(keys_dir)
+        if not key_override:
+            raise RuntimeError("private key missing")
     with tempfile.TemporaryDirectory() as tmp:
         data_path = Path(tmp) / "request"
         data_path.write_bytes(canonical)
+        if key_override is not None:
+            temp_key = Path(tmp) / "temp.key"
+            temp_key.write_bytes(key_override)
+            os.chmod(temp_key, 0o600)
+            private_key_path = temp_key
         subprocess.run(
             [
                 "ssh-keygen",
