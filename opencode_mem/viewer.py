@@ -576,6 +576,69 @@ VIEWER_HTML = """<!doctype html>
         color: var(--muted);
         font-size: 12px;
       }
+      .sync-section .section-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .peer-list {
+        display: grid;
+        gap: 12px;
+      }
+      .peer-card {
+        border: 1px solid rgba(25, 24, 23, 0.12);
+        border-radius: 14px;
+        padding: 14px 16px;
+        background: rgba(255, 250, 243, 0.9);
+        display: grid;
+        gap: 8px;
+      }
+      [data-theme="dark"] .peer-card {
+        background: rgba(24, 28, 32, 0.75);
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+      .peer-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .peer-title strong {
+        font-size: 1rem;
+      }
+      .peer-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .peer-actions button {
+        border: 1px solid rgba(25, 24, 23, 0.15);
+        background: transparent;
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 0.8rem;
+        cursor: pointer;
+      }
+      .peer-actions button:hover {
+        border-color: rgba(25, 24, 23, 0.35);
+      }
+      .peer-meta {
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+      .peer-addresses {
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.8rem;
+        color: var(--ink);
+        opacity: 0.7;
+      }
+      .attempts-list {
+        margin-top: 12px;
+        display: grid;
+        gap: 6px;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
       .section-meta .badge {
         background: rgba(31, 111, 92, 0.12);
         color: var(--accent);
@@ -1130,6 +1193,18 @@ VIEWER_HTML = """<!doctype html>
           <div class="grid-2" id="sessionGrid"></div>
         </section>
       </div>
+      <section class="sync-section" style="animation-delay: 0.04s;">
+        <div class="section-header">
+          <h2>Sync</h2>
+          <div class="section-actions">
+            <button class="settings-button" id="syncNowButton">Sync now</button>
+          </div>
+        </div>
+        <div class="section-meta" id="syncMeta">Loading sync status…</div>
+        <div class="grid-2" id="syncStatusGrid"></div>
+        <div class="peer-list" id="syncPeers"></div>
+        <div class="attempts-list" id="syncAttempts"></div>
+      </section>
       <section style="animation-delay: 0.06s;">
         <div class="section-header">
           <h2>Diagnostics</h2>
@@ -1185,6 +1260,11 @@ VIEWER_HTML = """<!doctype html>
       const packSessionLimitInput = document.getElementById("packSessionLimit");
       const projectFilter = document.getElementById("projectFilter");
       const themeToggle = document.getElementById("themeToggle");
+      const syncMeta = document.getElementById("syncMeta");
+      const syncStatusGrid = document.getElementById("syncStatusGrid");
+      const syncPeers = document.getElementById("syncPeers");
+      const syncAttempts = document.getElementById("syncAttempts");
+      const syncNowButton = document.getElementById("syncNowButton");
 
       let configDefaults = {};
       let configPath = "";
@@ -1417,6 +1497,144 @@ VIEWER_HTML = """<!doctype html>
         });
         if (typeof lucide !== "undefined") lucide.createIcons();
         metaLine.textContent = `DB: ${db.path || "unknown"} · ${Math.round((db.size_bytes || 0) / 1024)} KB`;
+      }
+
+      function formatTimestamp(value) {
+        if (!value) return "never";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return date.toLocaleString();
+      }
+
+      function renderSyncStatus(status) {
+        if (!syncMeta || !syncStatusGrid) return;
+        if (!status || typeof status !== "object") {
+          syncMeta.textContent = "Sync status unavailable";
+          syncStatusGrid.textContent = "";
+          return;
+        }
+        const peerCount = status.peer_count || 0;
+        const enabledLabel = status.enabled ? "enabled" : "disabled";
+        syncMeta.textContent = `${enabledLabel} · ${peerCount} peers`;
+        const items = [
+          { label: "Device", value: status.device_id || "unpaired" },
+          { label: "Bind", value: status.bind || "n/a" },
+          { label: "Interval", value: status.interval_s ? `${status.interval_s}s` : "n/a" },
+          { label: "Last sync", value: formatTimestamp(status.last_sync_at) },
+        ];
+        syncStatusGrid.textContent = "";
+        items.forEach(item => {
+          const stat = createElement("div", "stat");
+          const content = createElement("div", "stat-content");
+          const value = createElement("div", "value", item.value);
+          const label = createElement("div", "label", item.label);
+          content.append(value, label);
+          stat.append(content);
+          syncStatusGrid.appendChild(stat);
+        });
+      }
+
+      async function syncPeerNow(peerDeviceId) {
+        if (syncNowButton) syncNowButton.disabled = true;
+        try {
+          const payload = peerDeviceId ? { peer_device_id: peerDeviceId } : {};
+          const response = await fetch("/api/sync/actions/sync-now", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!response.ok) {
+            console.warn("Sync now failed");
+          }
+        } catch (err) {
+          console.warn("Sync now error", err);
+        } finally {
+          if (syncNowButton) syncNowButton.disabled = false;
+          refresh();
+        }
+      }
+
+      async function renamePeer(peerDeviceId) {
+        const name = window.prompt("Rename peer", "");
+        if (!name) return;
+        try {
+          const response = await fetch("/api/sync/peers/rename", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ peer_device_id: peerDeviceId, name }),
+          });
+          if (!response.ok) {
+            console.warn("Rename peer failed");
+          }
+        } catch (err) {
+          console.warn("Rename peer error", err);
+        } finally {
+          refresh();
+        }
+      }
+
+      async function removePeer(peerDeviceId) {
+        const confirmRemove = window.confirm("Remove this peer?");
+        if (!confirmRemove) return;
+        try {
+          const response = await fetch(`/api/sync/peers/${peerDeviceId}`, { method: "DELETE" });
+          if (!response.ok) {
+            console.warn("Remove peer failed");
+          }
+        } catch (err) {
+          console.warn("Remove peer error", err);
+        } finally {
+          refresh();
+        }
+      }
+
+      function renderSyncPeers(items) {
+        if (!syncPeers) return;
+        syncPeers.textContent = "";
+        if (!items || !items.length) {
+          syncPeers.appendChild(createElement("div", "peer-meta", "No peers configured"));
+          return;
+        }
+        items.forEach(peer => {
+          const card = createElement("div", "peer-card");
+          const titleRow = createElement("div", "peer-title");
+          const name = peer.name || peer.peer_device_id || "peer";
+          titleRow.appendChild(createElement("strong", "", name));
+          const actions = createElement("div", "peer-actions");
+          const syncButton = createElement("button", "", "Sync");
+          syncButton.addEventListener("click", () => syncPeerNow(peer.peer_device_id));
+          const renameButton = createElement("button", "", "Rename");
+          renameButton.addEventListener("click", () => renamePeer(peer.peer_device_id));
+          const removeButton = createElement("button", "", "Remove");
+          removeButton.addEventListener("click", () => removePeer(peer.peer_device_id));
+          actions.append(syncButton, renameButton, removeButton);
+          titleRow.appendChild(actions);
+          const meta = createElement(
+            "div",
+            "peer-meta",
+            `last sync: ${formatTimestamp(peer.last_sync_at)} · status: ${peer.last_error || "ok"}`
+          );
+          const addresses = createElement(
+            "div",
+            "peer-addresses",
+            (peer.addresses || []).join(", ") || "no addresses"
+          );
+          card.append(titleRow, meta, addresses);
+          syncPeers.appendChild(card);
+        });
+      }
+
+      function renderSyncAttempts(items) {
+        if (!syncAttempts) return;
+        syncAttempts.textContent = "";
+        if (!items || !items.length) {
+          syncAttempts.appendChild(createElement("div", "peer-meta", "No sync attempts yet"));
+          return;
+        }
+        items.slice(0, 6).forEach(attempt => {
+          const label = `${attempt.peer_device_id} · ${attempt.ok ? "ok" : "error"} · ${formatTimestamp(attempt.finished_at)}`;
+          syncAttempts.appendChild(createElement("div", "peer-meta", label));
+        });
       }
 
       function renderList(el, rows, formatter) {
@@ -1966,19 +2184,27 @@ VIEWER_HTML = """<!doctype html>
         refresh();
       });
 
+      syncNowButton?.addEventListener("click", () => syncPeerNow());
+
       async function refresh() {
         refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
         try {
           const projectParam = currentProject ? `&project=${encodeURIComponent(currentProject)}` : "";
           const usageProjectParam = currentProject ? `?project=${encodeURIComponent(currentProject)}` : "";
-          const [stats, summaries, observations, usage] = await Promise.all([
+          const [stats, summaries, observations, usage, syncStatus, syncPeersData, syncAttemptsData] = await Promise.all([
             fetch("/api/stats").then(r => r.json()),
             fetch(`/api/memory?kind=session_summary&limit=20${projectParam}`).then(r => r.json()),
             fetch(`/api/observations?limit=40${projectParam}`).then(r => r.json()),
             fetch(`/api/usage${usageProjectParam}`).then(r => r.json()),
+            fetch("/api/sync/status").then(r => r.json()),
+            fetch("/api/sync/peers").then(r => r.json()),
+            fetch("/api/sync/attempts?limit=8").then(r => r.json()),
           ]);
           renderStats(stats);
           renderSessionStats(usage.recent_packs || [], !currentProject);
+          renderSyncStatus(syncStatus);
+          renderSyncPeers(syncPeersData.items || []);
+          renderSyncAttempts(syncAttemptsData.items || []);
 
           if (isDiagnosticsOpen()) {
             try {
