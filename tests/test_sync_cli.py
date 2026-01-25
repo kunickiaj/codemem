@@ -233,6 +233,29 @@ def test_sync_service_stop_falls_back_to_pid(monkeypatch) -> None:
     assert result.exit_code == 0
 
 
+def test_sync_service_status_uses_pid(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "opencode_mem.cli._service_status_summary", lambda user: (False, "failed (EX_CONFIG)")
+    )
+    monkeypatch.setattr("opencode_mem.cli._sync_pid_running", lambda: True)
+    monkeypatch.setattr(
+        "opencode_mem.cli.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 120,
+            },
+        )(),
+    )
+    result = runner.invoke(app, ["sync", "service", "status"])
+    assert result.exit_code == 0
+    assert "running (pidfile)" in result.stdout
+
+
 def test_sync_daemon_requires_enabled(monkeypatch) -> None:
     monkeypatch.setattr(
         "opencode_mem.cli.load_config", lambda: type("Cfg", (), {"sync_enabled": False})()

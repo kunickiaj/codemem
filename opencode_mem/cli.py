@@ -111,6 +111,11 @@ def _sync_daemon_running(host: str, port: int) -> bool:
     return _port_open(_normalize_local_check_host(host), port)
 
 
+def _sync_pid_running() -> bool:
+    pid = _read_pid(_sync_pid_path())
+    return pid is not None and _pid_running(pid)
+
+
 def _spawn_sync_daemon(host: str, port: int, interval_s: int, db_path: str | None) -> int:
     binary = shutil.which("opencode-mem") or "opencode-mem"
     cmd = [
@@ -250,6 +255,17 @@ def _service_status_summary(user: bool) -> tuple[bool, str]:
         return True, state
 
     return False, "unsupported"
+
+
+def _effective_sync_status(config: Any) -> tuple[bool, str]:
+    service_running, service_summary = _service_status_summary(user=True)
+    if service_running:
+        return True, f"service ({service_summary})"
+    if _sync_pid_running():
+        return True, "pidfile"
+    if _sync_daemon_running(config.sync_host, config.sync_port):
+        return True, "port"
+    return False, f"service ({service_summary})"
 
 
 def _run_service_action_quiet(action: str, *, user: bool, system: bool) -> bool:
@@ -1824,9 +1840,10 @@ def sync_service_status(
     verbose: bool = typer.Option(False, help="Show raw service output"),
 ) -> None:
     """Show service status for sync daemon."""
-    running, summary = _service_status_summary(user)
+    config = load_config()
+    running, summary = _effective_sync_status(config)
     label = "running" if running else "not running"
-    print(f"- Sync service: {label} ({summary})")
+    print(f"- Sync: {label} ({summary})")
     if not verbose:
         return
     _run_service_action("status", user=user, system=system)
@@ -1838,8 +1855,21 @@ def sync_service_start(
     system: bool = typer.Option(False, help="Use system-level service"),
 ) -> None:
     """Start sync daemon service."""
-    _run_service_action("start", user=user, system=system)
-    print("[green]Started sync service[/green]")
+    config = load_config()
+    if _run_service_action_quiet("start", user=user, system=system):
+        print("[green]Started sync service[/green]")
+        return
+    if _sync_pid_running() or _sync_daemon_running(config.sync_host, config.sync_port):
+        print("[yellow]Sync already running[/yellow]")
+        return
+    pid = _spawn_sync_daemon(
+        host=config.sync_host,
+        port=config.sync_port,
+        interval_s=config.sync_interval_s,
+        db_path=None,
+    )
+    _write_pid(_sync_pid_path(), pid)
+    print(f"[green]Started sync daemon (pid {pid})[/green]")
 
 
 @sync_service_app.command("stop")
@@ -1865,8 +1895,13 @@ def sync_service_restart(
     system: bool = typer.Option(False, help="Use system-level service"),
 ) -> None:
     """Restart sync daemon service."""
-    _run_service_action("restart", user=user, system=system)
-    print("[green]Restarted sync service[/green]")
+    try:
+        _run_service_action("restart", user=user, system=system)
+        print("[green]Restarted sync service[/green]")
+        return
+    except typer.Exit:
+        _stop_sync_pid()
+        sync_service_start(user=user, system=system)
 
 
 @sync_app.command("install")
