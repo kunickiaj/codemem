@@ -106,3 +106,23 @@ def test_sync_peers_list(tmp_path: Path) -> None:
     result = runner.invoke(app, ["sync", "peers", "list", "--db-path", str(db_path)], env=env)
     assert result.exit_code == 0
     assert "Laptop" in result.stdout
+
+
+def test_sync_service_status_linux_user(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(command, capture_output, text, check):
+        calls.append(command)
+
+        class Result:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("opencode_mem.cli.sys.platform", "linux")
+    monkeypatch.setattr("opencode_mem.cli.subprocess.run", fake_run)
+    result = runner.invoke(app, ["sync", "service", "status"])
+    assert result.exit_code == 0
+    assert calls == [["systemctl", "--user", "status", "opencode-mem-sync.service"]]

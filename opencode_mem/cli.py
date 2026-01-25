@@ -28,8 +28,10 @@ from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT, start_viewer
 app = typer.Typer(help="opencode-mem: persistent memory for OpenCode CLI")
 sync_app = typer.Typer(help="Sync opencode-mem between devices")
 sync_peers_app = typer.Typer(help="Manage sync peers")
+sync_service_app = typer.Typer(help="Manage sync service")
 app.add_typer(sync_app, name="sync")
 sync_app.add_typer(sync_peers_app, name="peers")
+sync_app.add_typer(sync_service_app, name="service")
 
 
 def _store(db_path: str | None) -> MemoryStore:
@@ -95,6 +97,53 @@ def _write_config_or_exit(data: dict[str, Any]) -> None:
     except OSError as exc:
         print(f"[red]Failed to write config: {exc}[/red]")
         raise typer.Exit(code=1) from exc
+
+
+def _build_service_commands(action: str, install_mode: str) -> list[list[str]]:
+    if sys.platform.startswith("darwin"):
+        label = "com.opencode-mem.sync"
+        if install_mode != "user":
+            raise ValueError("system launchctl not supported")
+        uid = os.getuid()
+        target = f"gui/{uid}/{label}"
+        if action == "status":
+            return [["launchctl", "print", target]]
+        if action == "start":
+            return [["launchctl", "kickstart", "-k", target]]
+        if action == "stop":
+            return [["launchctl", "stop", target]]
+        if action == "restart":
+            return [["launchctl", "stop", target], ["launchctl", "kickstart", "-k", target]]
+        raise ValueError("unknown action")
+
+    if sys.platform.startswith("linux"):
+        unit = "opencode-mem-sync.service"
+        base = ["systemctl"]
+        if install_mode == "user":
+            base.append("--user")
+        return [[*base, action, unit]]
+
+    raise ValueError("unsupported platform")
+
+
+def _run_service_action(action: str, *, user: bool, system: bool) -> None:
+    if user and system:
+        print("[red]Use only one of --user or --system[/red]")
+        raise typer.Exit(code=1)
+    install_mode = "system" if system else "user"
+    try:
+        commands = _build_service_commands(action, install_mode)
+    except ValueError as exc:
+        print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(code=1) from exc
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.stdout:
+            print(result.stdout.strip())
+        if result.stderr:
+            print(result.stderr.strip())
+        if result.returncode != 0:
+            raise typer.Exit(code=result.returncode)
 
 
 def _build_import_key(
@@ -1433,6 +1482,42 @@ def sync_daemon(
         interval_s=interval_s or config.sync_interval_s,
         db_path=Path(db_path) if db_path else None,
     )
+
+
+@sync_service_app.command("status")
+def sync_service_status(
+    user: bool = typer.Option(True, help="Use user-level service"),
+    system: bool = typer.Option(False, help="Use system-level service"),
+) -> None:
+    """Show service status for sync daemon."""
+    _run_service_action("status", user=user, system=system)
+
+
+@sync_service_app.command("start")
+def sync_service_start(
+    user: bool = typer.Option(True, help="Use user-level service"),
+    system: bool = typer.Option(False, help="Use system-level service"),
+) -> None:
+    """Start sync daemon service."""
+    _run_service_action("start", user=user, system=system)
+
+
+@sync_service_app.command("stop")
+def sync_service_stop(
+    user: bool = typer.Option(True, help="Use user-level service"),
+    system: bool = typer.Option(False, help="Use system-level service"),
+) -> None:
+    """Stop sync daemon service."""
+    _run_service_action("stop", user=user, system=system)
+
+
+@sync_service_app.command("restart")
+def sync_service_restart(
+    user: bool = typer.Option(True, help="Use user-level service"),
+    system: bool = typer.Option(False, help="Use system-level service"),
+) -> None:
+    """Restart sync daemon service."""
+    _run_service_action("restart", user=user, system=system)
 
 
 @sync_app.command("install")
