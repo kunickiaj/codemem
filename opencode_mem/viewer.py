@@ -2471,6 +2471,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return None
         return payload if isinstance(payload, dict) else None
 
+    def _reject_cross_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return False
+        allowed = (
+            origin.startswith("http://127.0.0.1")
+            or origin.startswith("http://localhost")
+            or origin.startswith("http://[::1]")
+        )
+        if allowed:
+            return False
+        self._send_json({"error": "forbidden"}, status=403)
+        return True
+
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         if os.environ.get("OPENCODE_MEM_VIEWER_LOGS") == "1":
             super().log_message(format, *args)
@@ -2734,6 +2748,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self._reject_cross_origin():
+            return
         if parsed.path == "/api/sync/peers/rename":
             payload = self._read_json()
             if payload is None:
@@ -3116,6 +3132,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self._reject_cross_origin():
+            return
         if not parsed.path.startswith("/api/sync/peers/"):
             self.send_response(404)
             self.end_headers()
