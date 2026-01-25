@@ -1574,7 +1574,7 @@ VIEWER_HTML = """<!doctype html>
           { label: "Memories", value: db.memory_items || 0, icon: "brain" },
           { label: "Active memories", value: db.active_memory_items || 0, icon: "check-circle" },
           { label: "Artifacts", value: db.artifacts || 0, icon: "package" },
-          { label: "Work investment", value: usage.tokens_written || 0, tooltip: "Tokens spent creating memories (observer LLM calls)", icon: "pencil" },
+          { label: "Work investment", value: usage.work_investment_tokens || 0, tooltip: "Tokens spent arriving at stored memories (from assistant usage; claude-mem parity)", icon: "pencil" },
           { label: "Read cost", value: usage.tokens_read || 0, tooltip: "Tokens to read memories when injected into context", icon: "book-open" },
           { label: "Savings", value: usage.tokens_saved || 0, tooltip: "Tokens saved by reusing compressed memories instead of raw context", icon: "trending-up" },
         ];

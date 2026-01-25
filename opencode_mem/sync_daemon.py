@@ -14,7 +14,7 @@ from urllib.parse import urlencode, urlparse
 
 from . import db
 from .store import MemoryStore, ReplicationOp
-from .sync_api import build_sync_handler
+from .sync_api import MAX_SYNC_BODY_BYTES, build_sync_handler
 from .sync_auth import build_auth_headers
 from .sync_discovery import (
     advertise_mdns,
@@ -28,6 +28,29 @@ from .sync_discovery import (
     update_peer_addresses,
 )
 from .sync_identity import ensure_device_identity
+
+
+def _chunk_ops_by_size(
+    ops: list[ReplicationOp],
+    *,
+    max_bytes: int,
+) -> list[list[ReplicationOp]]:
+    batches: list[list[ReplicationOp]] = []
+    current: list[ReplicationOp] = []
+    current_bytes = 0
+    for op in ops:
+        op_bytes = len(json.dumps(op, ensure_ascii=False))
+        if op_bytes > max_bytes:
+            raise RuntimeError("single op exceeds size limit")
+        if current and current_bytes + op_bytes > max_bytes:
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(op)
+        current_bytes += op_bytes
+    if current:
+        batches.append(current)
+    return batches
 
 
 def _build_base_url(address: str) -> str:
@@ -201,27 +224,30 @@ def sync_once(
                 last_acked, limit=limit
             )
             post_url = f"{base_url}/v1/ops"
-            body = {"ops": outbound_ops}
-            body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            post_headers = build_auth_headers(
-                device_id=device_id,
-                method="POST",
-                url=post_url,
-                body_bytes=body_bytes,
-                keys_dir=keys_dir,
-            )
-            status, payload = _request_json(
-                "POST",
-                post_url,
-                headers=post_headers,
-                body=body,
-                body_bytes=body_bytes,
-            )
-            if status != 200 or payload is None:
-                raise RuntimeError("peer ops push failed")
-            if outbound_ops and outbound_cursor:
-                _set_replication_cursor(store, peer_device_id, last_acked=outbound_cursor)
-                last_acked = outbound_cursor
+            if outbound_ops:
+                batches = _chunk_ops_by_size(outbound_ops, max_bytes=MAX_SYNC_BODY_BYTES)
+                for batch in batches:
+                    body = {"ops": batch}
+                    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+                    post_headers = build_auth_headers(
+                        device_id=device_id,
+                        method="POST",
+                        url=post_url,
+                        body_bytes=body_bytes,
+                        keys_dir=keys_dir,
+                    )
+                    status, payload = _request_json(
+                        "POST",
+                        post_url,
+                        headers=post_headers,
+                        body=body,
+                        body_bytes=body_bytes,
+                    )
+                    if status != 200 or payload is None:
+                        raise RuntimeError("peer ops push failed")
+                if outbound_cursor:
+                    _set_replication_cursor(store, peer_device_id, last_acked=outbound_cursor)
+                    last_acked = outbound_cursor
 
             record_peer_success(store.conn, peer_device_id, base_url)
             record_sync_attempt(

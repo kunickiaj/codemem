@@ -1,10 +1,14 @@
+import json
 import os
 import threading
 from http.server import HTTPServer
 from pathlib import Path
+from typing import cast
+
+import pytest
 
 from opencode_mem import db, sync_daemon
-from opencode_mem.store import MemoryStore
+from opencode_mem.store import MemoryStore, ReplicationOp
 from opencode_mem.sync_api import build_sync_handler
 from opencode_mem.sync_daemon import sync_once
 from opencode_mem.sync_discovery import update_peer_addresses
@@ -167,3 +171,40 @@ def test_request_json_respects_body_bytes(monkeypatch) -> None:
     )
     assert status == 200
     assert called["conn"].body == b"signed-bytes"
+
+
+def _make_op(op_id: str, entity_id: str, payload: dict | None = None) -> dict:
+    return {
+        "op_id": op_id,
+        "entity_type": "memory_item",
+        "entity_id": entity_id,
+        "op_type": "upsert",
+        "payload": payload or {},
+        "clock": {"rev": 1, "updated_at": "t", "device_id": "d"},
+        "device_id": "d",
+        "created_at": "t",
+    }
+
+
+def test_chunk_ops_by_size_single_batch() -> None:
+    ops = [_make_op("a", "1"), _make_op("b", "2")]
+    typed_ops = cast(list[ReplicationOp], ops)
+    total_bytes = sum(len(json.dumps(op, ensure_ascii=False)) for op in ops)
+    batches = sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=total_bytes)
+    assert batches == [typed_ops]
+
+
+def test_chunk_ops_by_size_splits_batches() -> None:
+    ops = [_make_op("a", "1"), _make_op("b", "2"), _make_op("c", "3")]
+    typed_ops = cast(list[ReplicationOp], ops)
+    op_bytes = [len(json.dumps(op, ensure_ascii=False)) for op in ops]
+    max_bytes = op_bytes[0] + op_bytes[1]
+    batches = sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=max_bytes)
+    assert batches == [typed_ops[:2], typed_ops[2:]]
+
+
+def test_chunk_ops_by_size_raises_on_oversize() -> None:
+    ops = [_make_op("a", "1", payload={"blob": "x" * 300})]
+    typed_ops = cast(list[ReplicationOp], ops)
+    with pytest.raises(RuntimeError, match="single op exceeds size limit"):
+        sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=50)

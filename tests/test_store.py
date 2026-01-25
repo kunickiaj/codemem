@@ -245,6 +245,95 @@ def test_pack_reuse_savings(tmp_path: Path) -> None:
     assert usage["pack"]["tokens_saved"] > 0
 
 
+def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="note",
+        title="Alpha",
+        body_text="Alpha body",
+        metadata={"discovery_tokens": 111},
+    )
+    store.remember(
+        session,
+        kind="note",
+        title="Beta",
+        body_text="Beta body",
+        metadata={"discovery_tokens": 222},
+    )
+    store.record_usage("observe", session_id=session, tokens_written=999)
+    store.end_session(session)
+
+    stats = store.stats()
+    assert stats["usage"]["totals"]["work_investment_tokens"] == 333
+
+
+def test_backfill_discovery_tokens_from_raw_events(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.get_or_create_opencode_session(
+        opencode_session_id="sess-1",
+        cwd="/tmp",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="feature",
+        title="First",
+        body_text="First body",
+        metadata={"source": "observer"},
+    )
+    store.remember(
+        session,
+        kind="feature",
+        title="Second",
+        body_text="Second body",
+        metadata={"source": "observer"},
+    )
+    store.record_raw_events_batch(
+        opencode_session_id="sess-1",
+        events=[
+            {
+                "event_id": "e1",
+                "event_type": "assistant_usage",
+                "payload": {
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    }
+                },
+            }
+        ],
+    )
+
+    updated = store.backfill_discovery_tokens(limit_sessions=10)
+    assert updated == 2
+    updated_again = store.backfill_discovery_tokens(limit_sessions=10)
+    assert updated_again == 0
+
+    rows = store.conn.execute(
+        "SELECT metadata_json FROM memory_items WHERE session_id = ? ORDER BY id ASC",
+        (session,),
+    ).fetchall()
+    meta_a = json.loads(rows[0]["metadata_json"])
+    meta_b = json.loads(rows[1]["metadata_json"])
+    assert meta_a["discovery_tokens"] == 7
+    assert meta_b["discovery_tokens"] == 7
+    assert meta_a["discovery_source"] == "usage"
+
+    stats = store.stats()
+    assert stats["usage"]["totals"]["work_investment_tokens"] == 14
+
+
 def test_deactivate_low_signal_observations(tmp_path: Path) -> None:
     """Test the deactivation mechanism works - with empty patterns, nothing is deactivated."""
     store = MemoryStore(tmp_path / "mem.sqlite")

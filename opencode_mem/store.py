@@ -352,6 +352,170 @@ class MemoryStore:
             count += 1
         return count
 
+    def _session_discovery_tokens_from_raw_events(self, opencode_session_id: str) -> int:
+        row = self.conn.execute(
+            """
+            SELECT
+                COALESCE(
+                    SUM(
+                        COALESCE(CAST(json_extract(payload_json, '$.usage.input_tokens') AS INTEGER), 0)
+                        + COALESCE(CAST(json_extract(payload_json, '$.usage.output_tokens') AS INTEGER), 0)
+                        + COALESCE(
+                            CAST(json_extract(payload_json, '$.usage.cache_creation_input_tokens') AS INTEGER),
+                            0
+                        )
+                    ),
+                    0
+                ) AS total_tokens
+            FROM raw_events
+            WHERE opencode_session_id = ?
+              AND event_type = 'assistant_usage'
+              AND json_valid(payload_json) = 1
+            """,
+            (opencode_session_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["total_tokens"] or 0)
+
+    def _session_discovery_tokens_from_transcript(self, session_id: int) -> int:
+        row = self.conn.execute(
+            """
+            SELECT content_text
+            FROM artifacts
+            WHERE session_id = ? AND kind = 'transcript'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        text = str(row["content_text"] or "")
+        if not text.strip():
+            return 0
+        return self.estimate_tokens(text)
+
+    def backfill_discovery_tokens(self, *, limit_sessions: int = 50) -> int:
+        """Backfill missing per-memory discovery_tokens for existing databases.
+
+        We treat discovery_tokens as the session work investment (input+output+cache creation)
+        from OpenCode's assistant usage events, split evenly across observer-generated memories.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT s.id AS session_id, os.opencode_session_id AS opencode_session_id
+            FROM sessions s
+            JOIN opencode_sessions os ON os.session_id = s.id
+            JOIN memory_items mi ON mi.session_id = s.id
+            WHERE s.tool_version = 'raw_events'
+              AND (
+                mi.metadata_json IS NULL
+                OR TRIM(mi.metadata_json) = ''
+                OR json_valid(mi.metadata_json) = 0
+                OR COALESCE(
+                    CASE
+                        WHEN json_valid(mi.metadata_json) = 1
+                        THEN CAST(json_extract(mi.metadata_json, '$.discovery_tokens') AS INTEGER)
+                        ELSE 0
+                    END,
+                    0
+                ) <= 0
+              )
+            ORDER BY s.id DESC
+            LIMIT ?
+            """,
+            (limit_sessions,),
+        ).fetchall()
+
+        updated = 0
+        for row in rows:
+            session_id = int(row["session_id"])
+            opencode_session_id = str(row["opencode_session_id"] or "").strip()
+            if not opencode_session_id:
+                continue
+
+            items = self.conn.execute(
+                "SELECT id, metadata_json FROM memory_items WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+            if not items:
+                continue
+
+            relevant: list[tuple[int, dict[str, Any]]] = []
+            missing_ids: list[int] = []
+            for item in items:
+                meta = db.from_json(item["metadata_json"])
+                source = str(meta.get("source") or "")
+                if source and source != "observer":
+                    continue
+                current_tokens = 0
+                try:
+                    current_tokens = int(meta.get("discovery_tokens") or 0)
+                except (TypeError, ValueError):
+                    current_tokens = 0
+                relevant.append((int(item["id"]), meta))
+                if current_tokens <= 0:
+                    missing_ids.append(int(item["id"]))
+
+            if not relevant or not missing_ids:
+                continue
+
+            session_tokens = self._session_discovery_tokens_from_raw_events(opencode_session_id)
+            source_label = "usage"
+            if session_tokens <= 0:
+                session_tokens = self._session_discovery_tokens_from_transcript(session_id)
+                source_label = "estimate"
+            if session_tokens <= 0:
+                continue
+
+            per_item = max(1, session_tokens // len(relevant))
+            now = self._now_iso()
+            for memory_id, meta in relevant:
+                if memory_id not in missing_ids:
+                    continue
+                meta["discovery_tokens"] = per_item
+                meta["discovery_source"] = source_label
+                self.conn.execute(
+                    "UPDATE memory_items SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                    (db.to_json(meta), now, memory_id),
+                )
+                updated += 1
+            self.conn.commit()
+
+        return updated
+
+    def work_investment_tokens(self) -> int:
+        """Sum discovery_tokens across stored memories.
+
+        This mirrors claude-mem's token economics model where discovery_tokens represents
+        the token cost to arrive at an observation.
+        """
+
+        row = self.conn.execute(
+            """
+            SELECT
+                COALESCE(
+                    SUM(
+                        COALESCE(
+                            CASE
+                                WHEN json_valid(metadata_json) = 1
+                                THEN CAST(json_extract(metadata_json, '$.discovery_tokens') AS INTEGER)
+                                ELSE 0
+                            END,
+                            0
+                        )
+                    ),
+                    0
+                ) AS total
+            FROM memory_items
+            """
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["total"] or 0)
+
     def _ensure_session_for_replication(self, session_id: int, started_at: str | None) -> None:
         row = self.conn.execute(
             "SELECT 1 FROM sessions WHERE id = ?",
@@ -3437,6 +3601,10 @@ class MemoryStore:
         return results
 
     def stats(self) -> dict[str, Any]:
+        # Keep existing databases accurate: fill missing discovery_tokens incrementally.
+        # This is bounded and idempotent; it should converge after a few viewer refreshes.
+        self.backfill_discovery_tokens(limit_sessions=25)
+
         total_memories = self.conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
         active_memories = self.conn.execute(
             "SELECT COUNT(*) FROM memory_items WHERE active = 1"
@@ -3477,6 +3645,7 @@ class MemoryStore:
                 "tokens_read": sum(row["tokens_read"] or 0 for row in usage_rows),
                 "tokens_written": sum(row["tokens_written"] or 0 for row in usage_rows),
                 "tokens_saved": sum(row["tokens_saved"] or 0 for row in usage_rows),
+                "work_investment_tokens": self.work_investment_tokens(),
             },
         }
 
