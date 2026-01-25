@@ -11,7 +11,6 @@ import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 from .sync_identity import load_private_key, resolve_key_paths
