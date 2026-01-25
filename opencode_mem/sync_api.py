@@ -14,12 +14,16 @@ from .sync_auth import DEFAULT_TIME_WINDOW_S, cleanup_nonces, record_nonce, veri
 from .sync_identity import ensure_device_identity, fingerprint_public_key
 
 PROTOCOL_VERSION = "1"
+MAX_SYNC_BODY_BYTES = int(os.getenv("OPENCODE_MEM_SYNC_MAX_BODY_BYTES", "1048576"))
+MAX_SYNC_OPS = int(os.getenv("OPENCODE_MEM_SYNC_MAX_OPS", "2000"))
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> bytes:
     length = int(handler.headers.get("Content-Length", "0") or 0)
     if length <= 0:
         return b""
+    if length > MAX_SYNC_BODY_BYTES:
+        raise ValueError("payload_too_large")
     return handler.rfile.read(length)
 
 
@@ -118,7 +122,18 @@ def build_sync_handler(db_path: Path | None = None):
                     if not _authorize_request(store, self, b""):
                         self._unauthorized()
                         return
-                    device_id, fingerprint = ensure_device_identity(store.conn)
+                    device_row = store.conn.execute(
+                        "SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1"
+                    ).fetchone()
+                    if device_row:
+                        device_id = device_row["device_id"]
+                        fingerprint = device_row["fingerprint"]
+                    else:
+                        keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
+                        keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
+                        device_id, fingerprint = ensure_device_identity(
+                            store.conn, keys_dir=keys_dir
+                        )
                 except Exception:
                     _send_json(self, {"error": "internal_error"}, status=500)
                 else:
@@ -162,7 +177,11 @@ def build_sync_handler(db_path: Path | None = None):
                 return
             store = self._store()
             try:
-                raw = _read_body(self)
+                try:
+                    raw = _read_body(self)
+                except ValueError:
+                    _send_json(self, {"error": "payload_too_large"}, status=413)
+                    return
                 if not _authorize_request(store, self, raw):
                     self._unauthorized()
                     return
@@ -173,6 +192,9 @@ def build_sync_handler(db_path: Path | None = None):
                 ops = data.get("ops")
                 if not isinstance(ops, list):
                     _send_json(self, {"error": "invalid_ops"}, status=400)
+                    return
+                if len(ops) > MAX_SYNC_OPS:
+                    _send_json(self, {"error": "too_many_ops"}, status=413)
                     return
                 normalized_ops: list[dict[str, Any]] = []
                 for op in ops:
