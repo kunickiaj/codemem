@@ -76,6 +76,32 @@ def test_sync_enable_no_start(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
 
 
+def test_sync_enable_restarts_running_daemon_on_change(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    config_path.write_text(
+        json.dumps({"sync_host": "127.0.0.1", "sync_port": 7337, "sync_interval_s": 120}) + "\n"
+    )
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+
+    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
+    called = {"restart": 0}
+
+    def fake_run_service(action: str, *, user: bool, system: bool) -> None:
+        assert action == "restart"
+        called["restart"] += 1
+
+    monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
+    result = runner.invoke(
+        app,
+        ["sync", "enable", "--db-path", str(db_path), "--host", "0.0.0.0"],
+        env=env,
+    )
+    assert result.exit_code == 0
+    assert called["restart"] == 1
+
+
 def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"

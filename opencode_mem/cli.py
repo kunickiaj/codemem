@@ -18,6 +18,7 @@ from rich import print
 from . import db
 from .config import get_config_path, load_config, read_config_file, write_config_file
 from .db import DEFAULT_DB_PATH
+from .net import pick_advertise_host
 from .store import MemoryStore
 from .summarizer import Summarizer
 from .sync_daemon import run_sync_daemon, sync_once
@@ -1264,6 +1265,10 @@ def sync_enable(
     port: int | None = typer.Option(None, help="Port to bind sync server"),
     interval_s: int | None = typer.Option(None, help="Sync interval in seconds"),
     start: bool = typer.Option(True, "--start/--no-start", help="Start daemon after enabling"),
+    advertise: str | None = typer.Option(
+        None,
+        help="Advertised host for pairing payload ('auto' to prefer Tailscale, else LAN)",
+    ),
 ) -> None:
     """Enable sync and initialize device identity."""
     store = _store(db_path)
@@ -1273,10 +1278,16 @@ def sync_enable(
         store.close()
     config_data = _read_config_or_exit()
     config = load_config()
+    previous_host = str(config_data.get("sync_host") or config.sync_host)
+    previous_port = int(config_data.get("sync_port") or config.sync_port)
+    previous_interval = int(config_data.get("sync_interval_s") or config.sync_interval_s)
+
     config_data["sync_enabled"] = True
     config_data["sync_host"] = host or config.sync_host
     config_data["sync_port"] = port or config.sync_port
     config_data["sync_interval_s"] = interval_s or config.sync_interval_s
+    if advertise is not None:
+        config_data["sync_advertise"] = advertise
     _write_config_or_exit(config_data)
     config_path = get_config_path()
     print("[green]Sync enabled[/green]")
@@ -1287,8 +1298,26 @@ def sync_enable(
     if not start:
         print("- Run: opencode-mem sync daemon")
         return
-    if _sync_daemon_running(str(config_data["sync_host"]), int(config_data["sync_port"])):
-        print("[yellow]Sync daemon already running[/yellow]")
+    desired_host = str(config_data["sync_host"])
+    desired_port = int(config_data["sync_port"])
+    desired_interval = int(config_data["sync_interval_s"])
+    bind_changed = (previous_host, previous_port, previous_interval) != (
+        desired_host,
+        desired_port,
+        desired_interval,
+    )
+    if _sync_daemon_running(desired_host, desired_port):
+        if bind_changed:
+            try:
+                _run_service_action("restart", user=True, system=False)
+                print("[green]Sync daemon restarted[/green]")
+            except typer.Exit:
+                print("[yellow]Sync daemon already running[/yellow]")
+                print("Restart required to apply updated bind settings:")
+                print("- opencode-mem sync service restart")
+                print("- or stop/start your foreground daemon")
+        else:
+            print("[yellow]Sync daemon already running[/yellow]")
         return
     pid = _spawn_sync_daemon(
         host=str(config_data["sync_host"]),
@@ -1355,7 +1384,7 @@ def sync_status(db_path: str = typer.Option(None, help="Path to SQLite database"
 def sync_pair(
     accept: str | None = typer.Option(None, help="Accept pairing payload (JSON)"),
     name: str | None = typer.Option(None, help="Label for the peer"),
-    address: str | None = typer.Option(None, help="Override peer address"),
+    address: str | None = typer.Option(None, help="Override peer address (host:port)"),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Print pairing payload or accept a peer payload."""
@@ -1396,7 +1425,14 @@ def sync_pair(
             print("[red]Public key missing[/red]")
             raise typer.Exit(code=1)
         config = load_config()
-        resolved_address = address or f"{config.sync_host}:{config.sync_port}"
+        if address and address.strip().lower() in {"auto", "default"}:
+            address = None
+        if address:
+            resolved_address = address
+        else:
+            advertise_host = pick_advertise_host(config.sync_advertise)
+            resolved_host = advertise_host or config.sync_host
+            resolved_address = f"{resolved_host}:{config.sync_port}"
         payload = {
             "device_id": device_id,
             "fingerprint": fingerprint,

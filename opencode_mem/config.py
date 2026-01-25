@@ -20,6 +20,7 @@ CONFIG_ENV_OVERRIDES = {
     "sync_interval_s": "OPENCODE_MEM_SYNC_INTERVAL_S",
     "sync_mdns": "OPENCODE_MEM_SYNC_MDNS",
     "sync_key_store": "OPENCODE_MEM_SYNC_KEY_STORE",
+    "sync_advertise": "OPENCODE_MEM_SYNC_ADVERTISE",
 }
 
 
@@ -83,11 +84,13 @@ class OpencodeMemConfig:
     plugin_log: str | None = "~/.opencode-mem/plugin.log"
     plugin_cmd_timeout_ms: int = 1500
     sync_enabled: bool = False
-    sync_host: str = "127.0.0.1"
+    sync_host: str = "0.0.0.0"
     sync_port: int = 7337
     sync_interval_s: int = 120
     sync_mdns: bool = True
     sync_key_store: str = "file"
+
+    sync_advertise: str = "auto"
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -162,4 +165,5 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.sync_interval_s = int(os.getenv("OPENCODE_MEM_SYNC_INTERVAL_S", cfg.sync_interval_s))
     cfg.sync_mdns = _parse_bool(os.getenv("OPENCODE_MEM_SYNC_MDNS"), cfg.sync_mdns)
     cfg.sync_key_store = os.getenv("OPENCODE_MEM_SYNC_KEY_STORE", cfg.sync_key_store)
+    cfg.sync_advertise = os.getenv("OPENCODE_MEM_SYNC_ADVERTISE", cfg.sync_advertise)
     return cfg
