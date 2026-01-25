@@ -30,6 +30,18 @@ def _key_store_mode() -> str:
     return mode if mode in {"file", "keychain"} else "file"
 
 
+def _warn_keychain_limitations() -> None:
+    if not sys.platform.startswith("darwin"):
+        return
+    if _key_store_mode() != "keychain":
+        return
+    if os.environ.get("OPENCODE_MEM_SYNC_KEYCHAIN_WARN") == "0":
+        return
+    print(
+        "[opencode-mem] keychain storage on macOS uses the `security` CLI and may expose the key in process arguments."
+    )
+
+
 def _secret_tool_available() -> bool:
     return shutil.which("secret-tool") is not None
 
@@ -162,6 +174,7 @@ def ensure_device_identity(
     key_dir = (keys_dir or DEFAULT_KEYS_DIR).expanduser()
     private_key_path = key_dir / PRIVATE_KEY_NAME
     public_key_path = key_dir / PUBLIC_KEY_NAME
+    _warn_keychain_limitations()
 
     row = conn.execute(
         "SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1"

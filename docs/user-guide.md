@@ -69,6 +69,7 @@
 
 - `sync_key_store=keychain` (or `OPENCODE_MEM_SYNC_KEY_STORE=keychain`) stores the private key in Secret Service (Linux) or Keychain (macOS).
 - Falls back to file-based storage if the platform tooling is unavailable.
+- On macOS, the Keychain storage uses the `security` CLI and may expose the key in process arguments; use `sync_key_store=file` if that is a concern.
 
 ## Troubleshooting
 - If sessions are missing, confirm the viewer and plugin share the same DB path.

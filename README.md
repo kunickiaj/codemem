@@ -262,6 +262,8 @@ Relevant config keys (override with env vars):
 - `sync_mdns` / `OPENCODE_MEM_SYNC_MDNS`
 - `sync_key_store` / `OPENCODE_MEM_SYNC_KEY_STORE` ("file" or "keychain")
 
+Note: macOS keychain storage uses the `security` CLI and may expose the key via process arguments. Keep `sync_key_store=file` if that’s a concern.
+
 The viewer includes a Settings modal for the observer provider, model, and max chars. Changes write to the config file; environment variables still override those values.
 
 ## Docs
