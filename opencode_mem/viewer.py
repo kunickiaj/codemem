@@ -2786,6 +2786,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             peer_device_id = payload.get("peer_device_id")
             store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
             try:
+                config = load_config()
+                if not config.sync_enabled:
+                    self._send_json({"error": "sync_disabled"}, status=403)
+                    return
                 rows = []
                 if isinstance(peer_device_id, str) and peer_device_id:
                     rows = store.conn.execute(
