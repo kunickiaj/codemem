@@ -51,11 +51,29 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
         env=env,
     )
     assert result.exit_code == 0
+
+
+def test_sync_enable_mac_defaults_no_install(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
+    monkeypatch.setattr("opencode_mem.cli.sys.platform", "darwin")
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+    monkeypatch.setattr("opencode_mem.cli.spawn_daemon", lambda *a, **k: 123)
+    monkeypatch.setattr(
+        "opencode_mem.cli.effective_status",
+        lambda host, port: type(
+            "S", (), {"running": True, "mechanism": "pidfile", "detail": "running", "pid": 123}
+        )(),
+    )
+    result = runner.invoke(app, ["sync", "enable", "--db-path", str(db_path)], env=env)
+    assert result.exit_code == 0
+    assert "falling back" not in result.stdout
     data = json.loads(config_path.read_text())
     assert data["sync_enabled"] is True
     assert data["sync_host"] == "0.0.0.0"
     assert data["sync_port"] == 7337
-    assert data["sync_interval_s"] == 60
+    assert data["sync_interval_s"] == 120
 
     conn = db.connect(db_path)
     try:

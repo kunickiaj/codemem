@@ -1466,8 +1466,10 @@ def sync_enable(
         None,
         help="Advertised host for pairing payload ('auto' to prefer Tailscale, else LAN)",
     ),
-    install: bool = typer.Option(
-        True, "--install/--no-install", help="Install autostart (recommended)"
+    install: bool | None = typer.Option(
+        None,
+        "--install/--no-install",
+        help="Install autostart (systemd/launchd). On macOS dev, default is no-install.",
     ),
 ) -> None:
     """Enable sync and initialize device identity."""
@@ -1501,15 +1503,28 @@ def sync_enable(
 
     print("Starting sync daemon...")
 
-    # Prefer service management if available/installed.
+    if install is None:
+        if sys.platform.startswith("darwin"):
+            install = False
+        else:
+            install = True
+
+    # Prefer service management if available and actually results in a running daemon.
     if install:
+        print("- Installing autostart...")
         _install_autostart_quiet(user=True)
-        if _run_service_action_quiet("restart", user=True, system=False):
-            print("[green]Sync daemon running (autostart enabled)[/green]")
+        print("- Starting via service...")
+        _run_service_action_quiet("restart", user=True, system=False)
+        status = effective_status(str(config_data["sync_host"]), int(config_data["sync_port"]))
+        if status.running and status.mechanism == "service":
+            print("[green]Sync daemon running (service)[/green]")
             return
-        if _run_service_action_quiet("start", user=True, system=False):
-            print("[green]Sync daemon running (autostart enabled)[/green]")
-            return
+        if sys.platform.startswith("darwin") and status.detail.startswith("failed (EX_CONFIG"):
+            print(
+                "[yellow]launchd cannot run opencode-mem in dev mode; using pidfile daemon. Use `sync install` only after installing opencode-mem on PATH.[/yellow]"
+            )
+        else:
+            print("[yellow]Service did not start sync daemon; falling back to pidfile[/yellow]")
     desired_host = str(config_data["sync_host"])
     desired_port = int(config_data["sync_port"])
     desired_interval = int(config_data["sync_interval_s"])
@@ -1531,15 +1546,17 @@ def sync_enable(
         else:
             print("[yellow]Sync daemon already running[/yellow]")
         return
-    pid = _spawn_sync_daemon(
+    pid = spawn_daemon(
         host=str(config_data["sync_host"]),
         port=int(config_data["sync_port"]),
         interval_s=int(config_data["sync_interval_s"]),
         db_path=db_path,
     )
-    _write_pid(_sync_pid_path(), pid)
-    print(f"[green]Sync daemon started (pid {pid})[/green]")
-    print("Logs: ~/.opencode-mem/sync-daemon.log")
+    status = effective_status(str(config_data["sync_host"]), int(config_data["sync_port"]))
+    if status.running and status.mechanism in {"pidfile", "port"}:
+        print(f"[green]Sync daemon running ({status.mechanism})[/green]")
+        return
+    print(f"[yellow]Started sync daemon (pid {pid}) but it is not running[/yellow]")
 
 
 @sync_app.command("disable")
@@ -2004,6 +2021,12 @@ def sync_install(
     dest.write_text(unit_path.read_text())
     print(f"[green]Installed user service at {dest}[/green]")
     print("Run: systemctl --user enable --now opencode-mem-sync.service")
+
+
+@sync_app.command("uninstall")
+def sync_uninstall() -> None:
+    """Uninstall autostart service configuration."""
+    _sync_uninstall_impl(user=True)
 
 
 @app.command()
