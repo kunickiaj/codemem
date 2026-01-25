@@ -1476,6 +1476,9 @@ def sync_daemon(
 ) -> None:
     """Run the sync daemon loop."""
     config = load_config()
+    if not config.sync_enabled:
+        print("[yellow]Sync is disabled (enable via `opencode-mem sync enable`).[/yellow]")
+        raise typer.Exit(code=1)
     run_sync_daemon(
         host=host or config.sync_host,
         port=port or config.sync_port,
