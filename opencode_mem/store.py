@@ -301,6 +301,52 @@ class MemoryStore:
             created_at=self._now_iso(),
         )
 
+    def backfill_replication_ops(self, *, limit: int = 200) -> int:
+        """Generate deterministic ops for rows that predate replication.
+
+        This is used to bootstrap peers so existing databases converge without
+        requiring a manual command.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT mi.*
+            FROM memory_items mi
+            LEFT JOIN replication_ops ro
+              ON ro.entity_type = 'memory_item' AND ro.entity_id = mi.import_key
+            WHERE ro.op_id IS NULL
+            ORDER BY mi.updated_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        count = 0
+        for row in rows:
+            payload = self._memory_item_payload(dict(row))
+            clock = self._clock_from_payload(payload)
+            import_key = str(payload.get("import_key") or "")
+            if not import_key:
+                continue
+            op_type = (
+                "delete"
+                if payload.get("deleted_at") or int(payload.get("active") or 1) == 0
+                else "upsert"
+            )
+            op_id = f"backfill:memory_item:{import_key}:{clock['rev']}"
+            if self._replication_op_exists(op_id):
+                continue
+            self.record_replication_op(
+                op_id=op_id,
+                entity_type="memory_item",
+                entity_id=import_key,
+                op_type=op_type,
+                payload=payload,
+                clock=clock,
+                device_id=clock["device_id"],
+                created_at=self._now_iso(),
+            )
+            count += 1
+        return count
+
     def _ensure_session_for_replication(self, session_id: int, started_at: str | None) -> None:
         row = self.conn.execute(
             "SELECT 1 FROM sessions WHERE id = ?",

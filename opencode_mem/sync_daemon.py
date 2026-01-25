@@ -244,6 +244,7 @@ def sync_once(
 
 
 def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
+    store.backfill_replication_ops(limit=200)
     rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
     mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
     results: list[dict[str, Any]] = []

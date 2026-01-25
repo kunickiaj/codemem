@@ -205,7 +205,23 @@ def test_sync_service_status_linux_user(monkeypatch) -> None:
     monkeypatch.setattr("opencode_mem.cli.subprocess.run", fake_run)
     result = runner.invoke(app, ["sync", "service", "status"])
     assert result.exit_code == 0
-    assert calls == [["systemctl", "--user", "status", "opencode-mem-sync.service"]]
+    assert calls[0][:3] == ["systemctl", "--user", "is-active"]
+
+
+def test_sync_service_stop_prints_success(monkeypatch) -> None:
+    def fake_run(command, capture_output, text, check):
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("opencode_mem.cli.sys.platform", "linux")
+    monkeypatch.setattr("opencode_mem.cli.subprocess.run", fake_run)
+    result = runner.invoke(app, ["sync", "service", "stop"])
+    assert result.exit_code == 0
+    assert "Stopped sync service" in result.stdout
 
 
 def test_sync_service_stop_falls_back_to_pid(monkeypatch) -> None:
@@ -264,6 +280,19 @@ def test_sync_doctor_prints_ok(monkeypatch, tmp_path: Path) -> None:
     finally:
         conn.close()
 
+    monkeypatch.setattr(
+        "opencode_mem.cli.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 120,
+            },
+        )(),
+    )
     monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
     monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: True)
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)])

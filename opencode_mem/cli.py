@@ -211,6 +211,47 @@ def _run_service_action(action: str, *, user: bool, system: bool) -> None:
             raise typer.Exit(code=result.returncode)
 
 
+def _service_status_summary(user: bool) -> tuple[bool, str]:
+    if sys.platform.startswith("darwin"):
+        uid = os.getuid()
+        label = "com.opencode-mem.sync"
+        target = f"gui/{uid}/{label}"
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False, "not loaded"
+        text = result.stdout
+        running = "active count = 1" in text or "state = running" in text
+        if "last exit code" in text and "EX_CONFIG" in text:
+            return False, "failed (EX_CONFIG; opencode-mem not on PATH for launchd)"
+        return running, "running" if running else "loaded (not running)"
+
+    if sys.platform.startswith("linux"):
+        base = ["systemctl"]
+        if user:
+            base.append("--user")
+        result = subprocess.run(
+            [*base, "is-active", "opencode-mem-sync.service"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        state = (result.stdout or "").strip() or "unknown"
+        if result.returncode != 0:
+            if "inactive" in state:
+                return False, "inactive"
+            if "unknown" in state:
+                return False, "not installed"
+            return False, state
+        return True, state
+
+    return False, "unsupported"
+
+
 def _run_service_action_quiet(action: str, *, user: bool, system: bool) -> bool:
     if user and system:
         return False
@@ -1780,8 +1821,14 @@ def sync_daemon(
 def sync_service_status(
     user: bool = typer.Option(True, help="Use user-level service"),
     system: bool = typer.Option(False, help="Use system-level service"),
+    verbose: bool = typer.Option(False, help="Show raw service output"),
 ) -> None:
     """Show service status for sync daemon."""
+    running, summary = _service_status_summary(user)
+    label = "running" if running else "not running"
+    print(f"- Sync service: {label} ({summary})")
+    if not verbose:
+        return
     _run_service_action("status", user=user, system=system)
 
 
@@ -1792,6 +1839,7 @@ def sync_service_start(
 ) -> None:
     """Start sync daemon service."""
     _run_service_action("start", user=user, system=system)
+    print("[green]Started sync service[/green]")
 
 
 @sync_service_app.command("stop")
@@ -1802,6 +1850,7 @@ def sync_service_stop(
     """Stop sync daemon service."""
     try:
         _run_service_action("stop", user=user, system=system)
+        print("[green]Stopped sync service[/green]")
         return
     except typer.Exit:
         if _stop_sync_pid():
@@ -1817,6 +1866,7 @@ def sync_service_restart(
 ) -> None:
     """Restart sync daemon service."""
     _run_service_action("restart", user=user, system=system)
+    print("[green]Restarted sync service[/green]")
 
 
 @sync_app.command("install")

@@ -26,6 +26,14 @@ def test_sync_converges_between_two_peers(tmp_path: Path) -> None:
         store_a.remember(session_a, kind="note", title="One", body_text="First")
         store_b.remember(session_b, kind="note", title="Two", body_text="Second")
 
+        # Simulate late pairing: clear replication_ops then backfill.
+        store_a.conn.execute("DELETE FROM replication_ops")
+        store_b.conn.execute("DELETE FROM replication_ops")
+        store_a.conn.commit()
+        store_b.conn.commit()
+        assert store_a.backfill_replication_ops(limit=100) >= 1
+        assert store_b.backfill_replication_ops(limit=100) >= 1
+
         ops_a, _ = store_a.load_replication_ops_since(None, limit=100)
         ops_b, _ = store_b.load_replication_ops_since(None, limit=100)
         store_b.apply_replication_ops(ops_a)
