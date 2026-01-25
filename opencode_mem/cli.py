@@ -211,6 +211,75 @@ def _run_service_action(action: str, *, user: bool, system: bool) -> None:
             raise typer.Exit(code=result.returncode)
 
 
+def _run_service_action_quiet(action: str, *, user: bool, system: bool) -> bool:
+    if user and system:
+        return False
+    install_mode = "system" if system else "user"
+    try:
+        commands = _build_service_commands(action, install_mode)
+    except ValueError:
+        return False
+    ok = True
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            ok = False
+    return ok
+
+
+def _install_autostart_quiet(*, user: bool) -> bool:
+    if sys.platform.startswith("darwin"):
+        if not user:
+            return False
+        source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "launchd"
+        plist_path = source / "com.opencode-mem.sync.plist"
+        dest = Path.home() / "Library" / "LaunchAgents" / "com.opencode-mem.sync.plist"
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(plist_path.read_text())
+        except OSError:
+            return False
+        uid = os.getuid()
+        subprocess.run(
+            ["launchctl", "load", "-w", str(dest)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{uid}/com.opencode-mem.sync"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return True
+
+    if sys.platform.startswith("linux"):
+        source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "systemd"
+        unit_path = source / "opencode-mem-sync.service"
+        dest = Path.home() / ".config" / "systemd" / "user" / "opencode-mem-sync.service"
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(unit_path.read_text())
+        except OSError:
+            return False
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", "opencode-mem-sync.service"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return True
+
+    return False
+
+
 def _build_import_key(
     source: str,
     record_type: str,
@@ -1294,6 +1363,9 @@ def sync_enable(
         None,
         help="Advertised host for pairing payload ('auto' to prefer Tailscale, else LAN)",
     ),
+    install: bool = typer.Option(
+        True, "--install/--no-install", help="Install autostart (recommended)"
+    ),
 ) -> None:
     """Enable sync and initialize device identity."""
     store = _store(db_path)
@@ -1323,6 +1395,16 @@ def sync_enable(
     if not start:
         print("- Run: opencode-mem sync daemon")
         return
+
+    # Prefer service management if available/installed.
+    if install:
+        _install_autostart_quiet(user=True)
+        if _run_service_action_quiet("restart", user=True, system=False):
+            print("[green]Sync daemon running (autostart enabled)[/green]")
+            return
+        if _run_service_action_quiet("start", user=True, system=False):
+            print("[green]Sync daemon running (autostart enabled)[/green]")
+            return
     desired_host = str(config_data["sync_host"])
     desired_port = int(config_data["sync_port"])
     desired_interval = int(config_data["sync_interval_s"])
@@ -1695,7 +1777,14 @@ def sync_service_stop(
     system: bool = typer.Option(False, help="Use system-level service"),
 ) -> None:
     """Stop sync daemon service."""
-    _run_service_action("stop", user=user, system=system)
+    try:
+        _run_service_action("stop", user=user, system=system)
+        return
+    except typer.Exit:
+        if _stop_sync_pid():
+            print("[green]Stopped sync daemon (pidfile)[/green]")
+            return
+        raise
 
 
 @sync_service_app.command("restart")
