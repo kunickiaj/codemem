@@ -102,6 +102,22 @@ def test_sync_enable_restarts_running_daemon_on_change(monkeypatch, tmp_path: Pa
     assert called["restart"] == 1
 
 
+def test_sync_disable_stops_service(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"sync_enabled": True}) + "\n")
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+    called = {"stop": 0}
+
+    def fake_run_service(action: str, *, user: bool, system: bool) -> None:
+        assert action == "stop"
+        called["stop"] += 1
+
+    monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
+    result = runner.invoke(app, ["sync", "disable"], env=env)
+    assert result.exit_code == 0
+    assert called["stop"] == 1
+
+
 def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
