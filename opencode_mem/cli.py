@@ -4,6 +4,7 @@ import datetime as dt
 import getpass
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -97,6 +98,44 @@ def _write_config_or_exit(data: dict[str, Any]) -> None:
     except OSError as exc:
         print(f"[red]Failed to write config: {exc}[/red]")
         raise typer.Exit(code=1) from exc
+
+
+def _normalize_local_check_host(host: str) -> str:
+    if host in {"0.0.0.0", "::", "::0"}:
+        return "127.0.0.1"
+    return host
+
+
+def _sync_daemon_running(host: str, port: int) -> bool:
+    return _port_open(_normalize_local_check_host(host), port)
+
+
+def _spawn_sync_daemon(host: str, port: int, interval_s: int, db_path: str | None) -> int:
+    binary = shutil.which("opencode-mem") or "opencode-mem"
+    cmd = [
+        binary,
+        "sync",
+        "daemon",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--interval-s",
+        str(interval_s),
+    ]
+    if db_path:
+        cmd.extend(["--db-path", db_path])
+    log_path = Path("~/.opencode-mem/sync-daemon.log").expanduser()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("ab") as log:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+    return int(proc.pid)
 
 
 def _build_service_commands(action: str, install_mode: str) -> list[list[str]]:
@@ -1224,6 +1263,7 @@ def sync_enable(
     host: str | None = typer.Option(None, help="Host to bind sync server"),
     port: int | None = typer.Option(None, help="Port to bind sync server"),
     interval_s: int | None = typer.Option(None, help="Sync interval in seconds"),
+    start: bool = typer.Option(True, "--start/--no-start", help="Start daemon after enabling"),
 ) -> None:
     """Enable sync and initialize device identity."""
     store = _store(db_path)
@@ -1244,7 +1284,20 @@ def sync_enable(
     print(f"- Device ID: {device_id}")
     print(f"- Fingerprint: {fingerprint}")
     print(f"- Listen: {config_data['sync_host']}:{config_data['sync_port']}")
-    print("- Run: opencode-mem sync daemon")
+    if not start:
+        print("- Run: opencode-mem sync daemon")
+        return
+    if _sync_daemon_running(str(config_data["sync_host"]), int(config_data["sync_port"])):
+        print("[yellow]Sync daemon already running[/yellow]")
+        return
+    pid = _spawn_sync_daemon(
+        host=str(config_data["sync_host"]),
+        port=int(config_data["sync_port"]),
+        interval_s=int(config_data["sync_interval_s"]),
+        db_path=db_path,
+    )
+    print(f"[green]Sync daemon started (pid {pid})[/green]")
+    print("Logs: ~/.opencode-mem/sync-daemon.log")
 
 
 @sync_app.command("disable")
@@ -1275,6 +1328,13 @@ def sync_status(db_path: str = typer.Option(None, help="Path to SQLite database"
     print(f"- Config: {config_path}")
     print(f"- Listen: {config.sync_host}:{config.sync_port}")
     print(f"- Interval: {config.sync_interval_s}s")
+    running = _sync_daemon_running(config.sync_host, config.sync_port)
+    if running:
+        print("- Daemon: running")
+    else:
+        print(
+            "- Daemon: not running (run `opencode-mem sync daemon` or `opencode-mem sync service start`)"
+        )
     if row is None:
         print("- Device ID: (not initialized)")
     else:
@@ -1465,6 +1525,54 @@ def sync_once_command(
             print(f"- {row['peer_device_id']}: {status}")
     finally:
         store.close()
+
+
+@sync_app.command("doctor")
+def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
+    """Diagnose common sync setup and connectivity issues."""
+    config = load_config()
+    print("[bold]Sync doctor[/bold]")
+    print(f"- Enabled: {config.sync_enabled}")
+    print(f"- Listen: {config.sync_host}:{config.sync_port}")
+    running = _sync_daemon_running(config.sync_host, config.sync_port)
+    print(f"- Daemon: {'running' if running else 'not running'}")
+
+    store = _store(db_path)
+    try:
+        device = store.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
+        if device is None:
+            print("- Identity: missing (run `opencode-mem sync enable`)")
+        else:
+            print(f"- Identity: {device['device_id']}")
+
+        peers = store.conn.execute(
+            "SELECT peer_device_id, addresses_json, pinned_fingerprint, public_key FROM sync_peers"
+        ).fetchall()
+    finally:
+        store.close()
+
+    if not peers:
+        print("- Peers: none (pair a device first)")
+        return
+    print(f"- Peers: {len(peers)}")
+    for peer in peers:
+        addresses = db.from_json(peer["addresses_json"]) if peer["addresses_json"] else []
+        addresses = [str(item) for item in addresses if isinstance(item, str)]
+        pinned = bool(peer["pinned_fingerprint"])
+        has_key = bool(peer["public_key"])
+        reach = "unknown"
+        if addresses:
+            host_port = addresses[0]
+            try:
+                if "://" in host_port:
+                    host_port = host_port.split("://", 1)[1]
+                host, port_str = host_port.rsplit(":", 1)
+                reach = "ok" if _port_open(host, int(port_str)) else "unreachable"
+            except Exception:
+                reach = "invalid address"
+        print(
+            f"  - {peer['peer_device_id']}: addresses={len(addresses)} reach={reach} pinned={pinned} public_key={has_key}"
+        )
 
 
 @sync_app.command("daemon")
