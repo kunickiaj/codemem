@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
+import socket
 import threading
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import HTTPServer
@@ -266,7 +268,17 @@ def run_sync_daemon(
     stop_event: threading.Event | None = None,
 ) -> None:
     handler = build_sync_handler(db_path)
-    server = HTTPServer((host, port), handler)
+
+    class Server(HTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+
+        def server_bind(self) -> None:
+            if self.address_family == socket.AF_INET6:
+                with contextlib.suppress(OSError):
+                    self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            super().server_bind()
+
+    server = Server((host, port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     stop = stop_event or threading.Event()

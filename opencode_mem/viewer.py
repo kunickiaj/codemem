@@ -23,6 +23,7 @@ from .config import (
     write_config_file,
 )
 from .db import DEFAULT_DB_PATH, from_json
+from .net import pick_advertise_host
 from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events
 from .store import MemoryStore
@@ -236,7 +237,7 @@ VIEWER_HTML = """<!doctype html>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%231f6f5c'/%3E%3Cstop offset='100%25' style='stop-color:%23e67e4d'/%3E%3C/linearGradient%3E%3Cfilter id='shadow'%3E%3CfeDropShadow dx='0' dy='2' stdDeviation='3' flood-color='%23000' flood-opacity='0.5'/%3E%3C/filter%3E%3C/defs%3E%3Crect x='5' y='5' width='90' height='90' rx='16' fill='%23fff' stroke='%23000' stroke-width='3' filter='url(%23shadow)'/%3E%3Crect x='8' y='8' width='84' height='84' rx='14' fill='url(%23g1)'/%3E%3Cpath d='M20 75V25h15l15 25 15-25h15v50h-15V45l-15 22-15-22v30z' fill='white'/%3E%3C/svg%3E" />
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="/static/qrcode.bundle.min.js"></script>
     <style>
       :root {
         --bg: #f7f1e7;
@@ -625,6 +626,14 @@ VIEWER_HTML = """<!doctype html>
       .peer-actions button:hover {
         border-color: rgba(25, 24, 23, 0.35);
       }
+      [data-theme="dark"] .peer-actions button {
+        border-color: rgba(255, 255, 255, 0.14);
+        color: rgba(233, 238, 245, 0.9);
+      }
+      [data-theme="dark"] .peer-actions button:hover {
+        border-color: rgba(255, 255, 255, 0.24);
+        background: rgba(255, 255, 255, 0.06);
+      }
       .peer-meta {
         font-size: 0.85rem;
         color: var(--muted);
@@ -682,6 +691,11 @@ VIEWER_HTML = """<!doctype html>
         display: flex;
         align-items: center;
         justify-content: center;
+        color: #223a5e;
+      }
+      [data-theme="dark"] .pairing-qr {
+        background: rgba(18, 22, 28, 0.9);
+        color: rgba(233, 238, 245, 0.8);
       }
       .pairing-qr img {
         width: 140px;
@@ -784,6 +798,15 @@ VIEWER_HTML = """<!doctype html>
         transform: translateY(-1px);
         border-color: rgba(31, 111, 92, 0.5);
         background: rgba(31, 111, 92, 0.18);
+      }
+      [data-theme="dark"] .settings-button {
+        border-color: rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(233, 238, 245, 0.9);
+      }
+      [data-theme="dark"] .settings-button:hover {
+        border-color: rgba(255, 255, 255, 0.24);
+        background: rgba(255, 255, 255, 0.10);
       }
       /* Theme toggle icon sizing */
       #themeToggle {
@@ -1755,7 +1778,15 @@ VIEWER_HTML = """<!doctype html>
           return;
         }
         try {
-          const dataUrl = await QRCode.toDataURL(text, { width: 160, margin: 1 });
+          const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+          const colors = isDark
+            ? { dark: "#e9eef5ff", light: "#12161cff" }
+            : { dark: "#111111ff", light: "#ffffffff" };
+          const dataUrl = await QRCode.toDataURL(text, {
+            width: 160,
+            margin: 1,
+            color: colors,
+          });
           pairingQr.textContent = "";
           const img = document.createElement("img");
           img.src = dataUrl;
@@ -2491,6 +2522,25 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/static/qrcode.bundle.min.js":
+            try:
+                import importlib.resources as resources
+
+                body = (
+                    resources.files("opencode_mem")
+                    .joinpath("static/qrcode.bundle.min.js")
+                    .read_bytes()
+                )
+            except Exception:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/":
             self._send_html()
             return
@@ -2727,7 +2777,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     "device_id": device_id,
                     "fingerprint": fingerprint,
                     "public_key": public_key,
-                    "address": f"{config.sync_host}:{config.sync_port}",
+                    "address": f"{pick_advertise_host(config.sync_advertise) or config.sync_host}:{config.sync_port}",
                 }
                 self._send_json(payload)
                 return
