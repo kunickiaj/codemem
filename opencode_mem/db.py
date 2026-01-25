@@ -267,11 +267,18 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             peer_device_id TEXT PRIMARY KEY,
             name TEXT,
             pinned_fingerprint TEXT,
+            public_key TEXT,
             addresses_json TEXT,
             created_at TEXT NOT NULL,
             last_seen_at TEXT,
             last_sync_at TEXT,
             last_error TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_nonces (
+            nonce TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS sync_device (
@@ -309,6 +316,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "user_prompts", "import_key", "TEXT")
     _ensure_column(conn, "session_summaries", "import_key", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "cwd", "TEXT")
+    _ensure_column(conn, "sync_peers", "public_key", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "project", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "started_at", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "last_seen_ts_wall_ms", "INTEGER")

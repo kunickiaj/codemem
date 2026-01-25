@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import sqlite3
 import time
 from typing import Any
@@ -9,6 +10,10 @@ from urllib.parse import urlparse
 from . import db
 
 DEFAULT_SERVICE_TYPE = "_opencode-mem._tcp.local."
+
+
+def mdns_enabled() -> bool:
+    return os.environ.get("OPENCODE_MEM_SYNC_MDNS", "1") not in {"0", "false", "off"}
 
 
 def normalize_address(address: str) -> str:
@@ -48,7 +53,11 @@ def load_peer_addresses(conn: sqlite3.Connection, peer_device_id: str) -> list[s
     ).fetchone()
     if row is None:
         return []
-    return db.from_json(row["addresses_json"]) if row["addresses_json"] else []
+    raw = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
+    if not isinstance(raw, list):
+        return []
+    items: list[str] = [str(item) for item in raw if isinstance(item, str)]
+    return items
 
 
 def update_peer_addresses(
@@ -58,6 +67,7 @@ def update_peer_addresses(
     *,
     name: str | None = None,
     pinned_fingerprint: str | None = None,
+    public_key: str | None = None,
 ) -> list[str]:
     merged = merge_addresses(load_peer_addresses(conn, peer_device_id), addresses)
     now = dt.datetime.now(dt.UTC).isoformat()
@@ -72,16 +82,18 @@ def update_peer_addresses(
                 peer_device_id,
                 name,
                 pinned_fingerprint,
+                public_key,
                 addresses_json,
                 created_at,
                 last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 peer_device_id,
                 name,
                 pinned_fingerprint,
+                public_key,
                 db.to_json(merged),
                 now,
                 now,
@@ -93,6 +105,7 @@ def update_peer_addresses(
             UPDATE sync_peers
             SET name = COALESCE(?, name),
                 pinned_fingerprint = COALESCE(?, pinned_fingerprint),
+                public_key = COALESCE(?, public_key),
                 addresses_json = ?,
                 last_seen_at = ?
             WHERE peer_device_id = ?
@@ -100,6 +113,7 @@ def update_peer_addresses(
             (
                 name,
                 pinned_fingerprint,
+                public_key,
                 db.to_json(merged),
                 now,
                 peer_device_id,
@@ -180,13 +194,42 @@ def record_peer_success(
     return ordered
 
 
+def select_dial_addresses(
+    *,
+    stored: list[str],
+    mdns: list[str],
+) -> list[str]:
+    if not mdns:
+        return merge_addresses(stored, [])
+    ordered = merge_addresses(mdns, stored)
+    return ordered
+
+
+def mdns_addresses_for_peer(peer_device_id: str, entries: list[dict[str, Any]]) -> list[str]:
+    addresses: list[str] = []
+    for entry in entries:
+        props = entry.get("properties") or {}
+        device_id = props.get(b"device_id") or props.get("device_id")
+        if device_id is None:
+            continue
+        if isinstance(device_id, bytes):
+            device_id = device_id.decode("utf-8")
+        if device_id != peer_device_id:
+            continue
+        host = entry.get("host") or ""
+        port = entry.get("port") or 0
+        if host:
+            addresses.append(f"{host}:{port}")
+    return addresses
+
+
 def discover_peers_via_mdns(
     *,
     service_type: str = DEFAULT_SERVICE_TYPE,
     timeout_s: float = 1.5,
 ) -> list[dict[str, Any]]:
     try:
-        from zeroconf import ServiceBrowser, Zeroconf
+        from zeroconf import ServiceBrowser, Zeroconf  # type: ignore[import-not-found]
     except Exception:
         return []
 
@@ -233,7 +276,7 @@ def advertise_mdns(
     name: str | None = None,
 ) -> Any:
     try:
-        from zeroconf import ServiceInfo, Zeroconf
+        from zeroconf import ServiceInfo, Zeroconf  # type: ignore[import-not-found]
     except Exception:
         return None
 

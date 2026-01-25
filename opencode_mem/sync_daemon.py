@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import threading
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import HTTPServer
@@ -12,7 +13,18 @@ from urllib.parse import urlencode, urlparse
 from . import db
 from .store import MemoryStore, ReplicationOp
 from .sync_api import build_sync_handler
-from .sync_discovery import record_peer_success, record_sync_attempt
+from .sync_auth import build_auth_headers
+from .sync_discovery import (
+    discover_peers_via_mdns,
+    load_peer_addresses,
+    mdns_addresses_for_peer,
+    mdns_enabled,
+    record_peer_success,
+    record_sync_attempt,
+    select_dial_addresses,
+    update_peer_addresses,
+)
+from .sync_identity import ensure_device_identity
 
 
 def _build_base_url(address: str) -> str:
@@ -31,6 +43,7 @@ def _request_json(
     *,
     headers: dict[str, str] | None = None,
     body: dict[str, Any] | None = None,
+    body_bytes: bytes | None = None,
     timeout_s: float = 3.0,
 ) -> tuple[int, dict[str, Any] | None]:
     parsed = urlparse(url)
@@ -45,7 +58,7 @@ def _request_json(
         path = f"{path}?{parsed.query}"
     payload = None
     body_bytes = None
-    if body is not None:
+    if body_bytes is None and body is not None:
         body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request_headers = {"Accept": "application/json"}
     if body_bytes is not None:
@@ -128,7 +141,9 @@ def sync_once(
     limit: int = 200,
 ) -> dict[str, Any]:
     last_applied, last_acked = _get_replication_cursor(store, peer_device_id)
-    headers = {"X-Opencode-Device": store.device_id}
+    keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
+    keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
+    device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
     error: str | None = None
     for address in addresses:
         base_url = _build_base_url(address)
@@ -136,7 +151,15 @@ def sync_once(
             continue
         try:
             query = urlencode({"since": last_applied or "", "limit": limit})
-            status, payload = _request_json("GET", f"{base_url}/v1/ops?{query}", headers=headers)
+            get_url = f"{base_url}/v1/ops?{query}"
+            get_headers = build_auth_headers(
+                device_id=device_id,
+                method="GET",
+                url=get_url,
+                body_bytes=b"",
+                keys_dir=keys_dir,
+            )
+            status, payload = _request_json("GET", get_url, headers=get_headers)
             if status != 200 or payload is None:
                 raise RuntimeError("peer ops fetch failed")
             ops = payload.get("ops")
@@ -151,11 +174,22 @@ def sync_once(
             outbound_ops, outbound_cursor = store.load_replication_ops_since(
                 last_acked, limit=limit
             )
+            post_url = f"{base_url}/v1/ops"
+            body = {"ops": outbound_ops}
+            body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            post_headers = build_auth_headers(
+                device_id=device_id,
+                method="POST",
+                url=post_url,
+                body_bytes=body_bytes,
+                keys_dir=keys_dir,
+            )
             status, payload = _request_json(
                 "POST",
-                f"{base_url}/v1/ops",
-                headers=headers,
-                body={"ops": outbound_ops},
+                post_url,
+                headers=post_headers,
+                body=body,
+                body_bytes=body_bytes,
             )
             if status != 200 or payload is None:
                 raise RuntimeError("peer ops push failed")
@@ -185,15 +219,18 @@ def sync_once(
 
 
 def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
-    rows = store.conn.execute("SELECT peer_device_id, addresses_json FROM sync_peers").fetchall()
+    rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
+    mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
     results: list[dict[str, Any]] = []
     for row in rows:
         peer_device_id = str(row["peer_device_id"])
-        raw_addresses = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
-        if not isinstance(raw_addresses, list):
-            raw_addresses = []
-        addresses = [str(item) for item in raw_addresses if isinstance(item, str)]
-        results.append(sync_once(store, peer_device_id, addresses))
+        stored = load_peer_addresses(store.conn, peer_device_id)
+        mdns_addresses = mdns_addresses_for_peer(peer_device_id, mdns_entries)
+        if mdns_addresses:
+            update_peer_addresses(store.conn, peer_device_id, mdns_addresses)
+            stored = load_peer_addresses(store.conn, peer_device_id)
+        dial_addresses = select_dial_addresses(stored=stored, mdns=mdns_addresses)
+        results.append(sync_once(store, peer_device_id, dial_addresses))
     return results
 
 

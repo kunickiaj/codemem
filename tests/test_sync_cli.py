@@ -58,7 +58,13 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
-    payload = {"device_id": "peer-1", "fingerprint": "abc123", "address": "peer:7337"}
+    public_key = "public-key"
+    payload = {
+        "device_id": "peer-1",
+        "fingerprint": sync_identity.fingerprint_public_key(public_key),
+        "public_key": public_key,
+        "address": "peer:7337",
+    }
     result = runner.invoke(
         app,
         ["sync", "pair", "--accept", json.dumps(payload), "--db-path", str(db_path)],
@@ -69,11 +75,12 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
     conn = db.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT peer_device_id, pinned_fingerprint, addresses_json FROM sync_peers LIMIT 1"
+            "SELECT peer_device_id, pinned_fingerprint, public_key FROM sync_peers LIMIT 1"
         ).fetchone()
         assert row is not None
         assert row["peer_device_id"] == "peer-1"
-        assert row["pinned_fingerprint"] == "abc123"
+        assert row["pinned_fingerprint"] == payload["fingerprint"]
+        assert row["public_key"] == public_key
     finally:
         conn.close()
 

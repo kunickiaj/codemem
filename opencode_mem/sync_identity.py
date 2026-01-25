@@ -105,3 +105,16 @@ def load_private_key(keys_dir: Path | None = None) -> bytes | None:
     if not private_key_path.exists():
         return None
     return private_key_path.read_bytes()
+
+
+def load_public_key(keys_dir: Path | None = None) -> str | None:
+    key_dir = (keys_dir or DEFAULT_KEYS_DIR).expanduser()
+    public_key_path = key_dir / PUBLIC_KEY_NAME
+    if not public_key_path.exists():
+        return None
+    return public_key_path.read_text().strip() or None
+
+
+def resolve_key_paths(keys_dir: Path | None = None) -> tuple[Path, Path]:
+    key_dir = (keys_dir or DEFAULT_KEYS_DIR).expanduser()
+    return key_dir / PRIVATE_KEY_NAME, key_dir / PUBLIC_KEY_NAME

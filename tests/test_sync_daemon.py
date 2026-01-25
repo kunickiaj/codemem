@@ -1,9 +1,16 @@
+import os
 import threading
 from http.server import HTTPServer
 from pathlib import Path
 
+from opencode_mem import db
 from opencode_mem.store import MemoryStore
 from opencode_mem.sync_api import build_sync_handler
+from opencode_mem.sync_identity import (
+    ensure_device_identity,
+    fingerprint_public_key,
+    load_public_key,
+)
 from opencode_mem.sync_daemon import sync_once
 from opencode_mem.sync_discovery import update_peer_addresses
 
@@ -17,6 +24,7 @@ def _start_server(db_path: Path) -> tuple[HTTPServer, int]:
 
 
 def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
+    os.environ["OPENCODE_MEM_KEYS_DIR"] = str(tmp_path / "keys-client")
     store_a = MemoryStore(tmp_path / "a.sqlite")
     store_b = MemoryStore(tmp_path / "b.sqlite")
     try:
@@ -34,8 +42,44 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
         store_a.close()
         store_b.close()
 
+    client_keys_dir = tmp_path / "keys-client"
+    server_keys_dir = tmp_path / "keys-server"
+
+    conn = db.connect(tmp_path / "b.sqlite")
+    try:
+        db.initialize_schema(conn)
+        ensure_device_identity(conn, keys_dir=server_keys_dir)
+    finally:
+        conn.close()
+
     server, port = _start_server(tmp_path / "b.sqlite")
     try:
+        client_conn = db.connect(tmp_path / "a.sqlite")
+        try:
+            client_device_id, _ = ensure_device_identity(client_conn, keys_dir=client_keys_dir)
+        finally:
+            client_conn.close()
+        client_public_key = load_public_key(client_keys_dir)
+        assert client_public_key
+        fingerprint = fingerprint_public_key(client_public_key)
+        conn = db.connect(tmp_path / "b.sqlite")
+        try:
+            conn.execute(
+                """
+                INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, addresses_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    client_device_id,
+                    fingerprint,
+                    client_public_key,
+                    "[]",
+                    "2026-01-24T00:00:00Z",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         store_a = MemoryStore(tmp_path / "a.sqlite")
         try:
             result = sync_once(store_a, "peer-1", [f"http://127.0.0.1:{port}"])
@@ -68,3 +112,4 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
             store_b.close()
     finally:
         server.shutdown()
+        os.environ.pop("OPENCODE_MEM_KEYS_DIR", None)

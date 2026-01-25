@@ -21,7 +21,7 @@ from .store import MemoryStore
 from .summarizer import Summarizer
 from .sync_daemon import run_sync_daemon, sync_once
 from .sync_discovery import update_peer_addresses
-from .sync_identity import ensure_device_identity
+from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
 from .utils import resolve_project
 from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT, start_viewer
 
@@ -1260,9 +1260,15 @@ def sync_pair(
                 raise typer.Exit(code=1) from exc
             device_id = str(payload.get("device_id") or "")
             fingerprint = str(payload.get("fingerprint") or "")
+            public_key = str(payload.get("public_key") or "")
             resolved_address = address or str(payload.get("address") or "")
-            if not device_id or not fingerprint or not resolved_address:
-                print("[red]Pairing payload missing device_id, fingerprint, or address[/red]")
+            if not device_id or not fingerprint or not public_key or not resolved_address:
+                print(
+                    "[red]Pairing payload missing device_id, fingerprint, public_key, or address[/red]"
+                )
+                raise typer.Exit(code=1)
+            if fingerprint_public_key(public_key) != fingerprint:
+                print("[red]Pairing payload fingerprint mismatch[/red]")
                 raise typer.Exit(code=1)
             update_peer_addresses(
                 store.conn,
@@ -1270,16 +1276,22 @@ def sync_pair(
                 [resolved_address],
                 name=name,
                 pinned_fingerprint=fingerprint,
+                public_key=public_key,
             )
             print(f"[green]Paired with {device_id}[/green]")
             return
 
         device_id, fingerprint = ensure_device_identity(store.conn)
+        public_key = load_public_key()
+        if not public_key:
+            print("[red]Public key missing[/red]")
+            raise typer.Exit(code=1)
         config = load_config()
         resolved_address = address or f"{config.sync_host}:{config.sync_port}"
         payload = {
             "device_id": device_id,
             "fingerprint": fingerprint,
+            "public_key": public_key,
             "address": resolved_address,
         }
         print("[bold]Pairing payload[/bold]")
