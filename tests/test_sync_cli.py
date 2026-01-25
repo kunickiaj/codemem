@@ -43,6 +43,7 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
             "7337",
             "--interval-s",
             "60",
+            "--no-install",
         ],
         env=env,
     )
@@ -71,7 +72,7 @@ def test_sync_enable_no_start(monkeypatch, tmp_path: Path) -> None:
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
     result = runner.invoke(
         app,
-        ["sync", "enable", "--db-path", str(db_path), "--no-start"],
+        ["sync", "enable", "--db-path", str(db_path), "--no-start", "--no-install"],
         env=env,
     )
     assert result.exit_code == 0
@@ -96,7 +97,7 @@ def test_sync_enable_restarts_running_daemon_on_change(monkeypatch, tmp_path: Pa
     monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
     result = runner.invoke(
         app,
-        ["sync", "enable", "--db-path", str(db_path), "--host", "0.0.0.0"],
+        ["sync", "enable", "--db-path", str(db_path), "--host", "0.0.0.0", "--no-install"],
         env=env,
     )
     assert result.exit_code == 0
@@ -205,6 +206,15 @@ def test_sync_service_status_linux_user(monkeypatch) -> None:
     result = runner.invoke(app, ["sync", "service", "status"])
     assert result.exit_code == 0
     assert calls == [["systemctl", "--user", "status", "opencode-mem-sync.service"]]
+
+
+def test_sync_service_stop_falls_back_to_pid(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "opencode_mem.cli._run_service_action", lambda *a, **k: (_ for _ in ()).throw(typer.Exit(1))
+    )
+    monkeypatch.setattr("opencode_mem.cli._stop_sync_pid", lambda: True)
+    result = runner.invoke(app, ["sync", "service", "stop"])
+    assert result.exit_code == 0
 
 
 def test_sync_daemon_requires_enabled(monkeypatch) -> None:
