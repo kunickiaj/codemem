@@ -4,8 +4,7 @@ import threading
 from http.server import HTTPServer
 from pathlib import Path
 
-from opencode_mem import db
-from opencode_mem import sync_identity
+from opencode_mem import db, sync_identity
 from opencode_mem.sync_identity import ensure_device_identity
 from opencode_mem.viewer import ViewerHandler
 
@@ -112,6 +111,36 @@ def test_sync_peers_rename(tmp_path: Path, monkeypatch) -> None:
         )
         resp = conn.getresponse()
         assert resp.status == 200
+    finally:
+        server.shutdown()
+
+
+def test_sync_rejects_cross_origin(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = json.dumps({"peer_device_id": "peer-1", "name": "Office"})
+        conn.request(
+            "POST",
+            "/api/sync/peers/rename",
+            body=body.encode("utf-8"),
+            headers={"Content-Type": "application/json", "Origin": "https://evil.invalid"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 403
     finally:
         server.shutdown()
 
