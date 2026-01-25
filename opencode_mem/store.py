@@ -503,7 +503,6 @@ class MemoryStore:
               AND json_extract(mi.metadata_json, '$.source') = 'observer'
               AND (
                 json_extract(mi.metadata_json, '$.discovery_group') IS NULL
-                OR COALESCE(CAST(json_extract(mi.metadata_json, '$.discovery_backfill_version') AS INTEGER), 0) < 2
               )
             ORDER BY s.id DESC
             LIMIT ?
@@ -565,15 +564,26 @@ class MemoryStore:
                 if None in grouped:
                     group_tokens[None] = max(0, int(session_tokens) - assigned)
             else:
-                if session_tokens <= 0:
-                    continue
-                weights = self._prompt_length_weights(session_id)
-                allocation = self._allocate_tokens_by_weight(
-                    int(session_tokens),
-                    keys=keys,
-                    weights=weights,
-                )
-                group_tokens.update({k: int(v) for k, v in allocation.items()})
+                if session_tokens > 0:
+                    weights = self._prompt_length_weights(session_id)
+                    allocation = self._allocate_tokens_by_weight(
+                        int(session_tokens),
+                        keys=keys,
+                        weights=weights,
+                    )
+                    group_tokens.update({k: int(v) for k, v in allocation.items()})
+                else:
+                    # Last resort: use whatever discovery_tokens already exist on items.
+                    # Older databases may not have raw_events or transcript artifacts.
+                    source_label = "fallback"
+                    for key in keys:
+                        total = 0
+                        for _, meta in grouped.get(key, []):
+                            try:
+                                total += int(meta.get("discovery_tokens") or 0)
+                            except (TypeError, ValueError):
+                                continue
+                        group_tokens[key] = max(0, int(total))
 
             now = self._now_iso()
             for key, group_items in grouped.items():
@@ -581,17 +591,21 @@ class MemoryStore:
                     group_id = f"{opencode_session_id}:unknown"
                 else:
                     group_id = f"{opencode_session_id}:p{key}"
-                tokens = int(group_tokens.get(key, 0) or 0)
+                tokens_value = group_tokens.get(key)
+                tokens = int(tokens_value) if isinstance(tokens_value, int) else 0
                 for memory_id, meta in group_items:
                     existing_version = 0
-                    try:
-                        existing_version = int(meta.get("discovery_backfill_version") or 0)
-                    except (TypeError, ValueError):
-                        existing_version = 0
-                    existing_tokens = None
-                    if meta.get("discovery_tokens") is not None:
+                    existing_version_raw = meta.get("discovery_backfill_version")
+                    if existing_version_raw is not None:
                         try:
-                            existing_tokens = int(meta.get("discovery_tokens"))
+                            existing_version = int(existing_version_raw)
+                        except (TypeError, ValueError):
+                            existing_version = 0
+                    existing_tokens = None
+                    existing_tokens_raw = meta.get("discovery_tokens")
+                    if existing_tokens_raw is not None:
+                        try:
+                            existing_tokens = int(existing_tokens_raw)
                         except (TypeError, ValueError):
                             existing_tokens = None
                     if (

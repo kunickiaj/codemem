@@ -395,6 +395,45 @@ def test_backfill_discovery_tokens_from_raw_events(tmp_path: Path) -> None:
     assert stats["usage"]["totals"]["work_investment_tokens"] == 15
 
 
+def test_backfill_discovery_tokens_uses_existing_when_no_artifacts(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.get_or_create_opencode_session(
+        opencode_session_id="sess-2",
+        cwd="/tmp",
+        project="/tmp/project-a",
+    )
+    store.remember_observation(
+        session,
+        kind="feature",
+        title="One",
+        narrative="One",
+        prompt_number=1,
+        metadata={"source": "observer", "discovery_tokens": 7, "discovery_source": "estimate"},
+    )
+    store.remember_observation(
+        session,
+        kind="feature",
+        title="Two",
+        narrative="Two",
+        prompt_number=1,
+        metadata={"source": "observer", "discovery_tokens": 7, "discovery_source": "estimate"},
+    )
+
+    updated = store.backfill_discovery_tokens(limit_sessions=10)
+    assert updated == 2
+
+    rows = store.conn.execute(
+        "SELECT metadata_json FROM memory_items WHERE session_id = ? ORDER BY id ASC",
+        (session,),
+    ).fetchall()
+    meta_a = json.loads(rows[0]["metadata_json"])
+    meta_b = json.loads(rows[1]["metadata_json"])
+    assert meta_a["discovery_group"] == "sess-2:p1"
+    assert meta_a["discovery_tokens"] == 14
+    assert meta_b["discovery_tokens"] == 14
+    assert meta_a["discovery_source"] == "fallback"
+
+
 def test_deactivate_low_signal_observations(tmp_path: Path) -> None:
     """Test the deactivation mechanism works - with empty patterns, nothing is deactivated."""
     store = MemoryStore(tmp_path / "mem.sqlite")
