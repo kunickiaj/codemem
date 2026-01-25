@@ -218,7 +218,7 @@ git push origin v0.1.1
 
 Configuration is stored in `~/.config/opencode-mem/config.json` (override with `OPENCODE_MEM_CONFIG`). Environment variables always take precedence.
 
-### Sync quickstart (Phase 1)
+### Sync quickstart (Phase 2)
 
 ```bash
 # Enable sync (generates device keys)
@@ -228,7 +228,7 @@ opencode-mem sync enable
 opencode-mem sync daemon
 ```
 
-Pair on device A:
+Pair on device A (CLI or viewer UI QR):
 
 ```bash
 opencode-mem sync pair
@@ -259,6 +259,8 @@ Relevant config keys (override with env vars):
 - `sync_host` / `OPENCODE_MEM_SYNC_HOST`
 - `sync_port` / `OPENCODE_MEM_SYNC_PORT`
 - `sync_interval_s` / `OPENCODE_MEM_SYNC_INTERVAL_S`
+- `sync_mdns` / `OPENCODE_MEM_SYNC_MDNS`
+- `sync_key_store` / `OPENCODE_MEM_SYNC_KEY_STORE` ("file" or "keychain")
 
 The viewer includes a Settings modal for the observer provider, model, and max chars. Changes write to the config file; environment variables still override those values.
 
