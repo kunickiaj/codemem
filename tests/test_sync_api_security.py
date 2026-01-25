@@ -48,14 +48,15 @@ def _seed_local_peer(db_path: Path, keys_dir: Path) -> None:
         conn.close()
 
 
-def test_sync_ops_rejects_large_body(tmp_path: Path) -> None:
+def test_sync_ops_rejects_large_body(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("opencode_mem.sync_api.MAX_SYNC_BODY_BYTES", 64)
     db_path = tmp_path / "mem.sqlite"
     keys_dir = tmp_path / "keys"
     _seed_local_peer(db_path, keys_dir)
 
     server, port = _start_server(db_path)
     try:
-        body = b"{" + b"a" * (MAX_SYNC_BODY_BYTES + 10) + b"}"
+        body = b"{" + b"a" * 128 + b"}"
         headers = build_auth_headers(
             device_id="local",
             method="POST",
