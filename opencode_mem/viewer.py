@@ -1288,13 +1288,13 @@ VIEWER_HTML = """<!doctype html>
           <div class="peer-title">
             <strong>Pairing payload</strong>
             <div class="peer-actions">
-              <button id="pairingCopy">Copy</button>
+              <button id="pairingCopy">Copy pairing command</button>
             </div>
           </div>
           <div class="pairing-body">
             <pre id="pairingPayload">Loading…</pre>
           </div>
-          <div class="peer-meta" id="pairingHint">Scan or copy the payload to pair a device.</div>
+          <div class="peer-meta" id="pairingHint">Run the command on the other machine to pair.</div>
         </div>
       </section>
       <section style="animation-delay: 0.06s;">
@@ -1745,8 +1745,10 @@ VIEWER_HTML = """<!doctype html>
           return;
         }
         const text = JSON.stringify(payload);
-        pairingPayload.textContent = text;
-        if (pairingHint) pairingHint.textContent = "Scan or copy the payload to pair a device.";
+        const escaped = text.replace(/'/g, `'\\''`);
+        const command = `opencode-mem sync pair --accept '${escaped}'`;
+        pairingPayload.textContent = command;
+        if (pairingHint) pairingHint.textContent = "Run the command on the other machine to pair.";
       }
 
       async function loadPairing() {
@@ -2357,10 +2359,8 @@ VIEWER_HTML = """<!doctype html>
 
       syncNowButton?.addEventListener("click", () => syncPeerNow());
       pairingCopy?.addEventListener("click", async () => {
-        const payloadText = pairingPayload?.textContent || "";
-        if (!payloadText) return;
-        const escaped = payloadText.replace(/'/g, `'\\''`);
-        const command = `opencode-mem sync pair --accept '${escaped}'`;
+        const command = pairingPayload?.textContent || "";
+        if (!command) return;
         try {
           await navigator.clipboard.writeText(command);
           if (pairingHint) pairingHint.textContent = "Copied pairing command.";
