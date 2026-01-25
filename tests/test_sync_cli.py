@@ -23,6 +23,12 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
 
+    class DummyProc:
+        pid = 12345
+
+    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: False)
+    monkeypatch.setattr("opencode_mem.cli.subprocess.Popen", lambda *a, **k: DummyProc())
+
     result = runner.invoke(
         app,
         [
@@ -52,6 +58,22 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
         assert row is not None
     finally:
         conn.close()
+
+
+def test_sync_enable_no_start(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
+    monkeypatch.setattr(
+        "opencode_mem.cli.subprocess.Popen", lambda *a, **k: (_ for _ in ()).throw(Exception("no"))
+    )
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+    result = runner.invoke(
+        app,
+        ["sync", "enable", "--db-path", str(db_path), "--no-start"],
+        env=env,
+    )
+    assert result.exit_code == 0
 
 
 def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
@@ -134,3 +156,25 @@ def test_sync_daemon_requires_enabled(monkeypatch) -> None:
     )
     result = runner.invoke(app, ["sync", "daemon"])
     assert result.exit_code == 1
+
+
+def test_sync_doctor_runs(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-1", "pub", "fp", "2026-01-24T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: False)
+    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: False)
+    result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)])
+    assert result.exit_code == 0
