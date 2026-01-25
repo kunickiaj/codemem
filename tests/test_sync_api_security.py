@@ -1,11 +1,10 @@
 import http.client
-import json
 import threading
 from http.server import HTTPServer
 from pathlib import Path
 
 from opencode_mem import db
-from opencode_mem.sync_api import MAX_SYNC_BODY_BYTES, build_sync_handler
+from opencode_mem.sync_api import build_sync_handler
 from opencode_mem.sync_auth import build_auth_headers
 from opencode_mem.sync_identity import (
     ensure_device_identity,
