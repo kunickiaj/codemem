@@ -57,7 +57,6 @@ def _request_json(
     if parsed.query:
         path = f"{path}?{parsed.query}"
     payload = None
-    body_bytes = None
     if body_bytes is None and body is not None:
         body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request_headers = {"Accept": "application/json"}
@@ -140,6 +139,13 @@ def sync_once(
     *,
     limit: int = 200,
 ) -> dict[str, Any]:
+    pinned_row = store.conn.execute(
+        "SELECT pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?",
+        (peer_device_id,),
+    ).fetchone()
+    pinned_fingerprint = str(pinned_row["pinned_fingerprint"]) if pinned_row else ""
+    if not pinned_fingerprint:
+        return {"ok": False, "error": "peer not pinned"}
     last_applied, last_acked = _get_replication_cursor(store, peer_device_id)
     keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
     keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
@@ -150,6 +156,23 @@ def sync_once(
         if not base_url:
             continue
         try:
+            status_url = f"{base_url}/v1/status"
+            status_headers = build_auth_headers(
+                device_id=device_id,
+                method="GET",
+                url=status_url,
+                body_bytes=b"",
+                keys_dir=keys_dir,
+            )
+            status_code, status_payload = _request_json(
+                "GET",
+                status_url,
+                headers=status_headers,
+            )
+            if status_code != 200 or not status_payload:
+                raise RuntimeError("peer status failed")
+            if status_payload.get("fingerprint") != pinned_fingerprint:
+                raise RuntimeError("peer fingerprint mismatch")
             query = urlencode({"since": last_applied or "", "limit": limit})
             get_url = f"{base_url}/v1/ops?{query}"
             get_headers = build_auth_headers(

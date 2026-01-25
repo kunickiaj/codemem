@@ -6,13 +6,14 @@ from pathlib import Path
 from opencode_mem import db
 from opencode_mem.store import MemoryStore
 from opencode_mem.sync_api import build_sync_handler
+from opencode_mem import sync_daemon
+from opencode_mem.sync_daemon import sync_once
+from opencode_mem.sync_discovery import update_peer_addresses
 from opencode_mem.sync_identity import (
     ensure_device_identity,
     fingerprint_public_key,
     load_public_key,
 )
-from opencode_mem.sync_daemon import sync_once
-from opencode_mem.sync_discovery import update_peer_addresses
 
 
 def _start_server(db_path: Path) -> tuple[HTTPServer, int]:
@@ -80,6 +81,23 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
             conn.commit()
         finally:
             conn.close()
+        server_public_key = load_public_key(server_keys_dir)
+        assert server_public_key
+        server_fingerprint = fingerprint_public_key(server_public_key)
+        conn = db.connect(tmp_path / "a.sqlite")
+        try:
+            conn.execute(
+                """
+                UPDATE sync_peers
+                SET pinned_fingerprint = ?, public_key = ?
+                WHERE peer_device_id = ?
+                """,
+                (server_fingerprint, server_public_key, "peer-1"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
         store_a = MemoryStore(tmp_path / "a.sqlite")
         try:
             result = sync_once(store_a, "peer-1", [f"http://127.0.0.1:{port}"])
@@ -113,3 +131,40 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         os.environ.pop("OPENCODE_MEM_KEYS_DIR", None)
+
+
+def test_request_json_respects_body_bytes(monkeypatch) -> None:
+    called = {}
+
+    class DummyConn:
+        def __init__(self) -> None:
+            self.body = None
+
+        def request(self, method, path, body=None, headers=None):
+            self.body = body
+
+        def getresponse(self):
+            class Resp:
+                status = 200
+
+                def read(self):
+                    return b"{}"
+
+            return Resp()
+
+        def close(self):
+            return None
+
+    def fake_http(host, port=None, timeout=None):
+        called["conn"] = DummyConn()
+        return called["conn"]
+
+    monkeypatch.setattr("opencode_mem.sync_daemon.HTTPConnection", fake_http)
+    status, _payload = sync_daemon._request_json(
+        "POST",
+        "http://example.test/ops",
+        body={"ops": [1]},
+        body_bytes=b"signed-bytes",
+    )
+    assert status == 200
+    assert called["conn"].body == b"signed-bytes"
