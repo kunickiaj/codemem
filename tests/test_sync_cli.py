@@ -126,3 +126,11 @@ def test_sync_service_status_linux_user(monkeypatch) -> None:
     result = runner.invoke(app, ["sync", "service", "status"])
     assert result.exit_code == 0
     assert calls == [["systemctl", "--user", "status", "opencode-mem-sync.service"]]
+
+
+def test_sync_daemon_requires_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "opencode_mem.cli.load_config", lambda: type("Cfg", (), {"sync_enabled": False})()
+    )
+    result = runner.invoke(app, ["sync", "daemon"])
+    assert result.exit_code == 1

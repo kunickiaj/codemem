@@ -145,6 +145,33 @@ def test_sync_rejects_cross_origin(tmp_path: Path, monkeypatch) -> None:
         server.shutdown()
 
 
+def test_sync_now_rejects_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setattr(
+        "opencode_mem.viewer.load_config", lambda: type("Cfg", (), {"sync_enabled": False})()
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/actions/sync-now",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 403
+    finally:
+        server.shutdown()
+
+
 def test_sync_pairing_payload(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     keys_dir = tmp_path / "keys"
