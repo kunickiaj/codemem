@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import getpass
 import json
@@ -24,6 +25,7 @@ from .summarizer import Summarizer
 from .sync_daemon import run_sync_daemon, sync_once
 from .sync_discovery import update_peer_addresses
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
+from .sync_runtime import effective_status, spawn_daemon, stop_pidfile
 from .utils import resolve_project
 from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT, start_viewer
 
@@ -335,6 +337,50 @@ def _install_autostart_quiet(*, user: bool) -> bool:
         return True
 
     return False
+
+
+def _sync_uninstall_impl(*, user: bool) -> None:
+    if sys.platform.startswith("darwin"):
+        if not user:
+            return
+        dest = Path.home() / "Library" / "LaunchAgents" / "com.opencode-mem.sync.plist"
+        uid = os.getuid()
+        subprocess.run(
+            ["launchctl", "unload", "-w", str(dest)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        subprocess.run(
+            ["launchctl", "remove", f"gui/{uid}/com.opencode-mem.sync"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        with contextlib.suppress(FileNotFoundError):
+            dest.unlink()
+        print("[green]Removed launchd sync agent[/green]")
+        return
+
+    if sys.platform.startswith("linux"):
+        if not user:
+            return
+        dest = Path.home() / ".config" / "systemd" / "user" / "opencode-mem-sync.service"
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", "opencode-mem-sync.service"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        with contextlib.suppress(FileNotFoundError):
+            dest.unlink()
+        print("[green]Removed systemd user sync service[/green]")
 
 
 def _build_import_key(
@@ -1499,6 +1545,7 @@ def sync_enable(
 @sync_app.command("disable")
 def sync_disable(
     stop: bool = typer.Option(True, "--stop/--no-stop", help="Stop daemon/service after disabling"),
+    uninstall: bool = typer.Option(False, help="Remove autostart service configuration"),
 ) -> None:
     """Disable sync without deleting keys or peers."""
     config_data = _read_config_or_exit()
@@ -1506,6 +1553,8 @@ def sync_disable(
     _write_config_or_exit(config_data)
     print("[yellow]Sync disabled[/yellow]")
     if not stop:
+        if uninstall:
+            _sync_uninstall_impl(user=True)
         return
     try:
         _run_service_action("stop", user=True, system=False)
@@ -1513,10 +1562,14 @@ def sync_disable(
     except typer.Exit:
         if _stop_sync_pid():
             print("[green]Sync daemon stopped[/green]")
+            if uninstall:
+                _sync_uninstall_impl(user=True)
             return
         print("Stop the daemon to apply disable:")
         print("- opencode-mem sync service stop")
         print("- or stop your foreground `opencode-mem sync daemon`")
+        if uninstall:
+            _sync_uninstall_impl(user=True)
 
 
 @sync_app.command("status")
@@ -1841,9 +1894,10 @@ def sync_service_status(
 ) -> None:
     """Show service status for sync daemon."""
     config = load_config()
-    running, summary = _effective_sync_status(config)
-    label = "running" if running else "not running"
-    print(f"- Sync: {label} ({summary})")
+    status = effective_status(config.sync_host, config.sync_port)
+    label = "running" if status.running else "not running"
+    extra = f" pid={status.pid}" if status.pid else ""
+    print(f"- Sync: {label} ({status.mechanism}; {status.detail}{extra})")
     if not verbose:
         return
     _run_service_action("status", user=user, system=system)
@@ -1856,19 +1910,24 @@ def sync_service_start(
 ) -> None:
     """Start sync daemon service."""
     config = load_config()
+    if not config.sync_enabled:
+        print("[yellow]Sync is disabled (run `opencode-mem sync enable`).[/yellow]")
+        raise typer.Exit(code=1)
     if _run_service_action_quiet("start", user=user, system=system):
-        print("[green]Started sync service[/green]")
-        return
-    if _sync_pid_running() or _sync_daemon_running(config.sync_host, config.sync_port):
+        status = effective_status(config.sync_host, config.sync_port)
+        if status.running:
+            print("[green]Started sync service[/green]")
+            return
+    status = effective_status(config.sync_host, config.sync_port)
+    if status.running:
         print("[yellow]Sync already running[/yellow]")
         return
-    pid = _spawn_sync_daemon(
+    pid = spawn_daemon(
         host=config.sync_host,
         port=config.sync_port,
         interval_s=config.sync_interval_s,
         db_path=None,
     )
-    _write_pid(_sync_pid_path(), pid)
     print(f"[green]Started sync daemon (pid {pid})[/green]")
 
 
@@ -1883,8 +1942,12 @@ def sync_service_stop(
         print("[green]Stopped sync service[/green]")
         return
     except typer.Exit:
-        if _stop_sync_pid():
+        if stop_pidfile():
             print("[green]Stopped sync daemon (pidfile)[/green]")
+            return
+        status = effective_status(load_config().sync_host, load_config().sync_port)
+        if not status.running:
+            print("[yellow]Sync already stopped[/yellow]")
             return
         raise
 
@@ -1895,13 +1958,13 @@ def sync_service_restart(
     system: bool = typer.Option(False, help="Use system-level service"),
 ) -> None:
     """Restart sync daemon service."""
-    try:
-        _run_service_action("restart", user=user, system=system)
-        print("[green]Restarted sync service[/green]")
-        return
-    except typer.Exit:
-        _stop_sync_pid()
-        sync_service_start(user=user, system=system)
+    if _run_service_action_quiet("restart", user=user, system=system):
+        status = effective_status(load_config().sync_host, load_config().sync_port)
+        if status.running:
+            print("[green]Restarted sync service[/green]")
+            return
+    sync_service_stop(user=user, system=system)
+    sync_service_start(user=user, system=system)
 
 
 @sync_app.command("install")
