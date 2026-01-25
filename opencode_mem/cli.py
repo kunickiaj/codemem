@@ -1396,6 +1396,8 @@ def sync_enable(
         print("- Run: opencode-mem sync daemon")
         return
 
+    print("Starting sync daemon...")
+
     # Prefer service management if available/installed.
     if install:
         _install_autostart_quiet(user=True)
@@ -1709,8 +1711,19 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
     finally:
         store.close()
 
+    issues: list[str] = []
+    if not config.sync_enabled:
+        issues.append("sync is disabled")
+    if not running:
+        issues.append("daemon not running")
+    if device is None:
+        issues.append("identity missing")
+
     if not peers:
         print("- Peers: none (pair a device first)")
+        issues.append("no peers")
+        if issues:
+            print(f"[yellow]WARN: {', '.join(issues)}[/yellow]")
         return
     print(f"- Peers: {len(peers)}")
     for peer in peers:
@@ -1731,6 +1744,16 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
         print(
             f"  - {peer['peer_device_id']}: addresses={len(addresses)} reach={reach} pinned={pinned} public_key={has_key}"
         )
+        if reach != "ok":
+            issues.append(f"peer {peer['peer_device_id']} unreachable")
+        if not pinned or not has_key:
+            issues.append(f"peer {peer['peer_device_id']} not pinned")
+
+    if issues:
+        unique = list(dict.fromkeys(issues))
+        print(f"[yellow]WARN: {', '.join(unique[:3])}[/yellow]")
+    else:
+        print("[green]OK: sync looks healthy[/green]")
 
 
 @sync_app.command("daemon")

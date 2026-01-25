@@ -245,3 +245,27 @@ def test_sync_doctor_runs(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: False)
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)])
     assert result.exit_code == 0
+
+
+def test_sync_doctor_prints_ok(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-1", "pub", "fp", "2026-01-24T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, pinned_fingerprint, public_key, created_at) VALUES (?, ?, ?, ?, ?)",
+            ("peer-1", json.dumps(["127.0.0.1:7337"]), "fp", "pub", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: True)
+    result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert "OK: sync looks healthy" in result.stdout
