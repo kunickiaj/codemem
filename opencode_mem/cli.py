@@ -1330,12 +1330,23 @@ def sync_enable(
 
 
 @sync_app.command("disable")
-def sync_disable() -> None:
+def sync_disable(
+    stop: bool = typer.Option(True, "--stop/--no-stop", help="Stop daemon/service after disabling"),
+) -> None:
     """Disable sync without deleting keys or peers."""
     config_data = _read_config_or_exit()
     config_data["sync_enabled"] = False
     _write_config_or_exit(config_data)
     print("[yellow]Sync disabled[/yellow]")
+    if not stop:
+        return
+    try:
+        _run_service_action("stop", user=True, system=False)
+        print("[green]Sync daemon stopped[/green]")
+    except typer.Exit:
+        print("Stop the daemon to apply disable:")
+        print("- opencode-mem sync service stop")
+        print("- or stop your foreground `opencode-mem sync daemon`")
 
 
 @sync_app.command("status")
