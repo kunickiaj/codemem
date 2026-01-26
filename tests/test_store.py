@@ -776,6 +776,47 @@ def test_normalize_outbound_cursor_resets_when_ahead_of_local_stream(tmp_path: P
         store.close()
 
 
+def test_apply_replication_ops_skips_excluded_project(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"sync_projects_exclude": ["opencode-mem"]}) + "\n")
+    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        op = {
+            "op_id": "op-1",
+            "entity_type": "memory_item",
+            "entity_id": "k1",
+            "op_type": "upsert",
+            "payload": {
+                "session_id": 1,
+                "project": "opencode-mem",
+                "kind": "note",
+                "title": "Nope",
+                "body_text": "Nope",
+                "confidence": 0.5,
+                "tags_text": "",
+                "active": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "metadata_json": {"clock_device_id": "dev-a"},
+                "prompt_number": 1,
+                "import_key": "k1",
+                "deleted_at": None,
+                "rev": 1,
+            },
+            "clock": {"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "dev-a"},
+            "device_id": "dev-a",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+        result = store.apply_replication_ops(cast(list[ReplicationOp], [op]))
+        assert result["inserted"] == 0
+        assert store.conn.execute("SELECT COUNT(*) AS c FROM memory_items").fetchone()["c"] == 0
+        assert store.conn.execute("SELECT COUNT(*) AS c FROM replication_ops").fetchone()["c"] == 1
+    finally:
+        store.close()
+
+
 def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
