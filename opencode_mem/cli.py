@@ -1697,9 +1697,10 @@ def sync_status(db_path: str = typer.Option(None, help="Path to SQLite database"
     print(f"- Config: {config_path}")
     print(f"- Listen: {config.sync_host}:{config.sync_port}")
     print(f"- Interval: {config.sync_interval_s}s")
-    running = _sync_daemon_running(config.sync_host, config.sync_port)
-    if running:
-        print("- Daemon: running")
+    daemon_status = effective_status(config.sync_host, config.sync_port)
+    if daemon_status.running:
+        extra = f" pid={daemon_status.pid}" if daemon_status.pid else ""
+        print(f"- Daemon: running ({daemon_status.mechanism}{extra})")
     else:
         print("- Daemon: not running (run `opencode-mem sync daemon` or `opencode-mem sync start`)")
     if row is None:
