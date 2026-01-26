@@ -1874,8 +1874,12 @@ def sync_once_command(
                 stored_addresses = update_peer_addresses(store.conn, peer_device_id, mdns_addresses)
             dial_addresses = select_dial_addresses(stored=stored_addresses, mdns=mdns_addresses)
             result = sync_once(store, peer_device_id, dial_addresses)
-            status = "ok" if result.get("ok") else "error"
-            print(f"- {row['peer_device_id']}: {status}")
+            if result.get("ok"):
+                print(f"- {row['peer_device_id']}: ok")
+            else:
+                error = result.get("error")
+                suffix = f": {error}" if isinstance(error, str) and error else ""
+                print(f"- {row['peer_device_id']}: error{suffix}")
     finally:
         store.close()
 

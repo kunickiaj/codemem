@@ -259,6 +259,9 @@ def discover_peers_via_mdns(
         def remove_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
             return
 
+        def update_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
+            return
+
     listener = Listener()
     browser = ServiceBrowser(zeroconf, service_type, listener)
     try:
