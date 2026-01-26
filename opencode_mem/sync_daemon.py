@@ -247,14 +247,35 @@ def sync_once(
                 detail = payload.get("error") if isinstance(payload, dict) else None
                 suffix = f" ({status}: {detail})" if detail else f" ({status})"
                 raise RuntimeError(f"peer ops fetch failed{suffix}")
+            if payload.get("blocked") is True:
+                blocked_op = payload.get("blocked_op")
+                op_id = ""
+                project = ""
+                if isinstance(blocked_op, dict):
+                    op_id = str(blocked_op.get("op_id") or "")
+                    project = str(blocked_op.get("project") or "")
+                reason = str(payload.get("blocked_reason") or "blocked")
+                suffix = f" op={op_id}" if op_id else ""
+                if project:
+                    suffix += f" project={project}"
+                raise RuntimeError(f"peer ops blocked ({reason}){suffix}")
             ops = payload.get("ops")
             if not isinstance(ops, list):
                 raise RuntimeError("invalid ops response")
-            applied = store.apply_replication_ops(cast(list[ReplicationOp], ops))
-            next_cursor = payload.get("next_cursor")
-            if isinstance(next_cursor, str) and next_cursor:
-                _set_replication_cursor(store, peer_device_id, last_applied=next_cursor)
-                last_applied = next_cursor
+            received_at = dt.datetime.now(dt.UTC).isoformat()
+            applied = store.apply_replication_ops(
+                cast(list[ReplicationOp], ops),
+                source_device_id=peer_device_id,
+                received_at=received_at,
+            )
+            if ops:
+                last_op = ops[-1] if isinstance(ops[-1], dict) else None
+                op_id = str(last_op.get("op_id") or "") if last_op else ""
+                created_at = str(last_op.get("created_at") or "") if last_op else ""
+                if op_id and created_at:
+                    local_next = store.compute_cursor(created_at, op_id)
+                    _set_replication_cursor(store, peer_device_id, last_applied=local_next)
+                    last_applied = local_next
 
             effective_last_acked = store.normalize_outbound_cursor(last_acked, device_id=device_id)
             outbound_ops, outbound_cursor = store.load_replication_ops_since(

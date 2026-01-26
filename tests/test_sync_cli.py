@@ -55,7 +55,7 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
 
 def test_sync_enable_mac_defaults_no_install(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
-    monkeypatch.setattr("opencode_mem.cli.sys.platform", "darwin")
+    monkeypatch.setattr("opencode_mem.commands.sync_cmds.sys.platform", "darwin")
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
@@ -439,3 +439,160 @@ def test_sync_doctor_prints_ok(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)])
     assert result.exit_code == 0
     assert "OK: sync looks healthy" in result.stdout
+
+
+def test_sync_doctor_warns_on_unknown_project_ops_when_include_active(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    config_path.write_text(
+        json.dumps(
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_projects_include": ["some-project"],
+            }
+        )
+        + "\n"
+    )
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-1", "pub", "fp", "2026-01-24T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, pinned_fingerprint, public_key, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "peer-1",
+                json.dumps(["127.0.0.1:7337"]),
+                "fp",
+                "pub",
+                "2026-01-24T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO replication_ops(
+                op_id, entity_type, entity_id, op_type, payload_json,
+                clock_rev, clock_updated_at, clock_device_id, device_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "op-1",
+                "memory_item",
+                "legacy:dev-1:memory_item:1",
+                "upsert",
+                json.dumps({"id": 1, "title": "t"}),
+                1,
+                "2026-01-24T00:00:00Z",
+                "dev-1",
+                "dev-1",
+                "2026-01-24T00:00:01Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: True)
+
+    result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)], env=env)
+    assert result.exit_code == 0
+    assert "Unknown project ops:" in result.stdout
+    assert "Unknown project ops: 1" in result.stdout
+
+
+def test_sync_doctor_reports_outbound_blocked_head_op(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    config_path.write_text(
+        json.dumps(
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_projects_include": ["some-project"],
+            }
+        )
+        + "\n"
+    )
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-1", "pub", "fp", "2026-01-24T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, pinned_fingerprint, public_key, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "peer-1",
+                json.dumps(["127.0.0.1:7337"]),
+                "fp",
+                "pub",
+                "2026-01-24T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO replication_ops(
+                op_id, entity_type, entity_id, op_type, payload_json,
+                clock_rev, clock_updated_at, clock_device_id, device_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "op-1",
+                "memory_item",
+                "k1",
+                "upsert",
+                json.dumps({"project": "some-project"}),
+                1,
+                "2026-01-24T00:00:00Z",
+                "dev-1",
+                "dev-1",
+                "2026-01-24T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO replication_ops(
+                op_id, entity_type, entity_id, op_type, payload_json,
+                clock_rev, clock_updated_at, clock_device_id, device_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "op-2",
+                "memory_item",
+                "k2",
+                "upsert",
+                json.dumps({"title": "no project"}),
+                1,
+                "2026-01-24T00:00:01Z",
+                "dev-1",
+                "dev-1",
+                "2026-01-24T00:00:01Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO replication_cursors(peer_device_id, last_acked_cursor, updated_at) VALUES (?, ?, ?)",
+            ("peer-1", "2026-01-24T00:00:00Z|op-1", "2026-01-24T00:00:02Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: True)
+
+    result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)], env=env)
+    assert result.exit_code == 0
+    assert "outbound_blocked=op-2" in result.stdout
