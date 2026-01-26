@@ -45,6 +45,42 @@ def resolve_project_for_cli(cwd: str, project: str | None, *, all_projects: bool
     return resolve_project(cwd)
 
 
+def mdns_runtime_status(enabled: bool) -> tuple[bool, str]:
+    if not enabled:
+        return False, "disabled"
+    try:
+        import zeroconf  # type: ignore[import-not-found]
+
+        version = getattr(zeroconf, "__version__", "unknown")
+        return True, f"enabled (zeroconf {version})"
+    except Exception:
+        return False, "enabled but zeroconf missing"
+
+
+def normalize_local_check_host(host: str) -> str:
+    if host in {"0.0.0.0", "::", "::0"}:
+        return "127.0.0.1"
+    return host
+
+
+def compact_lines(text: str, limit: int) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if len(lines) > limit:
+        lines = lines[:limit] + [f"... (+{len(lines) - limit} more)"]
+    return "; ".join(lines)
+
+
+def compact_list(text: str, limit: int) -> str:
+    items = [line.strip() for line in text.splitlines() if line.strip()]
+    if not items:
+        return ""
+    if len(items) > limit:
+        items = items[:limit] + [f"... (+{len(items) - limit} more)"]
+    return ", ".join(items)
+
+
 def format_bytes(size: int) -> str:
     units = ["B", "KB", "MB", "GB"]
     value = float(size)

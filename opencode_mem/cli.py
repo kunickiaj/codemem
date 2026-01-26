@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-import contextlib
-import datetime as dt
-import getpass
 import json
-import os
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +8,73 @@ import typer
 from rich import print
 
 from . import __version__, db
+from .commands.common import (
+    compact_lines,
+    compact_list,
+    mdns_runtime_status,
+    normalize_local_check_host,
+    read_config_or_exit,
+    resolve_project_for_cli,
+    write_config_or_exit,
+)
+from .commands.db_cmds import normalize_projects_cmd, prune_memories_cmd, prune_observations_cmd
+from .commands.import_export_cmds import export_memories_cmd, import_memories_cmd
+from .commands.maintenance_cmds import (
+    backfill_discovery_tokens_cmd,
+    backfill_tags_cmd,
+    embed_cmd,
+    ingest_cmd,
+    init_db_cmd,
+    mcp_cmd,
+    pack_benchmark_cmd,
+    stats_cmd,
+)
+from .commands.memory_cmds import (
+    compact_cmd,
+    forget_cmd,
+    inject_cmd,
+    normalize_imported_metadata_cmd,
+    pack_cmd,
+    recent_cmd,
+    remember_cmd,
+    search_cmd,
+    show_cmd,
+)
+from .commands.opencode_integration_cmds import install_mcp_cmd, install_plugin_cmd
+from .commands.raw_events_cmds import (
+    flush_raw_events_cmd,
+    raw_events_retry_cmd,
+    raw_events_status_cmd,
+)
+from .commands.sync_cmds import (
+    sync_attempts_cmd,
+    sync_daemon_cmd,
+    sync_disable_cmd,
+    sync_doctor_cmd,
+    sync_enable_cmd,
+    sync_install_cmd,
+    sync_once_cmd,
+    sync_pair_cmd,
+    sync_peers_list_cmd,
+    sync_peers_remove_cmd,
+    sync_peers_rename_cmd,
+    sync_repair_legacy_keys_cmd,
+    sync_status_cmd,
+    sync_uninstall_cmd,
+)
+from .commands.sync_service_cmds import install_autostart_quiet as _install_autostart_quiet
+from .commands.sync_service_cmds import run_service_action as _run_service_action
+from .commands.sync_service_cmds import run_service_action_quiet as _run_service_action_quiet
+from .commands.sync_service_cmds import (
+    sync_service_restart_cmd,
+    sync_service_start_cmd,
+    sync_service_status_cmd,
+    sync_service_stop_cmd,
+)
+from .commands.sync_service_cmds import sync_uninstall_impl as _sync_uninstall_impl
 from .commands.viewer_cmds import _port_open
 from .commands.viewer_cmds import serve as _serve
-from .config import get_config_path, load_config, read_config_file, write_config_file
+from .config import get_config_path, load_config
 from .db import DEFAULT_DB_PATH
 from .net import pick_advertise_host, pick_advertise_hosts
 from .store import MemoryStore
@@ -30,7 +87,6 @@ from .sync_discovery import (
 )
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
 from .sync_runtime import effective_status, spawn_daemon, stop_pidfile
-from .utils import resolve_project
 from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT
 
 app = typer.Typer(help="opencode-mem: persistent memory for OpenCode CLI")
@@ -49,26 +105,7 @@ def sync_attempts(
 ) -> None:
     """Show recent sync attempts."""
 
-    store = _store(db_path)
-    try:
-        rows = store.conn.execute(
-            """
-            SELECT peer_device_id, ok, ops_in, ops_out, error, finished_at
-            FROM sync_attempts
-            ORDER BY finished_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    finally:
-        store.close()
-    for row in rows:
-        status = "ok" if int(row["ok"] or 0) else "error"
-        error = str(row["error"] or "")
-        suffix = f" | {error}" if error else ""
-        print(
-            f"{row['peer_device_id']}|{status}|in={int(row['ops_in'] or 0)}|out={int(row['ops_out'] or 0)}|{row['finished_at']}{suffix}"
-        )
+    sync_attempts_cmd(store_from_path=_store, db_path=db_path, limit=limit)
 
 
 @sync_app.command("start")
@@ -105,247 +142,36 @@ def _store(db_path: str | None) -> MemoryStore:
     return MemoryStore(db_path or DEFAULT_DB_PATH)
 
 
-def _format_bytes(size: int) -> str:
-    units = ["B", "KB", "MB", "GB"]
-    value = float(size)
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{int(size)} B"
-
-
-def _format_tokens(count: int) -> str:
-    return f"{count:,}"
-
-
 def _mdns_runtime_status(enabled: bool) -> tuple[bool, str]:
-    if not enabled:
-        return False, "disabled"
-    try:
-        import zeroconf  # type: ignore[import-not-found]
-
-        version = getattr(zeroconf, "__version__", "unknown")
-        return True, f"enabled (zeroconf {version})"
-    except Exception:
-        return False, "enabled but zeroconf missing"
+    return mdns_runtime_status(enabled)
 
 
 def _resolve_project(cwd: str, project: str | None, all_projects: bool = False) -> str | None:
-    if all_projects:
-        return None
-    if project:
-        return project
-    env_project = os.environ.get("OPENCODE_MEM_PROJECT")
-    if env_project:
-        return env_project
-    return resolve_project(cwd)
+    return resolve_project_for_cli(cwd, project, all_projects=all_projects)
 
 
 def _compact_lines(text: str, limit: int) -> str:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return ""
-    if len(lines) > limit:
-        lines = lines[:limit] + [f"... (+{len(lines) - limit} more)"]
-    return "; ".join(lines)
+    return compact_lines(text, limit)
 
 
 def _compact_list(text: str, limit: int) -> str:
-    items = [line.strip() for line in text.splitlines() if line.strip()]
-    if not items:
-        return ""
-    if len(items) > limit:
-        items = items[:limit] + [f"... (+{len(items) - limit} more)"]
-    return ", ".join(items)
+    return compact_list(text, limit)
 
 
 def _read_config_or_exit() -> dict[str, Any]:
-    try:
-        return read_config_file()
-    except ValueError as exc:
-        print(f"[red]Invalid config file: {exc}[/red]")
-        raise typer.Exit(code=1) from exc
+    return read_config_or_exit()
 
 
 def _write_config_or_exit(data: dict[str, Any]) -> None:
-    try:
-        write_config_file(data)
-    except OSError as exc:
-        print(f"[red]Failed to write config: {exc}[/red]")
-        raise typer.Exit(code=1) from exc
+    write_config_or_exit(data)
 
 
 def _normalize_local_check_host(host: str) -> str:
-    if host in {"0.0.0.0", "::", "::0"}:
-        return "127.0.0.1"
-    return host
+    return normalize_local_check_host(host)
 
 
 def _sync_daemon_running(host: str, port: int) -> bool:
     return effective_status(host, port).running
-
-
-def _build_service_commands(action: str, install_mode: str) -> list[list[str]]:
-    if sys.platform.startswith("darwin"):
-        label = "com.opencode-mem.sync"
-        if install_mode != "user":
-            raise ValueError("system launchctl not supported")
-        uid = os.getuid()
-        target = f"gui/{uid}/{label}"
-        if action == "status":
-            return [["launchctl", "print", target]]
-        if action == "start":
-            return [["launchctl", "kickstart", "-k", target]]
-        if action == "stop":
-            return [["launchctl", "stop", target]]
-        if action == "restart":
-            return [["launchctl", "stop", target], ["launchctl", "kickstart", "-k", target]]
-        raise ValueError("unknown action")
-
-    if sys.platform.startswith("linux"):
-        unit = "opencode-mem-sync.service"
-        base = ["systemctl"]
-        if install_mode == "user":
-            base.append("--user")
-        return [[*base, action, unit]]
-
-    raise ValueError("unsupported platform")
-
-
-def _run_service_action(action: str, *, user: bool, system: bool) -> None:
-    if user and system:
-        print("[red]Use only one of --user or --system[/red]")
-        raise typer.Exit(code=1)
-    install_mode = "system" if system else "user"
-    try:
-        commands = _build_service_commands(action, install_mode)
-    except ValueError as exc:
-        print(f"[yellow]{exc}[/yellow]")
-        raise typer.Exit(code=1) from exc
-    for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.stdout:
-            print(result.stdout.strip())
-        if result.stderr:
-            print(result.stderr.strip())
-        if result.returncode != 0:
-            raise typer.Exit(code=result.returncode)
-
-
-def _run_service_action_quiet(action: str, *, user: bool, system: bool) -> bool:
-    if user and system:
-        return False
-    install_mode = "system" if system else "user"
-    try:
-        commands = _build_service_commands(action, install_mode)
-    except ValueError:
-        return False
-    ok = True
-    for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            ok = False
-    return ok
-
-
-def _install_autostart_quiet(*, user: bool) -> bool:
-    if sys.platform.startswith("darwin"):
-        if not user:
-            return False
-        source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "launchd"
-        plist_path = source / "com.opencode-mem.sync.plist"
-        dest = Path.home() / "Library" / "LaunchAgents" / "com.opencode-mem.sync.plist"
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(plist_path.read_text())
-        except OSError:
-            return False
-        uid = os.getuid()
-        subprocess.run(
-            ["launchctl", "load", "-w", str(dest)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        subprocess.run(
-            ["launchctl", "kickstart", "-k", f"gui/{uid}/com.opencode-mem.sync"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return True
-
-    if sys.platform.startswith("linux"):
-        source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "systemd"
-        unit_path = source / "opencode-mem-sync.service"
-        dest = Path.home() / ".config" / "systemd" / "user" / "opencode-mem-sync.service"
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(unit_path.read_text())
-        except OSError:
-            return False
-        subprocess.run(
-            ["systemctl", "--user", "daemon-reload"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        subprocess.run(
-            ["systemctl", "--user", "enable", "--now", "opencode-mem-sync.service"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return True
-
-    return False
-
-
-def _sync_uninstall_impl(*, user: bool) -> None:
-    if sys.platform.startswith("darwin"):
-        if not user:
-            return
-        dest = Path.home() / "Library" / "LaunchAgents" / "com.opencode-mem.sync.plist"
-        uid = os.getuid()
-        subprocess.run(
-            ["launchctl", "unload", "-w", str(dest)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        subprocess.run(
-            ["launchctl", "remove", f"gui/{uid}/com.opencode-mem.sync"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        with contextlib.suppress(FileNotFoundError):
-            dest.unlink()
-        print("[green]Removed launchd sync agent[/green]")
-        return
-
-    if sys.platform.startswith("linux"):
-        if not user:
-            return
-        dest = Path.home() / ".config" / "systemd" / "user" / "opencode-mem-sync.service"
-        subprocess.run(
-            ["systemctl", "--user", "disable", "--now", "opencode-mem-sync.service"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        subprocess.run(
-            ["systemctl", "--user", "daemon-reload"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        with contextlib.suppress(FileNotFoundError):
-            dest.unlink()
-        print("[green]Removed systemd user sync autostart[/green]")
 
 
 def _build_import_key(
@@ -423,58 +249,10 @@ def _merge_summary_metadata(metadata: dict[str, Any], import_metadata: Any) -> d
     return merged
 
 
-def _strip_json_comments(text: str) -> str:
-    lines: list[str] = []
-    for line in text.splitlines():
-        result: list[str] = []
-        in_string = False
-        escape_next = False
-        i = 0
-        while i < len(line):
-            char = line[i]
-            if escape_next:
-                result.append(char)
-                escape_next = False
-                i += 1
-                continue
-            if char == "\\" and in_string:
-                result.append(char)
-                escape_next = True
-                i += 1
-                continue
-            if char == '"':
-                in_string = not in_string
-                result.append(char)
-                i += 1
-                continue
-            if not in_string and char == "/" and i + 1 < len(line) and line[i + 1] == "/":
-                break
-            result.append(char)
-            i += 1
-        lines.append("".join(result))
-    return "\n".join(lines)
-
-
-def _load_opencode_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    raw = path.read_text()
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return json.loads(_strip_json_comments(raw))
-
-
-def _write_opencode_config(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-
-
 @app.command()
 def init_db(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
     """Create the SQLite database (no-op if it already exists)."""
-    store = _store(db_path)
-    print(f"Initialized database at {store.db_path}")
+    init_db_cmd(store_from_path=_store, db_path=db_path)
 
 
 @app.command()
@@ -486,12 +264,15 @@ def search(
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     """Search memories by keyword or semantic recall."""
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-    filters = {"project": resolved_project} if resolved_project else None
-    results = store.search(query, limit=limit, filters=filters)
-    for item in results:
-        print(f"[{item.id}] ({item.kind}) {item.title}\n{item.body_text}\nscore={item.score:.2f}\n")
+    search_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        db_path=db_path,
+        query=query,
+        limit=limit,
+        project=project,
+        all_projects=all_projects,
+    )
 
 
 @app.command()
@@ -503,25 +284,21 @@ def recent(
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     """Show recent memories."""
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-    filters = {"kind": kind} if kind else {}
-    if resolved_project:
-        filters["project"] = resolved_project
-    results = store.recent(limit=limit, filters=filters or None)
-    for item in results:
-        print(f"[{item['id']}] ({item['kind']}) {item['title']}\n{item['body_text']}\n")
+    recent_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        db_path=db_path,
+        limit=limit,
+        kind=kind,
+        project=project,
+        all_projects=all_projects,
+    )
 
 
 @app.command()
 def show(memory_id: int, db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
     """Print a memory item as JSON."""
-    store = _store(db_path)
-    item = store.get(memory_id)
-    if not item:
-        print(f"[red]Memory {memory_id} not found[/red]")
-        raise typer.Exit(code=1)
-    print(json.dumps(item, indent=2))
+    show_cmd(store_from_path=_store, db_path=db_path, memory_id=memory_id)
 
 
 @app.command()
@@ -534,20 +311,16 @@ def remember(
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
 ) -> None:
     """Manually add a memory item."""
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=False)
-    session_id = store.start_session(
-        cwd=os.getcwd(),
-        project=resolved_project,
-        git_remote=None,
-        git_branch=None,
-        user=getpass.getuser(),
-        tool_version="manual",
-        metadata={"manual": True},
+    remember_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        db_path=db_path,
+        kind=kind,
+        title=title,
+        body=body,
+        tags=tags,
+        project=project,
     )
-    mem_id = store.remember(session_id, kind=kind, title=title, body_text=body, tags=tags)
-    store.end_session(session_id, metadata={"manual": True})
-    print(f"Stored memory {mem_id}")
 
 
 @app.command()
@@ -555,9 +328,7 @@ def forget(
     memory_id: int, db_path: str = typer.Option(None, help="Path to SQLite database")
 ) -> None:
     """Deactivate a memory item by id."""
-    store = _store(db_path)
-    store.forget(memory_id)
-    print(f"Memory {memory_id} marked inactive")
+    forget_cmd(store_from_path=_store, db_path=db_path, memory_id=memory_id)
 
 
 @db_app.command("prune-observations")
@@ -567,10 +338,7 @@ def db_prune_observations(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Deactivate low-signal observations (does not delete rows)."""
-    store = _store(db_path)
-    result = store.deactivate_low_signal_observations(limit=limit, dry_run=dry_run)
-    action = "Would deactivate" if dry_run else "Deactivated"
-    print(f"{action} {result['deactivated']} of {result['checked']} observations")
+    prune_observations_cmd(store_from_path=_store, db_path=db_path, limit=limit, dry_run=dry_run)
 
 
 @db_app.command("prune-memories")
@@ -583,10 +351,9 @@ def db_prune_memories(
     db_path: str = typer.Option(None),
 ) -> None:
     """Deactivate low-signal memories across multiple kinds (does not delete rows)."""
-    store = _store(db_path)
-    result = store.deactivate_low_signal_memories(kinds=kinds, limit=limit, dry_run=dry_run)
-    action = "Would deactivate" if dry_run else "Deactivated"
-    print(f"{action} {result['deactivated']} of {result['checked']} memories")
+    prune_memories_cmd(
+        store_from_path=_store, db_path=db_path, limit=limit, dry_run=dry_run, kinds=kinds
+    )
 
 
 @app.command()
@@ -599,17 +366,17 @@ def pack(
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     """Build a JSON memory pack for a query/context string."""
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-    config = load_config()
-    filters = {"project": resolved_project} if resolved_project else None
-    pack = store.build_memory_pack(
+    pack_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        load_config=load_config,
+        db_path=db_path,
         context=context,
-        limit=limit or config.pack_observation_limit,
+        limit=limit,
         token_budget=token_budget,
-        filters=filters,
+        project=project,
+        all_projects=all_projects,
     )
-    print(json.dumps(pack, indent=2))
 
 
 @app.command()
@@ -622,17 +389,17 @@ def inject(
     all_projects: bool = typer.Option(False, help="Search across all projects"),
 ) -> None:
     """Build a context block from memories for manual injection into prompts."""
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-    config = load_config()
-    filters = {"project": resolved_project} if resolved_project else None
-    pack = store.build_memory_pack(
+    inject_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        load_config=load_config,
+        db_path=db_path,
         context=context,
-        limit=limit or config.pack_observation_limit,
+        limit=limit,
         token_budget=token_budget,
-        filters=filters,
+        project=project,
+        all_projects=all_projects,
     )
-    print(pack.get("pack_text", ""))
 
 
 @app.command()
@@ -642,71 +409,18 @@ def compact(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Re-run summarization for past sessions (uses model if configured)."""
-    store = _store(db_path)
-    summarizer = Summarizer()
-    sessions = store.all_sessions()
-    sessions = [s for s in sessions if s["id"] == session_id] if session_id else sessions[:limit]
-    if not sessions:
-        print("[yellow]No sessions found to compact[/yellow]")
-        return
-    for sess in sessions:
-        transcript = store.latest_transcript(sess["id"])
-        if not transcript:
-            print(f"[yellow]Skipping session {sess['id']}: no transcript artifact[/yellow]")
-            continue
-        summary = summarizer.summarize(transcript=transcript, diff_summary="", recent_files="")
-        store.replace_session_summary(sess["id"], summary)
-        transcript_tokens = store.estimate_tokens(transcript)
-        summary_tokens = store.estimate_tokens(summary.session_summary)
-        summary_tokens += sum(store.estimate_tokens(obs) for obs in summary.observations)
-        summary_tokens += sum(store.estimate_tokens(entity) for entity in summary.entities)
-        tokens_saved = max(0, transcript_tokens - summary_tokens)
-        store.record_usage(
-            "compact",
-            session_id=sess["id"],
-            tokens_read=transcript_tokens,
-            tokens_written=summary_tokens,
-            tokens_saved=tokens_saved,
-            metadata={"mode": "manual"},
-        )
-        print(f"[green]Compacted session {sess['id']}[/green]")
+    compact_cmd(
+        store_from_path=_store,
+        summarizer_factory=Summarizer,
+        db_path=db_path,
+        session_id=session_id,
+        limit=limit,
+    )
 
 
 @app.command()
 def stats(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
-    store = _store(db_path)
-    stats_data = store.stats()
-    db_stats = stats_data["database"]
-    usage = stats_data["usage"]
-
-    print("[bold]Database[/bold]")
-    print(f"- Path: {db_stats['path']}")
-    print(f"- Size: {_format_bytes(db_stats['size_bytes'])}")
-    print(f"- Sessions: {db_stats['sessions']}")
-    print(f"- Memory items: {db_stats['memory_items']} (active {db_stats['active_memory_items']})")
-    print(
-        f"- Tags: {db_stats['tags_filled']} filled "
-        f"(~{db_stats['tags_coverage'] * 100:.0f}% of active)"
-    )
-    print(f"- Artifacts: {db_stats['artifacts']}")
-    print(f"- Raw events: {db_stats['raw_events']}")
-
-    print("\n[bold]Usage[/bold]")
-    if not usage["events"]:
-        print("- No usage events recorded yet")
-        return
-    for event in usage["events"]:
-        print(
-            f"- {event['event']}: {event['count']} "
-            f"(read ~{_format_tokens(event['tokens_read'])} tokens, "
-            f"est. saved ~{_format_tokens(event['tokens_saved'])} tokens)"
-        )
-    totals = usage["totals"]
-    print(
-        f"\n- Total events: {totals['events']} "
-        f"(read ~{_format_tokens(totals['tokens_read'])} tokens, "
-        f"est. saved ~{_format_tokens(totals['tokens_saved'])} tokens)"
-    )
+    stats_cmd(store_from_path=_store, db_path=db_path)
 
 
 @app.command()
@@ -719,21 +433,17 @@ def embed(
     inactive: bool = typer.Option(False, help="Include inactive memories"),
     dry_run: bool = typer.Option(False, help="Report without writing"),
 ) -> None:
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-    result = store.backfill_vectors(
+    embed_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        db_path=db_path,
         limit=limit,
         since=since,
-        project=resolved_project,
-        active_only=not inactive,
+        project=project,
+        all_projects=all_projects,
+        inactive=inactive,
         dry_run=dry_run,
     )
-    action = "Would embed" if dry_run else "Embedded"
-    print(
-        f"{action} {result['embedded']} vectors "
-        f"({result['inserted']} inserted, {result['skipped']} skipped)"
-    )
-    print(f"Checked {result['checked']} memories")
 
 
 @app.command("backfill-tags")
@@ -748,18 +458,17 @@ def backfill_tags(
 ) -> None:
     """Populate tags_text for memories missing tags."""
 
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-    result = store.backfill_tags_text(
+    backfill_tags_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        db_path=db_path,
         limit=limit,
         since=since,
-        project=resolved_project,
-        active_only=not inactive,
+        project=project,
+        all_projects=all_projects,
+        inactive=inactive,
         dry_run=dry_run,
     )
-    action = "Would update" if dry_run else "Updated"
-    print(f"{action} {result['updated']} memories (skipped {result['skipped']})")
-    print(f"Checked {result['checked']} memories")
 
 
 @app.command("backfill-discovery-tokens")
@@ -769,9 +478,9 @@ def backfill_discovery_tokens(
 ) -> None:
     """Populate discovery_group/discovery_tokens for existing observer memories."""
 
-    store = _store(db_path)
-    updated = store.backfill_discovery_tokens(limit_sessions=limit_sessions)
-    print(f"Updated {updated} memories")
+    backfill_discovery_tokens_cmd(
+        store_from_path=_store, db_path=db_path, limit_sessions=limit_sessions
+    )
 
 
 @app.command("flush-raw-events")
@@ -785,18 +494,18 @@ def flush_raw_events(
 ) -> None:
     """Flush spooled raw events into the normal ingest pipeline."""
 
-    from .raw_event_flush import flush_raw_events as flush
-
     store = _store(db_path)
-    result = flush(
-        store,
-        opencode_session_id=opencode_session_id,
-        cwd=cwd,
-        project=project,
-        started_at=started_at,
-        max_events=max_events,
-    )
-    print(f"Flushed {result['flushed']} events")
+    try:
+        flush_raw_events_cmd(
+            store,
+            opencode_session_id=opencode_session_id,
+            cwd=cwd,
+            project=project,
+            started_at=started_at,
+            max_events=max_events,
+        )
+    finally:
+        store.close()
 
 
 @app.command("raw-events-status")
@@ -807,18 +516,10 @@ def raw_events_status(
     """Show pending raw-event backlog by OpenCode session."""
 
     store = _store(db_path)
-    items = store.raw_event_backlog(limit=limit)
-    if not items:
-        print("No pending raw events")
-        return
-    for item in items:
-        counts = store.raw_event_batch_status_counts(item["opencode_session_id"])
-        print(
-            f"- {item['opencode_session_id']} pending={item['pending']} "
-            f"max_seq={item['max_seq']} last_flushed={item['last_flushed_event_seq']} "
-            f"batches=started:{counts['started']} running:{counts['running']} error:{counts['error']} completed:{counts['completed']} "
-            f"project={item.get('project') or ''}"
-        )
+    try:
+        raw_events_status_cmd(store, limit=limit)
+    finally:
+        store.close()
 
 
 @app.command("raw-events-retry")
@@ -829,26 +530,11 @@ def raw_events_retry(
 ) -> None:
     """Retry error raw-event flush batches for a session."""
 
-    from .raw_event_flush import flush_raw_events as flush
-
     store = _store(db_path)
-    errors = store.raw_event_error_batches(opencode_session_id, limit=limit)
-    if not errors:
-        print("No error batches")
-        return
-    for batch in errors:
-        # Re-run extraction by forcing last_flushed back to the batch start-1.
-        start_seq = int(batch["start_event_seq"])
-        store.update_raw_event_flush_state(opencode_session_id, start_seq - 1)
-        result = flush(
-            store,
-            opencode_session_id=opencode_session_id,
-            cwd=None,
-            project=None,
-            started_at=None,
-            max_events=None,
-        )
-        print(f"Retried batch {batch['id']} -> flushed {result['flushed']} events")
+    try:
+        raw_events_retry_cmd(store, opencode_session_id=opencode_session_id, limit=limit)
+    finally:
+        store.close()
 
 
 @app.command("pack-benchmark")
@@ -863,39 +549,30 @@ def pack_benchmark(
 ) -> None:
     """Run pack generation for a query set and report token metrics."""
 
-    from .pack_benchmark import format_benchmark_report, read_queries, run_pack_benchmark, to_json
-
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-    config = load_config()
-    filters = {"project": resolved_project} if resolved_project else None
-    queries = read_queries(queries_path.read_text())
-    result = run_pack_benchmark(
-        store,
-        queries=queries,
-        limit=limit or config.pack_observation_limit,
+    pack_benchmark_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        load_config=load_config,
+        db_path=db_path,
+        queries_path=queries_path,
+        limit=limit,
         token_budget=token_budget,
-        filters=filters,
+        project=project,
+        all_projects=all_projects,
+        json_out=json_out,
     )
-    print(format_benchmark_report(result))
-    if json_out:
-        json_out.write_text(to_json(result) + "\n")
 
 
 @app.command()
 def mcp() -> None:
     """Run the MCP server for OpenCode."""
-    from .mcp_server import run as mcp_run
-
-    mcp_run()
+    mcp_cmd()
 
 
 @app.command()
 def ingest() -> None:
     """Ingest plugin events from stdin."""
-    from .plugin_ingest import main as ingest_main
-
-    ingest_main()
+    ingest_cmd()
 
 
 @app.command()
@@ -961,92 +638,25 @@ def sync_enable(
     ),
 ) -> None:
     """Enable sync and initialize device identity."""
-    store = _store(db_path)
-    try:
-        device_id, fingerprint = ensure_device_identity(store.conn)
-    finally:
-        store.close()
-    config_data = _read_config_or_exit()
-    config = load_config()
-    previous_host = str(config_data.get("sync_host") or config.sync_host)
-    previous_port = int(config_data.get("sync_port") or config.sync_port)
-    previous_interval = int(config_data.get("sync_interval_s") or config.sync_interval_s)
-
-    config_data["sync_enabled"] = True
-    config_data["sync_host"] = host or config.sync_host
-    config_data["sync_port"] = port or config.sync_port
-    config_data["sync_interval_s"] = interval_s or config.sync_interval_s
-    if advertise is not None:
-        config_data["sync_advertise"] = advertise
-    _write_config_or_exit(config_data)
-    config_path = get_config_path()
-    print("[green]Sync enabled[/green]")
-    print(f"- Config: {config_path}")
-    print(f"- Device ID: {device_id}")
-    print(f"- Fingerprint: {fingerprint}")
-    print(f"- Listen: {config_data['sync_host']}:{config_data['sync_port']}")
-    if not start:
-        print("- Run: opencode-mem sync daemon")
-        return
-
-    print("Starting sync daemon...")
-
-    if install is None:
-        if sys.platform.startswith("darwin"):
-            install = False
-        else:
-            install = True
-
-    # Prefer service management if available and actually results in a running daemon.
-    if install:
-        print("- Installing autostart...")
-        _install_autostart_quiet(user=True)
-        print("- Starting via service...")
-        _run_service_action_quiet("restart", user=True, system=False)
-        status = effective_status(str(config_data["sync_host"]), int(config_data["sync_port"]))
-        if status.running and status.mechanism == "service":
-            print("[green]Sync daemon running (service)[/green]")
-            return
-        if sys.platform.startswith("darwin") and status.detail.startswith("failed (EX_CONFIG"):
-            print(
-                "[yellow]launchd cannot run opencode-mem in dev mode; using pidfile daemon. Use `sync install` only after installing opencode-mem on PATH.[/yellow]"
-            )
-        else:
-            print("[yellow]Service did not start sync daemon; falling back to pidfile[/yellow]")
-    desired_host = str(config_data["sync_host"])
-    desired_port = int(config_data["sync_port"])
-    desired_interval = int(config_data["sync_interval_s"])
-    bind_changed = (previous_host, previous_port, previous_interval) != (
-        desired_host,
-        desired_port,
-        desired_interval,
-    )
-    status = effective_status(desired_host, desired_port)
-    if status.running:
-        if bind_changed:
-            if _run_service_action_quiet("restart", user=True, system=False):
-                status = effective_status(desired_host, desired_port)
-                if status.running:
-                    print(f"[green]Sync daemon running ({status.mechanism})[/green]")
-                    return
-            print("[yellow]Sync daemon already running[/yellow]")
-            print("Restart required to apply updated bind settings:")
-            print("- opencode-mem sync restart")
-            print("- or stop/start your foreground daemon")
-        else:
-            print(f"[yellow]Sync daemon already running ({status.mechanism})[/yellow]")
-        return
-    pid = spawn_daemon(
-        host=desired_host,
-        port=desired_port,
-        interval_s=desired_interval,
+    sync_enable_cmd(
+        store_from_path=_store,
+        read_config_or_exit=_read_config_or_exit,
+        write_config_or_exit=_write_config_or_exit,
+        get_config_path=get_config_path,
+        load_config=load_config,
+        ensure_device_identity=ensure_device_identity,
+        effective_status=effective_status,
+        spawn_daemon=spawn_daemon,
+        run_service_action_quiet=_run_service_action_quiet,
+        install_autostart_quiet=_install_autostart_quiet,
         db_path=db_path,
+        host=host,
+        port=port,
+        interval_s=interval_s,
+        start=start,
+        advertise=advertise,
+        install=install,
     )
-    status = effective_status(desired_host, desired_port)
-    if status.running:
-        print(f"[green]Sync daemon running ({status.mechanism})[/green]")
-        return
-    print(f"[yellow]Started sync daemon (pid {pid}) but it is not running[/yellow]")
 
 
 @sync_app.command("disable")
@@ -1055,69 +665,27 @@ def sync_disable(
     uninstall: bool = typer.Option(False, help="Remove autostart service configuration"),
 ) -> None:
     """Disable sync without deleting keys or peers."""
-    config_data = _read_config_or_exit()
-    config_data["sync_enabled"] = False
-    _write_config_or_exit(config_data)
-    print("[yellow]Sync disabled[/yellow]")
-    if not stop:
-        if uninstall:
-            _sync_uninstall_impl(user=True)
-        return
-    try:
-        _run_service_action("stop", user=True, system=False)
-        print("[green]Sync daemon stopped[/green]")
-    except typer.Exit:
-        if stop_pidfile():
-            print("[green]Sync daemon stopped[/green]")
-            if uninstall:
-                _sync_uninstall_impl(user=True)
-            return
-        print("Stop the daemon to apply disable:")
-        print("- opencode-mem sync stop")
-        print("- or stop your foreground `opencode-mem sync daemon`")
-        if uninstall:
-            _sync_uninstall_impl(user=True)
+    sync_disable_cmd(
+        read_config_or_exit=_read_config_or_exit,
+        write_config_or_exit=_write_config_or_exit,
+        run_service_action=_run_service_action,
+        stop_pidfile=stop_pidfile,
+        sync_uninstall_impl=_sync_uninstall_impl,
+        stop=stop,
+        uninstall=uninstall,
+    )
 
 
 @sync_app.command("status")
 def sync_status(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
     """Show sync configuration and peer summary."""
-    config = load_config()
-    store = _store(db_path)
-    try:
-        row = store.conn.execute(
-            "SELECT device_id, fingerprint FROM sync_device LIMIT 1"
-        ).fetchone()
-        peers = store.conn.execute(
-            "SELECT peer_device_id, name, last_sync_at, last_error FROM sync_peers"
-        ).fetchall()
-    finally:
-        store.close()
-    config_path = get_config_path()
-    print(f"- Enabled: {config.sync_enabled}")
-    print(f"- Config: {config_path}")
-    print(f"- Listen: {config.sync_host}:{config.sync_port}")
-    print(f"- Interval: {config.sync_interval_s}s")
-    daemon_status = effective_status(config.sync_host, config.sync_port)
-    if daemon_status.running:
-        extra = f" pid={daemon_status.pid}" if daemon_status.pid else ""
-        print(f"- Daemon: running ({daemon_status.mechanism}{extra})")
-    else:
-        print("- Daemon: not running (run `opencode-mem sync daemon` or `opencode-mem sync start`)")
-    if row is None:
-        print("- Device ID: (not initialized)")
-    else:
-        print(f"- Device ID: {row['device_id']}")
-        print(f"- Fingerprint: {row['fingerprint']}")
-    if not peers:
-        print("- Peers: none")
-    else:
-        print(f"- Peers: {len(peers)}")
-        for peer in peers:
-            label = peer["name"] or peer["peer_device_id"]
-            last_error = peer["last_error"] or "ok"
-            last_sync = peer["last_sync_at"] or "never"
-            print(f"  - {label}: last_sync={last_sync}, status={last_error}")
+    sync_status_cmd(
+        store_from_path=_store,
+        load_config=load_config,
+        get_config_path=get_config_path,
+        effective_status=effective_status,
+        db_path=db_path,
+    )
 
 
 @sync_app.command("pair")
@@ -1128,119 +696,26 @@ def sync_pair(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Print pairing payload or accept a peer payload."""
-    store = _store(db_path)
-    try:
-        if accept:
-            try:
-                payload = json.loads(accept)
-            except json.JSONDecodeError as exc:
-                print(f"[red]Invalid pairing payload: {exc}[/red]")
-                raise typer.Exit(code=1) from exc
-            device_id = str(payload.get("device_id") or "")
-            fingerprint = str(payload.get("fingerprint") or "")
-            public_key = str(payload.get("public_key") or "")
-            resolved_addresses: list[str] = []
-            if address and address.strip():
-                resolved_addresses = [address.strip()]
-            else:
-                raw_addresses = payload.get("addresses")
-                if isinstance(raw_addresses, list):
-                    resolved_addresses = [
-                        str(item).strip()
-                        for item in raw_addresses
-                        if isinstance(item, str) and str(item).strip()
-                    ]
-                if not resolved_addresses:
-                    fallback_address = str(payload.get("address") or "").strip()
-                    if fallback_address:
-                        resolved_addresses = [fallback_address]
-            if not device_id or not fingerprint or not public_key or not resolved_addresses:
-                print(
-                    "[red]Pairing payload missing device_id, fingerprint, public_key, or addresses[/red]"
-                )
-                raise typer.Exit(code=1)
-            if fingerprint_public_key(public_key) != fingerprint:
-                print("[red]Pairing payload fingerprint mismatch[/red]")
-                raise typer.Exit(code=1)
-            update_peer_addresses(
-                store.conn,
-                device_id,
-                resolved_addresses,
-                name=name,
-                pinned_fingerprint=fingerprint,
-                public_key=public_key,
-            )
-            print(f"[green]Paired with {device_id}[/green]")
-            return
-
-        device_id, fingerprint = ensure_device_identity(store.conn)
-        public_key = load_public_key()
-        if not public_key:
-            print("[red]Public key missing[/red]")
-            raise typer.Exit(code=1)
-        config = load_config()
-        if address and address.strip().lower() in {"auto", "default"}:
-            address = None
-        if address and address.strip():
-            addresses = [address.strip()]
-        else:
-            hosts = pick_advertise_hosts(config.sync_advertise)
-            if not hosts:
-                advertise_host = pick_advertise_host(config.sync_advertise)
-                hosts = [advertise_host] if advertise_host else []
-            if not hosts:
-                hosts = [config.sync_host]
-            addresses = [
-                f"{host}:{config.sync_port}"
-                for host in hosts
-                if host and host.strip() and host != "0.0.0.0"
-            ]
-            if not addresses and config.sync_host and config.sync_host != "0.0.0.0":
-                addresses = [f"{config.sync_host}:{config.sync_port}"]
-        primary_address = addresses[0] if addresses else ""
-        payload = {
-            "device_id": device_id,
-            "fingerprint": fingerprint,
-            "public_key": public_key,
-            "address": primary_address,
-            "addresses": addresses,
-        }
-        payload_text = json.dumps(payload, ensure_ascii=False)
-        escaped = payload_text.replace("'", "'\\''")
-        print("[bold]Pairing payload[/bold]")
-        print(payload_text)
-        print("Share this with your other device and run:")
-        print(f"  opencode-mem sync pair --accept '{escaped}'")
-    finally:
-        store.close()
+    sync_pair_cmd(
+        store_from_path=_store,
+        ensure_device_identity=ensure_device_identity,
+        load_public_key=load_public_key,
+        fingerprint_public_key=fingerprint_public_key,
+        update_peer_addresses=update_peer_addresses,
+        pick_advertise_hosts=pick_advertise_hosts,
+        pick_advertise_host=pick_advertise_host,
+        load_config=load_config,
+        accept=accept,
+        name=name,
+        address=address,
+        db_path=db_path,
+    )
 
 
 @sync_peers_app.command("list")
 def sync_peers_list(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
     """List known sync peers."""
-    store = _store(db_path)
-    try:
-        rows = store.conn.execute(
-            """
-            SELECT peer_device_id, name, last_sync_at, last_error, addresses_json
-            FROM sync_peers
-            ORDER BY name, peer_device_id
-            """
-        ).fetchall()
-    finally:
-        store.close()
-    if not rows:
-        print("[yellow]No sync peers found[/yellow]")
-        return
-    for row in rows:
-        addresses = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
-        label = row["name"] or row["peer_device_id"]
-        last_sync = row["last_sync_at"] or "never"
-        status = row["last_error"] or "ok"
-        address_text = ", ".join(addresses) if addresses else "(no addresses)"
-        print(
-            f"- {label} ({row['peer_device_id']}): {address_text} | last_sync={last_sync} | {status}"
-        )
+    sync_peers_list_cmd(store_from_path=_store, from_json=db.from_json, db_path=db_path)
 
 
 @sync_peers_app.command("remove")
@@ -1249,24 +724,7 @@ def sync_peers_remove(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Remove a peer."""
-    store = _store(db_path)
-    try:
-        rows = store.conn.execute(
-            "SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ? OR name = ?",
-            (peer, peer),
-        ).fetchall()
-        if not rows:
-            print("[yellow]Peer not found[/yellow]")
-            raise typer.Exit(code=1)
-        for row in rows:
-            store.conn.execute(
-                "DELETE FROM sync_peers WHERE peer_device_id = ?",
-                (row["peer_device_id"],),
-            )
-        store.conn.commit()
-    finally:
-        store.close()
-    print(f"[green]Removed {len(rows)} peer(s)[/green]")
+    sync_peers_remove_cmd(store_from_path=_store, peer=peer, db_path=db_path)
 
 
 @sync_peers_app.command("rename")
@@ -1276,23 +734,9 @@ def sync_peers_rename(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Rename a peer."""
-    store = _store(db_path)
-    try:
-        row = store.conn.execute(
-            "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
-            (peer_device_id,),
-        ).fetchone()
-        if row is None:
-            print("[yellow]Peer not found[/yellow]")
-            raise typer.Exit(code=1)
-        store.conn.execute(
-            "UPDATE sync_peers SET name = ? WHERE peer_device_id = ?",
-            (name, peer_device_id),
-        )
-        store.conn.commit()
-    finally:
-        store.close()
-    print(f"[green]Renamed peer {peer_device_id}[/green]")
+    sync_peers_rename_cmd(
+        store_from_path=_store, peer_device_id=peer_device_id, name=name, db_path=db_path
+    )
 
 
 @sync_app.command("once")
@@ -1301,121 +745,29 @@ def sync_once_command(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Run a single sync pass."""
-    store = _store(db_path)
-    try:
-        sync_pass_preflight(store)
-        mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
-        if peer:
-            rows = store.conn.execute(
-                """
-                SELECT peer_device_id
-                FROM sync_peers
-                WHERE peer_device_id = ? OR name = ?
-                """,
-                (peer, peer),
-            ).fetchall()
-        else:
-            rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
-        if not rows:
-            print("[yellow]No peers available for sync[/yellow]")
-            raise typer.Exit(code=1)
-        for row in rows:
-            peer_device_id = str(row["peer_device_id"])
-            result = run_sync_pass(store, peer_device_id, mdns_entries=mdns_entries)
-            if result.get("ok"):
-                print(f"- {row['peer_device_id']}: ok")
-            else:
-                error = result.get("error")
-                suffix = f": {error}" if isinstance(error, str) and error else ""
-                print(f"- {row['peer_device_id']}: error{suffix}")
-    finally:
-        store.close()
+    sync_once_cmd(
+        store_from_path=_store,
+        sync_pass_preflight=sync_pass_preflight,
+        mdns_enabled=mdns_enabled,
+        discover_peers_via_mdns=discover_peers_via_mdns,
+        run_sync_pass=run_sync_pass,
+        peer=peer,
+        db_path=db_path,
+    )
 
 
 @sync_app.command("doctor")
 def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database")) -> None:
     """Diagnose common sync setup and connectivity issues."""
-    config = load_config()
-    print("[bold]Sync doctor[/bold]")
-    print(f"- Enabled: {config.sync_enabled}")
-    print(f"- Listen: {config.sync_host}:{config.sync_port}")
-    mdns_ok, mdns_detail = _mdns_runtime_status(bool(getattr(config, "sync_mdns", True)))
-    print(f"- mDNS: {mdns_detail}")
-    include = [p for p in getattr(config, "sync_projects_include", []) if p]
-    exclude = [p for p in getattr(config, "sync_projects_exclude", []) if p]
-    if include or exclude:
-        print(f"- Project filter: include={include or '[]'} exclude={exclude or '[]'}")
-    running = _sync_daemon_running(config.sync_host, config.sync_port)
-    print(f"- Daemon: {'running' if running else 'not running'}")
-
-    store = _store(db_path)
-    try:
-        device = store.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
-        daemon_state = store.get_sync_daemon_state() or {}
-        if device is None:
-            print("- Identity: missing (run `opencode-mem sync enable`)")
-        else:
-            print(f"- Identity: {device['device_id']}")
-
-        peers = store.conn.execute(
-            "SELECT peer_device_id, addresses_json, pinned_fingerprint, public_key FROM sync_peers"
-        ).fetchall()
-    finally:
-        store.close()
-
-    issues: list[str] = []
-    if not config.sync_enabled:
-        issues.append("sync is disabled")
-    if not running:
-        issues.append("daemon not running")
-    if daemon_state.get("last_error") and (
-        not daemon_state.get("last_ok_at")
-        or str(daemon_state.get("last_ok_at")) < str(daemon_state.get("last_error_at"))
-    ):
-        print(
-            f"- Daemon error: {daemon_state.get('last_error')} (at {daemon_state.get('last_error_at')})"
-        )
-        issues.append("daemon error")
-    if getattr(config, "sync_mdns", True) and not mdns_ok:
-        issues.append("mDNS enabled but zeroconf missing")
-    if device is None:
-        issues.append("identity missing")
-
-    if not peers:
-        print("- Peers: none (pair a device first)")
-        issues.append("no peers")
-        if issues:
-            print(f"[yellow]WARN: {', '.join(issues)}[/yellow]")
-        return
-    print(f"- Peers: {len(peers)}")
-    for peer in peers:
-        addresses = db.from_json(peer["addresses_json"]) if peer["addresses_json"] else []
-        addresses = [str(item) for item in addresses if isinstance(item, str)]
-        pinned = bool(peer["pinned_fingerprint"])
-        has_key = bool(peer["public_key"])
-        reach = "unknown"
-        if addresses:
-            host_port = addresses[0]
-            try:
-                if "://" in host_port:
-                    host_port = host_port.split("://", 1)[1]
-                host, port_str = host_port.rsplit(":", 1)
-                reach = "ok" if _port_open(host, int(port_str)) else "unreachable"
-            except Exception:
-                reach = "invalid address"
-        print(
-            f"  - {peer['peer_device_id']}: addresses={len(addresses)} reach={reach} pinned={pinned} public_key={has_key}"
-        )
-        if reach != "ok":
-            issues.append(f"peer {peer['peer_device_id']} unreachable")
-        if not pinned or not has_key:
-            issues.append(f"peer {peer['peer_device_id']} not pinned")
-
-    if issues:
-        unique = list(dict.fromkeys(issues))
-        print(f"[yellow]WARN: {', '.join(unique[:3])}[/yellow]")
-    else:
-        print("[green]OK: sync looks healthy[/green]")
+    sync_doctor_cmd(
+        store_from_path=_store,
+        load_config=load_config,
+        mdns_runtime_status=_mdns_runtime_status,
+        sync_daemon_running=_sync_daemon_running,
+        port_open=_port_open,
+        from_json=db.from_json,
+        db_path=db_path,
+    )
 
 
 @sync_app.command("repair-legacy-keys")
@@ -1430,15 +782,8 @@ def sync_repair_legacy_keys(
     device-prefixed form (legacy:<device_id>:memory_item:<n>) and tombstones the old key.
     """
 
-    store = _store(db_path)
-    try:
-        result = store.repair_legacy_import_keys(limit=limit, dry_run=dry_run)
-    finally:
-        store.close()
-    mode = "dry-run" if dry_run else "applied"
-    print(f"Repair legacy keys ({mode})")
-    print(
-        f"- Checked: {result['checked']} | renamed: {result['renamed']} | merged: {result['merged']} | tombstoned: {result['tombstoned']} | ops: {result['ops']}"
+    sync_repair_legacy_keys_cmd(
+        store_from_path=_store, db_path=db_path, limit=limit, dry_run=dry_run
     )
 
 
@@ -1450,15 +795,13 @@ def sync_daemon(
     interval_s: int | None = typer.Option(None, help="Sync interval in seconds"),
 ) -> None:
     """Run the sync daemon loop."""
-    config = load_config()
-    if not config.sync_enabled:
-        print("[yellow]Sync is disabled (enable via `opencode-mem sync enable`).[/yellow]")
-        raise typer.Exit(code=1)
-    run_sync_daemon(
-        host=host or config.sync_host,
-        port=port or config.sync_port,
-        interval_s=interval_s or config.sync_interval_s,
-        db_path=Path(db_path) if db_path else None,
+    sync_daemon_cmd(
+        load_config=load_config,
+        run_sync_daemon=run_sync_daemon,
+        db_path=db_path,
+        host=host,
+        port=port,
+        interval_s=interval_s,
     )
 
 
@@ -1468,14 +811,13 @@ def sync_service_status(
     verbose: bool = typer.Option(False, help="Show raw service output"),
 ) -> None:
     """Show service status for sync daemon."""
-    config = load_config()
-    status = effective_status(config.sync_host, config.sync_port)
-    label = "running" if status.running else "not running"
-    extra = f" pid={status.pid}" if status.pid else ""
-    print(f"- Sync: {label} ({status.mechanism}; {status.detail}{extra})")
-    if not verbose:
-        return
-    _run_service_action("status", user=user, system=system)
+    sync_service_status_cmd(
+        load_config=load_config,
+        effective_status=effective_status,
+        verbose=verbose,
+        user=user,
+        system=system,
+    )
 
 
 def sync_service_start(
@@ -1483,26 +825,13 @@ def sync_service_start(
     system: bool = typer.Option(False, help="Use system-level service"),
 ) -> None:
     """Start sync daemon."""
-    config = load_config()
-    if not config.sync_enabled:
-        print("[yellow]Sync is disabled (run `opencode-mem sync enable`).[/yellow]")
-        raise typer.Exit(code=1)
-    if _run_service_action_quiet("start", user=user, system=system):
-        status = effective_status(config.sync_host, config.sync_port)
-        if status.running:
-            print("[green]Started sync daemon[/green]")
-            return
-    status = effective_status(config.sync_host, config.sync_port)
-    if status.running:
-        print("[yellow]Sync already running[/yellow]")
-        return
-    pid = spawn_daemon(
-        host=config.sync_host,
-        port=config.sync_port,
-        interval_s=config.sync_interval_s,
-        db_path=None,
+    sync_service_start_cmd(
+        load_config=load_config,
+        effective_status=effective_status,
+        spawn_daemon=spawn_daemon,
+        user=user,
+        system=system,
     )
-    print(f"[green]Started sync daemon (pid {pid})[/green]")
 
 
 def sync_service_stop(
@@ -1510,19 +839,13 @@ def sync_service_stop(
     system: bool = typer.Option(False, help="Use system-level service"),
 ) -> None:
     """Stop sync daemon."""
-    try:
-        _run_service_action("stop", user=user, system=system)
-        print("[green]Stopped sync daemon[/green]")
-        return
-    except typer.Exit:
-        if stop_pidfile():
-            print("[green]Stopped sync daemon (pidfile)[/green]")
-            return
-        status = effective_status(load_config().sync_host, load_config().sync_port)
-        if not status.running:
-            print("[yellow]Sync already stopped[/yellow]")
-            return
-        raise
+    sync_service_stop_cmd(
+        load_config=load_config,
+        effective_status=effective_status,
+        stop_pidfile=stop_pidfile,
+        user=user,
+        system=system,
+    )
 
 
 def sync_service_restart(
@@ -1530,13 +853,14 @@ def sync_service_restart(
     system: bool = typer.Option(False, help="Use system-level service"),
 ) -> None:
     """Restart sync daemon."""
-    if _run_service_action_quiet("restart", user=user, system=system):
-        status = effective_status(load_config().sync_host, load_config().sync_port)
-        if status.running:
-            print("[green]Restarted sync daemon[/green]")
-            return
-    sync_service_stop(user=user, system=system)
-    sync_service_start(user=user, system=system)
+    sync_service_restart_cmd(
+        load_config=load_config,
+        effective_status=effective_status,
+        spawn_daemon=spawn_daemon,
+        stop_pidfile=stop_pidfile,
+        user=user,
+        system=system,
+    )
 
 
 @sync_app.command("install")
@@ -1545,43 +869,13 @@ def sync_install(
     system: bool = typer.Option(False, help="Install system-level service (requires root)"),
 ) -> None:
     """Install autostart service for sync daemon."""
-    if system and user:
-        print("[red]Use only one of --user or --system[/red]")
-        raise typer.Exit(code=1)
-    install_mode = "system" if system else "user"
-    if sys.platform.startswith("darwin"):
-        source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "launchd"
-        plist_path = source / "com.opencode-mem.sync.plist"
-        dest = Path.home() / "Library" / "LaunchAgents" / "com.opencode-mem.sync.plist"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(plist_path.read_text())
-        print(f"[green]Installed LaunchAgent at {dest}[/green]")
-        print("Run: launchctl load -w ~/Library/LaunchAgents/com.opencode-mem.sync.plist")
-        return
-
-    if not sys.platform.startswith("linux"):
-        print("[yellow]Autostart install is only supported on macOS and Linux[/yellow]")
-        raise typer.Exit(code=1)
-
-    source = Path(__file__).resolve().parent.parent / "docs" / "autostart" / "systemd"
-    unit_path = source / "opencode-mem-sync.service"
-    if install_mode == "system":
-        dest = Path("/etc/systemd/system/opencode-mem-sync.service")
-        dest.write_text(unit_path.read_text())
-        print(f"[green]Installed system service at {dest}[/green]")
-        print("Run: systemctl enable --now opencode-mem-sync.service")
-        return
-    dest = Path.home() / ".config" / "systemd" / "user" / "opencode-mem-sync.service"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(unit_path.read_text())
-    print(f"[green]Installed user service at {dest}[/green]")
-    print("Run: systemctl --user enable --now opencode-mem-sync.service")
+    sync_install_cmd(user=user, system=system)
 
 
 @sync_app.command("uninstall")
 def sync_uninstall() -> None:
     """Uninstall autostart service configuration."""
-    _sync_uninstall_impl(user=True)
+    sync_uninstall_cmd(sync_uninstall_impl=_sync_uninstall_impl)
 
 
 @app.command()
@@ -1596,119 +890,17 @@ def export_memories(
     ),
 ) -> None:
     """Export memories to a JSON file for sharing or backup."""
-    store = _store(db_path)
-    resolved_project = _resolve_project(os.getcwd(), project, all_projects=all_projects)
-
-    # Build filters
-    filters = {}
-    if resolved_project:
-        filters["project"] = resolved_project
-    if since:
-        filters["since"] = since
-
-    # Fetch sessions
-    sessions_query = "SELECT * FROM sessions"
-    params: list[Any] = []
-    if resolved_project:
-        sessions_query += " WHERE project = ? OR project LIKE ? OR project LIKE ?"
-        if "/" in resolved_project or "\\" in resolved_project:
-            params.extend([resolved_project, resolved_project, resolved_project])
-        else:
-            params.extend([resolved_project, f"%/{resolved_project}", f"%\\{resolved_project}"])
-    if since:
-        if params:
-            sessions_query += " AND started_at >= ?"
-        else:
-            sessions_query += " WHERE started_at >= ?"
-        params.append(since)
-    sessions_query += " ORDER BY started_at ASC"
-
-    sessions_rows = store.conn.execute(sessions_query, params).fetchall()
-    sessions = []
-    session_ids = []
-    for row in sessions_rows:
-        session_data = dict(row)
-        session_data["metadata_json"] = db.from_json(session_data.get("metadata_json"))
-        sessions.append(session_data)
-        session_ids.append(row["id"])
-
-    if not session_ids:
-        print("[yellow]No sessions found matching filters[/yellow]")
-        raise typer.Exit(code=0)
-
-    # Fetch memory items for these sessions
-    active_clause = "" if include_inactive else " AND active = 1"
-    mem_placeholders = ",".join("?" for _ in session_ids)
-    memories_rows = store.conn.execute(
-        f"SELECT * FROM memory_items WHERE session_id IN ({mem_placeholders}){active_clause} ORDER BY created_at ASC",
-        session_ids,
-    ).fetchall()
-    memories = []
-    for row in memories_rows:
-        mem_data = dict(row)
-        mem_data["metadata_json"] = db.from_json(mem_data.get("metadata_json"))
-        mem_data["facts"] = db.from_json(mem_data.get("facts"))
-        mem_data["concepts"] = db.from_json(mem_data.get("concepts"))
-        mem_data["files_read"] = db.from_json(mem_data.get("files_read"))
-        mem_data["files_modified"] = db.from_json(mem_data.get("files_modified"))
-        memories.append(mem_data)
-
-    # Fetch session summaries
-    summaries_rows = store.conn.execute(
-        f"SELECT * FROM session_summaries WHERE session_id IN ({mem_placeholders}) ORDER BY created_at_epoch ASC",
-        session_ids,
-    ).fetchall()
-    summaries = []
-    for row in summaries_rows:
-        summary_data = dict(row)
-        summary_data["metadata_json"] = db.from_json(summary_data.get("metadata_json"))
-        summary_data["files_read"] = db.from_json(summary_data.get("files_read"))
-        summary_data["files_edited"] = db.from_json(summary_data.get("files_edited"))
-        summaries.append(summary_data)
-
-    # Fetch user prompts
-    prompts_rows = store.conn.execute(
-        f"SELECT * FROM user_prompts WHERE session_id IN ({mem_placeholders}) ORDER BY created_at_epoch ASC",
-        session_ids,
-    ).fetchall()
-    prompts = []
-    for row in prompts_rows:
-        prompt_data = dict(row)
-        prompt_data["metadata_json"] = db.from_json(prompt_data.get("metadata_json"))
-        prompts.append(prompt_data)
-
-    # Build export structure
-    export_data = {
-        "version": "1.0",
-        "exported_at": dt.datetime.now(dt.UTC).isoformat(),
-        "export_metadata": {
-            "tool_version": "opencode-mem",
-            "projects": list(set(s["project"] for s in sessions if s.get("project"))),
-            "total_memories": len(memories),
-            "total_sessions": len(sessions),
-            "include_inactive": include_inactive,
-            "filters": filters,
-        },
-        "sessions": sessions,
-        "memory_items": memories,
-        "session_summaries": summaries,
-        "user_prompts": prompts,
-    }
-
-    # Write output
-    output_json = json.dumps(export_data, ensure_ascii=False, indent=2)
-    if output == "-":
-        print(output_json)
-    else:
-        output_path = Path(output).expanduser()
-        output_path.write_text(output_json, encoding="utf-8")
-        size_mb = len(output_json) / 1024 / 1024
-        print(f"[green]✓ Exported to {output_path}[/green]")
-        print(f"  Size: {size_mb:.1f} MB")
-        print(f"  Sessions: {len(sessions)}")
-        print(f"  Memories: {len(memories)}")
-        print(f"  Summaries: {len(summaries)}")
-        print(f"  Prompts: {len(prompts)}")
+    export_memories_cmd(
+        store_from_path=_store,
+        resolve_project=_resolve_project,
+        from_json=db.from_json,
+        db_path=db_path,
+        output=output,
+        project=project,
+        all_projects=all_projects,
+        include_inactive=include_inactive,
+        since=since,
+    )
 
 
 @app.command()
@@ -1719,244 +911,15 @@ def import_memories(
     dry_run: bool = typer.Option(False, help="Preview import without writing"),
 ) -> None:
     """Import memories from an exported JSON file."""
-    # Read input
-    if input_file == "-":
-        import sys
-
-        input_json = sys.stdin.read()
-    else:
-        input_path = Path(input_file).expanduser()
-        if not input_path.exists():
-            print(f"[red]Input file not found: {input_path}[/red]")
-            raise typer.Exit(code=1)
-        input_json = input_path.read_text(encoding="utf-8")
-
-    try:
-        import_data = json.loads(input_json)
-    except json.JSONDecodeError as e:
-        print(f"[red]Invalid JSON: {e}[/red]")
-        raise typer.Exit(code=1) from None
-
-    # Validate structure
-    if import_data.get("version") != "1.0":
-        print(f"[red]Unsupported export version: {import_data.get('version')}[/red]")
-        raise typer.Exit(code=1)
-
-    sessions_data = import_data.get("sessions", [])
-    memories_data = import_data.get("memory_items", [])
-    summaries_data = import_data.get("session_summaries", [])
-    prompts_data = import_data.get("user_prompts", [])
-
-    print("[bold]Import Preview[/bold]")
-    print(f"- Export version: {import_data.get('version')}")
-    print(f"- Exported at: {import_data.get('exported_at')}")
-    if import_data.get("export_metadata"):
-        meta = import_data["export_metadata"]
-        print(f"- Source projects: {', '.join(meta.get('projects', []))}")
-    print(f"- Sessions: {len(sessions_data)}")
-    print(f"- Memories: {len(memories_data)}")
-    print(f"- Summaries: {len(summaries_data)}")
-    print(f"- Prompts: {len(prompts_data)}")
-
-    if dry_run:
-        print("\n[yellow]Dry run - no data will be imported[/yellow]")
-        return
-
-    store = _store(db_path)
-
-    # Create session mapping: old session_id -> new session_id
-    session_mapping = {}
-    imported_sessions = 0
-    created_session_ids: list[int] = []
-
-    print("\n[bold]Importing sessions...[/bold]")
-    for sess_data in sessions_data:
-        old_session_id = sess_data["id"]
-        project = remap_project if remap_project else sess_data.get("project")
-        if (not remap_project) and isinstance(project, str) and ("/" in project or "\\" in project):
-            project = project.replace("\\", "/").rstrip("/").split("/")[-1]
-
-        import_key = _build_import_key(
-            "export",
-            "session",
-            old_session_id,
-            project=project,
-            created_at=sess_data.get("started_at"),
-        )
-        existing_session_id = store.find_imported_id("sessions", import_key)
-        if existing_session_id:
-            session_mapping[old_session_id] = existing_session_id
-            continue
-
-        new_session_id = store.start_session(
-            cwd=sess_data.get("cwd", os.getcwd()),
-            project=project,
-            git_remote=sess_data.get("git_remote"),
-            git_branch=sess_data.get("git_branch"),
-            user=sess_data.get("user", getpass.getuser()),
-            tool_version=sess_data.get("tool_version", "import"),
-            metadata={
-                "source": "export",
-                "original_session_id": old_session_id,
-                "original_started_at": sess_data.get("started_at"),
-                "original_ended_at": sess_data.get("ended_at"),
-                "import_metadata": sess_data.get("metadata_json"),
-                "import_key": import_key,
-            },
-        )
-        session_mapping[old_session_id] = new_session_id
-        imported_sessions += 1
-        created_session_ids.append(new_session_id)
-        if imported_sessions % 10 == 0:
-            print(f"  Imported {imported_sessions}/{len(sessions_data)} sessions...")
-
-    print(f"[green]✓ Imported {imported_sessions} sessions[/green]")
-
-    # Import memory items
-    print("\n[bold]Importing memory items...[/bold]")
-    imported_memories = 0
-    for mem_data in memories_data:
-        old_session_id = mem_data.get("session_id")
-        new_session_id = session_mapping.get(old_session_id)
-        if not new_session_id:
-            continue
-        import_key = _build_import_key(
-            "export",
-            "memory",
-            mem_data.get("id"),
-            project=remap_project or mem_data.get("project"),
-            created_at=mem_data.get("created_at"),
-        )
-        if store.find_imported_id("memory_items", import_key):
-            continue
-
-        import_metadata = mem_data.get("metadata_json")
-        base_metadata = {
-            "source": "export",
-            "original_memory_id": mem_data.get("id"),
-            "original_created_at": mem_data.get("created_at"),
-            "import_metadata": import_metadata,
-            "import_key": import_key,
-        }
-        metadata = base_metadata
-        if mem_data.get("kind") == "session_summary":
-            metadata = _merge_summary_metadata(base_metadata, import_metadata)
-
-        if mem_data.get("narrative") or mem_data.get("facts") or mem_data.get("concepts"):
-            store.remember_observation(
-                new_session_id,
-                kind=mem_data.get("kind", "observation"),
-                title=mem_data.get("title", "Untitled"),
-                narrative=mem_data.get("narrative") or mem_data.get("body_text") or "",
-                subtitle=mem_data.get("subtitle"),
-                facts=mem_data.get("facts"),
-                concepts=mem_data.get("concepts"),
-                files_read=mem_data.get("files_read"),
-                files_modified=mem_data.get("files_modified"),
-                prompt_number=mem_data.get("prompt_number"),
-                confidence=mem_data.get("confidence", 0.5),
-                metadata=metadata,
-            )
-        else:
-            store.remember(
-                new_session_id,
-                kind=mem_data.get("kind", "observation"),
-                title=mem_data.get("title", "Untitled"),
-                body_text=mem_data.get("body_text", ""),
-                confidence=mem_data.get("confidence", 0.5),
-                tags=mem_data.get("tags_text", "").split() if mem_data.get("tags_text") else None,
-                metadata=metadata,
-            )
-        imported_memories += 1
-        if imported_memories % 100 == 0:
-            print(f"  Imported {imported_memories}/{len(memories_data)} memories...")
-
-    print(f"[green]✓ Imported {imported_memories} memory items[/green]")
-
-    # Import session summaries
-    print("\n[bold]Importing session summaries...[/bold]")
-    imported_summaries = 0
-    for summ_data in summaries_data:
-        old_session_id = summ_data.get("session_id")
-        new_session_id = session_mapping.get(old_session_id)
-        if not new_session_id:
-            continue
-
-        project = remap_project if remap_project else summ_data.get("project")
-        if (not remap_project) and isinstance(project, str) and ("/" in project or "\\" in project):
-            project = project.replace("\\", "/").rstrip("/").split("/")[-1]
-        import_key = _build_import_key(
-            "export",
-            "summary",
-            summ_data.get("id"),
-            project=project,
-            created_at=summ_data.get("created_at"),
-        )
-        if store.find_imported_id("session_summaries", import_key):
-            continue
-        store.add_session_summary(
-            new_session_id,
-            project=project,
-            request=summ_data.get("request", ""),
-            investigated=summ_data.get("investigated", ""),
-            learned=summ_data.get("learned", ""),
-            completed=summ_data.get("completed", ""),
-            next_steps=summ_data.get("next_steps", ""),
-            notes=summ_data.get("notes", ""),
-            files_read=summ_data.get("files_read"),
-            files_edited=summ_data.get("files_edited"),
-            prompt_number=summ_data.get("prompt_number"),
-            metadata={
-                "source": "export",
-                "original_summary_id": summ_data.get("id"),
-                "original_created_at": summ_data.get("created_at"),
-                "import_metadata": summ_data.get("metadata_json"),
-                "import_key": import_key,
-            },
-        )
-        imported_summaries += 1
-        if imported_summaries % 50 == 0:
-            print(f"  Imported {imported_summaries}/{len(summaries_data)} summaries...")
-
-    print(f"[green]✓ Imported {imported_summaries} session summaries[/green]")
-
-    # Import user prompts
-    print("\n[bold]Importing user prompts...[/bold]")
-    imported_prompts = 0
-    for prompt_data in prompts_data:
-        old_session_id = prompt_data.get("session_id")
-        new_session_id = session_mapping.get(old_session_id)
-        if not new_session_id:
-            continue
-
-        project = remap_project if remap_project else prompt_data.get("project")
-        import_key = _build_import_key(
-            "export",
-            "prompt",
-            prompt_data.get("id"),
-            project=project,
-            created_at=prompt_data.get("created_at"),
-        )
-        if store.find_imported_id("user_prompts", import_key):
-            continue
-        store.add_user_prompt(
-            new_session_id,
-            project=project,
-            prompt_text=prompt_data.get("prompt_text", ""),
-            prompt_number=prompt_data.get("prompt_number"),
-            metadata={
-                "source": "export",
-                "original_prompt_id": prompt_data.get("id"),
-                "original_created_at": prompt_data.get("created_at"),
-                "import_metadata": prompt_data.get("metadata_json"),
-                "import_key": import_key,
-            },
-        )
-        imported_prompts += 1
-        if imported_prompts % 100 == 0:
-            print(f"  Imported {imported_prompts}/{len(prompts_data)} prompts...")
-
-    print(f"[green]✓ Imported {imported_prompts} user prompts[/green]")
+    import_memories_cmd(
+        store_from_path=_store,
+        build_import_key=_build_import_key,
+        merge_summary_metadata=_merge_summary_metadata,
+        db_path=db_path,
+        input_file=input_file,
+        remap_project=remap_project,
+        dry_run=dry_run,
+    )
 
 
 @db_app.command("normalize-projects")
@@ -1970,18 +933,7 @@ def db_normalize_projects(
     basename ("opencode-mem") to avoid machine-specific anchoring.
     """
 
-    store = _store(db_path)
-    preview = store.normalize_projects(dry_run=not apply)
-    mapping = preview.get("rewritten_paths") or {}
-    print("[bold]Project normalization[/bold]")
-    print(f"- Dry run: {preview.get('dry_run')}")
-    print(f"- Sessions to update: {preview.get('sessions_to_update')}")
-    print(f"- Raw event sessions to update: {preview.get('raw_event_sessions_to_update')}")
-    print(f"- Usage events to update: {preview.get('usage_events_to_update')}")
-    if mapping:
-        print("- Rewritten paths:")
-        for source in sorted(mapping):
-            print(f"  - {source} -> {mapping[source]}")
+    normalize_projects_cmd(store_from_path=_store, db_path=db_path, apply=apply)
 
 
 @app.command()
@@ -1990,32 +942,14 @@ def normalize_imported_metadata(
     dry_run: bool = typer.Option(False, help="Preview changes without writing"),
 ) -> None:
     """Normalize imported session summary metadata for viewer rendering."""
-    store = _store(db_path)
-    rows = store.conn.execute(
-        "SELECT id, metadata_json FROM memory_items WHERE kind = 'session_summary'"
-    ).fetchall()
-    updated = 0
-    now = dt.datetime.now(dt.UTC).isoformat()
-    for row in rows:
-        metadata = db.from_json(row["metadata_json"])
-        if not isinstance(metadata, dict):
-            metadata = {}
-        import_metadata = metadata.get("import_metadata")
-        merged = _merge_summary_metadata(metadata, import_metadata)
-        if merged == metadata:
-            continue
-        updated += 1
-        if dry_run:
-            continue
-        store.conn.execute(
-            "UPDATE memory_items SET metadata_json = ?, updated_at = ? WHERE id = ?",
-            (db.to_json(merged), now, row["id"]),
-        )
-    if not dry_run:
-        store.conn.commit()
-    print(f"[green]✓ Updated {updated} session summaries[/green]")
-    if dry_run:
-        print("[yellow]Dry run - no data was updated[/yellow]")
+    normalize_imported_metadata_cmd(
+        store_from_path=_store,
+        from_json=db.from_json,
+        to_json=db.to_json,
+        merge_summary_metadata=_merge_summary_metadata,
+        db_path=db_path,
+        dry_run=dry_run,
+    )
 
 
 @app.command()
@@ -2023,43 +957,7 @@ def install_plugin(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing plugin file"),
 ) -> None:
     """Install the opencode-mem plugin to OpenCode's plugin directory."""
-    # Determine plugin source path (relative to this CLI file)
-    # In installed package: opencode_mem/.opencode/plugin/opencode-mem.js
-    # In dev mode: .opencode/plugin/opencode-mem.js (relative to repo root)
-    cli_dir = Path(__file__).parent
-    plugin_source = cli_dir / ".opencode" / "plugin" / "opencode-mem.js"
-
-    # Fallback to repo root location for dev mode
-    if not plugin_source.exists():
-        plugin_source = cli_dir.parent / ".opencode" / "plugin" / "opencode-mem.js"
-
-    if not plugin_source.exists():
-        print("[red]Error: Plugin file not found in package[/red]")
-        print(f"[dim]Searched: {cli_dir / '.opencode' / 'plugin'}[/dim]")
-        print(f"[dim]Searched: {cli_dir.parent / '.opencode' / 'plugin'}[/dim]")
-        raise typer.Exit(code=1)
-
-    # Determine OpenCode plugin directory
-    opencode_config_dir = Path.home() / ".config" / "opencode"
-    plugin_dir = opencode_config_dir / "plugin"
-    plugin_dest = plugin_dir / "opencode-mem.js"
-
-    # Check if already exists
-    if plugin_dest.exists() and not force:
-        print(f"[yellow]Plugin already installed at {plugin_dest}[/yellow]")
-        print("[dim]Use --force to overwrite[/dim]")
-        return
-
-    # Create plugin directory if needed
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-
-    # Copy plugin file
-    shutil.copy2(plugin_source, plugin_dest)
-    print(f"[green]✓ Plugin installed to {plugin_dest}[/green]")
-    print("\n[bold]Next steps:[/bold]")
-    print("1. Restart OpenCode to load the plugin")
-    print("2. The plugin will auto-detect installed mode and use SSH git URLs")
-    print("3. View logs at: [dim]~/.opencode-mem/plugin.log[/dim]")
+    install_plugin_cmd(force=force)
 
 
 @app.command()
@@ -2067,40 +965,7 @@ def install_mcp(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing MCP config"),
 ) -> None:
     """Install the opencode-mem MCP entry into OpenCode's config."""
-    config_path = Path.home() / ".config" / "opencode" / "opencode.json"
-    try:
-        config = _load_opencode_config(config_path)
-    except Exception as exc:
-        print(f"[red]Error: Failed to parse {config_path}: {exc}[/red]")
-        raise typer.Exit(code=1) from exc
-
-    if not isinstance(config, dict):
-        config = {}
-
-    mcp_config = config.get("mcp")
-    if not isinstance(mcp_config, dict):
-        mcp_config = {}
-
-    if "opencode_mem" in mcp_config and not force:
-        print(f"[yellow]MCP entry already exists in {config_path}[/yellow]")
-        print("[dim]Use --force to overwrite[/dim]")
-        return
-
-    mcp_config["opencode_mem"] = {
-        "type": "local",
-        "command": ["uvx", "opencode-mem", "mcp"],
-        "enabled": True,
-    }
-    config["mcp"] = mcp_config
-
-    try:
-        _write_opencode_config(config_path, config)
-    except Exception as exc:
-        print(f"[red]Error: Failed to write {config_path}: {exc}[/red]")
-        raise typer.Exit(code=1) from exc
-
-    print(f"[green]✓ MCP entry installed in {config_path}[/green]")
-    print("Restart OpenCode to load the MCP tools.")
+    install_mcp_cmd(force=force)
 
 
 def main() -> None:
