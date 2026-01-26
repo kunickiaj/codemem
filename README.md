@@ -65,7 +65,7 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 - `opencode-mem init-db` – initialize the database.
 - `opencode-mem stats` / `opencode-mem recent` / `opencode-mem search` – inspect stored memories.
 - `opencode-mem embed` – backfill semantic embeddings for existing memories.
-- `opencode-mem purge` – deactivate low-signal observations (use `--dry-run` to preview).
+- `opencode-mem db prune-memories` – deactivate low-signal memories (use `--dry-run` to preview).
 - `opencode-mem serve` – launch the web viewer (the plugin also auto-starts it).
 - `opencode-mem export-memories` / `opencode-mem import-memories` – export and import memories by project for sharing or backup.
 - `opencode-mem sync` – enable peer sync, pair devices, and run the sync daemon.

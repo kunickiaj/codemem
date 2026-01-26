@@ -98,7 +98,7 @@
 - `opencode_mem/plugin_ingest.py`: filters tool events, builds transcript from user_prompt and assistant_message events, persists memories.
 - `opencode_mem/classifier.py`: typed memory classification (API or `opencode run`).
 - `opencode_mem/summarizer.py`: heuristic summarization and low‑signal detection.
-- `opencode_mem/store.py`: SQLite operations and purge logic.
+- `opencode_mem/store.py`: SQLite operations and deactivation/cleanup logic.
 - `opencode_mem/cli.py`: Typer-based CLI commands including export/import.
 - `.opencode/plugin/opencode-mem.js`: Plugin entrypoint with adaptive flush strategy.
 
@@ -116,7 +116,7 @@
 - Is plugin loaded? Check `~/.opencode-mem/plugin.log`.
 - Are events flushed? Look for `flush.start` / `flush.ok`.
 - Are memories clean? Run `opencode-mem recent`.
-- Need cleanup? `opencode-mem purge`.
+- Need cleanup? `opencode-mem db prune-memories`.
 
 ## Do / Don’t
 - Do prefer typed memories and concise narratives.

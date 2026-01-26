@@ -638,7 +638,7 @@ def db_prune_observations(
     dry_run: bool = typer.Option(False, help="Report without deactivating"),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
-    """Deactivate low-signal observations."""
+    """Deactivate low-signal observations (does not delete rows)."""
     store = _store(db_path)
     result = store.deactivate_low_signal_observations(limit=limit, dry_run=dry_run)
     action = "Would deactivate" if dry_run else "Deactivated"
@@ -650,11 +650,11 @@ def db_prune_memories(
     limit: int | None = typer.Option(None, help="Max memories to scan (defaults to all)"),
     dry_run: bool = typer.Option(False, help="Report without deactivating"),
     kinds: list[str] | None = typer.Option(
-        None, help="Memory kinds to purge (defaults to common low-signal kinds)"
+        None, help="Memory kinds to prune (defaults to common low-signal kinds)"
     ),
     db_path: str = typer.Option(None),
 ) -> None:
-    """Deactivate low-signal memories across multiple kinds."""
+    """Deactivate low-signal memories across multiple kinds (does not delete rows)."""
     store = _store(db_path)
     result = store.deactivate_low_signal_memories(kinds=kinds, limit=limit, dry_run=dry_run)
     action = "Would deactivate" if dry_run else "Deactivated"
