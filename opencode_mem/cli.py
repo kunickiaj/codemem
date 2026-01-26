@@ -23,7 +23,13 @@ from .net import pick_advertise_host, pick_advertise_hosts
 from .store import MemoryStore
 from .summarizer import Summarizer
 from .sync_daemon import run_sync_daemon, sync_once
-from .sync_discovery import update_peer_addresses
+from .sync_discovery import (
+    discover_peers_via_mdns,
+    mdns_addresses_for_peer,
+    mdns_enabled,
+    select_dial_addresses,
+    update_peer_addresses,
+)
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
 from .sync_runtime import effective_status, spawn_daemon, stop_pidfile
 from .utils import resolve_project
@@ -1840,6 +1846,7 @@ def sync_once_command(
     """Run a single sync pass."""
     store = _store(db_path)
     try:
+        mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
         if peer:
             rows = store.conn.execute(
                 """
@@ -1857,11 +1864,16 @@ def sync_once_command(
             print("[yellow]No peers available for sync[/yellow]")
             raise typer.Exit(code=1)
         for row in rows:
-            addresses = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
-            if not isinstance(addresses, list):
-                addresses = []
-            resolved = [str(item) for item in addresses if isinstance(item, str)]
-            result = sync_once(store, str(row["peer_device_id"]), resolved)
+            peer_device_id = str(row["peer_device_id"])
+            stored = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
+            if not isinstance(stored, list):
+                stored = []
+            stored_addresses = [str(item) for item in stored if isinstance(item, str)]
+            mdns_addresses = mdns_addresses_for_peer(peer_device_id, mdns_entries)
+            if mdns_addresses:
+                stored_addresses = update_peer_addresses(store.conn, peer_device_id, mdns_addresses)
+            dial_addresses = select_dial_addresses(stored=stored_addresses, mdns=mdns_addresses)
+            result = sync_once(store, peer_device_id, dial_addresses)
             status = "ok" if result.get("ok") else "error"
             print(f"- {row['peer_device_id']}: {status}")
     finally:

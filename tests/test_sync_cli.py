@@ -288,6 +288,41 @@ def test_sync_service_stop_falls_back_to_pid(monkeypatch) -> None:
     assert result.exit_code == 0
 
 
+def test_sync_once_updates_addresses_from_mdns(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", json.dumps(["10.0.0.1:7337"]), "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("opencode_mem.cli.mdns_enabled", lambda: True)
+    monkeypatch.setattr(
+        "opencode_mem.cli.discover_peers_via_mdns",
+        lambda: [{"host": "192.168.1.22", "port": 7337, "properties": {"device_id": "peer-1"}}],
+    )
+    monkeypatch.setattr("opencode_mem.cli.sync_once", lambda store, peer, addresses: {"ok": True})
+    result = runner.invoke(app, ["sync", "once", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+
+    conn = db.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        addresses = json.loads(row["addresses_json"])
+        assert "192.168.1.22:7337" in addresses
+    finally:
+        conn.close()
+
+
 def test_sync_doctor_reports_mdns_status(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
