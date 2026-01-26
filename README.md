@@ -70,6 +70,26 @@ export OPENCODE_MEM_DB=~/opencode-mem.sqlite
 - `opencode-mem export-memories` / `opencode-mem import-memories` – export and import memories by project for sharing or backup.
 - `opencode-mem sync` – enable peer sync, pair devices, and run the sync daemon.
 
+### Sync project filters
+
+By default, sync replicates all projects. You can restrict which projects a device will apply by
+project basename (folder name).
+
+Config keys (in `~/.config/opencode-mem/config.json`):
+
+```json
+{
+  "sync_projects_include": ["opencode-mem"],
+  "sync_projects_exclude": ["work-repo"]
+}
+```
+
+Notes:
+- If `sync_projects_include` is non-empty, only those projects sync.
+- `sync_projects_exclude` always wins.
+- Filtering is reversible: excluded projects are skipped without advancing cursors, so toggling
+  filters later will allow previously filtered ops to sync.
+
 ## Semantic recall
 
 Semantic recall stores vector embeddings for memory items using sqlite-vec and fastembed. Embeddings are written when memories are created; use `opencode-mem embed` to backfill existing memories.
