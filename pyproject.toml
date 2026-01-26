@@ -27,6 +27,7 @@ dependencies = [
   "openai>=1.0",
   "sqlite-vec>=0.1.6",
   "fastembed>=0.3.6",
+  "zeroconf>=0.132.2",
 ]
 
 [dependency-groups]
