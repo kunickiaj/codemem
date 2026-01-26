@@ -16,6 +16,7 @@ from typing import Any, TypedDict, cast
 from uuid import uuid4
 
 from . import db
+from .config import load_config
 from .semantic import chunk_text, embed_texts, get_embedding_client, hash_text
 from .summarizer import Summary, is_low_signal_observation
 
@@ -209,6 +210,28 @@ class MemoryStore:
         if not self.device_id:
             row = self.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
             self.device_id = str(row["device_id"]) if row else "local"
+
+        cfg = load_config()
+        self._sync_projects_include = [
+            p.strip() for p in cfg.sync_projects_include if p and p.strip()
+        ]
+        self._sync_projects_exclude = [
+            p.strip() for p in cfg.sync_projects_exclude if p and p.strip()
+        ]
+
+    def _sync_project_allowed(self, project: str | None) -> bool:
+        include = {self._project_basename(p) for p in self._sync_projects_include if p}
+        exclude = {self._project_basename(p) for p in self._sync_projects_exclude if p}
+
+        value = None
+        if isinstance(project, str) and project.strip():
+            value = self._project_basename(project.strip())
+
+        if value and value in exclude:
+            return False
+        if include:
+            return bool(value and value in include)
+        return True
 
     def migrate_legacy_import_keys(self, *, limit: int = 2000) -> int:
         """Make legacy import_key values globally unique.
@@ -617,8 +640,23 @@ class MemoryStore:
 
     def _memory_item_payload(self, row: dict[str, Any]) -> dict[str, Any]:
         metadata = self._normalize_metadata(row.get("metadata_json"))
+        session_id = row.get("session_id")
+        project = None
+        if session_id is not None:
+            try:
+                session_row = self.conn.execute(
+                    "SELECT project FROM sessions WHERE id = ?",
+                    (int(session_id),),
+                ).fetchone()
+                if session_row is not None:
+                    raw = session_row["project"]
+                    if isinstance(raw, str) and raw.strip():
+                        project = self._project_basename(raw.strip())
+            except Exception:
+                project = None
         return {
-            "session_id": row.get("session_id"),
+            "session_id": session_id,
+            "project": project,
             "kind": row.get("kind"),
             "title": row.get("title"),
             "body_text": row.get("body_text"),
@@ -1318,6 +1356,14 @@ class MemoryStore:
                     skipped += 1
                     continue
                 op_type = str(op.get("op_type") or "")
+                project = None
+                payload = op.get("payload") or {}
+                if isinstance(payload, dict):
+                    project_value = payload.get("project")
+                    project = project_value if isinstance(project_value, str) else None
+                if not self._sync_project_allowed(project):
+                    skipped += 1
+                    continue
                 if op_type == "upsert":
                     action = self._apply_memory_item_upsert(op)
                 elif op_type == "delete":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,8 @@ CONFIG_ENV_OVERRIDES = {
     "sync_mdns": "OPENCODE_MEM_SYNC_MDNS",
     "sync_key_store": "OPENCODE_MEM_SYNC_KEY_STORE",
     "sync_advertise": "OPENCODE_MEM_SYNC_ADVERTISE",
+    "sync_projects_include": "OPENCODE_MEM_SYNC_PROJECTS_INCLUDE",
+    "sync_projects_exclude": "OPENCODE_MEM_SYNC_PROJECTS_EXCLUDE",
 }
 
 
@@ -91,6 +93,12 @@ class OpencodeMemConfig:
     sync_key_store: str = "file"
 
     sync_advertise: str = "auto"
+
+    # Basename-based project filters for syncing memory_items.
+    # When include is non-empty, only those projects will sync.
+    # Exclude always takes precedence.
+    sync_projects_include: list[str] = field(default_factory=list)
+    sync_projects_exclude: list[str] = field(default_factory=list)
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -166,4 +174,11 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.sync_mdns = _parse_bool(os.getenv("OPENCODE_MEM_SYNC_MDNS"), cfg.sync_mdns)
     cfg.sync_key_store = os.getenv("OPENCODE_MEM_SYNC_KEY_STORE", cfg.sync_key_store)
     cfg.sync_advertise = os.getenv("OPENCODE_MEM_SYNC_ADVERTISE", cfg.sync_advertise)
+
+    include = os.getenv("OPENCODE_MEM_SYNC_PROJECTS_INCLUDE")
+    if include is not None:
+        cfg.sync_projects_include = [p.strip() for p in include.split(",") if p.strip()]
+    exclude = os.getenv("OPENCODE_MEM_SYNC_PROJECTS_EXCLUDE")
+    if exclude is not None:
+        cfg.sync_projects_exclude = [p.strip() for p in exclude.split(",") if p.strip()]
     return cfg

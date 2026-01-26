@@ -167,6 +167,16 @@ def build_sync_handler(db_path: Path | None = None):
                         limit=limit,
                         device_id=store.device_id,
                     )
+                    ops = [
+                        op
+                        for op in ops
+                        if op.get("entity_type") != "memory_item"
+                        or store._sync_project_allowed(
+                            (op.get("payload") or {}).get("project")
+                            if isinstance(op.get("payload"), dict)
+                            else None
+                        )
+                    ]
                     _send_json(self, {"ops": ops, "next_cursor": next_cursor})
                 finally:
                     store.close()
