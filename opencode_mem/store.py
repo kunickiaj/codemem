@@ -233,6 +233,34 @@ class MemoryStore:
             return bool(value and value in include)
         return True
 
+    def filter_replication_ops_for_sync(
+        self, ops: Sequence[ReplicationOp]
+    ) -> tuple[list[ReplicationOp], str | None]:
+        """Filter outbound replication ops with safe cursor semantics.
+
+        This returns the longest prefix of ops allowed by the current sync project
+        include/exclude settings. The returned cursor advances only to the last
+        returned op.
+        """
+
+        allowed_ops: list[ReplicationOp] = []
+        next_cursor: str | None = None
+        for op in ops:
+            entity_type = op.get("entity_type")
+            if entity_type == "memory_item":
+                project = None
+                payload = op.get("payload")
+                if isinstance(payload, dict):
+                    project_value = payload.get("project")
+                    project = project_value if isinstance(project_value, str) else None
+                if not self._sync_project_allowed(project):
+                    break
+            allowed_ops.append(op)
+            next_cursor = self.compute_cursor(
+                str(op.get("created_at") or ""), str(op.get("op_id") or "")
+            )
+        return allowed_ops, next_cursor
+
     def migrate_legacy_import_keys(self, *, limit: int = 2000) -> int:
         """Make legacy import_key values globally unique.
 
