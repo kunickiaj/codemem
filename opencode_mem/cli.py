@@ -22,12 +22,10 @@ from .db import DEFAULT_DB_PATH
 from .net import pick_advertise_host, pick_advertise_hosts
 from .store import MemoryStore
 from .summarizer import Summarizer
-from .sync_daemon import run_sync_daemon, sync_once
+from .sync_daemon import run_sync_daemon, run_sync_pass, sync_pass_preflight
 from .sync_discovery import (
     discover_peers_via_mdns,
-    mdns_addresses_for_peer,
     mdns_enabled,
-    select_dial_addresses,
     update_peer_addresses,
 )
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
@@ -1846,34 +1844,25 @@ def sync_once_command(
     """Run a single sync pass."""
     store = _store(db_path)
     try:
+        sync_pass_preflight(store)
         mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
         if peer:
             rows = store.conn.execute(
                 """
-                SELECT peer_device_id, addresses_json
+                SELECT peer_device_id
                 FROM sync_peers
                 WHERE peer_device_id = ? OR name = ?
                 """,
                 (peer, peer),
             ).fetchall()
         else:
-            rows = store.conn.execute(
-                "SELECT peer_device_id, addresses_json FROM sync_peers"
-            ).fetchall()
+            rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
         if not rows:
             print("[yellow]No peers available for sync[/yellow]")
             raise typer.Exit(code=1)
         for row in rows:
             peer_device_id = str(row["peer_device_id"])
-            stored = db.from_json(row["addresses_json"]) if row["addresses_json"] else []
-            if not isinstance(stored, list):
-                stored = []
-            stored_addresses = [str(item) for item in stored if isinstance(item, str)]
-            mdns_addresses = mdns_addresses_for_peer(peer_device_id, mdns_entries)
-            if mdns_addresses:
-                stored_addresses = update_peer_addresses(store.conn, peer_device_id, mdns_addresses)
-            dial_addresses = select_dial_addresses(stored=stored_addresses, mdns=mdns_addresses)
-            result = sync_once(store, peer_device_id, dial_addresses)
+            result = run_sync_pass(store, peer_device_id, mdns_entries=mdns_entries)
             if result.get("ok"):
                 print(f"- {row['peer_device_id']}: ok")
             else:
@@ -2509,9 +2498,8 @@ def normalize_projects(
 ) -> None:
     """Normalize project identifiers in the DB.
 
-    This rewrites legacy basename projects (e.g. "opencode-mem") to a stable
-    full-path project, and replaces obvious git error strings ("fatal: ...") with
-    the session cwd when available.
+    This rewrites path-like projects (e.g. "/Users/.../opencode-mem") to their
+    basename ("opencode-mem") to avoid machine-specific anchoring.
     """
 
     store = _store(db_path)
@@ -2521,6 +2509,7 @@ def normalize_projects(
     print(f"- Dry run: {preview.get('dry_run')}")
     print(f"- Sessions to update: {preview.get('sessions_to_update')}")
     print(f"- Raw event sessions to update: {preview.get('raw_event_sessions_to_update')}")
+    print(f"- Usage events to update: {preview.get('usage_events_to_update')}")
     if mapping:
         print("- Rewritten paths:")
         for source in sorted(mapping):

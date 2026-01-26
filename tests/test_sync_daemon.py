@@ -208,3 +208,35 @@ def test_chunk_ops_by_size_raises_on_oversize() -> None:
     body_bytes = len(json.dumps({"ops": ops}, ensure_ascii=False).encode("utf-8"))
     with pytest.raises(RuntimeError, match="single op exceeds size limit"):
         sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=body_bytes - 1)
+
+
+def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-2", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(store, "migrate_legacy_import_keys", lambda *, limit: 0)
+        monkeypatch.setattr(store, "backfill_replication_ops", lambda *, limit: 0)
+        monkeypatch.setattr(sync_daemon, "mdns_enabled", lambda: False)
+
+        called: list[str] = []
+
+        def fake_run_sync_pass(store_arg, peer_device_id, **k):
+            called.append(str(peer_device_id))
+            return {"ok": True, "peer_device_id": str(peer_device_id)}
+
+        monkeypatch.setattr(sync_daemon, "run_sync_pass", fake_run_sync_pass)
+
+        results = sync_daemon.sync_daemon_tick(store)
+        assert {item.get("peer_device_id") for item in results} == {"peer-1", "peer-2"}
+        assert set(called) == {"peer-1", "peer-2"}
+    finally:
+        store.close()

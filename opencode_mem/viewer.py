@@ -1566,18 +1566,42 @@ VIEWER_HTML = """<!doctype html>
         return `${slice.join(", ")}${suffix}`.trim();
       }
 
-      function renderStats(stats) {
+      function renderStats(stats, usagePayload, project) {
         const db = stats.database || {};
-        const usage = stats.usage?.totals || {};
+        const totalsGlobal = usagePayload?.totals_global || usagePayload?.totals || stats.usage?.totals || {};
+        const totalsFiltered = usagePayload?.totals_filtered || null;
+        const isFiltered = !!(project && totalsFiltered);
+        const usage = isFiltered ? totalsFiltered : totalsGlobal;
+
+        const globalLine = isFiltered
+          ? `\nGlobal: ${Number(totalsGlobal.tokens_read || 0).toLocaleString()} read, ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
+          : "";
+
         const items = [
           { label: "Sessions", value: db.sessions || 0, icon: "database" },
           { label: "Memories", value: db.memory_items || 0, icon: "brain" },
           { label: "Active memories", value: db.active_memory_items || 0, icon: "check-circle" },
           { label: "Artifacts", value: db.artifacts || 0, icon: "package" },
-          { label: "Work investment", value: usage.work_investment_tokens || 0, tooltip: "Token cost of unique discovery groups (avoids double-counting when one response yields multiple memories)", icon: "pencil" },
-          { label: "Read cost", value: usage.tokens_read || 0, tooltip: "Tokens to read memories when injected into context", icon: "book-open" },
-          { label: "Savings", value: usage.tokens_saved || 0, tooltip: "Tokens saved by reusing compressed memories instead of raw context", icon: "trending-up" },
+          {
+            label: isFiltered ? "Work investment (project)" : "Work investment",
+            value: Number(usage.work_investment_tokens || 0),
+            tooltip: "Token cost of unique discovery groups (avoids double-counting when one response yields multiple memories)" + globalLine,
+            icon: "pencil",
+          },
+          {
+            label: isFiltered ? "Read cost (project)" : "Read cost",
+            value: Number(usage.tokens_read || 0),
+            tooltip: "Tokens to read memories when injected into context" + globalLine,
+            icon: "book-open",
+          },
+          {
+            label: isFiltered ? "Savings (project)" : "Savings",
+            value: Number(usage.tokens_saved || 0),
+            tooltip: "Tokens saved by reusing compressed memories instead of raw context" + globalLine,
+            icon: "trending-up",
+          },
         ];
+
         statsGrid.textContent = "";
         items.forEach(item => {
           const stat = createElement("div", "stat");
@@ -1589,14 +1613,15 @@ VIEWER_HTML = """<!doctype html>
           icon.setAttribute("data-lucide", item.icon);
           icon.className = "stat-icon";
           const content = createElement("div", "stat-content");
-          const value = createElement("div", "value", item.value.toLocaleString());
+          const value = createElement("div", "value", Number(item.value || 0).toLocaleString());
           const label = createElement("div", "label", item.label);
           content.append(value, label);
           stat.append(icon, content);
           statsGrid.appendChild(stat);
         });
         if (typeof lucide !== "undefined") lucide.createIcons();
-        metaLine.textContent = `DB: ${db.path || "unknown"} · ${Math.round((db.size_bytes || 0) / 1024)} KB`;
+        const projectSuffix = project ? ` · project: ${project}` : "";
+        metaLine.textContent = `DB: ${db.path || "unknown"} · ${Math.round((db.size_bytes || 0) / 1024)} KB${projectSuffix}`;
       }
 
       function formatTimestamp(value) {
@@ -2003,54 +2028,31 @@ VIEWER_HTML = """<!doctype html>
         });
       }
 
-      function renderSessionStats(recentPacks, isAllProjects) {
+      function renderSessionStats(recentPacks, project) {
         sessionGrid.textContent = "";
         if (!recentPacks || !recentPacks.length) {
           sessionMeta.textContent = "No injections yet";
           return;
         }
-        let items, workTokens, packTokens, savedTokens, semanticCandidates, semanticHits, timeAgo;
-        let workSource = "estimate";
-        let workUsageItems = 0;
-        let workEstimateItems = 0;
-        if (isAllProjects) {
-          // Aggregate stats across latest pack per project
-          items = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).items || 0), 0);
-          workTokens = recentPacks.reduce((sum, p) => {
-            const meta = (p.metadata_json || {});
-            return sum + (meta.work_tokens_unique || meta.work_tokens || 0);
-          }, 0);
-          packTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_read || 0), 0);
-          savedTokens = recentPacks.reduce((sum, p) => sum + (p.tokens_saved || 0), 0);
-          semanticCandidates = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_candidates || 0), 0);
-          semanticHits = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).semantic_hits || 0), 0);
-          workUsageItems = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).work_usage_items || 0), 0);
-          workEstimateItems = recentPacks.reduce((sum, p) => sum + ((p.metadata_json || {}).work_estimate_items || 0), 0);
-          if (workUsageItems && workEstimateItems) {
-            workSource = "mixed";
-          } else if (workUsageItems) {
-            workSource = "usage";
-          }
-          timeAgo = recentPacks.length === 1 ? "1 project" : `${recentPacks.length} projects`;
-        } else {
-          const latest = recentPacks[0];
-          const metadata = latest.metadata_json || {};
-          items = metadata.items || 0;
-          workTokens = metadata.work_tokens_unique || metadata.work_tokens || 0;
-          packTokens = latest.tokens_read || 0;
-          savedTokens = latest.tokens_saved || 0;
-          semanticCandidates = metadata.semantic_candidates || 0;
-          semanticHits = metadata.semantic_hits || 0;
-          workSource = metadata.work_source || "estimate";
-          workUsageItems = metadata.work_usage_items || 0;
-          workEstimateItems = metadata.work_estimate_items || 0;
-          timeAgo = latest.created_at ? formatDate(latest.created_at) : "recently";
-        }
+        const latest = recentPacks[0];
+        const metadata = latest.metadata_json || {};
+        const items = metadata.items || 0;
+        const workTokens = metadata.work_tokens_unique || metadata.work_tokens || 0;
+        const packTokens = latest.tokens_read || 0;
+        const savedTokens = latest.tokens_saved || 0;
+        const semanticCandidates = metadata.semantic_candidates || 0;
+        const semanticHits = metadata.semantic_hits || 0;
+        const workSource = metadata.work_source || "estimate";
+        const workUsageItems = metadata.work_usage_items || 0;
+        const workEstimateItems = metadata.work_estimate_items || 0;
+        const timeAgo = latest.created_at ? formatDate(latest.created_at) : "recently";
+        const packProject = project || metadata.project || "";
         const savingsPercent = workTokens > 0 ? Math.round((savedTokens / workTokens) * 100) : 0;
         const semanticRate = semanticCandidates > 0
           ? Math.round((semanticHits / semanticCandidates) * 100)
           : 0;
-        sessionMeta.textContent = `Last injection: ${timeAgo}`;
+        const projectSuffix = packProject ? ` · ${packProject}` : "";
+        sessionMeta.textContent = `Last injection: ${timeAgo}${projectSuffix}`;
         const workLabel = workSource === "usage"
           ? "Work saved (usage)"
           : workSource === "mixed"
@@ -2386,8 +2388,8 @@ VIEWER_HTML = """<!doctype html>
             fetch("/api/sync/peers").then(r => r.json()),
             fetch("/api/sync/attempts?limit=8").then(r => r.json()),
           ]);
-          renderStats(stats);
-          renderSessionStats(usage.recent_packs || [], !currentProject);
+          renderStats(stats, usage, currentProject);
+          renderSessionStats(usage.recent_packs || [], currentProject);
           renderSyncStatus(syncStatus);
           renderSyncPeers(syncPeersData.items || []);
           renderSyncAttempts(syncAttemptsData.items || []);
@@ -2493,16 +2495,23 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/usage":
                 params = parse_qs(parsed.query)
                 project_filter = params.get("project", [None])[0]
+                events_global = store.usage_summary()
+                totals_global = store.usage_totals()
+                events_filtered = None
+                totals_filtered = None
                 if project_filter:
-                    # For specific project: get recent packs for that project
-                    recent_packs = store.recent_pack_events(limit=10, project=project_filter)
-                else:
-                    # For all projects: get latest pack per project (for aggregation)
-                    recent_packs = store.latest_pack_per_project()
+                    events_filtered = store.usage_summary(project_filter)
+                    totals_filtered = store.usage_totals(project_filter)
+                recent_packs = store.recent_pack_events(limit=10, project=project_filter)
                 self._send_json(
                     {
-                        "events": store.usage_summary(),
-                        "totals": store.stats()["usage"]["totals"],
+                        "project": project_filter,
+                        "events": events_filtered if project_filter else events_global,
+                        "totals": totals_filtered if project_filter else totals_global,
+                        "events_global": events_global,
+                        "totals_global": totals_global,
+                        "events_filtered": events_filtered,
+                        "totals_filtered": totals_filtered,
                         "recent_packs": recent_packs,
                     }
                 )

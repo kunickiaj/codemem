@@ -993,16 +993,27 @@ class MemoryStore:
 
         return updated
 
-    def work_investment_tokens_sum(self) -> int:
+    def work_investment_tokens_sum(self, project: str | None = None) -> int:
+        join = ""
+        where = ""
+        params: list[Any] = []
+        if project:
+            clause, clause_params = self._project_clause(project)
+            if clause:
+                join = " JOIN sessions ON sessions.id = memory_items.session_id"
+                where = f" WHERE {clause}"
+                params.extend(clause_params)
         row = self.conn.execute(
-            """
+            f"""
             SELECT
                 COALESCE(
                     SUM(
                         COALESCE(
                             CASE
-                                WHEN json_valid(metadata_json) = 1
-                                THEN CAST(json_extract(metadata_json, '$.discovery_tokens') AS INTEGER)
+                                WHEN json_valid(memory_items.metadata_json) = 1
+                                THEN CAST(
+                                    json_extract(memory_items.metadata_json, '$.discovery_tokens') AS INTEGER
+                                )
                                 ELSE 0
                             END,
                             0
@@ -1010,44 +1021,63 @@ class MemoryStore:
                     ),
                     0
                 ) AS total
-            FROM memory_items
-            """
+            FROM memory_items{join}{where}
+            """,
+            (*params,),
         ).fetchone()
         if row is None:
             return 0
         return int(row["total"] or 0)
 
-    def work_investment_tokens(self) -> int:
+    def work_investment_tokens(self, project: str | None = None) -> int:
         """Additive work investment from unique discovery_group values."""
 
+        join = ""
+        where_project = ""
+        params: list[Any] = []
+        if project:
+            clause, clause_params = self._project_clause(project)
+            if clause:
+                join = " JOIN sessions ON sessions.id = memory_items.session_id"
+                where_project = f" AND {clause}"
+                params.extend(clause_params)
+
         group_rows = self.conn.execute(
-            """
+            f"""
             SELECT
-                json_extract(metadata_json, '$.discovery_group') AS grp,
+                json_extract(memory_items.metadata_json, '$.discovery_group') AS grp,
                 MAX(
-                    COALESCE(CAST(json_extract(metadata_json, '$.discovery_tokens') AS INTEGER), 0)
+                    COALESCE(
+                        CAST(json_extract(memory_items.metadata_json, '$.discovery_tokens') AS INTEGER),
+                        0
+                    )
                 ) AS tokens
-            FROM memory_items
-            WHERE json_valid(metadata_json) = 1
-              AND json_extract(metadata_json, '$.discovery_group') IS NOT NULL
-            GROUP BY json_extract(metadata_json, '$.discovery_group')
-            """
+            FROM memory_items{join}
+            WHERE json_valid(memory_items.metadata_json) = 1
+              AND json_extract(memory_items.metadata_json, '$.discovery_group') IS NOT NULL{where_project}
+            GROUP BY json_extract(memory_items.metadata_json, '$.discovery_group')
+            """,
+            (*params,),
         ).fetchall()
         grouped_total = sum(int(row["tokens"] or 0) for row in group_rows)
 
         ungrouped_row = self.conn.execute(
-            """
+            f"""
             SELECT
                 COALESCE(
                     SUM(
-                        COALESCE(CAST(json_extract(metadata_json, '$.discovery_tokens') AS INTEGER), 0)
+                        COALESCE(
+                            CAST(json_extract(memory_items.metadata_json, '$.discovery_tokens') AS INTEGER),
+                            0
+                        )
                     ),
                     0
                 ) AS tokens
-            FROM memory_items
-            WHERE json_valid(metadata_json) = 1
-              AND json_extract(metadata_json, '$.discovery_group') IS NULL
-            """
+            FROM memory_items{join}
+            WHERE json_valid(memory_items.metadata_json) = 1
+              AND json_extract(memory_items.metadata_json, '$.discovery_group') IS NULL{where_project}
+            """,
+            (*params,),
         ).fetchone()
         ungrouped_total = int(ungrouped_row["tokens"] or 0) if ungrouped_row else 0
         return grouped_total + ungrouped_total
@@ -2918,22 +2948,23 @@ class MemoryStore:
             return tokens[0]
         return " OR ".join(tokens)
 
-    def _project_clause(self, project: str) -> tuple[str, list[Any]]:
+    def _project_column_clause(self, column_expr: str, project: str) -> tuple[str, list[Any]]:
         project = project.strip()
         if not project:
             return "", []
+        value = project
         if "/" in project or "\\" in project:
             base = self._project_basename(project)
             if not base:
                 return "", []
-            return (
-                "(sessions.project = ? OR sessions.project LIKE ? OR sessions.project LIKE ?)",
-                [base, f"%/{base}", f"%\\{base}"],
-            )
+            value = base
         return (
-            "(sessions.project = ? OR sessions.project LIKE ? OR sessions.project LIKE ?)",
-            [project, f"%/{project}", f"%\\{project}"],
+            f"({column_expr} = ? OR {column_expr} LIKE ? OR {column_expr} LIKE ?)",
+            [value, f"%/{value}", f"%\\{value}"],
         )
+
+    def _project_clause(self, project: str) -> tuple[str, list[Any]]:
+        return self._project_column_clause("sessions.project", project)
 
     @staticmethod
     def _project_basename(value: str) -> str:
@@ -2960,6 +2991,9 @@ class MemoryStore:
         ).fetchall()
         raw_rows = self.conn.execute(
             "SELECT opencode_session_id, cwd, project FROM raw_event_sessions"
+        ).fetchall()
+        usage_rows = self.conn.execute(
+            "SELECT id, metadata_json FROM usage_events WHERE event = 'pack'"
         ).fetchall()
 
         rewritten_paths: dict[str, str] = {}
@@ -3010,11 +3044,34 @@ class MemoryStore:
             if new_value is not None and new_value != proj:
                 raw_updates.append((new_value, opencode_session_id))
 
+        usage_updates: list[tuple[str, int]] = []
+        for row in usage_rows:
+            usage_id = int(row["id"])
+            metadata = db.from_json(row["metadata_json"]) if row["metadata_json"] else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            project_value = metadata.get("project")
+            if not isinstance(project_value, str):
+                continue
+            proj = project_value.strip()
+            if not proj:
+                continue
+            new_value: str | None = None
+            if "/" in proj or "\\" in proj:
+                base = self._project_basename(proj)
+                if base and base != proj:
+                    new_value = base
+                    rewritten_paths.setdefault(proj, base)
+            if new_value is not None and new_value != proj:
+                metadata["project"] = new_value
+                usage_updates.append((db.to_json(metadata), usage_id))
+
         preview = {
             "dry_run": dry_run,
             "rewritten_paths": rewritten_paths,
             "sessions_to_update": len(session_updates),
             "raw_event_sessions_to_update": len(raw_updates),
+            "usage_events_to_update": len(usage_updates),
         }
         if dry_run:
             return preview
@@ -3028,6 +3085,11 @@ class MemoryStore:
             self.conn.execute(
                 "UPDATE raw_event_sessions SET project = ? WHERE opencode_session_id = ?",
                 (project, opencode_session_id),
+            )
+        for metadata_json, usage_id in usage_updates:
+            self.conn.execute(
+                "UPDATE usage_events SET metadata_json = ? WHERE id = ?",
+                (metadata_json, usage_id),
             )
         self.conn.commit()
         return preview
@@ -4149,36 +4211,123 @@ class MemoryStore:
             raise RuntimeError("Failed to record usage")
         return int(lastrowid)
 
-    def usage_summary(self) -> list[dict[str, Any]]:
+    def usage_summary(self, project: str | None = None) -> list[dict[str, Any]]:
+        if not project:
+            rows = self.conn.execute(
+                """
+                SELECT event,
+                       COUNT(*) AS count,
+                       COALESCE(SUM(tokens_read), 0) AS tokens_read,
+                       COALESCE(SUM(tokens_written), 0) AS tokens_written,
+                       COALESCE(SUM(tokens_saved), 0) AS tokens_saved
+                FROM usage_events
+                GROUP BY event
+                ORDER BY event
+                """
+            ).fetchall()
+            return db.rows_to_dicts(rows)
+
+        session_clause, session_params = self._project_column_clause("sessions.project", project)
+        meta_project_expr = (
+            "CASE WHEN json_valid(usage_events.metadata_json) = 1 "
+            "THEN json_extract(usage_events.metadata_json, '$.project') ELSE NULL END"
+        )
+        meta_clause, meta_params = self._project_column_clause(meta_project_expr, project)
+        if not session_clause and not meta_clause:
+            return []
         rows = self.conn.execute(
-            """
-            SELECT event,
+            f"""
+            SELECT usage_events.event AS event,
                    COUNT(*) AS count,
-                   COALESCE(SUM(tokens_read), 0) AS tokens_read,
-                   COALESCE(SUM(tokens_written), 0) AS tokens_written,
-                   COALESCE(SUM(tokens_saved), 0) AS tokens_saved
+                   COALESCE(SUM(usage_events.tokens_read), 0) AS tokens_read,
+                   COALESCE(SUM(usage_events.tokens_written), 0) AS tokens_written,
+                   COALESCE(SUM(usage_events.tokens_saved), 0) AS tokens_saved
             FROM usage_events
-            GROUP BY event
-            ORDER BY event
-            """
+            LEFT JOIN sessions ON sessions.id = usage_events.session_id
+            WHERE ({session_clause} OR {meta_clause})
+            GROUP BY usage_events.event
+            ORDER BY usage_events.event
+            """,
+            (*session_params, *meta_params),
         ).fetchall()
         return db.rows_to_dicts(rows)
+
+    def usage_totals(self, project: str | None = None) -> dict[str, Any]:
+        if not project:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) as count,
+                       COALESCE(SUM(tokens_read), 0) as tokens_read,
+                       COALESCE(SUM(tokens_written), 0) as tokens_written,
+                       COALESCE(SUM(tokens_saved), 0) as tokens_saved
+                FROM usage_events
+                """
+            ).fetchone()
+            return {
+                "events": int(row["count"] or 0) if row else 0,
+                "tokens_read": int(row["tokens_read"] or 0) if row else 0,
+                "tokens_written": int(row["tokens_written"] or 0) if row else 0,
+                "tokens_saved": int(row["tokens_saved"] or 0) if row else 0,
+                "work_investment_tokens": self.work_investment_tokens(),
+                "work_investment_tokens_sum": self.work_investment_tokens_sum(),
+            }
+
+        session_clause, session_params = self._project_column_clause("sessions.project", project)
+        meta_project_expr = (
+            "CASE WHEN json_valid(usage_events.metadata_json) = 1 "
+            "THEN json_extract(usage_events.metadata_json, '$.project') ELSE NULL END"
+        )
+        meta_clause, meta_params = self._project_column_clause(meta_project_expr, project)
+        if not session_clause and not meta_clause:
+            return {
+                "events": 0,
+                "tokens_read": 0,
+                "tokens_written": 0,
+                "tokens_saved": 0,
+                "work_investment_tokens": 0,
+                "work_investment_tokens_sum": 0,
+            }
+        row = self.conn.execute(
+            f"""
+            SELECT COUNT(*) as count,
+                   COALESCE(SUM(usage_events.tokens_read), 0) as tokens_read,
+                   COALESCE(SUM(usage_events.tokens_written), 0) as tokens_written,
+                   COALESCE(SUM(usage_events.tokens_saved), 0) as tokens_saved
+            FROM usage_events
+            LEFT JOIN sessions ON sessions.id = usage_events.session_id
+            WHERE ({session_clause} OR {meta_clause})
+            """,
+            (*session_params, *meta_params),
+        ).fetchone()
+        return {
+            "events": int(row["count"] or 0) if row else 0,
+            "tokens_read": int(row["tokens_read"] or 0) if row else 0,
+            "tokens_written": int(row["tokens_written"] or 0) if row else 0,
+            "tokens_saved": int(row["tokens_saved"] or 0) if row else 0,
+            "work_investment_tokens": self.work_investment_tokens(project=project),
+            "work_investment_tokens_sum": self.work_investment_tokens_sum(project=project),
+        }
 
     def recent_pack_events(
         self, limit: int = 10, project: str | None = None
     ) -> list[dict[str, Any]]:
         if project:
+            meta_project_expr = (
+                "CASE WHEN json_valid(metadata_json) = 1 "
+                "THEN json_extract(metadata_json, '$.project') ELSE NULL END"
+            )
+            meta_clause, meta_params = self._project_column_clause(meta_project_expr, project)
             rows = self.conn.execute(
-                """
+                f"""
                 SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
                        created_at, metadata_json
                 FROM usage_events
                 WHERE event = 'pack'
-                  AND json_extract(metadata_json, '$.project') = ?
+                  AND {meta_clause}
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (project, limit),
+                (*meta_params, limit),
             ).fetchall()
         else:
             rows = self.conn.execute(
