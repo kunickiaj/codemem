@@ -174,8 +174,8 @@ Problem: Phase 1 has templates/install; lacking stop/restart/status helpers.
 Deliverable:
 
 - CLI commands:
-  - `opencode-mem sync service status`
-  - `opencode-mem sync service start|stop|restart`
+  - `opencode-mem sync status`
+  - `opencode-mem sync start|stop|restart`
   - macOS LaunchAgent + Linux systemd --user
 
 Acceptance criteria:

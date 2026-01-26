@@ -63,7 +63,7 @@
 
 ### Service helpers
 
-- `opencode-mem sync service status|start|stop|restart` for user services.
+- `opencode-mem sync status` and `opencode-mem sync start|stop|restart` for daemon control.
 
 ### Keychain (optional)
 

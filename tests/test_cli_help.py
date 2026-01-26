@@ -11,7 +11,6 @@ def test_sync_help_shows_simple_controls() -> None:
     assert "start" in result.stdout
     assert "stop" in result.stdout
     assert "restart" in result.stdout
-    # We keep install/uninstall wording, but hide the nested `sync service` namespace.
     assert "\n│ service" not in result.stdout.lower()
 
 

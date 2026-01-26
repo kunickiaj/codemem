@@ -345,7 +345,7 @@ def _sync_uninstall_impl(*, user: bool) -> None:
         )
         with contextlib.suppress(FileNotFoundError):
             dest.unlink()
-        print("[green]Removed systemd user sync service[/green]")
+        print("[green]Removed systemd user sync autostart[/green]")
 
 
 def _build_import_key(
