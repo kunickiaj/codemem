@@ -1647,6 +1647,16 @@ VIEWER_HTML = """<!doctype html>
           { label: "Interval", value: status.interval_s ? `${status.interval_s}s` : "n/a" },
           { label: "Last sync", value: formatTimestamp(status.last_sync_at) },
         ];
+        const pf = status.project_filter || {};
+        const include = Array.isArray(pf.include) ? pf.include.filter(Boolean) : [];
+        const exclude = Array.isArray(pf.exclude) ? pf.exclude.filter(Boolean) : [];
+        if (include.length || exclude.length) {
+          const detail = `include=[${include.join(", ")}] exclude=[${exclude.join(", ")}]`;
+          items.push({ label: "Projects", value: include.length ? "filtered" : "excluded" });
+          syncMeta.textContent = `${enabledLabel} · ${peerCount} peers · project filter`;
+          // Attach detail tooltip to the last stat added below.
+          items[items.length - 1].tooltip = detail;
+        }
         if (status.daemon_last_error && (!status.daemon_last_ok_at || new Date(status.daemon_last_ok_at) < new Date(status.daemon_last_error_at || 0))) {
           items.push({ label: "Daemon", value: "error" });
           syncMeta.textContent = `${enabledLabel} · ${peerCount} peers · daemon error`;
@@ -1656,6 +1666,10 @@ VIEWER_HTML = """<!doctype html>
           const stat = createElement("div", "stat");
           if (item.label === "Daemon" && status.daemon_last_error) {
             stat.title = status.daemon_last_error;
+            stat.style.cursor = "help";
+          }
+          if (item.tooltip) {
+            stat.title = item.tooltip;
             stat.style.cursor = "help";
           }
           const content = createElement("div", "stat-content");
@@ -2674,6 +2688,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         "daemon_last_error": daemon_state.get("last_error"),
                         "daemon_last_error_at": daemon_state.get("last_error_at"),
                         "daemon_last_ok_at": daemon_state.get("last_ok_at"),
+                        "project_filter": {
+                            "include": getattr(config, "sync_projects_include", []) or [],
+                            "exclude": getattr(config, "sync_projects_exclude", []) or [],
+                        },
                     }
                 )
                 return
