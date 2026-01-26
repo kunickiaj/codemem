@@ -544,6 +544,13 @@ def test_repair_legacy_import_keys_prefers_existing_new_key(tmp_path: Path) -> N
             "SELECT COUNT(*) AS c FROM memory_items WHERE active = 1"
         ).fetchone()["c"]
         assert int(count) == 1
+
+        again = store.repair_legacy_import_keys()
+        assert again["checked"] == 0
+        assert again["renamed"] == 0
+        assert again["merged"] == 0
+        assert again["tombstoned"] == 0
+        assert again["ops"] == 0
     finally:
         store.close()
 
