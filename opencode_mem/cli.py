@@ -37,9 +37,11 @@ app = typer.Typer(help="opencode-mem: persistent memory for OpenCode CLI")
 sync_app = typer.Typer(help="Sync opencode-mem between devices")
 sync_peers_app = typer.Typer(help="Manage sync peers")
 sync_service_app = typer.Typer(help="Manage sync service")
+db_app = typer.Typer(help="Database maintenance")
 app.add_typer(sync_app, name="sync")
 sync_app.add_typer(sync_peers_app, name="peers")
-sync_app.add_typer(sync_service_app, name="service")
+sync_app.add_typer(sync_service_app, name="service", hidden=True)
+app.add_typer(db_app, name="db")
 
 
 @sync_app.command("attempts")
@@ -69,6 +71,36 @@ def sync_attempts(
         print(
             f"{row['peer_device_id']}|{status}|in={int(row['ops_in'] or 0)}|out={int(row['ops_out'] or 0)}|{row['finished_at']}{suffix}"
         )
+
+
+@sync_app.command("start")
+def sync_start(
+    user: bool = typer.Option(True, help="Use user-level service"),
+    system: bool = typer.Option(False, help="Use system-level service"),
+) -> None:
+    """Start sync daemon (autostart if installed, else pidfile)."""
+
+    sync_service_start(user=user, system=system)
+
+
+@sync_app.command("stop")
+def sync_stop(
+    user: bool = typer.Option(True, help="Use user-level service"),
+    system: bool = typer.Option(False, help="Use system-level service"),
+) -> None:
+    """Stop sync daemon."""
+
+    sync_service_stop(user=user, system=system)
+
+
+@sync_app.command("restart")
+def sync_restart(
+    user: bool = typer.Option(True, help="Use user-level service"),
+    system: bool = typer.Option(False, help="Use system-level service"),
+) -> None:
+    """Restart sync daemon."""
+
+    sync_service_restart(user=user, system=system)
 
 
 def _store(db_path: str | None) -> MemoryStore:
@@ -712,8 +744,8 @@ def forget(
     print(f"Memory {memory_id} marked inactive")
 
 
-@app.command()
-def prune_observations(
+@db_app.command("prune-observations")
+def db_prune_observations(
     limit: int | None = typer.Option(None, help="Max observations to scan (defaults to all)"),
     dry_run: bool = typer.Option(False, help="Report without deactivating"),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
@@ -725,8 +757,17 @@ def prune_observations(
     print(f"{action} {result['deactivated']} of {result['checked']} observations")
 
 
-@app.command()
-def purge(
+@app.command("prune-observations", hidden=True)
+def prune_observations(
+    limit: int | None = typer.Option(None, help="Max observations to scan (defaults to all)"),
+    dry_run: bool = typer.Option(False, help="Report without deactivating"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+) -> None:
+    db_prune_observations(limit=limit, dry_run=dry_run, db_path=db_path)
+
+
+@db_app.command("prune-memories")
+def db_prune_memories(
     limit: int | None = typer.Option(None, help="Max memories to scan (defaults to all)"),
     dry_run: bool = typer.Option(False, help="Report without deactivating"),
     kinds: list[str] | None = typer.Option(
@@ -739,6 +780,18 @@ def purge(
     result = store.deactivate_low_signal_memories(kinds=kinds, limit=limit, dry_run=dry_run)
     action = "Would deactivate" if dry_run else "Deactivated"
     print(f"{action} {result['deactivated']} of {result['checked']} memories")
+
+
+@app.command("purge", hidden=True)
+def purge(
+    limit: int | None = typer.Option(None, help="Max memories to scan (defaults to all)"),
+    dry_run: bool = typer.Option(False, help="Report without deactivating"),
+    kinds: list[str] | None = typer.Option(
+        None, help="Memory kinds to purge (defaults to common low-signal kinds)"
+    ),
+    db_path: str = typer.Option(None),
+) -> None:
+    db_prune_memories(limit=limit, dry_run=dry_run, kinds=kinds, db_path=db_path)
 
 
 @app.command()
@@ -1600,7 +1653,7 @@ def sync_enable(
                     return
             print("[yellow]Sync daemon already running[/yellow]")
             print("Restart required to apply updated bind settings:")
-            print("- opencode-mem sync service restart")
+            print("- opencode-mem sync restart")
             print("- or stop/start your foreground daemon")
         else:
             print(f"[yellow]Sync daemon already running ({status.mechanism})[/yellow]")
@@ -1671,9 +1724,7 @@ def sync_status(db_path: str = typer.Option(None, help="Path to SQLite database"
     if running:
         print("- Daemon: running")
     else:
-        print(
-            "- Daemon: not running (run `opencode-mem sync daemon` or `opencode-mem sync service start`)"
-        )
+        print("- Daemon: not running (run `opencode-mem sync daemon` or `opencode-mem sync start`)")
     if row is None:
         print("- Device ID: (not initialized)")
     else:
@@ -2533,8 +2584,8 @@ def import_memories(
     print(f"[green]✓ Imported {imported_prompts} user prompts[/green]")
 
 
-@app.command()
-def normalize_projects(
+@db_app.command("normalize-projects")
+def db_normalize_projects(
     db_path: str = typer.Option(None, help="Path to opencode-mem SQLite database"),
     apply: bool = typer.Option(False, help="Apply changes (default is dry-run)"),
 ) -> None:
@@ -2556,6 +2607,14 @@ def normalize_projects(
         print("- Rewritten paths:")
         for source in sorted(mapping):
             print(f"  - {source} -> {mapping[source]}")
+
+
+@app.command("normalize-projects", hidden=True)
+def normalize_projects(
+    db_path: str = typer.Option(None, help="Path to opencode-mem SQLite database"),
+    apply: bool = typer.Option(False, help="Apply changes (default is dry-run)"),
+) -> None:
+    db_normalize_projects(db_path=db_path, apply=apply)
 
 
 @app.command()
