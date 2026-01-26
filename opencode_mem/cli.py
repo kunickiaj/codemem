@@ -58,6 +58,18 @@ def _format_tokens(count: int) -> str:
     return f"{count:,}"
 
 
+def _mdns_runtime_status(enabled: bool) -> tuple[bool, str]:
+    if not enabled:
+        return False, "disabled"
+    try:
+        import zeroconf  # type: ignore[import-not-found]
+
+        version = getattr(zeroconf, "__version__", "unknown")
+        return True, f"enabled (zeroconf {version})"
+    except Exception:
+        return False, "enabled but zeroconf missing"
+
+
 def _resolve_project(cwd: str, project: str | None, all_projects: bool = False) -> str | None:
     if all_projects:
         return None
@@ -1863,6 +1875,8 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
     print("[bold]Sync doctor[/bold]")
     print(f"- Enabled: {config.sync_enabled}")
     print(f"- Listen: {config.sync_host}:{config.sync_port}")
+    mdns_ok, mdns_detail = _mdns_runtime_status(bool(getattr(config, "sync_mdns", True)))
+    print(f"- mDNS: {mdns_detail}")
     running = _sync_daemon_running(config.sync_host, config.sync_port)
     print(f"- Daemon: {'running' if running else 'not running'}")
 
@@ -1885,6 +1899,8 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
         issues.append("sync is disabled")
     if not running:
         issues.append("daemon not running")
+    if getattr(config, "sync_mdns", True) and not mdns_ok:
+        issues.append("mDNS enabled but zeroconf missing")
     if device is None:
         issues.append("identity missing")
 

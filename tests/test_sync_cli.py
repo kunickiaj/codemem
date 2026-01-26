@@ -288,6 +288,27 @@ def test_sync_service_stop_falls_back_to_pid(monkeypatch) -> None:
     assert result.exit_code == 0
 
 
+def test_sync_doctor_reports_mdns_status(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    config_path.write_text(
+        json.dumps(
+            {"sync_enabled": True, "sync_host": "0.0.0.0", "sync_port": 7337, "sync_mdns": True}
+        )
+        + "\n"
+    )
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr(
+        "opencode_mem.cli._mdns_runtime_status",
+        lambda enabled: (False, "enabled but zeroconf missing"),
+    )
+    result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)], env=env)
+    assert result.exit_code == 0
+    assert "mDNS:" in result.stdout
+    assert "zeroconf" in result.stdout
+
+
 def test_sync_service_status_uses_pid(monkeypatch) -> None:
     monkeypatch.setattr(
         "opencode_mem.sync_runtime.service_status_macos",
