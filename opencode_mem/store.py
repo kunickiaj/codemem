@@ -369,7 +369,7 @@ class MemoryStore:
             FROM memory_items
             WHERE import_key IS NULL
                OR TRIM(import_key) = ''
-               OR import_key LIKE 'legacy:memory_item:%'
+               OR (active = 1 AND import_key LIKE 'legacy:memory_item:%')
             ORDER BY id ASC
             LIMIT ?
             """,

@@ -2524,12 +2524,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 sessions = store.all_sessions()
                 projects = sorted(
                     {
-                        p.strip()
+                        store._project_basename(p.strip())
                         for s in sessions
                         if (p := s.get("project"))
                         and isinstance(p, str)
                         and p.strip()
                         and not p.strip().lower().startswith("fatal:")
+                        and store._project_basename(p.strip())
                     }
                 )
                 self._send_json({"projects": projects})
