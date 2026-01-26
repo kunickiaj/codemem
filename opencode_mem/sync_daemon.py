@@ -227,8 +227,11 @@ def sync_once(
                 _set_replication_cursor(store, peer_device_id, last_applied=next_cursor)
                 last_applied = next_cursor
 
+            effective_last_acked = store.normalize_outbound_cursor(last_acked, device_id=device_id)
             outbound_ops, outbound_cursor = store.load_replication_ops_since(
-                last_acked, limit=limit
+                effective_last_acked,
+                limit=limit,
+                device_id=device_id,
             )
             post_url = f"{base_url}/v1/ops"
             if outbound_ops:

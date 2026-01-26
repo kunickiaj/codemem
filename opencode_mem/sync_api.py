@@ -162,7 +162,11 @@ def build_sync_handler(db_path: Path | None = None):
                         limit = max(1, min(int(limit_value), 1000))
                     except (TypeError, ValueError):
                         limit = 200
-                    ops, next_cursor = store.load_replication_ops_since(cursor, limit=limit)
+                    ops, next_cursor = store.load_replication_ops_since(
+                        cursor,
+                        limit=limit,
+                        device_id=store.device_id,
+                    )
                     _send_json(self, {"ops": ops, "next_cursor": next_cursor})
                 finally:
                     store.close()

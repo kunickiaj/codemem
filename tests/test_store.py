@@ -629,6 +629,103 @@ def test_apply_replication_ops_upsert_aliases_legacy_keys(tmp_path: Path) -> Non
         store.close()
 
 
+def test_backfill_replication_ops_emits_delete_for_new_rev(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-a", "pk", "fp", "2026-01-01T00:00:00Z"),
+        )
+        store.conn.commit()
+        session = store.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project",
+        )
+        mid = store.remember(session, kind="note", title="X", body_text="Y")
+        import_key = f"legacy:dev-a:memory_item:{mid}"
+        store.conn.execute(
+            "UPDATE memory_items SET import_key = ?, rev = 1 WHERE id = ?",
+            (import_key, mid),
+        )
+        store.conn.commit()
+        count = store.backfill_replication_ops(limit=50)
+        assert count >= 1
+
+        now = "2026-01-02T00:00:00Z"
+        store.conn.execute(
+            "UPDATE memory_items SET active = 0, deleted_at = ?, updated_at = ?, rev = 2 WHERE id = ?",
+            (now, now, mid),
+        )
+        store.conn.commit()
+        count2 = store.backfill_replication_ops(limit=50)
+        assert count2 >= 1
+        row = store.conn.execute(
+            """
+            SELECT op_type, clock_rev
+            FROM replication_ops
+            WHERE entity_id = ? AND clock_rev = 2
+            LIMIT 1
+            """,
+            (import_key,),
+        ).fetchone()
+        assert row is not None
+        assert row["op_type"] == "delete"
+    finally:
+        store.close()
+
+
+def test_load_replication_ops_since_filters_by_device_id(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.record_replication_op(
+            op_id="op-a",
+            entity_type="memory_item",
+            entity_id="k1",
+            op_type="upsert",
+            payload={"import_key": "k1", "session_id": 1, "rev": 1, "metadata_json": {}},
+            clock={"rev": 1, "updated_at": "t", "device_id": "dev-a"},
+            device_id="dev-a",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        store.record_replication_op(
+            op_id="op-b",
+            entity_type="memory_item",
+            entity_id="k2",
+            op_type="upsert",
+            payload={"import_key": "k2", "session_id": 1, "rev": 1, "metadata_json": {}},
+            clock={"rev": 1, "updated_at": "t", "device_id": "dev-b"},
+            device_id="dev-b",
+            created_at="2026-01-01T00:00:01Z",
+        )
+        ops, _ = store.load_replication_ops_since(None, limit=10, device_id="dev-a")
+        assert [op["op_id"] for op in ops] == ["op-a"]
+    finally:
+        store.close()
+
+
+def test_normalize_outbound_cursor_resets_when_ahead_of_local_stream(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.record_replication_op(
+            op_id="op-a",
+            entity_type="memory_item",
+            entity_id="k1",
+            op_type="upsert",
+            payload={"import_key": "k1", "session_id": 1, "rev": 1, "metadata_json": {}},
+            clock={"rev": 1, "updated_at": "t", "device_id": "dev-a"},
+            device_id="dev-a",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        cursor = "2099-01-01T00:00:00Z|zzz"
+        assert store.normalize_outbound_cursor(cursor, device_id="dev-a") is None
+    finally:
+        store.close()
+
+
 def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

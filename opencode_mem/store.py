@@ -640,9 +640,17 @@ class MemoryStore:
             """
             SELECT mi.*
             FROM memory_items mi
-            LEFT JOIN replication_ops ro
-              ON ro.entity_type = 'memory_item' AND ro.entity_id = mi.import_key
-            WHERE ro.op_id IS NULL
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM replication_ops ro
+                WHERE ro.entity_type = 'memory_item'
+                  AND ro.entity_id = mi.import_key
+                  AND ro.clock_rev = mi.rev
+                  AND ro.op_type = CASE
+                      WHEN mi.deleted_at IS NOT NULL OR mi.active = 0 THEN 'delete'
+                      ELSE 'upsert'
+                  END
+            )
             ORDER BY mi.updated_at ASC
             LIMIT ?
             """,
@@ -1086,15 +1094,19 @@ class MemoryStore:
         self.conn.commit()
 
     def load_replication_ops_since(
-        self, cursor: str | None, limit: int = 100
+        self, cursor: str | None, limit: int = 100, *, device_id: str | None = None
     ) -> tuple[list[ReplicationOp], str | None]:
         parsed = self._parse_cursor(cursor)
         params: list[Any] = []
-        where_clause = ""
+        where: list[str] = []
         if parsed:
             created_at, op_id = parsed
-            where_clause = "WHERE created_at > ? OR (created_at = ? AND op_id > ?)"
+            where.append("created_at > ? OR (created_at = ? AND op_id > ?)")
             params.extend([created_at, created_at, op_id])
+        if device_id:
+            where.append("(device_id = ? OR device_id = 'local')")
+            params.append(device_id)
+        where_clause = f"WHERE {' AND '.join(where)}" if where else ""
         rows = self.conn.execute(
             f"""
             SELECT *
@@ -1129,6 +1141,42 @@ class MemoryStore:
             last = rows[-1]
             next_cursor = self.compute_cursor(str(last["created_at"]), str(last["op_id"]))
         return ops, next_cursor
+
+    def max_replication_cursor(self, *, device_id: str | None = None) -> str | None:
+        params: list[Any] = []
+        where = ""
+        if device_id:
+            where = "WHERE (device_id = ? OR device_id = 'local')"
+            params.append(device_id)
+        row = self.conn.execute(
+            f"""
+            SELECT created_at, op_id
+            FROM replication_ops
+            {where}
+            ORDER BY created_at DESC, op_id DESC
+            LIMIT 1
+            """,
+            (*params,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self.compute_cursor(str(row["created_at"]), str(row["op_id"]))
+
+    def normalize_outbound_cursor(self, cursor: str | None, *, device_id: str) -> str | None:
+        if not cursor:
+            return None
+        parsed = self._parse_cursor(cursor)
+        if not parsed:
+            return None
+        max_cursor = self.max_replication_cursor(device_id=device_id)
+        if not max_cursor:
+            return None
+        max_parsed = self._parse_cursor(max_cursor)
+        if not max_parsed:
+            return None
+        if parsed > max_parsed:
+            return None
+        return cursor
 
     def apply_replication_ops(self, ops: list[ReplicationOp]) -> dict[str, int]:
         inserted = 0
