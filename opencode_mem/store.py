@@ -272,6 +272,47 @@ class MemoryStore:
         self.conn.commit()
         return updated
 
+    def get_sync_daemon_state(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT last_error, last_traceback, last_error_at, last_ok_at FROM sync_daemon_state WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "last_error": row["last_error"],
+            "last_traceback": row["last_traceback"],
+            "last_error_at": row["last_error_at"],
+            "last_ok_at": row["last_ok_at"],
+        }
+
+    def set_sync_daemon_error(self, error: str, traceback_text: str) -> None:
+        now = self._now_iso()
+        self.conn.execute(
+            """
+            INSERT INTO sync_daemon_state(id, last_error, last_traceback, last_error_at)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                last_error = excluded.last_error,
+                last_traceback = excluded.last_traceback,
+                last_error_at = excluded.last_error_at
+            """,
+            (error, traceback_text, now),
+        )
+        self.conn.commit()
+
+    def set_sync_daemon_ok(self) -> None:
+        now = self._now_iso()
+        self.conn.execute(
+            """
+            INSERT INTO sync_daemon_state(id, last_ok_at)
+            VALUES (1, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                last_ok_at = excluded.last_ok_at
+            """,
+            (now,),
+        )
+        self.conn.commit()
+
     def _legacy_import_key_suffix(self, import_key: str) -> str | None:
         match = LEGACY_IMPORT_KEY_OLD_RE.match(import_key)
         if match:

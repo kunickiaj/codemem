@@ -1888,6 +1888,7 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
     store = _store(db_path)
     try:
         device = store.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
+        daemon_state = store.get_sync_daemon_state() or {}
         if device is None:
             print("- Identity: missing (run `opencode-mem sync enable`)")
         else:
@@ -1904,6 +1905,14 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
         issues.append("sync is disabled")
     if not running:
         issues.append("daemon not running")
+    if daemon_state.get("last_error") and (
+        not daemon_state.get("last_ok_at")
+        or str(daemon_state.get("last_ok_at")) < str(daemon_state.get("last_error_at"))
+    ):
+        print(
+            f"- Daemon error: {daemon_state.get('last_error')} (at {daemon_state.get('last_error_at')})"
+        )
+        issues.append("daemon error")
     if getattr(config, "sync_mdns", True) and not mdns_ok:
         issues.append("mDNS enabled but zeroconf missing")
     if device is None:

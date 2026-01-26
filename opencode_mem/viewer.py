@@ -1647,9 +1647,17 @@ VIEWER_HTML = """<!doctype html>
           { label: "Interval", value: status.interval_s ? `${status.interval_s}s` : "n/a" },
           { label: "Last sync", value: formatTimestamp(status.last_sync_at) },
         ];
+        if (status.daemon_last_error && (!status.daemon_last_ok_at || new Date(status.daemon_last_ok_at) < new Date(status.daemon_last_error_at || 0))) {
+          items.push({ label: "Daemon", value: "error" });
+          syncMeta.textContent = `${enabledLabel} · ${peerCount} peers · daemon error`;
+        }
         syncStatusGrid.textContent = "";
         items.forEach(item => {
           const stat = createElement("div", "stat");
+          if (item.label === "Daemon" && status.daemon_last_error) {
+            stat.title = status.daemon_last_error;
+            stat.style.cursor = "help";
+          }
           const content = createElement("div", "stat-content");
           const value = createElement("div", "value", item.value);
           const label = createElement("div", "label", item.label);
@@ -2638,6 +2646,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 device_row = store.conn.execute(
                     "SELECT device_id, fingerprint FROM sync_device LIMIT 1"
                 ).fetchone()
+                daemon_state = store.get_sync_daemon_state() or {}
                 peer_count = store.conn.execute(
                     "SELECT COUNT(1) AS total FROM sync_peers"
                 ).fetchone()
@@ -2662,6 +2671,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         "peer_count": int(peer_count["total"]) if peer_count else 0,
                         "last_sync_at": last_sync["last_sync_at"] if last_sync else None,
                         "last_attempt": dict(last_attempt) if last_attempt else None,
+                        "daemon_last_error": daemon_state.get("last_error"),
+                        "daemon_last_error_at": daemon_state.get("last_error_at"),
+                        "daemon_last_ok_at": daemon_state.get("last_ok_at"),
                     }
                 )
                 return
