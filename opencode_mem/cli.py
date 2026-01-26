@@ -1957,6 +1957,30 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
         print("[green]OK: sync looks healthy[/green]")
 
 
+@sync_app.command("repair-legacy-keys")
+def sync_repair_legacy_keys(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit: int = typer.Option(10000, help="Max rows to inspect"),
+    dry_run: bool = typer.Option(False, help="Report changes without writing"),
+) -> None:
+    """Repair legacy import_key duplication after Phase 2 sync hardening.
+
+    This merges old-format legacy keys (legacy:memory_item:<n>) into the canonical
+    device-prefixed form (legacy:<device_id>:memory_item:<n>) and tombstones the old key.
+    """
+
+    store = _store(db_path)
+    try:
+        result = store.repair_legacy_import_keys(limit=limit, dry_run=dry_run)
+    finally:
+        store.close()
+    mode = "dry-run" if dry_run else "applied"
+    print(f"Repair legacy keys ({mode})")
+    print(
+        f"- Checked: {result['checked']} | renamed: {result['renamed']} | merged: {result['merged']} | tombstoned: {result['tombstoned']} | ops: {result['ops']}"
+    )
+
+
 @sync_app.command("daemon")
 def sync_daemon(
     db_path: str = typer.Option(None, help="Path to SQLite database"),

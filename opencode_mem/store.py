@@ -19,6 +19,9 @@ from . import db
 from .semantic import chunk_text, embed_texts, get_embedding_client, hash_text
 from .summarizer import Summary, is_low_signal_observation
 
+LEGACY_IMPORT_KEY_OLD_RE = re.compile(r"^legacy:memory_item:(\d+)$")
+LEGACY_IMPORT_KEY_NEW_RE = re.compile(r"^legacy:([^:]+):memory_item:(\d+)$")
+
 
 @dataclass
 class MemoryResult:
@@ -221,7 +224,7 @@ class MemoryStore:
 
         rows = self.conn.execute(
             """
-            SELECT id, import_key
+            SELECT id, import_key, metadata_json
             FROM memory_items
             WHERE import_key IS NULL
                OR TRIM(import_key) = ''
@@ -237,16 +240,279 @@ class MemoryStore:
         updated = 0
         for row in rows:
             memory_id = int(row["id"])
-            new_key = f"legacy:{device_id}:memory_item:{memory_id}"
-            if str(row["import_key"] or "") == new_key:
+            current = str(row["import_key"] or "").strip()
+            metadata = self._normalize_metadata(row["metadata_json"])
+            clock_device_id = str(metadata.get("clock_device_id") or "").strip()
+
+            canonical = ""
+            if not current:
+                canonical = f"legacy:{device_id}:memory_item:{memory_id}"
+            else:
+                match = LEGACY_IMPORT_KEY_OLD_RE.match(current)
+                if not match:
+                    continue
+                suffix = match.group(1)
+                origin = (
+                    clock_device_id if clock_device_id and clock_device_id != "local" else device_id
+                )
+                canonical = f"legacy:{origin}:memory_item:{suffix}" if origin else ""
+            if not canonical or canonical == current:
+                continue
+            existing = self.conn.execute(
+                "SELECT id FROM memory_items WHERE import_key = ? LIMIT 1",
+                (canonical,),
+            ).fetchone()
+            if existing is not None and int(existing["id"]) != memory_id:
                 continue
             self.conn.execute(
                 "UPDATE memory_items SET import_key = ? WHERE id = ?",
-                (new_key, memory_id),
+                (canonical, memory_id),
             )
             updated += 1
         self.conn.commit()
         return updated
+
+    def _legacy_import_key_suffix(self, import_key: str) -> str | None:
+        match = LEGACY_IMPORT_KEY_OLD_RE.match(import_key)
+        if match:
+            return match.group(1)
+        match = LEGACY_IMPORT_KEY_NEW_RE.match(import_key)
+        if match:
+            return match.group(2)
+        return None
+
+    def _canonical_legacy_import_key(
+        self,
+        import_key: str,
+        *,
+        clock_device_id: str,
+        local_device_id: str,
+        memory_id: int,
+    ) -> str | None:
+        cleaned = import_key.strip()
+        if not cleaned:
+            if not local_device_id:
+                return None
+            return f"legacy:{local_device_id}:memory_item:{memory_id}"
+        if LEGACY_IMPORT_KEY_NEW_RE.match(cleaned):
+            return cleaned
+        match = LEGACY_IMPORT_KEY_OLD_RE.match(cleaned)
+        if not match:
+            return None
+        suffix = match.group(1)
+        origin = (
+            clock_device_id.strip()
+            if clock_device_id.strip() and clock_device_id != "local"
+            else local_device_id
+        )
+        if not origin:
+            return None
+        return f"legacy:{origin}:memory_item:{suffix}"
+
+    def _legacy_import_key_aliases(self, import_key: str, *, clock_device_id: str) -> list[str]:
+        aliases: list[str] = []
+        cleaned = import_key.strip()
+        match = LEGACY_IMPORT_KEY_NEW_RE.match(cleaned)
+        if match:
+            suffix = match.group(2)
+            aliases.append(f"legacy:memory_item:{suffix}")
+        match = LEGACY_IMPORT_KEY_OLD_RE.match(cleaned)
+        if match and clock_device_id and clock_device_id != "local":
+            suffix = match.group(1)
+            aliases.append(f"legacy:{clock_device_id}:memory_item:{suffix}")
+        return aliases
+
+    def _record_replication_delete_for_key(
+        self, *, import_key: str, payload: dict[str, Any]
+    ) -> None:
+        metadata = self._normalize_metadata(payload.get("metadata_json"))
+        metadata["clock_device_id"] = self.device_id
+        payload = dict(payload)
+        payload["metadata_json"] = metadata
+        payload["import_key"] = import_key
+        payload["active"] = 0
+        payload["deleted_at"] = payload.get("deleted_at") or self._now_iso()
+        payload["updated_at"] = payload.get("updated_at") or payload["deleted_at"]
+        payload["rev"] = int(payload.get("rev") or 0) + 1
+        clock = self._clock_from_payload(payload)
+        self.record_replication_op(
+            op_id=str(uuid4()),
+            entity_type="memory_item",
+            entity_id=import_key,
+            op_type="delete",
+            payload=payload,
+            clock=clock,
+            device_id=clock["device_id"],
+            created_at=self._now_iso(),
+        )
+
+    def repair_legacy_import_keys(
+        self,
+        *,
+        limit: int = 10000,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
+        """Repair legacy import_key duplication across old/new formats.
+
+        Older databases used `legacy:memory_item:<n>` which collides across devices.
+        Newer code uses `legacy:<device_id>:memory_item:<n>`. If a database contains both,
+        sync can duplicate the same conceptual memories.
+        """
+
+        device_row = self.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
+        local_device_id = str(device_row["device_id"]) if device_row else self.device_id
+        now = self._now_iso()
+
+        rows = self.conn.execute(
+            """
+            SELECT id, import_key, metadata_json, rev, updated_at
+            FROM memory_items
+            WHERE import_key IS NULL
+               OR TRIM(import_key) = ''
+               OR import_key LIKE 'legacy:memory_item:%'
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        stats = {
+            "checked": 0,
+            "renamed": 0,
+            "merged": 0,
+            "tombstoned": 0,
+            "skipped": 0,
+            "ops": 0,
+        }
+
+        for row in rows:
+            stats["checked"] += 1
+            memory_id = int(row["id"])
+            current = str(row["import_key"] or "").strip()
+            metadata = self._normalize_metadata(row["metadata_json"])
+            clock_device_id = str(metadata.get("clock_device_id") or "").strip()
+            canonical = self._canonical_legacy_import_key(
+                current,
+                clock_device_id=clock_device_id,
+                local_device_id=local_device_id,
+                memory_id=memory_id,
+            )
+            if not canonical or canonical == current:
+                stats["skipped"] += 1
+                continue
+
+            canonical_row = self.conn.execute(
+                "SELECT * FROM memory_items WHERE import_key = ? LIMIT 1",
+                (canonical,),
+            ).fetchone()
+
+            if canonical_row is None:
+                if dry_run:
+                    stats["renamed"] += 1
+                    continue
+                if current and LEGACY_IMPORT_KEY_OLD_RE.match(current):
+                    original = self.conn.execute(
+                        "SELECT * FROM memory_items WHERE id = ? LIMIT 1",
+                        (memory_id,),
+                    ).fetchone()
+                    if original is not None:
+                        self._record_replication_delete_for_key(
+                            import_key=current,
+                            payload=self._memory_item_payload(dict(original)),
+                        )
+                        stats["ops"] += 1
+                self.conn.execute(
+                    "UPDATE memory_items SET import_key = ?, updated_at = ? WHERE id = ?",
+                    (canonical, now, memory_id),
+                )
+                self.conn.commit()
+                self._record_memory_item_op(memory_id, "upsert")
+                stats["ops"] += 1
+                stats["renamed"] += 1
+                continue
+
+            canonical_id = int(canonical_row["id"])
+            if canonical_id == memory_id:
+                stats["skipped"] += 1
+                continue
+
+            if dry_run:
+                stats["merged"] += 1
+                stats["tombstoned"] += 1
+                continue
+
+            # Merge: keep the newer clock row's content under the canonical key.
+            old_row = dict(
+                self.conn.execute(
+                    "SELECT * FROM memory_items WHERE id = ? LIMIT 1",
+                    (memory_id,),
+                ).fetchone()
+            )
+            new_row = dict(canonical_row)
+            winner = "canonical"
+            if self._is_newer_clock(
+                self._memory_item_clock(old_row), self._memory_item_clock(new_row)
+            ):
+                winner = "old"
+
+            if winner == "old":
+                merged_meta = self._normalize_metadata(old_row.get("metadata_json"))
+                merged_meta["clock_device_id"] = self.device_id
+                merged_json = db.to_json(merged_meta)
+                self.conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET session_id = ?, kind = ?, title = ?, body_text = ?, confidence = ?, tags_text = ?,
+                        active = ?, created_at = ?, updated_at = ?, metadata_json = ?, subtitle = ?, facts = ?,
+                        narrative = ?, concepts = ?, files_read = ?, files_modified = ?, prompt_number = ?,
+                        deleted_at = ?, rev = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        int(old_row.get("session_id") or 0),
+                        str(old_row.get("kind") or ""),
+                        str(old_row.get("title") or ""),
+                        str(old_row.get("body_text") or ""),
+                        float(old_row.get("confidence") or 0.5),
+                        str(old_row.get("tags_text") or ""),
+                        int(old_row.get("active") or 1),
+                        str(old_row.get("created_at") or now),
+                        now,
+                        merged_json,
+                        old_row.get("subtitle"),
+                        old_row.get("facts"),
+                        old_row.get("narrative"),
+                        old_row.get("concepts"),
+                        old_row.get("files_read"),
+                        old_row.get("files_modified"),
+                        old_row.get("prompt_number"),
+                        old_row.get("deleted_at"),
+                        max(int(new_row.get("rev") or 0), int(old_row.get("rev") or 0)) + 1,
+                        canonical_id,
+                    ),
+                )
+                self.conn.commit()
+                self._record_memory_item_op(canonical_id, "upsert")
+                stats["ops"] += 1
+
+            # Tombstone the old key (so peers delete it) and deactivate locally.
+            delete_payload = self._memory_item_payload(old_row)
+            self._record_replication_delete_for_key(
+                import_key=current or f"memory:{memory_id}", payload=delete_payload
+            )
+            stats["ops"] += 1
+            tombstone_meta = self._normalize_metadata(old_row.get("metadata_json"))
+            tombstone_meta["clock_device_id"] = self.device_id
+            self.conn.execute(
+                "UPDATE memory_items SET active = 0, deleted_at = ?, updated_at = ?, metadata_json = ?, rev = rev + 1 WHERE id = ?",
+                (now, now, db.to_json(tombstone_meta), memory_id),
+            )
+            self.conn.commit()
+
+            stats["merged"] += 1
+            stats["tombstoned"] += 1
+
+        return stats
 
     @staticmethod
     def _now_iso() -> str:
@@ -351,6 +617,7 @@ class MemoryStore:
         This is used to bootstrap peers so existing databases converge without
         requiring a manual command.
         """
+        self.migrate_legacy_import_keys(limit=2000)
         rows = self.conn.execute(
             """
             SELECT mi.*
@@ -364,7 +631,6 @@ class MemoryStore:
             (limit,),
         ).fetchall()
         count = 0
-        self.migrate_legacy_import_keys(limit=2000)
         for row in rows:
             payload = self._memory_item_payload(dict(row))
             clock = self._clock_from_payload(payload)
@@ -914,11 +1180,25 @@ class MemoryStore:
         session_id = payload.get("session_id")
         if not import_key or session_id is None:
             return "skipped"
+        clock = cast(ReplicationClock, op.get("clock") or {})
+        clock_device_id = str(clock.get("device_id") or "")
+        lookup_key = import_key
         row = self.conn.execute(
             "SELECT * FROM memory_items WHERE import_key = ?",
-            (import_key,),
+            (lookup_key,),
         ).fetchone()
-        clock = cast(ReplicationClock, op.get("clock") or {})
+        if row is None:
+            for alias in self._legacy_import_key_aliases(
+                import_key, clock_device_id=clock_device_id
+            ):
+                candidate = self.conn.execute(
+                    "SELECT * FROM memory_items WHERE import_key = ?",
+                    (alias,),
+                ).fetchone()
+                if candidate is not None:
+                    row = candidate
+                    lookup_key = alias
+                    break
         op_clock = self._clock_tuple(
             clock.get("rev"), clock.get("updated_at"), clock.get("device_id")
         )
@@ -927,7 +1207,7 @@ class MemoryStore:
             if not self._is_newer_clock(op_clock, self._memory_item_clock(existing)):
                 return "skipped"
         metadata = self._normalize_metadata(payload.get("metadata_json"))
-        metadata["clock_device_id"] = str(clock.get("device_id") or "")
+        metadata["clock_device_id"] = clock_device_id
         metadata_json = db.to_json(metadata)
         created_at = str(payload.get("created_at") or clock.get("updated_at") or "")
         updated_at = str(payload.get("updated_at") or clock.get("updated_at") or "")
@@ -1009,7 +1289,7 @@ class MemoryStore:
                 rev = ?
             WHERE import_key = ?
             """,
-            (*values, import_key),
+            (*values, lookup_key),
         )
         return "updated"
 
@@ -1019,11 +1299,25 @@ class MemoryStore:
         import_key = str(payload.get("import_key") or entity_id)
         if not import_key:
             return "skipped"
+        clock = cast(ReplicationClock, op.get("clock") or {})
+        clock_device_id = str(clock.get("device_id") or "")
+        lookup_key = import_key
         row = self.conn.execute(
             "SELECT * FROM memory_items WHERE import_key = ?",
-            (import_key,),
+            (lookup_key,),
         ).fetchone()
-        clock = cast(ReplicationClock, op.get("clock") or {})
+        if row is None:
+            for alias in self._legacy_import_key_aliases(
+                import_key, clock_device_id=clock_device_id
+            ):
+                candidate = self.conn.execute(
+                    "SELECT * FROM memory_items WHERE import_key = ?",
+                    (alias,),
+                ).fetchone()
+                if candidate is not None:
+                    row = candidate
+                    lookup_key = alias
+                    break
         op_clock = self._clock_tuple(
             clock.get("rev"), clock.get("updated_at"), clock.get("device_id")
         )
@@ -1032,7 +1326,7 @@ class MemoryStore:
             if not self._is_newer_clock(op_clock, self._memory_item_clock(existing)):
                 return "skipped"
         metadata = self._normalize_metadata(payload.get("metadata_json"))
-        metadata["clock_device_id"] = str(clock.get("device_id") or "")
+        metadata["clock_device_id"] = clock_device_id
         metadata_json = db.to_json(metadata)
         deleted_at = str(clock.get("updated_at") or payload.get("deleted_at") or "")
         updated_at = deleted_at
@@ -1103,7 +1397,7 @@ class MemoryStore:
                 rev = ?
             WHERE import_key = ?
             """,
-            (deleted_at, updated_at, metadata_json, rev, import_key),
+            (deleted_at, updated_at, metadata_json, rev, lookup_key),
         )
         return "updated"
 
