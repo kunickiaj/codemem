@@ -6,10 +6,8 @@ import getpass
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +15,8 @@ import typer
 from rich import print
 
 from . import __version__, db
+from .commands.viewer_cmds import _port_open
+from .commands.viewer_cmds import serve as _serve
 from .config import get_config_path, load_config, read_config_file, write_config_file
 from .db import DEFAULT_DB_PATH
 from .net import pick_advertise_host, pick_advertise_hosts
@@ -31,7 +31,7 @@ from .sync_discovery import (
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
 from .sync_runtime import effective_status, spawn_daemon, stop_pidfile
 from .utils import resolve_project
-from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT, start_viewer
+from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT
 
 app = typer.Typer(help="opencode-mem: persistent memory for OpenCode CLI")
 sync_app = typer.Typer(help="Sync opencode-mem between devices")
@@ -421,78 +421,6 @@ def _merge_summary_metadata(metadata: dict[str, Any], import_metadata: Any) -> d
             merged[key] = parsed_import_metadata[key]
     merged["import_metadata"] = import_metadata
     return merged
-
-
-def _viewer_pid_path() -> Path:
-    pid_path = os.environ.get("OPENCODE_MEM_VIEWER_PID", "~/.opencode-mem-viewer.pid")
-    return Path(os.path.expanduser(pid_path))
-
-
-def _read_pid(pid_path: Path) -> int | None:
-    try:
-        raw = pid_path.read_text().strip()
-    except FileNotFoundError:
-        return None
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
-def _pid_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _write_pid(pid_path: Path, pid: int) -> None:
-    pid_path.parent.mkdir(parents=True, exist_ok=True)
-    pid_path.write_text(f"{pid}\n")
-
-
-def _clear_pid(pid_path: Path) -> None:
-    try:
-        pid_path.unlink()
-    except FileNotFoundError:
-        return
-
-
-def _port_open(host: str, port: int) -> bool:
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.2)
-        try:
-            return sock.connect_ex((host, port)) == 0
-        except OSError:
-            return False
-
-
-def _pid_for_port(port: int) -> int | None:
-    try:
-        result = subprocess.run(
-            ["lsof", "-ti", f"tcp:{port}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return None
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            return int(line)
-        except ValueError:
-            continue
-    return None
 
 
 def _strip_json_comments(text: str) -> str:
@@ -1005,82 +933,14 @@ def serve(
     stop: bool = typer.Option(False, help="Stop background viewer"),
     restart: bool = typer.Option(False, help="Restart background viewer"),
 ) -> None:
-    """Run the viewer server (foreground or background)."""
-    if stop and restart:
-        print("[red]Use only one of --stop or --restart[/red]")
-        raise typer.Exit(code=1)
-
-    if db_path:
-        os.environ["OPENCODE_MEM_DB"] = db_path
-    pid_path = _viewer_pid_path()
-
-    if stop or restart:
-        pid = _read_pid(pid_path)
-        if pid is None and _port_open(host, port):
-            pid = _pid_for_port(port)
-            if pid is not None:
-                print(f"[yellow]Found viewer pid {pid} by port scan[/yellow]")
-        if pid is None:
-            if _port_open(host, port):
-                print("[yellow]Viewer is running but no PID file was found[/yellow]")
-            else:
-                print("[yellow]No background viewer found[/yellow]")
-        elif not _pid_running(pid):
-            _clear_pid(pid_path)
-            print("[yellow]Removed stale viewer PID file[/yellow]")
-        else:
-            os.kill(pid, signal.SIGTERM)
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                if not _pid_running(pid):
-                    break
-                time.sleep(0.05)
-            _clear_pid(pid_path)
-            print(f"[green]Stopped viewer (pid {pid})[/green]")
-        if stop:
-            return
-        background = True
-
-    if background:
-        pid = _read_pid(pid_path)
-        if pid is not None and _pid_running(pid):
-            print(f"[yellow]Viewer already running (pid {pid})[/yellow]")
-            return
-        if pid is not None:
-            _clear_pid(pid_path)
-        if _port_open(host, port):
-            print(f"[yellow]Viewer already running at http://{host}:{port}[/yellow]")
-            return
-        cmd = [
-            sys.executable,
-            "-m",
-            "opencode_mem.cli",
-            "serve",
-            "--host",
-            host,
-            "--port",
-            str(port),
-        ]
-        if db_path:
-            cmd += ["--db-path", db_path]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            env=os.environ.copy(),
-        )
-        _write_pid(pid_path, proc.pid)
-        print(
-            f"[green]Viewer started in background (pid {proc.pid}) at http://{host}:{port}[/green]"
-        )
-        return
-
-    if _port_open(host, port):
-        print(f"[yellow]Viewer already running at http://{host}:{port}[/yellow]")
-        return
-    print(f"[green]Viewer running at http://{host}:{port}[/green]")
-    start_viewer(host=host, port=port, background=False)
+    _serve(
+        db_path=db_path,
+        host=host,
+        port=port,
+        background=background,
+        stop=stop,
+        restart=restart,
+    )
 
 
 @sync_app.command("enable")
