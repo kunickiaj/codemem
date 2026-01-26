@@ -306,7 +306,10 @@ def test_sync_once_updates_addresses_from_mdns(monkeypatch, tmp_path: Path) -> N
         "opencode_mem.cli.discover_peers_via_mdns",
         lambda: [{"host": "192.168.1.22", "port": 7337, "properties": {"device_id": "peer-1"}}],
     )
-    monkeypatch.setattr("opencode_mem.cli.sync_once", lambda store, peer, addresses: {"ok": True})
+    monkeypatch.setattr("opencode_mem.sync_daemon.sync_pass_preflight", lambda store: None)
+    monkeypatch.setattr(
+        "opencode_mem.sync_daemon.sync_once", lambda store, peer, addresses, **k: {"ok": True}
+    )
     result = runner.invoke(app, ["sync", "once", "--db-path", str(db_path)])
     assert result.exit_code == 0
 
@@ -321,6 +324,39 @@ def test_sync_once_updates_addresses_from_mdns(monkeypatch, tmp_path: Path) -> N
         assert "192.168.1.22:7337" in addresses
     finally:
         conn.close()
+
+
+def test_sync_once_runs_preflight(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", json.dumps(["127.0.0.1:7337"]), "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    called: dict[str, int] = {"legacy": 0, "backfill": 0}
+
+    def fake_legacy(self, *, limit: int = 0):
+        called["legacy"] = limit
+
+    def fake_backfill(self, *, limit: int = 0):
+        called["backfill"] = limit
+        return 0
+
+    monkeypatch.setattr("opencode_mem.store.MemoryStore.migrate_legacy_import_keys", fake_legacy)
+    monkeypatch.setattr("opencode_mem.store.MemoryStore.backfill_replication_ops", fake_backfill)
+    monkeypatch.setattr("opencode_mem.cli.run_sync_pass", lambda store, peer, **k: {"ok": True})
+    monkeypatch.setattr("opencode_mem.cli.mdns_enabled", lambda: False)
+
+    result = runner.invoke(app, ["sync", "once", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert called["legacy"] == 2000
+    assert called["backfill"] == 200
 
 
 def test_sync_doctor_reports_mdns_status(monkeypatch, tmp_path: Path) -> None:

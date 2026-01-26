@@ -30,6 +30,34 @@ from .sync_discovery import (
 from .sync_identity import ensure_device_identity
 
 
+def sync_pass_preflight(
+    store: MemoryStore,
+    *,
+    legacy_limit: int = 2000,
+    replication_backfill_limit: int = 200,
+) -> None:
+    store.migrate_legacy_import_keys(limit=legacy_limit)
+    store.backfill_replication_ops(limit=replication_backfill_limit)
+
+
+def run_sync_pass(
+    store: MemoryStore,
+    peer_device_id: str,
+    *,
+    mdns_entries: list[dict[str, Any]] | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    if mdns_entries is None:
+        mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
+    stored = load_peer_addresses(store.conn, peer_device_id)
+    mdns_addresses = mdns_addresses_for_peer(peer_device_id, mdns_entries)
+    if mdns_addresses:
+        update_peer_addresses(store.conn, peer_device_id, mdns_addresses)
+        stored = load_peer_addresses(store.conn, peer_device_id)
+    dial_addresses = select_dial_addresses(stored=stored, mdns=mdns_addresses)
+    return sync_once(store, peer_device_id, dial_addresses, limit=limit)
+
+
 def _chunk_ops_by_size(
     ops: list[ReplicationOp],
     *,
@@ -283,20 +311,13 @@ def sync_once(
 
 
 def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
-    store.migrate_legacy_import_keys(limit=2000)
-    store.backfill_replication_ops(limit=200)
+    sync_pass_preflight(store)
     rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
     mdns_entries = discover_peers_via_mdns() if mdns_enabled() else []
     results: list[dict[str, Any]] = []
     for row in rows:
         peer_device_id = str(row["peer_device_id"])
-        stored = load_peer_addresses(store.conn, peer_device_id)
-        mdns_addresses = mdns_addresses_for_peer(peer_device_id, mdns_entries)
-        if mdns_addresses:
-            update_peer_addresses(store.conn, peer_device_id, mdns_addresses)
-            stored = load_peer_addresses(store.conn, peer_device_id)
-        dial_addresses = select_dial_addresses(stored=stored, mdns=mdns_addresses)
-        results.append(sync_once(store, peer_device_id, dial_addresses))
+        results.append(run_sync_pass(store, peer_device_id, mdns_entries=mdns_entries))
     return results
 
 
