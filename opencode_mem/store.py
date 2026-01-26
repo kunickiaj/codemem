@@ -4427,22 +4427,29 @@ class MemoryStore:
         self, limit: int = 10, project: str | None = None
     ) -> list[dict[str, Any]]:
         if project:
+            session_clause, session_params = self._project_column_clause(
+                "sessions.project", project
+            )
             meta_project_expr = (
-                "CASE WHEN json_valid(metadata_json) = 1 "
-                "THEN json_extract(metadata_json, '$.project') ELSE NULL END"
+                "CASE WHEN json_valid(usage_events.metadata_json) = 1 "
+                "THEN json_extract(usage_events.metadata_json, '$.project') ELSE NULL END"
             )
             meta_clause, meta_params = self._project_column_clause(meta_project_expr, project)
+            if not session_clause and not meta_clause:
+                return []
             rows = self.conn.execute(
                 f"""
-                SELECT id, session_id, event, tokens_read, tokens_written, tokens_saved,
-                       created_at, metadata_json
+                SELECT usage_events.id, usage_events.session_id, usage_events.event,
+                       usage_events.tokens_read, usage_events.tokens_written, usage_events.tokens_saved,
+                       usage_events.created_at, usage_events.metadata_json
                 FROM usage_events
+                LEFT JOIN sessions ON sessions.id = usage_events.session_id
                 WHERE event = 'pack'
-                  AND {meta_clause}
-                ORDER BY created_at DESC
+                  AND ({session_clause} OR {meta_clause})
+                ORDER BY usage_events.created_at DESC
                 LIMIT ?
                 """,
-                (*meta_params, limit),
+                (*session_params, *meta_params, limit),
             ).fetchall()
         else:
             rows = self.conn.execute(

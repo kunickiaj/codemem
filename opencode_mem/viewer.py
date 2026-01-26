@@ -1573,8 +1573,14 @@ VIEWER_HTML = """<!doctype html>
         const isFiltered = !!(project && totalsFiltered);
         const usage = isFiltered ? totalsFiltered : totalsGlobal;
 
-        const globalLine = isFiltered
-          ? `\nGlobal: ${Number(totalsGlobal.tokens_read || 0).toLocaleString()} read, ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
+        const globalLineWork = isFiltered
+          ? `\nGlobal: ${Number(totalsGlobal.work_investment_tokens || 0).toLocaleString()} invested`
+          : "";
+        const globalLineRead = isFiltered
+          ? `\nGlobal: ${Number(totalsGlobal.tokens_read || 0).toLocaleString()} read`
+          : "";
+        const globalLineSaved = isFiltered
+          ? `\nGlobal: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
           : "";
 
         const items = [
@@ -1585,19 +1591,19 @@ VIEWER_HTML = """<!doctype html>
           {
             label: isFiltered ? "Work investment (project)" : "Work investment",
             value: Number(usage.work_investment_tokens || 0),
-            tooltip: "Token cost of unique discovery groups (avoids double-counting when one response yields multiple memories)" + globalLine,
+            tooltip: "Token cost of unique discovery groups (avoids double-counting when one response yields multiple memories)" + globalLineWork,
             icon: "pencil",
           },
           {
             label: isFiltered ? "Read cost (project)" : "Read cost",
             value: Number(usage.tokens_read || 0),
-            tooltip: "Tokens to read memories when injected into context" + globalLine,
+            tooltip: "Tokens to read memories when injected into context" + globalLineRead,
             icon: "book-open",
           },
           {
             label: isFiltered ? "Savings (project)" : "Savings",
             value: Number(usage.tokens_saved || 0),
-            tooltip: "Tokens saved by reusing compressed memories instead of raw context" + globalLine,
+            tooltip: "Tokens saved by reusing compressed memories instead of raw context" + globalLineSaved,
             icon: "trending-up",
           },
         ];
