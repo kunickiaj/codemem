@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import socket
 import sqlite3
 import time
 from typing import Any
@@ -217,10 +218,19 @@ def mdns_addresses_for_peer(peer_device_id: str, entries: list[dict[str, Any]]) 
             device_id = device_id.decode("utf-8")
         if device_id != peer_device_id:
             continue
-        host = entry.get("host") or ""
         port = entry.get("port") or 0
+        host = entry.get("host") or ""
         if host:
             addresses.append(f"{host}:{port}")
+            continue
+        raw = entry.get("address")
+        if isinstance(raw, (bytes, bytearray)) and len(raw) == 4:
+            try:
+                ip = socket.inet_ntoa(raw)
+            except OSError:
+                ip = ""
+            if ip:
+                addresses.append(f"{ip}:{port}")
     return addresses
 
 
@@ -284,12 +294,27 @@ def advertise_mdns(
     except Exception:
         return None
 
+    lan_ip = None
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            lan_ip = sock.getsockname()[0]
+    except OSError:
+        lan_ip = None
+    addresses = []
+    if lan_ip and not lan_ip.startswith("127."):
+        try:
+            addresses = [socket.inet_aton(lan_ip)]
+        except OSError:
+            addresses = []
+
     service_name = name or f"{device_id}.{service_type}"
     info = ServiceInfo(
         service_type,
         service_name,
         port=port,
-        properties={"device_id": device_id},
+        properties={b"device_id": device_id.encode("utf-8")},
+        addresses=addresses,
     )
     zc = Zeroconf()
     zc.register_service(info)
