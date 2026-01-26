@@ -4,10 +4,12 @@ import sqlite3
 import threading
 from http.server import HTTPServer
 from pathlib import Path
+from typing import cast
 
+from opencode_mem import db
 from opencode_mem import store as store_module
 from opencode_mem import viewer as viewer_module
-from opencode_mem.store import MemoryStore
+from opencode_mem.store import MemoryStore, ReplicationOp
 from opencode_mem.viewer import ViewerHandler
 
 
@@ -283,20 +285,30 @@ def test_pack_metrics_dedupe_work_by_discovery_group(tmp_path: Path) -> None:
 
 
 def test_migrate_legacy_import_keys_prefixes_device_id(tmp_path: Path) -> None:
-    store_a = MemoryStore(tmp_path / "a.sqlite")
-    store_b = MemoryStore(tmp_path / "b.sqlite")
+    db_a = tmp_path / "a.sqlite"
+    db_b = tmp_path / "b.sqlite"
+    conn_a = db.connect(db_a)
+    conn_b = db.connect(db_b)
     try:
-        store_a.conn.execute(
+        db.initialize_schema(conn_a)
+        db.initialize_schema(conn_b)
+        conn_a.execute(
             "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
             ("dev-a", "pk", "fp", "2026-01-01T00:00:00Z"),
         )
-        store_b.conn.execute(
+        conn_b.execute(
             "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
             ("dev-b", "pk", "fp", "2026-01-01T00:00:00Z"),
         )
-        store_a.conn.commit()
-        store_b.conn.commit()
+        conn_a.commit()
+        conn_b.commit()
+    finally:
+        conn_a.close()
+        conn_b.close()
 
+    store_a = MemoryStore(db_a)
+    store_b = MemoryStore(db_b)
+    try:
         session_a = store_a.start_session(
             cwd="/tmp",
             git_remote=None,
@@ -313,20 +325,29 @@ def test_migrate_legacy_import_keys_prefixes_device_id(tmp_path: Path) -> None:
             tool_version="test",
             project="/tmp/project-b",
         )
-        store_a.remember(
+        mid_a = store_a.remember(
             session_a,
             kind="note",
             title="A",
             body_text="A",
-            metadata={"import_key": "legacy:memory_item:1"},
         )
-        store_b.remember(
+        mid_b = store_b.remember(
             session_b,
             kind="note",
             title="B",
             body_text="B",
-            metadata={"import_key": "legacy:memory_item:1"},
         )
+
+        store_a.conn.execute(
+            "UPDATE memory_items SET import_key = ? WHERE id = ?",
+            (f"legacy:memory_item:{mid_a}", mid_a),
+        )
+        store_b.conn.execute(
+            "UPDATE memory_items SET import_key = ? WHERE id = ?",
+            (f"legacy:memory_item:{mid_b}", mid_b),
+        )
+        store_a.conn.commit()
+        store_b.conn.commit()
 
         updated_a = store_a.migrate_legacy_import_keys()
         updated_b = store_b.migrate_legacy_import_keys()
@@ -343,12 +364,180 @@ def test_migrate_legacy_import_keys_prefixes_device_id(tmp_path: Path) -> None:
         ).fetchone()
         assert row_a is not None
         assert row_b is not None
-        assert str(row_a["import_key"]).startswith(f"legacy:dev-a:memory_item:{row_a['id']}")
-        assert str(row_b["import_key"]).startswith(f"legacy:dev-b:memory_item:{row_b['id']}")
+        assert row_a["import_key"] == f"legacy:dev-a:memory_item:{row_a['id']}"
+        assert row_b["import_key"] == f"legacy:dev-b:memory_item:{row_b['id']}"
         assert row_a["import_key"] != row_b["import_key"]
     finally:
         store_a.close()
         store_b.close()
+
+
+def test_repair_legacy_import_keys_merges_old_and_new(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-b", "pk", "fp", "2026-01-01T00:00:00Z"),
+        )
+        store.conn.commit()
+        session = store.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-b",
+        )
+        now = "2026-01-01T00:00:00Z"
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id, kind, title, body_text, confidence, tags_text, active,
+                created_at, updated_at, metadata_json, prompt_number, import_key, deleted_at, rev
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session,
+                "note",
+                "Dup",
+                "Same",
+                0.5,
+                "",
+                1,
+                now,
+                now,
+                json.dumps({"clock_device_id": "dev-a"}),
+                1,
+                "legacy:memory_item:1",
+                None,
+                1,
+            ),
+        )
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id, kind, title, body_text, confidence, tags_text, active,
+                created_at, updated_at, metadata_json, prompt_number, import_key, deleted_at, rev
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session,
+                "note",
+                "Dup",
+                "Same",
+                0.5,
+                "",
+                1,
+                now,
+                now,
+                json.dumps({"clock_device_id": "dev-a"}),
+                1,
+                "legacy:dev-a:memory_item:1",
+                None,
+                1,
+            ),
+        )
+        store.conn.commit()
+
+        result = store.repair_legacy_import_keys()
+        assert result["merged"] == 1
+        assert result["tombstoned"] == 1
+
+        old_row = store.conn.execute(
+            "SELECT active, deleted_at FROM memory_items WHERE import_key = ?",
+            ("legacy:memory_item:1",),
+        ).fetchone()
+        new_row = store.conn.execute(
+            "SELECT active, deleted_at FROM memory_items WHERE import_key = ?",
+            ("legacy:dev-a:memory_item:1",),
+        ).fetchone()
+        assert old_row is not None
+        assert new_row is not None
+        assert int(old_row["active"]) == 0
+        assert old_row["deleted_at"]
+        assert int(new_row["active"]) == 1
+
+        op = store.conn.execute(
+            "SELECT 1 FROM replication_ops WHERE entity_id = ? AND op_type = 'delete' LIMIT 1",
+            ("legacy:memory_item:1",),
+        ).fetchone()
+        assert op is not None
+    finally:
+        store.close()
+
+
+def test_apply_replication_ops_upsert_aliases_legacy_keys(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session = store.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project",
+        )
+        now = "2026-01-01T00:00:00Z"
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id, kind, title, body_text, confidence, tags_text, active,
+                created_at, updated_at, metadata_json, prompt_number, import_key, deleted_at, rev
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session,
+                "note",
+                "One",
+                "Body",
+                0.5,
+                "",
+                1,
+                now,
+                now,
+                json.dumps({"clock_device_id": "dev-a"}),
+                1,
+                "legacy:memory_item:1",
+                None,
+                1,
+            ),
+        )
+        store.conn.commit()
+        op = {
+            "op_id": "op-1",
+            "entity_type": "memory_item",
+            "entity_id": "legacy:dev-a:memory_item:1",
+            "op_type": "upsert",
+            "payload": {
+                "session_id": session,
+                "kind": "note",
+                "title": "One",
+                "body_text": "Body",
+                "confidence": 0.5,
+                "tags_text": "",
+                "active": 1,
+                "created_at": now,
+                "updated_at": now,
+                "metadata_json": {"clock_device_id": "dev-a"},
+                "prompt_number": 1,
+                "import_key": "legacy:dev-a:memory_item:1",
+                "deleted_at": None,
+                "rev": 2,
+            },
+            "clock": {"rev": 2, "updated_at": now, "device_id": "dev-a"},
+            "device_id": "dev-a",
+            "created_at": now,
+        }
+        result = store.apply_replication_ops(cast(list[ReplicationOp], [op]))
+        assert result["updated"] == 1
+        count = store.conn.execute("SELECT COUNT(*) AS c FROM memory_items").fetchone()["c"]
+        assert int(count) == 1
+        key = store.conn.execute("SELECT import_key FROM memory_items LIMIT 1").fetchone()[
+            "import_key"
+        ]
+        assert key == "legacy:dev-a:memory_item:1"
+    finally:
+        store.close()
 
 
 def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
