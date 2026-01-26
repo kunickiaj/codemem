@@ -219,10 +219,6 @@ def mdns_addresses_for_peer(peer_device_id: str, entries: list[dict[str, Any]]) 
         if device_id != peer_device_id:
             continue
         port = entry.get("port") or 0
-        host = entry.get("host") or ""
-        if host:
-            addresses.append(f"{host}:{port}")
-            continue
         raw = entry.get("address")
         if isinstance(raw, (bytes, bytearray)) and len(raw) == 4:
             try:
@@ -231,6 +227,10 @@ def mdns_addresses_for_peer(peer_device_id: str, entries: list[dict[str, Any]]) 
                 ip = ""
             if ip:
                 addresses.append(f"{ip}:{port}")
+                continue
+        host = entry.get("host") or ""
+        if host and "_opencode-mem._tcp.local" not in host:
+            addresses.append(f"{host}:{port}")
     return addresses
 
 
@@ -273,7 +273,7 @@ def discover_peers_via_mdns(
             return
 
     listener = Listener()
-    browser = ServiceBrowser(zeroconf, service_type, listener)
+    browser = ServiceBrowser(zeroconf, service_type, listener)  # type: ignore[arg-type]
     try:
         time.sleep(timeout_s)
     finally:
