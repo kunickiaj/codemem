@@ -262,18 +262,9 @@ def sync_once(
                 limit=limit,
                 device_id=device_id,
             )
+            outbound_ops, outbound_cursor = store.filter_replication_ops_for_sync(outbound_ops)
             post_url = f"{base_url}/v1/ops"
             if outbound_ops:
-                outbound_ops = [
-                    op
-                    for op in outbound_ops
-                    if op.get("entity_type") != "memory_item"
-                    or store._sync_project_allowed(
-                        (op.get("payload") or {}).get("project")
-                        if isinstance(op.get("payload"), dict)
-                        else None
-                    )
-                ]
                 batches = _chunk_ops_by_size(outbound_ops, max_bytes=MAX_SYNC_BODY_BYTES)
                 for batch in batches:
                     body = {"ops": batch}
