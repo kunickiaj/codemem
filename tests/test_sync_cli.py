@@ -157,7 +157,7 @@ def test_sync_disable_stops_pid_when_no_service(monkeypatch, tmp_path: Path) -> 
         raise typer.Exit(code=1)
 
     monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
-    monkeypatch.setattr("opencode_mem.cli._stop_sync_pid", lambda: True)
+    monkeypatch.setattr("opencode_mem.cli.stop_pidfile", lambda: True)
     result = runner.invoke(app, ["sync", "disable"], env=env)
     assert result.exit_code == 0
 
@@ -247,7 +247,7 @@ def test_sync_stop_falls_back_to_pid(monkeypatch) -> None:
     monkeypatch.setattr(
         "opencode_mem.cli._run_service_action", lambda *a, **k: (_ for _ in ()).throw(typer.Exit(1))
     )
-    monkeypatch.setattr("opencode_mem.cli._stop_sync_pid", lambda: True)
+    monkeypatch.setattr("opencode_mem.cli.stop_pidfile", lambda: True)
     result = runner.invoke(app, ["sync", "stop"])
     assert result.exit_code == 0
 
