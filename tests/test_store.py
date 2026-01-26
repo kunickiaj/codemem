@@ -817,6 +817,34 @@ def test_apply_replication_ops_skips_excluded_project(tmp_path: Path, monkeypatc
         store.close()
 
 
+def test_recent_pack_events_project_filter_includes_session_project_when_metadata_missing(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session = store.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="opencode-mem",
+        )
+        store.record_usage(
+            "pack",
+            session_id=session,
+            tokens_read=10,
+            tokens_written=0,
+            tokens_saved=5,
+            metadata={},
+        )
+        rows = store.recent_pack_events(limit=10, project="opencode-mem")
+        assert len(rows) == 1
+        assert rows[0]["event"] == "pack"
+    finally:
+        store.close()
+
+
 def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
