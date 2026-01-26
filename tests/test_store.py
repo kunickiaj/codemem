@@ -282,6 +282,75 @@ def test_pack_metrics_dedupe_work_by_discovery_group(tmp_path: Path) -> None:
     assert metrics.get("work_tokens") == 200
 
 
+def test_migrate_legacy_import_keys_prefixes_device_id(tmp_path: Path) -> None:
+    store_a = MemoryStore(tmp_path / "a.sqlite")
+    store_b = MemoryStore(tmp_path / "b.sqlite")
+    try:
+        store_a.conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-a", "pk", "fp", "2026-01-01T00:00:00Z"),
+        )
+        store_b.conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-b", "pk", "fp", "2026-01-01T00:00:00Z"),
+        )
+        store_a.conn.commit()
+        store_b.conn.commit()
+
+        session_a = store_a.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-a",
+        )
+        session_b = store_b.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-b",
+        )
+        store_a.remember(
+            session_a,
+            kind="note",
+            title="A",
+            body_text="A",
+            metadata={"import_key": "legacy:memory_item:1"},
+        )
+        store_b.remember(
+            session_b,
+            kind="note",
+            title="B",
+            body_text="B",
+            metadata={"import_key": "legacy:memory_item:1"},
+        )
+
+        updated_a = store_a.migrate_legacy_import_keys()
+        updated_b = store_b.migrate_legacy_import_keys()
+        assert updated_a == 1
+        assert updated_b == 1
+
+        row_a = store_a.conn.execute(
+            "SELECT id, import_key FROM memory_items WHERE title = ?",
+            ("A",),
+        ).fetchone()
+        row_b = store_b.conn.execute(
+            "SELECT id, import_key FROM memory_items WHERE title = ?",
+            ("B",),
+        ).fetchone()
+        assert row_a is not None
+        assert row_b is not None
+        assert str(row_a["import_key"]).startswith(f"legacy:dev-a:memory_item:{row_a['id']}")
+        assert str(row_b["import_key"]).startswith(f"legacy:dev-b:memory_item:{row_b['id']}")
+        assert row_a["import_key"] != row_b["import_key"]
+    finally:
+        store_a.close()
+        store_b.close()
+
+
 def test_stats_work_investment_uses_discovery_tokens(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

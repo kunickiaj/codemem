@@ -202,7 +202,51 @@ class MemoryStore:
         self.db_path = Path(db_path).expanduser()
         self.conn = db.connect(self.db_path, check_same_thread=check_same_thread)
         db.initialize_schema(self.conn)
-        self.device_id = os.getenv("OPENCODE_MEM_DEVICE_ID", "local")
+        self.device_id = os.getenv("OPENCODE_MEM_DEVICE_ID", "")
+        if not self.device_id:
+            row = self.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
+            self.device_id = str(row["device_id"]) if row else "local"
+
+    def migrate_legacy_import_keys(self, *, limit: int = 2000) -> int:
+        """Make legacy import_key values globally unique.
+
+        Earlier versions used import keys like `legacy:memory_item:{row_id}`, which collide
+        across devices and can cause replication ops to no-op.
+        """
+
+        device_row = self.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
+        device_id = str(device_row["device_id"]) if device_row else ""
+        if not device_id:
+            return 0
+
+        rows = self.conn.execute(
+            """
+            SELECT id, import_key
+            FROM memory_items
+            WHERE import_key IS NULL
+               OR TRIM(import_key) = ''
+               OR import_key LIKE 'legacy:memory_item:%'
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        if not rows:
+            return 0
+
+        updated = 0
+        for row in rows:
+            memory_id = int(row["id"])
+            new_key = f"legacy:{device_id}:memory_item:{memory_id}"
+            if str(row["import_key"] or "") == new_key:
+                continue
+            self.conn.execute(
+                "UPDATE memory_items SET import_key = ? WHERE id = ?",
+                (new_key, memory_id),
+            )
+            updated += 1
+        self.conn.commit()
+        return updated
 
     @staticmethod
     def _now_iso() -> str:
@@ -320,12 +364,18 @@ class MemoryStore:
             (limit,),
         ).fetchall()
         count = 0
+        self.migrate_legacy_import_keys(limit=2000)
         for row in rows:
             payload = self._memory_item_payload(dict(row))
             clock = self._clock_from_payload(payload)
             import_key = str(payload.get("import_key") or "")
             if not import_key:
-                import_key = f"legacy:memory_item:{row['id']}"
+                device_row = self.conn.execute(
+                    "SELECT device_id FROM sync_device LIMIT 1"
+                ).fetchone()
+                device_id = str(device_row["device_id"]) if device_row else ""
+                prefix = f"legacy:{device_id}:" if device_id else "legacy:"
+                import_key = f"{prefix}memory_item:{row['id']}"
                 self.conn.execute(
                     "UPDATE memory_items SET import_key = ? WHERE id = ?",
                     (import_key, row["id"]),
