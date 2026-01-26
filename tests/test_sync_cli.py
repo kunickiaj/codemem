@@ -237,54 +237,18 @@ def test_sync_peers_list(tmp_path: Path) -> None:
     assert "Laptop" in result.stdout
 
 
-def test_sync_service_status_linux_user(monkeypatch) -> None:
-    calls = []
-
-    def fake_run(command, capture_output, text, check):
-        calls.append(command)
-
-        class Result:
-            returncode = 0
-            stdout = "ok"
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr("opencode_mem.cli.sys.platform", "linux")
-    monkeypatch.setattr("opencode_mem.cli.subprocess.run", fake_run)
-    result = runner.invoke(app, ["sync", "service", "status"])
-    assert result.exit_code == 0
-    assert calls[0][:3] == ["systemctl", "--user", "is-active"]
-
-
-def test_sync_service_stop_prints_success(monkeypatch) -> None:
-    def fake_run(command, capture_output, text, check):
-        class Result:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr("opencode_mem.cli.sys.platform", "linux")
-    monkeypatch.setattr("opencode_mem.cli.subprocess.run", fake_run)
-    result = runner.invoke(app, ["sync", "service", "stop"])
-    assert result.exit_code == 0
-    assert "Stopped sync service" in result.stdout
-
-
 def test_sync_uninstall_runs(monkeypatch) -> None:
     monkeypatch.setattr("opencode_mem.cli._sync_uninstall_impl", lambda user: None)
     result = runner.invoke(app, ["sync", "uninstall"])
     assert result.exit_code == 0
 
 
-def test_sync_service_stop_falls_back_to_pid(monkeypatch) -> None:
+def test_sync_stop_falls_back_to_pid(monkeypatch) -> None:
     monkeypatch.setattr(
         "opencode_mem.cli._run_service_action", lambda *a, **k: (_ for _ in ()).throw(typer.Exit(1))
     )
     monkeypatch.setattr("opencode_mem.cli._stop_sync_pid", lambda: True)
-    result = runner.invoke(app, ["sync", "service", "stop"])
+    result = runner.invoke(app, ["sync", "stop"])
     assert result.exit_code == 0
 
 
@@ -404,7 +368,7 @@ def test_sync_service_status_uses_pid(monkeypatch) -> None:
             },
         )(),
     )
-    result = runner.invoke(app, ["sync", "service", "status"])
+    result = runner.invoke(app, ["sync", "status"])
     assert result.exit_code == 0
     assert "running" in result.stdout
     assert "pidfile" in result.stdout
