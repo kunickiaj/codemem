@@ -23,7 +23,7 @@ from .config import (
     write_config_file,
 )
 from .db import DEFAULT_DB_PATH, from_json
-from .net import pick_advertise_host
+from .net import pick_advertise_host, pick_advertise_hosts
 from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events
 from .store import MemoryStore
@@ -2715,8 +2715,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     "device_id": device_id,
                     "fingerprint": fingerprint,
                     "public_key": public_key,
-                    "address": f"{pick_advertise_host(config.sync_advertise) or config.sync_host}:{config.sync_port}",
+                    "addresses": [
+                        f"{host}:{config.sync_port}"
+                        for host in pick_advertise_hosts(config.sync_advertise)
+                        if host and host != "0.0.0.0"
+                    ]
+                    or [
+                        f"{pick_advertise_host(config.sync_advertise) or config.sync_host}:{config.sync_port}"
+                    ],
                 }
+                payload["address"] = payload["addresses"][0]
                 self._send_json(payload)
                 return
             self.send_response(404)

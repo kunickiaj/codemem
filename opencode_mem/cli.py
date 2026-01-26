@@ -19,7 +19,7 @@ from rich import print
 from . import db
 from .config import get_config_path, load_config, read_config_file, write_config_file
 from .db import DEFAULT_DB_PATH
-from .net import pick_advertise_host
+from .net import pick_advertise_host, pick_advertise_hosts
 from .store import MemoryStore
 from .summarizer import Summarizer
 from .sync_daemon import run_sync_daemon, sync_once
@@ -1476,7 +1476,7 @@ def sync_enable(
     start: bool = typer.Option(True, "--start/--no-start", help="Start daemon after enabling"),
     advertise: str | None = typer.Option(
         None,
-        help="Advertised host for pairing payload ('auto' to prefer Tailscale, else LAN)",
+        help="Advertised host for pairing payload ('auto' prefers LAN, then Tailscale)",
     ),
     install: bool | None = typer.Option(
         None,
@@ -1664,10 +1664,24 @@ def sync_pair(
             device_id = str(payload.get("device_id") or "")
             fingerprint = str(payload.get("fingerprint") or "")
             public_key = str(payload.get("public_key") or "")
-            resolved_address = address or str(payload.get("address") or "")
-            if not device_id or not fingerprint or not public_key or not resolved_address:
+            resolved_addresses: list[str] = []
+            if address and address.strip():
+                resolved_addresses = [address.strip()]
+            else:
+                raw_addresses = payload.get("addresses")
+                if isinstance(raw_addresses, list):
+                    resolved_addresses = [
+                        str(item).strip()
+                        for item in raw_addresses
+                        if isinstance(item, str) and str(item).strip()
+                    ]
+                if not resolved_addresses:
+                    fallback_address = str(payload.get("address") or "").strip()
+                    if fallback_address:
+                        resolved_addresses = [fallback_address]
+            if not device_id or not fingerprint or not public_key or not resolved_addresses:
                 print(
-                    "[red]Pairing payload missing device_id, fingerprint, public_key, or address[/red]"
+                    "[red]Pairing payload missing device_id, fingerprint, public_key, or addresses[/red]"
                 )
                 raise typer.Exit(code=1)
             if fingerprint_public_key(public_key) != fingerprint:
@@ -1676,7 +1690,7 @@ def sync_pair(
             update_peer_addresses(
                 store.conn,
                 device_id,
-                [resolved_address],
+                resolved_addresses,
                 name=name,
                 pinned_fingerprint=fingerprint,
                 public_key=public_key,
@@ -1692,17 +1706,29 @@ def sync_pair(
         config = load_config()
         if address and address.strip().lower() in {"auto", "default"}:
             address = None
-        if address:
-            resolved_address = address
+        if address and address.strip():
+            addresses = [address.strip()]
         else:
-            advertise_host = pick_advertise_host(config.sync_advertise)
-            resolved_host = advertise_host or config.sync_host
-            resolved_address = f"{resolved_host}:{config.sync_port}"
+            hosts = pick_advertise_hosts(config.sync_advertise)
+            if not hosts:
+                advertise_host = pick_advertise_host(config.sync_advertise)
+                hosts = [advertise_host] if advertise_host else []
+            if not hosts:
+                hosts = [config.sync_host]
+            addresses = [
+                f"{host}:{config.sync_port}"
+                for host in hosts
+                if host and host.strip() and host != "0.0.0.0"
+            ]
+            if not addresses and config.sync_host and config.sync_host != "0.0.0.0":
+                addresses = [f"{config.sync_host}:{config.sync_port}"]
+        primary_address = addresses[0] if addresses else ""
         payload = {
             "device_id": device_id,
             "fingerprint": fingerprint,
             "public_key": public_key,
-            "address": resolved_address,
+            "address": primary_address,
+            "addresses": addresses,
         }
         print("[bold]Pairing payload[/bold]")
         print(json.dumps(payload, ensure_ascii=False))

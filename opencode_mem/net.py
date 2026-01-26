@@ -33,12 +33,57 @@ def _primary_lan_ipv4() -> str | None:
     return ip if ip and not ip.startswith("127.") else None
 
 
-def pick_advertise_host(value: str | None) -> str | None:
+def _local_ipv4_candidates() -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str | None) -> None:
+        if not value:
+            return
+        cleaned = value.strip()
+        if not cleaned or cleaned.startswith("127.") or cleaned == "0.0.0.0":
+            return
+        if cleaned in seen:
+            return
+        seen.add(cleaned)
+        candidates.append(cleaned)
+
+    _add(_primary_lan_ipv4())
+
+    try:
+        host = socket.gethostname()
+        for ip in socket.gethostbyname_ex(host)[2]:
+            _add(ip)
+        for info in socket.getaddrinfo(host, None, family=socket.AF_INET):
+            addr = info[4][0] if info and info[4] else None
+            if isinstance(addr, str):
+                _add(addr)
+    except Exception:
+        pass
+
+    return candidates
+
+
+def pick_advertise_hosts(value: str | None) -> list[str]:
     if not value:
-        return None
+        return []
     lowered = value.strip().lower()
-    if lowered in {"auto", "default"}:
-        return _tailscale_ipv4() or _primary_lan_ipv4()
     if lowered in {"none", "off"}:
-        return None
-    return value.strip() or None
+        return []
+    if lowered in {"auto", "default"}:
+        # Prefer LAN first for same-network pairing; include Tailscale as fallback.
+        lan = _local_ipv4_candidates()
+        ts = _tailscale_ipv4()
+        return [*lan, *([ts] if ts and ts not in lan else [])]
+    if lowered in {"lan", "local"}:
+        return _local_ipv4_candidates()
+    if lowered in {"tailscale", "ts"}:
+        ts = _tailscale_ipv4()
+        lan = _local_ipv4_candidates()
+        return [*([ts] if ts else []), *[ip for ip in lan if ip != ts]]
+    return [value.strip()]
+
+
+def pick_advertise_host(value: str | None) -> str | None:
+    hosts = pick_advertise_hosts(value)
+    return hosts[0] if hosts else None

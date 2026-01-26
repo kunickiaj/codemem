@@ -172,6 +172,7 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
         "fingerprint": sync_identity.fingerprint_public_key(public_key),
         "public_key": public_key,
         "address": "peer:7337",
+        "addresses": ["peer:7337", "peer.local:7337"],
     }
     result = runner.invoke(
         app,
@@ -189,6 +190,14 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
         assert row["peer_device_id"] == "peer-1"
         assert row["pinned_fingerprint"] == payload["fingerprint"]
         assert row["public_key"] == public_key
+
+        stored = conn.execute(
+            "SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert stored is not None
+        addresses = json.loads(stored["addresses_json"])
+        assert "peer:7337" in addresses
     finally:
         conn.close()
 
