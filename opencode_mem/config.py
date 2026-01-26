@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,44 @@ def _parse_bool(value: str | None, default: bool) -> bool:
     return default
 
 
+def _parse_int(value: object, default: int, *, key: str) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        warnings.warn(f"Invalid int for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+        return default
+
+
+def _coerce_bool(value: object, default: bool, *, key: str) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return _parse_bool(value, default)
+    warnings.warn(f"Invalid bool for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+    return default
+
+
+def _coerce_str_list(value: object, *, key: str) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        items: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                items.append(item.strip())
+        return items
+    if isinstance(value, str):
+        return [p.strip() for p in value.split(",") if p.strip()]
+    warnings.warn(f"Invalid list for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+    return None
+
+
 def load_config(path: Path | None = None) -> OpencodeMemConfig:
     cfg = OpencodeMemConfig()
     config_path = get_config_path(path)
@@ -128,6 +167,34 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
     for key, value in data.items():
         if not hasattr(cfg, key):
             continue
+        if key in {
+            "observer_max_chars",
+            "observer_max_tokens",
+            "summary_max_chars",
+            "pack_observation_limit",
+            "pack_session_limit",
+            "viewer_port",
+            "plugin_cmd_timeout_ms",
+            "sync_port",
+            "sync_interval_s",
+        }:
+            setattr(cfg, key, _parse_int(value, getattr(cfg, key), key=key))
+            continue
+        if key in {
+            "use_opencode_run",
+            "viewer_auto",
+            "viewer_auto_stop",
+            "viewer_enabled",
+            "sync_enabled",
+            "sync_mdns",
+        }:
+            setattr(cfg, key, _coerce_bool(value, getattr(cfg, key), key=key))
+            continue
+        if key in {"sync_projects_include", "sync_projects_exclude"}:
+            parsed = _coerce_str_list(value, key=key)
+            if parsed is not None:
+                setattr(cfg, key, parsed)
+            continue
         setattr(cfg, key, value)
     return cfg
 
@@ -143,18 +210,28 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.observer_provider = os.getenv("OPENCODE_MEM_OBSERVER_PROVIDER", cfg.observer_provider)
     cfg.observer_model = os.getenv("OPENCODE_MEM_OBSERVER_MODEL", cfg.observer_model)
     cfg.observer_api_key = os.getenv("OPENCODE_MEM_OBSERVER_API_KEY", cfg.observer_api_key)
-    cfg.observer_max_chars = int(
-        os.getenv("OPENCODE_MEM_OBSERVER_MAX_CHARS", cfg.observer_max_chars)
+    cfg.observer_max_chars = _parse_int(
+        os.getenv("OPENCODE_MEM_OBSERVER_MAX_CHARS"),
+        cfg.observer_max_chars,
+        key="observer_max_chars",
     )
-    cfg.observer_max_tokens = int(
-        os.getenv("OPENCODE_MEM_OBSERVER_MAX_TOKENS", cfg.observer_max_tokens)
+    cfg.observer_max_tokens = _parse_int(
+        os.getenv("OPENCODE_MEM_OBSERVER_MAX_TOKENS"),
+        cfg.observer_max_tokens,
+        key="observer_max_tokens",
     )
-    cfg.summary_max_chars = int(os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS", cfg.summary_max_chars))
-    cfg.pack_observation_limit = int(
-        os.getenv("OPENCODE_MEM_PACK_OBSERVATION_LIMIT", cfg.pack_observation_limit)
+    cfg.summary_max_chars = _parse_int(
+        os.getenv("OPENCODE_MEM_SUMMARY_MAX_CHARS"), cfg.summary_max_chars, key="summary_max_chars"
     )
-    cfg.pack_session_limit = int(
-        os.getenv("OPENCODE_MEM_PACK_SESSION_LIMIT", cfg.pack_session_limit)
+    cfg.pack_observation_limit = _parse_int(
+        os.getenv("OPENCODE_MEM_PACK_OBSERVATION_LIMIT"),
+        cfg.pack_observation_limit,
+        key="pack_observation_limit",
+    )
+    cfg.pack_session_limit = _parse_int(
+        os.getenv("OPENCODE_MEM_PACK_SESSION_LIMIT"),
+        cfg.pack_session_limit,
+        key="pack_session_limit",
     )
     cfg.viewer_auto = _parse_bool(os.getenv("OPENCODE_MEM_VIEWER_AUTO"), cfg.viewer_auto)
     cfg.viewer_auto_stop = _parse_bool(
@@ -162,23 +239,33 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     )
     cfg.viewer_enabled = _parse_bool(os.getenv("OPENCODE_MEM_VIEWER"), cfg.viewer_enabled)
     cfg.viewer_host = os.getenv("OPENCODE_MEM_VIEWER_HOST", cfg.viewer_host)
-    cfg.viewer_port = int(os.getenv("OPENCODE_MEM_VIEWER_PORT", cfg.viewer_port))
+    cfg.viewer_port = _parse_int(
+        os.getenv("OPENCODE_MEM_VIEWER_PORT"), cfg.viewer_port, key="viewer_port"
+    )
     cfg.plugin_log = os.getenv("OPENCODE_MEM_PLUGIN_LOG", cfg.plugin_log)
-    cfg.plugin_cmd_timeout_ms = int(
-        os.getenv("OPENCODE_MEM_PLUGIN_CMD_TIMEOUT", cfg.plugin_cmd_timeout_ms)
+    cfg.plugin_cmd_timeout_ms = _parse_int(
+        os.getenv("OPENCODE_MEM_PLUGIN_CMD_TIMEOUT"),
+        cfg.plugin_cmd_timeout_ms,
+        key="plugin_cmd_timeout_ms",
     )
     cfg.sync_enabled = _parse_bool(os.getenv("OPENCODE_MEM_SYNC_ENABLED"), cfg.sync_enabled)
     cfg.sync_host = os.getenv("OPENCODE_MEM_SYNC_HOST", cfg.sync_host)
-    cfg.sync_port = int(os.getenv("OPENCODE_MEM_SYNC_PORT", cfg.sync_port))
-    cfg.sync_interval_s = int(os.getenv("OPENCODE_MEM_SYNC_INTERVAL_S", cfg.sync_interval_s))
+    cfg.sync_port = _parse_int(os.getenv("OPENCODE_MEM_SYNC_PORT"), cfg.sync_port, key="sync_port")
+    cfg.sync_interval_s = _parse_int(
+        os.getenv("OPENCODE_MEM_SYNC_INTERVAL_S"), cfg.sync_interval_s, key="sync_interval_s"
+    )
     cfg.sync_mdns = _parse_bool(os.getenv("OPENCODE_MEM_SYNC_MDNS"), cfg.sync_mdns)
     cfg.sync_key_store = os.getenv("OPENCODE_MEM_SYNC_KEY_STORE", cfg.sync_key_store)
     cfg.sync_advertise = os.getenv("OPENCODE_MEM_SYNC_ADVERTISE", cfg.sync_advertise)
 
-    include = os.getenv("OPENCODE_MEM_SYNC_PROJECTS_INCLUDE")
+    include = _coerce_str_list(
+        os.getenv("OPENCODE_MEM_SYNC_PROJECTS_INCLUDE"), key="sync_projects_include"
+    )
     if include is not None:
-        cfg.sync_projects_include = [p.strip() for p in include.split(",") if p.strip()]
-    exclude = os.getenv("OPENCODE_MEM_SYNC_PROJECTS_EXCLUDE")
+        cfg.sync_projects_include = include
+    exclude = _coerce_str_list(
+        os.getenv("OPENCODE_MEM_SYNC_PROJECTS_EXCLUDE"), key="sync_projects_exclude"
+    )
     if exclude is not None:
-        cfg.sync_projects_exclude = [p.strip() for p in exclude.split(",") if p.strip()]
+        cfg.sync_projects_exclude = exclude
     return cfg

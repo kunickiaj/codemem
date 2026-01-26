@@ -233,20 +233,69 @@ class MemoryStore:
             return bool(value and value in include)
         return True
 
+    def count_replication_ops_missing_project(self) -> int:
+        """Count memory_item replication ops whose payload lacks a usable project.
+
+        When sync include-lists are active, these ops cannot be reliably filtered.
+        """
+
+        try:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM replication_ops
+                WHERE entity_type = 'memory_item'
+                  AND (
+                    payload_json IS NULL
+                    OR TRIM(payload_json) = ''
+                    OR json_extract(payload_json, '$.project') IS NULL
+                    OR TRIM(COALESCE(json_extract(payload_json, '$.project'), '')) = ''
+                  )
+                """
+            ).fetchone()
+            return int(row["count"] or 0) if row else 0
+        except sqlite3.OperationalError:
+            rows = self.conn.execute(
+                "SELECT payload_json FROM replication_ops WHERE entity_type = 'memory_item'"
+            ).fetchall()
+            missing = 0
+            for row in rows:
+                payload_json = row["payload_json"]
+                if not payload_json or not str(payload_json).strip():
+                    missing += 1
+                    continue
+                try:
+                    payload = json.loads(payload_json)
+                except json.JSONDecodeError:
+                    missing += 1
+                    continue
+                project = payload.get("project") if isinstance(payload, dict) else None
+                if not isinstance(project, str) or not project.strip():
+                    missing += 1
+            return missing
+
     def filter_replication_ops_for_sync(
         self, ops: Sequence[ReplicationOp]
     ) -> tuple[list[ReplicationOp], str | None]:
+        allowed_ops, next_cursor, _blocked = self.filter_replication_ops_for_sync_with_status(ops)
+        return allowed_ops, next_cursor
+
+    def filter_replication_ops_for_sync_with_status(
+        self, ops: Sequence[ReplicationOp]
+    ) -> tuple[list[ReplicationOp], str | None, dict[str, Any] | None]:
         """Filter outbound replication ops with safe cursor semantics.
 
-        This returns the longest prefix of ops allowed by the current sync project
-        include/exclude settings. The returned cursor advances only to the last
-        returned op.
+        Returns:
+        - allowed ops: longest prefix allowed by current include/exclude
+        - next_cursor: cursor for the last returned op (never advances past filtered)
+        - blocked: metadata for the first blocked op (if any)
         """
 
         allowed_ops: list[ReplicationOp] = []
         next_cursor: str | None = None
+        blocked: dict[str, Any] | None = None
         for op in ops:
-            entity_type = op.get("entity_type")
+            entity_type = str(op.get("entity_type") or "")
             if entity_type == "memory_item":
                 project = None
                 payload = op.get("payload")
@@ -254,12 +303,20 @@ class MemoryStore:
                     project_value = payload.get("project")
                     project = project_value if isinstance(project_value, str) else None
                 if not self._sync_project_allowed(project):
+                    blocked = {
+                        "reason": "project_filter",
+                        "op_id": str(op.get("op_id") or ""),
+                        "created_at": str(op.get("created_at") or ""),
+                        "entity_type": entity_type,
+                        "entity_id": str(op.get("entity_id") or ""),
+                        "project": project,
+                    }
                     break
             allowed_ops.append(op)
             next_cursor = self.compute_cursor(
                 str(op.get("created_at") or ""), str(op.get("op_id") or "")
             )
-        return allowed_ops, next_cursor
+        return allowed_ops, next_cursor, blocked
 
     def migrate_legacy_import_keys(self, *, limit: int = 2000) -> int:
         """Make legacy import_key values globally unique.
@@ -1338,12 +1395,119 @@ class MemoryStore:
             return None
         return cursor
 
-    def apply_replication_ops(self, ops: list[ReplicationOp]) -> dict[str, int]:
+    def _parse_iso8601(self, value: str) -> dt.datetime | None:
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            parsed = dt.datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
+
+    def _legacy_import_key_device_id(self, key: str) -> str | None:
+        if not key.startswith("legacy:"):
+            return None
+        parts = key.split(":")
+        if len(parts) >= 4 and parts[0] == "legacy" and parts[2] == "memory_item":
+            return parts[1]
+        return None
+
+    def _sanitize_inbound_replication_op(
+        self,
+        op: ReplicationOp,
+        *,
+        source_device_id: str | None,
+        received_at: dt.datetime | None,
+    ) -> ReplicationOp:
+        sanitized: dict[str, Any] = dict(op)
+        clock = dict(cast(dict[str, Any], op.get("clock") or {}))
+        sanitized["clock"] = clock
+        payload_value = op.get("payload")
+        if isinstance(payload_value, dict):
+            sanitized["payload"] = dict(payload_value)
+
+        op_id = str(sanitized.get("op_id") or "")
+        if not op_id:
+            raise ValueError("invalid_ops")
+
+        if source_device_id:
+            op_device_id = str(sanitized.get("device_id") or "")
+            clock_device_id = str(clock.get("device_id") or "")
+            if op_device_id != source_device_id or clock_device_id != source_device_id:
+                raise ValueError("identity_mismatch")
+            if source_device_id != "local" and (
+                op_device_id == "local" or clock_device_id == "local"
+            ):
+                raise ValueError("identity_mismatch")
+            entity_id = str(sanitized.get("entity_id") or "")
+            import_key = ""
+            payload = sanitized.get("payload")
+            if isinstance(payload, dict):
+                import_key = str(payload.get("import_key") or "")
+            candidate_keys = [k for k in [entity_id, import_key] if k]
+            for key in candidate_keys:
+                prefix_device_id = self._legacy_import_key_device_id(key)
+                if prefix_device_id and prefix_device_id != source_device_id:
+                    raise ValueError("identity_mismatch")
+
+            if str(sanitized.get("entity_type") or "") == "memory_item":
+                entity_id = str(sanitized.get("entity_id") or "")
+                entity_match = LEGACY_IMPORT_KEY_OLD_RE.match(entity_id) if entity_id else None
+                if entity_match is not None:
+                    sanitized["entity_id"] = (
+                        f"legacy:{source_device_id}:memory_item:{entity_match.group(1)}"
+                    )
+                payload = sanitized.get("payload")
+                if isinstance(payload, dict):
+                    import_key = str(payload.get("import_key") or "")
+                    import_match = (
+                        LEGACY_IMPORT_KEY_OLD_RE.match(import_key) if import_key else None
+                    )
+                    if import_match is not None:
+                        payload["import_key"] = (
+                            f"legacy:{source_device_id}:memory_item:{import_match.group(1)}"
+                        )
+
+        created_at = str(sanitized.get("created_at") or "")
+        created_parsed = self._parse_iso8601(created_at)
+        if created_parsed is None:
+            raise ValueError("invalid_timestamp")
+        clock_updated_at = str(clock.get("updated_at") or "")
+        clock_parsed = self._parse_iso8601(clock_updated_at)
+        if clock_parsed is None:
+            raise ValueError("invalid_timestamp")
+        if received_at is not None:
+            max_future = received_at + dt.timedelta(minutes=10)
+            if created_parsed > max_future:
+                sanitized["created_at"] = received_at.isoformat()
+            if clock_parsed > max_future:
+                clock["updated_at"] = received_at.isoformat()
+        return cast(ReplicationOp, sanitized)
+
+    def apply_replication_ops(
+        self,
+        ops: list[ReplicationOp],
+        *,
+        source_device_id: str | None = None,
+        received_at: str | None = None,
+    ) -> dict[str, int]:
         inserted = 0
         updated = 0
         skipped = 0
+
+        received_at_dt = None
+        if received_at:
+            received_at_dt = self._parse_iso8601(received_at)
         with self.conn:
             for op in ops:
+                op = self._sanitize_inbound_replication_op(
+                    op, source_device_id=source_device_id, received_at=received_at_dt
+                )
                 op_id = str(op.get("op_id") or "")
                 if not op_id or self._replication_op_exists(op_id):
                     skipped += 1
@@ -2135,6 +2299,28 @@ class MemoryStore:
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def raw_event_backlog_totals(self) -> dict[str, int]:
+        row = self.conn.execute(
+            """
+            WITH max_events AS (
+                SELECT opencode_session_id, MAX(event_seq) AS max_seq
+                FROM raw_events
+                GROUP BY opencode_session_id
+            )
+            SELECT
+              COUNT(1) AS sessions,
+              SUM(e.max_seq - s.last_flushed_event_seq) AS pending
+            FROM raw_event_sessions s
+            JOIN max_events e ON e.opencode_session_id = s.opencode_session_id
+            WHERE e.max_seq > s.last_flushed_event_seq
+            """
+        ).fetchone()
+        if row is None:
+            return {"sessions": 0, "pending": 0}
+        sessions = int(row["sessions"] or 0)
+        pending = int(row["pending"] or 0)
+        return {"sessions": sessions, "pending": pending}
 
     def raw_event_batch_status_counts(self, opencode_session_id: str) -> dict[str, int]:
         rows = self.conn.execute(

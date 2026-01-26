@@ -584,6 +584,18 @@ VIEWER_HTML = """<!doctype html>
         gap: 8px;
         align-items: center;
       }
+      .sync-section {
+        padding: 14px;
+      }
+      .sync-section h2 {
+        margin-bottom: 6px;
+      }
+      .sync-section .section-meta {
+        margin-bottom: 8px;
+      }
+      .sync-section .grid-2 {
+        gap: 10px;
+      }
       .peer-list {
         display: grid;
         gap: 12px;
@@ -816,6 +828,9 @@ VIEWER_HTML = """<!doctype html>
       .modal-backdrop[hidden],
       .modal[hidden] {
         display: none;
+      }
+      [hidden] {
+        display: none !important;
       }
       .modal-card {
         width: min(520px, 100%);
@@ -1277,14 +1292,25 @@ VIEWER_HTML = """<!doctype html>
         <div class="section-header">
           <h2>Sync</h2>
           <div class="section-actions">
+            <button class="settings-button" id="syncDetailsToggle">Diagnostics</button>
+            <button class="settings-button" id="syncPairingToggle">Pair</button>
             <button class="settings-button" id="syncNowButton">Sync now</button>
           </div>
         </div>
         <div class="section-meta" id="syncMeta">Loading sync status…</div>
-        <div class="grid-2" id="syncStatusGrid"></div>
-        <div class="peer-list" id="syncPeers"></div>
-        <div class="attempts-list" id="syncAttempts"></div>
-        <div class="pairing-card" id="syncPairing">
+        <div class="grid-2" id="syncHealthGrid"></div>
+        <div id="syncDiagnostics" hidden>
+          <div class="section-meta">
+            <label class="small" style="display:flex;align-items:center;gap:8px;">
+              <input id="syncRedact" type="checkbox" checked />
+              Redact sensitive details
+            </label>
+          </div>
+          <div class="grid-2" id="syncStatusGrid"></div>
+          <div class="peer-list" id="syncPeers"></div>
+          <div class="attempts-list" id="syncAttempts"></div>
+        </div>
+        <div class="pairing-card" id="syncPairing" hidden>
           <div class="peer-title">
             <strong>Pairing payload</strong>
             <div class="peer-actions">
@@ -1294,20 +1320,10 @@ VIEWER_HTML = """<!doctype html>
           <div class="pairing-body">
             <pre id="pairingPayload">Loading…</pre>
           </div>
-          <div class="peer-meta" id="pairingHint">Run the command on the other machine to pair.</div>
+          <div class="peer-meta" id="pairingHint">Copy/paste this on the other device to pair.</div>
         </div>
       </section>
-      <section style="animation-delay: 0.06s;">
-        <div class="section-header">
-          <h2>Diagnostics</h2>
-          <button class="settings-button" id="diagnosticsToggle">Show</button>
-        </div>
-        <div id="diagnosticsBody" hidden>
-          <div class="section-meta" id="rawEventsMeta">Loading raw event backlog…</div>
-          <div class="grid-2" id="rawEventsGrid"></div>
-          <div class="diag-list" id="rawEventsList"></div>
-        </div>
-      </section>
+
         <section class="feed-section" style="animation-delay: 0.1s;">
           <h2>Memory feed</h2>
           <div class="feed-controls">
@@ -1330,11 +1346,6 @@ VIEWER_HTML = """<!doctype html>
       const feedTypeToggle = document.getElementById("feedTypeToggle");
       const sessionGrid = document.getElementById("sessionGrid");
       const sessionMeta = document.getElementById("sessionMeta");
-      const diagnosticsToggle = document.getElementById("diagnosticsToggle");
-      const diagnosticsBody = document.getElementById("diagnosticsBody");
-      const rawEventsMeta = document.getElementById("rawEventsMeta");
-      const rawEventsGrid = document.getElementById("rawEventsGrid");
-      const rawEventsList = document.getElementById("rawEventsList");
       const settingsButton = document.getElementById("settingsButton");
       const settingsBackdrop = document.getElementById("settingsBackdrop");
       const settingsModal = document.getElementById("settingsModal");
@@ -1358,13 +1369,19 @@ VIEWER_HTML = """<!doctype html>
       const projectFilter = document.getElementById("projectFilter");
       const themeToggle = document.getElementById("themeToggle");
       const syncMeta = document.getElementById("syncMeta");
+      const syncHealthGrid = document.getElementById("syncHealthGrid");
       const syncStatusGrid = document.getElementById("syncStatusGrid");
+      const syncDiagnostics = document.getElementById("syncDiagnostics");
       const syncPeers = document.getElementById("syncPeers");
       const syncAttempts = document.getElementById("syncAttempts");
       const syncNowButton = document.getElementById("syncNowButton");
+      const syncDetailsToggle = document.getElementById("syncDetailsToggle");
+      const syncPairingToggle = document.getElementById("syncPairingToggle");
+      const syncRedact = document.getElementById("syncRedact");
       const pairingPayload = document.getElementById("pairingPayload");
       const pairingCopy = document.getElementById("pairingCopy");
       const pairingHint = document.getElementById("pairingHint");
+      const syncPairing = document.getElementById("syncPairing");
 
       let configDefaults = {};
       let configPath = "";
@@ -1372,8 +1389,17 @@ VIEWER_HTML = """<!doctype html>
       const itemViewState = new Map();
       const FEED_FILTER_KEY = "opencode-mem-feed-filter";
       const FEED_FILTERS = ["all", "observations", "summaries"];
-      const DIAGNOSTICS_KEY = "opencode-mem-diagnostics";
+
+      const SYNC_DIAGNOSTICS_KEY = "opencode-mem-sync-diagnostics";
+      const SYNC_PAIRING_KEY = "opencode-mem-sync-pairing";
+      const SYNC_REDACT_KEY = "opencode-mem-sync-redact";
       let feedTypeFilter = "all";
+      let pairingPayloadRaw = null;
+      let pairingCommandRaw = "";
+      let lastSyncStatus = null;
+      let lastSyncPeers = [];
+      let lastSyncAttempts = [];
+      let syncPairingOpen = false;
 
       // Theme management
       function getTheme() {
@@ -1401,13 +1427,37 @@ VIEWER_HTML = """<!doctype html>
       setTheme(getTheme());
       themeToggle?.addEventListener("click", toggleTheme);
 
-      setDiagnosticsOpen(isDiagnosticsOpen());
-      diagnosticsToggle?.addEventListener("click", () => {
-        const next = !isDiagnosticsOpen();
-        setDiagnosticsOpen(next);
+      setSyncDiagnosticsOpen(isSyncDiagnosticsOpen());
+      try {
+        syncPairingOpen = localStorage.getItem(SYNC_PAIRING_KEY) === "1";
+      } catch (err) {
+        syncPairingOpen = false;
+      }
+      setSyncPairingOpen(syncPairingOpen);
+      setSyncRedactionEnabled(isSyncRedactionEnabled());
+
+      syncDetailsToggle?.addEventListener("click", () => {
+        const next = !isSyncDiagnosticsOpen();
+        setSyncDiagnosticsOpen(next);
+        refresh();
+      });
+
+      syncPairingToggle?.addEventListener("click", () => {
+        const next = !isSyncPairingOpen();
+        setSyncPairingOpen(next);
         if (next) {
-          refresh();
+          if (pairingPayload) pairingPayload.textContent = "Loading…";
+          if (pairingHint) pairingHint.textContent = "Fetching pairing command…";
         }
+        refresh();
+      });
+
+      syncRedact?.addEventListener("change", () => {
+        setSyncRedactionEnabled(Boolean(syncRedact.checked));
+        renderSyncStatus(lastSyncStatus);
+        renderSyncPeers(lastSyncPeers);
+        renderSyncAttempts(lastSyncAttempts);
+        renderPairing(pairingPayloadRaw);
       });
 
       feedTypeFilter = getFeedTypeFilter();
@@ -1448,17 +1498,49 @@ VIEWER_HTML = """<!doctype html>
         return FEED_FILTERS.includes(saved) ? saved : "all";
       }
 
-      function isDiagnosticsOpen() {
-        return localStorage.getItem(DIAGNOSTICS_KEY) === "1";
+      function isSyncDiagnosticsOpen() {
+        return localStorage.getItem(SYNC_DIAGNOSTICS_KEY) === "1";
       }
 
-      function setDiagnosticsOpen(open) {
-        if (!diagnosticsBody) return;
-        diagnosticsBody.hidden = !open;
-        if (diagnosticsToggle) {
-          diagnosticsToggle.textContent = open ? "Hide" : "Show";
+      function setSyncDiagnosticsOpen(open) {
+        if (syncDiagnostics) {
+          syncDiagnostics.hidden = !open;
         }
-        localStorage.setItem(DIAGNOSTICS_KEY, open ? "1" : "0");
+        if (syncDetailsToggle) {
+          syncDetailsToggle.textContent = open ? "Hide diagnostics" : "Diagnostics";
+        }
+        localStorage.setItem(SYNC_DIAGNOSTICS_KEY, open ? "1" : "0");
+      }
+
+      function isSyncPairingOpen() {
+        return syncPairingOpen;
+      }
+
+      function setSyncPairingOpen(open) {
+        syncPairingOpen = open;
+        if (syncPairing) {
+          syncPairing.hidden = !open;
+        }
+        if (syncPairingToggle) {
+          syncPairingToggle.textContent = open ? "Close" : "Pair";
+        }
+        try {
+          localStorage.setItem(SYNC_PAIRING_KEY, open ? "1" : "0");
+        } catch (err) {
+          // Ignore persistence errors (private mode / disabled storage).
+        }
+      }
+
+      function isSyncRedactionEnabled() {
+        const raw = localStorage.getItem(SYNC_REDACT_KEY);
+        return raw !== "0";
+      }
+
+      function setSyncRedactionEnabled(enabled) {
+        localStorage.setItem(SYNC_REDACT_KEY, enabled ? "1" : "0");
+        if (syncRedact) {
+          syncRedact.checked = enabled;
+        }
       }
 
       function setFeedTypeFilter(value) {
@@ -1566,12 +1648,16 @@ VIEWER_HTML = """<!doctype html>
         return `${slice.join(", ")}${suffix}`.trim();
       }
 
-      function renderStats(stats, usagePayload, project) {
+      function renderStats(stats, usagePayload, project, rawEvents) {
         const db = stats.database || {};
         const totalsGlobal = usagePayload?.totals_global || usagePayload?.totals || stats.usage?.totals || {};
         const totalsFiltered = usagePayload?.totals_filtered || null;
         const isFiltered = !!(project && totalsFiltered);
         const usage = isFiltered ? totalsFiltered : totalsGlobal;
+
+        const raw = rawEvents && typeof rawEvents === "object" ? rawEvents : {};
+        const rawSessions = Number(raw.sessions || 0);
+        const rawPending = Number(raw.pending || 0);
 
         const globalLineWork = isFiltered
           ? `\nGlobal: ${Number(totalsGlobal.work_investment_tokens || 0).toLocaleString()} invested`
@@ -1588,6 +1674,18 @@ VIEWER_HTML = """<!doctype html>
           { label: "Memories", value: db.memory_items || 0, icon: "brain" },
           { label: "Active memories", value: db.active_memory_items || 0, icon: "check-circle" },
           { label: "Artifacts", value: db.artifacts || 0, icon: "package" },
+          {
+            label: "Raw sessions",
+            value: rawSessions,
+            tooltip: "OpenCode sessions with pending raw events waiting to be flushed",
+            icon: "inbox",
+          },
+          {
+            label: "Raw events pending",
+            value: rawPending,
+            tooltip: "Total pending raw events waiting to be flushed",
+            icon: "activity",
+          },
           {
             label: isFiltered ? "Work investment (project)" : "Work investment",
             value: Number(usage.work_investment_tokens || 0),
@@ -1637,43 +1735,130 @@ VIEWER_HTML = """<!doctype html>
         return date.toLocaleString();
       }
 
+      function redactAddress(address) {
+        const raw = String(address || "");
+        if (!raw) return "";
+        let scheme = "";
+        let rest = raw;
+        if (raw.includes("://")) {
+          const parts = raw.split("://");
+          scheme = parts[0] + "://";
+          rest = parts.slice(1).join("://");
+        }
+        if (rest.startsWith("[")) {
+          const end = rest.indexOf("]");
+          if (end !== -1) {
+            const remainder = rest.slice(end + 1);
+            const port = remainder.startsWith(":") ? remainder.slice(1) : "";
+            return scheme + "[\u2026]" + (port ? ":" + port : "");
+          }
+        }
+        const idx = rest.lastIndexOf(":");
+        if (idx === -1) {
+          return scheme + "\u2026";
+        }
+        const port = rest.slice(idx + 1);
+        return scheme + "\u2026:" + port;
+      }
+
+      function redactPairingPayload(payload) {
+        if (!payload || typeof payload !== "object") return null;
+        const redacted = { ...payload };
+        if (typeof redacted.public_key === "string" && redacted.public_key) {
+          redacted.public_key = "\u2026";
+        }
+        if (Array.isArray(redacted.addresses)) {
+          redacted.addresses = redacted.addresses.map(redactAddress);
+        }
+        if (typeof redacted.address === "string") {
+          redacted.address = redactAddress(redacted.address);
+        }
+        return redacted;
+      }
+
       function renderSyncStatus(status) {
-        if (!syncMeta || !syncStatusGrid) return;
+        lastSyncStatus = status;
+        if (!syncMeta || !syncHealthGrid) return;
         if (!status || typeof status !== "object") {
           syncMeta.textContent = "Sync status unavailable";
+          syncHealthGrid.textContent = "";
+          if (syncStatusGrid) syncStatusGrid.textContent = "";
+          return;
+        }
+
+        const diagnosticsOpen = isSyncDiagnosticsOpen();
+        const redact = isSyncRedactionEnabled();
+        const peerCount = status.peer_count || 0;
+        const enabledLabel = status.enabled ? "enabled" : "disabled";
+        const daemonState = status.daemon_state || "unknown";
+        const projectFilterActive = Boolean(status.project_filter_active);
+
+        const metaSuffix = [];
+        if (daemonState === "error") metaSuffix.push("daemon error");
+        if (projectFilterActive) metaSuffix.push("project filter");
+        if (diagnosticsOpen) metaSuffix.push("diagnostics");
+        syncMeta.textContent = [`${enabledLabel} · ${peerCount} peers`, ...metaSuffix].join(" · ");
+
+        const healthItems = [
+          { label: "Sync", value: enabledLabel },
+          { label: "Peers", value: String(peerCount) },
+          { label: "Last sync", value: formatTimestamp(status.last_sync_at) },
+          { label: "Daemon", value: daemonState },
+        ];
+        syncHealthGrid.textContent = "";
+        healthItems.forEach(item => {
+          const stat = createElement("div", "stat");
+          const content = createElement("div", "stat-content");
+          const value = createElement("div", "value", item.value);
+          const label = createElement("div", "label", item.label);
+          content.append(value, label);
+          stat.append(content);
+          syncHealthGrid.appendChild(stat);
+        });
+
+        if (!syncStatusGrid) return;
+        if (!diagnosticsOpen) {
           syncStatusGrid.textContent = "";
           return;
         }
-        const peerCount = status.peer_count || 0;
-        const enabledLabel = status.enabled ? "enabled" : "disabled";
-        syncMeta.textContent = `${enabledLabel} · ${peerCount} peers`;
-        const items = [
-          { label: "Device", value: status.device_id || "unpaired" },
-          { label: "Bind", value: status.bind || "n/a" },
-          { label: "Interval", value: status.interval_s ? `${status.interval_s}s` : "n/a" },
-          { label: "Last sync", value: formatTimestamp(status.last_sync_at) },
-        ];
+
+        const details = [];
+        details.push({
+          label: "Device",
+          value: redact ? "hidden" : (status.device_id || "unpaired"),
+        });
+        details.push({
+          label: "Bind",
+          value: redact ? "hidden" : (status.bind || "n/a"),
+        });
+        details.push({
+          label: "Interval",
+          value: status.interval_s ? `${status.interval_s}s` : "n/a",
+        });
+        details.push({ label: "Last sync", value: formatTimestamp(status.last_sync_at) });
+
         const pf = status.project_filter || {};
         const include = Array.isArray(pf.include) ? pf.include.filter(Boolean) : [];
         const exclude = Array.isArray(pf.exclude) ? pf.exclude.filter(Boolean) : [];
         if (include.length || exclude.length) {
           const detail = `include=[${include.join(", ")}] exclude=[${exclude.join(", ")}]`;
-          items.push({ label: "Projects", value: include.length ? "filtered" : "excluded" });
-          syncMeta.textContent = `${enabledLabel} · ${peerCount} peers · project filter`;
-          // Attach detail tooltip to the last stat added below.
-          items[items.length - 1].tooltip = detail;
+          details.push({
+            label: "Projects",
+            value: include.length ? "filtered" : "excluded",
+            tooltip: detail,
+          });
         }
-        if (status.daemon_last_error && (!status.daemon_last_ok_at || new Date(status.daemon_last_ok_at) < new Date(status.daemon_last_error_at || 0))) {
-          items.push({ label: "Daemon", value: "error" });
-          syncMeta.textContent = `${enabledLabel} · ${peerCount} peers · daemon error`;
-        }
-        syncStatusGrid.textContent = "";
-        items.forEach(item => {
-          const stat = createElement("div", "stat");
-          if (item.label === "Daemon" && status.daemon_last_error) {
-            stat.title = status.daemon_last_error;
-            stat.style.cursor = "help";
+        if (daemonState === "error") {
+          const item = { label: "Daemon", value: "error" };
+          if (!redact && status.daemon_last_error) {
+            item.tooltip = status.daemon_last_error;
           }
+          details.push(item);
+        }
+
+        syncStatusGrid.textContent = "";
+        details.forEach(item => {
+          const stat = createElement("div", "stat");
           if (item.tooltip) {
             stat.title = item.tooltip;
             stat.style.cursor = "help";
@@ -1742,7 +1927,13 @@ VIEWER_HTML = """<!doctype html>
       }
 
       function renderSyncPeers(items) {
+        lastSyncPeers = items || [];
         if (!syncPeers) return;
+        if (!isSyncDiagnosticsOpen()) {
+          syncPeers.textContent = "";
+          return;
+        }
+        const redact = isSyncRedactionEnabled();
         syncPeers.textContent = "";
         if (!items || !items.length) {
           syncPeers.appendChild(createElement("div", "peer-meta", "No peers configured"));
@@ -1765,12 +1956,16 @@ VIEWER_HTML = """<!doctype html>
           const meta = createElement(
             "div",
             "peer-meta",
-            `last sync: ${formatTimestamp(peer.last_sync_at)} · status: ${peer.last_error || "ok"}`
+            `last sync: ${formatTimestamp(peer.last_sync_at)} · status: ${peer.last_error ? "error" : "ok"}`
           );
+          if (!redact && peer.last_error) {
+            meta.title = peer.last_error;
+            meta.style.cursor = "help";
+          }
           const addresses = createElement(
             "div",
             "peer-addresses",
-            (peer.addresses || []).join(", ") || "no addresses"
+            (redact ? (peer.addresses || []).map(redactAddress) : (peer.addresses || [])).join(", ") || "no addresses"
           );
           card.append(titleRow, meta, addresses);
           syncPeers.appendChild(card);
@@ -1778,7 +1973,12 @@ VIEWER_HTML = """<!doctype html>
       }
 
       function renderSyncAttempts(items) {
+        lastSyncAttempts = items || [];
         if (!syncAttempts) return;
+        if (!isSyncDiagnosticsOpen()) {
+          syncAttempts.textContent = "";
+          return;
+        }
         syncAttempts.textContent = "";
         if (!items || !items.length) {
           syncAttempts.appendChild(createElement("div", "peer-meta", "No sync attempts yet"));
@@ -1793,20 +1993,31 @@ VIEWER_HTML = """<!doctype html>
       async function renderPairing(payload) {
         if (!pairingPayload) return;
         if (!payload || typeof payload !== "object") {
-          pairingPayload.textContent = "Pairing payload unavailable";
-          if (pairingHint) pairingHint.textContent = "Generate a device identity first.";
+          pairingPayload.textContent = "Failed to load pairing command";
+          pairingCommandRaw = "";
+          pairingPayloadRaw = null;
+          if (pairingHint) pairingHint.textContent = "Click Pair to retry.";
           return;
         }
-        const text = JSON.stringify(payload);
-        const escaped = text.replace(/'/g, `'\\''`);
-        const command = `opencode-mem sync pair --accept '${escaped}'`;
-        pairingPayload.textContent = command;
-        if (pairingHint) pairingHint.textContent = "Run the command on the other machine to pair.";
+        pairingPayloadRaw = payload;
+        const rawText = JSON.stringify(payload);
+        const rawEscaped = rawText.replace(/'/g, `'\\''`);
+        pairingCommandRaw = `opencode-mem sync pair --accept '${rawEscaped}'`;
+
+        const displayPayload = isSyncRedactionEnabled() ? redactPairingPayload(payload) : payload;
+        const displayText = JSON.stringify(displayPayload);
+        const displayEscaped = displayText.replace(/'/g, `'\\''`);
+        pairingPayload.textContent = `opencode-mem sync pair --accept '${displayEscaped}'`;
+        if (pairingHint) {
+          pairingHint.textContent = "Copy/paste this on the other device to pair.";
+        }
       }
 
       async function loadPairing() {
         try {
-          const response = await fetch("/api/sync/pairing");
+          if (pairingPayload) pairingPayload.textContent = "Loading…";
+          if (pairingHint) pairingHint.textContent = "Fetching pairing command…";
+          const response = await fetch("/api/sync/pairing?includeDiagnostics=1");
           const data = await response.json();
           if (!response.ok) {
             renderPairing(null);
@@ -2125,57 +2336,6 @@ VIEWER_HTML = """<!doctype html>
         if (typeof lucide !== "undefined") lucide.createIcons();
       }
 
-      function renderRawEventsStatus(items) {
-        if (!rawEventsGrid || !rawEventsMeta || !rawEventsList) {
-          return;
-        }
-        rawEventsGrid.textContent = "";
-        rawEventsList.textContent = "";
-        const list = Array.isArray(items) ? items : [];
-        const sessions = list.length;
-        const pendingTotal = list.reduce((sum, item) => sum + (Number(item.pending) || 0), 0);
-        rawEventsMeta.textContent = sessions
-          ? `Pending: ${sessions} sessions, ${pendingTotal} events`
-          : "No pending raw events";
-
-        const stats = [
-          { label: "Pending sessions", value: sessions, icon: "inbox" },
-          { label: "Pending events", value: pendingTotal.toLocaleString(), icon: "activity" },
-        ];
-        stats.forEach(item => {
-          const stat = createElement("div", "stat");
-          const icon = document.createElement("i");
-          icon.setAttribute("data-lucide", item.icon);
-          icon.className = "stat-icon";
-          const content = createElement("div", "stat-content");
-          const value = createElement("div", "value", String(item.value));
-          const label = createElement("div", "label", item.label);
-          content.append(value, label);
-          stat.append(icon, content);
-          rawEventsGrid.appendChild(stat);
-        });
-
-        list.slice(0, 10).forEach(item => {
-          const line = createElement("div", "diag-line");
-          const left = createElement("div", "left");
-          const right = createElement("div", "right mono");
-          const sid = String(item.opencode_session_id || "");
-          const shortId = sid.length > 10 ? `…${sid.slice(-10)}` : sid;
-          const project = String(item.project || "");
-          left.appendChild(createElement("div", "mono", `${shortId} · pending ${item.pending}`));
-          if (project) {
-            left.appendChild(createElement("div", "small", project));
-          }
-          const lastSeen = item.last_seen_ts_wall_ms
-            ? new Date(Number(item.last_seen_ts_wall_ms)).toLocaleString()
-            : "";
-          right.textContent = lastSeen;
-          line.append(left, right);
-          rawEventsList.appendChild(line);
-        });
-        if (typeof lucide !== "undefined") lucide.createIcons();
-      }
-
       function setSettingsOpen(isOpen) {
         settingsBackdrop.hidden = !isOpen;
         settingsModal.hidden = !isOpen;
@@ -2392,7 +2552,7 @@ VIEWER_HTML = """<!doctype html>
 
       syncNowButton?.addEventListener("click", () => syncPeerNow());
       pairingCopy?.addEventListener("click", async () => {
-        const command = pairingPayload?.textContent || "";
+        const command = pairingCommandRaw || pairingPayload?.textContent || "";
         if (!command) return;
         try {
           await navigator.clipboard.writeText(command);
@@ -2407,31 +2567,40 @@ VIEWER_HTML = """<!doctype html>
         try {
           const projectParam = currentProject ? `&project=${encodeURIComponent(currentProject)}` : "";
           const usageProjectParam = currentProject ? `?project=${encodeURIComponent(currentProject)}` : "";
-          const [stats, summaries, observations, usage, syncStatus, syncPeersData, syncAttemptsData] = await Promise.all([
+          const syncDiagnosticsOpen = isSyncDiagnosticsOpen();
+          const syncStatusUrl = syncDiagnosticsOpen
+            ? "/api/sync/status?includeDiagnostics=1"
+            : "/api/sync/status";
+          const [stats, summaries, observations, usage, syncStatus, rawEvents] = await Promise.all([
             fetch("/api/stats").then(r => r.json()),
             fetch(`/api/memory?kind=session_summary&limit=20${projectParam}`).then(r => r.json()),
             fetch(`/api/observations?limit=40${projectParam}`).then(r => r.json()),
             fetch(`/api/usage${usageProjectParam}`).then(r => r.json()),
-            fetch("/api/sync/status").then(r => r.json()),
-            fetch("/api/sync/peers").then(r => r.json()),
-            fetch("/api/sync/attempts?limit=8").then(r => r.json()),
+            fetch(syncStatusUrl).then(r => r.json()),
+            fetch("/api/raw-events/status?limit=1").then(r => r.json()),
           ]);
-          renderStats(stats, usage, currentProject);
+          renderStats(stats, usage, currentProject, rawEvents?.totals || {});
           renderSessionStats(usage.recent_packs || [], currentProject);
           renderSyncStatus(syncStatus);
-          renderSyncPeers(syncPeersData.items || []);
-          renderSyncAttempts(syncAttemptsData.items || []);
-          loadPairing();
 
-          if (isDiagnosticsOpen()) {
-            try {
-              const raw = await fetch("/api/raw-events/status?limit=25").then(r => r.json());
-              renderRawEventsStatus(raw.items || []);
-            } catch (err) {
-              if (rawEventsMeta) {
-                rawEventsMeta.textContent = "Failed to load raw event status";
-              }
-            }
+          if (syncDiagnosticsOpen) {
+            const [syncPeersData, syncAttemptsData] = await Promise.all([
+              fetch("/api/sync/peers?includeDiagnostics=1").then(r => r.json()),
+              fetch("/api/sync/attempts?limit=8").then(r => r.json()),
+            ]);
+            renderSyncPeers(syncPeersData.items || []);
+            renderSyncAttempts(syncAttemptsData.items || []);
+          } else {
+            renderSyncPeers([]);
+            renderSyncAttempts([]);
+          }
+
+          if (isSyncPairingOpen()) {
+            loadPairing();
+          } else {
+            pairingPayloadRaw = null;
+            pairingCommandRaw = "";
+            if (syncPairing) syncPairing.hidden = true;
           }
           const summaryItems = summaries.items || [];
           const observationItems = observations.items || [];
@@ -2547,7 +2716,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/raw-events/status":
                 params = parse_qs(parsed.query)
                 limit = int(params.get("limit", ["25"])[0])
-                self._send_json({"items": store.raw_event_backlog(limit=limit)})
+                self._send_json(
+                    {
+                        "items": store.raw_event_backlog(limit=limit),
+                        "totals": store.raw_event_backlog_totals(),
+                    }
+                )
                 return
             if parsed.path == "/api/sessions":
                 params = parse_qs(parsed.query)
@@ -2662,6 +2836,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/api/sync/status":
+                params = parse_qs(parsed.query)
+                include_diagnostics = params.get("includeDiagnostics", ["0"])[0] in {
+                    "1",
+                    "true",
+                    "yes",
+                }
                 config = load_config()
                 device_row = store.conn.execute(
                     "SELECT device_id, fingerprint FROM sync_device LIMIT 1"
@@ -2670,38 +2850,50 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 peer_count = store.conn.execute(
                     "SELECT COUNT(1) AS total FROM sync_peers"
                 ).fetchone()
-                last_attempt = store.conn.execute(
-                    """
-                    SELECT peer_device_id, ok, error, finished_at
-                    FROM sync_attempts
-                    ORDER BY finished_at DESC
-                    LIMIT 1
-                    """
-                ).fetchone()
                 last_sync = store.conn.execute(
                     "SELECT MAX(last_sync_at) AS last_sync_at FROM sync_peers"
                 ).fetchone()
-                self._send_json(
-                    {
-                        "enabled": config.sync_enabled,
-                        "device_id": device_row["device_id"] if device_row else None,
-                        "fingerprint": device_row["fingerprint"] if device_row else None,
-                        "bind": f"{config.sync_host}:{config.sync_port}",
-                        "interval_s": config.sync_interval_s,
-                        "peer_count": int(peer_count["total"]) if peer_count else 0,
-                        "last_sync_at": last_sync["last_sync_at"] if last_sync else None,
-                        "last_attempt": dict(last_attempt) if last_attempt else None,
-                        "daemon_last_error": daemon_state.get("last_error"),
-                        "daemon_last_error_at": daemon_state.get("last_error_at"),
-                        "daemon_last_ok_at": daemon_state.get("last_ok_at"),
-                        "project_filter": {
-                            "include": getattr(config, "sync_projects_include", []) or [],
-                            "exclude": getattr(config, "sync_projects_exclude", []) or [],
-                        },
-                    }
-                )
+                last_error = daemon_state.get("last_error")
+                last_error_at = daemon_state.get("last_error_at")
+                last_ok_at = daemon_state.get("last_ok_at")
+                daemon_state_value = "ok"
+                if last_error and (not last_ok_at or str(last_ok_at) < str(last_error_at or "")):
+                    daemon_state_value = "error"
+
+                include = getattr(config, "sync_projects_include", []) or []
+                exclude = getattr(config, "sync_projects_exclude", []) or []
+                project_filter_active = bool([p for p in include if p] or [p for p in exclude if p])
+                payload: dict[str, Any] = {
+                    "enabled": config.sync_enabled,
+                    "interval_s": config.sync_interval_s,
+                    "peer_count": int(peer_count["total"]) if peer_count else 0,
+                    "last_sync_at": last_sync["last_sync_at"] if last_sync else None,
+                    "daemon_state": daemon_state_value,
+                    "project_filter_active": project_filter_active,
+                    "project_filter": {"include": include, "exclude": exclude},
+                    "redacted": not include_diagnostics,
+                }
+
+                if include_diagnostics:
+                    payload.update(
+                        {
+                            "device_id": device_row["device_id"] if device_row else None,
+                            "fingerprint": device_row["fingerprint"] if device_row else None,
+                            "bind": f"{config.sync_host}:{config.sync_port}",
+                            "daemon_last_error": last_error,
+                            "daemon_last_error_at": last_error_at,
+                            "daemon_last_ok_at": last_ok_at,
+                        }
+                    )
+                self._send_json(payload)
                 return
             if parsed.path == "/api/sync/peers":
+                params = parse_qs(parsed.query)
+                include_diagnostics = params.get("includeDiagnostics", ["0"])[0] in {
+                    "1",
+                    "true",
+                    "yes",
+                }
                 rows = store.conn.execute(
                     """
                     SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
@@ -2712,19 +2904,27 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 peers = []
                 for row in rows:
-                    addresses = load_peer_addresses(store.conn, row["peer_device_id"])
+                    addresses = (
+                        load_peer_addresses(store.conn, row["peer_device_id"])
+                        if include_diagnostics
+                        else []
+                    )
                     peers.append(
                         {
                             "peer_device_id": row["peer_device_id"],
                             "name": row["name"],
-                            "fingerprint": row["pinned_fingerprint"],
+                            "fingerprint": row["pinned_fingerprint"]
+                            if include_diagnostics
+                            else None,
+                            "pinned": bool(row["pinned_fingerprint"]),
                             "addresses": addresses,
                             "last_seen_at": row["last_seen_at"],
                             "last_sync_at": row["last_sync_at"],
-                            "last_error": row["last_error"],
+                            "last_error": row["last_error"] if include_diagnostics else None,
+                            "has_error": bool(row["last_error"]),
                         }
                     )
-                self._send_json({"items": peers})
+                self._send_json({"items": peers, "redacted": not include_diagnostics})
                 return
             if parsed.path == "/api/sync/attempts":
                 params = parse_qs(parsed.query)
@@ -2741,7 +2941,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self._send_json({"items": [dict(row) for row in rows]})
                 return
             if parsed.path == "/api/sync/pairing":
+                params = parse_qs(parsed.query)
+                include_diagnostics = params.get("includeDiagnostics", ["0"])[0] in {
+                    "1",
+                    "true",
+                    "yes",
+                }
                 config = load_config()
+                if not include_diagnostics:
+                    self._send_json({"redacted": True})
+                    return
                 keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
                 keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
                 device_row = store.conn.execute(
@@ -2770,7 +2979,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         f"{pick_advertise_host(config.sync_advertise) or config.sync_host}:{config.sync_port}"
                     ],
                 }
-                payload["address"] = payload["addresses"][0]
                 self._send_json(payload)
                 return
             self.send_response(404)

@@ -113,7 +113,7 @@ def test_ops_cursor_does_not_advance_past_filtered_ops(tmp_path: Path, monkeypat
             entity_id="k1",
             op_type="upsert",
             payload={"project": "project-a"},
-            clock={"rev": 1, "updated_at": "t", "device_id": "local"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "local"},
             device_id="local",
             created_at="2026-01-01T00:00:00Z",
         )
@@ -123,7 +123,7 @@ def test_ops_cursor_does_not_advance_past_filtered_ops(tmp_path: Path, monkeypat
             entity_id="k2",
             op_type="upsert",
             payload={"project": "project-a"},
-            clock={"rev": 1, "updated_at": "t", "device_id": "local"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:01Z", "device_id": "local"},
             device_id="local",
             created_at="2026-01-01T00:00:01Z",
         )
@@ -133,7 +133,7 @@ def test_ops_cursor_does_not_advance_past_filtered_ops(tmp_path: Path, monkeypat
             entity_id="k3",
             op_type="upsert",
             payload={"project": "project-b"},
-            clock={"rev": 1, "updated_at": "t", "device_id": "local"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:02Z", "device_id": "local"},
             device_id="local",
             created_at="2026-01-01T00:00:02Z",
         )
@@ -220,7 +220,7 @@ def test_ops_cursor_does_not_advance_for_unknown_project_when_include_set(
             entity_id="k1",
             op_type="upsert",
             payload={"project": "project-a"},
-            clock={"rev": 1, "updated_at": "t", "device_id": "local"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:03Z", "device_id": "local"},
             device_id="local",
             created_at="2026-01-01T00:00:00Z",
         )
@@ -230,7 +230,7 @@ def test_ops_cursor_does_not_advance_for_unknown_project_when_include_set(
             entity_id="k2",
             op_type="upsert",
             payload={},
-            clock={"rev": 1, "updated_at": "t", "device_id": "local"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:04Z", "device_id": "local"},
             device_id="local",
             created_at="2026-01-01T00:00:01Z",
         )
@@ -277,5 +277,83 @@ def test_ops_cursor_does_not_advance_for_unknown_project_when_include_set(
         assert resp.status == 200
         assert [op.get("op_id") for op in payload.get("ops", [])] == ["op-1"]
         assert payload.get("next_cursor") == "2026-01-01T00:00:00Z|op-1"
+    finally:
+        server.shutdown()
+
+
+def test_ops_endpoint_signals_blocked_head_op_when_filtered(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
+    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.record_replication_op(
+            op_id="op-1",
+            entity_type="memory_item",
+            entity_id="k1",
+            op_type="upsert",
+            payload={"project": "project-a"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "local"},
+            device_id="local",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        store.record_replication_op(
+            op_id="op-2",
+            entity_type="memory_item",
+            entity_id="k2",
+            op_type="upsert",
+            payload={},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:01Z", "device_id": "local"},
+            device_id="local",
+            created_at="2026-01-01T00:00:01Z",
+        )
+    finally:
+        store.close()
+
+    conn = db.connect(tmp_path / "mem.sqlite")
+    try:
+        db.initialize_schema(conn)
+        ensure_device_identity(conn, keys_dir=tmp_path / "keys")
+        public_key = load_public_key(tmp_path / "keys")
+        assert public_key
+        fingerprint = fingerprint_public_key(public_key)
+        conn.execute(
+            """
+            INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, addresses_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "local",
+                fingerprint,
+                public_key,
+                "[]",
+                "2026-01-24T00:00:00Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(tmp_path / "mem.sqlite")
+    try:
+        cursor = "2026-01-01T00:00:00Z|op-1"
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        headers = build_auth_headers(
+            device_id="local",
+            method="GET",
+            url=f"http://127.0.0.1:{port}/v1/ops?limit=10&since={cursor}",
+            body_bytes=b"",
+            keys_dir=tmp_path / "keys",
+        )
+        conn.request("GET", f"/v1/ops?limit=10&since={cursor}", headers=headers)
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload.get("ops") == []
+        assert payload.get("next_cursor") is None
+        assert payload.get("blocked") is True
+        assert payload.get("blocked_reason") == "project_filter"
+        assert payload.get("blocked_op", {}).get("op_id") == "op-2"
     finally:
         server.shutdown()

@@ -14,8 +14,20 @@ from .sync_auth import DEFAULT_TIME_WINDOW_S, cleanup_nonces, record_nonce, veri
 from .sync_identity import ensure_device_identity, fingerprint_public_key
 
 PROTOCOL_VERSION = "1"
-MAX_SYNC_BODY_BYTES = int(os.getenv("OPENCODE_MEM_SYNC_MAX_BODY_BYTES", "1048576"))
-MAX_SYNC_OPS = int(os.getenv("OPENCODE_MEM_SYNC_MAX_OPS", "2000"))
+
+
+def _safe_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_SYNC_BODY_BYTES = _safe_int_env("OPENCODE_MEM_SYNC_MAX_BODY_BYTES", 1048576)
+MAX_SYNC_OPS = _safe_int_env("OPENCODE_MEM_SYNC_MAX_OPS", 2000)
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> bytes:
@@ -167,8 +179,21 @@ def build_sync_handler(db_path: Path | None = None):
                         limit=limit,
                         device_id=store.device_id,
                     )
-                    ops, next_cursor = store.filter_replication_ops_for_sync(ops)
-                    _send_json(self, {"ops": ops, "next_cursor": next_cursor})
+                    ops, next_cursor, blocked = store.filter_replication_ops_for_sync_with_status(
+                        ops
+                    )
+                    payload: dict[str, Any] = {"ops": ops, "next_cursor": next_cursor}
+                    if blocked is not None and not ops:
+                        payload["blocked"] = True
+                        payload["blocked_reason"] = blocked.get("reason")
+                        payload["blocked_op"] = {
+                            "op_id": blocked.get("op_id"),
+                            "created_at": blocked.get("created_at"),
+                            "entity_type": blocked.get("entity_type"),
+                            "entity_id": blocked.get("entity_id"),
+                            "project": blocked.get("project"),
+                        }
+                    _send_json(self, payload)
                 finally:
                     store.close()
                 return
@@ -190,6 +215,7 @@ def build_sync_handler(db_path: Path | None = None):
                 if not _authorize_request(store, self, raw):
                     self._unauthorized()
                     return
+                source_device_id = str(self.headers.get("X-Opencode-Device") or "")
                 data = _parse_json_body(raw)
                 if data is None:
                     _send_json(self, {"error": "invalid_json"}, status=400)
@@ -206,8 +232,17 @@ def build_sync_handler(db_path: Path | None = None):
                     if not isinstance(op, dict):
                         continue
                     normalized_ops.append(op)
-                result = store.apply_replication_ops(cast(list[ReplicationOp], normalized_ops))
-                _send_json(self, result)
+                received_at = dt.datetime.now(dt.UTC).isoformat()
+                try:
+                    result = store.apply_replication_ops(
+                        cast(list[ReplicationOp], normalized_ops),
+                        source_device_id=source_device_id,
+                        received_at=received_at,
+                    )
+                except ValueError as exc:
+                    _send_json(self, {"error": str(exc) or "invalid_ops"}, status=400)
+                else:
+                    _send_json(self, result)
             finally:
                 store.close()
 

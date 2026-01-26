@@ -737,7 +737,7 @@ def test_load_replication_ops_since_filters_by_device_id(tmp_path: Path) -> None
             entity_id="k1",
             op_type="upsert",
             payload={"import_key": "k1", "session_id": 1, "rev": 1, "metadata_json": {}},
-            clock={"rev": 1, "updated_at": "t", "device_id": "dev-a"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "dev-a"},
             device_id="dev-a",
             created_at="2026-01-01T00:00:00Z",
         )
@@ -747,7 +747,7 @@ def test_load_replication_ops_since_filters_by_device_id(tmp_path: Path) -> None
             entity_id="k2",
             op_type="upsert",
             payload={"import_key": "k2", "session_id": 1, "rev": 1, "metadata_json": {}},
-            clock={"rev": 1, "updated_at": "t", "device_id": "dev-b"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "dev-b"},
             device_id="dev-b",
             created_at="2026-01-01T00:00:01Z",
         )
@@ -766,7 +766,7 @@ def test_normalize_outbound_cursor_resets_when_ahead_of_local_stream(tmp_path: P
             entity_id="k1",
             op_type="upsert",
             payload={"import_key": "k1", "session_id": 1, "rev": 1, "metadata_json": {}},
-            clock={"rev": 1, "updated_at": "t", "device_id": "dev-a"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:01Z", "device_id": "dev-a"},
             device_id="dev-a",
             created_at="2026-01-01T00:00:00Z",
         )
@@ -1718,6 +1718,10 @@ def test_raw_event_backlog(tmp_path: Path) -> None:
     assert len(items) == 1
     assert items[0]["opencode_session_id"] == "sess"
     assert items[0]["pending"] == 1
+
+    totals = store.raw_event_backlog_totals()
+    assert totals["sessions"] == 1
+    assert totals["pending"] == 1
 
 
 def test_pack_prefers_tag_overlap(tmp_path: Path) -> None:

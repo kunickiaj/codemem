@@ -28,9 +28,18 @@ def _start_server(db_path: Path) -> tuple[HTTPServer, int]:
 
 
 def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
-    os.environ["OPENCODE_MEM_KEYS_DIR"] = str(tmp_path / "keys-client")
+    client_keys_dir = tmp_path / "keys-client"
+    server_keys_dir = tmp_path / "keys-server"
+    os.environ["OPENCODE_MEM_KEYS_DIR"] = str(client_keys_dir)
+
+    conn = db.connect(tmp_path / "a.sqlite")
+    try:
+        db.initialize_schema(conn)
+        ensure_device_identity(conn, keys_dir=client_keys_dir)
+    finally:
+        conn.close()
+
     store_a = MemoryStore(tmp_path / "a.sqlite")
-    store_b = MemoryStore(tmp_path / "b.sqlite")
     try:
         session_id = store_a.start_session(
             cwd=str(tmp_path),
@@ -41,18 +50,15 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
             project="/tmp/project-a",
         )
         store_a.remember(session_id, kind="note", title="Omega", body_text="Omega body")
+        # Placeholder peer id; will be renamed to the real server device id once known.
         update_peer_addresses(store_a.conn, "peer-1", ["http://127.0.0.1:0"])
     finally:
         store_a.close()
-        store_b.close()
-
-    client_keys_dir = tmp_path / "keys-client"
-    server_keys_dir = tmp_path / "keys-server"
 
     conn = db.connect(tmp_path / "b.sqlite")
     try:
         db.initialize_schema(conn)
-        ensure_device_identity(conn, keys_dir=server_keys_dir)
+        server_device_id, _ = ensure_device_identity(conn, keys_dir=server_keys_dir)
     finally:
         conn.close()
 
@@ -97,25 +103,37 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
                 """,
                 (server_fingerprint, server_public_key, "peer-1"),
             )
+            conn.execute(
+                "UPDATE sync_peers SET peer_device_id = ? WHERE peer_device_id = ?",
+                (server_device_id, "peer-1"),
+            )
+            conn.execute(
+                "UPDATE replication_cursors SET peer_device_id = ? WHERE peer_device_id = ?",
+                (server_device_id, "peer-1"),
+            )
+            conn.execute(
+                "UPDATE sync_attempts SET peer_device_id = ? WHERE peer_device_id = ?",
+                (server_device_id, "peer-1"),
+            )
             conn.commit()
         finally:
             conn.close()
 
         store_a = MemoryStore(tmp_path / "a.sqlite")
         try:
-            result = sync_once(store_a, "peer-1", [f"http://127.0.0.1:{port}"])
+            result = sync_once(store_a, server_device_id, [f"http://127.0.0.1:{port}"])
             assert result["ok"] is True
 
             cursor_row = store_a.conn.execute(
                 "SELECT last_acked_cursor FROM replication_cursors WHERE peer_device_id = ?",
-                ("peer-1",),
+                (server_device_id,),
             ).fetchone()
             assert cursor_row is not None
             assert cursor_row["last_acked_cursor"]
 
             attempt = store_a.conn.execute(
                 "SELECT ok FROM sync_attempts WHERE peer_device_id = ?",
-                ("peer-1",),
+                (server_device_id,),
             ).fetchone()
             assert attempt is not None
             assert attempt["ok"] == 1
@@ -180,9 +198,9 @@ def _make_op(op_id: str, entity_id: str, payload: dict | None = None) -> dict:
         "entity_id": entity_id,
         "op_type": "upsert",
         "payload": payload or {},
-        "clock": {"rev": 1, "updated_at": "t", "device_id": "d"},
+        "clock": {"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "d"},
         "device_id": "d",
-        "created_at": "t",
+        "created_at": "2026-01-01T00:00:00Z",
     }
 
 
@@ -208,6 +226,118 @@ def test_chunk_ops_by_size_raises_on_oversize() -> None:
     body_bytes = len(json.dumps({"ops": ops}, ensure_ascii=False).encode("utf-8"))
     with pytest.raises(RuntimeError, match="single op exceeds size limit"):
         sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=body_bytes - 1)
+
+
+def test_sync_once_does_not_trust_peer_next_cursor(monkeypatch, tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "opencode_mem.sync_daemon.ensure_device_identity",
+            lambda conn, keys_dir=None: ("dev-local", "fp-local"),
+        )
+        monkeypatch.setattr(
+            "opencode_mem.sync_daemon.build_auth_headers",
+            lambda **kwargs: {},
+        )
+
+        ops = [
+            {
+                "op_id": "op-1",
+                "entity_type": "memory_item",
+                "entity_id": "k1",
+                "op_type": "upsert",
+                "payload": {},
+                "clock": {
+                    "rev": 1,
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "device_id": "peer-1",
+                },
+                "device_id": "peer-1",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "op_id": "op-2",
+                "entity_type": "memory_item",
+                "entity_id": "k2",
+                "op_type": "upsert",
+                "payload": {},
+                "clock": {
+                    "rev": 1,
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "device_id": "peer-1",
+                },
+                "device_id": "peer-1",
+                "created_at": "2026-01-01T00:00:01Z",
+            },
+        ]
+
+        def fake_request_json(method: str, url: str, **kwargs):
+            if url.endswith("/v1/status"):
+                return 200, {"fingerprint": "fp-peer"}
+            if "/v1/ops?" in url:
+                return 200, {"ops": ops, "next_cursor": "9999-01-01T00:00:00Z|zzz"}
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+        monkeypatch.setattr(sync_daemon, "_request_json", fake_request_json)
+
+        result = sync_daemon.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
+        assert result["ok"] is True
+
+        row = store.conn.execute(
+            "SELECT last_applied_cursor FROM replication_cursors WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        assert row["last_applied_cursor"] == "2026-01-01T00:00:01Z|op-2"
+    finally:
+        store.close()
+
+
+def test_sync_once_returns_error_when_peer_is_blocked(monkeypatch, tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "opencode_mem.sync_daemon.ensure_device_identity",
+            lambda conn, keys_dir=None: ("dev-local", "fp-local"),
+        )
+        monkeypatch.setattr(
+            "opencode_mem.sync_daemon.build_auth_headers",
+            lambda **kwargs: {},
+        )
+
+        def fake_request_json(method: str, url: str, **kwargs):
+            if url.endswith("/v1/status"):
+                return 200, {"fingerprint": "fp-peer"}
+            if "/v1/ops?" in url:
+                return 200, {
+                    "ops": [],
+                    "next_cursor": None,
+                    "blocked": True,
+                    "blocked_reason": "project_filter",
+                    "blocked_op": {"op_id": "op-2", "project": "(missing)"},
+                }
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+        monkeypatch.setattr(sync_daemon, "_request_json", fake_request_json)
+
+        result = sync_daemon.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
+        assert result["ok"] is False
+        assert "blocked" in str(result.get("error") or "")
+        assert "op-2" in str(result.get("error") or "")
+    finally:
+        store.close()
 
 
 def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> None:
