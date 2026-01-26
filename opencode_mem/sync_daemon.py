@@ -35,19 +35,22 @@ def _chunk_ops_by_size(
     *,
     max_bytes: int,
 ) -> list[list[ReplicationOp]]:
+    def _body_bytes(batch: list[ReplicationOp]) -> int:
+        return len(json.dumps({"ops": batch}, ensure_ascii=False).encode("utf-8"))
+
     batches: list[list[ReplicationOp]] = []
     current: list[ReplicationOp] = []
-    current_bytes = 0
     for op in ops:
-        op_bytes = len(json.dumps(op, ensure_ascii=False))
-        if op_bytes > max_bytes:
+        candidate = [*current, op]
+        if _body_bytes(candidate) <= max_bytes:
+            current = candidate
+            continue
+        if not current:
             raise RuntimeError("single op exceeds size limit")
-        if current and current_bytes + op_bytes > max_bytes:
-            batches.append(current)
-            current = []
-            current_bytes = 0
-        current.append(op)
-        current_bytes += op_bytes
+        batches.append(current)
+        current = [op]
+        if _body_bytes(current) > max_bytes:
+            raise RuntimeError("single op exceeds size limit")
     if current:
         batches.append(current)
     return batches

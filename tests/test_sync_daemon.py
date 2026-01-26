@@ -189,16 +189,15 @@ def _make_op(op_id: str, entity_id: str, payload: dict | None = None) -> dict:
 def test_chunk_ops_by_size_single_batch() -> None:
     ops = [_make_op("a", "1"), _make_op("b", "2")]
     typed_ops = cast(list[ReplicationOp], ops)
-    total_bytes = sum(len(json.dumps(op, ensure_ascii=False)) for op in ops)
-    batches = sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=total_bytes)
+    body_bytes = len(json.dumps({"ops": ops}, ensure_ascii=False).encode("utf-8"))
+    batches = sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=body_bytes)
     assert batches == [typed_ops]
 
 
 def test_chunk_ops_by_size_splits_batches() -> None:
     ops = [_make_op("a", "1"), _make_op("b", "2"), _make_op("c", "3")]
     typed_ops = cast(list[ReplicationOp], ops)
-    op_bytes = [len(json.dumps(op, ensure_ascii=False)) for op in ops]
-    max_bytes = op_bytes[0] + op_bytes[1]
+    max_bytes = len(json.dumps({"ops": ops[:2]}, ensure_ascii=False).encode("utf-8"))
     batches = sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=max_bytes)
     assert batches == [typed_ops[:2], typed_ops[2:]]
 
@@ -206,5 +205,6 @@ def test_chunk_ops_by_size_splits_batches() -> None:
 def test_chunk_ops_by_size_raises_on_oversize() -> None:
     ops = [_make_op("a", "1", payload={"blob": "x" * 300})]
     typed_ops = cast(list[ReplicationOp], ops)
+    body_bytes = len(json.dumps({"ops": ops}, ensure_ascii=False).encode("utf-8"))
     with pytest.raises(RuntimeError, match="single op exceeds size limit"):
-        sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=50)
+        sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=body_bytes - 1)
