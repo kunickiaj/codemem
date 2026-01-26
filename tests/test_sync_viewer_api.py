@@ -59,6 +59,93 @@ def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
         server.shutdown()
 
 
+def test_sync_status_includes_project_filter_from_config(tmp_path: Path, monkeypatch) -> None:
+    # Objective: /api/sync/status reflects configured sync project include/exclude filters.
+
+    # Arrange
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setattr(
+        "opencode_mem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": ["opencode-mem"],
+                "sync_projects_exclude": ["other"],
+            },
+        )(),
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        # Act
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+
+        # Assert
+        assert resp.status == 200
+        assert payload.get("project_filter") == {
+            "include": ["opencode-mem"],
+            "exclude": ["other"],
+        }
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_project_filter_defaults_when_config_missing_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Objective: /api/sync/status handles missing/legacy config fields by returning safe defaults.
+
+    # Arrange
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setattr(
+        "opencode_mem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+            },
+        )(),
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        # Act
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+
+        # Assert
+        assert resp.status == 200
+        assert payload.get("project_filter") == {"include": [], "exclude": []}
+    finally:
+        server.shutdown()
+
+
 def test_sync_peers_list_endpoint(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
