@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import threading
+import traceback
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import HTTPServer
 from pathlib import Path
@@ -356,7 +357,13 @@ def run_sync_daemon(
         while not stop.wait(interval_s):
             store = MemoryStore(db_path or db.DEFAULT_DB_PATH)
             try:
-                sync_daemon_tick(store)
+                try:
+                    sync_daemon_tick(store)
+                    store.set_sync_daemon_ok()
+                except Exception as exc:
+                    tb = traceback.format_exc()
+                    store.set_sync_daemon_error(str(exc), tb)
+                    _append_sync_daemon_log(tb)
             finally:
                 store.close()
     finally:
@@ -364,3 +371,15 @@ def run_sync_daemon(
         if zeroconf is not None:
             with contextlib.suppress(Exception):
                 zeroconf.close()
+
+
+def _append_sync_daemon_log(message: str) -> None:
+    try:
+        log_dir = Path.home() / ".opencode-mem"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "sync-daemon.log"
+        ts = dt.datetime.now(dt.UTC).isoformat()
+        with log_path.open("a", encoding="utf-8", errors="ignore") as handle:
+            handle.write(f"\n[{ts}]\n{message}\n")
+    except Exception:
+        return

@@ -37,6 +37,10 @@ def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
             "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
             ("peer-1", "[]", "2026-01-24T00:00:00Z"),
         )
+        conn.execute(
+            "INSERT INTO sync_daemon_state(id, last_error, last_error_at) VALUES (1, ?, ?)",
+            ("boom", "2026-01-24T00:00:00Z"),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -50,6 +54,7 @@ def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
         assert resp.status == 200
         assert payload.get("device_id") == "dev-1"
         assert payload.get("peer_count") == 1
+        assert payload.get("daemon_last_error") == "boom"
     finally:
         server.shutdown()
 

@@ -299,6 +299,14 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             error TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_sync_attempts_peer_started ON sync_attempts(peer_device_id, started_at);
+
+        CREATE TABLE IF NOT EXISTS sync_daemon_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            last_error TEXT,
+            last_traceback TEXT,
+            last_error_at TEXT,
+            last_ok_at TEXT
+        );
         """
     )
     _ensure_column(conn, "sessions", "project", "TEXT")
