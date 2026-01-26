@@ -188,64 +188,6 @@ def _sync_daemon_running(host: str, port: int) -> bool:
     return effective_status(host, port).running
 
 
-def _sync_pid_running() -> bool:
-    pid = _read_pid(_sync_pid_path())
-    return pid is not None and _pid_running(pid)
-
-
-def _spawn_sync_daemon(host: str, port: int, interval_s: int, db_path: str | None) -> int:
-    binary = shutil.which("opencode-mem") or "opencode-mem"
-    cmd = [
-        binary,
-        "sync",
-        "daemon",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--interval-s",
-        str(interval_s),
-    ]
-    if db_path:
-        cmd.extend(["--db-path", db_path])
-    log_path = Path("~/.opencode-mem/sync-daemon.log").expanduser()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("ab") as log:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-            env=os.environ.copy(),
-        )
-    return int(proc.pid)
-
-
-def _sync_pid_path() -> Path:
-    pid_path = os.environ.get("OPENCODE_MEM_SYNC_PID", "~/.opencode-mem/sync-daemon.pid")
-    return Path(os.path.expanduser(pid_path))
-
-
-def _stop_sync_pid() -> bool:
-    pid_path = _sync_pid_path()
-    pid = _read_pid(pid_path)
-    if pid is None:
-        return False
-    if not _pid_running(pid):
-        _clear_pid(pid_path)
-        return False
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return False
-    for _ in range(30):
-        time.sleep(0.1)
-        if not _pid_running(pid):
-            _clear_pid(pid_path)
-            return True
-    return False
-
-
 def _build_service_commands(action: str, install_mode: str) -> list[list[str]]:
     if sys.platform.startswith("darwin"):
         label = "com.opencode-mem.sync"
@@ -291,58 +233,6 @@ def _run_service_action(action: str, *, user: bool, system: bool) -> None:
             print(result.stderr.strip())
         if result.returncode != 0:
             raise typer.Exit(code=result.returncode)
-
-
-def _service_status_summary(user: bool) -> tuple[bool, str]:
-    if sys.platform.startswith("darwin"):
-        uid = os.getuid()
-        label = "com.opencode-mem.sync"
-        target = f"gui/{uid}/{label}"
-        result = subprocess.run(
-            ["launchctl", "print", target],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            return False, "not loaded"
-        text = result.stdout
-        running = "active count = 1" in text or "state = running" in text
-        if "last exit code" in text and "EX_CONFIG" in text:
-            return False, "failed (EX_CONFIG; opencode-mem not on PATH for launchd)"
-        return running, "running" if running else "loaded (not running)"
-
-    if sys.platform.startswith("linux"):
-        base = ["systemctl"]
-        if user:
-            base.append("--user")
-        result = subprocess.run(
-            [*base, "is-active", "opencode-mem-sync.service"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        state = (result.stdout or "").strip() or "unknown"
-        if result.returncode != 0:
-            if "inactive" in state:
-                return False, "inactive"
-            if "unknown" in state:
-                return False, "not installed"
-            return False, state
-        return True, state
-
-    return False, "unsupported"
-
-
-def _effective_sync_status(config: Any) -> tuple[bool, str]:
-    service_running, service_summary = _service_status_summary(user=True)
-    if service_running:
-        return True, f"service ({service_summary})"
-    if _sync_pid_running():
-        return True, "pidfile"
-    if _sync_daemon_running(config.sync_host, config.sync_port):
-        return True, "port"
-    return False, f"service ({service_summary})"
 
 
 def _run_service_action_quiet(action: str, *, user: bool, system: bool) -> bool:
@@ -1666,13 +1556,13 @@ def sync_disable(
         _run_service_action("stop", user=True, system=False)
         print("[green]Sync daemon stopped[/green]")
     except typer.Exit:
-        if _stop_sync_pid():
+        if stop_pidfile():
             print("[green]Sync daemon stopped[/green]")
             if uninstall:
                 _sync_uninstall_impl(user=True)
             return
         print("Stop the daemon to apply disable:")
-        print("- opencode-mem sync service stop")
+        print("- opencode-mem sync stop")
         print("- or stop your foreground `opencode-mem sync daemon`")
         if uninstall:
             _sync_uninstall_impl(user=True)
@@ -2622,8 +2512,6 @@ def install_plugin(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing plugin file"),
 ) -> None:
     """Install the opencode-mem plugin to OpenCode's plugin directory."""
-    import shutil
-
     # Determine plugin source path (relative to this CLI file)
     # In installed package: opencode_mem/.opencode/plugin/opencode-mem.js
     # In dev mode: .opencode/plugin/opencode-mem.js (relative to repo root)
