@@ -1882,6 +1882,10 @@ def sync_doctor(db_path: str = typer.Option(None, help="Path to SQLite database"
     print(f"- Listen: {config.sync_host}:{config.sync_port}")
     mdns_ok, mdns_detail = _mdns_runtime_status(bool(getattr(config, "sync_mdns", True)))
     print(f"- mDNS: {mdns_detail}")
+    include = [p for p in getattr(config, "sync_projects_include", []) if p]
+    exclude = [p for p in getattr(config, "sync_projects_exclude", []) if p]
+    if include or exclude:
+        print(f"- Project filter: include={include or '[]'} exclude={exclude or '[]'}")
     running = _sync_daemon_running(config.sync_host, config.sync_port)
     print(f"- Daemon: {'running' if running else 'not running'}")
 
