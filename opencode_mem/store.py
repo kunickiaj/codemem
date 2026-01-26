@@ -636,26 +636,48 @@ class MemoryStore:
         requiring a manual command.
         """
         self.migrate_legacy_import_keys(limit=2000)
+        # Prioritize delete/tombstone ops so peers converge quickly.
         rows = self.conn.execute(
             """
             SELECT mi.*
             FROM memory_items mi
-            WHERE NOT EXISTS (
+            WHERE (mi.deleted_at IS NOT NULL OR mi.active = 0)
+              AND NOT EXISTS (
                 SELECT 1
                 FROM replication_ops ro
                 WHERE ro.entity_type = 'memory_item'
                   AND ro.entity_id = mi.import_key
-                  AND ro.clock_rev = mi.rev
-                  AND ro.op_type = CASE
-                      WHEN mi.deleted_at IS NOT NULL OR mi.active = 0 THEN 'delete'
-                      ELSE 'upsert'
-                  END
-            )
+                  AND ro.op_type = 'delete'
+                  AND ro.clock_rev = COALESCE(mi.rev, 0)
+              )
             ORDER BY mi.updated_at ASC
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
+
+        remaining = max(0, limit - len(rows))
+        if remaining:
+            upsert_rows = self.conn.execute(
+                """
+                SELECT mi.*
+                FROM memory_items mi
+                WHERE mi.deleted_at IS NULL
+                  AND mi.active = 1
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM replication_ops ro
+                    WHERE ro.entity_type = 'memory_item'
+                      AND ro.entity_id = mi.import_key
+                      AND ro.op_type = 'upsert'
+                      AND ro.clock_rev = COALESCE(mi.rev, 0)
+                  )
+                ORDER BY mi.updated_at ASC
+                LIMIT ?
+                """,
+                (remaining,),
+            ).fetchall()
+            rows = [*rows, *upsert_rows]
         count = 0
         for row in rows:
             payload = self._memory_item_payload(dict(row))
@@ -679,6 +701,7 @@ class MemoryStore:
                 else "upsert"
             )
             op_id = f"backfill:memory_item:{import_key}:{clock['rev']}"
+            op_id = f"{op_id}:{op_type}"
             if self._replication_op_exists(op_id):
                 continue
             self.record_replication_op(

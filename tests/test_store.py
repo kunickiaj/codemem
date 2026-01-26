@@ -678,6 +678,56 @@ def test_backfill_replication_ops_emits_delete_for_new_rev(tmp_path: Path) -> No
         store.close()
 
 
+def test_backfill_replication_ops_emits_delete_even_if_rev_does_not_change(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+            ("dev-a", "pk", "fp", "2026-01-01T00:00:00Z"),
+        )
+        store.conn.commit()
+        session = store.start_session(
+            cwd="/tmp",
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project",
+        )
+        mid = store.remember(session, kind="note", title="X", body_text="Y")
+        import_key = f"legacy:dev-a:memory_item:{mid}"
+        store.conn.execute(
+            "UPDATE memory_items SET import_key = ?, rev = 1 WHERE id = ?",
+            (import_key, mid),
+        )
+        store.conn.commit()
+        store.backfill_replication_ops(limit=50)
+
+        now = "2026-01-02T00:00:00Z"
+        store.conn.execute(
+            "UPDATE memory_items SET active = 0, deleted_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, mid),
+        )
+        store.conn.commit()
+        count = store.backfill_replication_ops(limit=50)
+        assert count >= 1
+        row = store.conn.execute(
+            """
+            SELECT op_type, clock_rev
+            FROM replication_ops
+            WHERE entity_id = ? AND op_type = 'delete'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (import_key,),
+        ).fetchone()
+        assert row is not None
+        assert row["op_type"] == "delete"
+        assert int(row["clock_rev"]) == 1
+    finally:
+        store.close()
+
+
 def test_load_replication_ops_since_filters_by_device_id(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
