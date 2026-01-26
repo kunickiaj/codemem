@@ -202,6 +202,18 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_sync_pair_prints_copyable_command(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
+    monkeypatch.setattr("opencode_mem.cli.pick_advertise_hosts", lambda value: ["127.0.0.1"])
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+    result = runner.invoke(app, ["sync", "pair", "--db-path", str(db_path)], env=env)
+    assert result.exit_code == 0
+    assert "opencode-mem sync pair --accept" in result.stdout
+    assert '"addresses"' in result.stdout
+
+
 def test_sync_peers_list(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"

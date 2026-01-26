@@ -199,7 +199,9 @@ def sync_once(
                 headers=status_headers,
             )
             if status_code != 200 or not status_payload:
-                raise RuntimeError("peer status failed")
+                detail = status_payload.get("error") if isinstance(status_payload, dict) else None
+                suffix = f" ({status_code}: {detail})" if detail else f" ({status_code})"
+                raise RuntimeError(f"peer status failed{suffix}")
             if status_payload.get("fingerprint") != pinned_fingerprint:
                 raise RuntimeError("peer fingerprint mismatch")
             query = urlencode({"since": last_applied or "", "limit": limit})
@@ -213,7 +215,9 @@ def sync_once(
             )
             status, payload = _request_json("GET", get_url, headers=get_headers)
             if status != 200 or payload is None:
-                raise RuntimeError("peer ops fetch failed")
+                detail = payload.get("error") if isinstance(payload, dict) else None
+                suffix = f" ({status}: {detail})" if detail else f" ({status})"
+                raise RuntimeError(f"peer ops fetch failed{suffix}")
             ops = payload.get("ops")
             if not isinstance(ops, list):
                 raise RuntimeError("invalid ops response")
@@ -247,7 +251,9 @@ def sync_once(
                         body_bytes=body_bytes,
                     )
                     if status != 200 or payload is None:
-                        raise RuntimeError("peer ops push failed")
+                        detail = payload.get("error") if isinstance(payload, dict) else None
+                        suffix = f" ({status}: {detail})" if detail else f" ({status})"
+                        raise RuntimeError(f"peer ops push failed{suffix}")
                 if outbound_cursor:
                     _set_replication_cursor(store, peer_device_id, last_acked=outbound_cursor)
                     last_acked = outbound_cursor
@@ -267,7 +273,7 @@ def sync_once(
                 "ops_out": len(outbound_ops),
             }
         except Exception as exc:
-            error = str(exc)
+            error = f"{base_url}: {exc}"
             continue
     record_sync_attempt(store.conn, peer_device_id, ok=False, error=error)
     return {"ok": False, "error": error}

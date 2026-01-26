@@ -1730,10 +1730,12 @@ def sync_pair(
             "address": primary_address,
             "addresses": addresses,
         }
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        escaped = payload_text.replace("'", "'\\''")
         print("[bold]Pairing payload[/bold]")
-        print(json.dumps(payload, ensure_ascii=False))
+        print(payload_text)
         print("Share this with your other device and run:")
-        print("  opencode-mem sync pair --accept '<payload>'")
+        print(f"  opencode-mem sync pair --accept '{escaped}'")
     finally:
         store.close()
 
