@@ -167,6 +167,7 @@ def build_sync_handler(db_path: Path | None = None):
                     if not _authorize_request(store, self, b""):
                         self._unauthorized()
                         return
+                    peer_device_id = str(self.headers.get("X-Opencode-Device") or "")
                     params = parse_qs(parsed.query)
                     cursor = params.get("since", [None])[0]
                     limit_value = params.get("limit", ["200"])[0]
@@ -180,7 +181,8 @@ def build_sync_handler(db_path: Path | None = None):
                         device_id=store.device_id,
                     )
                     ops, next_cursor, blocked = store.filter_replication_ops_for_sync_with_status(
-                        ops
+                        ops,
+                        peer_device_id=peer_device_id or None,
                     )
                     payload: dict[str, Any] = {"ops": ops, "next_cursor": next_cursor}
                     if blocked is not None and not ops:

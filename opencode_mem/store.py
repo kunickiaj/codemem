@@ -219,9 +219,45 @@ class MemoryStore:
             p.strip() for p in cfg.sync_projects_exclude if p and p.strip()
         ]
 
-    def _sync_project_allowed(self, project: str | None) -> bool:
-        include = {self._project_basename(p) for p in self._sync_projects_include if p}
-        exclude = {self._project_basename(p) for p in self._sync_projects_exclude if p}
+    def _effective_sync_project_filters(
+        self, *, peer_device_id: str | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Return include/exclude filters for a specific peer.
+
+        Semantics:
+        - If the peer has no per-peer override (both columns NULL), fall back to global config.
+        - If either per-peer column is non-NULL, treat missing side as empty (no implicit global merge).
+        """
+
+        if not peer_device_id:
+            return self._sync_projects_include, self._sync_projects_exclude
+        row = self.conn.execute(
+            """
+            SELECT projects_include_json, projects_exclude_json
+            FROM sync_peers
+            WHERE peer_device_id = ?
+            """,
+            (peer_device_id,),
+        ).fetchone()
+        if row is None:
+            return self._sync_projects_include, self._sync_projects_exclude
+        include_text = row["projects_include_json"]
+        exclude_text = row["projects_exclude_json"]
+        has_override = include_text is not None or exclude_text is not None
+        if not has_override:
+            return self._sync_projects_include, self._sync_projects_exclude
+        include = self._safe_json_list(include_text)
+        exclude = self._safe_json_list(exclude_text)
+        return include, exclude
+
+    def _sync_project_allowed(
+        self, project: str | None, *, peer_device_id: str | None = None
+    ) -> bool:
+        include_list, exclude_list = self._effective_sync_project_filters(
+            peer_device_id=peer_device_id
+        )
+        include = {self._project_basename(p) for p in include_list if p}
+        exclude = {self._project_basename(p) for p in exclude_list if p}
 
         value = None
         if isinstance(project, str) and project.strip():
@@ -275,13 +311,15 @@ class MemoryStore:
             return missing
 
     def filter_replication_ops_for_sync(
-        self, ops: Sequence[ReplicationOp]
+        self, ops: Sequence[ReplicationOp], *, peer_device_id: str | None = None
     ) -> tuple[list[ReplicationOp], str | None]:
-        allowed_ops, next_cursor, _blocked = self.filter_replication_ops_for_sync_with_status(ops)
+        allowed_ops, next_cursor, _blocked = self.filter_replication_ops_for_sync_with_status(
+            ops, peer_device_id=peer_device_id
+        )
         return allowed_ops, next_cursor
 
     def filter_replication_ops_for_sync_with_status(
-        self, ops: Sequence[ReplicationOp]
+        self, ops: Sequence[ReplicationOp], *, peer_device_id: str | None = None
     ) -> tuple[list[ReplicationOp], str | None, dict[str, Any] | None]:
         """Filter outbound replication ops with safe cursor semantics.
 
@@ -302,7 +340,7 @@ class MemoryStore:
                 if isinstance(payload, dict):
                     project_value = payload.get("project")
                     project = project_value if isinstance(project_value, str) else None
-                if not self._sync_project_allowed(project):
+                if not self._sync_project_allowed(project, peer_device_id=peer_device_id):
                     blocked = {
                         "reason": "project_filter",
                         "op_id": str(op.get("op_id") or ""),
@@ -1553,7 +1591,7 @@ class MemoryStore:
                 if isinstance(payload, dict):
                     project_value = payload.get("project")
                     project = project_value if isinstance(project_value, str) else None
-                if not self._sync_project_allowed(project):
+                if not self._sync_project_allowed(project, peer_device_id=source_device_id):
                     skipped += 1
                     continue
                 if op_type == "upsert":

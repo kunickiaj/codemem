@@ -357,3 +357,66 @@ def test_ops_endpoint_signals_blocked_head_op_when_filtered(tmp_path: Path, monk
         assert payload.get("blocked_op", {}).get("op_id") == "op-2"
     finally:
         server.shutdown()
+
+
+def test_peer_project_filter_override_allows_more_than_global(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
+    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.record_replication_op(
+            op_id="op-1",
+            entity_type="memory_item",
+            entity_id="k1",
+            op_type="upsert",
+            payload={"project": "project-a"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "local"},
+            device_id="local",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        store.record_replication_op(
+            op_id="op-2",
+            entity_type="memory_item",
+            entity_id="k2",
+            op_type="upsert",
+            payload={"project": "project-b"},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:01Z", "device_id": "local"},
+            device_id="local",
+            created_at="2026-01-01T00:00:01Z",
+        )
+        ops, _next = store.load_replication_ops_since(None, limit=10, device_id="local")
+        allowed_default, _cursor, _blocked = store.filter_replication_ops_for_sync_with_status(ops)
+        assert [op.get("op_id") for op in allowed_default] == ["op-1"]
+
+        store.conn.execute(
+            """
+            INSERT INTO sync_peers(
+                peer_device_id,
+                pinned_fingerprint,
+                public_key,
+                addresses_json,
+                created_at,
+                projects_include_json,
+                projects_exclude_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                "fp",
+                "pub",
+                "[]",
+                "2026-01-24T00:00:00Z",
+                "[]",
+                "[]",
+            ),
+        )
+        store.conn.commit()
+        allowed_peer, _cursor, _blocked = store.filter_replication_ops_for_sync_with_status(
+            ops, peer_device_id="peer-1"
+        )
+        assert [op.get("op_id") for op in allowed_peer] == ["op-1", "op-2"]
+    finally:
+        store.close()

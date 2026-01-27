@@ -325,6 +325,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "session_summaries", "import_key", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "cwd", "TEXT")
     _ensure_column(conn, "sync_peers", "public_key", "TEXT")
+    _ensure_column(conn, "sync_peers", "projects_include_json", "TEXT")
+    _ensure_column(conn, "sync_peers", "projects_exclude_json", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "project", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "started_at", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "last_seen_ts_wall_ms", "INTEGER")

@@ -512,7 +512,7 @@ def sync_doctor_cmd(
                     device_id=store.device_id,
                 )
                 _allowed, _next, blocked = store.filter_replication_ops_for_sync_with_status(
-                    outbound_ops
+                    outbound_ops, peer_device_id=peer_device_id
                 )
                 if blocked is not None:
                     blocked_outbound[peer_device_id] = blocked

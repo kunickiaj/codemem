@@ -283,7 +283,9 @@ def sync_once(
                 limit=limit,
                 device_id=device_id,
             )
-            outbound_ops, outbound_cursor = store.filter_replication_ops_for_sync(outbound_ops)
+            outbound_ops, outbound_cursor = store.filter_replication_ops_for_sync(
+                outbound_ops, peer_device_id=peer_device_id
+            )
             post_url = f"{base_url}/v1/ops"
             if outbound_ops:
                 batches = _chunk_ops_by_size(outbound_ops, max_bytes=MAX_SYNC_BODY_BYTES)
