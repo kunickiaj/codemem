@@ -238,19 +238,39 @@ def sync_pair_cmd(
     load_public_key,
     fingerprint_public_key,
     update_peer_addresses,
+    set_peer_project_filter,
     pick_advertise_hosts,
     pick_advertise_host,
     load_config,
     accept: str | None,
     name: str | None,
     address: str | None,
+    include: str | None,
+    exclude: str | None,
+    all_projects: bool,
+    default_projects: bool,
     db_path: str | None,
 ) -> None:
     """Print pairing payload or accept a peer payload."""
 
+    def _parse_projects(value: str | None) -> list[str]:
+        if not value:
+            return []
+        return [p.strip() for p in value.split(",") if p.strip()]
+
     store = store_from_path(db_path)
     try:
+        if not accept and (include or exclude or all_projects or default_projects):
+            print("[red]Project filters can only be set when accepting a payload[/red]")
+            raise typer.Exit(code=1)
         if accept:
+            if all_projects and default_projects:
+                print("[red]Use only one of --all or --default[/red]")
+                raise typer.Exit(code=1)
+            if (all_projects or default_projects) and (include or exclude):
+                print("[red]--include/--exclude cannot be combined with --all/--default[/red]")
+                raise typer.Exit(code=1)
+
             try:
                 payload = json.loads(accept)
             except json.JSONDecodeError as exc:
@@ -290,6 +310,21 @@ def sync_pair_cmd(
                 pinned_fingerprint=fingerprint,
                 public_key=public_key,
             )
+
+            if default_projects:
+                set_peer_project_filter(
+                    store.conn,
+                    device_id,
+                    include=None,
+                    exclude=None,
+                )
+            elif all_projects or include or exclude:
+                set_peer_project_filter(
+                    store.conn,
+                    device_id,
+                    include=[] if all_projects else _parse_projects(include),
+                    exclude=[] if all_projects else _parse_projects(exclude),
+                )
             print(f"[green]Paired with {device_id}[/green]")
             return
 

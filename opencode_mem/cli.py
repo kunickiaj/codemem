@@ -83,6 +83,7 @@ from .sync_daemon import run_sync_daemon, run_sync_pass, sync_pass_preflight
 from .sync_discovery import (
     discover_peers_via_mdns,
     mdns_enabled,
+    set_peer_project_filter,
     update_peer_addresses,
 )
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
@@ -693,6 +694,24 @@ def sync_pair(
     accept: str | None = typer.Option(None, help="Accept pairing payload (JSON)"),
     name: str | None = typer.Option(None, help="Label for the peer"),
     address: str | None = typer.Option(None, help="Override peer address (host:port)"),
+    include: str | None = typer.Option(
+        None,
+        help="Comma-separated project basenames to sync with this peer (accept only)",
+    ),
+    exclude: str | None = typer.Option(
+        None,
+        help="Comma-separated project basenames to exclude for this peer (accept only)",
+    ),
+    all_projects: bool = typer.Option(
+        False,
+        "--all",
+        help="Override peer project filter to sync all projects with this peer (accept only)",
+    ),
+    default_projects: bool = typer.Option(
+        False,
+        "--default",
+        help="Clear peer project filter override and inherit global defaults (accept only)",
+    ),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
 ) -> None:
     """Print pairing payload or accept a peer payload."""
@@ -702,12 +721,17 @@ def sync_pair(
         load_public_key=load_public_key,
         fingerprint_public_key=fingerprint_public_key,
         update_peer_addresses=update_peer_addresses,
+        set_peer_project_filter=set_peer_project_filter,
         pick_advertise_hosts=pick_advertise_hosts,
         pick_advertise_host=pick_advertise_host,
         load_config=load_config,
         accept=accept,
         name=name,
         address=address,
+        include=include,
+        exclude=exclude,
+        all_projects=all_projects,
+        default_projects=default_projects,
         db_path=db_path,
     )
 

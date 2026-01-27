@@ -176,7 +176,18 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
     }
     result = runner.invoke(
         app,
-        ["sync", "pair", "--accept", json.dumps(payload), "--db-path", str(db_path)],
+        [
+            "sync",
+            "pair",
+            "--accept",
+            json.dumps(payload),
+            "--include",
+            "project-a,project-b",
+            "--exclude",
+            "private-repo",
+            "--db-path",
+            str(db_path),
+        ],
         env=env,
     )
     assert result.exit_code == 0
@@ -184,12 +195,22 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
     conn = db.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT peer_device_id, pinned_fingerprint, public_key FROM sync_peers LIMIT 1"
+            """
+            SELECT peer_device_id,
+                   pinned_fingerprint,
+                   public_key,
+                   projects_include_json,
+                   projects_exclude_json
+            FROM sync_peers
+            LIMIT 1
+            """
         ).fetchone()
         assert row is not None
         assert row["peer_device_id"] == "peer-1"
         assert row["pinned_fingerprint"] == payload["fingerprint"]
         assert row["public_key"] == public_key
+        assert json.loads(row["projects_include_json"]) == ["project-a", "project-b"]
+        assert json.loads(row["projects_exclude_json"]) == ["private-repo"]
 
         stored = conn.execute(
             "SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?",

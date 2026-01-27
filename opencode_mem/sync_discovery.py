@@ -125,6 +125,33 @@ def update_peer_addresses(
     return merged
 
 
+def set_peer_project_filter(
+    conn: sqlite3.Connection,
+    peer_device_id: str,
+    *,
+    include: list[str] | None,
+    exclude: list[str] | None,
+) -> None:
+    """Set per-peer project filters.
+
+    - include/exclude as lists store a per-peer override (including empty lists).
+    - include=None and exclude=None clears the override (both columns NULL), inheriting global config.
+    """
+
+    include_json = None if include is None else db.to_json(include)
+    exclude_json = None if exclude is None else db.to_json(exclude)
+    conn.execute(
+        """
+        UPDATE sync_peers
+        SET projects_include_json = ?,
+            projects_exclude_json = ?
+        WHERE peer_device_id = ?
+        """,
+        (include_json, exclude_json, peer_device_id),
+    )
+    conn.commit()
+
+
 def record_sync_attempt(
     conn: sqlite3.Connection,
     peer_device_id: str,

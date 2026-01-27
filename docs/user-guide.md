@@ -50,6 +50,11 @@
 2. Or run `opencode-mem sync pair` and copy the payload.
 3. On the other device, run `opencode-mem sync pair --accept '<payload>'`.
 
+Optional (recommended for coworker sync): set a per-peer project filter at accept time:
+
+- `opencode-mem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
+- `opencode-mem sync pair --accept '<payload>' --exclude private-repo`
+
 ### One-off sync
 
 - `opencode-mem sync once` syncs all peers once.

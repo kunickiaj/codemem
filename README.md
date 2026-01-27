@@ -90,6 +90,28 @@ Notes:
 - Filtering is reversible: excluded projects are skipped without advancing cursors, so toggling
   filters later will allow previously filtered ops to sync.
 
+#### Per-peer overrides (recommended for coworker sync)
+
+Global filters apply to all peers by default. When accepting a pairing payload, you can set a
+per-peer override so one peer only syncs shared work projects while your other devices still sync
+everything.
+
+Example:
+
+```bash
+# Accept a peer and only sync specific projects with them
+opencode-mem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2
+
+# Accept a peer and exclude a project
+opencode-mem sync pair --accept '<payload>' --exclude private-repo
+
+# Clear per-peer override (inherit global defaults)
+opencode-mem sync pair --accept '<payload>' --default
+
+# Force per-peer override to sync all projects with this peer
+opencode-mem sync pair --accept '<payload>' --all
+```
+
 ## Semantic recall
 
 Semantic recall stores vector embeddings for memory items using sqlite-vec and fastembed. Embeddings are written when memories are created; use `opencode-mem embed` to backfill existing memories.
