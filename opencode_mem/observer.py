@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import observer_auth as _observer_auth
+from . import observer_codex as _observer_codex
 from . import observer_config as _observer_config
 from .config import load_config
 from .observer_prompts import ObserverContext, build_observer_prompt
@@ -15,13 +16,13 @@ from .xml_parser import ParsedOutput, parse_observer_output
 
 DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
-CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
-DEFAULT_CODEX_ENDPOINT = CODEX_API_ENDPOINT
+CODEX_API_ENDPOINT = _observer_codex.CODEX_API_ENDPOINT
+DEFAULT_CODEX_ENDPOINT = _observer_codex.DEFAULT_CODEX_ENDPOINT
 
 
 logger = logging.getLogger(__name__)
 
-_REDACT_PATTERNS = _observer_auth._REDACT_PATTERNS
+_REDACT_PATTERNS = _observer_codex._REDACT_PATTERNS
 _build_codex_headers = _observer_auth._build_codex_headers
 _extract_oauth_access = _observer_auth._extract_oauth_access
 _extract_oauth_account_id = _observer_auth._extract_oauth_account_id
@@ -29,8 +30,12 @@ _extract_oauth_expires = _observer_auth._extract_oauth_expires
 _get_iap_token = _observer_auth._get_iap_token
 _get_opencode_auth_path = _observer_auth._get_opencode_auth_path
 _now_ms = _observer_auth._now_ms
-_redact_text = _observer_auth._redact_text
+_redact_text = _observer_codex._redact_text
 _resolve_oauth_provider = _observer_auth._resolve_oauth_provider
+
+_build_codex_payload = _observer_codex._build_codex_payload
+_parse_codex_stream = _observer_codex._parse_codex_stream
+_resolve_codex_endpoint = _observer_codex._resolve_codex_endpoint
 
 _get_opencode_provider_config = _observer_config._get_opencode_provider_config
 _get_provider_api_key = _observer_config._get_provider_api_key
@@ -48,6 +53,7 @@ _strip_json_comments = _observer_config._strip_json_comments
 _strip_trailing_commas = _observer_config._strip_trailing_commas
 
 del _observer_auth
+del _observer_codex
 del _observer_config
 
 
@@ -67,50 +73,6 @@ def _load_opencode_oauth_cache() -> dict[str, Any]:
         logger.warning("opencode auth cache load failed", exc_info=exc)
         return {}
     return data if isinstance(data, dict) else {}
-
-
-def _build_codex_payload(model: str, prompt: str, max_tokens: int) -> dict[str, Any]:
-    payload = {
-        "model": model,
-        "instructions": "You are a memory observer.",
-        "input": [
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            }
-        ],
-        "store": False,
-        "stream": True,
-    }
-    return payload
-
-
-def _resolve_codex_endpoint() -> str:
-    return os.getenv("OPENCODE_MEM_CODEX_ENDPOINT", DEFAULT_CODEX_ENDPOINT)
-
-
-def _parse_codex_stream(response: Any) -> str | None:
-    text_parts: list[str] = []
-    for line in response.iter_lines():
-        if not line:
-            continue
-        decoded = line.decode("utf-8") if isinstance(line, (bytes, bytearray)) else str(line)
-        if not decoded.startswith("data:"):
-            continue
-        payload = decoded[len("data:") :].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        if event.get("type") == "response.output_text.delta":
-            delta = event.get("delta")
-            if isinstance(delta, str) and delta:
-                text_parts.append(delta)
-    if text_parts:
-        return "".join(text_parts).strip()
-    return None
 
 
 @dataclass

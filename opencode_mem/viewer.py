@@ -29,6 +29,12 @@ from .store import MemoryStore
 from .sync_daemon import sync_once
 from .sync_discovery import load_peer_addresses
 from .sync_identity import ensure_device_identity, load_public_key
+from .viewer_http import (
+    read_json_body,
+    reject_cross_origin,
+    send_html_response,
+    send_json_response,
+)
 
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
@@ -2474,45 +2480,16 @@ VIEWER_HTML = """<!doctype html>
 
 class ViewerHandler(BaseHTTPRequestHandler):
     def _send_json(self, payload: dict, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        send_json_response(self, payload, status=status)
 
     def _send_html(self) -> None:
-        body = VIEWER_HTML.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        send_html_response(self, VIEWER_HTML)
 
     def _read_json(self) -> dict[str, Any] | None:
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        raw = self.rfile.read(length).decode("utf-8") if length else ""
-        if not raw:
-            return None
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
+        return read_json_body(self)
 
     def _reject_cross_origin(self) -> bool:
-        origin = self.headers.get("Origin")
-        if not origin:
-            return False
-        allowed = (
-            origin.startswith("http://127.0.0.1")
-            or origin.startswith("http://localhost")
-            or origin.startswith("http://[::1]")
-        )
-        if allowed:
-            return False
-        self._send_json({"error": "forbidden"}, status=403)
-        return True
+        return reject_cross_origin(self)
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         if os.environ.get("OPENCODE_MEM_VIEWER_LOGS") == "1":
