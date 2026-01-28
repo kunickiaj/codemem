@@ -24,10 +24,10 @@ def test_sync_enable_writes_config(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
 
-    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: False)
-    monkeypatch.setattr("opencode_mem.cli.spawn_daemon", lambda *a, **k: 12345)
+    monkeypatch.setattr("opencode_mem.cli_app._sync_daemon_running", lambda host, port: False)
+    monkeypatch.setattr("opencode_mem.cli_app.spawn_daemon", lambda *a, **k: 12345)
     monkeypatch.setattr(
-        "opencode_mem.cli.effective_status",
+        "opencode_mem.cli_app.effective_status",
         lambda host, port: type(
             "S", (), {"running": True, "mechanism": "pidfile", "detail": "running", "pid": 12345}
         )(),
@@ -59,9 +59,9 @@ def test_sync_enable_mac_defaults_no_install(monkeypatch, tmp_path: Path) -> Non
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
-    monkeypatch.setattr("opencode_mem.cli.spawn_daemon", lambda *a, **k: 123)
+    monkeypatch.setattr("opencode_mem.cli_app.spawn_daemon", lambda *a, **k: 123)
     monkeypatch.setattr(
-        "opencode_mem.cli.effective_status",
+        "opencode_mem.cli_app.effective_status",
         lambda host, port: type(
             "S", (), {"running": True, "mechanism": "pidfile", "detail": "running", "pid": 123}
         )(),
@@ -86,7 +86,7 @@ def test_sync_enable_mac_defaults_no_install(monkeypatch, tmp_path: Path) -> Non
 def test_sync_enable_no_start(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
     monkeypatch.setattr(
-        "opencode_mem.cli.spawn_daemon",
+        "opencode_mem.cli_app.spawn_daemon",
         lambda *a, **k: (_ for _ in ()).throw(Exception("no")),
     )
     config_path = tmp_path / "config.json"
@@ -110,7 +110,7 @@ def test_sync_enable_restarts_running_daemon_on_change(monkeypatch, tmp_path: Pa
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
 
     monkeypatch.setattr(
-        "opencode_mem.cli.effective_status",
+        "opencode_mem.cli_app.effective_status",
         lambda host, port: type(
             "S", (), {"running": True, "mechanism": "pidfile", "detail": "running", "pid": 1}
         )(),
@@ -122,7 +122,7 @@ def test_sync_enable_restarts_running_daemon_on_change(monkeypatch, tmp_path: Pa
         called["restart"] += 1
         return True
 
-    monkeypatch.setattr("opencode_mem.cli._run_service_action_quiet", fake_run_service)
+    monkeypatch.setattr("opencode_mem.cli_app._run_service_action_quiet", fake_run_service)
     result = runner.invoke(
         app,
         ["sync", "enable", "--db-path", str(db_path), "--host", "0.0.0.0", "--no-install"],
@@ -142,7 +142,7 @@ def test_sync_disable_stops_service(monkeypatch, tmp_path: Path) -> None:
         assert action == "stop"
         called["stop"] += 1
 
-    monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
+    monkeypatch.setattr("opencode_mem.cli_app._run_service_action", fake_run_service)
     result = runner.invoke(app, ["sync", "disable"], env=env)
     assert result.exit_code == 0
     assert called["stop"] == 1
@@ -156,8 +156,8 @@ def test_sync_disable_stops_pid_when_no_service(monkeypatch, tmp_path: Path) -> 
     def fake_run_service(action: str, *, user: bool, system: bool) -> None:
         raise typer.Exit(code=1)
 
-    monkeypatch.setattr("opencode_mem.cli._run_service_action", fake_run_service)
-    monkeypatch.setattr("opencode_mem.cli.stop_pidfile", lambda: True)
+    monkeypatch.setattr("opencode_mem.cli_app._run_service_action", fake_run_service)
+    monkeypatch.setattr("opencode_mem.cli_app.stop_pidfile", lambda: True)
     result = runner.invoke(app, ["sync", "disable"], env=env)
     assert result.exit_code == 0
 
@@ -225,7 +225,7 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
 
 def test_sync_pair_prints_copyable_command(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
-    monkeypatch.setattr("opencode_mem.cli.pick_advertise_hosts", lambda value: ["127.0.0.1"])
+    monkeypatch.setattr("opencode_mem.cli_app.pick_advertise_hosts", lambda value: ["127.0.0.1"])
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
@@ -259,16 +259,17 @@ def test_sync_peers_list(tmp_path: Path) -> None:
 
 
 def test_sync_uninstall_runs(monkeypatch) -> None:
-    monkeypatch.setattr("opencode_mem.cli._sync_uninstall_impl", lambda user: None)
+    monkeypatch.setattr("opencode_mem.cli_app._sync_uninstall_impl", lambda user: None)
     result = runner.invoke(app, ["sync", "uninstall"])
     assert result.exit_code == 0
 
 
 def test_sync_stop_falls_back_to_pid(monkeypatch) -> None:
     monkeypatch.setattr(
-        "opencode_mem.cli._run_service_action", lambda *a, **k: (_ for _ in ()).throw(typer.Exit(1))
+        "opencode_mem.cli_app._run_service_action",
+        lambda *a, **k: (_ for _ in ()).throw(typer.Exit(1)),
     )
-    monkeypatch.setattr("opencode_mem.cli.stop_pidfile", lambda: True)
+    monkeypatch.setattr("opencode_mem.cli_app.stop_pidfile", lambda: True)
     result = runner.invoke(app, ["sync", "stop"])
     assert result.exit_code == 0
 
@@ -286,9 +287,9 @@ def test_sync_once_updates_addresses_from_mdns(monkeypatch, tmp_path: Path) -> N
     finally:
         conn.close()
 
-    monkeypatch.setattr("opencode_mem.cli.mdns_enabled", lambda: True)
+    monkeypatch.setattr("opencode_mem.cli_app.mdns_enabled", lambda: True)
     monkeypatch.setattr(
-        "opencode_mem.cli.discover_peers_via_mdns",
+        "opencode_mem.cli_app.discover_peers_via_mdns",
         lambda: [{"host": "192.168.1.22", "port": 7337, "properties": {"device_id": "peer-1"}}],
     )
     monkeypatch.setattr("opencode_mem.sync_daemon.sync_pass_preflight", lambda store: None)
@@ -335,8 +336,8 @@ def test_sync_once_runs_preflight(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr("opencode_mem.store.MemoryStore.migrate_legacy_import_keys", fake_legacy)
     monkeypatch.setattr("opencode_mem.store.MemoryStore.backfill_replication_ops", fake_backfill)
-    monkeypatch.setattr("opencode_mem.cli.run_sync_pass", lambda store, peer, **k: {"ok": True})
-    monkeypatch.setattr("opencode_mem.cli.mdns_enabled", lambda: False)
+    monkeypatch.setattr("opencode_mem.cli_app.run_sync_pass", lambda store, peer, **k: {"ok": True})
+    monkeypatch.setattr("opencode_mem.cli_app.mdns_enabled", lambda: False)
 
     result = runner.invoke(app, ["sync", "once", "--db-path", str(db_path)])
     assert result.exit_code == 0
@@ -354,9 +355,9 @@ def test_sync_doctor_reports_mdns_status(monkeypatch, tmp_path: Path) -> None:
         + "\n"
     )
     env = {"OPENCODE_MEM_CONFIG": str(config_path)}
-    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli_app._sync_daemon_running", lambda host, port: True)
     monkeypatch.setattr(
-        "opencode_mem.cli._mdns_runtime_status",
+        "opencode_mem.cli_app._mdns_runtime_status",
         lambda enabled: (False, "enabled but zeroconf missing"),
     )
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)], env=env)
@@ -377,7 +378,7 @@ def test_sync_service_status_uses_pid(monkeypatch) -> None:
     monkeypatch.setattr("opencode_mem.sync_runtime._read_pid", lambda p: 123)
     monkeypatch.setattr("opencode_mem.sync_runtime._pid_running", lambda pid: True)
     monkeypatch.setattr(
-        "opencode_mem.cli.load_config",
+        "opencode_mem.cli_app.load_config",
         lambda: type(
             "Cfg",
             (),
@@ -397,7 +398,7 @@ def test_sync_service_status_uses_pid(monkeypatch) -> None:
 
 def test_sync_daemon_requires_enabled(monkeypatch) -> None:
     monkeypatch.setattr(
-        "opencode_mem.cli.load_config", lambda: type("Cfg", (), {"sync_enabled": False})()
+        "opencode_mem.cli_app.load_config", lambda: type("Cfg", (), {"sync_enabled": False})()
     )
     result = runner.invoke(app, ["sync", "daemon"])
     assert result.exit_code == 1
@@ -419,8 +420,8 @@ def test_sync_doctor_runs(monkeypatch, tmp_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
-    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: False)
-    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: False)
+    monkeypatch.setattr("opencode_mem.cli_app._sync_daemon_running", lambda host, port: False)
+    monkeypatch.setattr("opencode_mem.cli_app._port_open", lambda host, port: False)
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)])
     assert result.exit_code == 0
 
@@ -443,7 +444,7 @@ def test_sync_doctor_prints_ok(monkeypatch, tmp_path: Path) -> None:
         conn.close()
 
     monkeypatch.setattr(
-        "opencode_mem.cli.load_config",
+        "opencode_mem.cli_app.load_config",
         lambda: type(
             "Cfg",
             (),
@@ -455,8 +456,8 @@ def test_sync_doctor_prints_ok(monkeypatch, tmp_path: Path) -> None:
             },
         )(),
     )
-    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
-    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli_app._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli_app._port_open", lambda host, port: True)
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)])
     assert result.exit_code == 0
     assert "OK: sync looks healthy" in result.stdout
@@ -521,8 +522,8 @@ def test_sync_doctor_warns_on_unknown_project_ops_when_include_active(
     finally:
         conn.close()
 
-    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
-    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli_app._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli_app._port_open", lambda host, port: True)
 
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)], env=env)
     assert result.exit_code == 0
@@ -611,8 +612,8 @@ def test_sync_doctor_reports_outbound_skipped_ops(monkeypatch, tmp_path: Path) -
     finally:
         conn.close()
 
-    monkeypatch.setattr("opencode_mem.cli._sync_daemon_running", lambda host, port: True)
-    monkeypatch.setattr("opencode_mem.cli._port_open", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli_app._sync_daemon_running", lambda host, port: True)
+    monkeypatch.setattr("opencode_mem.cli_app._port_open", lambda host, port: True)
 
     result = runner.invoke(app, ["sync", "doctor", "--db-path", str(db_path)], env=env)
     assert result.exit_code == 0

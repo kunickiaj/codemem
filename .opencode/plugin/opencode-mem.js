@@ -2,33 +2,42 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 
-export const OpencodeMemPlugin = async ({
-  project,
-  client,
-  directory,
-  worktree,
-}) => {
-  const events = [];
-  const maxEvents = Number.parseInt(
-    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENTS || "200",
-    10
-  );
-  const maxChars = Number.parseInt(
-    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENT_CHARS || "8000",
-    10
-  );
-  const cwd = worktree || directory || process.cwd();
-  const debug = ["1", "true", "yes"].includes(
-    (process.env.OPENCODE_MEM_PLUGIN_DEBUG || "").toLowerCase()
-  );
-  const debugExtraction = ["1", "true", "yes"].includes(
-    (process.env.OPENCODE_MEM_DEBUG_EXTRACTION || "").toLowerCase()
-  );
-  const logTimeoutMs = Number.parseInt(
-    process.env.OPENCODE_MEM_PLUGIN_LOG_TIMEOUT_MS || "1500",
-    10
-  );
-  const log = async (level, message, extra = {}) => {
+const TRUTHY_VALUES = ["1", "true", "yes"];
+const ENABLE_VALUES = ["1", "true", "on"];
+const DISABLED_VALUES = ["0", "false", "off"];
+
+const normalizeEnvValue = (value) => (value || "").toLowerCase();
+const envHasValue = (value, truthyValues) =>
+  truthyValues.includes(normalizeEnvValue(value));
+const envNotDisabled = (value) =>
+  !DISABLED_VALUES.includes(normalizeEnvValue(value));
+
+const resolveLogPath = (logPathEnvRaw, cwd, homeDir) => {
+  const logPathEnv = normalizeEnvValue(logPathEnvRaw);
+  const logEnabled = !!logPathEnvRaw && !DISABLED_VALUES.includes(logPathEnv);
+  if (!logEnabled) {
+    return null;
+  }
+  if (["true", "yes", "1"].includes(logPathEnv)) {
+    return `${homeDir || cwd}/.opencode-mem/plugin.log`;
+  }
+  return logPathEnvRaw;
+};
+
+const createLogLine = (logPath) => async (line) => {
+  if (!logPath) {
+    return;
+  }
+  try {
+    await mkdir(dirname(logPath), { recursive: true });
+    await appendFile(logPath, `${new Date().toISOString()} ${line}\n`);
+  } catch (err) {
+    // ignore logging failures
+  }
+};
+
+const createDebugLogger = ({ debug, client, logTimeoutMs, getLogLine }) =>
+  async (level, message, extra = {}) => {
     if (!debug) {
       return;
     }
@@ -54,34 +63,72 @@ export const OpencodeMemPlugin = async ({
         ),
       ]);
       if (timedOut) {
-        await logLine("debug log timed out");
+        await getLogLine()("debug log timed out");
       }
     } catch (err) {
       // ignore debug logging failures
     }
   };
+
+const detectRunner = ({ cwd, envRunner }) => {
+  if (envRunner) {
+    return envRunner;
+  }
+  // Check if we're in the opencode-mem repo (dev mode)
+  try {
+    const pyproject = Bun.file(`${cwd}/pyproject.toml`);
+    if (pyproject.size > 0) {
+      const content = require("fs").readFileSync(
+        `${cwd}/pyproject.toml`,
+        "utf-8"
+      );
+      if (content.includes('name = "opencode-mem"')) {
+        return "uv";
+      }
+    }
+  } catch (err) {
+    // Not in dev mode
+  }
+  return "uvx";
+};
+
+export const OpencodeMemPlugin = async ({
+  project,
+  client,
+  directory,
+  worktree,
+}) => {
+  const events = [];
+  const maxEvents = Number.parseInt(
+    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENTS || "200",
+    10
+  );
+  const maxChars = Number.parseInt(
+    process.env.OPENCODE_MEM_PLUGIN_MAX_EVENT_CHARS || "8000",
+    10
+  );
+  const cwd = worktree || directory || process.cwd();
+  const debug = envHasValue(process.env.OPENCODE_MEM_PLUGIN_DEBUG, TRUTHY_VALUES);
+  const debugExtraction = envHasValue(
+    process.env.OPENCODE_MEM_DEBUG_EXTRACTION,
+    TRUTHY_VALUES
+  );
+  const logTimeoutMs = Number.parseInt(
+    process.env.OPENCODE_MEM_PLUGIN_LOG_TIMEOUT_MS || "1500",
+    10
+  );
   const logPathEnvRaw = process.env.OPENCODE_MEM_PLUGIN_LOG || "";
-  const logPathEnv = logPathEnvRaw.toLowerCase();
-  const logEnabled =
-    !!logPathEnvRaw && !["0", "false", "off"].includes(logPathEnv);
-  const logPath = logEnabled
-    ? ["true", "yes", "1"].includes(logPathEnv)
-      ? `${process.env.HOME || cwd}/.opencode-mem/plugin.log`
-      : logPathEnvRaw
-    : null;
-  const logLine = async (line) => {
-    if (!logPath) {
-      return;
-    }
-    try {
-      await mkdir(dirname(logPath), { recursive: true });
-      await appendFile(logPath, `${new Date().toISOString()} ${line}\n`);
-    } catch (err) {
-      // ignore logging failures
-    }
-  };
-  const pluginIgnored = ["1", "true", "yes"].includes(
-    (process.env.OPENCODE_MEM_PLUGIN_IGNORE || "").toLowerCase()
+  const logPath = resolveLogPath(logPathEnvRaw, cwd, process.env.HOME);
+  const logLine = createLogLine(logPath);
+  const log = createDebugLogger({
+    debug,
+    client,
+    logTimeoutMs,
+    getLogLine: () => logLine,
+  });
+  const pluginIgnored = envHasValue(
+    process.env.OPENCODE_MEM_PLUGIN_IGNORE,
+    TRUTHY_VALUES
   );
   if (pluginIgnored) {
     return {};
@@ -91,27 +138,10 @@ export const OpencodeMemPlugin = async ({
   // - If OPENCODE_MEM_RUNNER is set, use that
   // - If we're in a directory with pyproject.toml containing opencode-mem, use "uv" (dev mode)
   // - Otherwise, use "uvx" with SSH git URL (installed mode)
-  const detectRunner = () => {
-    const envRunner = process.env.OPENCODE_MEM_RUNNER;
-    if (envRunner) {
-      return envRunner;
-    }
-    // Check if we're in the opencode-mem repo (dev mode)
-    try {
-      const pyproject = Bun.file(`${cwd}/pyproject.toml`);
-      if (pyproject.size > 0) {
-        const content = require("fs").readFileSync(`${cwd}/pyproject.toml`, "utf-8");
-        if (content.includes('name = "opencode-mem"')) {
-          return "uv";
-        }
-      }
-    } catch (err) {
-      // Not in dev mode
-    }
-    return "uvx";
-  };
-
-  const runner = detectRunner();
+  const runner = detectRunner({
+    cwd,
+    envRunner: process.env.OPENCODE_MEM_RUNNER,
+  });
   const defaultRunnerFrom = runner === "uvx"
     ? "git+https://github.com/kunickiaj/opencode-mem.git"
     : cwd;
@@ -127,14 +157,12 @@ export const OpencodeMemPlugin = async ({
     return [];
   };
   const runnerArgs = buildRunnerArgs();
-  const viewerEnabled = !["0", "false", "off"].includes(
-    (process.env.OPENCODE_MEM_VIEWER || "1").toLowerCase()
+  const viewerEnabled = envNotDisabled(process.env.OPENCODE_MEM_VIEWER || "1");
+  const viewerAutoStart = envNotDisabled(
+    process.env.OPENCODE_MEM_VIEWER_AUTO || "1"
   );
-  const viewerAutoStart = !["0", "false", "off"].includes(
-    (process.env.OPENCODE_MEM_VIEWER_AUTO || "1").toLowerCase()
-  );
-  const viewerAutoStop = !["0", "false", "off"].includes(
-    (process.env.OPENCODE_MEM_VIEWER_AUTO_STOP || "1").toLowerCase()
+  const viewerAutoStop = envNotDisabled(
+    process.env.OPENCODE_MEM_VIEWER_AUTO_STOP || "1"
   );
   const viewerHost = process.env.OPENCODE_MEM_VIEWER_HOST || "127.0.0.1";
   const viewerPort = process.env.OPENCODE_MEM_VIEWER_PORT || "38888";
@@ -147,8 +175,8 @@ export const OpencodeMemPlugin = async ({
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) ? parsed : fallback;
   };
-  const injectEnabled = !["0", "false", "off"].includes(
-    (process.env.OPENCODE_MEM_INJECT_CONTEXT || "1").toLowerCase()
+  const injectEnabled = envNotDisabled(
+    process.env.OPENCODE_MEM_INJECT_CONTEXT || "1"
   );
   // Only use env overrides if explicitly set; otherwise CLI uses config defaults
   const injectLimitEnv = process.env.OPENCODE_MEM_INJECT_LIMIT;
@@ -169,12 +197,13 @@ export const OpencodeMemPlugin = async ({
   const messageTexts = new Map();
   let debugLogCount = 0;
 
-  const rawEventsEnabled = !["0", "false", "off"].includes(
-    (process.env.OPENCODE_MEM_RAW_EVENTS || "1").toLowerCase()
+  const rawEventsEnabled = envNotDisabled(
+    process.env.OPENCODE_MEM_RAW_EVENTS || "1"
   );
   const rawEventsUrl = `http://${viewerHost}:${viewerPort}/api/raw-events`;
-  const enableCliIngest = ["1", "true", "on"].includes(
-    (process.env.OPENCODE_MEM_ENABLE_CLI_INGEST || "0").toLowerCase()
+  const enableCliIngest = envHasValue(
+    process.env.OPENCODE_MEM_ENABLE_CLI_INGEST || "0",
+    ENABLE_VALUES
   );
   const disableCliIngest = !enableCliIngest;
   const nextEventId = () => {
