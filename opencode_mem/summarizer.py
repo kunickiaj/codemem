@@ -24,7 +24,35 @@ logger = logging.getLogger(__name__)
 LOW_SIGNAL_OBSERVATION_PATTERNS: list[re.Pattern[str]] = [
     # Empty by default - trust the observer LLM.
     # Add patterns here only for content that consistently gets through
-    # despite observer guidance (e.g., tool output formatting noise).
+    # despite observer guidance. These catch low-signal session summaries
+    # the observer regularly fails to suppress.
+    re.compile(r"\bno\s+code\s+changes?\s+(?:were|was)\s+(?:recorded|made)\b", re.IGNORECASE),
+    re.compile(r"\bno\s+code\s+was\s+modified\b", re.IGNORECASE),
+    re.compile(
+        r"\bno\s+new\s+(?:code|configuration|config|documentation)"
+        r"(?:\s+or\s+(?:code|configuration|config|documentation))?\s+(?:was|were)\s+(?:shipped|delivered)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bno\s+new\s+deliverables?\b", re.IGNORECASE),
+    re.compile(
+        r"\bno\s+definitive\s+(?:code\s+rewrite|feature\s+delivery)"
+        r"(?:\s+or\s+(?:code\s+rewrite|feature\s+delivery))?\s+(?:occurred|happened)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bonly\s+file\s+inspection\s+occurred\b", re.IGNORECASE),
+    re.compile(r"\bonly\s+produced\s+(?:an?\s+)?understanding\b", re.IGNORECASE),
+    re.compile(r"\bconsisted\s+entirely\s+of\s+capturing\b", re.IGNORECASE),
+    re.compile(r"\bno\s+fully\s+resolved\s+deliverable\b", re.IGNORECASE),
+    re.compile(r"\beffort\s+focused\s+on\s+clarifying\b", re.IGNORECASE),
+    re.compile(
+        r"\bno\s+code\s*,?\s+configuration\s*,?\s+or\s+documentation\s+changes?\s+(?:were|was)\s+made\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwork\s+consisted\s+entirely\s+of\s+capturing\s+the\s+current\s+state\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bprimary\s+user\s+request\s+details\s+were\s+absent\b", re.IGNORECASE),
 ]
 
 

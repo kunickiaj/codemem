@@ -284,6 +284,59 @@ def test_pack_metrics_dedupe_work_by_discovery_group(tmp_path: Path) -> None:
     assert metrics.get("work_tokens") == 200
 
 
+def test_pack_metrics_work_estimates_and_reliability(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    missing_one = store.remember(
+        session,
+        kind="note",
+        title="Missing tokens one",
+        body_text="savings-check unique-missing-1",
+    )
+    known = store.remember(
+        session,
+        kind="note",
+        title="Has tokens",
+        body_text="savings-check unique-known-1",
+        metadata={"discovery_tokens": 150, "discovery_source": "usage"},
+    )
+    missing_two = store.remember(
+        session,
+        kind="note",
+        title="Missing tokens two",
+        body_text="savings-check unique-missing-2",
+    )
+    store.end_session(session)
+
+    pack_missing = store.build_memory_pack("unique-missing-1", limit=1)
+    missing_items = {item.get("id") for item in pack_missing.get("items", [])}
+    assert missing_items == {missing_one}
+    missing_metrics = pack_missing.get("metrics") or {}
+    assert missing_metrics.get("work_tokens_unique", 0) >= 2000
+
+    pack_known = store.build_memory_pack("unique-known-1", limit=1)
+    known_items = {item.get("id") for item in pack_known.get("items", [])}
+    assert known_items == {known}
+    known_metrics = pack_known.get("metrics") or {}
+    assert known_metrics.get("work_tokens_unique") == 150
+    assert known_metrics.get("savings_reliable") is True
+
+    pack_mixed = store.build_memory_pack("savings-check", limit=10)
+    mixed_items = {item.get("id") for item in pack_mixed.get("items", [])}
+    assert known in mixed_items
+    assert missing_one in mixed_items
+    assert missing_two in mixed_items
+    mixed_metrics = pack_mixed.get("metrics") or {}
+    assert mixed_metrics.get("savings_reliable") is False
+
+
 def test_migrate_legacy_import_keys_prefixes_device_id(tmp_path: Path) -> None:
     db_a = tmp_path / "a.sqlite"
     db_b = tmp_path / "b.sqlite"

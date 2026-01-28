@@ -389,17 +389,53 @@ class TestFullPipeline:
 
 
 class TestLowSignalFiltering:
-    """Test that low-signal filtering infrastructure works (patterns are empty by default)."""
+    """Test that low-signal filtering infrastructure works."""
 
-    def test_empty_patterns_by_default(self) -> None:
-        """Low-signal patterns should be empty - we trust the observer LLM."""
+    def test_patterns_are_scoped(self) -> None:
+        """Observation patterns are targeted; transcript patterns remain empty."""
         from opencode_mem.summarizer import (
             LOW_SIGNAL_OBSERVATION_PATTERNS,
             LOW_SIGNAL_PATTERNS,
         )
 
         assert len(LOW_SIGNAL_PATTERNS) == 0
-        assert len(LOW_SIGNAL_OBSERVATION_PATTERNS) == 0
+        assert len(LOW_SIGNAL_OBSERVATION_PATTERNS) > 0
+
+    def test_low_signal_observations_match_patterns(self) -> None:
+        from opencode_mem.summarizer import is_low_signal_observation
+
+        low_signal_samples = [
+            "No code changes were recorded.",
+            "No code was modified.",
+            "No new code or configuration was shipped.",
+            "No new deliverables.",
+            "No definitive code rewrite or feature delivery occurred.",
+            "Only file inspection occurred.",
+            "Only produced an understanding of the current layout.",
+            "The session consisted entirely of capturing system details.",
+            "No fully resolved deliverable was reached.",
+            "Effort focused on clarifying requirements.",
+            "No code, configuration, or documentation changes were made.",
+            "The work consisted entirely of capturing the current state.",
+            "Primary user request details were absent.",
+        ]
+
+        for sample in low_signal_samples:
+            assert is_low_signal_observation(sample)
+
+    def test_legitimate_content_not_filtered(self) -> None:
+        from opencode_mem.summarizer import is_low_signal_observation
+
+        valid_samples = [
+            "No changes were needed in parser logic; added a CLI flag and tests.",
+            "No change in behavior, but shipped config defaults for staging.",
+            "Audited repo: no changes required in foo, yet updated README and released patch.",
+            "Investigated file inspection flow and added a new inspector helper.",
+            "Clarifying assumptions for the API, then implemented token refresh flow.",
+        ]
+
+        for sample in valid_samples:
+            assert not is_low_signal_observation(sample)
 
     def test_valuable_content_not_filtered(self) -> None:
         """With empty patterns, nothing should be filtered."""

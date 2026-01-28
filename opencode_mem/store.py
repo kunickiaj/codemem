@@ -4135,9 +4135,11 @@ class MemoryStore:
                         return tokens
                 except (TypeError, ValueError):
                     pass
+            # Fallback: a session producing a memory costs at least ~2K tokens;
+            # use the larger of that floor or the text-based estimate.
             title = item.title if isinstance(item, MemoryResult) else item.get("title", "")
             body = item.body_text if isinstance(item, MemoryResult) else item.get("body_text", "")
-            return self.estimate_tokens(f"{title} {body}".strip())
+            return max(2000, self.estimate_tokens(f"{title} {body}".strip()))
 
         def discovery_group(item: MemoryResult | dict[str, Any]) -> str:
             metadata = get_metadata(item)
@@ -4483,6 +4485,9 @@ class MemoryStore:
             "work_source": work_source_label,
             "work_usage_items": usage_items,
             "work_estimate_items": estimate_items,
+            "savings_reliable": avoided_known >= avoided_unknown
+            if (avoided_known + avoided_unknown) > 0
+            else True,
             "semantic_candidates": semantic_candidates,
             "semantic_hits": semantic_hits,
         }

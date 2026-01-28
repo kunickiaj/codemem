@@ -758,10 +758,12 @@ export const OpencodeMemPlugin = async ({
               const items = injected.metrics?.items;
               const packTokens = injected.metrics?.pack_tokens;
               const avoided = injected.metrics?.avoided_work_tokens;
+              const avoidedUnknown = injected.metrics?.avoided_work_unknown_items || 0;
+              const avoidedKnown = injected.metrics?.avoided_work_known_items || 0;
               const messageParts = ["opencode-mem injected"];
               if (typeof items === "number") messageParts.push(`${items} items`);
               if (typeof packTokens === "number") messageParts.push(`~${packTokens} tokens`);
-              if (typeof avoided === "number" && avoided > 0)
+              if (typeof avoided === "number" && avoided > 0 && avoidedKnown >= avoidedUnknown)
                 messageParts.push(`avoided work ~${avoided} tokens`);
               await client.tui.showToast({
                 body: {

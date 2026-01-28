@@ -2284,6 +2284,7 @@ VIEWER_HTML = """<!doctype html>
         const workSource = metadata.work_source || "estimate";
         const workUsageItems = metadata.work_usage_items || 0;
         const workEstimateItems = metadata.work_estimate_items || 0;
+        const savingsReliable = metadata.savings_reliable !== false;
         const timeAgo = latest.created_at ? formatDate(latest.created_at) : "recently";
         const packProject = project || metadata.project || "";
         const savingsPercent = workTokens > 0 ? Math.round((savedTokens / workTokens) * 100) : 0;
@@ -2309,7 +2310,7 @@ VIEWER_HTML = """<!doctype html>
           { label: "Memories packed", value: items, icon: "layers" },
           { label: "Pack size", value: packTokens.toLocaleString(), tooltip: "Token cost to inject memories into context", icon: "file-text" },
           { label: workLabel, value: workTokens.toLocaleString(), tooltip: workTooltip, icon: "zap" },
-          { label: "Savings", value: `${savedTokens.toLocaleString()} (${savingsPercent}%)`, tooltip: "Net savings from reusing compressed memories", icon: "arrow-down-circle" },
+          { label: savingsReliable ? "Savings" : "Savings (est.)", value: `${savedTokens > 0 ? "~" : ""}${savedTokens.toLocaleString()} (${savingsPercent}%)`, tooltip: savingsReliable ? "Net savings from reusing compressed memories" : "Estimated — some memories lack usage data from earlier versions", icon: "arrow-down-circle" },
         ];
         if (semanticCandidates > 0) {
           stats.push(
