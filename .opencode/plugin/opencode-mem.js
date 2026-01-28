@@ -508,10 +508,49 @@ export const OpencodeMemPlugin = async ({
   };
 
   const resolveInjectQuery = () => {
-    if (lastPromptText && lastPromptText.trim()) {
-      return lastPromptText.trim();
+    const parts = [];
+
+    // First prompt captures session intent (most stable signal)
+    if (sessionContext.firstPrompt && sessionContext.firstPrompt.trim()) {
+      parts.push(sessionContext.firstPrompt.trim());
     }
-    return "recent work";
+
+    // Latest prompt adds current focus (skip if same as first, or trivial)
+    if (
+      lastPromptText &&
+      lastPromptText.trim() &&
+      lastPromptText.trim() !== (sessionContext.firstPrompt || "").trim() &&
+      lastPromptText.trim().length > 5
+    ) {
+      parts.push(lastPromptText.trim());
+    }
+
+    // Project name for scoping
+    const projectName =
+      project?.name ||
+      (project?.root
+        ? String(project.root).split(/[/\\]/).filter(Boolean).pop()
+        : null);
+    if (projectName) {
+      parts.push(projectName);
+    }
+
+    // Recently modified files signal what area of the codebase we're in
+    if (sessionContext.filesModified.size > 0) {
+      const recentFiles = Array.from(sessionContext.filesModified)
+        .slice(-5)
+        .map((f) => f.split("/").pop())
+        .join(" ");
+      parts.push(recentFiles);
+    }
+
+    if (parts.length === 0) {
+      return "recent work";
+    }
+
+    // Cap total length to avoid overly long CLI args
+    const query = parts.join(" ");
+    return query.length > 500 ? query.slice(0, 500) : query;
   };
 
   const buildPackArgs = (query) => {
