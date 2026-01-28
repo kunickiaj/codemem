@@ -3914,7 +3914,7 @@ class MemoryStore:
             "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
         )
         sql = f"""
-            SELECT memory_items.*, bm25(memory_fts, 1.0, 1.0, 0.25) AS score,
+            SELECT memory_items.*, -bm25(memory_fts, 1.0, 1.0, 0.25) AS score,
                 (1.0 / (1.0 + ((julianday('now') - julianday(memory_items.created_at)) / 7.0))) AS recency
             FROM memory_fts
             JOIN memory_items ON memory_items.id = memory_fts.rowid
