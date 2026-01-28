@@ -183,12 +183,19 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     def memory_remember(
-        kind: str, title: str, body: str, confidence: float = 0.5
+        kind: str,
+        title: str,
+        body: str,
+        confidence: float = 0.5,
+        project: str | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
+            resolved_project = project or default_project
+            # Use client cwd if we could, but for now we default to server's cwd
+            # Ideally client should pass cwd too, but project is the critical bit.
             session_id = store.start_session(
                 cwd=os.getcwd(),
-                project=default_project,
+                project=resolved_project,
                 git_remote=None,
                 git_branch=None,
                 user=os.environ.get("USER", "unknown"),
@@ -276,10 +283,11 @@ def build_server() -> FastMCP:
                 "how": [
                     "Use memory.remember with kind decision/observation/note.",
                     "Keep titles short and bodies high-signal.",
+                    "ALWAYS pass the project parameter if known.",
                 ],
                 "examples": [
-                    'memory.remember(kind="decision", title="Switch to async cache", body="...why...")',
-                    'memory.remember(kind="observation", title="Fixed retry loop", body="...impact...")',
+                    'memory.remember(kind="decision", title="Switch to async cache", body="...why...", project="my-service")',
+                    'memory.remember(kind="observation", title="Fixed retry loop", body="...impact...", project="my-service")',
                 ],
             },
             "forget": {
@@ -309,15 +317,16 @@ def build_server() -> FastMCP:
                 "Persistence:\n"
                 "- On milestones (task done, key decision, new facts learned), call memory.remember.\n"
                 "- Use kind=decision for tradeoffs, kind=observation for outcomes, kind=note for small useful facts.\n"
-                "- Keep titles short and bodies high-signal.\n\n"
+                "- Keep titles short and bodies high-signal.\n"
+                "- ALWAYS pass the project parameter if known.\n\n"
                 "Safety:\n"
                 "- Use memory.forget(id) for incorrect or sensitive items.\n\n"
                 "Examples:\n"
                 '- memory.search_index("billing cache bug")\n'
                 "- memory.timeline(memory_id=123)\n"
                 "- memory.get_observations([123, 456])\n"
-                '- memory.remember(kind="decision", title="Use async cache", body="Chose async cache to avoid lock contention in X.")\n'
-                '- memory.remember(kind="observation", title="Fixed retry loop", body="Root cause was Y; added guard in Z.")\n'
+                '- memory.remember(kind="decision", title="Use async cache", body="Chose async cache to avoid lock contention in X.", project="my-service")\n'
+                '- memory.remember(kind="observation", title="Fixed retry loop", body="Root cause was Y; added guard in Z.", project="my-service")\n'
                 "- memory.forget(123)\n"
             ),
         }
