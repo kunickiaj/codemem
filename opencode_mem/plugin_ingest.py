@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -12,6 +11,21 @@ from typing import Any
 from . import db
 from .capture import build_artifact_bundle, capture_post_context, capture_pre_context
 from .config import load_config
+from .ingest.transcript import (
+    build_transcript as _build_transcript_impl,
+)
+from .ingest.transcript import (
+    derive_request as _derive_request_impl,
+)
+from .ingest.transcript import (
+    first_sentence as _first_sentence_impl,
+)
+from .ingest.transcript import (
+    is_trivial_request as _is_trivial_request_impl,
+)
+from .ingest.transcript import (
+    normalize_request_text as _normalize_request_text_impl,
+)
 from .ingest_sanitize import _sanitize_payload, _sanitize_tool_output, _strip_private
 from .ingest_tool_events import (
     _budget_tool_events,
@@ -133,18 +147,8 @@ def _extract_assistant_usage(events: Iterable[dict[str, Any]]) -> list[dict[str,
 
 def _build_transcript(events: Iterable[dict[str, Any]]) -> str:
     """Build a transcript from user prompts and assistant messages in chronological order."""
-    transcript_parts: list[str] = []
-    for event in events:
-        event_type = event.get("type")
-        if event_type == "user_prompt":
-            prompt_text = _strip_private(str(event.get("prompt_text") or "")).strip()
-            if prompt_text:
-                transcript_parts.append(f"User: {prompt_text}")
-        elif event_type == "assistant_message":
-            assistant_text = _strip_private(str(event.get("assistant_text") or "")).strip()
-            if assistant_text:
-                transcript_parts.append(f"Assistant: {assistant_text}")
-    return "\n\n".join(transcript_parts)
+
+    return _build_transcript_impl(events, strip_private=_strip_private)
 
 
 def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | None:
@@ -200,39 +204,19 @@ def _summary_body(summary: ParsedSummary) -> str:
 
 
 def _normalize_request_text(text: str | None) -> str:
-    if not text:
-        return ""
-    cleaned = text.strip().strip("\"'").strip()
-    cleaned = " ".join(cleaned.split())
-    return cleaned.lower()
+    return _normalize_request_text_impl(text)
 
 
 def _is_trivial_request(text: str | None) -> bool:
-    normalized = _normalize_request_text(text)
-    if not normalized:
-        return True
-    return normalized in TRIVIAL_REQUESTS
+    return _is_trivial_request_impl(text, trivial_requests=TRIVIAL_REQUESTS)
 
 
 def _first_sentence(text: str) -> str:
-    cleaned = " ".join(line.strip() for line in text.splitlines() if line.strip())
-    cleaned = re.sub(r"^[#*\-\d\.\s]+", "", cleaned)
-    match = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)
-    return (match[0] if match else cleaned).strip()
+    return _first_sentence_impl(text)
 
 
 def _derive_request(summary: ParsedSummary) -> str:
-    candidates = [
-        summary.completed,
-        summary.learned,
-        summary.investigated,
-        summary.next_steps,
-        summary.notes,
-    ]
-    for candidate in candidates:
-        if candidate:
-            return _first_sentence(candidate)
-    return ""
+    return _derive_request_impl(summary)
 
 
 def _normalize_path(path: str, repo_root: str | None) -> str:
