@@ -20,6 +20,6 @@ def build_artifacts(
     post: dict[str, Any],
     transcript: str,
     *,
-    build_bundle: Callable[[dict[str, Any], dict[str, Any], str], list[tuple[str, str, str]]],
-) -> list[tuple[str, str, str]]:
+    build_bundle: Callable[..., list[tuple[str, str, str | None]]],
+) -> list[tuple[str, str, str | None]]:
     return build_bundle(pre, post, transcript)
