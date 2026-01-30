@@ -1,4 +1,4 @@
-from opencode_mem.sync_discovery import mdns_addresses_for_peer
+from opencode_mem.sync.discovery import mdns_addresses_for_peer
 
 
 def test_mdns_addresses_for_peer_falls_back_to_ip_bytes() -> None:

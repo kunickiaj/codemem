@@ -10,9 +10,9 @@ import pytest
 from opencode_mem import db, sync_daemon
 from opencode_mem.store import MemoryStore, ReplicationOp
 from opencode_mem.sync import http_client
+from opencode_mem.sync.discovery import update_peer_addresses
 from opencode_mem.sync_api import build_sync_handler
 from opencode_mem.sync_daemon import sync_once
-from opencode_mem.sync_discovery import update_peer_addresses
 from opencode_mem.sync_identity import (
     ensure_device_identity,
     fingerprint_public_key,

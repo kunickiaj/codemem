@@ -15,9 +15,7 @@ from urllib.parse import urlencode
 from . import db
 from .store import MemoryStore, ReplicationOp
 from .sync import http_client
-from .sync_api import MAX_SYNC_BODY_BYTES, build_sync_handler
-from .sync_auth import build_auth_headers
-from .sync_discovery import (
+from .sync.discovery import (
     advertise_mdns,
     discover_peers_via_mdns,
     load_peer_addresses,
@@ -28,6 +26,8 @@ from .sync_discovery import (
     select_dial_addresses,
     update_peer_addresses,
 )
+from .sync_api import MAX_SYNC_BODY_BYTES, build_sync_handler
+from .sync_auth import build_auth_headers
 from .sync_identity import ensure_device_identity
 
 

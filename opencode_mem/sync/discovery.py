@@ -7,8 +7,8 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-from . import db
-from .config import load_config
+from .. import db
+from ..config import load_config
 
 DEFAULT_SERVICE_TYPE = "_opencode-mem._tcp.local."
 
@@ -223,11 +223,7 @@ def record_peer_success(
     return ordered
 
 
-def select_dial_addresses(
-    *,
-    stored: list[str],
-    mdns: list[str],
-) -> list[str]:
+def select_dial_addresses(*, stored: list[str], mdns: list[str]) -> list[str]:
     if not mdns:
         return merge_addresses(stored, [])
     ordered = merge_addresses(mdns, stored)
