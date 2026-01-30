@@ -9,7 +9,7 @@ import pytest
 
 from opencode_mem import db, sync_daemon
 from opencode_mem.store import MemoryStore, ReplicationOp
-from opencode_mem.sync import http_client
+from opencode_mem.sync import http_client, replication
 from opencode_mem.sync.discovery import update_peer_addresses
 from opencode_mem.sync_api import build_sync_handler
 from opencode_mem.sync_daemon import sync_once
@@ -209,7 +209,7 @@ def test_chunk_ops_by_size_single_batch() -> None:
     ops = [_make_op("a", "1"), _make_op("b", "2")]
     typed_ops = cast(list[ReplicationOp], ops)
     body_bytes = len(json.dumps({"ops": ops}, ensure_ascii=False).encode("utf-8"))
-    batches = sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=body_bytes)
+    batches = replication.chunk_ops_by_size(typed_ops, max_bytes=body_bytes)
     assert batches == [typed_ops]
 
 
@@ -217,7 +217,7 @@ def test_chunk_ops_by_size_splits_batches() -> None:
     ops = [_make_op("a", "1"), _make_op("b", "2"), _make_op("c", "3")]
     typed_ops = cast(list[ReplicationOp], ops)
     max_bytes = len(json.dumps({"ops": ops[:2]}, ensure_ascii=False).encode("utf-8"))
-    batches = sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=max_bytes)
+    batches = replication.chunk_ops_by_size(typed_ops, max_bytes=max_bytes)
     assert batches == [typed_ops[:2], typed_ops[2:]]
 
 
@@ -226,7 +226,7 @@ def test_chunk_ops_by_size_raises_on_oversize() -> None:
     typed_ops = cast(list[ReplicationOp], ops)
     body_bytes = len(json.dumps({"ops": ops}, ensure_ascii=False).encode("utf-8"))
     with pytest.raises(RuntimeError, match="single op exceeds size limit"):
-        sync_daemon._chunk_ops_by_size(typed_ops, max_bytes=body_bytes - 1)
+        replication.chunk_ops_by_size(typed_ops, max_bytes=body_bytes - 1)
 
 
 def test_sync_once_does_not_trust_peer_next_cursor(monkeypatch, tmp_path: Path) -> None:

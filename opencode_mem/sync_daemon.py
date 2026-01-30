@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 from . import db
 from .store import MemoryStore, ReplicationOp
-from .sync import http_client
+from .sync import http_client, replication
 from .sync.discovery import (
     advertise_mdns,
     discover_peers_via_mdns,
@@ -59,87 +59,6 @@ def run_sync_pass(
     return sync_once(store, peer_device_id, dial_addresses, limit=limit)
 
 
-def _chunk_ops_by_size(
-    ops: list[ReplicationOp],
-    *,
-    max_bytes: int,
-) -> list[list[ReplicationOp]]:
-    def _body_bytes(batch: list[ReplicationOp]) -> int:
-        return len(json.dumps({"ops": batch}, ensure_ascii=False).encode("utf-8"))
-
-    batches: list[list[ReplicationOp]] = []
-    current: list[ReplicationOp] = []
-    for op in ops:
-        candidate = [*current, op]
-        if _body_bytes(candidate) <= max_bytes:
-            current = candidate
-            continue
-        if not current:
-            raise RuntimeError("single op exceeds size limit")
-        batches.append(current)
-        current = [op]
-        if _body_bytes(current) > max_bytes:
-            raise RuntimeError("single op exceeds size limit")
-    if current:
-        batches.append(current)
-    return batches
-
-
-def _get_replication_cursor(
-    store: MemoryStore, peer_device_id: str
-) -> tuple[str | None, str | None]:
-    row = store.conn.execute(
-        """
-        SELECT last_applied_cursor, last_acked_cursor
-        FROM replication_cursors
-        WHERE peer_device_id = ?
-        """,
-        (peer_device_id,),
-    ).fetchone()
-    if row is None:
-        return None, None
-    return row["last_applied_cursor"], row["last_acked_cursor"]
-
-
-def _set_replication_cursor(
-    store: MemoryStore,
-    peer_device_id: str,
-    *,
-    last_applied: str | None = None,
-    last_acked: str | None = None,
-) -> None:
-    now = dt.datetime.now(dt.UTC).isoformat()
-    row = store.conn.execute(
-        "SELECT 1 FROM replication_cursors WHERE peer_device_id = ?",
-        (peer_device_id,),
-    ).fetchone()
-    if row is None:
-        store.conn.execute(
-            """
-            INSERT INTO replication_cursors(
-                peer_device_id,
-                last_applied_cursor,
-                last_acked_cursor,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?)
-            """,
-            (peer_device_id, last_applied, last_acked, now),
-        )
-    else:
-        store.conn.execute(
-            """
-            UPDATE replication_cursors
-            SET last_applied_cursor = COALESCE(?, last_applied_cursor),
-                last_acked_cursor = COALESCE(?, last_acked_cursor),
-                updated_at = ?
-            WHERE peer_device_id = ?
-            """,
-            (last_applied, last_acked, now, peer_device_id),
-        )
-    store.conn.commit()
-
-
 def sync_once(
     store: MemoryStore,
     peer_device_id: str,
@@ -154,7 +73,7 @@ def sync_once(
     pinned_fingerprint = str(pinned_row["pinned_fingerprint"]) if pinned_row else ""
     if not pinned_fingerprint:
         return {"ok": False, "error": "peer not pinned"}
-    last_applied, last_acked = _get_replication_cursor(store, peer_device_id)
+    last_applied, last_acked = replication.get_replication_cursor(store, peer_device_id)
     keys_dir_value = os.environ.get("OPENCODE_MEM_KEYS_DIR")
     keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
     device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
@@ -212,7 +131,11 @@ def sync_once(
                 created_at = str(last_op.get("created_at") or "") if last_op else ""
                 if op_id and created_at:
                     local_next = store.compute_cursor(created_at, op_id)
-                    _set_replication_cursor(store, peer_device_id, last_applied=local_next)
+                    replication.set_replication_cursor(
+                        store,
+                        peer_device_id,
+                        last_applied=local_next,
+                    )
                     last_applied = local_next
 
             effective_last_acked = store.normalize_outbound_cursor(last_acked, device_id=device_id)
@@ -226,7 +149,10 @@ def sync_once(
             )
             post_url = f"{base_url}/v1/ops"
             if outbound_ops:
-                batches = _chunk_ops_by_size(outbound_ops, max_bytes=MAX_SYNC_BODY_BYTES)
+                batches = replication.chunk_ops_by_size(
+                    outbound_ops,
+                    max_bytes=MAX_SYNC_BODY_BYTES,
+                )
                 for batch in batches:
                     body = {"ops": batch}
                     body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -249,7 +175,11 @@ def sync_once(
                         suffix = f" ({status}: {detail})" if detail else f" ({status})"
                         raise RuntimeError(f"peer ops push failed{suffix}")
                 if outbound_cursor:
-                    _set_replication_cursor(store, peer_device_id, last_acked=outbound_cursor)
+                    replication.set_replication_cursor(
+                        store,
+                        peer_device_id,
+                        last_acked=outbound_cursor,
+                    )
                     last_acked = outbound_cursor
 
             record_peer_success(store.conn, peer_device_id, base_url)
