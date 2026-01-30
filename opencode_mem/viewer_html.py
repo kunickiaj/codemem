@@ -1588,7 +1588,10 @@ VIEWER_HTML = """<!doctype html>
         peers.forEach(peer => {
           const card = createElement("div", "peer-card");
           const title = createElement("div", "peer-title");
-          const name = createElement("strong", null, peer.name || "unknown");
+          const peerId = peer.peer_device_id ? String(peer.peer_device_id) : "";
+          const displayName = peer.name || (peerId ? peerId.slice(0, 8) : "unknown");
+          const name = createElement("strong", null, displayName);
+          if (peerId) name.title = peerId;
           const actions = createElement("div", "peer-actions");
 
           const status = peer.status || {};
@@ -1600,7 +1603,9 @@ VIEWER_HTML = """<!doctype html>
           statusBadge.style.color = online ? "var(--accent)" : "var(--accent-2)";
           name.append(" ", statusBadge);
 
-          const peerAddresses = Array.isArray(peer.addresses) ? peer.addresses : [];
+          const peerAddresses = Array.isArray(peer.addresses)
+            ? Array.from(new Set(peer.addresses.filter(Boolean)))
+            : [];
           const addressLine = peerAddresses.length
             ? peerAddresses.map(address => isSyncRedactionEnabled() ? redactAddress(address) : address).join(" · ")
             : "No addresses";
@@ -2165,7 +2170,16 @@ VIEWER_HTML = """<!doctype html>
           renderSyncStatus(lastSyncStatus);
           renderSyncPeers(lastSyncPeers);
           renderSyncAttempts(lastSyncAttempts);
+          if (syncMeta) {
+            const last = lastSyncStatus?.last_sync_at || lastSyncStatus?.last_sync_at_utc || "";
+            syncMeta.textContent = last ? `Last sync: ${formatTimestamp(last)}` : "Sync ready";
+          }
+          renderSyncHealth({
+            status: lastSyncStatus?.daemon_state || "unknown",
+            details: lastSyncStatus?.daemon_state === "error" ? "daemon error" : "",
+          });
         } catch (err) {
+          if (syncMeta) syncMeta.textContent = "Sync unavailable";
           // Ignore sync status errors.
         }
       }
