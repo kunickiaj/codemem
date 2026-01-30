@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from typing import Any, Protocol
+from urllib.parse import parse_qs
 
 
 class _ViewerHandler(Protocol):
@@ -19,6 +21,8 @@ class _RawEventFlusher(Protocol):
 
 class _Store(Protocol):
     conn: Any
+
+    def raw_event_backlog_totals(self) -> dict[str, int]: ...
 
     def record_raw_events_batch(
         self, *, opencode_session_id: str, events: list[dict[str, Any]]
@@ -37,14 +41,23 @@ class _Store(Protocol):
     def close(self) -> None: ...
 
 
+def handle_get(handler: Any, store: Any, path: str, query: str) -> bool:
+    if path != "/api/raw-events":
+        return False
+    # Compatibility endpoint used by the web UI stats panel.
+    _ = parse_qs(query)
+    handler._send_json(store.raw_event_backlog_totals())
+    return True
+
+
 def handle_post(
     handler: _ViewerHandler,
     *,
     path: str,
-    store_factory: callable,
+    store_factory: Callable[[str], _Store],
     default_db_path: str,
     flusher: _RawEventFlusher,
-    strip_private_obj: callable,
+    strip_private_obj: Callable[[Any], Any],
 ) -> bool:
     if path != "/api/raw-events":
         return False

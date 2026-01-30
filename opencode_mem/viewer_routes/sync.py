@@ -45,7 +45,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         include = getattr(config, "sync_projects_include", []) or []
         exclude = getattr(config, "sync_projects_exclude", []) or []
         project_filter_active = bool([p for p in include if p] or [p for p in exclude if p])
-        payload: dict[str, Any] = {
+        status_payload: dict[str, Any] = {
             "enabled": config.sync_enabled,
             "interval_s": config.sync_interval_s,
             "peer_count": int(peer_count["total"]) if peer_count else 0,
@@ -57,7 +57,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         }
 
         if include_diagnostics:
-            payload.update(
+            status_payload.update(
                 {
                     "device_id": device_row["device_id"] if device_row else None,
                     "fingerprint": device_row["fingerprint"] if device_row else None,
@@ -67,7 +67,55 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                     "daemon_last_ok_at": last_ok_at,
                 }
             )
-        handler._send_json(payload)
+
+        # Compatibility: older UI expects status/peers/attempts keys.
+        peers_rows = store.conn.execute(
+            """
+            SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
+                   last_seen_at, last_sync_at, last_error
+            FROM sync_peers
+            ORDER BY name, peer_device_id
+            """
+        ).fetchall()
+        peers_items = []
+        for row in peers_rows:
+            addresses = (
+                load_peer_addresses(store.conn, row["peer_device_id"])
+                if include_diagnostics
+                else []
+            )
+            peers_items.append(
+                {
+                    "peer_device_id": row["peer_device_id"],
+                    "name": row["name"],
+                    "fingerprint": row["pinned_fingerprint"] if include_diagnostics else None,
+                    "pinned": bool(row["pinned_fingerprint"]),
+                    "addresses": addresses,
+                    "last_seen_at": row["last_seen_at"],
+                    "last_sync_at": row["last_sync_at"],
+                    "last_error": row["last_error"] if include_diagnostics else None,
+                    "has_error": bool(row["last_error"]),
+                }
+            )
+        attempts_rows = store.conn.execute(
+            """
+            SELECT peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out
+            FROM sync_attempts
+            ORDER BY finished_at DESC
+            LIMIT ?
+            """,
+            (25,),
+        ).fetchall()
+        attempts_items = [dict(row) for row in attempts_rows]
+
+        handler._send_json(
+            {
+                **status_payload,
+                "status": status_payload,
+                "peers": peers_items,
+                "attempts": attempts_items,
+            }
+        )
         return True
 
     if path == "/api/sync/peers":
@@ -176,6 +224,10 @@ def handle_post(
     path: str,
     payload: dict[str, Any] | None,
 ) -> bool:
+    if path == "/api/sync/run":
+        # Compatibility endpoint for the bundled web UI.
+        path = "/api/sync/actions/sync-now"
+
     if path == "/api/sync/peers/rename":
         if payload is None:
             handler._send_json({"error": "invalid json"}, status=400)

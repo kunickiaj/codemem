@@ -13,6 +13,10 @@ class _ViewerHandler(Protocol):
 
 
 def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: str) -> bool:
+    # Compatibility endpoints used by the bundled web UI.
+    if path == "/api/memories":
+        path = "/api/observations"
+
     if path == "/api/sessions":
         params = parse_qs(query)
         limit = int(params.get("limit", ["20"])[0])
@@ -54,6 +58,66 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         filters = {"project": project} if project else None
         items = store.recent_by_kinds(limit=limit, kinds=kinds, filters=filters)
         handler._send_json({"items": items})
+        return True
+
+    if path == "/api/summaries":
+        params = parse_qs(query)
+        limit = int(params.get("limit", ["50"])[0])
+        project = params.get("project", [None])[0]
+        filters: dict[str, Any] = {"kind": "session_summary"}
+        if project:
+            filters["project"] = project
+        items = store.recent(limit=limit, filters=filters)
+        handler._send_json({"items": items})
+        return True
+
+    if path == "/api/session":
+        params = parse_qs(query)
+        project = params.get("project", [None])[0]
+
+        prompts = store.conn.execute(
+            "SELECT COUNT(*) AS total FROM user_prompts WHERE (? IS NULL OR project = ?)",
+            (project, project),
+        ).fetchone()["total"]
+        artifacts = store.conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM artifacts
+            JOIN sessions ON sessions.id = artifacts.session_id
+            WHERE (? IS NULL OR sessions.project = ?)
+            """,
+            (project, project),
+        ).fetchone()["total"]
+        memories = store.conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM memory_items
+            JOIN sessions ON sessions.id = memory_items.session_id
+            WHERE (? IS NULL OR sessions.project = ?)
+            """,
+            (project, project),
+        ).fetchone()["total"]
+        observations = store.conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM memory_items
+            JOIN sessions ON sessions.id = memory_items.session_id
+            WHERE kind != 'session_summary'
+              AND (? IS NULL OR sessions.project = ?)
+            """,
+            (project, project),
+        ).fetchone()["total"]
+        total = int(prompts or 0) + int(artifacts or 0) + int(memories or 0)
+
+        handler._send_json(
+            {
+                "total": total,
+                "memories": int(memories or 0),
+                "artifacts": int(artifacts or 0),
+                "prompts": int(prompts or 0),
+                "observations": int(observations or 0),
+            }
+        )
         return True
 
     if path == "/api/pack":

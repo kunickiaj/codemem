@@ -95,6 +95,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
             if viewer_routes_stats.handle_get(self, store, parsed.path, parsed.query):
                 return
+            if viewer_routes_raw_events.handle_get(self, store, parsed.path, parsed.query):
+                return
             if parsed.path == "/api/raw-events/status":
                 params = parse_qs(parsed.query)
                 limit = int(params.get("limit", ["25"])[0])
@@ -134,7 +136,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if self._reject_cross_origin():
             return
-        if parsed.path in {"/api/sync/peers/rename", "/api/sync/actions/sync-now"}:
+        if parsed.path in {
+            "/api/sync/peers/rename",
+            "/api/sync/actions/sync-now",
+            "/api/sync/run",
+        }:
             payload = self._read_json()
             if parsed.path == "/api/sync/actions/sync-now" and payload is None:
                 payload = {}
@@ -148,7 +154,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self,
             path=parsed.path,
             store_factory=MemoryStore,
-            default_db_path=DEFAULT_DB_PATH,
+            default_db_path=str(DEFAULT_DB_PATH),
             flusher=RAW_EVENT_FLUSHER,
             strip_private_obj=_strip_private_obj,
         ):
