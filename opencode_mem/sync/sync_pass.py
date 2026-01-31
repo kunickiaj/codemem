@@ -61,6 +61,46 @@ def sync_once(
     keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
     device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
     error: str | None = None
+
+    def _push_ops(
+        *,
+        post_url: str,
+        device_id: str,
+        keys_dir: Path | None,
+        ops: list[ReplicationOp],
+    ) -> None:
+        if not ops:
+            return
+
+        body = {"ops": ops}
+        body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        post_headers = build_auth_headers(
+            device_id=device_id,
+            method="POST",
+            url=post_url,
+            body_bytes=body_bytes,
+            keys_dir=keys_dir,
+        )
+        status, payload = http_client.request_json(
+            "POST",
+            post_url,
+            headers=post_headers,
+            body=body,
+            body_bytes=body_bytes,
+        )
+        if status == 200 and payload is not None:
+            return
+
+        detail = payload.get("error") if isinstance(payload, dict) else None
+        if status == 413 and len(ops) > 1 and detail in {"payload_too_large", "too_many_ops"}:
+            mid = len(ops) // 2
+            _push_ops(post_url=post_url, device_id=device_id, keys_dir=keys_dir, ops=ops[:mid])
+            _push_ops(post_url=post_url, device_id=device_id, keys_dir=keys_dir, ops=ops[mid:])
+            return
+
+        suffix = f" ({status}: {detail})" if detail else f" ({status})"
+        raise RuntimeError(f"peer ops push failed{suffix}")
+
     for address in addresses:
         base_url = http_client.build_base_url(address)
         if not base_url:
@@ -138,26 +178,12 @@ def sync_once(
                     max_bytes=MAX_SYNC_BODY_BYTES,
                 )
                 for batch in batches:
-                    body = {"ops": batch}
-                    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
-                    post_headers = build_auth_headers(
+                    _push_ops(
+                        post_url=post_url,
                         device_id=device_id,
-                        method="POST",
-                        url=post_url,
-                        body_bytes=body_bytes,
                         keys_dir=keys_dir,
+                        ops=cast(list[ReplicationOp], batch),
                     )
-                    status, payload = http_client.request_json(
-                        "POST",
-                        post_url,
-                        headers=post_headers,
-                        body=body,
-                        body_bytes=body_bytes,
-                    )
-                    if status != 200 or payload is None:
-                        detail = payload.get("error") if isinstance(payload, dict) else None
-                        suffix = f" ({status}: {detail})" if detail else f" ({status})"
-                        raise RuntimeError(f"peer ops push failed{suffix}")
                 if outbound_cursor:
                     replication.set_replication_cursor(
                         store,

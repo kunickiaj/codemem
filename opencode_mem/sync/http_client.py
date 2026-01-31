@@ -51,6 +51,11 @@ def request_json(
         try:
             payload = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
-            payload = None
+            snippet = raw[:240].decode("utf-8", errors="replace").strip()
+            payload = {"error": f"non_json_response: {snippet}" if snippet else "non_json_response"}
     conn.close()
-    return resp.status, payload if isinstance(payload, dict) else None
+    if payload is None:
+        return resp.status, None
+    if isinstance(payload, dict):
+        return resp.status, payload
+    return resp.status, {"error": f"unexpected_json_type: {type(payload).__name__}"}

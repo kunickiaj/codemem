@@ -191,6 +191,102 @@ def test_request_json_respects_body_bytes(monkeypatch) -> None:
     assert called["conn"].body == b"signed-bytes"
 
 
+def test_sync_once_splits_push_batches_on_peer_payload_too_large(
+    monkeypatch, tmp_path: Path
+) -> None:
+    client_keys_dir = tmp_path / "keys-client"
+    server_keys_dir = tmp_path / "keys-server"
+    os.environ["OPENCODE_MEM_KEYS_DIR"] = str(client_keys_dir)
+
+    conn = db.connect(tmp_path / "a.sqlite")
+    try:
+        db.initialize_schema(conn)
+        ensure_device_identity(conn, keys_dir=client_keys_dir)
+    finally:
+        conn.close()
+
+    conn = db.connect(tmp_path / "b.sqlite")
+    try:
+        db.initialize_schema(conn)
+        server_device_id, _ = ensure_device_identity(conn, keys_dir=server_keys_dir)
+    finally:
+        conn.close()
+
+    # Force the server to reject larger POST bodies.
+    monkeypatch.setattr("opencode_mem.sync_api.MAX_SYNC_BODY_BYTES", 10_000)
+
+    server, port = _start_server(tmp_path / "b.sqlite")
+    try:
+        client_conn = db.connect(tmp_path / "a.sqlite")
+        try:
+            client_device_id, _ = ensure_device_identity(client_conn, keys_dir=client_keys_dir)
+        finally:
+            client_conn.close()
+
+        client_public_key = load_public_key(client_keys_dir)
+        assert client_public_key
+        fingerprint = fingerprint_public_key(client_public_key)
+        conn = db.connect(tmp_path / "b.sqlite")
+        try:
+            conn.execute(
+                """
+                INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, addresses_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    client_device_id,
+                    fingerprint,
+                    client_public_key,
+                    "[]",
+                    "2026-01-24T00:00:00Z",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        server_public_key = load_public_key(server_keys_dir)
+        assert server_public_key
+        server_fingerprint = fingerprint_public_key(server_public_key)
+
+        store_a = MemoryStore(tmp_path / "a.sqlite")
+        try:
+            update_peer_addresses(store_a.conn, server_device_id, [f"http://127.0.0.1:{port}"])
+            store_a.conn.execute(
+                "UPDATE sync_peers SET pinned_fingerprint = ?, public_key = ? WHERE peer_device_id = ?",
+                (server_fingerprint, server_public_key, server_device_id),
+            )
+            store_a.conn.commit()
+
+            session_id = store_a.start_session(
+                cwd=str(tmp_path),
+                git_remote=None,
+                git_branch=None,
+                user="tester",
+                tool_version="test",
+                project="/tmp/project-a",
+            )
+            # Create enough small ops that the default client batch exceeds the server limit,
+            # but each individual op remains below it so splitting can succeed.
+            for i in range(30):
+                store_a.remember(
+                    session_id,
+                    kind="note",
+                    title=f"Small-{i}",
+                    body_text="x" * 800,
+                )
+
+            result = sync_pass.sync_once(
+                store_a, server_device_id, [f"http://127.0.0.1:{port}"], limit=50
+            )
+            assert result["ok"] is True
+        finally:
+            store_a.close()
+    finally:
+        server.shutdown()
+        os.environ.pop("OPENCODE_MEM_KEYS_DIR", None)
+
+
 def _make_op(op_id: str, entity_id: str, payload: dict | None = None) -> dict:
     return {
         "op_id": op_id,
