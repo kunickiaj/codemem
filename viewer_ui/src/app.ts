@@ -227,6 +227,33 @@ function formatDate(value: any) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+function formatPercent(value: any) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 'n/a';
+  return `${Math.round(num * 100)}%`;
+}
+
+function formatMultiplier(saved: any, read: any) {
+  const savedNum = Number(saved || 0);
+  const readNum = Number(read || 0);
+  if (!Number.isFinite(savedNum) || !Number.isFinite(readNum) || readNum <= 0)
+    return 'n/a';
+  const factor = (savedNum + readNum) / readNum;
+  if (!Number.isFinite(factor) || factor <= 0) return 'n/a';
+  return `${factor.toFixed(factor >= 10 ? 0 : 1)}x`;
+}
+
+function formatReductionPercent(saved: any, read: any) {
+  const savedNum = Number(saved || 0);
+  const readNum = Number(read || 0);
+  if (!Number.isFinite(savedNum) || !Number.isFinite(readNum)) return 'n/a';
+  const total = savedNum + readNum;
+  if (total <= 0) return 'n/a';
+  const pct = savedNum / total;
+  if (!Number.isFinite(pct)) return 'n/a';
+  return `${Math.round(pct * 100)}%`;
+}
+
 function normalize(text: any) {
   return String(text || '')
     .replace(/\s+/g, ' ')
@@ -484,27 +511,35 @@ function renderStats(
     ? `\nGlobal: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
     : '';
 
-  const items = [
-    { label: 'Sessions', value: db.sessions || 0, icon: 'database' },
-    { label: 'Memories', value: db.memory_items || 0, icon: 'brain' },
+  const items: Array<{
+    label: string;
+    value: any;
+    icon: string;
+    tooltip?: string;
+  }> = [
     {
-      label: 'Active memories',
-      value: db.active_memory_items || 0,
-      icon: 'check-circle',
-    },
-    { label: 'Artifacts', value: db.artifacts || 0, icon: 'package' },
-    {
-      label: 'Raw sessions',
-      value: rawSessions,
+      label: isFiltered ? 'Savings (project)' : 'Savings',
+      value: Number(usage.tokens_saved || 0),
       tooltip:
-        'OpenCode sessions with pending raw events waiting to be flushed',
-      icon: 'inbox',
+        'Tokens saved by reusing compressed memories instead of raw context' +
+        globalLineSaved,
+      icon: 'trending-up',
     },
     {
-      label: 'Raw events pending',
-      value: rawPending,
-      tooltip: 'Total pending raw events waiting to be flushed',
-      icon: 'activity',
+      label: isFiltered ? 'Injected (project)' : 'Injected',
+      value: Number(usage.tokens_read || 0),
+      tooltip: 'Tokens injected into context (pack size)' + globalLineRead,
+      icon: 'book-open',
+    },
+    {
+      label: isFiltered ? 'Reduction (project)' : 'Reduction',
+      value: formatReductionPercent(usage.tokens_saved, usage.tokens_read),
+      tooltip:
+        'Percent reduction from reuse (claude-mem style). ' +
+        `Factor: ${formatMultiplier(usage.tokens_saved, usage.tokens_read)}.` +
+        globalLineRead +
+        globalLineSaved,
+      icon: 'percent',
     },
     {
       label: isFiltered ? 'Work investment (project)' : 'Work investment',
@@ -515,21 +550,39 @@ function renderStats(
       icon: 'pencil',
     },
     {
-      label: isFiltered ? 'Read cost (project)' : 'Read cost',
-      value: Number(usage.tokens_read || 0),
-      tooltip:
-        'Tokens to read memories when injected into context' + globalLineRead,
-      icon: 'book-open',
+      label: 'Active memories',
+      value: db.active_memory_items || 0,
+      icon: 'check-circle',
     },
     {
-      label: isFiltered ? 'Savings (project)' : 'Savings',
-      value: Number(usage.tokens_saved || 0),
-      tooltip:
-        'Tokens saved by reusing compressed memories instead of raw context' +
-        globalLineSaved,
-      icon: 'trending-up',
+      label: 'Embedding coverage',
+      value: formatPercent(db.vector_coverage),
+      tooltip: 'Share of active memories with embeddings',
+      icon: 'layers',
+    },
+    {
+      label: 'Tag coverage',
+      value: formatPercent(db.tags_coverage),
+      tooltip: 'Share of active memories with tags',
+      icon: 'tag',
     },
   ];
+
+  if (rawPending > 0) {
+    items.push({
+      label: 'Raw events pending',
+      value: rawPending,
+      tooltip: 'Pending raw events waiting to be flushed',
+      icon: 'activity',
+    });
+  } else if (rawSessions > 0) {
+    items.push({
+      label: 'Raw sessions',
+      value: rawSessions,
+      tooltip: 'OpenCode sessions with pending raw events waiting to be flushed',
+      icon: 'inbox',
+    });
+  }
 
   if (statsGrid) {
     statsGrid.textContent = '';
@@ -543,10 +596,18 @@ function renderStats(
       icon.setAttribute('data-lucide', (item as any).icon);
       (icon as any).className = 'stat-icon';
       const content = createElement('div', 'stat-content');
+
+      const rawValue = (item as any).value;
+      const displayValue =
+        typeof rawValue === 'number'
+          ? rawValue.toLocaleString()
+          : rawValue === null || rawValue === undefined
+            ? 'n/a'
+            : String(rawValue);
       const value = createElement(
         'div',
         'value',
-        Number((item as any).value || 0).toLocaleString(),
+        displayValue,
       );
       const label = createElement('div', 'label', (item as any).label);
       content.append(value, label);
@@ -1283,7 +1344,7 @@ function renderFeed(items: any[]) {
     (globalThis as any).lucide.createIcons();
 }
 
-function renderSessionSummary(summary: any) {
+function renderSessionSummary(summary: any, usagePayload: any, project: string) {
   if (!sessionGrid || !sessionMeta) return;
   sessionGrid.textContent = '';
   if (!summary) {
@@ -1292,29 +1353,66 @@ function renderSessionSummary(summary: any) {
   }
 
   const total = Number(summary.total || 0);
-  sessionMeta.textContent = total
-    ? `${total} injections so far`
-    : 'No injections yet';
+  const totalsGlobal = usagePayload?.totals_global || usagePayload?.totals || {};
+  const totalsFiltered = usagePayload?.totals_filtered || null;
+  const isFiltered = !!(project && totalsFiltered);
+  const usage = isFiltered ? totalsFiltered : totalsGlobal;
 
-  const items = [
-    { label: 'Memories', value: summary.memories || 0 },
-    { label: 'Artifacts', value: summary.artifacts || 0 },
-    { label: 'Prompts', value: summary.prompts || 0 },
-    { label: 'Observations', value: summary.observations || 0 },
+  const events = Array.isArray(usagePayload?.events) ? usagePayload.events : [];
+  const packEvent = events.find((evt: any) => String(evt?.event || '') === 'pack') || null;
+  const packCount = Number(packEvent?.count || 0);
+  const recentPacks = Array.isArray(usagePayload?.recent_packs)
+    ? usagePayload.recent_packs
+    : [];
+  const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : '';
+
+  const packLine = packCount ? `${packCount} packs` : 'No packs yet';
+  const lastPackLine = lastPackAt ? `Last pack: ${formatTimestamp(lastPackAt)}` : '';
+  const baseLine = total ? `${total} injections so far` : 'No injections yet';
+  sessionMeta.textContent = [baseLine, packLine, lastPackLine].filter(Boolean).join(' · ');
+
+  const items: Array<{ label: string; value: any; icon: string }> = [
+    {
+      label: isFiltered ? 'Savings (project)' : 'Savings',
+      value: Number(usage?.tokens_saved || 0),
+      icon: 'trending-up',
+    },
+    {
+      label: isFiltered ? 'Reduction (project)' : 'Reduction',
+      value: formatReductionPercent(usage?.tokens_saved, usage?.tokens_read),
+      icon: 'percent',
+    },
+    { label: 'Prompts', value: summary.prompts || 0, icon: 'message-square' },
+    { label: 'Memories', value: summary.memories || 0, icon: 'brain' },
+    { label: 'Artifacts', value: summary.artifacts || 0, icon: 'package' },
+    { label: 'Observations', value: summary.observations || 0, icon: 'file-text' },
   ];
   items.forEach((item) => {
     const block = createElement('div', 'stat');
+    const icon = document.createElement('i');
+    icon.setAttribute('data-lucide', (item as any).icon);
+    (icon as any).className = 'stat-icon';
+    const rawValue = (item as any).value;
+    const displayValue =
+      typeof rawValue === 'number'
+        ? rawValue.toLocaleString()
+        : rawValue === null || rawValue === undefined
+          ? 'n/a'
+          : String(rawValue);
     const value = createElement(
       'div',
       'value',
-      Number(item.value || 0).toLocaleString(),
+      displayValue,
     );
     const label = createElement('div', 'label', item.label);
     const content = createElement('div', 'stat-content');
     content.append(value, label);
-    block.append(content);
+    block.append(icon, content);
     sessionGrid.appendChild(block);
   });
+
+  if (typeof (globalThis as any).lucide !== 'undefined')
+    (globalThis as any).lucide.createIcons();
 }
 
 function renderConfigModal(payload: any) {
@@ -1475,7 +1573,7 @@ async function loadStats() {
     const rawEvents = rawEventsPayload || {};
 
     renderStats(stats, usagePayload, currentProject, rawEvents);
-    renderSessionSummary(sessions);
+    renderSessionSummary(sessions, usagePayload, currentProject);
     renderSyncHealth(stats.sync_health || {});
   } catch {
     if (metaLine) metaLine.textContent = 'Stats unavailable';
