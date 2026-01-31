@@ -12,6 +12,7 @@ const feedList = document.getElementById('feedList');
 const feedMeta = document.getElementById('feedMeta');
 const feedTypeToggle = document.getElementById('feedTypeToggle');
 const feedSearch = document.getElementById('feedSearch') as HTMLInputElement | null;
+const feedUpdateBanner = document.getElementById('feedUpdateBanner') as HTMLButtonElement | null;
 const sessionGrid = document.getElementById('sessionGrid');
 const sessionMeta = document.getElementById('sessionMeta');
 const settingsButton = document.getElementById('settingsButton');
@@ -112,8 +113,44 @@ let lastFeedItems: any[] = [];
 let lastFeedFilteredCount = 0;
 let feedQuery = '';
 
+let pendingFeedItems: any[] | null = null;
+let pendingNewCount = 0;
+let refreshState: 'idle' | 'refreshing' | 'paused' | 'error' = 'idle';
+
+const newItemKeys = new Set<string>();
+
+let settingsDirty = false;
+
+function setSettingsDirty(next: boolean) {
+  settingsDirty = next;
+  if (settingsSave) {
+    (settingsSave as any).disabled = !next;
+  }
+}
+
 function isSettingsOpen() {
   return Boolean(settingsModal && !settingsModal.hasAttribute('hidden'));
+}
+
+function setRefreshStatus(state: typeof refreshState, detail?: string) {
+  refreshState = state;
+  if (!refreshStatus) return;
+
+  if (state === 'refreshing') {
+    refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
+    return;
+  }
+  if (state === 'paused') {
+    refreshStatus.innerHTML = "<span class='dot'></span>paused";
+    return;
+  }
+  if (state === 'error') {
+    refreshStatus.innerHTML = "<span class='dot'></span>refresh failed";
+    return;
+  }
+  const suffix = detail ? ` ${detail}` : '';
+  refreshStatus.innerHTML =
+    "<span class='dot'></span>updated " + new Date().toLocaleTimeString() + suffix;
 }
 
 function stopPolling() {
@@ -133,6 +170,7 @@ function startPolling() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     stopPolling();
+    setRefreshStatus('paused', '(tab hidden)');
     return;
   }
   if (!isSettingsOpen()) {
@@ -140,6 +178,34 @@ document.addEventListener('visibilitychange', () => {
     refresh();
   }
 });
+
+function isUserReadingFeed() {
+  const feedSection = document.querySelector('.feed-section') as HTMLElement | null;
+  if (!feedSection) return false;
+  const y = window.scrollY || 0;
+  // If the user is at/near the feed section and not at the very top, assume reading.
+  const threshold = feedSection.offsetTop - 40;
+  return y > threshold;
+}
+
+function isUserInteracting() {
+  const selection = window.getSelection?.();
+  const hasSelection = Boolean(selection && String(selection).trim());
+  return hasSelection;
+}
+
+function showFeedUpdateBanner(newCount: number) {
+  if (!feedUpdateBanner) return;
+  pendingNewCount = newCount;
+  feedUpdateBanner.textContent =
+    newCount > 0 ? `${newCount} new items · Update` : 'New items · Update';
+  (feedUpdateBanner as any).hidden = false;
+}
+
+function hideFeedUpdateBanner() {
+  if (!feedUpdateBanner) return;
+  (feedUpdateBanner as any).hidden = true;
+}
 
 // Theme management
 function getTheme() {
@@ -394,6 +460,14 @@ function updateFeedView() {
     renderFeed(visibleItems);
   }
 }
+
+feedUpdateBanner?.addEventListener('click', () => {
+  if (!pendingFeedItems) return;
+  lastFeedItems = pendingFeedItems;
+  pendingFeedItems = null;
+  hideFeedUpdateBanner();
+  updateFeedView();
+});
 
 function formatFeedFilterLabel() {
   if (feedTypeFilter === 'observations') return ' · observations';
@@ -1182,6 +1256,58 @@ function computeFeedSignature(items: any[]) {
   return `${feedTypeFilter}|${currentProject}|${parts.join('|')}`;
 }
 
+function countNewItems(nextItems: any[], currentItems: any[]) {
+  const seen = new Set(currentItems.map(itemKey));
+  let count = 0;
+  nextItems.forEach((item) => {
+    if (!seen.has(itemKey(item))) count += 1;
+  });
+  return count;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightText(text: string, query: string) {
+  const q = query.trim();
+  if (!q) return escapeHtml(text);
+  const safe = escapeHtml(text);
+  try {
+    const re = new RegExp(`(${escapeRegExp(q)})`, 'ig');
+    return safe.replace(re, '<mark class="match">$1</mark>');
+  } catch {
+    return safe;
+  }
+}
+
+function formatRelativeTime(value: any) {
+  if (!value) return 'n/a';
+  const date = new Date(value);
+  const ms = date.getTime();
+  if (Number.isNaN(ms)) return String(value);
+  const diff = Date.now() - ms;
+  const seconds = Math.round(diff / 1000);
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 14) return `${days}d ago`;
+  return date.toLocaleDateString();
+}
+
 function renderFeed(items: any[]) {
   if (!feedList) return;
   feedList.textContent = '';
@@ -1199,12 +1325,21 @@ function renderFeed(items: any[]) {
       'div',
       `feed-item ${kindValue}`.trim(),
     );
-    (card as any).dataset.key = itemKey(item);
+    const rowKey = itemKey(item);
+    (card as any).dataset.key = rowKey;
+    if (newItemKeys.has(rowKey)) {
+      card.classList.add('new-item');
+      setTimeout(() => {
+        card.classList.remove('new-item');
+        newItemKeys.delete(rowKey);
+      }, 700);
+    }
     const header = createElement('div', 'feed-card-header');
     const titleWrap = createElement('div', 'feed-header');
     const defaultTitle = item.title || '(untitled)';
     const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;
-    const title = createElement('div', 'feed-title title', displayTitle);
+    const title = createElement('div', 'feed-title title');
+    (title as any).innerHTML = highlightText(displayTitle, feedQuery);
     const kind = createElement(
       'span',
       `kind-pill ${kindValue}`.trim(),
@@ -1214,8 +1349,11 @@ function renderFeed(items: any[]) {
 
     const rightWrap = createElement('div', 'feed-actions');
 
-    const createdAt = formatDate(item.created_at || item.created_at_utc);
-    const age = createElement('div', 'small feed-age', createdAt);
+    const createdAtRaw = item.created_at || item.created_at_utc;
+    const createdAt = formatDate(createdAtRaw);
+    const relative = formatRelativeTime(createdAtRaw);
+    const age = createElement('div', 'small feed-age', relative);
+    (age as any).title = createdAt;
 
     const footerRight = createElement('div', 'feed-footer-right');
 
@@ -1471,15 +1609,23 @@ function renderConfigModal(payload: any) {
       ? 'Effective config differs (env overrides active)'
       : '';
   }
+
+  setSettingsDirty(false);
+  if (settingsStatus) settingsStatus.textContent = 'Ready';
 }
 
 function openSettings() {
   stopPolling();
+  setRefreshStatus('paused', '(settings)');
   if (settingsBackdrop) (settingsBackdrop as any).hidden = false;
   if (settingsModal) (settingsModal as any).hidden = false;
 }
 
 function closeSettings() {
+  if (settingsDirty) {
+    const ok = globalThis.confirm('Discard unsaved changes?');
+    if (!ok) return;
+  }
   if (settingsBackdrop) (settingsBackdrop as any).hidden = true;
   if (settingsModal) (settingsModal as any).hidden = true;
   startPolling();
@@ -1489,6 +1635,28 @@ function closeSettings() {
 settingsButton?.addEventListener('click', openSettings);
 settingsClose?.addEventListener('click', closeSettings);
 settingsBackdrop?.addEventListener('click', closeSettings);
+settingsModal?.addEventListener('click', (event) => {
+  if (event.target === settingsModal) {
+    closeSettings();
+  }
+});
+
+[
+  observerProviderInput,
+  observerModelInput,
+  observerMaxCharsInput,
+  packObservationLimitInput,
+  packSessionLimitInput,
+  syncEnabledInput,
+  syncHostInput,
+  syncPortInput,
+  syncIntervalInput,
+  syncMdnsInput,
+].forEach((input) => {
+  if (!input) return;
+  input.addEventListener('input', () => setSettingsDirty(true));
+  input.addEventListener('change', () => setSettingsDirty(true));
+});
 
 async function syncNow(address: string) {
   if (!syncNowButton) return;
@@ -1549,11 +1717,12 @@ async function saveSettings() {
       throw new Error(message);
     }
     settingsStatus.textContent = 'Saved';
+    setSettingsDirty(false);
     closeSettings();
   } catch {
     settingsStatus.textContent = 'Save failed';
   } finally {
-    (settingsSave as any).disabled = false;
+    (settingsSave as any).disabled = !settingsDirty;
   }
 }
 
@@ -1592,6 +1761,7 @@ async function loadStats() {
 
 async function loadFeed() {
   try {
+    setRefreshStatus('refreshing');
     const [observationsResp, summariesResp] = await Promise.all([
       fetch(
         `/api/memories?project=${encodeURIComponent(currentProject || '')}`,
@@ -1617,17 +1787,43 @@ async function loadFeed() {
         return right - left;
       },
     );
+    const shouldDefer =
+      isSettingsOpen() ||
+      isUserReadingFeed() ||
+      isUserInteracting() ||
+      Boolean(pendingFeedItems);
+
+    if (shouldDefer && lastFeedItems.length) {
+      pendingFeedItems = feedItems;
+      lastFeedFilteredCount = filteredCount;
+      const byType = filterFeedItems(feedItems);
+      const visiblePending = filterFeedQuery(byType);
+      const byTypeCurrent = filterFeedItems(lastFeedItems);
+      const visibleCurrent = filterFeedQuery(byTypeCurrent);
+      const newCount = countNewItems(visiblePending, visibleCurrent);
+      showFeedUpdateBanner(newCount);
+      setRefreshStatus('idle');
+      return;
+    }
+
+    // Track newly appearing items for a brief highlight.
+    const incomingNewCount = countNewItems(feedItems, lastFeedItems);
+    if (incomingNewCount) {
+      const seen = new Set(lastFeedItems.map(itemKey));
+      feedItems.forEach((item: any) => {
+        const key = itemKey(item);
+        if (!seen.has(key)) newItemKeys.add(key);
+      });
+    }
+
+    pendingFeedItems = null;
+    hideFeedUpdateBanner();
     lastFeedItems = feedItems;
     lastFeedFilteredCount = filteredCount;
     updateFeedView();
-    if (refreshStatus) {
-      refreshStatus.innerHTML =
-        "<span class='dot'></span>updated " + new Date().toLocaleTimeString();
-    }
+    setRefreshStatus('idle');
   } catch {
-    if (refreshStatus) {
-      refreshStatus.innerHTML = "<span class='dot'></span>refresh failed";
-    }
+    setRefreshStatus('error');
   }
 }
 

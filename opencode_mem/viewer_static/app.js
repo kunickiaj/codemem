@@ -7,6 +7,7 @@
   const feedMeta = document.getElementById("feedMeta");
   const feedTypeToggle = document.getElementById("feedTypeToggle");
   const feedSearch = document.getElementById("feedSearch");
+  const feedUpdateBanner = document.getElementById("feedUpdateBanner");
   const sessionGrid = document.getElementById("sessionGrid");
   const sessionMeta = document.getElementById("sessionMeta");
   const settingsButton = document.getElementById("settingsButton");
@@ -103,8 +104,34 @@
   let lastFeedItems = [];
   let lastFeedFilteredCount = 0;
   let feedQuery = "";
+  let pendingFeedItems = null;
+  const newItemKeys = /* @__PURE__ */ new Set();
+  let settingsDirty = false;
+  function setSettingsDirty(next) {
+    settingsDirty = next;
+    if (settingsSave) {
+      settingsSave.disabled = !next;
+    }
+  }
   function isSettingsOpen() {
     return Boolean(settingsModal && !settingsModal.hasAttribute("hidden"));
+  }
+  function setRefreshStatus(state, detail) {
+    if (!refreshStatus) return;
+    if (state === "refreshing") {
+      refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
+      return;
+    }
+    if (state === "paused") {
+      refreshStatus.innerHTML = "<span class='dot'></span>paused";
+      return;
+    }
+    if (state === "error") {
+      refreshStatus.innerHTML = "<span class='dot'></span>refresh failed";
+      return;
+    }
+    const suffix = detail ? ` ${detail}` : "";
+    refreshStatus.innerHTML = "<span class='dot'></span>updated " + (/* @__PURE__ */ new Date()).toLocaleTimeString() + suffix;
   }
   function stopPolling() {
     if (refreshTimer) {
@@ -121,6 +148,7 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       stopPolling();
+      setRefreshStatus("paused", "(tab hidden)");
       return;
     }
     if (!isSettingsOpen()) {
@@ -128,6 +156,27 @@
       refresh();
     }
   });
+  function isUserReadingFeed() {
+    const feedSection = document.querySelector(".feed-section");
+    if (!feedSection) return false;
+    const y = window.scrollY || 0;
+    const threshold = feedSection.offsetTop - 40;
+    return y > threshold;
+  }
+  function isUserInteracting() {
+    const selection = window.getSelection?.();
+    const hasSelection = Boolean(selection && String(selection).trim());
+    return hasSelection;
+  }
+  function showFeedUpdateBanner(newCount) {
+    if (!feedUpdateBanner) return;
+    feedUpdateBanner.textContent = newCount > 0 ? `${newCount} new items · Update` : "New items · Update";
+    feedUpdateBanner.hidden = false;
+  }
+  function hideFeedUpdateBanner() {
+    if (!feedUpdateBanner) return;
+    feedUpdateBanner.hidden = true;
+  }
   function getTheme() {
     const saved = localStorage.getItem("opencode-mem-theme");
     if (saved) return saved;
@@ -337,6 +386,13 @@
       renderFeed(visibleItems);
     }
   }
+  feedUpdateBanner?.addEventListener("click", () => {
+    if (!pendingFeedItems) return;
+    lastFeedItems = pendingFeedItems;
+    pendingFeedItems = null;
+    hideFeedUpdateBanner();
+    updateFeedView();
+  });
   function formatFeedFilterLabel() {
     if (feedTypeFilter === "observations") return " · observations";
     if (feedTypeFilter === "summaries") return " · session summaries";
@@ -923,6 +979,48 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     );
     return `${feedTypeFilter}|${currentProject}|${parts.join("|")}`;
   }
+  function countNewItems(nextItems, currentItems) {
+    const seen = new Set(currentItems.map(itemKey));
+    let count = 0;
+    nextItems.forEach((item) => {
+      if (!seen.has(itemKey(item))) count += 1;
+    });
+    return count;
+  }
+  function escapeHtml(value) {
+    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function highlightText(text, query) {
+    const q = query.trim();
+    if (!q) return escapeHtml(text);
+    const safe = escapeHtml(text);
+    try {
+      const re = new RegExp(`(${escapeRegExp(q)})`, "ig");
+      return safe.replace(re, '<mark class="match">$1</mark>');
+    } catch {
+      return safe;
+    }
+  }
+  function formatRelativeTime(value) {
+    if (!value) return "n/a";
+    const date = new Date(value);
+    const ms = date.getTime();
+    if (Number.isNaN(ms)) return String(value);
+    const diff = Date.now() - ms;
+    const seconds = Math.round(diff / 1e3);
+    if (seconds < 10) return "just now";
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    if (days < 14) return `${days}d ago`;
+    return date.toLocaleDateString();
+  }
   function renderFeed(items) {
     if (!feedList) return;
     feedList.textContent = "";
@@ -939,12 +1037,21 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         "div",
         `feed-item ${kindValue}`.trim()
       );
-      card.dataset.key = itemKey(item);
+      const rowKey = itemKey(item);
+      card.dataset.key = rowKey;
+      if (newItemKeys.has(rowKey)) {
+        card.classList.add("new-item");
+        setTimeout(() => {
+          card.classList.remove("new-item");
+          newItemKeys.delete(rowKey);
+        }, 700);
+      }
       const header = createElement("div", "feed-card-header");
       const titleWrap = createElement("div", "feed-header");
       const defaultTitle = item.title || "(untitled)";
       const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;
-      const title = createElement("div", "feed-title title", displayTitle);
+      const title = createElement("div", "feed-title title");
+      title.innerHTML = highlightText(displayTitle, feedQuery);
       const kind = createElement(
         "span",
         `kind-pill ${kindValue}`.trim(),
@@ -952,8 +1059,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       );
       titleWrap.append(kind, title);
       const rightWrap = createElement("div", "feed-actions");
-      const createdAt = formatDate(item.created_at || item.created_at_utc);
-      const age = createElement("div", "small feed-age", createdAt);
+      const createdAtRaw = item.created_at || item.created_at_utc;
+      const createdAt = formatDate(createdAtRaw);
+      const relative = formatRelativeTime(createdAtRaw);
+      const age = createElement("div", "small feed-age", relative);
+      age.title = createdAt;
       const footerRight = createElement("div", "feed-footer-right");
       let bodyNode = createElement("div", "feed-body");
       if (isSessionSummary) {
@@ -1157,13 +1267,20 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       const hasOverrides = Boolean(payload.env_overrides);
       settingsEffective.textContent = hasOverrides ? "Effective config differs (env overrides active)" : "";
     }
+    setSettingsDirty(false);
+    if (settingsStatus) settingsStatus.textContent = "Ready";
   }
   function openSettings() {
     stopPolling();
+    setRefreshStatus("paused", "(settings)");
     if (settingsBackdrop) settingsBackdrop.hidden = false;
     if (settingsModal) settingsModal.hidden = false;
   }
   function closeSettings() {
+    if (settingsDirty) {
+      const ok = globalThis.confirm("Discard unsaved changes?");
+      if (!ok) return;
+    }
     if (settingsBackdrop) settingsBackdrop.hidden = true;
     if (settingsModal) settingsModal.hidden = true;
     startPolling();
@@ -1172,6 +1289,27 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   settingsButton?.addEventListener("click", openSettings);
   settingsClose?.addEventListener("click", closeSettings);
   settingsBackdrop?.addEventListener("click", closeSettings);
+  settingsModal?.addEventListener("click", (event) => {
+    if (event.target === settingsModal) {
+      closeSettings();
+    }
+  });
+  [
+    observerProviderInput,
+    observerModelInput,
+    observerMaxCharsInput,
+    packObservationLimitInput,
+    packSessionLimitInput,
+    syncEnabledInput,
+    syncHostInput,
+    syncPortInput,
+    syncIntervalInput,
+    syncMdnsInput
+  ].forEach((input) => {
+    if (!input) return;
+    input.addEventListener("input", () => setSettingsDirty(true));
+    input.addEventListener("change", () => setSettingsDirty(true));
+  });
   async function syncNow(address) {
     if (!syncNowButton) return;
     syncNowButton.disabled = true;
@@ -1226,11 +1364,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         throw new Error(message);
       }
       settingsStatus.textContent = "Saved";
+      setSettingsDirty(false);
       closeSettings();
     } catch {
       settingsStatus.textContent = "Save failed";
     } finally {
-      settingsSave.disabled = false;
+      settingsSave.disabled = !settingsDirty;
     }
   }
   settingsSave?.addEventListener("click", saveSettings);
@@ -1262,6 +1401,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   }
   async function loadFeed() {
     try {
+      setRefreshStatus("refreshing");
       const [observationsResp, summariesResp] = await Promise.all([
         fetch(
           `/api/memories?project=${encodeURIComponent(currentProject || "")}`
@@ -1285,16 +1425,35 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
           return right - left;
         }
       );
+      const shouldDefer = isSettingsOpen() || isUserReadingFeed() || isUserInteracting() || Boolean(pendingFeedItems);
+      if (shouldDefer && lastFeedItems.length) {
+        pendingFeedItems = feedItems;
+        lastFeedFilteredCount = filteredCount;
+        const byType = filterFeedItems(feedItems);
+        const visiblePending = filterFeedQuery(byType);
+        const byTypeCurrent = filterFeedItems(lastFeedItems);
+        const visibleCurrent = filterFeedQuery(byTypeCurrent);
+        const newCount = countNewItems(visiblePending, visibleCurrent);
+        showFeedUpdateBanner(newCount);
+        setRefreshStatus("idle");
+        return;
+      }
+      const incomingNewCount = countNewItems(feedItems, lastFeedItems);
+      if (incomingNewCount) {
+        const seen = new Set(lastFeedItems.map(itemKey));
+        feedItems.forEach((item) => {
+          const key = itemKey(item);
+          if (!seen.has(key)) newItemKeys.add(key);
+        });
+      }
+      pendingFeedItems = null;
+      hideFeedUpdateBanner();
       lastFeedItems = feedItems;
       lastFeedFilteredCount = filteredCount;
       updateFeedView();
-      if (refreshStatus) {
-        refreshStatus.innerHTML = "<span class='dot'></span>updated " + (/* @__PURE__ */ new Date()).toLocaleTimeString();
-      }
+      setRefreshStatus("idle");
     } catch {
-      if (refreshStatus) {
-        refreshStatus.innerHTML = "<span class='dot'></span>refresh failed";
-      }
+      setRefreshStatus("error");
     }
   }
   async function loadConfig() {

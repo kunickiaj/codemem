@@ -782,6 +782,22 @@
         border-left-color: var(--accent-2);
         background: var(--item-hover-bg);
       }
+      .feed-item.new-item {
+        animation: newItemPulse 420ms ease-out 1;
+      }
+      @keyframes newItemPulse {
+        0% { box-shadow: 0 0 0 rgba(31, 111, 92, 0); }
+        40% { box-shadow: 0 0 0 3px rgba(31, 111, 92, 0.12); }
+        100% { box-shadow: 0 0 0 rgba(31, 111, 92, 0); }
+      }
+      [data-theme="dark"] .feed-item.new-item {
+        animation: newItemPulseDark 420ms ease-out 1;
+      }
+      @keyframes newItemPulseDark {
+        0% { box-shadow: 0 0 0 rgba(77, 212, 180, 0); }
+        40% { box-shadow: 0 0 0 3px rgba(77, 212, 180, 0.16); }
+        100% { box-shadow: 0 0 0 rgba(77, 212, 180, 0); }
+      }
       .feed-header {
         display: flex;
         align-items: center;
@@ -811,6 +827,12 @@
         flex: 1;
         min-width: 0;
       }
+      .feed-title {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+      }
       .feed-controls {
         display: flex;
         align-items: center;
@@ -818,6 +840,41 @@
         gap: 12px;
         flex-wrap: wrap;
         margin-bottom: 12px;
+      }
+      .feed-update {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(31, 111, 92, 0.28);
+        background: rgba(31, 111, 92, 0.10);
+        color: var(--accent);
+        font-size: 12px;
+        cursor: pointer;
+        transition: background 0.2s ease, border-color 0.2s ease;
+      }
+      .feed-update:hover {
+        background: rgba(31, 111, 92, 0.16);
+        border-color: rgba(31, 111, 92, 0.44);
+      }
+      [data-theme="dark"] .feed-update {
+        border-color: rgba(77, 212, 180, 0.28);
+        background: rgba(77, 212, 180, 0.10);
+        color: #4dd4b4;
+      }
+      [data-theme="dark"] .feed-update:hover {
+        border-color: rgba(77, 212, 180, 0.44);
+        background: rgba(77, 212, 180, 0.14);
+      }
+      .match {
+        padding: 0 2px;
+        border-radius: 4px;
+        background: rgba(31, 111, 92, 0.16);
+        color: inherit;
+      }
+      [data-theme="dark"] .match {
+        background: rgba(77, 212, 180, 0.18);
       }
       .feed-controls-right {
         display: flex;
@@ -1281,6 +1338,7 @@
           <div class="feed-controls">
             <div class="section-meta" id="feedMeta">Loading memories…</div>
             <div class="feed-controls-right">
+              <button class="feed-update" id="feedUpdateBanner" hidden>New items · Update</button>
               <input class="feed-search" id="feedSearch" placeholder="Search title/body/tags…" />
               <div class="feed-toggle" id="feedTypeToggle">
                 <button class="toggle-button" data-filter="all">All</button>
