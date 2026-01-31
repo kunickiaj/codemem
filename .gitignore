@@ -12,3 +12,6 @@ build/
 dist/
 .worktrees/
 .tmp/
+node_modules/
+viewer_ui/node_modules/
+viewer_ui/.vite/
