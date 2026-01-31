@@ -1077,12 +1077,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       observerMaxCharsHint.textContent = defaultValue ? `Default: ${defaultValue}` : "";
     }
     if (settingsEffective) {
-      const effective = payload.effective;
-      if (effective && typeof effective === "object") {
-        settingsEffective.textContent = JSON.stringify(effective, null, 2);
-      } else {
-        settingsEffective.textContent = String(effective ?? "");
-      }
+      const hasOverrides = Boolean(payload.env_overrides);
+      settingsEffective.textContent = hasOverrides ? "Effective config differs (env overrides active)" : "";
     }
   }
   function openSettings() {
