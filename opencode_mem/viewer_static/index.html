@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mem</title>
+    <title>opencode-mem viewer</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -1093,26 +1093,13 @@
   <body>
     <header>
       <div class="header-grid">
-         <div class="header-left">
-           <div style="display:flex; align-items:center; gap:10px;">
-             <span class="logo" aria-hidden="true" style="color: var(--accent); line-height: 0;">
-               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                 <path d="M7 6.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z"/>
-                 <path d="M6.2 5.2A2 2 0 0 1 8 4h10a2 2 0 0 1 2 2v.6"/>
-                 <path d="M4 8.2V8a2 2 0 0 1 2-2h.6"/>
-                 <circle cx="9" cy="10" r="1.2" fill="currentColor" stroke="none"/>
-                 <path d="M11.5 10h5"/>
-                 <path d="M9 13.5h7.5"/>
-                 <path d="M9 16h6"/>
-               </svg>
-             </span>
-             <h1>Mem</h1>
-           </div>
-           <div class="header-tags">
-             <span class="pill alt">auto-refresh</span>
-             <span class="refresh" id="refreshStatus"><span class="dot"></span>refreshing…</span>
-           </div>
-         </div>
+        <div class="header-left">
+          <h1>opencode-mem viewer</h1>
+          <div class="header-tags">
+            <span class="pill alt">auto-refresh</span>
+            <span class="refresh" id="refreshStatus"><span class="dot"></span>refreshing…</span>
+          </div>
+        </div>
         <div class="header-right">
           <div class="meta" id="metaLine">Loading stats…</div>
           <div style="display: flex; gap: 8px; align-items: center;">

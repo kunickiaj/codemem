@@ -53,7 +53,7 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
     base = f"http://{host}:{port}"
 
     html = _wait_for_http_text(base + "/")
-    assert "Mem" in html
+    assert "opencode-mem viewer" in html
 
     js = _wait_for_http_text(base + "/assets/app.js")
     assert "fetch(" in js
