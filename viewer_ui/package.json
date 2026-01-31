@@ -4,12 +4,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "build:watch": "vite build --watch",
+    "build": "vite build --mode production",
+    "build:watch": "vite build --watch --mode development",
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vite": "^6.4.1"
+    "vite": "^7.0.0"
   }
 }

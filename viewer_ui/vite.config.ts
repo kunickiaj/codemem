@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 
 import { defineConfig } from "vite";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   build: {
     outDir: resolve(__dirname, "../opencode_mem/viewer_static"),
     emptyOutDir: false,
@@ -17,7 +17,8 @@ export default defineConfig({
         inlineDynamicImports: true,
       },
     },
-    sourcemap: true,
+    // Sourcemaps in development only; avoid shipping debug payload by default.
+    sourcemap: mode === "development",
     minify: false,
   },
-});
+}));

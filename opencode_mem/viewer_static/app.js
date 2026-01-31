@@ -143,7 +143,7 @@
     setTheme(current === "dark" ? "light" : "dark");
   }
   setTheme(getTheme());
-  themeToggle == null ? void 0 : themeToggle.addEventListener("click", toggleTheme);
+  themeToggle?.addEventListener("click", toggleTheme);
   setSyncDiagnosticsOpen(isSyncDiagnosticsOpen());
   try {
     syncPairingOpen = localStorage.getItem(SYNC_PAIRING_KEY) === "1";
@@ -152,12 +152,12 @@
   }
   setSyncPairingOpen(syncPairingOpen);
   setSyncRedactionEnabled(isSyncRedactionEnabled());
-  syncDetailsToggle == null ? void 0 : syncDetailsToggle.addEventListener("click", () => {
+  syncDetailsToggle?.addEventListener("click", () => {
     const next = !isSyncDiagnosticsOpen();
     setSyncDiagnosticsOpen(next);
     refresh();
   });
-  syncPairingToggle == null ? void 0 : syncPairingToggle.addEventListener("click", () => {
+  syncPairingToggle?.addEventListener("click", () => {
     const next = !isSyncPairingOpen();
     setSyncPairingOpen(next);
     if (next) {
@@ -166,7 +166,7 @@
     }
     refresh();
   });
-  syncRedact == null ? void 0 : syncRedact.addEventListener("change", () => {
+  syncRedact?.addEventListener("change", () => {
     setSyncRedactionEnabled(Boolean(syncRedact.checked));
     renderSyncStatus(lastSyncStatus);
     renderSyncPeers(lastSyncPeers);
@@ -175,9 +175,8 @@
   });
   feedTypeFilter = getFeedTypeFilter();
   updateFeedTypeToggle();
-  feedTypeToggle == null ? void 0 : feedTypeToggle.addEventListener("click", (event) => {
-    var _a, _b;
-    const target = (_b = (_a = event.target) == null ? void 0 : _a.closest) == null ? void 0 : _b.call(_a, "button");
+  feedTypeToggle?.addEventListener("click", (event) => {
+    const target = event.target?.closest?.("button");
     if (!target) return;
     const value = target.dataset.filter || "all";
     setFeedTypeFilter(value);
@@ -255,8 +254,7 @@
     if (!feedTypeToggle) return;
     const buttons = Array.from(feedTypeToggle.querySelectorAll(".toggle-button"));
     buttons.forEach((button) => {
-      var _a;
-      const value = ((_a = button.dataset) == null ? void 0 : _a.filter) || "all";
+      const value = button.dataset?.filter || "all";
       button.classList.toggle("active", value === feedTypeFilter);
     });
   }
@@ -335,10 +333,9 @@
     return `${slice.join(", ")}${suffix}`.trim();
   }
   function renderStats(stats, usagePayload, project, rawEvents) {
-    var _a;
     const db = stats.database || {};
-    const totalsGlobal = (usagePayload == null ? void 0 : usagePayload.totals_global) || (usagePayload == null ? void 0 : usagePayload.totals) || ((_a = stats.usage) == null ? void 0 : _a.totals) || {};
-    const totalsFiltered = (usagePayload == null ? void 0 : usagePayload.totals_filtered) || null;
+    const totalsGlobal = usagePayload?.totals_global || usagePayload?.totals || stats.usage?.totals || {};
+    const totalsFiltered = usagePayload?.totals_filtered || null;
     const isFiltered = !!(project && totalsFiltered);
     const usage = isFiltered ? totalsFiltered : totalsGlobal;
     const raw = rawEvents && typeof rawEvents === "object" ? rawEvents : {};
@@ -617,7 +614,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
   }
   async function copyPairingCommand() {
-    const command = pairingCommandRaw || (pairingPayload == null ? void 0 : pairingPayload.textContent) || "";
+    const command = pairingCommandRaw || pairingPayload?.textContent || "";
     if (!command) return;
     try {
       await navigator.clipboard.writeText(command);
@@ -629,7 +626,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       if (pairingCopy) pairingCopy.textContent = "Copy failed";
     }
   }
-  pairingCopy == null ? void 0 : pairingCopy.addEventListener("click", copyPairingCommand);
+  pairingCopy?.addEventListener("click", copyPairingCommand);
   function itemSignature(item) {
     return String(
       item.id ?? item.memory_id ?? item.observation_id ?? item.session_id ?? item.created_at_utc ?? item.created_at ?? ""
@@ -642,24 +639,23 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     return value.replace(/_/g, " ").split(" ").map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(" ").trim();
   }
   function getSummaryObject(item) {
-    var _a;
-    const candidate = item == null ? void 0 : item.summary;
+    const candidate = item?.summary;
     if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
       return candidate;
     }
-    const nested = (_a = item == null ? void 0 : item.summary) == null ? void 0 : _a.summary;
+    const nested = item?.summary?.summary;
     if (nested && typeof nested === "object" && !Array.isArray(nested)) {
       return nested;
     }
     return null;
   }
   function getNarrativeText(item) {
-    const html = item == null ? void 0 : item.body_html;
-    const text = item == null ? void 0 : item.body_text;
+    const html = item?.body_html;
+    const text = item?.body_text;
     return String(html || text || "").trim();
   }
   function getFactsList(item) {
-    const text = String((item == null ? void 0 : item.body_text) || "");
+    const text = String(item?.body_text || "");
     return extractFactsFromBody(text);
   }
   function renderSummaryObject(summary) {
@@ -912,7 +908,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (settingsPath)
       settingsPath.textContent = configPath ? `Config path: ${configPath}` : "Config path: n/a";
     if (observerMaxCharsHint) {
-      const defaultValue = (configDefaults == null ? void 0 : configDefaults.observer_max_chars) || "";
+      const defaultValue = configDefaults?.observer_max_chars || "";
       observerMaxCharsHint.textContent = defaultValue ? `Default: ${defaultValue}` : "";
     }
     if (settingsEffective) settingsEffective.textContent = config.effective ?? "";
@@ -928,9 +924,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     startPolling();
     refresh();
   }
-  settingsButton == null ? void 0 : settingsButton.addEventListener("click", openSettings);
-  settingsClose == null ? void 0 : settingsClose.addEventListener("click", closeSettings);
-  settingsBackdrop == null ? void 0 : settingsBackdrop.addEventListener("click", closeSettings);
+  settingsButton?.addEventListener("click", openSettings);
+  settingsClose?.addEventListener("click", closeSettings);
+  settingsBackdrop?.addEventListener("click", closeSettings);
   async function syncNow(address) {
     if (!syncNowButton) return;
     syncNowButton.disabled = true;
@@ -949,10 +945,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       syncNowButton.textContent = "Sync now";
     }
   }
-  syncNowButton == null ? void 0 : syncNowButton.addEventListener("click", () => syncNow(""));
+  syncNowButton?.addEventListener("click", () => syncNow(""));
   function hideSettingsOverrideNotice(config) {
     if (!settingsOverrides) return;
-    if (config == null ? void 0 : config.has_env_overrides) {
+    if (config?.has_env_overrides) {
       settingsOverrides.hidden = false;
     } else {
       settingsOverrides.hidden = true;
@@ -964,16 +960,16 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     settingsStatus.textContent = "Saving...";
     try {
       const payload = {
-        observer_provider: (observerProviderInput == null ? void 0 : observerProviderInput.value) || "",
-        observer_model: (observerModelInput == null ? void 0 : observerModelInput.value) || "",
-        observer_max_chars: Number((observerMaxCharsInput == null ? void 0 : observerMaxCharsInput.value) || 0) || "",
-        pack_observation_limit: Number((packObservationLimitInput == null ? void 0 : packObservationLimitInput.value) || 0) || "",
-        pack_session_limit: Number((packSessionLimitInput == null ? void 0 : packSessionLimitInput.value) || 0) || "",
-        sync_enabled: (syncEnabledInput == null ? void 0 : syncEnabledInput.checked) || false,
-        sync_host: (syncHostInput == null ? void 0 : syncHostInput.value) || "",
-        sync_port: Number((syncPortInput == null ? void 0 : syncPortInput.value) || 0) || "",
-        sync_interval_seconds: Number((syncIntervalInput == null ? void 0 : syncIntervalInput.value) || 0) || "",
-        sync_mdns: (syncMdnsInput == null ? void 0 : syncMdnsInput.checked) || false
+        observer_provider: observerProviderInput?.value || "",
+        observer_model: observerModelInput?.value || "",
+        observer_max_chars: Number(observerMaxCharsInput?.value || 0) || "",
+        pack_observation_limit: Number(packObservationLimitInput?.value || 0) || "",
+        pack_session_limit: Number(packSessionLimitInput?.value || 0) || "",
+        sync_enabled: syncEnabledInput?.checked || false,
+        sync_host: syncHostInput?.value || "",
+        sync_port: Number(syncPortInput?.value || 0) || "",
+        sync_interval_seconds: Number(syncIntervalInput?.value || 0) || "",
+        sync_mdns: syncMdnsInput?.checked || false
       };
       const resp = await fetch("/api/config", {
         method: "POST",
@@ -995,7 +991,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       settingsSave.disabled = false;
     }
   }
-  settingsSave == null ? void 0 : settingsSave.addEventListener("click", saveSettings);
+  settingsSave?.addEventListener("click", saveSettings);
   async function loadStats() {
     try {
       const [statsResp, usageResp, sessionsResp, rawEventsResp] = await Promise.all([
@@ -1094,12 +1090,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       renderSyncPeers(lastSyncPeers);
       renderSyncAttempts(lastSyncAttempts);
       if (syncMeta) {
-        const last = (lastSyncStatus == null ? void 0 : lastSyncStatus.last_sync_at) || (lastSyncStatus == null ? void 0 : lastSyncStatus.last_sync_at_utc) || "";
+        const last = lastSyncStatus?.last_sync_at || lastSyncStatus?.last_sync_at_utc || "";
         syncMeta.textContent = last ? `Last sync: ${formatTimestamp(last)}` : "Sync ready";
       }
       renderSyncHealth({
-        status: (lastSyncStatus == null ? void 0 : lastSyncStatus.daemon_state) || "unknown",
-        details: (lastSyncStatus == null ? void 0 : lastSyncStatus.daemon_state) === "error" ? "daemon error" : ""
+        status: lastSyncStatus?.daemon_state || "unknown",
+        details: lastSyncStatus?.daemon_state === "error" ? "daemon error" : ""
       });
     } catch {
       if (syncMeta) syncMeta.textContent = "Sync unavailable";
@@ -1145,7 +1141,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     } catch {
     }
   }
-  projectFilter == null ? void 0 : projectFilter.addEventListener("change", () => {
+  projectFilter?.addEventListener("change", () => {
     currentProject = projectFilter.value || "";
     refresh();
   });
@@ -1181,4 +1177,3 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   refresh();
   startPolling();
 })();
-//# sourceMappingURL=app.js.map
