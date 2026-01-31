@@ -807,6 +807,44 @@ function getNarrativeText(item: any) {
 }
 
 function getFactsList(item: any) {
+  const summary = getSummaryObject(item);
+  if (summary) {
+    const preferred = [
+      'request',
+      'outcome',
+      'plan',
+      'completed',
+      'learned',
+      'investigated',
+      'next',
+      'next_steps',
+      'notes',
+    ];
+    const keys = Object.keys(summary || {});
+    const remaining = keys
+      .filter((key) => !preferred.includes(key))
+      .sort((a, b) => a.localeCompare(b));
+    const ordered = [...preferred.filter((key) => keys.includes(key)), ...remaining];
+
+    const facts: string[] = [];
+    ordered.forEach((key) => {
+      const raw = (summary as any)[key];
+      const content = String(raw || '').trim();
+      if (!content) return;
+
+      const bullets = extractFactsFromBody(content);
+      if (bullets.length) {
+        bullets.forEach((bullet) => {
+          facts.push(`${toTitleLabel(key)}: ${bullet}`.trim());
+        });
+        return;
+      }
+
+      facts.push(`${toTitleLabel(key)}: ${content}`.trim());
+    });
+    return facts;
+  }
+
   const text = String(item?.body_text || '');
   return extractFactsFromBody(text);
 }
