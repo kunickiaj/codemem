@@ -80,6 +80,7 @@ from .db import DEFAULT_DB_PATH
 from .net import pick_advertise_host, pick_advertise_hosts
 from .store import MemoryStore
 from .summarizer import Summarizer
+from .sync.daemon import run_sync_daemon
 from .sync.discovery import (
     discover_peers_via_mdns,
     mdns_enabled,
@@ -87,7 +88,6 @@ from .sync.discovery import (
     update_peer_addresses,
 )
 from .sync.sync_pass import run_sync_pass, sync_pass_preflight
-from .sync_daemon import run_sync_daemon
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
 from .sync_runtime import effective_status, spawn_daemon, stop_pidfile
 from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT
