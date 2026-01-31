@@ -630,6 +630,32 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       syncStatusGrid.appendChild(block);
     }
   }
+  function pickPrimaryAddress(addresses) {
+    if (!Array.isArray(addresses)) return "";
+    const unique = Array.from(new Set(addresses.filter(Boolean)));
+    const first = unique[0];
+    return typeof first === "string" ? first : "";
+  }
+  async function syncNow(address, button) {
+    const targetButton = button || syncNowButton;
+    if (!targetButton) return;
+    targetButton.disabled = true;
+    const prevLabel = targetButton.textContent;
+    targetButton.textContent = "Syncing...";
+    try {
+      const payload = address ? { address } : {};
+      await fetch("/api/sync/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      refresh();
+    } catch {
+    } finally {
+      targetButton.disabled = false;
+      targetButton.textContent = prevLabel || "Sync now";
+    }
+  }
   function renderSyncPeers(peers) {
     if (!syncPeers) return;
     syncPeers.textContent = "";
@@ -666,17 +692,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never"
       ].join(" · ");
       const meta = createElement("div", "peer-meta", metaLine2);
-      if (peerAddresses.length) {
-        peerAddresses.forEach((address) => {
-          const button = createElement(
-            "button",
-            null,
-            "Sync now"
-          );
-          button.addEventListener("click", () => syncNow(address));
-          actions.appendChild(button);
-        });
-      }
+      const primaryAddress = pickPrimaryAddress(peer.addresses);
+      const button = createElement("button", null, "Sync now");
+      button.disabled = !primaryAddress;
+      button.addEventListener("click", () => syncNow(primaryAddress, button));
+      actions.appendChild(button);
       title.append(name, actions);
       card.append(title, addressLabel, meta);
       syncPeers.appendChild(card);
@@ -1297,24 +1317,6 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     input.addEventListener("input", () => setSettingsDirty(true));
     input.addEventListener("change", () => setSettingsDirty(true));
   });
-  async function syncNow(address) {
-    if (!syncNowButton) return;
-    syncNowButton.disabled = true;
-    syncNowButton.textContent = "Syncing...";
-    try {
-      const payload = address ? { address } : {};
-      await fetch("/api/sync/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      refresh();
-    } catch {
-    } finally {
-      syncNowButton.disabled = false;
-      syncNowButton.textContent = "Sync now";
-    }
-  }
   syncNowButton?.addEventListener("click", () => syncNow(""));
   function hideSettingsOverrideNotice(config) {
     if (!settingsOverrides) return;

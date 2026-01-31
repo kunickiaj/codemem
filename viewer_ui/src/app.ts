@@ -770,6 +770,35 @@ function renderSyncStatus(status: any) {
   }
 }
 
+function pickPrimaryAddress(addresses: unknown): string {
+  if (!Array.isArray(addresses)) return '';
+  const unique = Array.from(new Set(addresses.filter(Boolean)));
+  const first = unique[0];
+  return typeof first === 'string' ? first : '';
+}
+
+async function syncNow(address: string, button?: HTMLButtonElement) {
+  const targetButton = button || syncNowButton;
+  if (!targetButton) return;
+  targetButton.disabled = true;
+  const prevLabel = targetButton.textContent;
+  targetButton.textContent = 'Syncing...';
+  try {
+    const payload = address ? { address } : {};
+    await fetch('/api/sync/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    refresh();
+  } catch {
+    // Ignore errors.
+  } finally {
+    targetButton.disabled = false;
+    targetButton.textContent = prevLabel || 'Sync now';
+  }
+}
+
 function renderSyncPeers(peers: any[]) {
   if (!syncPeers) return;
   syncPeers.textContent = '';
@@ -821,17 +850,11 @@ function renderSyncPeers(peers: any[]) {
     ].join(' · ');
     const meta = createElement('div', 'peer-meta', metaLine);
 
-    if (peerAddresses.length) {
-      peerAddresses.forEach((address: string) => {
-        const button = createElement(
-          'button',
-          null,
-          'Sync now',
-        ) as HTMLButtonElement;
-        button.addEventListener('click', () => syncNow(address));
-        actions.appendChild(button);
-      });
-    }
+    const primaryAddress = pickPrimaryAddress(peer.addresses);
+    const button = createElement('button', null, 'Sync now') as HTMLButtonElement;
+    button.disabled = !primaryAddress;
+    button.addEventListener('click', () => syncNow(primaryAddress, button));
+    actions.appendChild(button);
 
     title.append(name, actions);
     card.append(title, addressLabel, meta);
@@ -1652,26 +1675,6 @@ settingsModal?.addEventListener('click', (event) => {
   input.addEventListener('input', () => setSettingsDirty(true));
   input.addEventListener('change', () => setSettingsDirty(true));
 });
-
-async function syncNow(address: string) {
-  if (!syncNowButton) return;
-  syncNowButton.disabled = true;
-  syncNowButton.textContent = 'Syncing...';
-  try {
-    const payload = address ? { address } : {};
-    await fetch('/api/sync/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    refresh();
-  } catch {
-    // Ignore errors.
-  } finally {
-    syncNowButton.disabled = false;
-    syncNowButton.textContent = 'Sync now';
-  }
-}
 
 syncNowButton?.addEventListener('click', () => syncNow(''));
 
