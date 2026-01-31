@@ -890,10 +890,7 @@ function renderSummaryObject(summary: Record<string, any>): HTMLElement | null {
     'notes',
   ];
   const keys = Object.keys(summary || {});
-  const remaining = keys
-    .filter((key) => !preferred.includes(key))
-    .sort((a, b) => a.localeCompare(b));
-  const ordered = [...preferred.filter((key) => keys.includes(key)), ...remaining];
+  const ordered = preferred.filter((key) => keys.includes(key));
 
   const container = createElement('div', 'feed-body facts') as HTMLDivElement;
   let wrote = false;
@@ -904,7 +901,12 @@ function renderSummaryObject(summary: Record<string, any>): HTMLElement | null {
     wrote = true;
     const row = createElement('div', 'summary-section') as HTMLDivElement;
     const label = createElement('div', 'summary-section-label', toTitleLabel(key));
-    const value = createElement('div', 'summary-section-content', content);
+    const value = createElement('div', 'summary-section-content');
+    try {
+      value.innerHTML = (globalThis as any).marked.parse(content);
+    } catch {
+      value.textContent = content;
+    }
     row.append(label, value);
     container.appendChild(row);
   });
@@ -933,39 +935,79 @@ function renderNarrative(narrative: string): HTMLElement | null {
   return body;
 }
 
-function getViewModes(item: any): Array<{ id: ItemViewMode; label: string }> {
+function _sentenceFacts(text: string, limit = 6): string[] {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  const parts = collapsed
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const facts: string[] = [];
+  for (const part of parts) {
+    if (part.length < 18) continue;
+    facts.push(part);
+    if (facts.length >= limit) break;
+  }
+  return facts;
+}
+
+function _observationViewData(item: any) {
+  const metadata = mergeMetadata(item?.metadata_json);
+  const summary = String(item?.subtitle || item?.body_text || '').trim();
+  const narrative = String(item?.narrative || metadata?.narrative || '').trim();
+  const normalizedSummary = normalize(summary);
+  const normalizedNarrative = normalize(narrative);
+  const narrativeDistinct = Boolean(narrative) && normalizedNarrative !== normalizedSummary;
+  const explicitFacts = parseJsonArray(item?.facts || metadata?.facts || []);
+  const fallbackFacts = explicitFacts.length
+    ? explicitFacts
+    : extractFactsFromBody(summary || narrative);
+  const derivedFacts = fallbackFacts.length ? fallbackFacts : _sentenceFacts(summary);
+  return {
+    summary,
+    narrative,
+    facts: derivedFacts,
+    hasSummary: Boolean(summary),
+    hasFacts: derivedFacts.length > 0,
+    hasNarrative: narrativeDistinct,
+  };
+}
+
+function _observationViewModes(data: {
+  hasSummary: boolean;
+  hasFacts: boolean;
+  hasNarrative: boolean;
+}): Array<{ id: ItemViewMode; label: string }> {
   const modes: Array<{ id: ItemViewMode; label: string }> = [];
-  const summary = getSummaryObject(item);
-  const summaryEl = summary ? renderSummaryObject(summary) : null;
-  if (summaryEl) {
-    modes.push({ id: 'summary', label: 'Summary' });
-  }
-  if (renderFacts(getFactsList(item))) {
-    modes.push({ id: 'facts', label: 'Facts' });
-  }
-  if (renderNarrative(getNarrativeText(item))) {
-    modes.push({ id: 'narrative', label: 'Narrative' });
-  }
+  if (data.hasSummary) modes.push({ id: 'summary', label: 'Summary' });
+  if (data.hasFacts) modes.push({ id: 'facts', label: 'Facts' });
+  if (data.hasNarrative) modes.push({ id: 'narrative', label: 'Narrative' });
   return modes;
 }
 
-function getInitialViewMode(
-  modes: Array<{ id: ItemViewMode; label: string }>,
-): ItemViewMode {
-  if (modes.some((mode) => mode.id === 'summary')) return 'summary';
-  if (modes.some((mode) => mode.id === 'facts')) return 'facts';
+function _defaultObservationView(data: {
+  hasSummary: boolean;
+  hasFacts: boolean;
+  hasNarrative: boolean;
+}): ItemViewMode {
+  if (data.hasSummary) return 'summary';
+  if (data.hasFacts) return 'facts';
   return 'narrative';
 }
 
-function renderItemBody(item: any, mode: ItemViewMode): HTMLElement | null {
-  if (mode === 'summary') {
-    const summary = getSummaryObject(item);
-    return summary ? renderSummaryObject(summary) : null;
-  }
+function _renderObservationBody(
+  data: { summary: string; narrative: string; facts: string[] },
+  mode: ItemViewMode,
+): HTMLElement {
   if (mode === 'facts') {
-    return renderFacts(getFactsList(item));
+    return renderFacts(data.facts) || createElement('div', 'feed-body');
   }
-  return renderNarrative(getNarrativeText(item));
+  if (mode === 'narrative') {
+    return renderNarrative(data.narrative) || createElement('div', 'feed-body');
+  }
+  return renderNarrative(data.summary) || createElement('div', 'feed-body');
 }
 
 function renderItemViewToggle(
@@ -1006,22 +1048,24 @@ function renderFeed(items: any[]) {
     return;
   }
   items.forEach((item) => {
+    const kindValue = String(item.kind || 'session_summary').toLowerCase();
+    const isSessionSummary = kindValue === 'session_summary';
+    const metadata = mergeMetadata(item?.metadata_json);
+
     const card = createElement(
       'div',
-      `feed-item ${String(item.kind || '').toLowerCase()}`.trim(),
+      `feed-item ${kindValue}`.trim(),
     );
     (card as any).dataset.key = itemKey(item);
     const header = createElement('div', 'feed-card-header');
     const titleWrap = createElement('div', 'feed-header');
-    const title = createElement(
-      'div',
-      'feed-title title',
-      item.title || '(untitled)',
-    );
+    const defaultTitle = item.title || '(untitled)';
+    const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;
+    const title = createElement('div', 'feed-title title', displayTitle);
     const kind = createElement(
       'span',
-      `kind-pill ${String(item.kind || '').toLowerCase()}`.trim(),
-      item.kind || '',
+      `kind-pill ${kindValue}`.trim(),
+      kindValue.replace(/_/g, ' '),
     );
     titleWrap.append(title, kind);
 
@@ -1034,32 +1078,40 @@ function renderFeed(items: any[]) {
     const createdAt = formatDate(item.created_at || item.created_at_utc);
     const age = createElement('div', 'small', createdAt);
 
-    const modes = getViewModes(item);
-    const key = itemKey(item);
-    const saved = itemViewState.get(key) as ItemViewMode | undefined;
-    const activeMode = saved || getInitialViewMode(modes);
-    itemViewState.set(key, activeMode);
+    let bodyNode: HTMLElement = createElement('div', 'feed-body');
 
-    let bodyNode: HTMLElement =
-      renderItemBody(item, activeMode) || createElement('div', 'feed-body');
+    if (isSessionSummary) {
+      const summaryObject = getSummaryObject({ metadata_json: metadata });
+      const rendered = summaryObject ? renderSummaryObject(summaryObject) : null;
+      bodyNode = rendered || renderNarrative(String(item.body_text || '')) || bodyNode;
+    } else {
+      const data = _observationViewData({ ...item, metadata_json: metadata });
+      const modes = _observationViewModes(data);
+      const defaultView = _defaultObservationView(data);
 
-    const toggle = renderItemViewToggle(modes, activeMode, (mode) => {
-      itemViewState.set(key, mode);
-      const nextBody = renderItemBody(item, mode) || createElement('div', 'feed-body');
-      card.replaceChild(nextBody, bodyNode);
-      bodyNode = nextBody;
+      const key = itemKey(item);
+      const stored = itemViewState.get(key) as ItemViewMode | undefined;
+      let activeMode: ItemViewMode = stored && modes.some((m) => m.id === stored) ? stored : defaultView;
+      itemViewState.set(key, activeMode);
 
-      if (toggle) {
-        const buttons = Array.from(toggle.querySelectorAll('.toggle-button'));
-        buttons.forEach((button) => {
-          const value = (button as HTMLButtonElement).dataset.filter as ItemViewMode;
-          button.classList.toggle('active', value === mode);
-        });
-      }
-    });
+      bodyNode = _renderObservationBody(data, activeMode);
 
-    if (toggle) {
-      rightWrap.appendChild(toggle);
+      const toggle = renderItemViewToggle(modes, activeMode, (mode) => {
+        activeMode = mode;
+        itemViewState.set(key, mode);
+        const nextBody = _renderObservationBody(data, mode);
+        card.replaceChild(nextBody, bodyNode);
+        bodyNode = nextBody;
+
+        if (toggle) {
+          const buttons = Array.from(toggle.querySelectorAll('.toggle-button'));
+          buttons.forEach((button) => {
+            const value = (button as HTMLButtonElement).dataset.filter as ItemViewMode;
+            button.classList.toggle('active', value === mode);
+          });
+        }
+      });
+      if (toggle) rightWrap.appendChild(toggle);
     }
     rightWrap.appendChild(age);
 
