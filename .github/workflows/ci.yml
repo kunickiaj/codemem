@@ -73,7 +73,7 @@ jobs:
         run: |
           cd viewer_ui
           bun run build
-          git diff --exit-code ../opencode_mem/viewer_static/app.js ../opencode_mem/viewer_static/app.js.map
+          git diff --exit-code ../opencode_mem/viewer_static/app.js
       
       - name: Run ruff check
         run: uv run ruff check opencode_mem tests

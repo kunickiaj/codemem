@@ -15,3 +15,4 @@ dist/
 node_modules/
 viewer_ui/node_modules/
 viewer_ui/.vite/
+opencode_mem/viewer_static/app.js.map
