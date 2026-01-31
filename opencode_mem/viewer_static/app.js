@@ -1,4 +1,4 @@
-(function () {
+(function() {
   "use strict";
   const refreshStatus = document.getElementById("refreshStatus");
   const statsGrid = document.getElementById("statsGrid");
@@ -17,36 +17,71 @@
   const settingsPath = document.getElementById("settingsPath");
   const settingsEffective = document.getElementById("settingsEffective");
   const settingsOverrides = document.getElementById("settingsOverrides");
-  const observerProviderInput = document.getElementById("observerProvider");
-  const observerModelInput = document.getElementById("observerModel");
-  const observerMaxCharsInput = document.getElementById("observerMaxChars");
+  const observerProviderInput = document.getElementById(
+    "observerProvider"
+  );
+  const observerModelInput = document.getElementById(
+    "observerModel"
+  );
+  const observerMaxCharsInput = document.getElementById(
+    "observerMaxChars"
+  );
   const observerMaxCharsHint = document.getElementById("observerMaxCharsHint");
-  const packObservationLimitInput = document.getElementById("packObservationLimit");
-  const packSessionLimitInput = document.getElementById("packSessionLimit");
-  const syncEnabledInput = document.getElementById("syncEnabled");
-  const syncHostInput = document.getElementById("syncHost");
-  const syncPortInput = document.getElementById("syncPort");
-  const syncIntervalInput = document.getElementById("syncInterval");
-  const syncMdnsInput = document.getElementById("syncMdns");
-  const projectFilter = document.getElementById("projectFilter");
-  const themeToggle = document.getElementById("themeToggle");
+  const packObservationLimitInput = document.getElementById(
+    "packObservationLimit"
+  );
+  const packSessionLimitInput = document.getElementById(
+    "packSessionLimit"
+  );
+  const syncEnabledInput = document.getElementById(
+    "syncEnabled"
+  );
+  const syncHostInput = document.getElementById(
+    "syncHost"
+  );
+  const syncPortInput = document.getElementById(
+    "syncPort"
+  );
+  const syncIntervalInput = document.getElementById(
+    "syncInterval"
+  );
+  const syncMdnsInput = document.getElementById(
+    "syncMdns"
+  );
+  const projectFilter = document.getElementById(
+    "projectFilter"
+  );
+  const themeToggle = document.getElementById(
+    "themeToggle"
+  );
   const syncMeta = document.getElementById("syncMeta");
   const syncHealthGrid = document.getElementById("syncHealthGrid");
   const syncStatusGrid = document.getElementById("syncStatusGrid");
   const syncDiagnostics = document.getElementById("syncDiagnostics");
   const syncPeers = document.getElementById("syncPeers");
   const syncAttempts = document.getElementById("syncAttempts");
-  const syncNowButton = document.getElementById("syncNowButton");
-  const syncDetailsToggle = document.getElementById("syncDetailsToggle");
-  const syncPairingToggle = document.getElementById("syncPairingToggle");
-  const syncRedact = document.getElementById("syncRedact");
+  const syncNowButton = document.getElementById(
+    "syncNowButton"
+  );
+  const syncDetailsToggle = document.getElementById(
+    "syncDetailsToggle"
+  );
+  const syncPairingToggle = document.getElementById(
+    "syncPairingToggle"
+  );
+  const syncRedact = document.getElementById(
+    "syncRedact"
+  );
   const pairingPayload = document.getElementById("pairingPayload");
-  const pairingCopy = document.getElementById("pairingCopy");
+  const pairingCopy = document.getElementById(
+    "pairingCopy"
+  );
   const pairingHint = document.getElementById("pairingHint");
   const syncPairing = document.getElementById("syncPairing");
   let configDefaults = {};
   let configPath = "";
   let currentProject = "";
+  const itemViewState = /* @__PURE__ */ new Map();
   const FEED_FILTER_KEY = "opencode-mem-feed-filter";
   const FEED_FILTERS = ["all", "observations", "summaries"];
   const SYNC_DIAGNOSTICS_KEY = "opencode-mem-sync-diagnostics";
@@ -100,7 +135,8 @@
       themeToggle.innerHTML = theme === "dark" ? '<i data-lucide="sun"></i>' : '<i data-lucide="moon"></i>';
       themeToggle.title = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
     }
-    if (typeof globalThis.lucide !== "undefined") globalThis.lucide.createIcons();
+    if (typeof globalThis.lucide !== "undefined")
+      globalThis.lucide.createIcons();
   }
   function toggleTheme() {
     const current = getTheme();
@@ -116,55 +152,43 @@
   }
   setSyncPairingOpen(syncPairingOpen);
   setSyncRedactionEnabled(isSyncRedactionEnabled());
-  syncDetailsToggle == null
-    ? void 0
-    : syncDetailsToggle.addEventListener("click", () => {
-        const next = !isSyncDiagnosticsOpen();
-        setSyncDiagnosticsOpen(next);
-        refresh();
-      });
-  syncPairingToggle == null
-    ? void 0
-    : syncPairingToggle.addEventListener("click", () => {
-        const next = !isSyncPairingOpen();
-        setSyncPairingOpen(next);
-        if (next) {
-          if (pairingPayload) pairingPayload.textContent = "Loading…";
-          if (pairingHint) pairingHint.textContent = "Fetching pairing command…";
-        }
-        refresh();
-      });
-  syncRedact == null
-    ? void 0
-    : syncRedact.addEventListener("change", () => {
-        setSyncRedactionEnabled(Boolean(syncRedact.checked));
-        renderSyncStatus(lastSyncStatus);
-        renderSyncPeers(lastSyncPeers);
-        renderSyncAttempts(lastSyncAttempts);
-        renderPairing(pairingPayloadRaw);
-      });
+  syncDetailsToggle == null ? void 0 : syncDetailsToggle.addEventListener("click", () => {
+    const next = !isSyncDiagnosticsOpen();
+    setSyncDiagnosticsOpen(next);
+    refresh();
+  });
+  syncPairingToggle == null ? void 0 : syncPairingToggle.addEventListener("click", () => {
+    const next = !isSyncPairingOpen();
+    setSyncPairingOpen(next);
+    if (next) {
+      if (pairingPayload) pairingPayload.textContent = "Loading…";
+      if (pairingHint) pairingHint.textContent = "Fetching pairing command…";
+    }
+    refresh();
+  });
+  syncRedact == null ? void 0 : syncRedact.addEventListener("change", () => {
+    setSyncRedactionEnabled(Boolean(syncRedact.checked));
+    renderSyncStatus(lastSyncStatus);
+    renderSyncPeers(lastSyncPeers);
+    renderSyncAttempts(lastSyncAttempts);
+    renderPairing(pairingPayloadRaw);
+  });
   feedTypeFilter = getFeedTypeFilter();
   updateFeedTypeToggle();
-  feedTypeToggle == null
-    ? void 0
-    : feedTypeToggle.addEventListener("click", (event) => {
-        var _a, _b;
-        const target =
-          (_b = (_a = event.target) == null ? void 0 : _a.closest) == null ? void 0 : _b.call(_a, "button");
-        if (!target) return;
-        const value = target.dataset.filter || "all";
-        setFeedTypeFilter(value);
-      });
+  feedTypeToggle == null ? void 0 : feedTypeToggle.addEventListener("click", (event) => {
+    var _a, _b;
+    const target = (_b = (_a = event.target) == null ? void 0 : _a.closest) == null ? void 0 : _b.call(_a, "button");
+    if (!target) return;
+    const value = target.dataset.filter || "all";
+    setFeedTypeFilter(value);
+  });
   function formatDate(value) {
     if (!value) return "n/a";
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
   }
   function normalize(text) {
-    return String(text || "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toLowerCase();
+    return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
   function parseJsonArray(value) {
     if (!value) return [];
@@ -208,7 +232,8 @@
     }
     try {
       localStorage.setItem(SYNC_PAIRING_KEY, open ? "1" : "0");
-    } catch {}
+    } catch {
+    }
   }
   function isSyncRedactionEnabled() {
     const raw = localStorage.getItem(SYNC_REDACT_KEY);
@@ -237,10 +262,14 @@
   }
   function filterFeedItems(items) {
     if (feedTypeFilter === "observations") {
-      return items.filter((item) => String(item.kind || "").toLowerCase() !== "session_summary");
+      return items.filter(
+        (item) => String(item.kind || "").toLowerCase() !== "session_summary"
+      );
     }
     if (feedTypeFilter === "summaries") {
-      return items.filter((item) => String(item.kind || "").toLowerCase() === "session_summary");
+      return items.filter(
+        (item) => String(item.kind || "").toLowerCase() === "session_summary"
+      );
     }
     return items;
   }
@@ -248,6 +277,17 @@
     if (feedTypeFilter === "observations") return " · observations";
     if (feedTypeFilter === "summaries") return " · session summaries";
     return "";
+  }
+  function extractFactsFromBody(text) {
+    if (!text) return [];
+    const lines = String(text).split("\n").map((line) => line.trim()).filter(Boolean);
+    const bulletLines = lines.filter(
+      (line) => /^[-*\u2022]\s+/.test(line) || /^\d+\./.test(line)
+    );
+    if (!bulletLines.length) return [];
+    return bulletLines.map(
+      (line) => line.replace(/^[-*\u2022]\s+/, "").replace(/^\d+\.\s+/, "")
+    );
   }
   function isLowSignalObservation(item) {
     const title = normalize(item.title);
@@ -297,70 +337,58 @@
   function renderStats(stats, usagePayload, project, rawEvents) {
     var _a;
     const db = stats.database || {};
-    const totalsGlobal =
-      (usagePayload == null ? void 0 : usagePayload.totals_global) ||
-      (usagePayload == null ? void 0 : usagePayload.totals) ||
-      ((_a = stats.usage) == null ? void 0 : _a.totals) ||
-      {};
+    const totalsGlobal = (usagePayload == null ? void 0 : usagePayload.totals_global) || (usagePayload == null ? void 0 : usagePayload.totals) || ((_a = stats.usage) == null ? void 0 : _a.totals) || {};
     const totalsFiltered = (usagePayload == null ? void 0 : usagePayload.totals_filtered) || null;
     const isFiltered = !!(project && totalsFiltered);
     const usage = isFiltered ? totalsFiltered : totalsGlobal;
     const raw = rawEvents && typeof rawEvents === "object" ? rawEvents : {};
     const rawSessions = Number(raw.sessions || 0);
     const rawPending = Number(raw.pending || 0);
-    const globalLineWork = isFiltered
-      ? `
-Global: ${Number(totalsGlobal.work_investment_tokens || 0).toLocaleString()} invested`
-      : "";
-    const globalLineRead = isFiltered
-      ? `
-Global: ${Number(totalsGlobal.tokens_read || 0).toLocaleString()} read`
-      : "";
-    const globalLineSaved = isFiltered
-      ? `
-Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
-      : "";
+    const globalLineWork = isFiltered ? `
+Global: ${Number(totalsGlobal.work_investment_tokens || 0).toLocaleString()} invested` : "";
+    const globalLineRead = isFiltered ? `
+Global: ${Number(totalsGlobal.tokens_read || 0).toLocaleString()} read` : "";
+    const globalLineSaved = isFiltered ? `
+Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const items = [
       { label: "Sessions", value: db.sessions || 0, icon: "database" },
       { label: "Memories", value: db.memory_items || 0, icon: "brain" },
       {
         label: "Active memories",
         value: db.active_memory_items || 0,
-        icon: "check-circle",
+        icon: "check-circle"
       },
       { label: "Artifacts", value: db.artifacts || 0, icon: "package" },
       {
         label: "Raw sessions",
         value: rawSessions,
         tooltip: "OpenCode sessions with pending raw events waiting to be flushed",
-        icon: "inbox",
+        icon: "inbox"
       },
       {
         label: "Raw events pending",
         value: rawPending,
         tooltip: "Total pending raw events waiting to be flushed",
-        icon: "activity",
+        icon: "activity"
       },
       {
         label: isFiltered ? "Work investment (project)" : "Work investment",
         value: Number(usage.work_investment_tokens || 0),
-        tooltip:
-          "Token cost of unique discovery groups (avoids double-counting when one response yields multiple memories)" +
-          globalLineWork,
-        icon: "pencil",
+        tooltip: "Token cost of unique discovery groups (avoids double-counting when one response yields multiple memories)" + globalLineWork,
+        icon: "pencil"
       },
       {
         label: isFiltered ? "Read cost (project)" : "Read cost",
         value: Number(usage.tokens_read || 0),
         tooltip: "Tokens to read memories when injected into context" + globalLineRead,
-        icon: "book-open",
+        icon: "book-open"
       },
       {
         label: isFiltered ? "Savings (project)" : "Savings",
         value: Number(usage.tokens_saved || 0),
         tooltip: "Tokens saved by reusing compressed memories instead of raw context" + globalLineSaved,
-        icon: "trending-up",
-      },
+        icon: "trending-up"
+      }
     ];
     if (statsGrid) {
       statsGrid.textContent = "";
@@ -374,18 +402,23 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
         icon.setAttribute("data-lucide", item.icon);
         icon.className = "stat-icon";
         const content = createElement("div", "stat-content");
-        const value = createElement("div", "value", Number(item.value || 0).toLocaleString());
+        const value = createElement(
+          "div",
+          "value",
+          Number(item.value || 0).toLocaleString()
+        );
         const label = createElement("div", "label", item.label);
         content.append(value, label);
         stat.append(icon, content);
         statsGrid.appendChild(stat);
       });
     }
-    if (typeof globalThis.lucide !== "undefined") globalThis.lucide.createIcons();
+    if (typeof globalThis.lucide !== "undefined")
+      globalThis.lucide.createIcons();
     const projectSuffix = project ? ` · project: ${project}` : "";
     if (metaLine) {
       metaLine.textContent = `DB: ${db.path || "unknown"} · ${Math.round(
-        (db.size_bytes || 0) / 1024,
+        (db.size_bytes || 0) / 1024
       )} KB${projectSuffix}`;
     }
   }
@@ -424,7 +457,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       { label: "Pending events", value: pending },
       { label: "Last sync", value: formatTimestamp(lastSync) },
       { label: "Last ping", value: formatTimestamp(lastPing) },
-      { label: "Peers", value: Object.keys(peers).length },
+      { label: "Peers", value: Object.keys(peers).length }
     ];
     items.forEach((item) => {
       const block = createElement("div", "stat");
@@ -438,7 +471,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
     if (syncError || pingError) {
       const block = createElement("div", "stat");
       const value = createElement("div", "value", "Errors");
-      const label = createElement("div", "label", [syncError, pingError].filter(Boolean).join(" · "));
+      const label = createElement(
+        "div",
+        "label",
+        [syncError, pingError].filter(Boolean).join(" · ")
+      );
       const content = createElement("div", "stat-content");
       content.append(value, label);
       block.append(content);
@@ -446,7 +483,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
     }
     if (syncPayload && syncPayload.seconds_since_last) {
       const block = createElement("div", "stat");
-      const value = createElement("div", "value", `${syncPayload.seconds_since_last}s`);
+      const value = createElement(
+        "div",
+        "value",
+        `${syncPayload.seconds_since_last}s`
+      );
       const label = createElement("div", "label", "Since last sync");
       const content = createElement("div", "stat-content");
       content.append(value, label);
@@ -455,7 +496,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
     }
     if (pingPayload && pingPayload.seconds_since_last) {
       const block = createElement("div", "stat");
-      const value = createElement("div", "value", `${pingPayload.seconds_since_last}s`);
+      const value = createElement(
+        "div",
+        "value",
+        `${pingPayload.seconds_since_last}s`
+      );
       const label = createElement("div", "label", "Since last ping");
       const content = createElement("div", "stat-content");
       content.append(value, label);
@@ -479,25 +524,33 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       const syncStatus = status.sync_status || "";
       const pingStatus = status.ping_status || "";
       const online = syncStatus === "ok" || pingStatus === "ok";
-      const statusBadge = createElement("span", "badge", online ? "Online" : "Offline");
+      const statusBadge = createElement(
+        "span",
+        "badge",
+        online ? "Online" : "Offline"
+      );
       statusBadge.style.background = online ? "rgba(31, 111, 92, 0.12)" : "rgba(230, 126, 77, 0.15)";
       statusBadge.style.color = online ? "var(--accent)" : "var(--accent-2)";
       name.append(" ", statusBadge);
       const peerAddresses = Array.isArray(peer.addresses) ? Array.from(new Set(peer.addresses.filter(Boolean))) : [];
-      const addressLine = peerAddresses.length
-        ? peerAddresses.map((address) => (isSyncRedactionEnabled() ? redactAddress(address) : address)).join(" · ")
-        : "No addresses";
+      const addressLine = peerAddresses.length ? peerAddresses.map(
+        (address) => isSyncRedactionEnabled() ? redactAddress(address) : address
+      ).join(" · ") : "No addresses";
       const addressLabel = createElement("div", "peer-addresses", addressLine);
       const lastSyncAt = status.last_sync_at || status.last_sync_at_utc || "";
       const lastPingAt = status.last_ping_at || status.last_ping_at_utc || "";
       const metaLine2 = [
         lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
-        lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never",
+        lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never"
       ].join(" · ");
       const meta = createElement("div", "peer-meta", metaLine2);
       if (peerAddresses.length) {
         peerAddresses.forEach((address) => {
-          const button = createElement("button", null, "Sync now");
+          const button = createElement(
+            "button",
+            null,
+            "Sync now"
+          );
           button.addEventListener("click", () => syncNow(address));
           actions.appendChild(button);
         });
@@ -552,7 +605,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
     if (!pairingPayload) return;
     if (!payload) {
       pairingPayload.textContent = "No pairing payload available";
-      if (pairingHint) pairingHint.textContent = "Pairing will appear after at least one sync scan.";
+      if (pairingHint)
+        pairingHint.textContent = "Pairing will appear after at least one sync scan.";
       return;
     }
     const command = payload.command || "";
@@ -578,18 +632,135 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
   pairingCopy == null ? void 0 : pairingCopy.addEventListener("click", copyPairingCommand);
   function itemSignature(item) {
     return String(
-      item.id ??
-        item.memory_id ??
-        item.observation_id ??
-        item.session_id ??
-        item.created_at_utc ??
-        item.created_at ??
-        "",
+      item.id ?? item.memory_id ?? item.observation_id ?? item.session_id ?? item.created_at_utc ?? item.created_at ?? ""
     );
+  }
+  function itemKey(item) {
+    return `${String(item.kind || "").toLowerCase()}:${itemSignature(item)}`;
+  }
+  function toTitleLabel(value) {
+    return value.replace(/_/g, " ").split(" ").map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(" ").trim();
+  }
+  function getSummaryObject(item) {
+    var _a;
+    const candidate = item == null ? void 0 : item.summary;
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      return candidate;
+    }
+    const nested = (_a = item == null ? void 0 : item.summary) == null ? void 0 : _a.summary;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      return nested;
+    }
+    return null;
+  }
+  function getNarrativeText(item) {
+    const html = item == null ? void 0 : item.body_html;
+    const text = item == null ? void 0 : item.body_text;
+    return String(html || text || "").trim();
+  }
+  function getFactsList(item) {
+    const text = String((item == null ? void 0 : item.body_text) || "");
+    return extractFactsFromBody(text);
+  }
+  function renderSummaryObject(summary) {
+    const preferred = [
+      "request",
+      "outcome",
+      "plan",
+      "completed",
+      "learned",
+      "investigated",
+      "next",
+      "next_steps",
+      "notes"
+    ];
+    const keys = Object.keys(summary || {});
+    const remaining = keys.filter((key) => !preferred.includes(key)).sort((a, b) => a.localeCompare(b));
+    const ordered = [...preferred.filter((key) => keys.includes(key)), ...remaining];
+    const container = createElement("div", "feed-body facts");
+    let wrote = false;
+    ordered.forEach((key) => {
+      const raw = summary[key];
+      const content = String(raw || "").trim();
+      if (!content) return;
+      wrote = true;
+      const row = createElement("div", "summary-section");
+      const label = createElement("div", "summary-section-label", toTitleLabel(key));
+      const value = createElement("div", "summary-section-content", content);
+      row.append(label, value);
+      container.appendChild(row);
+    });
+    return wrote ? container : null;
+  }
+  function renderFacts(facts) {
+    const trimmed = facts.map((fact) => String(fact || "").trim()).filter(Boolean);
+    if (!trimmed.length) return null;
+    const container = createElement("div", "feed-body");
+    const list = document.createElement("ul");
+    trimmed.forEach((fact) => {
+      const li = document.createElement("li");
+      li.textContent = fact;
+      list.appendChild(li);
+    });
+    container.appendChild(list);
+    return container;
+  }
+  function renderNarrative(narrative) {
+    const content = String(narrative || "").trim();
+    if (!content) return null;
+    const body = createElement("div", "feed-body");
+    body.innerHTML = globalThis.marked.parse(content);
+    return body;
+  }
+  function getViewModes(item) {
+    const modes = [];
+    const summary = getSummaryObject(item);
+    const summaryEl = summary ? renderSummaryObject(summary) : null;
+    if (summaryEl) {
+      modes.push({ id: "summary", label: "Summary" });
+    }
+    if (renderFacts(getFactsList(item))) {
+      modes.push({ id: "facts", label: "Facts" });
+    }
+    if (renderNarrative(getNarrativeText(item))) {
+      modes.push({ id: "narrative", label: "Narrative" });
+    }
+    return modes;
+  }
+  function getInitialViewMode(modes) {
+    if (modes.some((mode) => mode.id === "summary")) return "summary";
+    if (modes.some((mode) => mode.id === "facts")) return "facts";
+    return "narrative";
+  }
+  function renderItemBody(item, mode) {
+    if (mode === "summary") {
+      const summary = getSummaryObject(item);
+      return summary ? renderSummaryObject(summary) : null;
+    }
+    if (mode === "facts") {
+      return renderFacts(getFactsList(item));
+    }
+    return renderNarrative(getNarrativeText(item));
+  }
+  function renderItemViewToggle(modes, active, onSelect) {
+    if (modes.length <= 1) return null;
+    const toggle = createElement("div", "feed-toggle");
+    modes.forEach((mode) => {
+      const button = createElement(
+        "button",
+        "toggle-button",
+        mode.label
+      );
+      button.dataset.filter = mode.id;
+      button.classList.toggle("active", mode.id === active);
+      button.addEventListener("click", () => onSelect(mode.id));
+      toggle.appendChild(button);
+    });
+    return toggle;
   }
   function computeFeedSignature(items) {
     const parts = items.map(
-      (item) => `${itemSignature(item)}:${item.kind || ""}:${item.created_at_utc || item.created_at || ""}`,
+      (item) => `${itemSignature(item)}:${item.kind || ""}:${item.created_at_utc || item.created_at || ""}`
     );
     return `${feedTypeFilter}|${currentProject}|${parts.join("|")}`;
   }
@@ -602,17 +773,55 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       return;
     }
     items.forEach((item) => {
-      const card = createElement("div", `feed-item ${String(item.kind || "").toLowerCase()}`.trim());
+      const card = createElement(
+        "div",
+        `feed-item ${String(item.kind || "").toLowerCase()}`.trim()
+      );
+      card.dataset.key = itemKey(item);
       const header = createElement("div", "feed-card-header");
       const titleWrap = createElement("div", "feed-header");
-      const title = createElement("div", "feed-title title", item.title || "(untitled)");
-      titleWrap.appendChild(title);
-      const kindRow = createElement("div", "kind-row");
-      const kind = createElement("span", `kind-pill ${String(item.kind || "").toLowerCase()}`.trim(), item.kind || "");
-      kindRow.appendChild(kind);
+      const title = createElement(
+        "div",
+        "feed-title title",
+        item.title || "(untitled)"
+      );
+      const kind = createElement(
+        "span",
+        `kind-pill ${String(item.kind || "").toLowerCase()}`.trim(),
+        item.kind || ""
+      );
+      titleWrap.append(title, kind);
+      const rightWrap = document.createElement("div");
+      rightWrap.style.display = "flex";
+      rightWrap.style.alignItems = "center";
+      rightWrap.style.gap = "10px";
+      rightWrap.style.flexShrink = "0";
       const createdAt = formatDate(item.created_at || item.created_at_utc);
       const age = createElement("div", "small", createdAt);
-      header.append(titleWrap, kindRow, age);
+      const modes = getViewModes(item);
+      const key = itemKey(item);
+      const saved = itemViewState.get(key);
+      const activeMode = saved || getInitialViewMode(modes);
+      itemViewState.set(key, activeMode);
+      let bodyNode = renderItemBody(item, activeMode) || createElement("div", "feed-body");
+      const toggle = renderItemViewToggle(modes, activeMode, (mode) => {
+        itemViewState.set(key, mode);
+        const nextBody = renderItemBody(item, mode) || createElement("div", "feed-body");
+        card.replaceChild(nextBody, bodyNode);
+        bodyNode = nextBody;
+        if (toggle) {
+          const buttons = Array.from(toggle.querySelectorAll(".toggle-button"));
+          buttons.forEach((button) => {
+            const value = button.dataset.filter;
+            button.classList.toggle("active", value === mode);
+          });
+        }
+      });
+      if (toggle) {
+        rightWrap.appendChild(toggle);
+      }
+      rightWrap.appendChild(age);
+      header.append(titleWrap, rightWrap);
       const meta = createElement("div", "feed-meta");
       const tags = parseJsonArray(item.tags || []);
       const files = parseJsonArray(item.files || []);
@@ -621,11 +830,6 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
       const projectContent = project ? `Project: ${project}` : "Project: n/a";
       meta.textContent = `${projectContent}${tagContent}${fileContent}`;
-      const body = createElement("div", "feed-body");
-      const parsedBody = item.body_html || item.body_text || "";
-      if (parsedBody) {
-        body.innerHTML = globalThis.marked.parse(parsedBody);
-      }
       const footer = createElement("div", "feed-footer");
       const footerLeft = createElement("div", "feed-footer-left");
       const filesWrap = createElement("div", "feed-files");
@@ -645,10 +849,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
         footerLeft.appendChild(tagsWrap);
       }
       footer.appendChild(footerLeft);
-      card.append(header, meta, body, footer);
+      card.append(header, meta, bodyNode, footer);
       feedList.appendChild(card);
     });
-    if (typeof globalThis.lucide !== "undefined") globalThis.lucide.createIcons();
+    if (typeof globalThis.lucide !== "undefined")
+      globalThis.lucide.createIcons();
   }
   function renderSessionSummary(summary) {
     if (!sessionGrid || !sessionMeta) return;
@@ -663,11 +868,15 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       { label: "Memories", value: summary.memories || 0 },
       { label: "Artifacts", value: summary.artifacts || 0 },
       { label: "Prompts", value: summary.prompts || 0 },
-      { label: "Observations", value: summary.observations || 0 },
+      { label: "Observations", value: summary.observations || 0 }
     ];
     items.forEach((item) => {
       const block = createElement("div", "stat");
-      const value = createElement("div", "value", Number(item.value || 0).toLocaleString());
+      const value = createElement(
+        "div",
+        "value",
+        Number(item.value || 0).toLocaleString()
+      );
       const label = createElement("div", "label", item.label);
       const content = createElement("div", "stat-content");
       content.append(value, label);
@@ -692,14 +901,16 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
     if (observerProviderInput) observerProviderInput.value = observerProvider;
     if (observerModelInput) observerModelInput.value = observerModel;
     if (observerMaxCharsInput) observerMaxCharsInput.value = observerMaxChars;
-    if (packObservationLimitInput) packObservationLimitInput.value = packObservationLimit;
+    if (packObservationLimitInput)
+      packObservationLimitInput.value = packObservationLimit;
     if (packSessionLimitInput) packSessionLimitInput.value = packSessionLimit;
     if (syncEnabledInput) syncEnabledInput.checked = Boolean(syncEnabled);
     if (syncHostInput) syncHostInput.value = syncHost;
     if (syncPortInput) syncPortInput.value = syncPort;
     if (syncIntervalInput) syncIntervalInput.value = syncInterval;
     if (syncMdnsInput) syncMdnsInput.checked = Boolean(syncMdns);
-    if (settingsPath) settingsPath.textContent = configPath ? `Config path: ${configPath}` : "Config path: n/a";
+    if (settingsPath)
+      settingsPath.textContent = configPath ? `Config path: ${configPath}` : "Config path: n/a";
     if (observerMaxCharsHint) {
       const defaultValue = (configDefaults == null ? void 0 : configDefaults.observer_max_chars) || "";
       observerMaxCharsHint.textContent = defaultValue ? `Default: ${defaultValue}` : "";
@@ -729,7 +940,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       await fetch("/api/sync/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payload)
       });
       refresh();
     } catch {
@@ -756,19 +967,18 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
         observer_provider: (observerProviderInput == null ? void 0 : observerProviderInput.value) || "",
         observer_model: (observerModelInput == null ? void 0 : observerModelInput.value) || "",
         observer_max_chars: Number((observerMaxCharsInput == null ? void 0 : observerMaxCharsInput.value) || 0) || "",
-        pack_observation_limit:
-          Number((packObservationLimitInput == null ? void 0 : packObservationLimitInput.value) || 0) || "",
+        pack_observation_limit: Number((packObservationLimitInput == null ? void 0 : packObservationLimitInput.value) || 0) || "",
         pack_session_limit: Number((packSessionLimitInput == null ? void 0 : packSessionLimitInput.value) || 0) || "",
         sync_enabled: (syncEnabledInput == null ? void 0 : syncEnabledInput.checked) || false,
         sync_host: (syncHostInput == null ? void 0 : syncHostInput.value) || "",
         sync_port: Number((syncPortInput == null ? void 0 : syncPortInput.value) || 0) || "",
         sync_interval_seconds: Number((syncIntervalInput == null ? void 0 : syncIntervalInput.value) || 0) || "",
-        sync_mdns: (syncMdnsInput == null ? void 0 : syncMdnsInput.checked) || false,
+        sync_mdns: (syncMdnsInput == null ? void 0 : syncMdnsInput.checked) || false
       };
       const resp = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payload)
       });
       if (!resp.ok) {
         const message = await resp.text();
@@ -791,8 +1001,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       const [statsResp, usageResp, sessionsResp, rawEventsResp] = await Promise.all([
         fetch("/api/stats"),
         fetch(`/api/usage?project=${encodeURIComponent(currentProject || "")}`),
-        fetch(`/api/session?project=${encodeURIComponent(currentProject || "")}`),
-        fetch(`/api/raw-events?project=${encodeURIComponent(currentProject || "")}`),
+        fetch(
+          `/api/session?project=${encodeURIComponent(currentProject || "")}`
+        ),
+        fetch(
+          `/api/raw-events?project=${encodeURIComponent(currentProject || "")}`
+        )
       ]);
       const statsPayload = await statsResp.json();
       const usagePayload = usageResp.ok ? await usageResp.json() : {};
@@ -811,20 +1025,28 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
   async function loadFeed() {
     try {
       const [observationsResp, summariesResp] = await Promise.all([
-        fetch(`/api/memories?project=${encodeURIComponent(currentProject || "")}`),
-        fetch(`/api/summaries?project=${encodeURIComponent(currentProject || "")}`),
+        fetch(
+          `/api/memories?project=${encodeURIComponent(currentProject || "")}`
+        ),
+        fetch(
+          `/api/summaries?project=${encodeURIComponent(currentProject || "")}`
+        )
       ]);
       const observations = await observationsResp.json();
       const summaries = await summariesResp.json();
       const summaryItems = summaries.items || [];
       const observationItems = observations.items || [];
-      const filteredObservations = observationItems.filter((item) => !isLowSignalObservation(item));
+      const filteredObservations = observationItems.filter(
+        (item) => !isLowSignalObservation(item)
+      );
       const filteredCount = observationItems.length - filteredObservations.length;
-      const feedItems = [...summaryItems, ...filteredObservations].sort((a, b) => {
-        const left = new Date(a.created_at || 0).getTime();
-        const right = new Date(b.created_at || 0).getTime();
-        return right - left;
-      });
+      const feedItems = [...summaryItems, ...filteredObservations].sort(
+        (a, b) => {
+          const left = new Date(a.created_at || 0).getTime();
+          const right = new Date(b.created_at || 0).getTime();
+          return right - left;
+        }
+      );
       const visibleItems = filterFeedItems(feedItems);
       const filterLabel = formatFeedFilterLabel();
       const signature = computeFeedSignature(visibleItems);
@@ -837,7 +1059,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
         renderFeed(visibleItems);
       }
       if (refreshStatus) {
-        refreshStatus.innerHTML = "<span class='dot'></span>updated " + /* @__PURE__ */ new Date().toLocaleTimeString();
+        refreshStatus.innerHTML = "<span class='dot'></span>updated " + (/* @__PURE__ */ new Date()).toLocaleTimeString();
       }
     } catch {
       if (refreshStatus) {
@@ -855,7 +1077,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       const payload = await resp.json();
       renderConfigModal(payload.defaults || {}, payload.config || {});
       hideSettingsOverrideNotice(payload.config || {});
-    } catch {}
+    } catch {
+    }
   }
   async function loadSyncStatus() {
     try {
@@ -871,15 +1094,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       renderSyncPeers(lastSyncPeers);
       renderSyncAttempts(lastSyncAttempts);
       if (syncMeta) {
-        const last =
-          (lastSyncStatus == null ? void 0 : lastSyncStatus.last_sync_at) ||
-          (lastSyncStatus == null ? void 0 : lastSyncStatus.last_sync_at_utc) ||
-          "";
+        const last = (lastSyncStatus == null ? void 0 : lastSyncStatus.last_sync_at) || (lastSyncStatus == null ? void 0 : lastSyncStatus.last_sync_at_utc) || "";
         syncMeta.textContent = last ? `Last sync: ${formatTimestamp(last)}` : "Sync ready";
       }
       renderSyncHealth({
         status: (lastSyncStatus == null ? void 0 : lastSyncStatus.daemon_state) || "unknown",
-        details: (lastSyncStatus == null ? void 0 : lastSyncStatus.daemon_state) === "error" ? "daemon error" : "",
+        details: (lastSyncStatus == null ? void 0 : lastSyncStatus.daemon_state) === "error" ? "daemon error" : ""
       });
     } catch {
       if (syncMeta) syncMeta.textContent = "Sync unavailable";
@@ -906,22 +1126,29 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
       const projects = payload.projects || [];
       if (!projectFilter) return;
       projectFilter.textContent = "";
-      const allOption = createElement("option", null, "All Projects");
+      const allOption = createElement(
+        "option",
+        null,
+        "All Projects"
+      );
       allOption.value = "";
       projectFilter.appendChild(allOption);
       projects.forEach((project) => {
-        const option = createElement("option", null, project);
+        const option = createElement(
+          "option",
+          null,
+          project
+        );
         option.value = project;
         projectFilter.appendChild(option);
       });
-    } catch {}
+    } catch {
+    }
   }
-  projectFilter == null
-    ? void 0
-    : projectFilter.addEventListener("change", () => {
-        currentProject = projectFilter.value || "";
-        refresh();
-      });
+  projectFilter == null ? void 0 : projectFilter.addEventListener("change", () => {
+    currentProject = projectFilter.value || "";
+    refresh();
+  });
   async function refresh() {
     if (refreshInFlight) {
       refreshQueued = true;
@@ -929,7 +1156,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
     }
     refreshInFlight = true;
     try {
-      await Promise.all([loadStats(), loadFeed(), loadConfig(), loadSyncStatus()]);
+      await Promise.all([
+        loadStats(),
+        loadFeed(),
+        loadConfig(),
+        loadSyncStatus()
+      ]);
       if (isSyncPairingOpen()) {
         loadPairing();
       } else {

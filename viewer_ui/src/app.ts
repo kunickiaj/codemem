@@ -773,6 +773,156 @@ function itemSignature(item: any) {
   );
 }
 
+type ItemViewMode = 'summary' | 'facts' | 'narrative';
+
+function itemKey(item: any) {
+  return `${String(item.kind || '').toLowerCase()}:${itemSignature(item)}`;
+}
+
+function toTitleLabel(value: string) {
+  return value
+    .replace(/_/g, ' ')
+    .split(' ')
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(' ')
+    .trim();
+}
+
+function getSummaryObject(item: any): Record<string, any> | null {
+  const candidate = item?.summary;
+  if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+    return candidate;
+  }
+  const nested = item?.summary?.summary;
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    return nested;
+  }
+  return null;
+}
+
+function getNarrativeText(item: any) {
+  const html = item?.body_html;
+  const text = item?.body_text;
+  return String(html || text || '').trim();
+}
+
+function getFactsList(item: any) {
+  const text = String(item?.body_text || '');
+  return extractFactsFromBody(text);
+}
+
+function renderSummaryObject(summary: Record<string, any>): HTMLElement | null {
+  const preferred = [
+    'request',
+    'outcome',
+    'plan',
+    'completed',
+    'learned',
+    'investigated',
+    'next',
+    'next_steps',
+    'notes',
+  ];
+  const keys = Object.keys(summary || {});
+  const remaining = keys
+    .filter((key) => !preferred.includes(key))
+    .sort((a, b) => a.localeCompare(b));
+  const ordered = [...preferred.filter((key) => keys.includes(key)), ...remaining];
+
+  const container = createElement('div', 'feed-body facts') as HTMLDivElement;
+  let wrote = false;
+  ordered.forEach((key) => {
+    const raw = (summary as any)[key];
+    const content = String(raw || '').trim();
+    if (!content) return;
+    wrote = true;
+    const row = createElement('div', 'summary-section') as HTMLDivElement;
+    const label = createElement('div', 'summary-section-label', toTitleLabel(key));
+    const value = createElement('div', 'summary-section-content', content);
+    row.append(label, value);
+    container.appendChild(row);
+  });
+  return wrote ? container : null;
+}
+
+function renderFacts(facts: string[]): HTMLElement | null {
+  const trimmed = facts.map((fact) => String(fact || '').trim()).filter(Boolean);
+  if (!trimmed.length) return null;
+  const container = createElement('div', 'feed-body') as HTMLDivElement;
+  const list = document.createElement('ul');
+  trimmed.forEach((fact) => {
+    const li = document.createElement('li');
+    li.textContent = fact;
+    list.appendChild(li);
+  });
+  container.appendChild(list);
+  return container;
+}
+
+function renderNarrative(narrative: string): HTMLElement | null {
+  const content = String(narrative || '').trim();
+  if (!content) return null;
+  const body = createElement('div', 'feed-body') as HTMLDivElement;
+  body.innerHTML = (globalThis as any).marked.parse(content);
+  return body;
+}
+
+function getViewModes(item: any): Array<{ id: ItemViewMode; label: string }> {
+  const modes: Array<{ id: ItemViewMode; label: string }> = [];
+  const summary = getSummaryObject(item);
+  const summaryEl = summary ? renderSummaryObject(summary) : null;
+  if (summaryEl) {
+    modes.push({ id: 'summary', label: 'Summary' });
+  }
+  if (renderFacts(getFactsList(item))) {
+    modes.push({ id: 'facts', label: 'Facts' });
+  }
+  if (renderNarrative(getNarrativeText(item))) {
+    modes.push({ id: 'narrative', label: 'Narrative' });
+  }
+  return modes;
+}
+
+function getInitialViewMode(
+  modes: Array<{ id: ItemViewMode; label: string }>,
+): ItemViewMode {
+  if (modes.some((mode) => mode.id === 'summary')) return 'summary';
+  if (modes.some((mode) => mode.id === 'facts')) return 'facts';
+  return 'narrative';
+}
+
+function renderItemBody(item: any, mode: ItemViewMode): HTMLElement | null {
+  if (mode === 'summary') {
+    const summary = getSummaryObject(item);
+    return summary ? renderSummaryObject(summary) : null;
+  }
+  if (mode === 'facts') {
+    return renderFacts(getFactsList(item));
+  }
+  return renderNarrative(getNarrativeText(item));
+}
+
+function renderItemViewToggle(
+  modes: Array<{ id: ItemViewMode; label: string }>,
+  active: ItemViewMode,
+  onSelect: (mode: ItemViewMode) => void,
+): HTMLElement | null {
+  if (modes.length <= 1) return null;
+  const toggle = createElement('div', 'feed-toggle') as HTMLDivElement;
+  modes.forEach((mode) => {
+    const button = createElement(
+      'button',
+      'toggle-button',
+      mode.label,
+    ) as HTMLButtonElement;
+    button.dataset.filter = mode.id;
+    button.classList.toggle('active', mode.id === active);
+    button.addEventListener('click', () => onSelect(mode.id));
+    toggle.appendChild(button);
+  });
+  return toggle;
+}
+
 function computeFeedSignature(items: any[]) {
   const parts = items.map(
     (item) =>
@@ -794,6 +944,7 @@ function renderFeed(items: any[]) {
       'div',
       `feed-item ${String(item.kind || '').toLowerCase()}`.trim(),
     );
+    (card as any).dataset.key = itemKey(item);
     const header = createElement('div', 'feed-card-header');
     const titleWrap = createElement('div', 'feed-header');
     const title = createElement(
@@ -801,20 +952,52 @@ function renderFeed(items: any[]) {
       'feed-title title',
       item.title || '(untitled)',
     );
-    titleWrap.appendChild(title);
-
-    const kindRow = createElement('div', 'kind-row');
     const kind = createElement(
       'span',
       `kind-pill ${String(item.kind || '').toLowerCase()}`.trim(),
       item.kind || '',
     );
-    kindRow.appendChild(kind);
+    titleWrap.append(title, kind);
+
+    const rightWrap = document.createElement('div');
+    rightWrap.style.display = 'flex';
+    rightWrap.style.alignItems = 'center';
+    rightWrap.style.gap = '10px';
+    rightWrap.style.flexShrink = '0';
 
     const createdAt = formatDate(item.created_at || item.created_at_utc);
     const age = createElement('div', 'small', createdAt);
 
-    header.append(titleWrap, kindRow, age);
+    const modes = getViewModes(item);
+    const key = itemKey(item);
+    const saved = itemViewState.get(key) as ItemViewMode | undefined;
+    const activeMode = saved || getInitialViewMode(modes);
+    itemViewState.set(key, activeMode);
+
+    let bodyNode: HTMLElement =
+      renderItemBody(item, activeMode) || createElement('div', 'feed-body');
+
+    const toggle = renderItemViewToggle(modes, activeMode, (mode) => {
+      itemViewState.set(key, mode);
+      const nextBody = renderItemBody(item, mode) || createElement('div', 'feed-body');
+      card.replaceChild(nextBody, bodyNode);
+      bodyNode = nextBody;
+
+      if (toggle) {
+        const buttons = Array.from(toggle.querySelectorAll('.toggle-button'));
+        buttons.forEach((button) => {
+          const value = (button as HTMLButtonElement).dataset.filter as ItemViewMode;
+          button.classList.toggle('active', value === mode);
+        });
+      }
+    });
+
+    if (toggle) {
+      rightWrap.appendChild(toggle);
+    }
+    rightWrap.appendChild(age);
+
+    header.append(titleWrap, rightWrap);
 
     const meta = createElement('div', 'feed-meta');
     const tags = parseJsonArray(item.tags || []);
@@ -826,12 +1009,6 @@ function renderFeed(items: any[]) {
     const fileContent = files.length ? ` · ${formatFileList(files)}` : '';
     const projectContent = project ? `Project: ${project}` : 'Project: n/a';
     meta.textContent = `${projectContent}${tagContent}${fileContent}`;
-
-    const body = createElement('div', 'feed-body');
-    const parsedBody = item.body_html || item.body_text || '';
-    if (parsedBody) {
-      body.innerHTML = (globalThis as any).marked.parse(parsedBody);
-    }
 
     const footer = createElement('div', 'feed-footer');
     const footerLeft = createElement('div', 'feed-footer-left');
@@ -856,7 +1033,7 @@ function renderFeed(items: any[]) {
     }
     footer.appendChild(footerLeft);
 
-    card.append(header, meta, body, footer);
+    card.append(header, meta, bodyNode, footer);
     feedList.appendChild(card);
   });
   if (typeof (globalThis as any).lucide !== 'undefined')
