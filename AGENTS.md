@@ -1,145 +1,190 @@
 # Agent Guidelines for opencode-mem
 
-## Project Overview
-- `opencode_mem/` is the Python package (CLI, ingest pipeline, MCP server, viewer, store).
-- `.opencode/plugin/opencode-mem.js` is the OpenCode plugin entrypoint.
-- `tests/` contains pytest tests (fast, isolated).
-- `pyproject.toml` defines dependencies and pytest options.
-- `README.md` documents installation and runtime configuration.
+This file is for agentic coding tools working in this repo.
 
-## Build / Install
-- Install (editable): `uv pip install -e .`
-- Install dev deps: `uv sync` (dev group is included by default)
-- Alternate: `pip install -e .`
+If you are about to run commands, prefer `uv run ...` (no manual venv activation needed).
 
-## Runtime Commands
-- CLI entrypoint: `opencode-mem` (Typer CLI)
-- MCP server: `opencode-mem mcp`
-- Plugin ingest: `opencode-mem ingest` (stdin JSON)
-- Viewer: `opencode-mem serve --background`
-- Export/Import: `opencode-mem export-memories`, `opencode-mem import-memories`
+## Stack (what this repo uses)
 
-## Test Commands
+- Python: >=3.11,<3.15
+- Env/tooling: `uv` (creates `.venv/`)
+- CLI: Typer (`opencode-mem`)
+- Storage: SQLite (path configurable)
+- Tests: pytest
+- Lint/format: ruff
+- UI/plugin ("frontend"):
+  - Viewer UI is embedded in Python: `opencode_mem/viewer.py`
+  - OpenCode plugin is ESM JS: `.opencode/plugin/opencode-mem.js`
+
+## Quick Commands
+
+### Setup (recommended)
+- Install dev deps + create venv: `uv sync`
+- Run commands via the venv (no activate): `uv run opencode-mem --help`
+- Activate (fish): `source .venv/bin/activate.fish`
+- Activate (bash/zsh): `source .venv/bin/activate`
+
+### Build / Install
+- Editable install (if you want `opencode-mem` on PATH): `uv pip install -e .`
+- No-install run from this repo: `uv run opencode-mem stats`
+- One-off run via uvx: `uvx --from . opencode-mem stats`
+
+### Common Dev Commands
+
+- CLI help: `uv run opencode-mem --help`
+- Viewer help: `uv run opencode-mem serve --help`
+- Serve viewer: `uv run opencode-mem serve`
+- Serve viewer (background): `uv run opencode-mem serve --background`
+- Serve viewer (restart): `uv run opencode-mem serve --restart`
+- MCP server: `uv run opencode-mem mcp`
+- Ingest (stdin JSON): `uv run opencode-mem ingest`
+- Stats: `uv run opencode-mem stats`
+
+### Tests (pytest)
 - Run all tests: `uv run pytest`
 - Run a single file: `uv run pytest tests/test_store.py`
 - Run a single test: `uv run pytest tests/test_store.py::test_store_roundtrip`
-- Pytest config: `pyproject.toml` sets `-q` (quiet) by default.
+- Run by substring match: `uv run pytest -k "roundtrip and store"`
 
-## Releases
-- Update `pyproject.toml` version (semver) and `opencode_mem/__init__.py` `__version__`
-- Ensure `uv run pytest` and `uv run ruff check opencode_mem tests` pass
-- Tag and push (e.g. `git tag v0.8.1` then `git push origin main --tags`) to trigger release
+Single-test example:
+- `uv run pytest tests/test_store.py::test_deactivate_low_signal_observations`
 
-## Lint / Format
-- Linter: `ruff check opencode_mem tests`
-- Formatter: `ruff format opencode_mem tests`
-- Auto-fix: `ruff check --fix opencode_mem tests`
-- CI enforces linting and formatting on all PRs.
+Notes:
+- Pytest default opts are in `pyproject.toml` (`addopts = "-q"`).
+
+### Lint / Format (ruff)
+- Lint: `uv run ruff check opencode_mem tests`
+- Format (check only): `uv run ruff format --check opencode_mem tests`
+- Auto-fix lint + format: `uv run ruff check --fix opencode_mem tests` then `uv run ruff format opencode_mem tests`
+
+Ruff config (from `pyproject.toml`):
+- line length: 100
+- target: py311
+- lint selects: E, W, F, I, UP, B, SIM
+- ignores: E501 (formatter), B008 (Typer default args)
+
+### Coverage (optional)
+- `uv run pytest --cov=opencode_mem --cov-report=term`
+
+## Frontend Development (viewer + plugin)
+
+This repo does not have a separate JS build step (no Vite/Next/etc). The UI is embedded.
+
+### Viewer UI
+
+- Source: `opencode_mem/viewer.py`
+- Dev loop: edit `opencode_mem/viewer.py` then restart `opencode-mem serve`
+
+### OpenCode plugin
+
+- Source: `.opencode/plugin/opencode-mem.js`
+- Rules:
+  - ESM only (`import`/`export`)
+  - must never crash OpenCode (no uncaught exceptions)
+  - avoid blocking hooks; defer heavy work to background CLI calls
+
+## Repo Map (where things live)
+- `opencode_mem/`: Python package (CLI, ingest pipeline, MCP server, viewer, store)
+- `opencode_mem/store/_store.py`: SQLite store entrypoint (most store methods hang off `MemoryStore`)
+- `opencode_mem/plugin_ingest.py`: ingestion + filtering of tool events / transcripts
+- `opencode_mem/mcp_server.py`: MCP tools (search/timeline/pack/etc.)
+- `opencode_mem/viewer.py`: embedded viewer HTML + server glue
+- `.opencode/plugin/opencode-mem.js`: OpenCode plugin entrypoint
+- `tests/`: pytest tests (prefer fast, isolated unit tests)
+
+## Runtime Commands
+- CLI entrypoint: `opencode-mem` (Typer)
+- MCP server: `opencode-mem mcp` (or `opencode-mem-mcp`)
+- Plugin ingest (stdin JSON): `opencode-mem ingest`
+- Viewer: `opencode-mem serve` (add `--background` / `--restart` as needed)
+- Export/Import: `opencode-mem export-memories`, `opencode-mem import-memories`
+- Store maintenance: `opencode-mem db prune-memories` (use `--dry-run` first)
+
+## Environment Variables (most used)
+
+- `OPENCODE_MEM_DB`: sqlite path (example: `~/opencode-mem.sqlite`)
+- `OPENCODE_MEM_PLUGIN_LOG`: set to `1` to enable plugin logging
 
 ## Code Style
+
 ### Python
-- Follow PEP 8 with 4‑space indentation.
-- Prefer explicit, descriptive names over abbreviations.
-- Use `snake_case` for functions/variables, `PascalCase` for classes, `UPPER_CASE` for constants.
-- Favor small pure helper functions for logic reuse.
-- Avoid inline comments unless the user requests them; rely on clear naming.
-- Use type hints (including `Optional`, `Iterable`, `list[...]`) consistently.
-- Keep string literals consistent with surrounding files.
+- Version: Python >=3.11,<3.15 (see `pyproject.toml`)
+- Always use `from __future__ import annotations` (project convention; most files already do)
+- Formatting: let `ruff format` do the wrapping; don't fight it
+- Imports:
+  - Let ruff/isort order imports
+  - Prefer relative imports within `opencode_mem` (as existing code does)
+- Types:
+  - Prefer built-in generics (`list[str]`, `dict[str, Any]`) and `collections.abc` (`Iterable`, `Sequence`)
+  - Use `Path` for filesystem paths; accept `Path | str` at public boundaries and normalize early
+  - Use `TypedDict` for "event-like" dict payloads when shape matters
+- Naming:
+  - `snake_case` for functions/vars, `PascalCase` for classes, `UPPER_SNAKE_CASE` for constants
+  - Private helpers start with `_`; keep module surfaces small and explicit
+- Error handling:
+  - Validate at boundaries (env vars, config, CLI inputs, network payloads)
+  - Avoid bare `except:`; log exceptions with context (`logger.warning(..., exc_info=exc)` or `logger.exception(...)`)
+  - CLI: prefer user-friendly messages + non-zero exits (Typer patterns)
+  - Keep failure paths safe/deterministic (no partial DB writes without intent)
 
 ### JavaScript (OpenCode plugin)
-- Uses ES modules (`import`/`export`).
-- Keep plugin logic non‑blocking; avoid long awaits in hooks.
-- Use small helpers for logging and runner execution.
-- Avoid heavy work in `event` hooks; defer to background CLI calls.
+- ESM modules (`import`/`export`)
+- The plugin must never crash OpenCode:
+  - Guard risky code paths; swallow/record errors where needed
+  - Avoid blocking work in hooks; defer heavy work to background CLI calls
+  - Keep helper functions small and testable; prefer pure transformations
 
-## Error Handling
-- Avoid swallowing exceptions silently; log or record errors where useful.
-- For CLI commands, prefer user‑friendly output and exit codes.
-- In background plugin operations, log to `~/.opencode-mem/plugin.log`.
-- Keep failure paths safe: no uncaught exceptions in plugin hooks.
+## Memory Quality Rules (important)
+- Don't store raw tool logs as memories
+- Filter low-signal tool events (`read`, `edit`, `glob`, `grep`, etc.)
+- Prefer typed memory kinds: `discovery`, `change`, `feature`, `bugfix`, `refactor`, `decision`, `exploration`
+- Use `exploration` for attempts/experiments that were tried but not shipped (preserves "why not")
+- Session summaries/observations are OFF by default; only enable via config
 
 ## Configuration
-- Default config file: `~/.config/opencode-mem/config.json`.
-- Environment variables override config values when present.
-- Do not hardcode user paths; use config or env.
-
-## Memory Quality Rules (Important)
-- Do not store raw tool logs as memories.
-- Filter low‑signal tool events (`read`, `edit`, `glob`, `grep`, etc.).
-- Prefer typed memories: `discovery`, `change`, `feature`, `bugfix`, `refactor`, `decision`, `exploration`.
-- **Use `exploration` for attempts/experiments that were tried but NOT shipped** - these preserve "why we didn't do X" context.
-- Session summaries/observations are OFF by default; only enable via config.
-- Apply low‑signal filters before persisting any memory.
-
-## MCP Tools
-- MCP server exposes memory tools for recall/search.
-- Global MCP config example is in `README.md`.
-- When updating memory kinds, also update `memory_schema` in `opencode_mem/mcp_server.py`.
-
-## Plugin Rules
-- Plugin file must export default (`export default OpencodeMemPlugin`).
-- Avoid startup banners or blocking CLI calls on load.
-- Flush strategy is adaptive with multiple triggers:
-  - **Idle-based:** 2min base delay, reduces to 60s/30s with heavy work
-  - **Threshold-based:** Force flush at 50+ tools OR 15+ prompts OR 10+ min duration
-  - **Error-based:** Immediate flush on `session.error`
-  - Note: `/new` command and `session.created` don't trigger flushes in OpenCode's multi-session environment
-- If changes are made to plugin behavior, update the README.
-
-## Viewer Notes
-- The settings modal writes both observer settings and pack limits; if you change viewer settings behavior, update `docs/user-guide.md` and the env var table in `README.md`.
+- Default config file: `~/.config/opencode-mem/config.json`
+- Env vars override config values when present
+- Default DB path is configurable; `OPENCODE_MEM_DB=~/opencode-mem.sqlite` is a common override
+- Avoid hardcoding user paths in code; use config/env and normalize with `Path(...).expanduser()`
 
 ## Testing Guidance
-- Prefer fast unit tests in `tests/`.
-- Use `tmp_path` fixtures for DB or filesystem tests.
-- Add tests for new filters or memory‑quality logic.
+- Prefer fast unit tests in `tests/` (avoid network; mock external calls)
+- Use `tmp_path` fixtures for DB/filesystem tests
+- Add/adjust tests when changing ingestion filters, low-signal heuristics, or schemas
 
-## Files to Know
-- `opencode_mem/plugin_ingest.py`: filters tool events, builds transcript from user_prompt and assistant_message events, persists memories.
-- `opencode_mem/classifier.py`: typed memory classification (API or `opencode run`).
-- `opencode_mem/summarizer.py`: heuristic summarization and low‑signal detection.
-- `opencode_mem/store.py`: SQLite operations and deactivation/cleanup logic.
-- `opencode_mem/cli.py`: Typer-based CLI commands including export/import.
-- `.opencode/plugin/opencode-mem.js`: Plugin entrypoint with adaptive flush strategy.
+## Plugin / Viewer Notes
+- Plugin must be defensive: no uncaught exceptions in hooks; avoid blocking work
+- Viewer HTML is embedded in Python (`opencode_mem/viewer.py`); restart the viewer to see UI changes
+- Docs:
+  - `docs/architecture.md` (data flow, flush strategy)
+  - `docs/user-guide.md` (viewer usage, troubleshooting)
 
-## Design Principles
-- Favor pragmatic, minimal changes.
-- Keep behavior deterministic and debuggable.
-- Avoid over‑engineering or new dependencies unless necessary.
-- Maintain compatibility with `uvx` execution and OpenCode OAuth flow.
+## Quick Debug Checklist
+- Plugin logging: `OPENCODE_MEM_PLUGIN_LOG=1` then check `~/.opencode-mem/plugin.log`
+- Missing sessions: confirm plugin + viewer use the same DB path (`OPENCODE_MEM_DB`)
+- Flush/backlog issues: look for viewer logs and `opencode-mem raw-events-status` output
+
+## When Changing Behavior
+- If you change plugin behavior, update `README.md` (and relevant docs under `docs/`)
+- If you change memory kinds, also update:
+  - `opencode_mem/observer_prompts.py` (types/schema)
+  - `opencode_mem/mcp_server.py` (`memory_schema`)
+  - `opencode_mem/viewer.py` (UI kind lists)
+  - `tests/test_e2e_pipeline.py` coverage around documented types
+
+## Releases
+- Bump versions:
+  - `pyproject.toml` (semver)
+  - `opencode_mem/__init__.py` (`__version__`)
+- Validate: `uv run pytest` and `uv run ruff check opencode_mem tests`
+- Tag + push: `git tag vX.Y.Z` then `git push origin main --tags`
 
 ## Cursor / Copilot Rules
 - No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` found.
-- If added later, mirror them here.
+- If added later, summarize and mirror them here.
 
-## Quick Debug Checklist
-- Is plugin loaded? Check `~/.opencode-mem/plugin.log`.
-- Are events flushed? Look for `flush.start` / `flush.ok`.
-- Are memories clean? Run `opencode-mem recent`.
-- Need cleanup? `opencode-mem db prune-memories`.
-
-## Do / Don’t
-- Do prefer typed memories and concise narratives.
-- Do keep ingestion filters conservative.
-- Don’t store raw file dumps or line‑number output as memories.
-- Don’t assume API keys exist; support OpenCode OAuth flow via `opencode run`.
-
-## Single‑Test Example
-- `pytest tests/test_store.py::test_deactivate_low_signal_observations`
-
-## Notes for Future Agents
-- If you change memory categories, update:
-  - `opencode_mem/observer_prompts.py` (OBSERVATION_TYPES and OBSERVATION_SCHEMA)
-  - `opencode_mem/mcp_server.py` (`memory_schema`)
-  - `opencode_mem/viewer.py` (pill/border styling, /api/observations kinds list)
-  - `tests/test_e2e_pipeline.py` (test_observer_types_are_documented)
-  - `README.md`
-- If you change CLI behavior, update `README.md` and tests.
-- If you change plugin flush behavior, update this file and `docs/architecture.md`.
-
-## Recent Improvements (Jan 2026)
-- **v0.3.0:** Export/import memories by project for team knowledge sharing
-- **v0.3.1:** Fixed transcript capture bug (was passing empty string, now builds from events)
-- **v0.3.3:** Web UI improvements (markdown, icons, current session stats, dark mode colors)
-- **v0.3.4:** Added `exploration` memory kind for tracking attempted approaches that weren't shipped
-- **Latest:** Adaptive flush strategy (2min base, 60s/30s with heavy work, force flush at thresholds)
+## Do / Don't
+- Do keep changes small and deterministic; prefer adding tests when behavior changes
+- Do validate inputs at boundaries; keep DB writes intentional
+- Don't add new heavy dependencies without a clear need
+- Don't let the plugin throw uncaught exceptions or block OpenCode hooks
