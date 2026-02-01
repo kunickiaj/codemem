@@ -810,6 +810,40 @@ def test_load_replication_ops_since_filters_by_device_id(tmp_path: Path) -> None
         store.close()
 
 
+def test_load_replication_ops_since_filters_by_device_id_with_cursor(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.record_replication_op(
+            op_id="op-a",
+            entity_type="memory_item",
+            entity_id="k1",
+            op_type="upsert",
+            payload={"import_key": "k1", "session_id": 1, "rev": 1, "metadata_json": {}},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:00Z", "device_id": "dev-a"},
+            device_id="dev-a",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        store.record_replication_op(
+            op_id="op-b",
+            entity_type="memory_item",
+            entity_id="k2",
+            op_type="upsert",
+            payload={"import_key": "k2", "session_id": 1, "rev": 1, "metadata_json": {}},
+            clock={"rev": 1, "updated_at": "2026-01-01T00:00:01Z", "device_id": "dev-b"},
+            device_id="dev-b",
+            created_at="2026-01-01T00:00:01Z",
+        )
+
+        ops, cursor = store.load_replication_ops_since(None, limit=10, device_id="dev-a")
+        assert [op["op_id"] for op in ops] == ["op-a"]
+        assert cursor
+
+        more_ops, _ = store.load_replication_ops_since(cursor, limit=10, device_id="dev-a")
+        assert more_ops == []
+    finally:
+        store.close()
+
+
 def test_normalize_outbound_cursor_resets_when_ahead_of_local_stream(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:

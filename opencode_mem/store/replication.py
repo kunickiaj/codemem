@@ -764,7 +764,7 @@ def load_replication_ops_since(
     where: list[str] = []
     if parsed:
         created_at, op_id = parsed
-        where.append("created_at > ? OR (created_at = ? AND op_id > ?)")
+        where.append("(created_at > ? OR (created_at = ? AND op_id > ?))")
         params.extend([created_at, created_at, op_id])
     if device_id:
         where.append("(device_id = ? OR device_id = 'local')")
