@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 import sys
 import threading
 import time
-import logging
 
 from .db import DEFAULT_DB_PATH
 from .raw_event_flush import flush_raw_events  # noqa: F401
 from .store import MemoryStore
-
 
 logger = logging.getLogger(__name__)
 
