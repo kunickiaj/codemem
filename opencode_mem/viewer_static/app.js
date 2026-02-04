@@ -1543,4 +1543,3 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   refresh();
   startPolling();
 })();
-//# sourceMappingURL=app.js.map
