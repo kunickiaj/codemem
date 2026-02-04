@@ -28,7 +28,7 @@ Release checklist:
    - `pyproject.toml`
    - `opencode_mem/__init__.py`
 3. Regenerate lockfiles/artifacts and commit the results:
-   - Python: run `uv sync` and commit `uv.lock`
+   - Python: run `uv sync` and commit `uv.lock` (the lockfile includes the local package version)
    - Viewer UI bundle: in `viewer_ui/`, run:
      - `bun install`
      - `bun run build`
