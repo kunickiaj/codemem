@@ -17,6 +17,28 @@ will be published.
 
 If you are about to run commands, prefer `uv run ...` (no manual venv activation needed).
 
+## Releases (reproducible process)
+
+This repo uses PR-only `main` with required CI checks.
+
+Release checklist:
+
+1. Create a release branch + PR (no direct pushes to `main`)
+2. Update version:
+   - `pyproject.toml`
+   - `opencode_mem/__init__.py`
+3. Regenerate lockfiles/artifacts and commit the results:
+   - Python: run `uv sync` and commit `uv.lock` (the lockfile includes the local package version)
+   - Viewer UI bundle: in `viewer_ui/`, run:
+     - `bun install`
+     - `bun run build`
+     - commit updated `opencode_mem/viewer_static/app.js`
+4. Ensure JS installs use the public npm registry (avoid private registries/mirrors)
+   - Keep `.opencode/.npmrc` with `registry=https://registry.npmjs.org/`
+5. Wait for CI to pass, then squash-merge the PR
+6. Tag the merge commit as `vX.Y.Z` and push the tag
+   - The `Release` workflow triggers on `v*` tags and publishes the GitHub Release artifacts.
+
 ## Stack (what this repo uses)
 
 - Python: >=3.11,<3.15
