@@ -36,7 +36,7 @@ Run directly without installing — requires SSH access to the repo:
 uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git opencode-mem stats
 
 # Run specific version
-uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0 opencode-mem stats
+uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.9.17 opencode-mem stats
 
 # Run from local clone
 uvx --from . opencode-mem stats
@@ -49,7 +49,7 @@ uvx --from . opencode-mem stats
 uv pip install git+ssh://git@github.com/kunickiaj/opencode-mem.git
 
 # Install specific version
-uv pip install git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.1.0
+uv pip install git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.9.17
 ```
 
 ### Configuration
