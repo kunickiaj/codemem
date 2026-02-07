@@ -54,3 +54,30 @@ def normalize_projects_cmd(*, store_from_path, db_path: str | None, apply: bool)
         print("- Rewritten paths:")
         for source in sorted(mapping):
             print(f"  - {source} -> {mapping[source]}")
+
+
+def rename_project_cmd(
+    *, store_from_path, db_path: str | None, old_name: str, new_name: str, apply: bool
+) -> None:
+    """Rename a project across sessions, raw_event_sessions, and usage_events."""
+
+    store = store_from_path(db_path)
+    try:
+        result = store.rename_project(old_name, new_name, dry_run=not apply)
+    finally:
+        store.close()
+
+    error = result.get("error")
+    if error:
+        print(f"[red]Error:[/red] {error}")
+        raise SystemExit(2)
+
+    action = "Will rename" if result.get("dry_run") else "Renamed"
+    print(
+        f"[bold]{action}[/bold] [cyan]{result.get('old_name')}[/cyan] → [green]{result.get('new_name')}[/green]"
+    )
+    print(f"- Sessions: {result.get('sessions_to_update')}")
+    print(f"- Raw event sessions: {result.get('raw_event_sessions_to_update')}")
+    print(f"- Usage events: {result.get('usage_events_to_update')}")
+    if result.get("dry_run"):
+        print("\n[dim]Pass --apply to execute.[/dim]")

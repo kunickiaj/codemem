@@ -1317,6 +1317,124 @@ def test_normalize_projects_rewrites_basenames_and_git_errors(tmp_path: Path) ->
     assert fatal_row["project"] == "not-a-repo"
 
 
+def test_rename_project_updates_sessions_raw_event_sessions_and_usage_events(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        # Sessions: one exact, one path-like
+        sid_exact = store.start_session(
+            cwd="/tmp/greenroom/wt/product-context",
+            git_remote=None,
+            git_branch="main",
+            user="tester",
+            tool_version="test",
+            project="product-context",
+        )
+        sid_path = store.start_session(
+            cwd="/tmp/greenroom/wt/product-context",
+            git_remote=None,
+            git_branch="main",
+            user="tester",
+            tool_version="test",
+            project="/tmp/greenroom/wt/product-context",
+        )
+        store.end_session(sid_exact)
+        store.end_session(sid_path)
+
+        # raw_event_sessions: path-like project
+        store.conn.execute(
+            """
+            INSERT INTO raw_event_sessions(opencode_session_id, cwd, project, started_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "ses_test",
+                "/tmp/greenroom/wt/product-context",
+                "/tmp/greenroom/wt/product-context",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        # usage_events: include a non-pack usage event with project metadata
+        store.conn.execute(
+            """
+            INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+            VALUES (NULL, 'search_index', 0, 0, 0, '2026-01-01T00:00:00Z', ?)
+            """,
+            (json.dumps({"project": "/tmp/greenroom/wt/product-context"}),),
+        )
+        store.conn.commit()
+
+        preview = store.rename_project("product-context", "/tmp/greenroom", dry_run=True)
+        assert preview.get("error") is None
+        assert preview["sessions_to_update"] == 2
+        assert preview["raw_event_sessions_to_update"] == 1
+        assert preview["usage_events_to_update"] == 1
+        assert preview["new_name"] == "greenroom"
+
+        store.rename_project("product-context", "/tmp/greenroom", dry_run=False)
+
+        rows = store.conn.execute(
+            "SELECT project FROM sessions WHERE id IN (?, ?) ORDER BY id",
+            (sid_exact, sid_path),
+        ).fetchall()
+        assert [r["project"] for r in rows] == ["greenroom", "greenroom"]
+
+        row = store.conn.execute(
+            "SELECT project FROM raw_event_sessions WHERE opencode_session_id = ?",
+            ("ses_test",),
+        ).fetchone()
+        assert row is not None
+        assert row["project"] == "greenroom"
+
+        row = store.conn.execute(
+            "SELECT metadata_json FROM usage_events WHERE event = 'search_index' LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        meta = json.loads(row["metadata_json"])
+        assert meta["project"] == "greenroom"
+    finally:
+        store.close()
+
+
+def test_rename_project_escapes_like_wildcards(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        sid_literal = store.start_session(
+            cwd="/tmp/foo%bar",
+            git_remote=None,
+            git_branch="main",
+            user="tester",
+            tool_version="test",
+            project="/tmp/foo%bar",
+        )
+        sid_other = store.start_session(
+            cwd="/tmp/fooxbar",
+            git_remote=None,
+            git_branch="main",
+            user="tester",
+            tool_version="test",
+            project="/tmp/fooxbar",
+        )
+        store.end_session(sid_literal)
+        store.end_session(sid_other)
+
+        store.rename_project("foo%bar", "renamed", dry_run=False)
+        proj_literal = store.conn.execute(
+            "SELECT project FROM sessions WHERE id = ?", (sid_literal,)
+        ).fetchone()
+        proj_other = store.conn.execute(
+            "SELECT project FROM sessions WHERE id = ?", (sid_other,)
+        ).fetchone()
+        assert proj_literal is not None
+        assert proj_other is not None
+        assert proj_literal["project"] == "renamed"
+        assert proj_other["project"] == "/tmp/fooxbar"
+    finally:
+        store.close()
+
+
 def test_pack_falls_back_to_recent_for_tasks(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

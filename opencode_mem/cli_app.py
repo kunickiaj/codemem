@@ -19,7 +19,12 @@ from .commands.common import (
     resolve_project_for_cli,
     write_config_or_exit,
 )
-from .commands.db_cmds import normalize_projects_cmd, prune_memories_cmd, prune_observations_cmd
+from .commands.db_cmds import (
+    normalize_projects_cmd,
+    prune_memories_cmd,
+    prune_observations_cmd,
+    rename_project_cmd,
+)
 from .commands.import_export_cmds import export_memories_cmd, import_memories_cmd
 from .commands.maintenance_cmds import (
     backfill_discovery_tokens_cmd,
@@ -1022,6 +1027,24 @@ def db_normalize_projects(
     """
 
     normalize_projects_cmd(store_from_path=_store, db_path=db_path, apply=apply)
+
+
+@db_app.command("rename-project")
+def db_rename_project(
+    old_name: str = typer.Argument(help="Current project name to rename"),
+    new_name: str = typer.Argument(help="New project name"),
+    db_path: str = typer.Option(None, help="Path to opencode-mem SQLite database"),
+    apply: bool = typer.Option(False, help="Apply changes (default is dry-run)"),
+) -> None:
+    """Rename a project across all sessions and related tables.
+
+    Matches both exact project names and path-like values whose basename
+    matches OLD_NAME (e.g. "/Users/.../product-context" matches "product-context").
+    """
+
+    rename_project_cmd(
+        store_from_path=_store, db_path=db_path, old_name=old_name, new_name=new_name, apply=apply
+    )
 
 
 @app.command()

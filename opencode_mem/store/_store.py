@@ -1282,6 +1282,11 @@ class MemoryStore:
     def normalize_projects(self, *, dry_run: bool = True) -> dict[str, Any]:
         return store_maintenance.normalize_projects(self, dry_run=dry_run)
 
+    def rename_project(
+        self, old_name: str, new_name: str, *, dry_run: bool = True
+    ) -> dict[str, Any]:
+        return store_maintenance.rename_project(self, old_name, new_name, dry_run=dry_run)
+
     def _query_looks_like_tasks(self, query: str) -> bool:
         return store_search._query_looks_like_tasks(query)
 
