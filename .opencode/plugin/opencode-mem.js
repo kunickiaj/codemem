@@ -749,7 +749,7 @@ export const OpencodeMemPlugin = async ({
 
     const payload = {
       cwd,
-      project: project?.root || project?.name || null,
+      project: project?.name || (project?.root ? String(project.root).split(/[/\\]/).filter(Boolean).pop() : null) || null,
       started_at: sessionStartedAt || new Date().toISOString(),
       events: [...events],
       // Session context for comprehensive memories

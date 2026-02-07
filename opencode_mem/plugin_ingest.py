@@ -285,7 +285,14 @@ def ingest(payload: dict[str, Any]) -> None:
         capture_post=capture_post_context,
     )
     diff_summary = post.get("git_diff") or ""
-    project = payload.get("project") or pre.get("project")
+    env_project = os.environ.get("OPENCODE_MEM_PROJECT")
+    raw_project = env_project or payload.get("project") or pre.get("project")
+    # Normalize: if the value looks like a filesystem path, extract just the directory name.
+    # The plugin may send project.root (a full path) instead of project.name.
+    if raw_project and ("/" in raw_project or "\\" in raw_project):
+        project = Path(raw_project).name
+    else:
+        project = raw_project
     repo_root = pre.get("project") or None
     db_path = os.environ.get("OPENCODE_MEM_DB")
     store = MemoryStore(Path(db_path) if db_path else db.DEFAULT_DB_PATH)
