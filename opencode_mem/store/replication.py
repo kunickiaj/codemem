@@ -684,18 +684,28 @@ def backfill_replication_ops(store: MemoryStore, *, limit: int = 200) -> int:
 
 
 def _ensure_session_for_replication(
-    store: MemoryStore, session_id: int, started_at: str | None
+    store: MemoryStore,
+    session_id: int,
+    started_at: str | None,
+    *,
+    project: str | None = None,
 ) -> None:
     row = store.conn.execute(
-        "SELECT 1 FROM sessions WHERE id = ?",
+        "SELECT id, project FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     if row is not None:
+        # Backfill project on existing sessions that lack one.
+        if project and (not row["project"] or not str(row["project"]).strip()):
+            store.conn.execute(
+                "UPDATE sessions SET project = ? WHERE id = ?",
+                (project, session_id),
+            )
         return
     created_at = started_at or store._now_iso()
     store.conn.execute(
-        "INSERT INTO sessions(id, started_at) VALUES (?, ?)",
-        (session_id, created_at),
+        "INSERT INTO sessions(id, started_at, project) VALUES (?, ?, ?)",
+        (session_id, created_at, project),
     )
 
 
@@ -1031,7 +1041,9 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
     metadata_json = db.to_json(metadata)
     created_at = str(payload.get("created_at") or clock.get("updated_at") or "")
     updated_at = str(payload.get("updated_at") or clock.get("updated_at") or "")
-    _ensure_session_for_replication(store, int(session_id), created_at)
+    project_value = payload.get("project")
+    project = project_value if isinstance(project_value, str) and project_value.strip() else None
+    _ensure_session_for_replication(store, int(session_id), created_at, project=project)
     values = (
         int(session_id),
         str(payload.get("kind") or ""),
@@ -1153,7 +1165,13 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
         if session_id is None:
             return "skipped"
         created_at = str(payload.get("created_at") or deleted_at)
-        _ensure_session_for_replication(store, int(session_id), created_at)
+        delete_project_value = payload.get("project")
+        delete_project = (
+            delete_project_value
+            if isinstance(delete_project_value, str) and delete_project_value.strip()
+            else None
+        )
+        _ensure_session_for_replication(store, int(session_id), created_at, project=delete_project)
         store.conn.execute(
             """
             INSERT INTO memory_items(

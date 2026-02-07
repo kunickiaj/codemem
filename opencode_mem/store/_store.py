@@ -353,8 +353,12 @@ class MemoryStore:
         ungrouped_total = int(ungrouped_row["tokens"] or 0) if ungrouped_row else 0
         return grouped_total + ungrouped_total
 
-    def _ensure_session_for_replication(self, session_id: int, started_at: str | None) -> None:
-        store_replication._ensure_session_for_replication(self, session_id, started_at)
+    def _ensure_session_for_replication(
+        self, session_id: int, started_at: str | None, *, project: str | None = None
+    ) -> None:
+        store_replication._ensure_session_for_replication(
+            self, session_id, started_at, project=project
+        )
 
     def _replication_op_exists(self, op_id: str) -> bool:
         return store_replication._replication_op_exists(self, op_id)
