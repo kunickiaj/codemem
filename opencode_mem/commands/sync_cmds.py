@@ -267,6 +267,7 @@ def sync_pair_cmd(
     keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
     store = store_from_path(db_path)
     try:
+        accept_mode_requested = accept is not None or accept_file is not None
         if payload_only and (accept or accept_file):
             print("[red]--payload-only cannot be combined with --accept or --accept-file[/red]")
             raise typer.Exit(code=1)
@@ -285,6 +286,10 @@ def sync_pair_cmd(
             except OSError as exc:
                 print(f"[red]Failed to read pairing payload from {accept_file}: {exc}[/red]")
                 raise typer.Exit(code=1) from exc
+
+        if accept_mode_requested and not (accept_text or "").strip():
+            print("[red]Empty pairing payload; provide JSON via --accept or --accept-file[/red]")
+            raise typer.Exit(code=1)
 
         if not accept_text and (include or exclude or all_projects or default_projects):
             print(

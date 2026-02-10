@@ -298,7 +298,45 @@ def test_sync_pair_help_marks_filters_outbound_only() -> None:
     assert "outbound-only blocklist" in normalized
     assert "outbound-only: this device pushes" in normalized
     assert "all projects to that peer" in normalized
-    assert "--payload-only" in normalized
+    assert "print JSON only" in normalized
+
+
+def test_sync_pair_accept_file_rejects_empty_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    payload_path = tmp_path / "empty-pairing.json"
+    payload_path.write_text("", encoding="utf-8")
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "pair",
+            "--accept-file",
+            str(payload_path),
+            "--db-path",
+            str(db_path),
+        ],
+        env=env,
+    )
+    assert result.exit_code == 1
+    assert "Empty pairing payload" in result.stdout
+
+
+def test_sync_pair_accept_file_rejects_empty_stdin(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    db_path = tmp_path / "mem.sqlite"
+    env = {"OPENCODE_MEM_CONFIG": str(config_path)}
+
+    result = runner.invoke(
+        app,
+        ["sync", "pair", "--accept-file", "-", "--db-path", str(db_path)],
+        env=env,
+        input="",
+    )
+    assert result.exit_code == 1
+    assert "Empty pairing payload" in result.stdout
 
 
 def test_sync_pair_payload_only_prints_json(monkeypatch, tmp_path: Path) -> None:
