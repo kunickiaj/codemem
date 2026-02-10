@@ -106,6 +106,7 @@ def test_reject_cross_origin_blocks_spoofed_loopback_origins() -> None:
         "http://127.0.0.1.evil.test",
         "http://localhost.evil.test",
         "http://127.0.0.1@evil.test",
+        "http://[::1",
         "http://[::1]:bad",
         "http://127.0.0.1/path",
     ]

@@ -10,20 +10,24 @@ _ALLOWED_ORIGIN_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def _is_allowed_loopback_origin_url(url: str) -> bool:
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
     if parsed.scheme != "http":
         return False
     if parsed.username is not None or parsed.password is not None:
         return False
-    if parsed.hostname not in _ALLOWED_ORIGIN_HOSTS:
-        return False
-    if parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment:
-        return False
     try:
+        hostname = parsed.hostname
         _ = parsed.port
     except ValueError:
         return False
-    return True
+    if hostname not in _ALLOWED_ORIGIN_HOSTS:
+        return False
+    return (
+        parsed.path in ("", "/") and not parsed.params and not parsed.query and not parsed.fragment
+    )
 
 
 def _is_unsafe_missing_origin(handler: BaseHTTPRequestHandler) -> bool:
