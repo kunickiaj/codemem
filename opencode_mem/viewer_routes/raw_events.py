@@ -8,6 +8,19 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs
 
 
+def _safe_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_RAW_EVENTS_BODY_BYTES = _safe_int_env("OPENCODE_MEM_RAW_EVENTS_MAX_BODY_BYTES", 1048576)
+
+
 class _ViewerHandler(Protocol):
     headers: Any
     rfile: Any
@@ -62,7 +75,16 @@ def handle_post(
     if path != "/api/raw-events":
         return False
 
-    length = int(handler.headers.get("Content-Length", "0"))
+    length = int(handler.headers.get("Content-Length", "0") or 0)
+    if length > MAX_RAW_EVENTS_BODY_BYTES:
+        handler._send_json(
+            {
+                "error": "payload too large",
+                "max_bytes": MAX_RAW_EVENTS_BODY_BYTES,
+            },
+            status=413,
+        )
+        return True
     raw = handler.rfile.read(length).decode("utf-8") if length else ""
     try:
         payload = json.loads(raw) if raw else {}

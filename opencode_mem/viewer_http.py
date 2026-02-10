@@ -3,7 +3,41 @@ from __future__ import annotations
 import json
 import os
 from http.server import BaseHTTPRequestHandler
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlparse
+
+_ALLOWED_ORIGIN_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _is_allowed_loopback_origin_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "http":
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    try:
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        return False
+    if hostname not in _ALLOWED_ORIGIN_HOSTS:
+        return False
+    return (
+        parsed.path in ("", "/") and not parsed.params and not parsed.query and not parsed.fragment
+    )
+
+
+def _is_unsafe_missing_origin(handler: BaseHTTPRequestHandler) -> bool:
+    sec_fetch_site = (handler.headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if sec_fetch_site and sec_fetch_site not in {"same-origin", "same-site", "none"}:
+        return True
+    referer = handler.headers.get("Referer")
+    if not referer:
+        return False
+    return not _is_allowed_loopback_origin_url(referer)
 
 
 def send_json_response(
@@ -56,15 +90,29 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def reject_cross_origin(handler: BaseHTTPRequestHandler) -> bool:
+MissingOriginPolicy = Literal["allow", "reject", "reject_if_unsafe"]
+
+
+def reject_cross_origin(
+    handler: BaseHTTPRequestHandler,
+    *,
+    missing_origin_policy: MissingOriginPolicy = "allow",
+) -> bool:
     origin = handler.headers.get("Origin")
     if not origin:
-        return False
-    allowed = (
-        origin.startswith("http://127.0.0.1")
-        or origin.startswith("http://localhost")
-        or origin.startswith("http://[::1]")
-    )
+        if missing_origin_policy == "allow":
+            return False
+        if missing_origin_policy == "reject":
+            send_json_response(handler, {"error": "forbidden"}, status=403)
+            return True
+        if missing_origin_policy == "reject_if_unsafe":
+            if _is_unsafe_missing_origin(handler):
+                send_json_response(handler, {"error": "forbidden"}, status=403)
+                return True
+            return False
+        send_json_response(handler, {"error": "forbidden"}, status=403)
+        return True
+    allowed = _is_allowed_loopback_origin_url(origin)
     if allowed:
         return False
     send_json_response(handler, {"error": "forbidden"}, status=403)

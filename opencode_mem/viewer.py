@@ -15,6 +15,7 @@ from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events  # noqa: F401
 from .store import MemoryStore
 from .viewer_http import (
+    MissingOriginPolicy,
     read_json_body,
     reject_cross_origin,
     send_bytes_response,
@@ -88,8 +89,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def _read_json(self) -> dict[str, Any] | None:
         return read_json_body(self)
 
-    def _reject_cross_origin(self) -> bool:
-        return reject_cross_origin(self)
+    def _reject_cross_origin(self, *, missing_origin_policy: MissingOriginPolicy = "allow") -> bool:
+        return reject_cross_origin(self, missing_origin_policy=missing_origin_policy)
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         if os.environ.get("OPENCODE_MEM_VIEWER_LOGS") == "1":
@@ -150,13 +151,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if self._reject_cross_origin():
-            return
-        if parsed.path in {
+        strict_paths = {
             "/api/sync/peers/rename",
             "/api/sync/actions/sync-now",
             "/api/sync/run",
-        }:
+        }
+        if parsed.path in strict_paths:
+            if self._reject_cross_origin(missing_origin_policy="reject"):
+                return
+        elif self._reject_cross_origin(missing_origin_policy="reject_if_unsafe"):
+            return
+        if parsed.path in strict_paths:
             payload = self._read_json()
             if parsed.path == "/api/sync/actions/sync-now" and payload is None:
                 payload = {}
@@ -188,7 +193,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if self._reject_cross_origin():
+        if self._reject_cross_origin(missing_origin_policy="reject"):
             return
         store = MemoryStore(os.environ.get("OPENCODE_MEM_DB") or DEFAULT_DB_PATH)
         try:

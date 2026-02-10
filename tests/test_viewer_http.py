@@ -99,3 +99,49 @@ def test_reject_cross_origin() -> None:
     assert handler_blocked.status == 403
     response = json.loads(handler_blocked.wfile.getvalue().decode("utf-8"))
     assert response == {"error": "forbidden"}
+
+
+def test_reject_cross_origin_blocks_spoofed_loopback_origins() -> None:
+    spoofed_origins = [
+        "http://127.0.0.1.evil.test",
+        "http://localhost.evil.test",
+        "http://127.0.0.1@evil.test",
+        "http://[::1",
+        "http://[::1]:bad",
+        "http://127.0.0.1/path",
+    ]
+
+    for origin in spoofed_origins:
+        handler = DummyHandler(headers={"Origin": origin})
+        assert reject_cross_origin(handler) is True
+        assert handler.status == 403
+
+
+def test_reject_cross_origin_missing_origin_unsafe_fetch_metadata() -> None:
+    handler = DummyHandler(headers={"Sec-Fetch-Site": "cross-site"})
+    assert reject_cross_origin(handler, missing_origin_policy="reject_if_unsafe") is True
+    assert handler.status == 403
+
+
+def test_reject_cross_origin_missing_origin_allows_non_browser_clients() -> None:
+    handler = DummyHandler(headers={})
+    assert reject_cross_origin(handler, missing_origin_policy="reject_if_unsafe") is False
+    assert handler.status is None
+
+
+def test_reject_cross_origin_missing_origin_blocks_unsafe_referer() -> None:
+    handler = DummyHandler(headers={"Referer": "https://evil.test/path"})
+    assert reject_cross_origin(handler, missing_origin_policy="reject_if_unsafe") is True
+    assert handler.status == 403
+
+
+def test_reject_cross_origin_missing_origin_allows_loopback_referer() -> None:
+    handler = DummyHandler(headers={"Referer": "http://localhost:38888"})
+    assert reject_cross_origin(handler, missing_origin_policy="reject_if_unsafe") is False
+    assert handler.status is None
+
+
+def test_reject_cross_origin_missing_origin_reject_policy() -> None:
+    handler = DummyHandler(headers={})
+    assert reject_cross_origin(handler, missing_origin_policy="reject") is True
+    assert handler.status == 403

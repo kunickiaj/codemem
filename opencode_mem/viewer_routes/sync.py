@@ -226,7 +226,16 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
 
     if path == "/api/sync/attempts":
         params = parse_qs(query)
-        limit = int(params.get("limit", ["25"])[0])
+        limit_value = params.get("limit", ["25"])[0]
+        try:
+            limit = int(limit_value)
+        except (TypeError, ValueError):
+            handler._send_json({"error": "invalid_limit"}, status=400)
+            return True
+        if limit <= 0:
+            handler._send_json({"error": "invalid_limit"}, status=400)
+            return True
+        limit = min(limit, 500)
         rows = store.conn.execute(
             """
             SELECT peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out

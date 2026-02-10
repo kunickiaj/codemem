@@ -251,7 +251,10 @@ def test_sync_peers_rename(tmp_path: Path, monkeypatch) -> None:
             "POST",
             "/api/sync/peers/rename",
             body=body.encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
         )
         resp = conn.getresponse()
         assert resp.status == 200
@@ -289,6 +292,99 @@ def test_sync_rejects_cross_origin(tmp_path: Path, monkeypatch) -> None:
         server.shutdown()
 
 
+def test_sync_rejects_spoofed_loopback_origin(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = json.dumps({"peer_device_id": "peer-1", "name": "Office"})
+        conn.request(
+            "POST",
+            "/api/sync/peers/rename",
+            body=body.encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1.evil.invalid",
+            },
+        )
+        resp = conn.getresponse()
+        assert resp.status == 403
+    finally:
+        server.shutdown()
+
+
+def test_sync_rejects_missing_origin_for_mutating_post(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = json.dumps({"peer_device_id": "peer-1", "name": "Office"})
+        conn.request(
+            "POST",
+            "/api/sync/peers/rename",
+            body=body.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 403
+    finally:
+        server.shutdown()
+
+
+def test_sync_delete_rejects_missing_origin_for_mutating_delete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "DELETE",
+            "/api/sync/peers/peer-1",
+            headers={},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 403
+    finally:
+        server.shutdown()
+
+
 def test_sync_now_rejects_when_disabled(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
@@ -308,7 +404,10 @@ def test_sync_now_rejects_when_disabled(tmp_path: Path, monkeypatch) -> None:
             "POST",
             "/api/sync/actions/sync-now",
             body="{}",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
         )
         resp = conn.getresponse()
         assert resp.status == 403
@@ -357,5 +456,72 @@ def test_sync_pairing_payload(tmp_path: Path, monkeypatch) -> None:
         assert "does not yet enforce incoming project filters" in str(
             payload.get("pairing_filter_hint") or ""
         )
+    finally:
+        server.shutdown()
+
+
+def test_sync_attempts_rejects_invalid_limit(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO sync_attempts(peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("peer-1", 1, None, "2026-01-24T00:00:00Z", "2026-01-24T00:00:01Z", 1, 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/attempts?limit=wat")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 400
+        assert payload == {"error": "invalid_limit"}
+    finally:
+        server.shutdown()
+
+
+def test_sync_attempts_clamps_large_limit(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        for idx in range(3):
+            conn.execute(
+                """
+                INSERT INTO sync_attempts(peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"peer-{idx}",
+                    1,
+                    None,
+                    "2026-01-24T00:00:00Z",
+                    f"2026-01-24T00:00:0{idx}Z",
+                    1,
+                    1,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/attempts?limit=999999")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert len(payload.get("items") or []) == 3
     finally:
         server.shutdown()
