@@ -44,18 +44,25 @@ def request_json(
         request_headers["Content-Length"] = str(len(body_bytes))
     if headers:
         request_headers.update(headers)
-    conn.request(method, path, body=body_bytes, headers=request_headers)
-    resp = conn.getresponse()
-    raw = resp.read()
-    if raw:
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError:
-            snippet = raw[:240].decode("utf-8", errors="replace").strip()
-            payload = {"error": f"non_json_response: {snippet}" if snippet else "non_json_response"}
-    conn.close()
+    status: int | None = None
+    try:
+        conn.request(method, path, body=body_bytes, headers=request_headers)
+        resp = conn.getresponse()
+        status = int(resp.status)
+        raw = resp.read()
+        if raw:
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except json.JSONDecodeError:
+                snippet = raw[:240].decode("utf-8", errors="replace").strip()
+                payload = {
+                    "error": f"non_json_response: {snippet}" if snippet else "non_json_response"
+                }
+    finally:
+        conn.close()
+    assert status is not None
     if payload is None:
-        return resp.status, None
+        return status, None
     if isinstance(payload, dict):
-        return resp.status, payload
-    return resp.status, {"error": f"unexpected_json_type: {type(payload).__name__}"}
+        return status, payload
+    return status, {"error": f"unexpected_json_type: {type(payload).__name__}"}
