@@ -915,12 +915,14 @@ class MemoryStore:
         project: str | None = None,
         active_only: bool = True,
         dry_run: bool = False,
+        memory_ids: list[int] | None = None,
     ) -> dict[str, int]:
         return store_maintenance.backfill_tags_text(
             self,
             limit=limit,
             since=since,
             project=project,
+            memory_ids=memory_ids,
             active_only=active_only,
             dry_run=dry_run,
         )
@@ -932,12 +934,14 @@ class MemoryStore:
         project: str | None = None,
         active_only: bool = True,
         dry_run: bool = False,
+        memory_ids: list[int] | None = None,
     ) -> dict[str, int]:
         return store_vectors.backfill_vectors(
             self,
             limit=limit,
             since=since,
             project=project,
+            memory_ids=memory_ids,
             active_only=active_only,
             dry_run=dry_run,
         )

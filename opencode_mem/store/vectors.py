@@ -15,6 +15,7 @@ def backfill_vectors(
     project: str | None = None,
     active_only: bool = True,
     dry_run: bool = False,
+    memory_ids: list[int] | None = None,
 ) -> dict[str, int]:
     client = get_embedding_client()
     if not client:
@@ -33,6 +34,10 @@ def backfill_vectors(
             where_clauses.append(clause)
             params.extend(clause_params)
         join_sessions = True
+    if memory_ids:
+        placeholders = ",".join(["?"] * len(memory_ids))
+        where_clauses.append(f"memory_items.id IN ({placeholders})")
+        params.extend(int(memory_id) for memory_id in memory_ids)
     where = " AND ".join(where_clauses) if where_clauses else "1=1"
     join_clause = "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
     limit_clause = "LIMIT ?" if limit else ""

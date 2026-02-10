@@ -319,6 +319,7 @@ def backfill_tags_text(
     project: str | None = None,
     active_only: bool = True,
     dry_run: bool = False,
+    memory_ids: list[int] | None = None,
 ) -> dict[str, int]:
     params: list[Any] = []
     where_clauses = ["(memory_items.tags_text IS NULL OR TRIM(memory_items.tags_text) = '')"]
@@ -334,6 +335,10 @@ def backfill_tags_text(
             where_clauses.append(clause)
             params.extend(clause_params)
         join_sessions = True
+    if memory_ids:
+        placeholders = ",".join(["?"] * len(memory_ids))
+        where_clauses.append(f"memory_items.id IN ({placeholders})")
+        params.extend(int(memory_id) for memory_id in memory_ids)
     where = " AND ".join(where_clauses)
     join_clause = "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
     limit_clause = "LIMIT ?" if limit else ""

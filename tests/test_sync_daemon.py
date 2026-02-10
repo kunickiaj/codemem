@@ -458,7 +458,7 @@ def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: 
             if "/v1/ops?" in url:
                 return 200, {
                     "ops": [],
-                    "next_cursor": None,
+                    "next_cursor": "2026-01-01T00:00:09Z|op-9",
                     "skipped": 2,
                 }
             return 200, {"inserted": 0, "updated": 0}
@@ -468,6 +468,12 @@ def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: 
         result = sync_pass.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
         assert result["ok"] is True
         assert result["ops_in"] == 0
+        row = store.conn.execute(
+            "SELECT last_applied_cursor FROM replication_cursors WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        assert row["last_applied_cursor"] == "2026-01-01T00:00:09Z|op-9"
     finally:
         store.close()
 
@@ -536,6 +542,90 @@ def test_sync_once_advances_last_acked_when_outbound_filtered(monkeypatch, tmp_p
         ).fetchone()
         assert row is not None
         assert row["last_acked_cursor"] == outbound_cursor
+    finally:
+        store.close()
+
+
+def test_sync_once_backfills_tags_and_vectors_for_incoming_upserts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-a",
+        )
+        memory_id = store.remember(session_id, kind="note", title="Seed", body_text="Body")
+        store.conn.execute(
+            "UPDATE memory_items SET import_key = ? WHERE id = ?", ("import-1", memory_id)
+        )
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "opencode_mem.sync.sync_pass.ensure_device_identity",
+            lambda conn, keys_dir=None: ("dev-local", "fp-local"),
+        )
+        monkeypatch.setattr(
+            "opencode_mem.sync.sync_pass.build_auth_headers",
+            lambda **kwargs: {},
+        )
+
+        captured: dict[str, list[int]] = {"tags": [], "vectors": []}
+
+        def fake_backfill_tags_text(*, memory_ids=None, active_only=True, **kwargs):
+            captured["tags"] = list(memory_ids or [])
+            return {"checked": len(captured["tags"]), "updated": 0, "skipped": 0}
+
+        def fake_backfill_vectors(*, memory_ids=None, active_only=True, **kwargs):
+            captured["vectors"] = list(memory_ids or [])
+            return {"checked": len(captured["vectors"]), "embedded": 0, "inserted": 0, "skipped": 0}
+
+        monkeypatch.setattr(store, "backfill_tags_text", fake_backfill_tags_text)
+        monkeypatch.setattr(store, "backfill_vectors", fake_backfill_vectors)
+        monkeypatch.setattr(
+            store,
+            "apply_replication_ops",
+            lambda ops, source_device_id, received_at: {"inserted": 1, "updated": 0, "skipped": 0},
+        )
+
+        incoming_ops = [
+            {
+                "op_id": "op-1",
+                "entity_type": "memory_item",
+                "entity_id": "import-1",
+                "op_type": "upsert",
+                "payload": {"import_key": "import-1"},
+                "clock": {
+                    "rev": 1,
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "device_id": "peer-1",
+                },
+                "device_id": "peer-1",
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+
+        def fake_request_json(method: str, url: str, **kwargs):
+            if url.endswith("/v1/status"):
+                return 200, {"fingerprint": "fp-peer"}
+            if "/v1/ops?" in url:
+                return 200, {"ops": incoming_ops}
+            return 200, {"inserted": 0, "updated": 0}
+
+        monkeypatch.setattr(http_client, "request_json", fake_request_json)
+
+        result = sync_pass.sync_once(store, "peer-1", ["127.0.0.1:7337"], limit=10)
+        assert result["ok"] is True
+        assert captured["tags"] == [memory_id]
+        assert captured["vectors"] == [memory_id]
     finally:
         store.close()
 

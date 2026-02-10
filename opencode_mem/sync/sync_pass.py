@@ -14,6 +14,62 @@ from ..sync_identity import ensure_device_identity
 from . import discovery, http_client, replication
 
 
+def _backfill_derived_fields_for_applied_ops(
+    store: MemoryStore,
+    ops: list[ReplicationOp],
+    applied: dict[str, int],
+) -> None:
+    changed_count = int(applied.get("inserted", 0)) + int(applied.get("updated", 0))
+    if changed_count <= 0:
+        return
+
+    import_keys: list[str] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        if str(op.get("entity_type") or "") != "memory_item":
+            continue
+        if str(op.get("op_type") or "") != "upsert":
+            continue
+        payload = op.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        import_key = str(payload.get("import_key") or op.get("entity_id") or "").strip()
+        if import_key:
+            import_keys.append(import_key)
+    if not import_keys:
+        return
+
+    deduped_keys: list[str] = []
+    seen: set[str] = set()
+    for import_key in import_keys:
+        if import_key in seen:
+            continue
+        seen.add(import_key)
+        deduped_keys.append(import_key)
+
+    placeholders = ",".join(["?"] * len(deduped_keys))
+    rows = store.conn.execute(
+        f"SELECT id FROM memory_items WHERE import_key IN ({placeholders})",
+        deduped_keys,
+    ).fetchall()
+    if not rows:
+        return
+    memory_ids = [int(row["id"]) for row in rows]
+    store.backfill_tags_text(memory_ids=memory_ids, active_only=True)
+    store.backfill_vectors(memory_ids=memory_ids, active_only=True)
+
+
+def _cursor_advances(current: str | None, candidate: str | None) -> bool:
+    if not candidate:
+        return False
+    if "|" not in candidate:
+        return False
+    if not current:
+        return True
+    return candidate > current
+
+
 def sync_pass_preflight(
     store: MemoryStore,
     *,
@@ -148,6 +204,7 @@ def sync_once(
                 source_device_id=peer_device_id,
                 received_at=received_at,
             )
+            _backfill_derived_fields_for_applied_ops(store, cast(list[ReplicationOp], ops), applied)
             if ops:
                 last_op = ops[-1] if isinstance(ops[-1], dict) else None
                 op_id = str(last_op.get("op_id") or "") if last_op else ""
@@ -160,6 +217,17 @@ def sync_once(
                         last_applied=local_next,
                     )
                     last_applied = local_next
+            else:
+                peer_next = str(payload.get("next_cursor") or "").strip()
+                skipped_value = payload.get("skipped")
+                skipped_count = int(skipped_value) if isinstance(skipped_value, int) else 0
+                if skipped_count > 0 and _cursor_advances(last_applied, peer_next):
+                    replication.set_replication_cursor(
+                        store,
+                        peer_device_id,
+                        last_applied=peer_next,
+                    )
+                    last_applied = peer_next
 
             effective_last_acked = store.normalize_outbound_cursor(last_acked, device_id=device_id)
             outbound_ops, outbound_cursor = store.load_replication_ops_since(
