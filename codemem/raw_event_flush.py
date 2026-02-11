@@ -6,6 +6,7 @@ from typing import Any
 
 from .plugin_ingest import ingest
 from .store import MemoryStore
+from .store.raw_events import RAW_EVENT_QUEUE_FAILED
 
 EXTRACTOR_VERSION = "raw_events_v1"
 
@@ -152,7 +153,7 @@ def flush_raw_events(
     try:
         ingest(payload)
     except Exception:
-        store.update_raw_event_flush_batch_status(batch_id, "error")
+        store.update_raw_event_flush_batch_status(batch_id, RAW_EVENT_QUEUE_FAILED)
         raise
     store.update_raw_event_flush_batch_status(batch_id, "completed")
     store.update_raw_event_flush_state(opencode_session_id, last_event_seq)

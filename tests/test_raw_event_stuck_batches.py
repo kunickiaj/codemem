@@ -54,5 +54,5 @@ def test_mark_stuck_raw_event_batches_as_error(tmp_path: Path) -> None:
             "SELECT start_event_seq, status FROM raw_event_flush_batches ORDER BY start_event_seq"
         ).fetchall()
     }
-    assert statuses[0] == "error"
+    assert statuses[0] == "failed"
     assert statuses[2] == "started"

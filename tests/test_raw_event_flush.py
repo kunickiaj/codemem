@@ -215,4 +215,4 @@ def test_flush_raw_events_marks_batch_error_when_observer_fails(tmp_path: Path) 
         ("sess", EXTRACTOR_VERSION),
     ).fetchone()
     assert row is not None
-    assert row["status"] == "error"
+    assert row["status"] == "failed"

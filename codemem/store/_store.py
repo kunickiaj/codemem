@@ -631,6 +631,9 @@ class MemoryStore:
     def raw_event_batch_status_counts(self, opencode_session_id: str) -> dict[str, int]:
         return store_raw_events.raw_event_batch_status_counts(self.conn, opencode_session_id)
 
+    def raw_event_queue_status_counts(self, opencode_session_id: str) -> dict[str, int]:
+        return store_raw_events.raw_event_queue_status_counts(self.conn, opencode_session_id)
+
     def claim_raw_event_flush_batch(self, batch_id: int) -> bool:
         return store_raw_events.claim_raw_event_flush_batch(self.conn, batch_id)
 

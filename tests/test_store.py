@@ -2021,7 +2021,7 @@ def test_get_or_create_raw_event_flush_batch_is_idempotent(tmp_path: Path) -> No
         end_event_seq=2,
         extractor_version="v1",
     )
-    assert status == "started"
+    assert status == "pending"
     batch_id2, status2 = store.get_or_create_raw_event_flush_batch(
         opencode_session_id="sess",
         start_event_seq=0,
@@ -2029,7 +2029,7 @@ def test_get_or_create_raw_event_flush_batch_is_idempotent(tmp_path: Path) -> No
         extractor_version="v1",
     )
     assert batch_id2 == batch_id
-    assert status2 == "started"
+    assert status2 == "pending"
 
 
 def test_raw_event_backlog(tmp_path: Path) -> None:

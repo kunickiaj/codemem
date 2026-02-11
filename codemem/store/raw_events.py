@@ -7,6 +7,22 @@ from typing import Any
 
 from .. import db
 
+RAW_EVENT_QUEUE_PENDING = "pending"
+RAW_EVENT_QUEUE_CLAIMED = "claimed"
+RAW_EVENT_QUEUE_COMPLETED = "completed"
+RAW_EVENT_QUEUE_FAILED = "failed"
+
+_RAW_EVENT_QUEUE_DB_TO_CANONICAL = {
+    "started": RAW_EVENT_QUEUE_PENDING,
+    "running": RAW_EVENT_QUEUE_CLAIMED,
+    RAW_EVENT_QUEUE_PENDING: RAW_EVENT_QUEUE_PENDING,
+    RAW_EVENT_QUEUE_CLAIMED: RAW_EVENT_QUEUE_CLAIMED,
+    "completed": RAW_EVENT_QUEUE_COMPLETED,
+    RAW_EVENT_QUEUE_COMPLETED: RAW_EVENT_QUEUE_COMPLETED,
+    "error": RAW_EVENT_QUEUE_FAILED,
+    RAW_EVENT_QUEUE_FAILED: RAW_EVENT_QUEUE_FAILED,
+}
+
 
 def _update_raw_event_ingest_stats(
     conn: sqlite3.Connection,
@@ -82,18 +98,27 @@ def get_or_create_raw_event_flush_batch(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, 'started', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(opencode_session_id, start_event_seq, end_event_seq, extractor_version)
         DO UPDATE SET updated_at = excluded.updated_at
         RETURNING id, status
         """,
-        (opencode_session_id, start_event_seq, end_event_seq, extractor_version, now, now),
+        (
+            opencode_session_id,
+            start_event_seq,
+            end_event_seq,
+            extractor_version,
+            RAW_EVENT_QUEUE_PENDING,
+            now,
+            now,
+        ),
     )
     row = cur.fetchone()
     if row is None:
         raise RuntimeError("Failed to create flush batch")
     conn.commit()
-    return int(row["id"]), str(row["status"])
+    db_status = str(row["status"])
+    return int(row["id"]), _RAW_EVENT_QUEUE_DB_TO_CANONICAL.get(db_status, db_status)
 
 
 def update_raw_event_flush_batch_status(
@@ -401,10 +426,10 @@ def raw_event_reliability_metrics_windowed(
 
     batch_query = """
         SELECT
-            SUM(CASE WHEN status = 'started' THEN 1 ELSE 0 END) AS started,
-            SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+            SUM(CASE WHEN status IN ('started', 'pending') THEN 1 ELSE 0 END) AS started,
+            SUM(CASE WHEN status IN ('running', 'claimed') THEN 1 ELSE 0 END) AS running,
             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errored,
+            SUM(CASE WHEN status IN ('error', 'failed') THEN 1 ELSE 0 END) AS errored,
             COALESCE(MAX(CASE WHEN attempt_count > 0 THEN attempt_count - 1 ELSE 0 END), 0) AS retry_depth_max
         FROM raw_event_flush_batches
     """
@@ -739,8 +764,42 @@ def raw_event_batch_status_counts(
     counts = {"started": 0, "running": 0, "completed": 0, "error": 0}
     for row in rows:
         status = str(row["status"] or "")
-        if status in counts:
-            counts[status] = int(row["n"])
+        canonical = _RAW_EVENT_QUEUE_DB_TO_CANONICAL.get(status)
+        if canonical == RAW_EVENT_QUEUE_PENDING:
+            counts["started"] += int(row["n"])
+        elif canonical == RAW_EVENT_QUEUE_CLAIMED:
+            counts["running"] += int(row["n"])
+        elif canonical == RAW_EVENT_QUEUE_COMPLETED:
+            counts["completed"] += int(row["n"])
+        elif canonical == RAW_EVENT_QUEUE_FAILED:
+            counts["error"] += int(row["n"])
+    return counts
+
+
+def raw_event_queue_status_counts(
+    conn: sqlite3.Connection, opencode_session_id: str
+) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT status, COUNT(*) AS n
+        FROM raw_event_flush_batches
+        WHERE opencode_session_id = ?
+        GROUP BY status
+        """,
+        (opencode_session_id,),
+    ).fetchall()
+    counts = {
+        RAW_EVENT_QUEUE_PENDING: 0,
+        RAW_EVENT_QUEUE_CLAIMED: 0,
+        RAW_EVENT_QUEUE_COMPLETED: 0,
+        RAW_EVENT_QUEUE_FAILED: 0,
+    }
+    for row in rows:
+        db_status = str(row["status"] or "")
+        canonical = _RAW_EVENT_QUEUE_DB_TO_CANONICAL.get(db_status)
+        if canonical is None:
+            continue
+        counts[canonical] += int(row["n"] or 0)
     return counts
 
 
@@ -749,11 +808,17 @@ def claim_raw_event_flush_batch(conn: sqlite3.Connection, batch_id: int) -> bool
     row = conn.execute(
         """
         UPDATE raw_event_flush_batches
-        SET status = 'running', updated_at = ?, attempt_count = attempt_count + 1
-        WHERE id = ? AND status IN ('started', 'error')
+        SET status = ?, updated_at = ?, attempt_count = attempt_count + 1
+        WHERE id = ? AND status IN (?, ?, 'started', 'error')
         RETURNING id
         """,
-        (now, batch_id),
+        (
+            RAW_EVENT_QUEUE_CLAIMED,
+            now,
+            batch_id,
+            RAW_EVENT_QUEUE_PENDING,
+            RAW_EVENT_QUEUE_FAILED,
+        ),
     ).fetchone()
     conn.commit()
     return row is not None
@@ -766,13 +831,18 @@ def raw_event_error_batches(
         """
         SELECT id, start_event_seq, end_event_seq, extractor_version, status, updated_at
         FROM raw_event_flush_batches
-        WHERE opencode_session_id = ? AND status = 'error'
+        WHERE opencode_session_id = ? AND status IN ('error', ?)
         ORDER BY updated_at DESC
         LIMIT ?
         """,
-        (opencode_session_id, limit),
+        (opencode_session_id, RAW_EVENT_QUEUE_FAILED, limit),
     ).fetchall()
-    return [dict(row) for row in rows]
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["status"] = "error"
+        items.append(item)
+    return items
 
 
 def mark_stuck_raw_event_batches_as_error(
@@ -787,15 +857,22 @@ def mark_stuck_raw_event_batches_as_error(
         WITH candidates AS (
             SELECT id
             FROM raw_event_flush_batches
-            WHERE status IN ('started', 'running') AND updated_at < ?
+            WHERE status IN ('started', 'running', ?, ?) AND updated_at < ?
             ORDER BY updated_at
             LIMIT ?
         )
         UPDATE raw_event_flush_batches
-        SET status = 'error', updated_at = ?
+        SET status = ?, updated_at = ?
         WHERE id IN (SELECT id FROM candidates)
         """,
-        (older_than_iso, limit, now),
+        (
+            RAW_EVENT_QUEUE_PENDING,
+            RAW_EVENT_QUEUE_CLAIMED,
+            older_than_iso,
+            limit,
+            RAW_EVENT_QUEUE_FAILED,
+            now,
+        ),
     )
     conn.commit()
     changes = cur.rowcount

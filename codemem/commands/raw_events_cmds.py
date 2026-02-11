@@ -38,11 +38,13 @@ def raw_events_status_cmd(store: MemoryStore, *, limit: int) -> None:
         print("No pending raw events")
         return
     for item in items:
-        counts = store.raw_event_batch_status_counts(item["opencode_session_id"])
+        legacy_counts = store.raw_event_batch_status_counts(item["opencode_session_id"])
+        queue_counts = store.raw_event_queue_status_counts(item["opencode_session_id"])
         print(
             f"- {item['opencode_session_id']} pending={item['pending']} "
             f"max_seq={item['max_seq']} last_flushed={item['last_flushed_event_seq']} "
-            f"batches=started:{counts['started']} running:{counts['running']} error:{counts['error']} completed:{counts['completed']} "
+            f"batches=started:{legacy_counts['started']} running:{legacy_counts['running']} error:{legacy_counts['error']} completed:{legacy_counts['completed']} "
+            f"queue=pending:{queue_counts['pending']} claimed:{queue_counts['claimed']} failed:{queue_counts['failed']} done:{queue_counts['completed']} "
             f"project={item.get('project') or ''}"
         )
 
