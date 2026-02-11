@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,3 +112,56 @@ def test_purge_raw_events_before(tmp_path: Path) -> None:
         ("2100-01-01T00:00:00+00:00",),
     ).fetchone()[0]
     assert int(future_sample_count) == 1
+
+
+def test_raw_event_sweeper_prioritizes_persisted_queue(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER", "1")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS", "999999999")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER_LIMIT", "10")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS", "7")
+
+    store = MemoryStore(db_path)
+    try:
+        now_ms = int(time.time() * 1000)
+        store.record_raw_event(
+            opencode_session_id="sess-queued",
+            event_id="evt-0",
+            event_type="user_prompt",
+            payload={"type": "user_prompt", "prompt_text": "Hello"},
+            ts_wall_ms=now_ms,
+            ts_mono_ms=1.0,
+        )
+        store.record_raw_event(
+            opencode_session_id="sess-queued",
+            event_id="evt-1",
+            event_type="tool.execute.after",
+            payload={"type": "tool.execute.after", "tool": "read", "args": {"filePath": "x"}},
+            ts_wall_ms=now_ms + 1,
+            ts_mono_ms=2.0,
+        )
+        store.update_raw_event_session_meta(
+            opencode_session_id="sess-queued",
+            cwd=str(tmp_path),
+            project="test-project",
+            started_at="2026-01-01T00:00:00Z",
+            last_seen_ts_wall_ms=now_ms,
+        )
+        store.get_or_create_raw_event_flush_batch(
+            opencode_session_id="sess-queued",
+            start_event_seq=0,
+            end_event_seq=1,
+            extractor_version="raw_events_v1",
+        )
+    finally:
+        store.close()
+
+    sweeper = RawEventSweeper()
+    with patch("codemem.viewer_raw_events.flush_raw_events") as flush:
+        sweeper.tick()
+
+    flush.assert_called_once()
+    kwargs = flush.call_args.kwargs
+    assert kwargs["opencode_session_id"] == "sess-queued"
+    assert kwargs["max_events"] == 7

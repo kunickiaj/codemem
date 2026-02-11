@@ -216,3 +216,72 @@ def test_flush_raw_events_marks_batch_error_when_observer_fails(tmp_path: Path) 
     ).fetchone()
     assert row is not None
     assert row["status"] == "failed"
+
+
+def test_flush_raw_events_chunked_resume_uses_checkpoint(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        for i in range(3):
+            store.record_raw_event(
+                opencode_session_id="sess-chunk",
+                event_id=f"evt-{i}",
+                event_type="user_prompt",
+                payload={"type": "user_prompt", "prompt_text": f"P{i}"},
+                ts_wall_ms=100 + i,
+                ts_mono_ms=1.0 + i,
+            )
+
+        captured: list[int] = []
+
+        def fake_ingest(payload: dict[str, object]) -> None:
+            events = payload.get("events")
+            assert isinstance(events, list)
+            captured.append(len(events))
+
+        with patch("codemem.raw_event_flush.ingest", fake_ingest):
+            result1 = flush_raw_events(
+                store,
+                opencode_session_id="sess-chunk",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=1,
+            )
+            assert result1 == {"flushed": 1, "updated_state": 1}
+            assert store.raw_event_flush_state("sess-chunk") == 0
+
+            result2 = flush_raw_events(
+                store,
+                opencode_session_id="sess-chunk",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=1,
+            )
+            assert result2 == {"flushed": 1, "updated_state": 1}
+            assert store.raw_event_flush_state("sess-chunk") == 1
+
+            result3 = flush_raw_events(
+                store,
+                opencode_session_id="sess-chunk",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=1,
+            )
+            assert result3 == {"flushed": 1, "updated_state": 1}
+            assert store.raw_event_flush_state("sess-chunk") == 2
+
+            result4 = flush_raw_events(
+                store,
+                opencode_session_id="sess-chunk",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=1,
+            )
+            assert result4 == {"flushed": 0, "updated_state": 0}
+
+        assert captured == [1, 1, 1]
+    finally:
+        store.close()

@@ -676,6 +676,24 @@ def raw_event_sessions_pending_idle_flush(
     return [str(row["opencode_session_id"]) for row in rows if row["opencode_session_id"]]
 
 
+def raw_event_sessions_with_pending_queue(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 25,
+) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT b.opencode_session_id
+        FROM raw_event_flush_batches b
+        WHERE b.status IN ('pending', 'failed', 'started', 'error')
+        ORDER BY b.updated_at ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [str(row["opencode_session_id"]) for row in rows if row["opencode_session_id"]]
+
+
 def purge_raw_events_before(conn: sqlite3.Connection, cutoff_ts_wall_ms: int) -> int:
     cutoff_iso = dt.datetime.fromtimestamp(cutoff_ts_wall_ms / 1000.0, tz=dt.UTC).isoformat()
     conn.execute(

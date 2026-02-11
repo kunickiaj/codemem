@@ -109,6 +109,16 @@ class RawEventSweeper:
         except (TypeError, ValueError):
             return 25
 
+    def worker_max_events(self) -> int | None:
+        value = os.environ.get("CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS", "250")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 250
+        if parsed <= 0:
+            return None
+        return parsed
+
     def retention_ms(self) -> int:
         value = os.environ.get("CODEMEM_RAW_EVENTS_RETENTION_MS", "0")
         try:
@@ -142,11 +152,10 @@ class RawEventSweeper:
                     limit=100,
                 )
 
-            session_ids = store.raw_event_sessions_pending_idle_flush(
-                idle_before_ts_wall_ms=idle_before,
-                limit=self.limit(),
-            )
-            for opencode_session_id in session_ids:
+            max_events = self.worker_max_events()
+            drained: set[str] = set()
+            queue_session_ids = store.raw_event_sessions_with_pending_queue(limit=self.limit())
+            for opencode_session_id in queue_session_ids:
                 try:
                     flush_raw_events(
                         store,
@@ -154,7 +163,37 @@ class RawEventSweeper:
                         cwd=None,
                         project=None,
                         started_at=None,
-                        max_events=None,
+                        max_events=max_events,
+                    )
+                    drained.add(opencode_session_id)
+                except Exception as exc:
+                    logger.exception(
+                        "raw event queue worker flush failed",
+                        extra={"opencode_session_id": opencode_session_id},
+                        exc_info=exc,
+                    )
+                    if not logging.getLogger().hasHandlers():
+                        print(
+                            f"codemem: raw event queue worker flush failed for {opencode_session_id}: {exc}",
+                            file=sys.stderr,
+                        )
+                    continue
+
+            session_ids = store.raw_event_sessions_pending_idle_flush(
+                idle_before_ts_wall_ms=idle_before,
+                limit=self.limit(),
+            )
+            for opencode_session_id in session_ids:
+                if opencode_session_id in drained:
+                    continue
+                try:
+                    flush_raw_events(
+                        store,
+                        opencode_session_id=opencode_session_id,
+                        cwd=None,
+                        project=None,
+                        started_at=None,
+                        max_events=max_events,
                     )
                 except Exception as exc:
                     # Never silently swallow flush failures: they can cause the backlog to grow
