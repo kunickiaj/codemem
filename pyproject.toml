@@ -7,7 +7,6 @@ packages = ["codemem"]
 
 [tool.hatch.build.targets.wheel.force-include]
 ".opencode/plugin/codemem.js" = "codemem/.opencode/plugin/codemem.js"
-"codemem/viewer_static" = "codemem/viewer_static"
 
 [tool.hatch.build.targets.sdist]
 include = [
