@@ -162,3 +162,62 @@ def test_sync_ops_roundtrip(tmp_path: Path) -> None:
         assert payload.get("skipped") == len(ops)
     finally:
         server.shutdown()
+
+
+def test_sync_ops_get_returns_internal_error_on_unexpected_exception(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        ensure_device_identity(conn, keys_dir=tmp_path / "keys")
+    finally:
+        conn.close()
+
+    public_key = load_public_key(tmp_path / "keys")
+    assert public_key
+    fingerprint = fingerprint_public_key(public_key)
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, addresses_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "local",
+                fingerprint,
+                public_key,
+                "[]",
+                "2026-01-24T00:00:00Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        MemoryStore,
+        "load_replication_ops_since",
+        lambda self, cursor, *, limit, device_id=None: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        headers = build_auth_headers(
+            device_id="local",
+            method="GET",
+            url=f"http://127.0.0.1:{port}/v1/ops?limit=10",
+            body_bytes=b"",
+            keys_dir=tmp_path / "keys",
+        )
+        conn.request("GET", "/v1/ops?limit=10", headers=headers)
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 500
+        assert payload == {"error": "internal_error"}
+    finally:
+        server.shutdown()

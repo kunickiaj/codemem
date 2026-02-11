@@ -224,3 +224,21 @@ def test_sync_ops_canonicalizes_old_legacy_import_key(tmp_path: Path) -> None:
         assert op_row["entity_id"] == "legacy:local:memory_item:1"
     finally:
         store.close()
+
+
+def test_sync_auth_401_does_not_expose_internal_reason(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    keys_dir = tmp_path / "keys"
+    _seed_local_peer(db_path, keys_dir)
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/v1/status", headers={})
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 401
+        assert payload == {"error": "unauthorized"}
+        assert "reason" not in payload
+    finally:
+        server.shutdown()

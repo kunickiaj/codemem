@@ -65,13 +65,15 @@ def _path_with_query(path: str) -> str:
     return parsed.path
 
 
-def _authorize_request(store: MemoryStore, handler: BaseHTTPRequestHandler, body: bytes) -> bool:
+def _authorize_request(
+    store: MemoryStore, handler: BaseHTTPRequestHandler, body: bytes
+) -> tuple[bool, str]:
     device_id = handler.headers.get("X-Opencode-Device")
     signature = handler.headers.get("X-Opencode-Signature")
     timestamp = handler.headers.get("X-Opencode-Timestamp")
     nonce = handler.headers.get("X-Opencode-Nonce")
     if not device_id or not signature or not timestamp or not nonce:
-        return False
+        return False, "missing_headers"
     row = store.conn.execute(
         """
         SELECT pinned_fingerprint, public_key
@@ -81,13 +83,13 @@ def _authorize_request(store: MemoryStore, handler: BaseHTTPRequestHandler, body
         (device_id,),
     ).fetchone()
     if row is None:
-        return False
+        return False, "unknown_peer"
     pinned_fingerprint = row["pinned_fingerprint"]
     public_key = row["public_key"]
     if not pinned_fingerprint or not public_key:
-        return False
+        return False, "peer_record_incomplete"
     if fingerprint_public_key(public_key) != pinned_fingerprint:
-        return False
+        return False, "fingerprint_mismatch"
     try:
         ok = verify_signature(
             method=handler.command,
@@ -100,16 +102,16 @@ def _authorize_request(store: MemoryStore, handler: BaseHTTPRequestHandler, body
             device_id=device_id,
         )
     except Exception:
-        return False
+        return False, "signature_verification_error"
     if not ok:
-        return False
+        return False, "invalid_signature"
     now = dt.datetime.now(dt.UTC)
     created_at = now.isoformat()
     if not record_nonce(store.conn, device_id=device_id, nonce=nonce, created_at=created_at):
-        return False
+        return False, "nonce_replay"
     cutoff = (now - dt.timedelta(seconds=DEFAULT_TIME_WINDOW_S * 2)).isoformat()
     cleanup_nonces(store.conn, cutoff=cutoff)
-    return True
+    return True, "ok"
 
 
 def build_sync_handler(db_path: Path | None = None):
@@ -131,7 +133,8 @@ def build_sync_handler(db_path: Path | None = None):
             if parsed.path == "/v1/status":
                 store = self._store()
                 try:
-                    if not _authorize_request(store, self, b""):
+                    authorized, _reason = _authorize_request(store, self, b"")
+                    if not authorized:
                         self._unauthorized()
                         return
                     device_row = store.conn.execute(
@@ -164,7 +167,8 @@ def build_sync_handler(db_path: Path | None = None):
             if parsed.path == "/v1/ops":
                 store = self._store()
                 try:
-                    if not _authorize_request(store, self, b""):
+                    authorized, _reason = _authorize_request(store, self, b"")
+                    if not authorized:
                         self._unauthorized()
                         return
                     peer_device_id = str(self.headers.get("X-Opencode-Device") or "")
@@ -188,6 +192,8 @@ def build_sync_handler(db_path: Path | None = None):
                     if skipped is not None:
                         payload["skipped"] = skipped.get("skipped_count", 0)
                     _send_json(self, payload)
+                except Exception:
+                    _send_json(self, {"error": "internal_error"}, status=500)
                 finally:
                     store.close()
                 return
@@ -206,7 +212,8 @@ def build_sync_handler(db_path: Path | None = None):
                 except ValueError:
                     _send_json(self, {"error": "payload_too_large"}, status=413)
                     return
-                if not _authorize_request(store, self, raw):
+                authorized, _reason = _authorize_request(store, self, raw)
+                if not authorized:
                     self._unauthorized()
                     return
                 source_device_id = str(self.headers.get("X-Opencode-Device") or "")

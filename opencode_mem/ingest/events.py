@@ -56,7 +56,8 @@ def event_to_tool_event(
         return None
     if tool in low_signal_tools:
         return None
-    args = event.get("args") or {}
+    raw_args = event.get("args")
+    args = raw_args if isinstance(raw_args, dict) else {}
     result = _sanitize_tool_output(tool, event.get("result"), max_chars)
     if tool == "read" and isinstance(result, str):
         result = _compact_read_output(result)
