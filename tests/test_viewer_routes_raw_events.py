@@ -139,3 +139,60 @@ def test_handle_post_accepts_payload_within_size_limit(monkeypatch) -> None:
     assert store.meta_updates[0]["last_seen_ts_wall_ms"] == 123
     assert store.closed is True
     assert flusher.noted == ["sess-1"]
+
+
+def test_handle_post_accepts_session_lifecycle_event_types() -> None:
+    events = [
+        {
+            "opencode_session_id": "sess-lifecycle",
+            "event_id": "evt-created",
+            "event_type": "session.created",
+            "payload": {"type": "session.created"},
+            "ts_wall_ms": 100,
+        },
+        {
+            "opencode_session_id": "sess-lifecycle",
+            "event_id": "evt-idle",
+            "event_type": "session.idle",
+            "payload": {"type": "session.idle"},
+            "ts_wall_ms": 200,
+        },
+        {
+            "opencode_session_id": "sess-lifecycle",
+            "event_id": "evt-error",
+            "event_type": "session.error",
+            "payload": {"type": "session.error"},
+            "ts_wall_ms": 300,
+        },
+    ]
+    body_payload = {
+        "events": events,
+        "cwd": "/tmp/project",
+        "project": "proj",
+        "started_at": "2026-01-01T00:00:00Z",
+    }
+    body = json.dumps(body_payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    flusher = DummyFlusher()
+    store = DummyStore()
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/raw-events",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert handler.response == {"inserted": 3, "received": 3}
+    assert [event["event_type"] for event in store.recorded_batches[0][1]] == [
+        "session.created",
+        "session.idle",
+        "session.error",
+    ]
+    assert store.meta_updates[0]["started_at"] == "2026-01-01T00:00:00Z"
+    assert store.meta_updates[0]["last_seen_ts_wall_ms"] == 300
+    assert flusher.noted == ["sess-lifecycle"]

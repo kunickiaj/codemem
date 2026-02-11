@@ -2433,6 +2433,111 @@ def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_p
         assert set(noted) == {"sess-a", "sess-b"}
     finally:
         server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_viewer_session_boundary_events_across_new_session(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = {
+            "cwd": "/should-not-bleed",
+            "project": "top-level-project",
+            "started_at": "1999-01-01T00:00:00Z",
+            "events": [
+                {
+                    "opencode_session_id": "sess-old",
+                    "event_id": "evt-old-created",
+                    "event_type": "session.created",
+                    "payload": {"type": "session.created"},
+                    "cwd": str(tmp_path),
+                    "project": "project-old",
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "ts_wall_ms": 100,
+                    "ts_mono_ms": 100.0,
+                },
+                {
+                    "opencode_session_id": "sess-old",
+                    "event_id": "evt-old-error",
+                    "event_type": "session.error",
+                    "payload": {"type": "session.error", "message": "boom"},
+                    "ts_wall_ms": 110,
+                    "ts_mono_ms": 110.0,
+                },
+                {
+                    "opencode_session_id": "sess-new",
+                    "event_id": "evt-new-created",
+                    "event_type": "session.created",
+                    "payload": {"type": "session.created"},
+                    "cwd": str(tmp_path),
+                    "project": "project-new",
+                    "started_at": "2026-01-01T00:05:00Z",
+                    "ts_wall_ms": 200,
+                    "ts_mono_ms": 200.0,
+                },
+                {
+                    "opencode_session_id": "sess-new",
+                    "event_id": "evt-new-idle",
+                    "event_type": "session.idle",
+                    "payload": {"type": "session.idle"},
+                    "ts_wall_ms": 210,
+                    "ts_mono_ms": 210.0,
+                },
+            ],
+        }
+        conn.request(
+            "POST",
+            "/api/raw-events",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert data["inserted"] == 4
+        conn.close()
+
+        store = MemoryStore(db_path)
+        try:
+            old_meta = store.raw_event_session_meta("sess-old")
+            assert old_meta.get("started_at") == "2026-01-01T00:00:00Z"
+            assert old_meta.get("project") == "project-old"
+            assert int(old_meta.get("last_seen_ts_wall_ms") or 0) == 110
+
+            new_meta = store.raw_event_session_meta("sess-new")
+            assert new_meta.get("started_at") == "2026-01-01T00:05:00Z"
+            assert new_meta.get("project") == "project-new"
+            assert int(new_meta.get("last_seen_ts_wall_ms") or 0) == 210
+
+            old_types = [
+                row["event_type"]
+                for row in store.conn.execute(
+                    "SELECT event_type FROM raw_events WHERE opencode_session_id = ? ORDER BY event_seq",
+                    ("sess-old",),
+                ).fetchall()
+            ]
+            assert old_types == ["session.created", "session.error"]
+
+            new_types = [
+                row["event_type"]
+                for row in store.conn.execute(
+                    "SELECT event_type FROM raw_events WHERE opencode_session_id = ? ORDER BY event_seq",
+                    ("sess-new",),
+                ).fetchall()
+            ]
+            assert new_types == ["session.created", "session.idle"]
+        finally:
+            store.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_viewer_rejects_missing_session_id(monkeypatch, tmp_path: Path) -> None:
