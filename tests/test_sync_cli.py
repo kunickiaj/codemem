@@ -571,6 +571,7 @@ def test_sync_service_status_uses_pid(monkeypatch) -> None:
     )
     monkeypatch.setattr("codemem.sync_runtime._read_pid", lambda p: 123)
     monkeypatch.setattr("codemem.sync_runtime._pid_running", lambda pid: True)
+    monkeypatch.setattr("codemem.sync_runtime._pid_is_sync_daemon", lambda pid: True)
     monkeypatch.setattr(
         "codemem.cli_app.load_config",
         lambda: type(

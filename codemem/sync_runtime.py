@@ -80,6 +80,36 @@ def _normalize_check_host(host: str) -> str:
     return host
 
 
+def _pid_command(pid: int) -> str | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    command = (result.stdout or "").strip()
+    if not command:
+        return None
+    return command
+
+
+def _is_sync_daemon_command(command: str) -> bool:
+    normalized = command.lower()
+    return "sync" in normalized and "daemon" in normalized
+
+
+def _pid_is_sync_daemon(pid: int) -> bool:
+    command = _pid_command(pid)
+    if not command:
+        return False
+    return _is_sync_daemon_command(command)
+
+
 def service_status_macos() -> SyncRuntimeStatus:
     uid = os.getuid()
     label = "com.codemem.sync"
@@ -127,7 +157,7 @@ def effective_status(host: str, port: int) -> SyncRuntimeStatus:
             return system_svc
     pid_path = _sync_pid_path()
     pid = _read_pid(pid_path)
-    if pid is not None and _pid_running(pid):
+    if pid is not None and _pid_running(pid) and _pid_is_sync_daemon(pid):
         return SyncRuntimeStatus(True, "pidfile", "running", pid=pid)
     if _port_open(_normalize_check_host(host), port):
         return SyncRuntimeStatus(True, "port", "listening")
@@ -174,6 +204,9 @@ def stop_pidfile() -> bool:
     if pid is None:
         return False
     if not _pid_running(pid):
+        _clear_pid(pid_path)
+        return False
+    if not _pid_is_sync_daemon(pid):
         _clear_pid(pid_path)
         return False
     try:
