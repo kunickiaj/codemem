@@ -346,7 +346,18 @@ Restart OpenCode and the MCP tools will be available to the model.
 
 Add `@kunickiaj/codemem` to your OpenCode plugin config, then restart OpenCode.
 
-**Git fallback one-liner** (requires SSH access to the repo):
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@kunickiaj/codemem"]
+}
+```
+
+Notes:
+- The key is `plugin` (singular). `plugins` is rejected as an unknown key.
+- To pin a specific plugin release, use `"@kunickiaj/codemem@0.9.20"`.
+
+**Git fallback one-liner** (advanced):
 
 ```bash
 uvx --from git+ssh://git@github.com/kunickiaj/codemem.git codemem install-plugin
