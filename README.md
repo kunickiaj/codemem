@@ -8,7 +8,6 @@ A lightweight persistent-memory companion for OpenCode. Captures terminal sessio
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- SSH access to this GitHub repository (for installation)
 
 ## Quick setup
 
@@ -29,27 +28,41 @@ codemem --help
 
 ### Via uvx (No Installation)
 
-Run directly without installing — requires SSH access to the repo:
+Run directly without installing:
 
 ```bash
 # Run latest
-uvx --from git+ssh://git@github.com/kunickiaj/codemem.git codemem stats
+uvx codemem stats
 
 # Run specific version
-uvx --from git+ssh://git@github.com/kunickiaj/codemem.git@v0.9.17 codemem stats
+uvx --from "codemem==0.9.20" codemem stats
 
 # Run from local clone
 uvx --from . codemem stats
 ```
 
-### Install from GitHub
+### Install from PyPI
 
 ```bash
 # Install latest
-uv pip install git+ssh://git@github.com/kunickiaj/codemem.git
+uv pip install codemem
 
 # Install specific version
-uv pip install git+ssh://git@github.com/kunickiaj/codemem.git@v0.9.17
+uv pip install "codemem==0.9.20"
+
+# pipx (isolated CLI install)
+pipx install codemem
+
+# pip (standard Python install)
+pip install codemem
+```
+
+### Git fallback (advanced)
+
+Use this only when you explicitly want an unreleased branch/tag from GitHub:
+
+```bash
+uvx --from git+ssh://git@github.com/kunickiaj/codemem.git codemem stats
 ```
 
 ### Configuration
@@ -248,7 +261,9 @@ The project uses GitHub Actions for continuous integration and deployment:
   - Builds distribution packages (wheel + sdist)
   - Creates GitHub Release with auto-generated changelog
   - Attaches packages to release for distribution
-  - Optional PyPI publishing (commented out, enable when going public)
+  - Publishes to PyPI via Trusted Publisher (OIDC)
+  - Publishes `@kunickiaj/codemem` to npm
+  - Supports manual TestPyPI verification via `workflow_dispatch` with `publish_target=testpypi`
 
 To create a release:
 ```bash
@@ -344,9 +359,16 @@ Restart OpenCode and the MCP tools will be available to the model.
 
 **Recommended (npm package):**
 
-Add `@kunickiaj/codemem` to your OpenCode plugin config, then restart OpenCode.
+Add `@kunickiaj/codemem` to your OpenCode plugin config, then restart OpenCode:
 
-**Git fallback one-liner** (requires SSH access to the repo):
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@kunickiaj/codemem"]
+}
+```
+
+**Git fallback one-liner** (advanced):
 
 ```bash
 uvx --from git+ssh://git@github.com/kunickiaj/codemem.git codemem install-plugin
