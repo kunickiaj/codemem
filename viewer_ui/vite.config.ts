@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig(({ mode }) => ({
   build: {
-    outDir: resolve(__dirname, "../opencode_mem/viewer_static"),
+    outDir: resolve(__dirname, "../codemem/viewer_static"),
     emptyOutDir: false,
     lib: {
       entry: resolve(__dirname, "src/app.ts"),

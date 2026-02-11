@@ -4,11 +4,11 @@ import threading
 from http.server import HTTPServer
 from pathlib import Path
 
-from opencode_mem import db
-from opencode_mem.store import MemoryStore
-from opencode_mem.sync_api import build_sync_handler
-from opencode_mem.sync_auth import build_auth_headers
-from opencode_mem.sync_identity import (
+from codemem import db
+from codemem.store import MemoryStore
+from codemem.sync_api import build_sync_handler
+from codemem.sync_auth import build_auth_headers
+from codemem.sync_identity import (
     ensure_device_identity,
     fingerprint_public_key,
     load_public_key,
@@ -103,7 +103,7 @@ def test_ops_cursor_paging(tmp_path: Path) -> None:
 def test_ops_cursor_advances_past_skipped_filtered_ops(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
-    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
@@ -209,7 +209,7 @@ def test_ops_cursor_advances_past_unknown_project_when_include_set(
 ) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
-    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
@@ -285,7 +285,7 @@ def test_ops_cursor_advances_past_unknown_project_when_include_set(
 def test_ops_endpoint_skips_filtered_ops(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
-    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
@@ -363,7 +363,7 @@ def test_ops_endpoint_skips_filtered_ops(tmp_path: Path, monkeypatch) -> None:
 def test_peer_project_filter_override_allows_more_than_global(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"sync_projects_include": ["project-a"]}) + "\n")
-    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
@@ -431,7 +431,7 @@ def test_filter_skips_blocked_ops_and_returns_ops_after(tmp_path: Path, monkeypa
 
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"sync_projects_include": ["wanted"]}) + "\n")
-    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:

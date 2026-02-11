@@ -1,8 +1,8 @@
 # Architecture
 
 ## Overview
-- **CLI (`opencode-mem`)** runs ingestion, MCP server, viewer, and export/import.
-- **Plugin** captures OpenCode events and posts them to `opencode-mem ingest`.
+- **CLI (`codemem`)** runs ingestion, MCP server, viewer, and export/import.
+- **Plugin** captures OpenCode events and posts them to `codemem ingest`.
 - **Ingest pipeline** builds transcript from events, calls the observer, and writes memories.
 - **Observer** returns typed observations and a session summary.
 - **Store** persists sessions, memories, and artifacts in SQLite.
@@ -11,7 +11,7 @@
 
 ## Data flow
 1. Plugin collects events during an OpenCode session (user prompts, assistant messages, tool calls).
-2. Plugin flushes events to `opencode-mem ingest` based on adaptive strategy.
+2. Plugin flushes events to `codemem ingest` based on adaptive strategy.
 3. Ingest builds transcript from user_prompt/assistant_message events.
 4. Observer creates observations + summary from transcript and tool events.
 5. Store writes artifacts (transcript, pre/post context), observations, and session summary.
@@ -46,12 +46,12 @@ The plugin uses an adaptive flush strategy optimized for OpenCode's multi-sessio
 - Use cases: knowledge transfer, backup/restore, team onboarding
 
 ## Configuration
-- File config lives at `~/.config/opencode-mem/config.json`.
+- File config lives at `~/.config/codemem/config.json`.
 - Environment variables override file settings.
 - Viewer settings modal edits only observer provider/model/max chars.
 
 ## Viewer
-- Implemented in `opencode_mem/viewer.py` as an embedded HTML page.
+- Implemented in `codemem/viewer.py` as an embedded HTML page.
 - Serves JSON APIs for stats, sessions, memory items, and config.
 - Restart required to pick up HTML changes.
 
@@ -62,5 +62,5 @@ The plugin uses an adaptive flush strategy optimized for OpenCode's multi-sessio
 
 ## Semantic recall
 - Embeddings are stored in the `memory_vectors` sqlite-vec table.
-- Vectors are written when memories are created, or via `opencode-mem embed` for backfill.
+- Vectors are written when memories are created, or via `codemem embed` for backfill.
 - Pack/inject can merge keyword and semantic results when embeddings are available.

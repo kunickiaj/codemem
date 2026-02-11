@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from opencode_mem.observer import _load_opencode_config
+from codemem.observer import _load_opencode_config
 
 
 def _write_config(tmp_path: Path, name: str, contents: str) -> None:

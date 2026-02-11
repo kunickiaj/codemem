@@ -1,5 +1,5 @@
-from opencode_mem.capture import TRUNCATION_NOTICE
-from opencode_mem.ingest_sanitize import (
+from codemem.capture import TRUNCATION_NOTICE
+from codemem.ingest_sanitize import (
     _is_low_signal_output,
     _sanitize_payload,
     _sanitize_tool_output,

@@ -7,15 +7,15 @@ from http.server import HTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from opencode_mem.store import MemoryStore
-from opencode_mem.viewer import ViewerHandler
+from codemem.store import MemoryStore
+from codemem.viewer import ViewerHandler
 
 
 def test_raw_events_autoflush_updates_flush_state(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
-    monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH", "1")
-    monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS", "0")
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_AUTO_FLUSH", "1")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_DEBOUNCE_MS", "0")
 
     mock_response = MagicMock()
     mock_response.parsed.observations = []
@@ -23,9 +23,9 @@ def test_raw_events_autoflush_updates_flush_state(monkeypatch, tmp_path: Path) -
     mock_response.parsed.skip_summary_reason = None
 
     with (
-        patch("opencode_mem.plugin_ingest.OBSERVER") as observer,
-        patch("opencode_mem.plugin_ingest.capture_pre_context") as pre,
-        patch("opencode_mem.plugin_ingest.capture_post_context") as post,
+        patch("codemem.plugin_ingest.OBSERVER") as observer,
+        patch("codemem.plugin_ingest.capture_pre_context") as pre,
+        patch("codemem.plugin_ingest.capture_post_context") as post,
     ):
         observer.observe.return_value = mock_response
         pre.return_value = {"project": "test"}

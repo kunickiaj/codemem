@@ -3,17 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from opencode_mem.store import MemoryStore
-from opencode_mem.viewer import RawEventSweeper
+from codemem.store import MemoryStore
+from codemem.viewer import RawEventSweeper
 
 
 def test_raw_event_sweeper_flushes_idle_sessions(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
-    monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_SWEEPER", "1")
-    monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS", "0")
-    monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_SWEEPER_LIMIT", "10")
-    monkeypatch.setenv("OPENCODE_MEM_RAW_EVENTS_RETENTION_MS", "0")
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER", "1")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS", "0")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER_LIMIT", "10")
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_RETENTION_MS", "0")
 
     store = MemoryStore(db_path)
     try:
@@ -49,7 +49,7 @@ def test_raw_event_sweeper_flushes_idle_sessions(monkeypatch, tmp_path: Path) ->
         store.close()
 
     sweeper = RawEventSweeper()
-    with patch("opencode_mem.viewer.flush_raw_events") as flush:
+    with patch("codemem.viewer.flush_raw_events") as flush:
         sweeper.tick()
         flush.assert_called_once()
 

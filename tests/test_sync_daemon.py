@@ -7,12 +7,12 @@ from typing import cast
 
 import pytest
 
-from opencode_mem import db
-from opencode_mem.store import MemoryStore, ReplicationOp
-from opencode_mem.sync import http_client, replication, sync_pass
-from opencode_mem.sync.discovery import update_peer_addresses
-from opencode_mem.sync_api import build_sync_handler
-from opencode_mem.sync_identity import (
+from codemem import db
+from codemem.store import MemoryStore, ReplicationOp
+from codemem.sync import http_client, replication, sync_pass
+from codemem.sync.discovery import update_peer_addresses
+from codemem.sync_api import build_sync_handler
+from codemem.sync_identity import (
     ensure_device_identity,
     fingerprint_public_key,
     load_public_key,
@@ -30,7 +30,7 @@ def _start_server(db_path: Path) -> tuple[HTTPServer, int]:
 def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
     client_keys_dir = tmp_path / "keys-client"
     server_keys_dir = tmp_path / "keys-server"
-    os.environ["OPENCODE_MEM_KEYS_DIR"] = str(client_keys_dir)
+    os.environ["CODEMEM_KEYS_DIR"] = str(client_keys_dir)
 
     conn = db.connect(tmp_path / "a.sqlite")
     try:
@@ -151,7 +151,7 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
             store_b.close()
     finally:
         server.shutdown()
-        os.environ.pop("OPENCODE_MEM_KEYS_DIR", None)
+        os.environ.pop("CODEMEM_KEYS_DIR", None)
 
 
 def test_request_json_respects_body_bytes(monkeypatch) -> None:
@@ -180,7 +180,7 @@ def test_request_json_respects_body_bytes(monkeypatch) -> None:
         called["conn"] = DummyConn()
         return called["conn"]
 
-    monkeypatch.setattr("opencode_mem.sync.http_client.HTTPConnection", fake_http)
+    monkeypatch.setattr("codemem.sync.http_client.HTTPConnection", fake_http)
     status, _payload = http_client.request_json(
         "POST",
         "http://example.test/ops",
@@ -196,7 +196,7 @@ def test_sync_once_splits_push_batches_on_peer_payload_too_large(
 ) -> None:
     client_keys_dir = tmp_path / "keys-client"
     server_keys_dir = tmp_path / "keys-server"
-    os.environ["OPENCODE_MEM_KEYS_DIR"] = str(client_keys_dir)
+    os.environ["CODEMEM_KEYS_DIR"] = str(client_keys_dir)
 
     conn = db.connect(tmp_path / "a.sqlite")
     try:
@@ -213,7 +213,7 @@ def test_sync_once_splits_push_batches_on_peer_payload_too_large(
         conn.close()
 
     # Force the server to reject larger POST bodies.
-    monkeypatch.setattr("opencode_mem.sync_api.MAX_SYNC_BODY_BYTES", 10_000)
+    monkeypatch.setattr("codemem.sync_api.MAX_SYNC_BODY_BYTES", 10_000)
 
     server, port = _start_server(tmp_path / "b.sqlite")
     try:
@@ -284,7 +284,7 @@ def test_sync_once_splits_push_batches_on_peer_payload_too_large(
             store_a.close()
     finally:
         server.shutdown()
-        os.environ.pop("OPENCODE_MEM_KEYS_DIR", None)
+        os.environ.pop("CODEMEM_KEYS_DIR", None)
 
 
 def test_apply_replication_ops_allows_cross_device_legacy_entity_id(tmp_path: Path) -> None:
@@ -373,11 +373,11 @@ def test_sync_once_does_not_trust_peer_next_cursor(monkeypatch, tmp_path: Path) 
         store.conn.commit()
 
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.ensure_device_identity",
+            "codemem.sync.sync_pass.ensure_device_identity",
             lambda conn, keys_dir=None: ("dev-local", "fp-local"),
         )
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.build_auth_headers",
+            "codemem.sync.sync_pass.build_auth_headers",
             lambda **kwargs: {},
         )
 
@@ -444,11 +444,11 @@ def test_sync_once_succeeds_when_peer_skips_filtered_ops(monkeypatch, tmp_path: 
         store.conn.commit()
 
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.ensure_device_identity",
+            "codemem.sync.sync_pass.ensure_device_identity",
             lambda conn, keys_dir=None: ("dev-local", "fp-local"),
         )
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.build_auth_headers",
+            "codemem.sync.sync_pass.build_auth_headers",
             lambda **kwargs: {},
         )
 
@@ -488,11 +488,11 @@ def test_sync_once_advances_last_acked_when_outbound_filtered(monkeypatch, tmp_p
         store.conn.commit()
 
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.ensure_device_identity",
+            "codemem.sync.sync_pass.ensure_device_identity",
             lambda conn, keys_dir=None: ("dev-local", "fp-local"),
         )
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.build_auth_headers",
+            "codemem.sync.sync_pass.build_auth_headers",
             lambda **kwargs: {},
         )
 
@@ -570,11 +570,11 @@ def test_sync_once_backfills_tags_and_vectors_for_incoming_upserts(
         store.conn.commit()
 
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.ensure_device_identity",
+            "codemem.sync.sync_pass.ensure_device_identity",
             lambda conn, keys_dir=None: ("dev-local", "fp-local"),
         )
         monkeypatch.setattr(
-            "opencode_mem.sync.sync_pass.build_auth_headers",
+            "codemem.sync.sync_pass.build_auth_headers",
             lambda **kwargs: {},
         )
 

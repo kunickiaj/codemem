@@ -7,11 +7,11 @@ from http.server import HTTPServer
 from pathlib import Path
 from typing import cast
 
-from opencode_mem import db
-from opencode_mem import store as store_module
-from opencode_mem import viewer as viewer_module
-from opencode_mem.store import MemoryStore, ReplicationOp
-from opencode_mem.viewer import ViewerHandler
+from codemem import db
+from codemem import store as store_module
+from codemem import viewer as viewer_module
+from codemem.store import MemoryStore, ReplicationOp
+from codemem.viewer import ViewerHandler
 
 
 def test_insert_and_search(tmp_path: Path) -> None:
@@ -84,7 +84,7 @@ def test_rejects_invalid_memory_kind(tmp_path: Path) -> None:
 
 
 def test_migrates_legacy_project_kind_to_decision(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("OPENCODE_MEM_EMBEDDING_DISABLED", "1")
+    monkeypatch.setenv("CODEMEM_EMBEDDING_DISABLED", "1")
     store = MemoryStore(tmp_path / "mem.sqlite")
     session_id = store.start_session(
         cwd="/tmp",
@@ -951,8 +951,8 @@ def test_normalize_outbound_cursor_resets_when_ahead_of_local_stream(tmp_path: P
 
 def test_apply_replication_ops_skips_excluded_project(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"sync_projects_exclude": ["opencode-mem"]}) + "\n")
-    monkeypatch.setenv("OPENCODE_MEM_CONFIG", str(config_path))
+    config_path.write_text(json.dumps({"sync_projects_exclude": ["codemem"]}) + "\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
@@ -963,7 +963,7 @@ def test_apply_replication_ops_skips_excluded_project(tmp_path: Path, monkeypatc
             "op_type": "upsert",
             "payload": {
                 "session_id": 1,
-                "project": "opencode-mem",
+                "project": "codemem",
                 "kind": "note",
                 "title": "Nope",
                 "body_text": "Nope",
@@ -1001,7 +1001,7 @@ def test_recent_pack_events_project_filter_includes_session_project_when_metadat
             git_branch=None,
             user="tester",
             tool_version="test",
-            project="opencode-mem",
+            project="codemem",
         )
         store.record_usage(
             "pack",
@@ -1011,7 +1011,7 @@ def test_recent_pack_events_project_filter_includes_session_project_when_metadat
             tokens_saved=5,
             metadata={},
         )
-        rows = store.recent_pack_events(limit=10, project="opencode-mem")
+        rows = store.recent_pack_events(limit=10, project="codemem")
         assert len(rows) == 1
         assert rows[0]["event"] == "pack"
     finally:
@@ -1275,20 +1275,20 @@ def test_normalize_projects_rewrites_basenames_and_git_errors(tmp_path: Path) ->
     store = MemoryStore(tmp_path / "mem.sqlite")
 
     full = store.start_session(
-        cwd="/tmp/opencode-mem",
+        cwd="/tmp/codemem",
         git_remote=None,
         git_branch="main",
         user="tester",
         tool_version="test",
-        project="/tmp/opencode-mem",
+        project="/tmp/codemem",
     )
     short = store.start_session(
-        cwd="/tmp/opencode-mem",
+        cwd="/tmp/codemem",
         git_remote=None,
         git_branch="main",
         user="tester",
         tool_version="test",
-        project="opencode-mem",
+        project="codemem",
     )
     fatal = store.start_session(
         cwd="/tmp/not-a-repo",
@@ -1306,11 +1306,11 @@ def test_normalize_projects_rewrites_basenames_and_git_errors(tmp_path: Path) ->
 
     short_row = store.conn.execute("SELECT project FROM sessions WHERE id = ?", (short,)).fetchone()
     assert short_row is not None
-    assert short_row["project"] == "opencode-mem"
+    assert short_row["project"] == "codemem"
 
     full_row = store.conn.execute("SELECT project FROM sessions WHERE id = ?", (full,)).fetchone()
     assert full_row is not None
-    assert full_row["project"] == "opencode-mem"
+    assert full_row["project"] == "codemem"
 
     fatal_row = store.conn.execute("SELECT project FROM sessions WHERE id = ?", (fatal,)).fetchone()
     assert fatal_row is not None
@@ -1804,7 +1804,7 @@ def test_remember_observation_populates_tags_text(tmp_path: Path) -> None:
         title="Investigated tagging",
         narrative="Found that tags_text was empty.",
         concepts=["postgres indexing"],
-        files_modified=["opencode_mem/store.py"],
+        files_modified=["codemem/store.py"],
     )
     store.end_session(session)
 
@@ -2105,7 +2105,7 @@ def test_pack_reports_avoided_work_metrics(tmp_path: Path) -> None:
 
 def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2180,7 +2180,7 @@ def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
 
 def test_viewer_accepts_multi_session_legacy_event_ids(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2245,7 +2245,7 @@ def test_viewer_legacy_seq_event_id_does_not_collide_on_restart(
     monkeypatch, tmp_path: Path
 ) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2316,10 +2316,10 @@ def test_viewer_legacy_seq_event_id_does_not_collide_on_restart(
 
 
 def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_path: Path) -> None:
-    import opencode_mem.viewer as viewer_module
+    import codemem.viewer as viewer_module
 
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
 
     noted: list[str] = []
 
@@ -2393,7 +2393,7 @@ def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_p
 
 def test_viewer_rejects_missing_session_id(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2427,7 +2427,7 @@ def test_viewer_rejects_missing_session_id(monkeypatch, tmp_path: Path) -> None:
 
 def test_viewer_rejects_missing_event_type(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2477,7 +2477,7 @@ def test_viewer_stats_migrates_legacy_raw_events_table(monkeypatch, tmp_path: Pa
     finally:
         conn.close()
 
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2500,7 +2500,7 @@ def test_viewer_api_returns_json_500_on_store_init_failure(monkeypatch, tmp_path
             raise RuntimeError("boom")
 
     monkeypatch.setattr(viewer_module, "MemoryStore", BoomStore)
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(tmp_path / "mem.sqlite"))
+    monkeypatch.setenv("CODEMEM_DB", str(tmp_path / "mem.sqlite"))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2518,7 +2518,7 @@ def test_viewer_api_returns_json_500_on_store_init_failure(monkeypatch, tmp_path
 
 def test_viewer_rejects_message_id_as_session_id(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     server = HTTPServer(("127.0.0.1", 0), ViewerHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

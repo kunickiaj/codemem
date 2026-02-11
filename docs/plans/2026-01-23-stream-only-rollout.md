@@ -4,7 +4,7 @@ This plan covers what you (operator) need to do to roll out stream-only mode in 
 
 ## Goal
 
-Run opencode-mem in "stream now, flush later" mode:
+Run codemem in "stream now, flush later" mode:
 
 - JS plugin streams events immediately to Python (viewer daemon) via HTTP.
 - Python persists raw events durably and decides when to flush/extract.
@@ -18,18 +18,18 @@ Run opencode-mem in "stream now, flush later" mode:
 Set these in the environment used to launch OpenCode (shell profile, systemd, whatever OpenCode inherits):
 
 ```bash
-export OPENCODE_MEM_DISABLE_CLI_INGEST=1
-export OPENCODE_MEM_RAW_EVENTS_AUTO_FLUSH=1
-export OPENCODE_MEM_RAW_EVENTS_DEBOUNCE_MS=60000
-export OPENCODE_MEM_RAW_EVENTS_SWEEPER=1
-export OPENCODE_MEM_RAW_EVENTS_SWEEPER_IDLE_MS=120000
+export CODEMEM_DISABLE_CLI_INGEST=1
+export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
+export CODEMEM_RAW_EVENTS_DEBOUNCE_MS=60000
+export CODEMEM_RAW_EVENTS_SWEEPER=1
+export CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS=120000
 
 # Optional retention (example: 7 days)
-# export OPENCODE_MEM_RAW_EVENTS_RETENTION_MS=$((7*24*60*60*1000))
+# export CODEMEM_RAW_EVENTS_RETENTION_MS=$((7*24*60*60*1000))
 ```
 
 Notes:
-- `OPENCODE_MEM_DISABLE_CLI_INGEST=1` makes the plugin stop spawning `opencode-mem ingest`.
+- `CODEMEM_DISABLE_CLI_INGEST=1` makes the plugin stop spawning `codemem ingest`.
 - Auto-flush + sweeper together prevent reliance on OpenCode idle/session_end semantics.
 
 ### 2) Restart OpenCode
@@ -48,13 +48,13 @@ In an OpenCode session:
 CLI:
 
 ```bash
-uv run opencode-mem raw-events-status
+uv run codemem raw-events-status
 ```
 
 If it shows error batches for a session (`batches=error:N`), retry them:
 
 ```bash
-uv run opencode-mem raw-events-retry <opencode_session_id>
+uv run codemem raw-events-retry <opencode_session_id>
 ```
 
 Viewer:
@@ -82,7 +82,7 @@ Work to implement:
 - Extend raw event backlog status (CLI + API) to show batch state counts per session:
   - `started`, `completed`, `error`
 - Add CLI support to retry failed batches:
-  - `opencode-mem raw-events-retry --session <id> [--only-error] [--limit]`
+  - `codemem raw-events-retry --session <id> [--only-error] [--limit]`
 - Add a safe policy for `started` but stuck batches:
   - treat as stuck if `updated_at` older than N minutes and mark `error` or re-run
 - Add unit tests covering:
@@ -113,7 +113,7 @@ Work to implement:
   - dedupe repetitive tool events before observer
   - stronger truncation/structuring for long tool outputs
 - Default retention recommendation:
-  - decide a default `OPENCODE_MEM_RAW_EVENTS_RETENTION_MS` guidance to prevent unbounded growth
+  - decide a default `CODEMEM_RAW_EVENTS_RETENTION_MS` guidance to prevent unbounded growth
 
 ## Current Status (already implemented)
 
@@ -126,7 +126,7 @@ Reliability / stream-only architecture:
 - Batch idempotency (flush batches), session mapping reuse
 - Artifact/memory/session_summary dedupe on retries
 - Backlog visibility:
-  - CLI `opencode-mem raw-events-status`
+  - CLI `codemem raw-events-status`
   - viewer `/api/raw-events/status`
   - viewer Diagnostics panel (hidden by default toggle)
 
@@ -142,7 +142,7 @@ Memory usefulness:
 
 Send me:
 
-- output of `uv run opencode-mem raw-events-status`
+- output of `uv run codemem raw-events-status`
 - whether backlog drains as expected
 - any examples of stuck flushes / large backlogs
 

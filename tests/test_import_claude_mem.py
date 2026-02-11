@@ -4,8 +4,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from opencode_mem.cli import app
-from opencode_mem.store import MemoryStore
+from codemem.cli import app
+from codemem.store import MemoryStore
 
 runner = CliRunner()
 
@@ -169,8 +169,8 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
     """Test importing from a mock claude-mem database."""
     claude_db = _create_claude_db(tmp_path)
 
-    # Import into opencode-mem
-    opencode_db = tmp_path / "opencode-mem.db"
+    # Import into codemem
+    opencode_db = tmp_path / "codemem.db"
     store = MemoryStore(opencode_db)
 
     # Simulate import command logic
@@ -250,7 +250,7 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
     assert summary_count == 1, "Should import 1 summary"
     assert prompt_count == 1, "Should import 1 prompt"
 
-    # Verify data in opencode-mem
+    # Verify data in codemem
     memories = store.recent(limit=10)
     assert len(memories) >= 1, "Should have at least 1 memory"
 
@@ -261,7 +261,7 @@ def test_import_from_claude_mem(tmp_path: Path) -> None:
 
 def test_import_from_claude_mem_idempotent(tmp_path: Path) -> None:
     claude_db = _create_claude_db(tmp_path)
-    opencode_db = tmp_path / "opencode-mem.db"
+    opencode_db = tmp_path / "codemem.db"
 
     result1 = runner.invoke(
         app, ["import-from-claude-mem", str(claude_db), "--db-path", str(opencode_db)]
@@ -281,7 +281,7 @@ def test_import_from_claude_mem_idempotent(tmp_path: Path) -> None:
 
 def test_import_from_claude_mem_preserves_discovery_tokens(tmp_path: Path) -> None:
     claude_db = _create_claude_db(tmp_path)
-    opencode_db = tmp_path / "opencode-mem.db"
+    opencode_db = tmp_path / "codemem.db"
     result = runner.invoke(
         app,
         [

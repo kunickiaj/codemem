@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from opencode_mem import viewer, viewer_raw_events
+from codemem import viewer, viewer_raw_events
 
 
 def test_viewer_raw_events_reexports() -> None:

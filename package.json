@@ -1,0 +1,37 @@
+{
+  "name": "@kunickiaj/codemem",
+  "version": "0.9.20",
+  "description": "CodeMem plugin for OpenCode",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE",
+    ".opencode/plugin/codemem.js"
+  ],
+  "dependencies": {
+    "@opencode-ai/plugin": "1.1.53"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kunickiaj/codemem.git"
+  },
+  "homepage": "https://github.com/kunickiaj/codemem",
+  "bugs": {
+    "url": "https://github.com/kunickiaj/codemem/issues"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "memory",
+    "codemem"
+  ]
+}

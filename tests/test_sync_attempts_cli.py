@@ -2,15 +2,15 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from opencode_mem import db
-from opencode_mem.cli import app
+from codemem import db
+from codemem.cli import app
 
 runner = CliRunner()
 
 
 def test_sync_attempts_command(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)

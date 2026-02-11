@@ -4,11 +4,11 @@ import threading
 from http.server import HTTPServer
 from pathlib import Path
 
-from opencode_mem import db
-from opencode_mem.store import MemoryStore
-from opencode_mem.sync_api import build_sync_handler
-from opencode_mem.sync_auth import build_auth_headers
-from opencode_mem.sync_identity import (
+from codemem import db
+from codemem.store import MemoryStore
+from codemem.sync_api import build_sync_handler
+from codemem.sync_auth import build_auth_headers
+from codemem.sync_identity import (
     ensure_device_identity,
     fingerprint_public_key,
     load_public_key,

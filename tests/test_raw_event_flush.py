@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from opencode_mem.raw_event_flush import EXTRACTOR_VERSION, flush_raw_events
-from opencode_mem.store import MemoryStore
-from opencode_mem.xml_parser import ParsedSummary
+from codemem.raw_event_flush import EXTRACTOR_VERSION, flush_raw_events
+from codemem.store import MemoryStore
+from codemem.xml_parser import ParsedSummary
 
 
 def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
@@ -42,15 +42,15 @@ def test_flush_raw_events_is_idempotent(tmp_path: Path) -> None:
     mock_response.parsed.skip_summary_reason = None
 
     with (
-        patch("opencode_mem.plugin_ingest.OBSERVER") as observer,
-        patch("opencode_mem.plugin_ingest.capture_pre_context") as pre,
-        patch("opencode_mem.plugin_ingest.capture_post_context") as post,
+        patch("codemem.plugin_ingest.OBSERVER") as observer,
+        patch("codemem.plugin_ingest.capture_pre_context") as pre,
+        patch("codemem.plugin_ingest.capture_post_context") as post,
     ):
         observer.observe.return_value = mock_response
         pre.return_value = {"project": "test"}
         post.return_value = {"git_diff": "", "recent_files": ""}
 
-        with patch.dict("os.environ", {"OPENCODE_MEM_DB": str(tmp_path / "mem.sqlite")}):
+        with patch.dict("os.environ", {"CODEMEM_DB": str(tmp_path / "mem.sqlite")}):
             result = flush_raw_events(
                 store,
                 opencode_session_id="sess",
@@ -145,7 +145,7 @@ def test_flush_raw_events_handles_ts_mono_reordering(tmp_path: Path) -> None:
     def fake_ingest(payload: dict[str, object]) -> None:
         captured["events"] = payload.get("events")
 
-    with patch("opencode_mem.raw_event_flush.ingest", fake_ingest):
+    with patch("codemem.raw_event_flush.ingest", fake_ingest):
         result = flush_raw_events(
             store,
             opencode_session_id="sess",
@@ -186,15 +186,15 @@ def test_flush_raw_events_marks_batch_error_when_observer_fails(tmp_path: Path) 
     mock_response.raw = None
 
     with (
-        patch("opencode_mem.plugin_ingest.OBSERVER") as observer,
-        patch("opencode_mem.plugin_ingest.capture_pre_context") as pre,
-        patch("opencode_mem.plugin_ingest.capture_post_context") as post,
+        patch("codemem.plugin_ingest.OBSERVER") as observer,
+        patch("codemem.plugin_ingest.capture_pre_context") as pre,
+        patch("codemem.plugin_ingest.capture_post_context") as post,
     ):
         observer.observe.return_value = mock_response
         pre.return_value = {"project": "test"}
         post.return_value = {"git_diff": "", "recent_files": ""}
 
-        with patch.dict("os.environ", {"OPENCODE_MEM_DB": str(tmp_path / "mem.sqlite")}):
+        with patch.dict("os.environ", {"CODEMEM_DB": str(tmp_path / "mem.sqlite")}):
             try:
                 flush_raw_events(
                     store,

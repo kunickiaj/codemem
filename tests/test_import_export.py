@@ -3,9 +3,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from opencode_mem import db
-from opencode_mem.cli import app
-from opencode_mem.store import MemoryStore
+from codemem import db
+from codemem.cli import app
+from codemem.store import MemoryStore
 
 runner = CliRunner()
 
@@ -96,7 +96,7 @@ def test_export_import_roundtrip(tmp_path: Path) -> None:
         "version": "1.0",
         "exported_at": "2025-01-15T10:00:00Z",
         "export_metadata": {
-            "tool_version": "opencode-mem",
+            "tool_version": "codemem",
             "projects": ["/tmp/myproject"],
             "total_memories": len(memories),
             "total_sessions": len(sessions),
@@ -254,7 +254,7 @@ def test_import_is_idempotent(tmp_path: Path) -> None:
         "version": "1.0",
         "exported_at": "2025-01-15T10:00:00Z",
         "export_metadata": {
-            "tool_version": "opencode-mem",
+            "tool_version": "codemem",
             "projects": ["/tmp/myproject"],
             "total_memories": len(memories),
             "total_sessions": len(sessions),
@@ -286,7 +286,7 @@ def test_import_memories_flattens_summary_metadata(tmp_path: Path) -> None:
         "version": "1.0",
         "exported_at": "2025-01-15T10:00:00Z",
         "export_metadata": {
-            "tool_version": "opencode-mem",
+            "tool_version": "codemem",
             "projects": ["/tmp/project"],
             "total_memories": 1,
             "total_sessions": 1,
@@ -470,7 +470,7 @@ def test_import_remap_project(tmp_path: Path) -> None:
         "version": "1.0",
         "exported_at": "2025-01-15T10:00:00Z",
         "export_metadata": {
-            "tool_version": "opencode-mem",
+            "tool_version": "codemem",
             "projects": ["/original/project"],
             "total_memories": 1,
             "total_sessions": 1,

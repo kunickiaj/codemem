@@ -4,7 +4,7 @@ import io
 import json
 from typing import Any
 
-from opencode_mem.viewer_routes import raw_events
+from codemem.viewer_routes import raw_events
 
 
 class DummyHandler:

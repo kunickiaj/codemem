@@ -7,7 +7,7 @@ from typing import Any
 def test_serve_background_ignores_stale_pid_file(monkeypatch: Any) -> None:
     # If the PID file points at a running process but the port is not listening,
     # the viewer should treat the PID file as stale and proceed to start.
-    from opencode_mem.commands import viewer_cmds
+    from codemem.commands import viewer_cmds
 
     calls: dict[str, Any] = {"popen": 0, "cleared": 0}
 

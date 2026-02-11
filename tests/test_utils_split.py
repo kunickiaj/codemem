@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import opencode_mem.redaction as redaction
-import opencode_mem.utils as utils
+import codemem.redaction as redaction
+import codemem.utils as utils
 
 
 def test_redact_is_stable_through_utils_facade() -> None:

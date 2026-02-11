@@ -1,4 +1,4 @@
-from opencode_mem.xml_parser import has_meaningful_observation, parse_observer_output
+from codemem.xml_parser import has_meaningful_observation, parse_observer_output
 
 
 def test_parse_observer_output_with_summary():
@@ -15,10 +15,10 @@ def test_parse_observer_output_with_summary():
     <concept>what-changed</concept>
   </concepts>
   <files_read>
-    <file>opencode_mem/plugin_ingest.py</file>
+    <file>codemem/plugin_ingest.py</file>
   </files_read>
   <files_modified>
-    <file>opencode_mem/observer.py</file>
+    <file>codemem/observer.py</file>
   </files_modified>
 </observation>
 <summary>
@@ -38,8 +38,8 @@ def test_parse_observer_output_with_summary():
     assert obs.narrative == "Implemented an observer-only pipeline for memories."
     assert obs.facts == ["Observer prompt outputs XML"]
     assert obs.concepts == ["what-changed"]
-    assert obs.files_read == ["opencode_mem/plugin_ingest.py"]
-    assert obs.files_modified == ["opencode_mem/observer.py"]
+    assert obs.files_read == ["codemem/plugin_ingest.py"]
+    assert obs.files_modified == ["codemem/observer.py"]
     assert parsed.summary is not None
     assert parsed.summary.request == "Improve memory quality"
     assert parsed.summary.completed == "Observer prompt added"

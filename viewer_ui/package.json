@@ -1,5 +1,5 @@
 {
-  "name": "opencode-mem-viewer-ui",
+  "name": "codemem-viewer-ui",
   "private": true,
   "type": "module",
   "scripts": {

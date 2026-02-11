@@ -1,6 +1,6 @@
 /* Viewer UI source (TypeScript).
  *
- * Built to: opencode_mem/viewer_static/app.js (served at /assets/app.js)
+ * Built to: codemem/viewer_static/app.js (served at /assets/app.js)
  */
 
 /* global marked, lucide */
@@ -90,17 +90,17 @@ let configPath = '';
 let currentProject = '';
 const itemViewState = new Map();
 const itemExpandState = new Map<string, boolean>();
-const FEED_FILTER_KEY = 'opencode-mem-feed-filter';
+const FEED_FILTER_KEY = 'codemem-feed-filter';
 const FEED_FILTERS = ['all', 'observations', 'summaries'];
 
-const SYNC_DIAGNOSTICS_KEY = 'opencode-mem-sync-diagnostics';
-const SYNC_PAIRING_KEY = 'opencode-mem-sync-pairing';
-const SYNC_REDACT_KEY = 'opencode-mem-sync-redact';
+const SYNC_DIAGNOSTICS_KEY = 'codemem-sync-diagnostics';
+const SYNC_PAIRING_KEY = 'codemem-sync-pairing';
+const SYNC_REDACT_KEY = 'codemem-sync-redact';
 let feedTypeFilter = 'all';
 let pairingPayloadRaw: any = null;
 let pairingCommandRaw = '';
 const PAIRING_FILTER_HINT =
-  "Run this on another device with opencode-mem sync pair --accept '<payload>'. " +
+  "Run this on another device with codemem sync pair --accept '<payload>'. " +
   'On that accepting device, --include/--exclude only control what it sends to peers. ' +
   'This device does not yet enforce incoming project filters.';
 let lastSyncStatus: any = null;
@@ -194,7 +194,7 @@ function isUserInteracting() {
 
 // Theme management
 function getTheme() {
-  const saved = localStorage.getItem('opencode-mem-theme');
+  const saved = localStorage.getItem('codemem-theme');
   if (saved) return saved;
   return window.matchMedia('(prefers-color-scheme: dark)').matches
     ? 'dark'
@@ -203,7 +203,7 @@ function getTheme() {
 
 function setTheme(theme: string) {
   document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('opencode-mem-theme', theme);
+  localStorage.setItem('codemem-theme', theme);
   if (themeToggle) {
     themeToggle.innerHTML =
       theme === 'dark'

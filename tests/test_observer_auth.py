@@ -6,8 +6,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from opencode_mem.config import OpencodeMemConfig
-from opencode_mem.observer import (
+from codemem.config import OpencodeMemConfig
+from codemem.observer import (
     _build_codex_headers,
     _extract_oauth_account_id,
     _extract_oauth_expires,
@@ -38,7 +38,7 @@ def test_loads_openai_oauth_cache(tmp_path: Path) -> None:
             }
         )
     )
-    with patch("opencode_mem.observer._get_opencode_auth_path", return_value=auth_path):
+    with patch("codemem.observer._get_opencode_auth_path", return_value=auth_path):
         data = _load_opencode_oauth_cache()
     assert data["openai"]["access"] == "oa-access"
     assert _extract_oauth_account_id(data, "openai") == "acc-123"
@@ -85,12 +85,12 @@ def test_openai_client_uses_oauth_token_when_api_key_missing(tmp_path: Path) -> 
     cfg = OpencodeMemConfig(observer_api_key=None, observer_provider="openai")
     openai_module = SimpleNamespace(OpenAI=OpenAIStub)
     with (
-        patch("opencode_mem.observer.load_config", return_value=cfg),
-        patch("opencode_mem.observer._get_opencode_auth_path", return_value=auth_path),
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._get_opencode_auth_path", return_value=auth_path),
         patch.dict("os.environ", {}, clear=True),
         patch.dict(sys.modules, {"openai": openai_module}),
     ):
-        from opencode_mem.observer import ObserverClient
+        from codemem.observer import ObserverClient
 
         client = ObserverClient()
         assert client.client is not None
@@ -115,12 +115,12 @@ def test_anthropic_client_uses_oauth_token_when_api_key_missing(tmp_path: Path) 
     anthropic_module = SimpleNamespace(Anthropic=Mock())
     cfg = OpencodeMemConfig(observer_api_key=None, observer_provider="anthropic")
     with (
-        patch("opencode_mem.observer.load_config", return_value=cfg),
-        patch("opencode_mem.observer._get_opencode_auth_path", return_value=auth_path),
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._get_opencode_auth_path", return_value=auth_path),
         patch.dict("os.environ", {}, clear=True),
         patch.dict(sys.modules, {"anthropic": anthropic_module}),
     ):
-        from opencode_mem.observer import ObserverClient
+        from codemem.observer import ObserverClient
 
         client = ObserverClient()
         assert client.client is not None
@@ -144,12 +144,12 @@ def test_oauth_skips_when_api_key_present(tmp_path: Path) -> None:
     cfg = OpencodeMemConfig(observer_api_key="cfg-key", observer_provider="openai")
     openai_module = SimpleNamespace(OpenAI=OpenAIStub)
     with (
-        patch("opencode_mem.observer.load_config", return_value=cfg),
-        patch("opencode_mem.observer._get_opencode_auth_path", return_value=auth_path),
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._get_opencode_auth_path", return_value=auth_path),
         patch.dict("os.environ", {}, clear=True),
         patch.dict(sys.modules, {"openai": openai_module}),
     ):
-        from opencode_mem.observer import ObserverClient
+        from codemem.observer import ObserverClient
 
         client = ObserverClient()
         assert client.client is not None
@@ -168,7 +168,7 @@ def test_oauth_skips_when_api_key_present(tmp_path: Path) -> None:
     ],
 )
 def test_extract_oauth_access(payload: dict, expected: str | None) -> None:
-    from opencode_mem.observer import _extract_oauth_access
+    from codemem.observer import _extract_oauth_access
 
     assert _extract_oauth_access(payload, "openai") == expected
 
@@ -178,7 +178,7 @@ def test_build_codex_headers_includes_account_id() -> None:
     assert headers["authorization"] == "Bearer token"
     assert headers["ChatGPT-Account-Id"] == "acc-123"
     assert headers["originator"]
-    assert headers["User-Agent"].startswith("opencode-mem/")
+    assert headers["User-Agent"].startswith("codemem/")
 
 
 def test_build_codex_headers_without_account_id() -> None:
@@ -186,7 +186,7 @@ def test_build_codex_headers_without_account_id() -> None:
     assert headers["authorization"] == "Bearer token"
     assert "ChatGPT-Account-Id" not in headers
     assert headers["originator"]
-    assert headers["User-Agent"].startswith("opencode-mem/")
+    assert headers["User-Agent"].startswith("codemem/")
 
 
 def test_provider_headers_resolve_file_placeholders(tmp_path: Path) -> None:
@@ -212,7 +212,7 @@ def test_provider_api_key_resolves_file_placeholders(tmp_path: Path) -> None:
 
 
 def test_codex_payload_uses_input_schema() -> None:
-    from opencode_mem.observer import _build_codex_payload
+    from codemem.observer import _build_codex_payload
 
     payload = _build_codex_payload("gpt-5.1-codex-mini", "hello", 42)
     assert payload["model"] == "gpt-5.1-codex-mini"
@@ -225,16 +225,16 @@ def test_codex_payload_uses_input_schema() -> None:
 def test_opencode_run_enabled_when_no_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
-    monkeypatch.delenv("OPENCODE_MEM_OBSERVER_API_KEY", raising=False)
+    monkeypatch.delenv("CODEMEM_OBSERVER_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with (
-        patch("opencode_mem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
         patch(
-            "opencode_mem.observer.load_config",
+            "codemem.observer.load_config",
             return_value=OpencodeMemConfig(use_opencode_run=True),
         ),
     ):
-        from opencode_mem.observer import ObserverClient
+        from codemem.observer import ObserverClient
 
         client = ObserverClient()
         assert client.use_opencode_run is True

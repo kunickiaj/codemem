@@ -11,7 +11,7 @@
 ### Task 1: Add OAuth cache loader
 
 **Files:**
-- Modify: `opencode_mem/observer.py`
+- Modify: `codemem/observer.py`
 - Test: `tests/test_observer_auth.py`
 
 **Step 1: Write the failing test**
@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from opencode_mem.observer import _load_opencode_oauth_cache
+from codemem.observer import _load_opencode_oauth_cache
 
 
 def test_loads_openai_oauth_cache(tmp_path: Path) -> None:
@@ -40,7 +40,7 @@ def test_loads_openai_oauth_cache(tmp_path: Path) -> None:
             }
         )
     )
-    with patch("opencode_mem.observer._get_opencode_auth_path", return_value=auth_path):
+    with patch("codemem.observer._get_opencode_auth_path", return_value=auth_path):
         data = _load_opencode_oauth_cache()
     assert data["openai"]["access"] == "oa-access"
 ```
@@ -79,20 +79,20 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add opencode_mem/observer.py tests/test_observer_auth.py
+git add codemem/observer.py tests/test_observer_auth.py
 git commit -m "feat: load opencode oauth cache for observer"
 ```
 
 ### Task 2: Provider selection rules
 
 **Files:**
-- Modify: `opencode_mem/observer.py`
+- Modify: `codemem/observer.py`
 - Test: `tests/test_observer_auth.py`
 
 **Step 1: Write the failing test**
 
 ```python
-from opencode_mem.observer import _resolve_oauth_provider
+from codemem.observer import _resolve_oauth_provider
 
 
 def test_provider_resolves_from_model() -> None:
@@ -129,14 +129,14 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add opencode_mem/observer.py tests/test_observer_auth.py
+git add codemem/observer.py tests/test_observer_auth.py
 git commit -m "feat: infer oauth provider for observer"
 ```
 
 ### Task 3: Use OAuth tokens for client init
 
 **Files:**
-- Modify: `opencode_mem/observer.py`
+- Modify: `codemem/observer.py`
 - Test: `tests/test_observer_auth.py`
 
 **Step 1: Write the failing test**
@@ -159,9 +159,9 @@ def test_openai_client_uses_oauth_token(tmp_path: Path) -> None:
             }
         )
     )
-    with patch("opencode_mem.observer._get_opencode_auth_path", return_value=auth_path):
-        with patch("opencode_mem.observer.OpenAI") as mock_openai:
-            from opencode_mem.observer import ObserverClient
+    with patch("codemem.observer._get_opencode_auth_path", return_value=auth_path):
+        with patch("codemem.observer.OpenAI") as mock_openai:
+            from codemem.observer import ObserverClient
 
             client = ObserverClient()
             assert client.client is not None
@@ -197,14 +197,14 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add opencode_mem/observer.py tests/test_observer_auth.py
+git add codemem/observer.py tests/test_observer_auth.py
 git commit -m "feat: prefer oauth cache tokens for observer clients"
 ```
 
 ### Task 4: Preserve `opencode run` fallback
 
 **Files:**
-- Modify: `opencode_mem/observer.py`
+- Modify: `codemem/observer.py`
 - Test: `tests/test_observer_auth.py`
 
 **Step 1: Write the failing test**
@@ -216,12 +216,12 @@ from unittest.mock import patch
 def test_opencode_run_fallback_when_no_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
-    monkeypatch.delenv("OPENCODE_MEM_OBSERVER_API_KEY", raising=False)
-    with patch("opencode_mem.observer._load_opencode_oauth_cache", return_value={}):
-        from opencode_mem.config import OpencodeMemConfig
-        from opencode_mem.observer import ObserverClient
+    monkeypatch.delenv("CODEMEM_OBSERVER_API_KEY", raising=False)
+    with patch("codemem.observer._load_opencode_oauth_cache", return_value={}):
+        from codemem.config import OpencodeMemConfig
+        from codemem.observer import ObserverClient
 
-        with patch("opencode_mem.observer.load_config", return_value=OpencodeMemConfig(use_opencode_run=True)):
+        with patch("codemem.observer.load_config", return_value=OpencodeMemConfig(use_opencode_run=True)):
             client = ObserverClient()
             assert client.use_opencode_run is True
 ```
@@ -243,7 +243,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add opencode_mem/observer.py tests/test_observer_auth.py
+git add codemem/observer.py tests/test_observer_auth.py
 git commit -m "test: ensure opencode run remains fallback"
 ```
 
@@ -257,7 +257,7 @@ git commit -m "test: ensure opencode run remains fallback"
 Add notes:
 - Observer auto-detects OpenCode OAuth cache at `~/.local/share/opencode/auth.json` when API keys are absent.
 - Provider chosen from `observer_provider` or inferred from model.
-- `OPENCODE_MEM_USE_OPENCODE_RUN` remains optional fallback.
+- `CODEMEM_USE_OPENCODE_RUN` remains optional fallback.
 
 **Step 2: Commit**
 
@@ -270,8 +270,8 @@ git commit -m "docs: document observer oauth cache usage"
 
 Run:
 - `uv run pytest`
-- `uv run ruff check opencode_mem tests`
-- `uv run ruff format --check opencode_mem tests`
+- `uv run ruff check codemem tests`
+- `uv run ruff format --check codemem tests`
 
 Expected: All pass.
 

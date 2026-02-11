@@ -3,20 +3,20 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["opencode_mem"]
+packages = ["codemem"]
 
 [tool.hatch.build.targets.wheel.force-include]
-".opencode/plugin/opencode-mem.js" = "opencode_mem/.opencode/plugin/opencode-mem.js"
-"opencode_mem/viewer_static" = "opencode_mem/viewer_static"
+".opencode/plugin/codemem.js" = "codemem/.opencode/plugin/codemem.js"
+"codemem/viewer_static" = "codemem/viewer_static"
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "opencode_mem/",
-  ".opencode/plugin/opencode-mem.js",
+  "codemem/",
+  ".opencode/plugin/codemem.js",
 ]
 
 [project]
-name = "opencode-mem"
+name = "codemem"
 version = "0.9.20"
 description = "Persistent memory layer for OpenCode CLI with MCP server and wrapper capture"
 authors = [{name = "OpenCode", email = "hello@opencode.dev"}]
@@ -39,8 +39,8 @@ dev = [
 ]
 
 [project.scripts]
-opencode-mem = "opencode_mem.cli:main"
-opencode-mem-mcp = "opencode_mem.mcp_server:run"
+codemem = "codemem.cli:main"
+codemem-mcp = "codemem.mcp_server:run"
 
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -65,10 +65,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["opencode_mem"]
+known-first-party = ["codemem"]
 
 [tool.coverage.run]
-source = ["opencode_mem"]
+source = ["codemem"]
 branch = true
 
 [tool.coverage.report]

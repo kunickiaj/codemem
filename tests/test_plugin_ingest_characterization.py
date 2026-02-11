@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
-import opencode_mem.plugin_ingest as plugin_ingest
+import codemem.plugin_ingest as plugin_ingest
 
 
 class FakeStore:
@@ -151,7 +151,7 @@ def test_ingest_filters_and_budgets_tool_events(monkeypatch: Any) -> None:
             },
             {
                 "type": "tool.execute.after",
-                "tool": "opencode_mem_memory_search",
+                "tool": "codemem_memory_search",
                 "args": {"query": "anything"},
                 "result": "[]",
             },

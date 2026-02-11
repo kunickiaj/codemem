@@ -1,4 +1,4 @@
-from opencode_mem.ingest_tool_events import (
+from codemem.ingest_tool_events import (
     _budget_tool_events,
     _compact_bash_output,
     _compact_list_output,
@@ -6,7 +6,7 @@ from opencode_mem.ingest_tool_events import (
     _tool_event_importance,
     _tool_event_signature,
 )
-from opencode_mem.observer_prompts import ToolEvent
+from codemem.observer_prompts import ToolEvent
 
 
 def test_compact_read_output_truncates_lines() -> None:

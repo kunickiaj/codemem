@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from opencode_mem.store import MemoryStore
+from codemem.store import MemoryStore
 
 
 def test_sync_converges_between_two_peers(tmp_path: Path) -> None:

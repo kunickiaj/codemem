@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 
-from opencode_mem import net
+from codemem import net
 
 
 def test_interface_ipv4_candidates_include_utun_and_filter_low_signal_interfaces(

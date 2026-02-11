@@ -4,9 +4,9 @@ import contextlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from opencode_mem.raw_event_flush import flush_raw_events
-from opencode_mem.store import MemoryStore
-from opencode_mem.xml_parser import ParsedSummary
+from codemem.raw_event_flush import flush_raw_events
+from codemem.store import MemoryStore
+from codemem.xml_parser import ParsedSummary
 
 
 def test_raw_event_retry_from_error_batch(tmp_path: Path) -> None:
@@ -43,10 +43,10 @@ def test_raw_event_retry_from_error_batch(tmp_path: Path) -> None:
     mock_response.parsed.skip_summary_reason = None
 
     with (
-        patch("opencode_mem.plugin_ingest.OBSERVER") as observer,
-        patch("opencode_mem.plugin_ingest.capture_pre_context") as pre,
-        patch("opencode_mem.plugin_ingest.capture_post_context") as post,
-        patch.dict("os.environ", {"OPENCODE_MEM_DB": str(tmp_path / "mem.sqlite")}),
+        patch("codemem.plugin_ingest.OBSERVER") as observer,
+        patch("codemem.plugin_ingest.capture_pre_context") as pre,
+        patch("codemem.plugin_ingest.capture_post_context") as post,
+        patch.dict("os.environ", {"CODEMEM_DB": str(tmp_path / "mem.sqlite")}),
     ):
         observer.observe.side_effect = RuntimeError("boom")
         pre.return_value = {"project": "test"}

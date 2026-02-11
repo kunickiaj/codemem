@@ -4,9 +4,9 @@ import threading
 from http.server import HTTPServer
 from pathlib import Path
 
-from opencode_mem import db, sync_identity
-from opencode_mem.sync_identity import ensure_device_identity
-from opencode_mem.viewer import ViewerHandler
+from codemem import db, sync_identity
+from codemem.sync_identity import ensure_device_identity
+from codemem.viewer import ViewerHandler
 
 
 def _start_server(db_path: Path) -> tuple[HTTPServer, int]:
@@ -24,8 +24,8 @@ def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:
 
 def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
-    monkeypatch.setenv("OPENCODE_MEM_KEYS_DIR", str(tmp_path / "keys"))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_KEYS_DIR", str(tmp_path / "keys"))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -64,8 +64,8 @@ def test_sync_status_endpoint_includes_diagnostics_when_requested(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
-    monkeypatch.setenv("OPENCODE_MEM_KEYS_DIR", str(tmp_path / "keys"))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_KEYS_DIR", str(tmp_path / "keys"))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -105,9 +105,9 @@ def test_sync_status_includes_project_filter_from_config(tmp_path: Path, monkeyp
 
     # Arrange
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     monkeypatch.setattr(
-        "opencode_mem.viewer.load_config",
+        "codemem.viewer.load_config",
         lambda: type(
             "Cfg",
             (),
@@ -116,7 +116,7 @@ def test_sync_status_includes_project_filter_from_config(tmp_path: Path, monkeyp
                 "sync_host": "127.0.0.1",
                 "sync_port": 7337,
                 "sync_interval_s": 60,
-                "sync_projects_include": ["opencode-mem"],
+                "sync_projects_include": ["codemem"],
                 "sync_projects_exclude": ["other"],
             },
         )(),
@@ -138,7 +138,7 @@ def test_sync_status_includes_project_filter_from_config(tmp_path: Path, monkeyp
         # Assert
         assert resp.status == 200
         assert payload.get("project_filter") == {
-            "include": ["opencode-mem"],
+            "include": ["codemem"],
             "exclude": ["other"],
         }
     finally:
@@ -152,9 +152,9 @@ def test_sync_status_project_filter_defaults_when_config_missing_fields(
 
     # Arrange
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     monkeypatch.setattr(
-        "opencode_mem.viewer.load_config",
+        "codemem.viewer.load_config",
         lambda: type(
             "Cfg",
             (),
@@ -189,7 +189,7 @@ def test_sync_status_project_filter_defaults_when_config_missing_fields(
 
 def test_sync_peers_list_endpoint(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -231,7 +231,7 @@ def test_sync_peers_list_endpoint(tmp_path: Path, monkeypatch) -> None:
 
 def test_sync_peers_rename(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -264,7 +264,7 @@ def test_sync_peers_rename(tmp_path: Path, monkeypatch) -> None:
 
 def test_sync_rejects_cross_origin(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -294,7 +294,7 @@ def test_sync_rejects_cross_origin(tmp_path: Path, monkeypatch) -> None:
 
 def test_sync_rejects_spoofed_loopback_origin(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -327,7 +327,7 @@ def test_sync_rejects_spoofed_loopback_origin(tmp_path: Path, monkeypatch) -> No
 
 def test_sync_rejects_missing_origin_for_mutating_post(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -359,7 +359,7 @@ def test_sync_delete_rejects_missing_origin_for_mutating_delete(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -387,9 +387,9 @@ def test_sync_delete_rejects_missing_origin_for_mutating_delete(
 
 def test_sync_now_rejects_when_disabled(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     monkeypatch.setattr(
-        "opencode_mem.viewer.load_config", lambda: type("Cfg", (), {"sync_enabled": False})()
+        "codemem.viewer.load_config", lambda: type("Cfg", (), {"sync_enabled": False})()
     )
     conn = db.connect(db_path)
     try:
@@ -418,8 +418,8 @@ def test_sync_now_rejects_when_disabled(tmp_path: Path, monkeypatch) -> None:
 def test_sync_pairing_payload(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     keys_dir = tmp_path / "keys"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
-    monkeypatch.setenv("OPENCODE_MEM_KEYS_DIR", str(keys_dir))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_KEYS_DIR", str(keys_dir))
     monkeypatch.setattr(sync_identity, "_generate_keypair", _write_fake_keys)
     conn = db.connect(db_path)
     try:
@@ -462,7 +462,7 @@ def test_sync_pairing_payload(tmp_path: Path, monkeypatch) -> None:
 
 def test_sync_attempts_rejects_invalid_limit(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -491,7 +491,7 @@ def test_sync_attempts_rejects_invalid_limit(tmp_path: Path, monkeypatch) -> Non
 
 def test_sync_attempts_clamps_large_limit(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -529,7 +529,7 @@ def test_sync_attempts_clamps_large_limit(tmp_path: Path, monkeypatch) -> None:
 
 def test_sync_attempts_rejects_invalid_limit_query(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -558,7 +558,7 @@ def test_sync_attempts_rejects_invalid_limit_query(tmp_path: Path, monkeypatch) 
 
 def test_sync_attempts_clamps_large_limit_query(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)

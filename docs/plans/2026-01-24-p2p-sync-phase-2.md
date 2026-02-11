@@ -130,7 +130,7 @@ Deliverable:
 - Viewer shows a one-line pairing command and a copy button.
 - Pairing is completed by running the copied command on the other machine:
 
-  `opencode-mem sync pair --accept '<payload>'`
+  `codemem sync pair --accept '<payload>'`
 
 Notes:
 
@@ -174,8 +174,8 @@ Problem: Phase 1 has templates/install; lacking stop/restart/status helpers.
 Deliverable:
 
 - CLI commands:
-  - `opencode-mem sync status`
-  - `opencode-mem sync start|stop|restart`
+  - `codemem sync status`
+  - `codemem sync start|stop|restart`
   - macOS LaunchAgent + Linux systemd --user
 
 Acceptance criteria:

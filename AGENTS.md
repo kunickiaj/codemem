@@ -1,4 +1,4 @@
-# Agent Guidelines for opencode-mem
+# Agent Guidelines for codemem
 
 This file is for agentic coding tools working in this repo.
 
@@ -26,13 +26,13 @@ Release checklist:
 1. Create a release branch + PR (no direct pushes to `main`)
 2. Update version:
    - `pyproject.toml`
-   - `opencode_mem/__init__.py`
+   - `codemem/__init__.py`
 3. Regenerate lockfiles/artifacts and commit the results:
    - Python: run `uv sync` and commit `uv.lock` (the lockfile includes the local package version)
    - Viewer UI bundle: in `viewer_ui/`, run:
      - `bun install`
      - `bun run build`
-     - commit updated `opencode_mem/viewer_static/app.js`
+     - commit updated `codemem/viewer_static/app.js`
 4. Ensure JS installs use the public npm registry (avoid private registries/mirrors)
    - Keep `.opencode/.npmrc` with `registry=https://registry.npmjs.org/`
 5. Wait for CI to pass, then squash-merge the PR
@@ -43,37 +43,37 @@ Release checklist:
 
 - Python: >=3.11,<3.15
 - Env/tooling: `uv` (creates `.venv/`)
-- CLI: Typer (`opencode-mem`)
+- CLI: Typer (`codemem`)
 - Storage: SQLite (path configurable)
 - Tests: pytest
 - Lint/format: ruff
 - UI/plugin ("frontend"):
-  - Viewer UI is embedded in Python: `opencode_mem/viewer.py`
-  - OpenCode plugin is ESM JS: `.opencode/plugin/opencode-mem.js`
+  - Viewer UI is embedded in Python: `codemem/viewer.py`
+  - OpenCode plugin is ESM JS: `.opencode/plugin/codemem.js`
 
 ## Quick Commands
 
 ### Setup (recommended)
 - Install dev deps + create venv: `uv sync`
-- Run commands via the venv (no activate): `uv run opencode-mem --help`
+- Run commands via the venv (no activate): `uv run codemem --help`
 - Activate (fish): `source .venv/bin/activate.fish`
 - Activate (bash/zsh): `source .venv/bin/activate`
 
 ### Build / Install
-- Editable install (if you want `opencode-mem` on PATH): `uv pip install -e .`
-- No-install run from this repo: `uv run opencode-mem stats`
-- One-off run via uvx: `uvx --from . opencode-mem stats`
+- Editable install (if you want `codemem` on PATH): `uv pip install -e .`
+- No-install run from this repo: `uv run codemem stats`
+- One-off run via uvx: `uvx --from . codemem stats`
 
 ### Common Dev Commands
 
-- CLI help: `uv run opencode-mem --help`
-- Viewer help: `uv run opencode-mem serve --help`
-- Serve viewer: `uv run opencode-mem serve`
-- Serve viewer (background): `uv run opencode-mem serve --background`
-- Serve viewer (restart): `uv run opencode-mem serve --restart`
-- MCP server: `uv run opencode-mem mcp`
-- Ingest (stdin JSON): `uv run opencode-mem ingest`
-- Stats: `uv run opencode-mem stats`
+- CLI help: `uv run codemem --help`
+- Viewer help: `uv run codemem serve --help`
+- Serve viewer: `uv run codemem serve`
+- Serve viewer (background): `uv run codemem serve --background`
+- Serve viewer (restart): `uv run codemem serve --restart`
+- MCP server: `uv run codemem mcp`
+- Ingest (stdin JSON): `uv run codemem ingest`
+- Stats: `uv run codemem stats`
 
 ### Tests (pytest)
 - Run all tests: `uv run pytest`
@@ -88,9 +88,9 @@ Notes:
 - Pytest default opts are in `pyproject.toml` (`addopts = "-q"`).
 
 ### Lint / Format (ruff)
-- Lint: `uv run ruff check opencode_mem tests`
-- Format (check only): `uv run ruff format --check opencode_mem tests`
-- Auto-fix lint + format: `uv run ruff check --fix opencode_mem tests` then `uv run ruff format opencode_mem tests`
+- Lint: `uv run ruff check codemem tests`
+- Format (check only): `uv run ruff format --check codemem tests`
+- Auto-fix lint + format: `uv run ruff check --fix codemem tests` then `uv run ruff format codemem tests`
 
 Ruff config (from `pyproject.toml`):
 - line length: 100
@@ -99,7 +99,7 @@ Ruff config (from `pyproject.toml`):
 - ignores: E501 (formatter), B008 (Typer default args)
 
 ### Coverage (optional)
-- `uv run pytest --cov=opencode_mem --cov-report=term`
+- `uv run pytest --cov=codemem --cov-report=term`
 
 ## Frontend Development (viewer + plugin)
 
@@ -107,38 +107,38 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 
 ### Viewer UI
 
-- Source: `opencode_mem/viewer.py`
-- Dev loop: edit `opencode_mem/viewer.py` then restart `opencode-mem serve`
+- Source: `codemem/viewer.py`
+- Dev loop: edit `codemem/viewer.py` then restart `codemem serve`
 
 ### OpenCode plugin
 
-- Source: `.opencode/plugin/opencode-mem.js`
+- Source: `.opencode/plugin/codemem.js`
 - Rules:
   - ESM only (`import`/`export`)
   - must never crash OpenCode (no uncaught exceptions)
   - avoid blocking hooks; defer heavy work to background CLI calls
 
 ## Repo Map (where things live)
-- `opencode_mem/`: Python package (CLI, ingest pipeline, MCP server, viewer, store)
-- `opencode_mem/store/_store.py`: SQLite store entrypoint (most store methods hang off `MemoryStore`)
-- `opencode_mem/plugin_ingest.py`: ingestion + filtering of tool events / transcripts
-- `opencode_mem/mcp_server.py`: MCP tools (search/timeline/pack/etc.)
-- `opencode_mem/viewer.py`: embedded viewer HTML + server glue
-- `.opencode/plugin/opencode-mem.js`: OpenCode plugin entrypoint
+- `codemem/`: Python package (CLI, ingest pipeline, MCP server, viewer, store)
+- `codemem/store/_store.py`: SQLite store entrypoint (most store methods hang off `MemoryStore`)
+- `codemem/plugin_ingest.py`: ingestion + filtering of tool events / transcripts
+- `codemem/mcp_server.py`: MCP tools (search/timeline/pack/etc.)
+- `codemem/viewer.py`: embedded viewer HTML + server glue
+- `.opencode/plugin/codemem.js`: OpenCode plugin entrypoint
 - `tests/`: pytest tests (prefer fast, isolated unit tests)
 
 ## Runtime Commands
-- CLI entrypoint: `opencode-mem` (Typer)
-- MCP server: `opencode-mem mcp` (or `opencode-mem-mcp`)
-- Plugin ingest (stdin JSON): `opencode-mem ingest`
-- Viewer: `opencode-mem serve` (add `--background` / `--restart` as needed)
-- Export/Import: `opencode-mem export-memories`, `opencode-mem import-memories`
-- Store maintenance: `opencode-mem db prune-memories` (use `--dry-run` first)
+- CLI entrypoint: `codemem` (Typer)
+- MCP server: `codemem mcp` (or `codemem-mcp`)
+- Plugin ingest (stdin JSON): `codemem ingest`
+- Viewer: `codemem serve` (add `--background` / `--restart` as needed)
+- Export/Import: `codemem export-memories`, `codemem import-memories`
+- Store maintenance: `codemem db prune-memories` (use `--dry-run` first)
 
 ## Environment Variables (most used)
 
-- `OPENCODE_MEM_DB`: sqlite path (example: `~/opencode-mem.sqlite`)
-- `OPENCODE_MEM_PLUGIN_LOG`: set to `1` to enable plugin logging
+- `CODEMEM_DB`: sqlite path (example: `~/.codemem/mem.sqlite`)
+- `CODEMEM_PLUGIN_LOG`: set to `1` to enable plugin logging
 
 ## Code Style
 
@@ -148,7 +148,7 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 - Formatting: let `ruff format` do the wrapping; don't fight it
 - Imports:
   - Let ruff/isort order imports
-  - Prefer relative imports within `opencode_mem` (as existing code does)
+  - Prefer relative imports within `codemem` (as existing code does)
 - Types:
   - Prefer built-in generics (`list[str]`, `dict[str, Any]`) and `collections.abc` (`Iterable`, `Sequence`)
   - Use `Path` for filesystem paths; accept `Path | str` at public boundaries and normalize early
@@ -177,9 +177,9 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 - Session summaries/observations are OFF by default; only enable via config
 
 ## Configuration
-- Default config file: `~/.config/opencode-mem/config.json`
+- Default config file: `~/.config/codemem/config.json`
 - Env vars override config values when present
-- Default DB path is configurable; `OPENCODE_MEM_DB=~/opencode-mem.sqlite` is a common override
+- Default DB path is configurable; `CODEMEM_DB=~/.codemem/mem.sqlite` is a common override
 - Avoid hardcoding user paths in code; use config/env and normalize with `Path(...).expanduser()`
 
 ## Testing Guidance
@@ -189,29 +189,29 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 
 ## Plugin / Viewer Notes
 - Plugin must be defensive: no uncaught exceptions in hooks; avoid blocking work
-- Viewer HTML is embedded in Python (`opencode_mem/viewer.py`); restart the viewer to see UI changes
+- Viewer HTML is embedded in Python (`codemem/viewer.py`); restart the viewer to see UI changes
 - Docs:
   - `docs/architecture.md` (data flow, flush strategy)
   - `docs/user-guide.md` (viewer usage, troubleshooting)
 
 ## Quick Debug Checklist
-- Plugin logging: `OPENCODE_MEM_PLUGIN_LOG=1` then check `~/.opencode-mem/plugin.log`
-- Missing sessions: confirm plugin + viewer use the same DB path (`OPENCODE_MEM_DB`)
-- Flush/backlog issues: look for viewer logs and `opencode-mem raw-events-status` output
+- Plugin logging: `CODEMEM_PLUGIN_LOG=1` then check `~/.codemem/plugin.log`
+- Missing sessions: confirm plugin + viewer use the same DB path (`CODEMEM_DB`)
+- Flush/backlog issues: look for viewer logs and `codemem raw-events-status` output
 
 ## When Changing Behavior
 - If you change plugin behavior, update `README.md` (and relevant docs under `docs/`)
 - If you change memory kinds, also update:
-  - `opencode_mem/observer_prompts.py` (types/schema)
-  - `opencode_mem/mcp_server.py` (`memory_schema`)
-  - `opencode_mem/viewer.py` (UI kind lists)
+  - `codemem/observer_prompts.py` (types/schema)
+  - `codemem/mcp_server.py` (`memory_schema`)
+  - `codemem/viewer.py` (UI kind lists)
   - `tests/test_e2e_pipeline.py` coverage around documented types
 
 ## Releases
 - Bump versions:
   - `pyproject.toml` (semver)
-  - `opencode_mem/__init__.py` (`__version__`)
-- Validate: `uv run pytest` and `uv run ruff check opencode_mem tests`
+  - `codemem/__init__.py` (`__version__`)
+- Validate: `uv run pytest` and `uv run ruff check codemem tests`
 - Tag + push: `git tag vX.Y.Z` then `git push origin main --tags`
 
 ## Cursor / Copilot Rules

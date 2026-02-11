@@ -13,9 +13,9 @@ ensuring we catch regressions in:
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from opencode_mem.plugin_ingest import ingest
-from opencode_mem.store import MemoryStore
-from opencode_mem.xml_parser import parse_observer_output
+from codemem.plugin_ingest import ingest
+from codemem.store import MemoryStore
+from codemem.xml_parser import parse_observer_output
 
 
 class TestTranscriptBuilding:
@@ -23,7 +23,7 @@ class TestTranscriptBuilding:
 
     def test_transcript_includes_user_prompts(self, tmp_path: Path) -> None:
         """User prompts should appear in transcript."""
-        from opencode_mem.plugin_ingest import _build_transcript
+        from codemem.plugin_ingest import _build_transcript
 
         events = [
             {"type": "user_prompt", "prompt_text": "Fix the bug", "prompt_number": 1},
@@ -33,7 +33,7 @@ class TestTranscriptBuilding:
 
     def test_transcript_includes_assistant_messages(self, tmp_path: Path) -> None:
         """Assistant messages should appear in transcript."""
-        from opencode_mem.plugin_ingest import _build_transcript
+        from codemem.plugin_ingest import _build_transcript
 
         events = [
             {"type": "assistant_message", "assistant_text": "I'll fix that now"},
@@ -43,7 +43,7 @@ class TestTranscriptBuilding:
 
     def test_transcript_preserves_order(self, tmp_path: Path) -> None:
         """Conversation should be in chronological order."""
-        from opencode_mem.plugin_ingest import _build_transcript
+        from codemem.plugin_ingest import _build_transcript
 
         events = [
             {"type": "user_prompt", "prompt_text": "First question", "prompt_number": 1},
@@ -63,7 +63,7 @@ class TestTranscriptBuilding:
 
     def test_transcript_ignores_tool_events(self, tmp_path: Path) -> None:
         """Tool events should not appear in transcript."""
-        from opencode_mem.plugin_ingest import _build_transcript
+        from codemem.plugin_ingest import _build_transcript
 
         events = [
             {"type": "user_prompt", "prompt_text": "Run tests", "prompt_number": 1},
@@ -156,7 +156,7 @@ class TestObserverIntegration:
 
     def test_observer_prompt_includes_transcript(self) -> None:
         """Observer prompt should include the conversation transcript."""
-        from opencode_mem.observer_prompts import ObserverContext, ToolEvent, build_observer_prompt
+        from codemem.observer_prompts import ObserverContext, ToolEvent, build_observer_prompt
 
         context = ObserverContext(
             project="/test/project",
@@ -180,7 +180,7 @@ class TestObserverIntegration:
 
     def test_observer_types_are_documented(self) -> None:
         """Observer prompt should document all valid observation types."""
-        from opencode_mem.observer_prompts import OBSERVATION_SCHEMA
+        from codemem.observer_prompts import OBSERVATION_SCHEMA
 
         for obs_type in [
             "bugfix",
@@ -217,10 +217,10 @@ class TestFullPipeline:
         mock_response.parsed.skip_summary_reason = None
 
         with (
-            patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}),
-            patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer,
-            patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre,
-            patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post,
+            patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+            patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+            patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+            patch("codemem.plugin_ingest.capture_post_context") as mock_post,
         ):
             mock_observer.observe.return_value = mock_response
             mock_pre.return_value = {"project": "test-project"}
@@ -263,10 +263,10 @@ class TestFullPipeline:
         mock_response.parsed = parse_observer_output(mock_response.raw)
 
         with (
-            patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}),
-            patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer,
-            patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre,
-            patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post,
+            patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+            patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+            patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+            patch("codemem.plugin_ingest.capture_post_context") as mock_post,
         ):
             mock_observer.observe.return_value = mock_response
             mock_pre.return_value = {"project": "test-project"}
@@ -317,10 +317,10 @@ class TestFullPipeline:
         mock_response.parsed = parse_observer_output(mock_response.raw)
 
         with (
-            patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}),
-            patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer,
-            patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre,
-            patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post,
+            patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+            patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+            patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+            patch("codemem.plugin_ingest.capture_post_context") as mock_post,
         ):
             mock_observer.observe.return_value = mock_response
             mock_pre.return_value = {"project": "test-project"}
@@ -358,10 +358,10 @@ class TestFullPipeline:
         mock_response.parsed.skip_summary_reason = None
 
         with (
-            patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}),
-            patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer,
-            patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre,
-            patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post,
+            patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+            patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+            patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+            patch("codemem.plugin_ingest.capture_post_context") as mock_post,
         ):
             mock_observer.observe.return_value = mock_response
             mock_pre.return_value = {"project": "test-project"}
@@ -393,7 +393,7 @@ class TestLowSignalFiltering:
 
     def test_patterns_are_scoped(self) -> None:
         """Observation patterns are targeted; transcript patterns remain empty."""
-        from opencode_mem.summarizer import (
+        from codemem.summarizer import (
             LOW_SIGNAL_OBSERVATION_PATTERNS,
             LOW_SIGNAL_PATTERNS,
         )
@@ -402,7 +402,7 @@ class TestLowSignalFiltering:
         assert len(LOW_SIGNAL_OBSERVATION_PATTERNS) > 0
 
     def test_low_signal_observations_match_patterns(self) -> None:
-        from opencode_mem.summarizer import is_low_signal_observation
+        from codemem.summarizer import is_low_signal_observation
 
         low_signal_samples = [
             "No code changes were recorded.",
@@ -424,7 +424,7 @@ class TestLowSignalFiltering:
             assert is_low_signal_observation(sample)
 
     def test_legitimate_content_not_filtered(self) -> None:
-        from opencode_mem.summarizer import is_low_signal_observation
+        from codemem.summarizer import is_low_signal_observation
 
         valid_samples = [
             "No changes were needed in parser logic; added a CLI flag and tests.",
@@ -439,7 +439,7 @@ class TestLowSignalFiltering:
 
     def test_valuable_content_not_filtered(self) -> None:
         """With empty patterns, nothing should be filtered."""
-        from opencode_mem.summarizer import is_low_signal_observation
+        from codemem.summarizer import is_low_signal_observation
 
         # These should all pass through now
         assert not is_low_signal_observation(
@@ -458,7 +458,7 @@ class TestLowSignalFiltering:
 
     def test_empty_string_is_low_signal(self) -> None:
         """Empty/whitespace-only content should still be filtered."""
-        from opencode_mem.summarizer import is_low_signal_observation
+        from codemem.summarizer import is_low_signal_observation
 
         assert is_low_signal_observation("")
         assert is_low_signal_observation("   ")
@@ -470,7 +470,7 @@ class TestRegressionPrevention:
 
     def test_transcript_not_empty_string(self, tmp_path: Path) -> None:
         """Regression: transcript was being passed as empty string."""
-        from opencode_mem.plugin_ingest import _build_transcript
+        from codemem.plugin_ingest import _build_transcript
 
         events = [
             {"type": "user_prompt", "prompt_text": "Test prompt"},
@@ -492,7 +492,7 @@ class TestRegressionPrevention:
 
     def test_discovery_type_accepted(self, tmp_path: Path) -> None:
         """Regression: discovery observations were being filtered."""
-        from opencode_mem.plugin_ingest import ingest
+        from codemem.plugin_ingest import ingest
 
         db_path = tmp_path / "test.sqlite"
 
@@ -513,10 +513,10 @@ class TestRegressionPrevention:
         mock_response.parsed = parse_observer_output(mock_response.raw)
 
         with (
-            patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}),
-            patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer,
-            patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre,
-            patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post,
+            patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+            patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+            patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+            patch("codemem.plugin_ingest.capture_post_context") as mock_post,
         ):
             mock_observer.observe.return_value = mock_response
             mock_pre.return_value = {}

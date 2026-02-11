@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
-from opencode_mem.store import MemoryStore
+from codemem.store import MemoryStore
 
 
 def test_mark_stuck_raw_event_batches_as_error(tmp_path: Path) -> None:

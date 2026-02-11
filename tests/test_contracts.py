@@ -42,9 +42,9 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
     response shapes, this should fail fast.
     """
 
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(tmp_path / "mem.sqlite"))
+    monkeypatch.setenv("CODEMEM_DB", str(tmp_path / "mem.sqlite"))
 
-    from opencode_mem.viewer import start_viewer
+    from codemem.viewer import start_viewer
 
     host = "127.0.0.1"
     port = 38891
@@ -53,7 +53,7 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
     base = f"http://{host}:{port}"
 
     html = _wait_for_http_text(base + "/")
-    assert "opencode-mem viewer" in html
+    assert "codemem viewer" in html
 
     js = _wait_for_http_text(base + "/assets/app.js")
     assert "fetch(" in js
@@ -108,5 +108,5 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
 def test_cli_entrypoints_import() -> None:
     """Ensure refactors don't break the CLI import surface."""
 
-    import opencode_mem.cli  # noqa: F401
-    import opencode_mem.cli_app  # noqa: F401
+    import codemem.cli  # noqa: F401
+    import codemem.cli_app  # noqa: F401

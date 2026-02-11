@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import opencode_mem.store as store_module
-from opencode_mem.pack_benchmark import read_queries, run_pack_benchmark
-from opencode_mem.store import MemoryStore
+import codemem.store as store_module
+from codemem.pack_benchmark import read_queries, run_pack_benchmark
+from codemem.store import MemoryStore
 
 
 def test_read_queries_filters_comments() -> None:

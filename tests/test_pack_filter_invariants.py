@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import opencode_mem.store as store_module
-from opencode_mem.store import MemoryStore
+import codemem.store as store_module
+from codemem.store import MemoryStore
 
 
 def test_pack_project_filter_is_subset(monkeypatch, tmp_path: Path) -> None:

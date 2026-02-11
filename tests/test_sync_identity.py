@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from opencode_mem import db, sync_identity
+from codemem import db, sync_identity
 
 
 def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:
@@ -51,8 +51,8 @@ def test_load_private_key(monkeypatch, tmp_path: Path) -> None:
 
 def test_keychain_load_prefers_secret_tool(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
-    monkeypatch.setenv("OPENCODE_MEM_DB", str(db_path))
-    monkeypatch.setenv("OPENCODE_MEM_SYNC_KEY_STORE", "keychain")
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_SYNC_KEY_STORE", "keychain")
     monkeypatch.setattr(sync_identity.sys, "platform", "linux")
     monkeypatch.setattr(sync_identity, "_secret_tool_available", lambda: True)
 

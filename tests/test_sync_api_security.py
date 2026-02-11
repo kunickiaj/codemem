@@ -4,11 +4,11 @@ import threading
 from http.server import HTTPServer
 from pathlib import Path
 
-from opencode_mem import db
-from opencode_mem.store import MemoryStore
-from opencode_mem.sync_api import build_sync_handler
-from opencode_mem.sync_auth import build_auth_headers
-from opencode_mem.sync_identity import (
+from codemem import db
+from codemem.store import MemoryStore
+from codemem.sync_api import build_sync_handler
+from codemem.sync_auth import build_auth_headers
+from codemem.sync_identity import (
     ensure_device_identity,
     fingerprint_public_key,
     load_public_key,
@@ -50,7 +50,7 @@ def _seed_local_peer(db_path: Path, keys_dir: Path) -> None:
 
 
 def test_sync_ops_rejects_large_body(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("opencode_mem.sync_api.MAX_SYNC_BODY_BYTES", 64)
+    monkeypatch.setattr("codemem.sync_api.MAX_SYNC_BODY_BYTES", 64)
     db_path = tmp_path / "mem.sqlite"
     keys_dir = tmp_path / "keys"
     _seed_local_peer(db_path, keys_dir)

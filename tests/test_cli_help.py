@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from opencode_mem.cli import app
+from codemem.cli import app
 
 runner = CliRunner()
 

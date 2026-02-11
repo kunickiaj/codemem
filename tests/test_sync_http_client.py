@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from opencode_mem.sync import http_client
+from codemem.sync import http_client
 
 
 class _ConnRequestFails:

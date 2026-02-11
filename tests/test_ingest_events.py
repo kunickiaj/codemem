@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from opencode_mem.ingest.events import event_to_tool_event
+from codemem.ingest.events import event_to_tool_event
 
 
 def test_event_to_tool_event_handles_non_dict_args() -> None:

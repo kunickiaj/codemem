@@ -3,8 +3,10 @@ from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from opencode_mem.observer_prompts import ToolEvent
-from opencode_mem.plugin_ingest import (
+import pytest
+
+from codemem.observer_prompts import ToolEvent
+from codemem.plugin_ingest import (
     _budget_tool_events,
     _build_transcript,
     _event_to_tool_event,
@@ -167,10 +169,10 @@ def test_ingest_with_tool_events_does_not_crash(tmp_path: Path) -> None:
     mock_response.parsed.skip_summary_reason = None
 
     with (
-        patch.dict("os.environ", {"OPENCODE_MEM_DB": str(db_path)}),
-        patch("opencode_mem.plugin_ingest.OBSERVER") as mock_observer,
-        patch("opencode_mem.plugin_ingest.capture_pre_context") as mock_pre,
-        patch("opencode_mem.plugin_ingest.capture_post_context") as mock_post,
+        patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+        patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+        patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+        patch("codemem.plugin_ingest.capture_post_context") as mock_post,
     ):
         mock_observer.observe.return_value = mock_response
         mock_pre.return_value = {"project": "test-project"}
@@ -214,6 +216,48 @@ def test_bash_tool_output_is_compacted() -> None:
     assert isinstance(tool_event.tool_output, str)
     assert "(+" in tool_event.tool_output
     assert len(tool_event.tool_output.splitlines()) <= 81
+
+
+def test_ingest_closes_store_on_observer_exception(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    payload = {
+        "cwd": str(tmp_path),
+        "project": "test-project",
+        "events": [
+            {
+                "type": "user_prompt",
+                "prompt_text": "Investigate issue",
+                "prompt_number": 1,
+                "timestamp": "2026-01-14T19:00:01Z",
+            }
+        ],
+    }
+    closed = {"count": 0}
+
+    original_close = None
+    from codemem.store import MemoryStore
+
+    original_close = MemoryStore.close
+
+    def counting_close(self):
+        closed["count"] += 1
+        return original_close(self)
+
+    with (
+        patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+        patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+        patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+        patch("codemem.plugin_ingest.capture_post_context") as mock_post,
+        patch.object(MemoryStore, "close", counting_close),
+    ):
+        mock_observer.observe.side_effect = RuntimeError("observer blew up")
+        mock_pre.return_value = {"project": "test-project"}
+        mock_post.return_value = {"git_diff": "", "recent_files": ""}
+
+        with pytest.raises(RuntimeError, match="observer blew up"):
+            ingest(payload)
+
+    assert closed["count"] >= 1
 
 
 def test_tool_event_budget_dedupes_and_preserves_errors() -> None:

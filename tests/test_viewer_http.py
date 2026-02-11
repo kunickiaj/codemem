@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import json
 
-from opencode_mem.viewer_http import (
+from codemem.viewer_http import (
     read_json_body,
     reject_cross_origin,
     send_html_response,

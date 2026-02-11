@@ -1,6 +1,6 @@
 # P2P Sync (Phase 1) Plan: LAN + Tailscale
 
-This plan describes Phase 1 of syncing the opencode-mem database across multiple computers owned by the same person, without a centralized store.
+This plan describes Phase 1 of syncing the codemem database across multiple computers owned by the same person, without a centralized store.
 
 The target experience is opt-in sync that is easy to set up, works on LAN and/or over Tailscale, and converges deterministically.
 
@@ -12,7 +12,7 @@ The target experience is opt-in sync that is easy to set up, works on LAN and/or
 
 ## Goals
 
-- Sync opencode-mem data between a user's devices via peer-to-peer.
+- Sync codemem data between a user's devices via peer-to-peer.
 - No centralized datastore.
 - Deterministic merge behavior with tombstones.
 - Minimal setup: enable on both machines, pair once, then it keeps working.
@@ -128,7 +128,7 @@ Conflict handling:
 - Generate a stable local `device_id` (uuid) on `sync enable`.
 - Generate a keypair for auth.
 - Store the private key on disk with strict permissions:
-  - `~/.config/opencode-mem/keys/device.key` (0600)
+  - `~/.config/codemem/keys/device.key` (0600)
   - store public key/fingerprint in SQLite.
 
 Phase 2: store private key in OS keychain (macOS Keychain, Linux Secret Service) with file fallback.
@@ -160,7 +160,7 @@ Pick the simplest secure approach that fits existing repo patterns.
 
 ### LAN
 
-- Advertise via mDNS/Bonjour: service `_opencode-mem._tcp` with port and device_id.
+- Advertise via mDNS/Bonjour: service `_codemem._tcp` with port and device_id.
 - Resolve by device_id during dialing.
 
 ### Tailscale
@@ -183,7 +183,7 @@ Use short timeouts and backoff.
 
 Use a single long-running daemon command:
 
-- `opencode-mem sync daemon`
+- `codemem sync daemon`
 
 Responsibilities:
 
@@ -193,7 +193,7 @@ Responsibilities:
 
 ### Config (file)
 
-Update `~/.config/opencode-mem/config.json` with:
+Update `~/.config/codemem/config.json` with:
 
 - `sync.enabled` (bool)
 - `sync.listen.port` (int; default 7337)
@@ -203,13 +203,13 @@ Update `~/.config/opencode-mem/config.json` with:
 
 ### macOS: LaunchAgent
 
-- Install: `~/Library/LaunchAgents/com.opencode-mem.sync.plist`
-- Command: `opencode-mem sync daemon`
+- Install: `~/Library/LaunchAgents/com.codemem.sync.plist`
+- Command: `codemem sync daemon`
 
 ### Linux: systemd user service
 
-- Install: `~/.config/systemd/user/opencode-mem-sync.service`
-- Enable: `systemctl --user enable --now opencode-mem-sync.service`
+- Install: `~/.config/systemd/user/codemem-sync.service`
+- Enable: `systemctl --user enable --now codemem-sync.service`
 
 Fallback:
 
@@ -217,21 +217,21 @@ Fallback:
 
 ## CLI Surface (Phase 1)
 
-- `opencode-mem sync enable`
+- `codemem sync enable`
   - generate device_id + keys if missing
   - write config, start user service
   - print pairing instructions and `sync status`
-- `opencode-mem sync disable`
+- `codemem sync disable`
   - set `sync.enabled=false`, stop/disable service
   - do not delete keys/peers
-- `opencode-mem sync status`
+- `codemem sync status`
   - show enabled state, device_id, binds/port, peers summary, last errors
-- `opencode-mem sync pair`
+- `codemem sync pair`
   - print pairing code (and QR if easy)
-- `opencode-mem sync pair --accept <code>`
+- `codemem sync pair --accept <code>`
   - store peer with pinned key + addresses
-- `opencode-mem sync peers list|remove|rename`
-- `opencode-mem sync once [--peer NAME|--all]`
+- `codemem sync peers list|remove|rename`
+- `codemem sync once [--peer NAME|--all]`
 
 ## Manual Import/Export Alignment
 
@@ -239,7 +239,7 @@ Phase 1 can keep existing memory export/import, but the ops log should become a 
 
 Nice-to-have in Phase 1 (if low effort):
 
-- `opencode-mem export-ops` and `opencode-mem import-ops`
+- `codemem export-ops` and `codemem import-ops`
 
 So P2P sync is just streaming the same ops bundles.
 
@@ -257,7 +257,7 @@ So P2P sync is just streaming the same ops bundles.
 Run expectations:
 
 - `uv run pytest`
-- `uv run ruff check opencode_mem tests`
+- `uv run ruff check codemem tests`
 
 ## Acceptance Criteria
 
@@ -277,7 +277,7 @@ Run expectations:
 
 ## Handoff Prompt (for OpenCoder / GPT-5.2-codex)
 
-Implement Phase 1 of this plan in the existing opencode-mem repo.
+Implement Phase 1 of this plan in the existing codemem repo.
 
 Constraints:
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from opencode_mem import observer_codex
+from codemem import observer_codex
 
 
 class StubResponse:

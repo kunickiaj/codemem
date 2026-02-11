@@ -1,0 +1,11 @@
+[Unit]
+Description=codemem sync daemon
+After=network-online.target
+
+[Service]
+ExecStart=codemem sync daemon
+Restart=on-failure
+Environment=CODEMEM_CONFIG=%h/.config/codemem/config.json
+
+[Install]
+WantedBy=default.target
