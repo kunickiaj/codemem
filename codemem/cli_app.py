@@ -51,6 +51,7 @@ from .commands.memory_cmds import (
 from .commands.opencode_integration_cmds import install_mcp_cmd, install_plugin_cmd
 from .commands.raw_events_cmds import (
     flush_raw_events_cmd,
+    raw_events_gate_cmd,
     raw_events_retry_cmd,
     raw_events_status_cmd,
 )
@@ -562,6 +563,45 @@ def raw_events_retry(
     store = _store(db_path)
     try:
         raw_events_retry_cmd(store, opencode_session_id=opencode_session_id, limit=limit)
+    finally:
+        store.close()
+
+
+@app.command("raw-events-gate")
+def raw_events_gate(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    min_flush_success_rate: float = typer.Option(
+        0.99, min=0.0, max=1.0, help="Minimum flush success rate"
+    ),
+    max_dropped_event_rate: float = typer.Option(
+        0.05, min=0.0, max=1.0, help="Maximum dropped event rate"
+    ),
+    min_session_boundary_accuracy: float = typer.Option(
+        0.99, min=0.0, max=1.0, help="Minimum session boundary accuracy"
+    ),
+    max_retry_depth: int = typer.Option(3, min=0, help="Maximum observed retry depth"),
+    min_events: int = typer.Option(1, min=0, help="Minimum processed events sample size"),
+    min_batches: int = typer.Option(1, min=0, help="Minimum flush batch sample size"),
+    min_sessions: int = typer.Option(1, min=0, help="Minimum session sample size"),
+    window_hours: float = typer.Option(
+        24.0, min=0.001, help="Rolling window in hours used for gate metrics"
+    ),
+) -> None:
+    """Validate raw-event reliability metrics against baseline thresholds."""
+
+    store = _store(db_path)
+    try:
+        raw_events_gate_cmd(
+            store,
+            min_flush_success_rate=min_flush_success_rate,
+            max_dropped_event_rate=max_dropped_event_rate,
+            min_session_boundary_accuracy=min_session_boundary_accuracy,
+            max_retry_depth=max_retry_depth,
+            min_events=min_events,
+            min_batches=min_batches,
+            min_sessions=min_sessions,
+            window_hours=window_hours,
+        )
     finally:
         store.close()
 

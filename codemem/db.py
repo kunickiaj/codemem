@@ -417,11 +417,52 @@ def _ensure_vector_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_raw_event_reliability_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_event_ingest_stats (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            inserted_events INTEGER NOT NULL DEFAULT 0,
+            skipped_events INTEGER NOT NULL DEFAULT 0,
+            skipped_invalid INTEGER NOT NULL DEFAULT 0,
+            skipped_duplicate INTEGER NOT NULL DEFAULT 0,
+            skipped_conflict INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_event_ingest_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            inserted_events INTEGER NOT NULL DEFAULT 0,
+            skipped_invalid INTEGER NOT NULL DEFAULT 0,
+            skipped_duplicate INTEGER NOT NULL DEFAULT 0,
+            skipped_conflict INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_raw_event_ingest_samples_created
+        ON raw_event_ingest_samples(created_at)
+        """
+    )
+    _ensure_column(conn, "raw_event_ingest_stats", "skipped_invalid", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(
+        conn, "raw_event_ingest_stats", "skipped_duplicate", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _ensure_column(conn, "raw_event_ingest_stats", "skipped_conflict", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "raw_event_flush_batches", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
     if _schema_user_version(conn) < SCHEMA_VERSION:
         _initialize_schema_v1(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     _ensure_vector_schema(conn)
+    _ensure_raw_event_reliability_schema(conn)
     _normalize_legacy_memory_kinds(conn)
     if conn.in_transaction:
         conn.commit()

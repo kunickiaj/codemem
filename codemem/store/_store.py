@@ -643,6 +643,13 @@ class MemoryStore:
             limit=limit,
         )
 
+    def raw_event_reliability_metrics(self, *, window_hours: float | None = None) -> dict[str, Any]:
+        if window_hours is None:
+            return store_raw_events.raw_event_reliability_metrics(self.conn)
+        return store_raw_events.raw_event_reliability_metrics_windowed(
+            self.conn, window_hours=window_hours
+        )
+
     def mark_stuck_raw_event_batches_as_error(
         self,
         *,
