@@ -270,4 +270,5 @@ def stats(store: MemoryStore) -> dict[str, Any]:
             "raw_events": raw_events,
         },
         "usage": usage,
+        "reliability": store.raw_event_reliability_metrics(),
     }

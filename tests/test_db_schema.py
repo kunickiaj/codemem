@@ -11,11 +11,27 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
     try:
         db.initialize_schema(conn)
         row = conn.execute("PRAGMA user_version").fetchone()
+        ingest_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'raw_event_ingest_stats'"
+        ).fetchone()
+        ingest_samples_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'raw_event_ingest_samples'"
+        ).fetchone()
+        ingest_reason_column = conn.execute(
+            "SELECT name FROM pragma_table_info('raw_event_ingest_stats') WHERE name = 'skipped_invalid'"
+        ).fetchone()
+        attempt_column = conn.execute(
+            "SELECT name FROM pragma_table_info('raw_event_flush_batches') WHERE name = 'attempt_count'"
+        ).fetchone()
     finally:
         conn.close()
 
     assert row is not None
     assert int(row[0]) == db.SCHEMA_VERSION
+    assert ingest_table is not None
+    assert ingest_samples_table is not None
+    assert ingest_reason_column is not None
+    assert attempt_column is not None
 
 
 def test_initialize_schema_skips_reinit_but_keeps_kind_normalization(

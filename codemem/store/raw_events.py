@@ -8,6 +8,60 @@ from typing import Any
 from .. import db
 
 
+def _update_raw_event_ingest_stats(
+    conn: sqlite3.Connection,
+    *,
+    inserted_events: int,
+    skipped_invalid: int,
+    skipped_duplicate: int,
+    skipped_conflict: int,
+) -> None:
+    now = dt.datetime.now(dt.UTC).isoformat()
+    skipped_events = skipped_invalid + skipped_duplicate + skipped_conflict
+    conn.execute(
+        """
+        INSERT INTO raw_event_ingest_samples(
+            created_at,
+            inserted_events,
+            skipped_invalid,
+            skipped_duplicate,
+            skipped_conflict
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (now, inserted_events, skipped_invalid, skipped_duplicate, skipped_conflict),
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_event_ingest_stats(
+            id,
+            inserted_events,
+            skipped_events,
+            skipped_invalid,
+            skipped_duplicate,
+            skipped_conflict,
+            updated_at
+        )
+        VALUES (1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            inserted_events = inserted_events + excluded.inserted_events,
+            skipped_events = skipped_events + excluded.skipped_events,
+            skipped_invalid = skipped_invalid + excluded.skipped_invalid,
+            skipped_duplicate = skipped_duplicate + excluded.skipped_duplicate,
+            skipped_conflict = skipped_conflict + excluded.skipped_conflict,
+            updated_at = excluded.updated_at
+        """,
+        (
+            inserted_events,
+            skipped_events,
+            skipped_invalid,
+            skipped_duplicate,
+            skipped_conflict,
+            now,
+        ),
+    )
+
+
 def get_or_create_raw_event_flush_batch(
     conn: sqlite3.Connection,
     *,
@@ -76,6 +130,14 @@ def record_raw_event(
         (opencode_session_id, event_id),
     ).fetchone()
     if cur is not None:
+        _update_raw_event_ingest_stats(
+            conn,
+            inserted_events=0,
+            skipped_invalid=0,
+            skipped_duplicate=1,
+            skipped_conflict=0,
+        )
+        conn.commit()
         return False
 
     existing = conn.execute(
@@ -132,6 +194,13 @@ def record_raw_event(
             created_at,
         ),
     )
+    _update_raw_event_ingest_stats(
+        conn,
+        inserted_events=1,
+        skipped_invalid=0,
+        skipped_duplicate=0,
+        skipped_conflict=0,
+    )
     conn.commit()
     return True
 
@@ -145,7 +214,9 @@ def record_raw_events_batch(
     if not opencode_session_id.strip():
         raise ValueError("opencode_session_id is required")
     inserted = 0
-    skipped = 0
+    skipped_invalid = 0
+    skipped_duplicate = 0
+    skipped_conflict = 0
     now = dt.datetime.now(dt.UTC).isoformat()
     with conn:
         existing = conn.execute(
@@ -169,10 +240,10 @@ def record_raw_events_batch(
             ts_wall_ms = event.get("ts_wall_ms")
             ts_mono_ms = event.get("ts_mono_ms")
             if not event_id or not event_type:
-                skipped += 1
+                skipped_invalid += 1
                 continue
             if event_id in seen_ids:
-                skipped += 1
+                skipped_duplicate += 1
                 continue
             seen_ids.add(event_id)
             normalized.append(
@@ -186,6 +257,14 @@ def record_raw_events_batch(
             )
 
         if not normalized:
+            _update_raw_event_ingest_stats(
+                conn,
+                inserted_events=0,
+                skipped_invalid=skipped_invalid,
+                skipped_duplicate=skipped_duplicate,
+                skipped_conflict=skipped_conflict,
+            )
+            skipped = skipped_invalid + skipped_duplicate + skipped_conflict
             return {"inserted": 0, "skipped": skipped}
 
         existing_ids: set[str] = set()
@@ -201,8 +280,16 @@ def record_raw_events_batch(
                 existing_ids.add(str(row["event_id"]))
 
         new_events = [event for event in normalized if event["event_id"] not in existing_ids]
-        skipped += len(normalized) - len(new_events)
+        skipped_duplicate += len(normalized) - len(new_events)
         if not new_events:
+            _update_raw_event_ingest_stats(
+                conn,
+                inserted_events=0,
+                skipped_invalid=skipped_invalid,
+                skipped_duplicate=skipped_duplicate,
+                skipped_conflict=skipped_conflict,
+            )
+            skipped = skipped_invalid + skipped_duplicate + skipped_conflict
             return {"inserted": 0, "skipped": skipped}
 
         row = conn.execute(
@@ -248,10 +335,167 @@ def record_raw_events_batch(
                     ),
                 )
             except sqlite3.IntegrityError:
-                skipped += 1
+                skipped_conflict += 1
                 continue
             inserted += 1
+        _update_raw_event_ingest_stats(
+            conn,
+            inserted_events=inserted,
+            skipped_invalid=skipped_invalid,
+            skipped_duplicate=skipped_duplicate,
+            skipped_conflict=skipped_conflict,
+        )
+    skipped = skipped_invalid + skipped_duplicate + skipped_conflict
     return {"inserted": inserted, "skipped": skipped}
+
+
+def raw_event_reliability_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
+    return raw_event_reliability_metrics_windowed(conn, window_hours=None)
+
+
+def raw_event_reliability_metrics_windowed(
+    conn: sqlite3.Connection, *, window_hours: float | None
+) -> dict[str, Any]:
+    cutoff_iso: str | None = None
+    if window_hours is not None:
+        cutoff_iso = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=window_hours)).isoformat()
+
+    if cutoff_iso is None:
+        ingest = conn.execute(
+            """
+            SELECT
+                inserted_events,
+                skipped_events,
+                skipped_invalid,
+                skipped_duplicate,
+                skipped_conflict
+            FROM raw_event_ingest_stats
+            WHERE id = 1
+            """
+        ).fetchone()
+    else:
+        ingest = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(inserted_events), 0) AS inserted_events,
+                COALESCE(SUM(skipped_invalid + skipped_duplicate + skipped_conflict), 0) AS skipped_events,
+                COALESCE(SUM(skipped_invalid), 0) AS skipped_invalid,
+                COALESCE(SUM(skipped_duplicate), 0) AS skipped_duplicate,
+                COALESCE(SUM(skipped_conflict), 0) AS skipped_conflict
+            FROM raw_event_ingest_samples
+            WHERE created_at >= ?
+            """,
+            (cutoff_iso,),
+        ).fetchone()
+
+    inserted_events = int((ingest["inserted_events"] if ingest else 0) or 0)
+    skipped_events = int((ingest["skipped_events"] if ingest else 0) or 0)
+    skipped_invalid = int((ingest["skipped_invalid"] if ingest else 0) or 0)
+    skipped_duplicate = int((ingest["skipped_duplicate"] if ingest else 0) or 0)
+    skipped_conflict = int((ingest["skipped_conflict"] if ingest else 0) or 0)
+    dropped_events = skipped_invalid + skipped_conflict
+    dropped_denominator = inserted_events + dropped_events
+    dropped_event_rate = (
+        float(dropped_events) / float(dropped_denominator) if dropped_denominator else 0.0
+    )
+
+    batch_query = """
+        SELECT
+            SUM(CASE WHEN status = 'started' THEN 1 ELSE 0 END) AS started,
+            SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errored,
+            COALESCE(MAX(CASE WHEN attempt_count > 0 THEN attempt_count - 1 ELSE 0 END), 0) AS retry_depth_max
+        FROM raw_event_flush_batches
+    """
+    if cutoff_iso is None:
+        batch_counts = conn.execute(batch_query).fetchone()
+    else:
+        batch_counts = conn.execute(
+            batch_query + " WHERE updated_at >= ?", (cutoff_iso,)
+        ).fetchone()
+
+    started_batches = int((batch_counts["started"] if batch_counts else 0) or 0)
+    running_batches = int((batch_counts["running"] if batch_counts else 0) or 0)
+    completed_batches = int((batch_counts["completed"] if batch_counts else 0) or 0)
+    errored_batches = int((batch_counts["errored"] if batch_counts else 0) or 0)
+    retry_depth_max = int((batch_counts["retry_depth_max"] if batch_counts else 0) or 0)
+    terminal_batches = completed_batches + errored_batches
+    flush_success_rate = (
+        float(completed_batches) / float(terminal_batches) if terminal_batches else 1.0
+    )
+
+    boundary_query = """
+        WITH has_events AS (
+            SELECT DISTINCT opencode_session_id
+            FROM raw_events
+        )
+        SELECT
+            COUNT(1) AS sessions_with_events,
+            SUM(CASE WHEN COALESCE(s.started_at, '') != '' THEN 1 ELSE 0 END) AS sessions_with_started_at
+        FROM has_events e
+        LEFT JOIN raw_event_sessions s ON s.opencode_session_id = e.opencode_session_id
+    """
+    if cutoff_iso is None:
+        boundary_counts = conn.execute(boundary_query).fetchone()
+    else:
+        boundary_counts = conn.execute(
+            """
+            WITH has_events AS (
+                SELECT DISTINCT opencode_session_id
+                FROM raw_events
+                WHERE created_at >= ?
+            )
+            SELECT
+                COUNT(1) AS sessions_with_events,
+                SUM(CASE WHEN COALESCE(s.started_at, '') != '' THEN 1 ELSE 0 END) AS sessions_with_started_at
+            FROM has_events e
+            LEFT JOIN raw_event_sessions s ON s.opencode_session_id = e.opencode_session_id
+            """,
+            (cutoff_iso,),
+        ).fetchone()
+    sessions_with_events = int(
+        (boundary_counts["sessions_with_events"] if boundary_counts else 0) or 0
+    )
+    sessions_with_started_at = int(
+        (boundary_counts["sessions_with_started_at"] if boundary_counts else 0) or 0
+    )
+    session_boundary_accuracy = (
+        float(sessions_with_started_at) / float(sessions_with_events)
+        if sessions_with_events
+        else 1.0
+    )
+
+    return {
+        "formulas": {
+            "flush_success_rate": "completed_batches / terminal_batches",
+            "dropped_event_rate": "(skipped_invalid + skipped_conflict) / (inserted_events + skipped_invalid + skipped_conflict)",
+            "session_boundary_accuracy": "sessions_with_started_at / sessions_with_events",
+            "retry_depth_max": "MAX(attempt_count - 1)",
+        },
+        "counts": {
+            "inserted_events": inserted_events,
+            "skipped_events": skipped_events,
+            "skipped_invalid": skipped_invalid,
+            "skipped_duplicate": skipped_duplicate,
+            "skipped_conflict": skipped_conflict,
+            "dropped_events": dropped_events,
+            "started_batches": started_batches,
+            "running_batches": running_batches,
+            "completed_batches": completed_batches,
+            "errored_batches": errored_batches,
+            "terminal_batches": terminal_batches,
+            "sessions_with_events": sessions_with_events,
+            "sessions_with_started_at": sessions_with_started_at,
+        },
+        "rates": {
+            "flush_success_rate": flush_success_rate,
+            "dropped_event_rate": dropped_event_rate,
+            "session_boundary_accuracy": session_boundary_accuracy,
+        },
+        "retry_depth_max": retry_depth_max,
+        "window_hours": window_hours,
+    }
 
 
 def raw_event_flush_state(conn: sqlite3.Connection, opencode_session_id: str) -> int:
@@ -408,6 +652,11 @@ def raw_event_sessions_pending_idle_flush(
 
 
 def purge_raw_events_before(conn: sqlite3.Connection, cutoff_ts_wall_ms: int) -> int:
+    cutoff_iso = dt.datetime.fromtimestamp(cutoff_ts_wall_ms / 1000.0, tz=dt.UTC).isoformat()
+    conn.execute(
+        "DELETE FROM raw_event_ingest_samples WHERE created_at < ?",
+        (cutoff_iso,),
+    )
     cur = conn.execute(
         "DELETE FROM raw_events WHERE ts_wall_ms IS NOT NULL AND ts_wall_ms < ?",
         (cutoff_ts_wall_ms,),
@@ -500,7 +749,7 @@ def claim_raw_event_flush_batch(conn: sqlite3.Connection, batch_id: int) -> bool
     row = conn.execute(
         """
         UPDATE raw_event_flush_batches
-        SET status = 'running', updated_at = ?
+        SET status = 'running', updated_at = ?, attempt_count = attempt_count + 1
         WHERE id = ? AND status IN ('started', 'error')
         RETURNING id
         """,

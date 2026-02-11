@@ -72,7 +72,42 @@ def test_purge_raw_events_before(tmp_path: Path) -> None:
         ts_wall_ms=200,
         ts_mono_ms=2.0,
     )
+    store.conn.execute(
+        """
+        INSERT INTO raw_event_ingest_samples(
+            created_at,
+            inserted_events,
+            skipped_invalid,
+            skipped_duplicate,
+            skipped_conflict
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("1970-01-01T00:00:00+00:00", 1, 0, 0, 0),
+    )
+    store.conn.execute(
+        """
+        INSERT INTO raw_event_ingest_samples(
+            created_at,
+            inserted_events,
+            skipped_invalid,
+            skipped_duplicate,
+            skipped_conflict
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("2100-01-01T00:00:00+00:00", 1, 0, 0, 0),
+    )
+    store.conn.commit()
     removed = store.purge_raw_events_before(150)
     assert removed == 1
     remaining = store.conn.execute("SELECT COUNT(*) AS n FROM raw_events").fetchone()[0]
     assert int(remaining) == 1
+    old_sample_count = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM raw_event_ingest_samples WHERE created_at = ?",
+        ("1970-01-01T00:00:00+00:00",),
+    ).fetchone()[0]
+    assert int(old_sample_count) == 0
+    future_sample_count = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM raw_event_ingest_samples WHERE created_at = ?",
+        ("2100-01-01T00:00:00+00:00",),
+    ).fetchone()[0]
+    assert int(future_sample_count) == 1
