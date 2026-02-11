@@ -143,7 +143,7 @@ export const OpencodeMemPlugin = async ({
     envRunner: process.env.OPENCODE_MEM_RUNNER,
   });
   const defaultRunnerFrom = runner === "uvx"
-    ? "git+https://github.com/kunickiaj/opencode-mem.git"
+    ? "git+https://github.com/kunickiaj/codemem.git"
     : cwd;
   const runnerFrom = process.env.OPENCODE_MEM_RUNNER_FROM || defaultRunnerFrom;
   const buildRunnerArgs = () => {
@@ -536,6 +536,56 @@ export const OpencodeMemPlugin = async ({
     return result;
   };
 
+  const parseSemver = (value) => {
+    const match = String(value || "").trim().match(/(\d+)\.(\d+)\.(\d+)/);
+    if (!match) return null;
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+  };
+
+  const isVersionAtLeast = (currentVersion, minVersion) => {
+    const current = parseSemver(currentVersion);
+    const minimum = parseSemver(minVersion);
+    if (!current || !minimum) return true;
+    for (let i = 0; i < 3; i += 1) {
+      if (current[i] > minimum[i]) return true;
+      if (current[i] < minimum[i]) return false;
+    }
+    return true;
+  };
+
+  const verifyCliCompatibility = async () => {
+    const minVersion = process.env.OPENCODE_MEM_MIN_VERSION || "0.9.20";
+    const versionResult = await runCli(["--version"]);
+    if (!versionResult || versionResult.exitCode !== 0) {
+      await logLine(
+        `compat.version_check_failed exit=${versionResult?.exitCode ?? "unknown"} stderr=${
+          versionResult?.stderr ? redactLog(versionResult.stderr.trim()) : ""
+        }`
+      );
+      return;
+    }
+    const currentVersion = (versionResult.stdout || "").trim();
+    if (isVersionAtLeast(currentVersion, minVersion)) {
+      return;
+    }
+
+    const message = `opencode-mem CLI ${currentVersion || "unknown"} is older than required ${minVersion}`;
+    await log("warn", message, { currentVersion, minVersion });
+    await logLine(`compat.version_mismatch current=${currentVersion} required=${minVersion}`);
+    if (client.tui?.showToast) {
+      try {
+        await client.tui.showToast({
+          body: {
+            message: `${message}. Upgrade: uv tool install --upgrade codemem`,
+            variant: "warning",
+          },
+        });
+      } catch (toastErr) {
+        // best-effort only
+      }
+    }
+  };
+
   const resolveInjectQuery = () => {
     const parts = [];
 
@@ -683,6 +733,7 @@ export const OpencodeMemPlugin = async ({
 
   await log("info", "opencode-mem plugin initialized", { cwd, version });
   await logLine(`plugin initialized cwd=${cwd} version=${version}`);
+  await verifyCliCompatibility();
 
   const truncate = (value) => {
     if (value === undefined || value === null) {

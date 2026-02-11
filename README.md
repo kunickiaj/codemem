@@ -1,6 +1,6 @@
 # opencode-mem
 
-[![CI](https://github.com/kunickiaj/opencode-mem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/opencode-mem/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/kunickiaj/opencode-mem/branch/main/graph/badge.svg)](https://codecov.io/gh/kunickiaj/opencode-mem) [![Release](https://img.shields.io/github/v/release/kunickiaj/opencode-mem)](https://github.com/kunickiaj/opencode-mem/releases)
+[![CI](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/kunickiaj/codemem/branch/main/graph/badge.svg)](https://codecov.io/gh/kunickiaj/codemem) [![Release](https://img.shields.io/github/v/release/kunickiaj/codemem)](https://github.com/kunickiaj/codemem/releases)
 
 A lightweight persistent-memory companion for OpenCode. Captures terminal sessions (and tool calls) as memories, serves a viewer, and exposes an OpenCode plugin that records tool usage automatically.
 
@@ -33,10 +33,10 @@ Run directly without installing — requires SSH access to the repo:
 
 ```bash
 # Run latest
-uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git opencode-mem stats
+uvx --from git+ssh://git@github.com/kunickiaj/codemem.git opencode-mem stats
 
 # Run specific version
-uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.9.17 opencode-mem stats
+uvx --from git+ssh://git@github.com/kunickiaj/codemem.git@v0.9.17 opencode-mem stats
 
 # Run from local clone
 uvx --from . opencode-mem stats
@@ -46,10 +46,10 @@ uvx --from . opencode-mem stats
 
 ```bash
 # Install latest
-uv pip install git+ssh://git@github.com/kunickiaj/opencode-mem.git
+uv pip install git+ssh://git@github.com/kunickiaj/codemem.git
 
 # Install specific version
-uv pip install git+ssh://git@github.com/kunickiaj/opencode-mem.git@v0.9.17
+uv pip install git+ssh://git@github.com/kunickiaj/codemem.git@v0.9.17
 ```
 
 ### Configuration
@@ -342,10 +342,14 @@ Restart OpenCode and the MCP tools will be available to the model.
 
 ### Installation
 
-**One-liner install** (requires SSH access to the repo):
+**Recommended (npm package):**
+
+Add `@kunickiaj/codemem` to your OpenCode plugin config, then restart OpenCode.
+
+**Git fallback one-liner** (requires SSH access to the repo):
 
 ```bash
-uvx --from git+ssh://git@github.com/kunickiaj/opencode-mem.git opencode-mem install-plugin
+uvx --from git+ssh://git@github.com/kunickiaj/codemem.git opencode-mem install-plugin
 ```
 
 That's it! Restart OpenCode and the plugin is active.

@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_target:
+        description: "Select Python publish target"
+        required: true
+        default: "testpypi"
+        type: choice
+        options:
+          - testpypi
+          - none
 
 permissions:
   contents: write
@@ -69,22 +79,65 @@ jobs:
             --generate-notes \
             --title "Release ${{ github.ref_name }}" \
             dist/*
-  
-  # Uncomment to publish to PyPI when ready to go public
-  # publish-pypi:
-  #   name: Publish to PyPI
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   environment: release
-  #   permissions:
-  #     id-token: write  # for trusted publishing
-  #   
-  #   steps:
-  #     - name: Download distribution packages
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: python-package-distributions
-  #         path: dist/
-  #     
-  #     - name: Publish to PyPI
-  #       uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    if: github.event_name == 'push'
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distribution packages
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI (Trusted Publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_target == 'testpypi'
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distribution packages
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI (Trusted Publisher)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-npm:
+    name: Publish npm package
+    needs: ci
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish @kunickiaj/codemem
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
