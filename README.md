@@ -4,15 +4,54 @@
 
 A lightweight persistent-memory companion for OpenCode. Captures terminal sessions (and tool calls) as memories, serves a viewer, and exposes an OpenCode plugin that records tool usage automatically.
 
+## Why codemem
+
+- Persistent cross-session memory for coding agents, stored locally in SQLite
+- Built-in viewer for memory feed, session history, and observer tuning
+- Peer-to-peer sync so your memory graph can travel across machines without a central service
+- OpenCode-native plugin + MCP tools for low-friction usage in daily workflows
+
+## What it looks like
+
+![codemem viewer overview](docs/images/codemem-viewer.png)
+
 ## Prerequisites
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- SSH access to this GitHub repository (only for git-based fallback installs)
 
-## Quick setup
+## Get started in 60 seconds
 
-### For Development (Recommended)
+1) Install the CLI:
+
+```bash
+uv tool install --upgrade codemem
+```
+
+2) Add the plugin in OpenCode config (`~/.config/opencode/opencode.jsonc`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@kunickiaj/codemem"]
+}
+```
+
+3) Restart OpenCode, then verify:
+
+```bash
+codemem stats
+codemem raw-events-status
+```
+
+If you are migrating from `opencode-mem`, use the step-by-step checklist in
+`docs/rename-migration.md`.
+
+## Alternative install paths
+
+SSH access is only needed for git-based fallback installs.
+
+### For local development
 
 ```bash
 # Create virtual environment and install with dependencies
@@ -27,9 +66,9 @@ source .venv/bin/activate.fish  # fish
 codemem --help
 ```
 
-### Via uvx (No Installation)
+### Via uvx (no install)
 
-Run directly without installing — requires SSH access to the repo:
+Run directly without installing:
 
 ```bash
 # Run latest
@@ -59,12 +98,6 @@ Optionally point the SQLite store somewhere else:
 ```bash
 export CODEMEM_DB=~/.codemem/mem.sqlite
 ```
-
-Legacy DB auto-migration on first codemem run:
-- Default target: `~/.codemem/mem.sqlite`
-- Legacy sources checked: `~/.opencode-mem.sqlite`, `~/.codemem.sqlite`
-- DB file plus `-wal` and `-shm` sidecars are moved together
-- Migration only runs when using the default target path and no new DB exists yet
 
 ## CLI commands
 
@@ -212,55 +245,9 @@ codemem import-memories project-knowledge.json --remap-project ~/workspace/mypro
 
 Now their LLM has access to all your discoveries, patterns, and decisions about the codebase.
 
-## Development
+## Contributing
 
-### Running Tests
-
-```bash
-# Run all tests
-uv run pytest
-
-# Run with coverage
-uv run pytest --cov=codemem --cov-report=term
-
-# Run specific test
-uv run pytest tests/test_store.py::test_store_roundtrip
-```
-
-### Code Quality
-
-```bash
-# Lint check
-uv run ruff check codemem tests
-
-# Format check
-uv run ruff format --check codemem tests
-
-# Auto-fix and format
-uv run ruff check --fix codemem tests
-uv run ruff format codemem tests
-```
-
-### CI/CD
-
-The project uses GitHub Actions for continuous integration and deployment:
-
-- **CI Pipeline** (`.github/workflows/ci.yml`): Runs on every push/PR to `main`
-  - Tests across Python 3.11-3.13
-  - Linting with `ruff`
-  - Code coverage reporting (via Codecov)
-
-- **Release Pipeline** (`.github/workflows/release.yml`): Triggered by version tags (`v*`)
-  - Builds distribution packages (wheel + sdist)
-  - Creates GitHub Release with auto-generated changelog
-  - Attaches packages to release for distribution
-  - Optional PyPI publishing (commented out, enable when going public)
-
-To create a release:
-```bash
-git tag v0.1.1
-git push origin v0.1.1
-```
+Contributor setup, tests, linting, and release workflow live in `CONTRIBUTING.md`.
 
 ## Configuration
 
@@ -318,6 +305,9 @@ The viewer includes a Settings modal for the observer provider, model, and max c
 
 - `docs/architecture.md` covers the data flow and components.
 - `docs/user-guide.md` covers viewer usage and troubleshooting.
+- `docs/plugin-reference.md` covers plugin behavior, env vars, and stream reliability knobs.
+- `docs/rename-migration.md` covers migration from `opencode-mem` to `codemem`.
+- `CONTRIBUTING.md` covers contributor setup, testing, and release workflow.
 
 ## OpenCode MCP setup
 
@@ -363,64 +353,6 @@ Notes:
 - The key is `plugin` (singular). `plugins` is rejected as an unknown key.
 - To pin a specific plugin release, use `"@kunickiaj/codemem@0.9.20"`.
 
-#### Migrating from legacy `opencode-mem` (step by step)
-
-1. Back up your existing DB:
-
-```bash
-cp ~/.opencode-mem.sqlite ~/.opencode-mem.sqlite.bak
-```
-
-2. Update OpenCode config to use the npm plugin package:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@kunickiaj/codemem"]
-}
-```
-
-3. Update OpenCode MCP command to `codemem` (if present):
-
-```json
-{
-  "mcp": {
-    "codemem": {
-      "type": "local",
-      "command": ["codemem", "mcp"],
-      "enabled": true
-    }
-  }
-}
-```
-
-4. Migrate runtime config file (if you used legacy config):
-
-```bash
-mkdir -p ~/.config/codemem
-cp ~/.config/opencode-mem/config.json ~/.config/codemem/config.json
-```
-
-5. Restart OpenCode.
-6. Verify codemem starts and data is present:
-
-```bash
-codemem stats
-codemem raw-events-status
-```
-
-7. After one successful run, remove legacy tool install:
-
-```bash
-uv tool uninstall opencode-mem
-```
-
-Notes:
-- Do not uninstall `opencode-mem` before your first successful codemem run.
-- On first run, codemem auto-migrates `~/.opencode-mem.sqlite` to `~/.codemem/mem.sqlite` when default DB path is used.
-- If `~/.codemem/mem.sqlite` already exists, auto-migration is skipped (move/copy legacy DB manually if needed).
-- If this machine should use installed-package behavior, remove `runner_from` from `~/.config/codemem/config.json`.
-
 **Git fallback one-liner** (advanced):
 
 ```bash
@@ -433,128 +365,17 @@ That's it! Restart OpenCode and the plugin is active.
 
 Just start OpenCode inside the repo directory — the plugin auto-loads from `.opencode/plugin/`.
 
-Dev mode on a machine that already has the npm plugin installed:
-- Inside this repo: OpenCode uses local `.opencode/plugin/codemem.js` (dev mode, picks up your edits).
-- Outside this repo: OpenCode uses configured package plugin (`@kunickiaj/codemem`).
-- To test migration behavior on your dev machine, run one validation session outside the repo so you exercise installed-package behavior.
-
 ### How it works
 
 When OpenCode starts, the plugin loads and:
 
 1. **Auto-detects mode**:
    - If in the `codemem` repo → uses `uv run` (dev mode, picks up changes)
-   - Otherwise → uses `uvx --from git+https://github.com/kunickiaj/codemem.git ...` (installed mode)
+   - Otherwise → uses `uvx --from git+ssh://...` (installed mode)
 
 2. Tracks every tool invocation (`tool.execute.after`)
 3. Flushes captured events on session boundaries (`session.idle`, `session.created`, `/new`, `session.error`)
-4. Auto-starts the viewer on plugin initialization (idempotent; set `CODEMEM_VIEWER_AUTO=0` to disable)
+4. Auto-starts the viewer by default (set `CODEMEM_VIEWER_AUTO=0` to disable)
 5. Injects a memory pack into the system prompt (disable with `CODEMEM_INJECT_CONTEXT=0`)
 
-### Screenshot checklist (v0.10 docs)
-
-Capture and add these images before/after release:
-- `docs/images/viewer-overview.png` (main dashboard)
-- `docs/images/session-detail.png` (session + memory detail view)
-- `docs/images/settings-provider.png` (observer/provider settings)
-
-### Environment hints for the plugin
-
-| Env var | Description |
-| --- | --- |
-| `CODEMEM_RUNNER` | Override auto-detected runner: `uv` (dev mode), `uvx` (installed mode), or direct binary path. |
-| `CODEMEM_RUNNER_FROM` | Override source location: directory path for `uv run --directory`, or git URL/path for `uvx --from`. |
-| `CODEMEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
-| `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
-| `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
-| `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
-| `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` to enable; defaults to off). |
-| `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
-| `CODEMEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint (default `https://chatgpt.com/backend-api/codex/responses`). |
-| `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events via `client.app.log`. |
-| `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process (used to avoid observer feedback loops). |
-| `CODEMEM_INJECT_CONTEXT` | Set to `0` to disable memory pack injection (default on). |
-| `CODEMEM_INJECT_LIMIT` | Max memory items in injected pack (default `8`). |
-| `CODEMEM_INJECT_TOKEN_BUDGET` | Approx token budget for injected pack (default `800`). |
-| `CODEMEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |
-| `CODEMEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
-| `CODEMEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |
-| `CODEMEM_OBSERVER_PROVIDER` | Force `openai`, `anthropic`, or a custom provider key (optional). |
-| `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
-| `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
-| `CODEMEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
-| `CODEMEM_RAW_EVENTS_BACKOFF_MS` | Backoff window after stream failure before retrying stream POSTs (default `10000`). |
-| `CODEMEM_RAW_EVENTS_STATUS_CHECK_MS` | Minimum interval between stream-availability preflight checks (default `30000`). |
-| `CODEMEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flushing of streamed raw events (default off). |
-| `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
-| `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` | Sweeper tick interval (default `30000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS` | Consider session idle if no events since this many ms (default `120000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
-| `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
-| `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
-
-### Plugin slash commands
-
-- `/mem-status` – show viewer URL, log path, stats, and recent entries.
-- `/mem-stats` – show just the stats block.
-- `/mem-recent` – show recent items (defaults to 5).
-
-## Observer model
-
-The ingest pipeline uses an observer agent to emit XML observations and summaries. Summaries are generated on session end by default; use `<skip_summary/>` in observer output to skip. The defaults are:
-
-- **OpenAI**: `gpt-5.1-codex-mini` (uses `CODEMEM_OBSERVER_API_KEY`, or `OPENCODE_API_KEY` / `OPENAI_API_KEY`; falls back to OpenCode OAuth cache at `~/.local/share/opencode/auth.json` and calls `https://chatgpt.com/backend-api/codex/responses` when API keys are absent).
-- **Anthropic**: `claude-4.5-haiku` (set `CODEMEM_OBSERVER_PROVIDER=anthropic` and provide `CODEMEM_OBSERVER_API_KEY` or `ANTHROPIC_API_KEY`; falls back to OpenCode OAuth cache when API keys are absent).
-
-Observer provider is selected from `CODEMEM_OBSERVER_PROVIDER` when set, otherwise inferred from the model (`claude*` → Anthropic, otherwise OpenAI). Override the model with `CODEMEM_OBSERVER_MODEL`, or use `CODEMEM_USE_OPENCODE_RUN=1` with `CODEMEM_OPENCODE_MODEL` as a fallback for OAuth-backed runs.
-
-### Custom providers (OpenCode config)
-
-Custom providers are loaded from `~/.config/opencode/opencode.json` (or JSONC). codemem reads the same config for provider names, base URLs, headers, and model mappings. The viewer settings modal populates provider options from this config.
-
-To set a default model for a custom provider, add `defaultModel` under that provider. If omitted, codemem falls back to the first model listed under `models`.
-
-When `CODEMEM_OBSERVER_PROVIDER` is set to a custom provider, `CODEMEM_OBSERVER_MODEL` can be the short model key (e.g. `claude-haiku`) or `provider/model`. If provider is left as auto, use the `provider/model` form so the custom provider can be inferred.
-
-## Running OpenCode with the plugin
-
-1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
-2. Every tooling session now creates a memory entry and pushes typed artifacts into SQLite.
-3. Use `codemem stats` / `recent` to see sessions and confirm the plugin ingested them.
-4. Browse the viewer at the printed URL.
-
-### Stream-only mode (advanced)
-
-If you want maximum reliability ("stream now, flush later"), run stream-only and let Python decide when to flush.
-
-Stream contract:
-- The plugin first checks viewer ingest availability (`GET /api/raw-events/status`) and then streams events (`POST /api/raw-events`).
-- Non-2xx responses and network failures are treated as stream failures.
-- Stream failures have no plugin-side fallback path; events can be dropped while the viewer is unavailable.
-- Raw-event batches accepted by the viewer are durably retried by Python flush workers.
-
-```bash
-export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
-export CODEMEM_RAW_EVENTS_DEBOUNCE_MS=60000
-export CODEMEM_RAW_EVENTS_SWEEPER=1
-export CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS=120000
-export CODEMEM_RAW_EVENTS_SWEEPER_LIMIT=25
-export CODEMEM_RAW_EVENTS_STUCK_BATCH_MS=300000
-# optional retention
-# export CODEMEM_RAW_EVENTS_RETENTION_MS=$((7*24*60*60*1000))
-```
-
-To monitor backlog:
-
-```bash
-codemem raw-events-status
-```
-
-### Troubleshooting
-
-If `raw-events-status` shows `batches=error:N` (legacy label) or `queue=... failed:N` for a session, retry those batches:
-
-```bash
-codemem raw-events-retry <opencode_session_id>
-```
+Observer/settings panel and advanced plugin controls are documented in `docs/plugin-reference.md`.
