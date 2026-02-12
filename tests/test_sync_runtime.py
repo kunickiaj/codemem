@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import json
+import os
 import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from codemem import sync_runtime
 
@@ -163,3 +170,115 @@ def test_is_sync_daemon_command_rejects_non_daemon_or_broad_matches() -> None:
     assert not sync_runtime._is_sync_daemon_command("sync-and-daemon-helper --sync --daemon")
     assert not sync_runtime._is_sync_daemon_command("echo sync daemon")
     assert not sync_runtime._is_sync_daemon_command("bash -lc 'echo codemem sync daemon'")
+
+
+def _wait_until(predicate, timeout_s: float = 3.0, interval_s: float = 0.05) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval_s)
+    return predicate()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="requires ps command semantics")
+def test_stop_pidfile_integration_stops_owned_process(tmp_path: Path) -> None:
+    pid_path = tmp_path / "sync.pid"
+    db_path = tmp_path / "mem.sqlite"
+    config_path = tmp_path / "config.json"
+    port = 0
+    config_path.write_text(
+        json.dumps(
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": port,
+                "sync_interval_s": 30,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["CODEMEM_CONFIG"] = str(config_path)
+    env["CODEMEM_DB"] = str(db_path)
+
+    daemon_cmd = [
+        sys.executable,
+        "-m",
+        "codemem.cli",
+        "sync",
+        "daemon",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--interval-s",
+        "30",
+        "--db-path",
+        str(db_path),
+    ]
+    launcher = (
+        "import subprocess, sys; "
+        "p = subprocess.Popen(sys.argv[1:], start_new_session=True, "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        "print(p.pid)"
+    )
+    daemon_pid = int(
+        subprocess.check_output(
+            [sys.executable, "-c", launcher, *daemon_cmd],
+            env=env,
+            text=True,
+        ).strip()
+    )
+    assert _wait_until(lambda: sync_runtime._pid_running(daemon_pid))
+    pid_path.write_text(f"{daemon_pid}\n", encoding="utf-8")
+
+    previous_pid_env = os.environ.get("CODEMEM_SYNC_PID")
+    os.environ["CODEMEM_SYNC_PID"] = str(pid_path)
+    try:
+        assert sync_runtime._pid_running(daemon_pid)
+        result = sync_runtime.stop_pidfile_with_reason()
+        assert result.stopped is True
+        assert result.reason == "stopped"
+        assert result.pid == daemon_pid
+        assert pid_path.exists() is False
+    finally:
+        if sync_runtime._pid_running(daemon_pid):
+            os.kill(daemon_pid, signal.SIGTERM)
+            _wait_until(lambda: not sync_runtime._pid_running(daemon_pid), timeout_s=2.0)
+        if previous_pid_env is None:
+            os.environ.pop("CODEMEM_SYNC_PID", None)
+        else:
+            os.environ["CODEMEM_SYNC_PID"] = previous_pid_env
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="requires ps command semantics")
+def test_stop_pidfile_integration_refuses_unrelated_process(tmp_path: Path) -> None:
+    pid_path = tmp_path / "sync.pid"
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "http.server", "0"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid_path.write_text(f"{proc.pid}\n", encoding="utf-8")
+
+    previous_pid_env = os.environ.get("CODEMEM_SYNC_PID")
+    os.environ["CODEMEM_SYNC_PID"] = str(pid_path)
+    try:
+        result = sync_runtime.stop_pidfile_with_reason()
+        assert result.stopped is False
+        assert result.reason == "pid_unverified"
+        assert result.pid == proc.pid
+        assert proc.poll() is None
+        assert pid_path.exists() is True
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=2)
+        if previous_pid_env is None:
+            os.environ.pop("CODEMEM_SYNC_PID", None)
+        else:
+            os.environ["CODEMEM_SYNC_PID"] = previous_pid_env
