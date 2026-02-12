@@ -26,6 +26,11 @@ def _safe_int_env(name: str, default: int) -> int:
         return default
 
 
+def _env_truthy(name: str) -> bool:
+    value = str(os.environ.get(name, "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 MAX_SYNC_BODY_BYTES = _safe_int_env("CODEMEM_SYNC_MAX_BODY_BYTES", 1048576)
 MAX_SYNC_OPS = _safe_int_env("CODEMEM_SYNC_MAX_OPS", 2000)
 
@@ -125,17 +130,20 @@ def build_sync_handler(db_path: Path | None = None):
         def _store(self) -> MemoryStore:
             return MemoryStore(resolved_db)
 
-        def _unauthorized(self) -> None:
-            _send_json(self, {"error": "unauthorized"}, status=401)
+        def _unauthorized(self, reason: str) -> None:
+            payload: dict[str, Any] = {"error": "unauthorized"}
+            if _env_truthy("CODEMEM_SYNC_AUTH_DIAGNOSTICS"):
+                payload["reason"] = reason
+            _send_json(self, payload, status=401)
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/v1/status":
                 store = self._store()
                 try:
-                    authorized, _reason = _authorize_request(store, self, b"")
+                    authorized, reason = _authorize_request(store, self, b"")
                     if not authorized:
-                        self._unauthorized()
+                        self._unauthorized(reason)
                         return
                     device_row = store.conn.execute(
                         "SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1"
@@ -167,9 +175,9 @@ def build_sync_handler(db_path: Path | None = None):
             if parsed.path == "/v1/ops":
                 store = self._store()
                 try:
-                    authorized, _reason = _authorize_request(store, self, b"")
+                    authorized, reason = _authorize_request(store, self, b"")
                     if not authorized:
-                        self._unauthorized()
+                        self._unauthorized(reason)
                         return
                     peer_device_id = str(self.headers.get("X-Opencode-Device") or "")
                     params = parse_qs(parsed.query)
@@ -212,9 +220,9 @@ def build_sync_handler(db_path: Path | None = None):
                 except ValueError:
                     _send_json(self, {"error": "payload_too_large"}, status=413)
                     return
-                authorized, _reason = _authorize_request(store, self, raw)
+                authorized, reason = _authorize_request(store, self, raw)
                 if not authorized:
-                    self._unauthorized()
+                    self._unauthorized(reason)
                     return
                 source_device_id = str(self.headers.get("X-Opencode-Device") or "")
                 data = _parse_json_body(raw)
