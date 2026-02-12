@@ -97,7 +97,7 @@ from .sync.discovery import (
 )
 from .sync.sync_pass import run_sync_pass, sync_pass_preflight
 from .sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
-from .sync_runtime import effective_status, spawn_daemon, stop_pidfile
+from .sync_runtime import effective_status, spawn_daemon, stop_pidfile_with_reason
 from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT
 
 app = typer.Typer(help="codemem: persistent memory for OpenCode CLI")
@@ -779,7 +779,7 @@ def sync_disable(
         read_config_or_exit=_read_config_or_exit,
         write_config_or_exit=_write_config_or_exit,
         run_service_action=_run_service_action,
-        stop_pidfile=stop_pidfile,
+        stop_pidfile_with_reason=stop_pidfile_with_reason,
         sync_uninstall_impl=_sync_uninstall_impl,
         stop=stop,
         uninstall=uninstall,
@@ -986,7 +986,7 @@ def sync_service_stop(
     sync_service_stop_cmd(
         load_config=load_config,
         effective_status=effective_status,
-        stop_pidfile=stop_pidfile,
+        stop_pidfile_with_reason=stop_pidfile_with_reason,
         user=user,
         system=system,
     )
@@ -1001,7 +1001,7 @@ def sync_service_restart(
         load_config=load_config,
         effective_status=effective_status,
         spawn_daemon=spawn_daemon,
-        stop_pidfile=stop_pidfile,
+        stop_pidfile_with_reason=stop_pidfile_with_reason,
         user=user,
         system=system,
     )

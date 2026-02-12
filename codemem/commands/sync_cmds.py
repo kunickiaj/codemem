@@ -155,7 +155,7 @@ def sync_disable_cmd(
     read_config_or_exit,
     write_config_or_exit,
     run_service_action,
-    stop_pidfile,
+    stop_pidfile_with_reason,
     sync_uninstall_impl,
     stop: bool,
     uninstall: bool,
@@ -174,11 +174,36 @@ def sync_disable_cmd(
         run_service_action("stop", user=True, system=False)
         print("[green]Sync daemon stopped[/green]")
     except typer.Exit:
-        if stop_pidfile():
+        result = stop_pidfile_with_reason()
+        if result.stopped:
             print("[green]Sync daemon stopped[/green]")
             if uninstall:
                 sync_uninstall_impl(user=True)
             return
+        if result.reason == "ps_unavailable":
+            pid_text = f" {result.pid}" if result.pid is not None else ""
+            print(
+                f"[yellow]Refused to signal pidfile PID{pid_text}: cannot verify command because `ps` is unavailable[/yellow]"
+            )
+        elif result.reason == "pid_unverified":
+            pid_text = f" {result.pid}" if result.pid is not None else ""
+            print(
+                f"[yellow]Refused to signal pidfile PID{pid_text}: process is not the codemem sync daemon[/yellow]"
+            )
+        elif result.reason == "pid_not_running":
+            print("[yellow]Pidfile process is already gone[/yellow]")
+            if uninstall:
+                sync_uninstall_impl(user=True)
+            return
+        elif result.reason == "pidfile_missing":
+            print("[yellow]No pidfile daemon found[/yellow]")
+            if uninstall:
+                sync_uninstall_impl(user=True)
+            return
+        elif result.reason == "timeout":
+            print("[yellow]Sent SIGTERM but pidfile daemon did not exit in time[/yellow]")
+        elif result.reason == "signal_failed":
+            print("[yellow]Failed to signal pidfile daemon[/yellow]")
         print("Stop the daemon to apply disable:")
         print("- codemem sync stop")
         print("- or stop your foreground `codemem sync daemon`")
@@ -216,6 +241,9 @@ def sync_status_cmd(
     if daemon_status.running:
         extra = f" pid={daemon_status.pid}" if daemon_status.pid else ""
         print(f"- Daemon: running ({daemon_status.mechanism}{extra})")
+    elif daemon_status.mechanism == "pidfile":
+        extra = f" pid={daemon_status.pid}" if daemon_status.pid else ""
+        print(f"- Daemon: not running ({daemon_status.mechanism}; {daemon_status.detail}{extra})")
     else:
         print("- Daemon: not running (run `codemem sync daemon` or `codemem sync start`)")
     if row is None:

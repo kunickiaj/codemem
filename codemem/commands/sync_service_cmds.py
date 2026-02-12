@@ -207,7 +207,7 @@ def sync_service_stop_cmd(
     *,
     load_config,
     effective_status,
-    stop_pidfile,
+    stop_pidfile_with_reason,
     user: bool,
     system: bool,
 ) -> None:
@@ -216,8 +216,21 @@ def sync_service_stop_cmd(
         print("[green]Stopped sync daemon[/green]")
         return
     except typer.Exit:
-        if stop_pidfile():
+        result = stop_pidfile_with_reason()
+        if result.stopped:
             print("[green]Stopped sync daemon (pidfile)[/green]")
+            return
+        if result.reason == "ps_unavailable":
+            pid_text = f" {result.pid}" if result.pid is not None else ""
+            print(
+                f"[yellow]Refused to signal pidfile PID{pid_text}: cannot verify command because `ps` is unavailable[/yellow]"
+            )
+            return
+        if result.reason == "pid_unverified":
+            pid_text = f" {result.pid}" if result.pid is not None else ""
+            print(
+                f"[yellow]Refused to signal pidfile PID{pid_text}: process is not the codemem sync daemon[/yellow]"
+            )
             return
         cfg = load_config()
         status = effective_status(cfg.sync_host, cfg.sync_port)
@@ -232,7 +245,7 @@ def sync_service_restart_cmd(
     load_config,
     effective_status,
     spawn_daemon,
-    stop_pidfile,
+    stop_pidfile_with_reason,
     user: bool,
     system: bool,
 ) -> None:
@@ -245,7 +258,7 @@ def sync_service_restart_cmd(
     sync_service_stop_cmd(
         load_config=load_config,
         effective_status=effective_status,
-        stop_pidfile=stop_pidfile,
+        stop_pidfile_with_reason=stop_pidfile_with_reason,
         user=user,
         system=system,
     )

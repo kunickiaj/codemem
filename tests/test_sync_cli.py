@@ -165,9 +165,33 @@ def test_sync_disable_stops_pid_when_no_service(monkeypatch, tmp_path: Path) -> 
         raise typer.Exit(code=1)
 
     monkeypatch.setattr("codemem.cli_app._run_service_action", fake_run_service)
-    monkeypatch.setattr("codemem.cli_app.stop_pidfile", lambda: True)
+    monkeypatch.setattr(
+        "codemem.cli_app.stop_pidfile_with_reason",
+        lambda: type("R", (), {"stopped": True, "reason": "stopped", "pid": 123})(),
+    )
     result = runner.invoke(app, ["sync", "disable"], env=env)
     assert result.exit_code == 0
+
+
+def test_sync_disable_reports_no_pidfile_without_stop_instructions(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"sync_enabled": True}) + "\n")
+    env = {"CODEMEM_CONFIG": str(config_path), "CODEMEM_SYNC_PID": str(tmp_path / "pid")}
+
+    def fake_run_service(action: str, *, user: bool, system: bool) -> None:
+        raise typer.Exit(code=1)
+
+    monkeypatch.setattr("codemem.cli_app._run_service_action", fake_run_service)
+    monkeypatch.setattr(
+        "codemem.cli_app.stop_pidfile_with_reason",
+        lambda: type("R", (), {"stopped": False, "reason": "pidfile_missing", "pid": None})(),
+    )
+    result = runner.invoke(app, ["sync", "disable"], env=env)
+    assert result.exit_code == 0
+    assert "No pidfile daemon found" in result.stdout
+    assert "Stop the daemon to apply disable" not in result.stdout
 
 
 def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
@@ -462,9 +486,63 @@ def test_sync_stop_falls_back_to_pid(monkeypatch) -> None:
         "codemem.cli_app._run_service_action",
         lambda *a, **k: (_ for _ in ()).throw(typer.Exit(1)),
     )
-    monkeypatch.setattr("codemem.cli_app.stop_pidfile", lambda: True)
+    monkeypatch.setattr(
+        "codemem.cli_app.stop_pidfile_with_reason",
+        lambda: type("R", (), {"stopped": True, "reason": "stopped", "pid": 123})(),
+    )
     result = runner.invoke(app, ["sync", "stop"])
     assert result.exit_code == 0
+
+
+def test_sync_stop_reports_unverified_pid_when_ps_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "codemem.cli_app._run_service_action",
+        lambda *a, **k: (_ for _ in ()).throw(typer.Exit(1)),
+    )
+    monkeypatch.setattr(
+        "codemem.cli_app.stop_pidfile_with_reason",
+        lambda: type("R", (), {"stopped": False, "reason": "ps_unavailable", "pid": 456})(),
+    )
+    result = runner.invoke(app, ["sync", "stop"])
+    assert result.exit_code == 0
+    assert "Refused to signal pidfile PID 456" in result.stdout
+    assert "ps" in result.stdout
+
+
+def test_sync_status_prints_pidfile_unverified_detail(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 120,
+            }
+        )
+        + "\n"
+    )
+    env = {"CODEMEM_CONFIG": str(config_path)}
+    monkeypatch.setattr(
+        "codemem.cli_app.effective_status",
+        lambda host, port: type(
+            "S",
+            (),
+            {
+                "running": False,
+                "mechanism": "pidfile",
+                "detail": "pid running but unverified (ps unavailable)",
+                "pid": 999,
+            },
+        )(),
+    )
+
+    result = runner.invoke(
+        app, ["sync", "status", "--db-path", str(tmp_path / "mem.sqlite")], env=env
+    )
+    assert result.exit_code == 0
+    assert "pid running but unverified (ps unavailable)" in result.stdout
+    assert "pid=999" in result.stdout
 
 
 def test_sync_once_updates_addresses_from_mdns(monkeypatch, tmp_path: Path) -> None:
@@ -560,7 +638,14 @@ def test_sync_doctor_reports_mdns_status(monkeypatch, tmp_path: Path) -> None:
     assert "zeroconf" in result.stdout
 
 
-def test_sync_service_status_uses_pid(monkeypatch) -> None:
+def test_sync_service_status_uses_pid(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+    finally:
+        conn.close()
+
     monkeypatch.setattr(
         "codemem.sync_runtime.service_status_macos",
         lambda: type(
@@ -571,7 +656,10 @@ def test_sync_service_status_uses_pid(monkeypatch) -> None:
     )
     monkeypatch.setattr("codemem.sync_runtime._read_pid", lambda p: 123)
     monkeypatch.setattr("codemem.sync_runtime._pid_running", lambda pid: True)
-    monkeypatch.setattr("codemem.sync_runtime._pid_is_sync_daemon", lambda pid: True)
+    monkeypatch.setattr(
+        "codemem.sync_runtime._pid_command_status",
+        lambda pid: ("codemem sync daemon --host 127.0.0.1", "ok"),
+    )
     monkeypatch.setattr(
         "codemem.cli_app.load_config",
         lambda: type(
@@ -585,7 +673,7 @@ def test_sync_service_status_uses_pid(monkeypatch) -> None:
             },
         )(),
     )
-    result = runner.invoke(app, ["sync", "status"])
+    result = runner.invoke(app, ["sync", "status", "--db-path", str(db_path)])
     assert result.exit_code == 0
     assert "running" in result.stdout
     assert "pidfile" in result.stdout

@@ -18,6 +18,13 @@ class SyncRuntimeStatus:
     pid: int | None = None
 
 
+@dataclass(frozen=True)
+class StopPidfileResult:
+    stopped: bool
+    reason: str
+    pid: int | None = None
+
+
 def _pid_running(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -81,6 +88,13 @@ def _normalize_check_host(host: str) -> str:
 
 
 def _pid_command(pid: int) -> str | None:
+    command, status = _pid_command_status(pid)
+    if status != "ok":
+        return None
+    return command
+
+
+def _pid_command_status(pid: int) -> tuple[str | None, str]:
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
@@ -89,13 +103,13 @@ def _pid_command(pid: int) -> str | None:
             check=False,
         )
     except FileNotFoundError:
-        return None
+        return None, "ps_unavailable"
     if result.returncode != 0:
-        return None
+        return None, "command_unavailable"
     command = (result.stdout or "").strip()
     if not command:
-        return None
-    return command
+        return None, "command_unavailable"
+    return command, "ok"
 
 
 def _is_sync_daemon_command(command: str) -> bool:
@@ -210,8 +224,8 @@ def _matches_sync_daemon_invocation(
 
 
 def _pid_is_sync_daemon(pid: int) -> bool:
-    command = _pid_command(pid)
-    if not command:
+    command, status = _pid_command_status(pid)
+    if status != "ok" or not command:
         return False
     return _is_sync_daemon_command(command)
 
@@ -263,10 +277,26 @@ def effective_status(host: str, port: int) -> SyncRuntimeStatus:
             return system_svc
     pid_path = _sync_pid_path()
     pid = _read_pid(pid_path)
-    if pid is not None and _pid_running(pid) and _pid_is_sync_daemon(pid):
-        return SyncRuntimeStatus(True, "pidfile", "running", pid=pid)
+    unverified_pid_detail: str | None = None
+    unverified_pid: int | None = None
+    if pid is not None and _pid_running(pid):
+        command, status = _pid_command_status(pid)
+        if status == "ps_unavailable":
+            unverified_pid_detail = "pid running but unverified (ps unavailable)"
+            unverified_pid = pid
+        if status == "ok" and command and _is_sync_daemon_command(command):
+            return SyncRuntimeStatus(True, "pidfile", "running", pid=pid)
+        elif status == "ok":
+            unverified_pid_detail = "pid running but not codemem sync daemon"
+            unverified_pid = pid
     if _port_open(_normalize_check_host(host), port):
+        if unverified_pid_detail is not None:
+            return SyncRuntimeStatus(
+                True, "port", f"listening; {unverified_pid_detail}", pid=unverified_pid
+            )
         return SyncRuntimeStatus(True, "port", "listening")
+    if unverified_pid_detail is not None:
+        return SyncRuntimeStatus(False, "pidfile", unverified_pid_detail, pid=unverified_pid)
     if sys.platform.startswith("darwin"):
         return SyncRuntimeStatus(False, "service", service_status_macos().detail)
     if sys.platform.startswith("linux"):
@@ -305,22 +335,29 @@ def spawn_daemon(host: str, port: int, interval_s: int, db_path: str | None) -> 
 
 
 def stop_pidfile() -> bool:
+    return stop_pidfile_with_reason().stopped
+
+
+def stop_pidfile_with_reason() -> StopPidfileResult:
     pid_path = _sync_pid_path()
     pid = _read_pid(pid_path)
     if pid is None:
-        return False
+        return StopPidfileResult(False, "pidfile_missing")
     if not _pid_running(pid):
         _clear_pid(pid_path)
-        return False
-    if not _pid_is_sync_daemon(pid):
-        return False
+        return StopPidfileResult(False, "pid_not_running", pid=pid)
+    command, status = _pid_command_status(pid)
+    if status == "ps_unavailable":
+        return StopPidfileResult(False, "ps_unavailable", pid=pid)
+    if status != "ok" or not command or not _is_sync_daemon_command(command):
+        return StopPidfileResult(False, "pid_unverified", pid=pid)
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
-        return False
+        return StopPidfileResult(False, "signal_failed", pid=pid)
     for _ in range(30):
         time.sleep(0.1)
         if not _pid_running(pid):
             _clear_pid(pid_path)
-            return True
-    return False
+            return StopPidfileResult(True, "stopped", pid=pid)
+    return StopPidfileResult(False, "timeout", pid=pid)
