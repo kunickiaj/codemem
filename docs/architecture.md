@@ -11,28 +11,28 @@
 
 ## Data flow
 1. Plugin collects events during an OpenCode session (user prompts, assistant messages, tool calls).
-2. Plugin streams raw events to `/api/raw-events` on the viewer.
-3. Python-side flush workers drain queued raw events and run ingest/observer.
-4. Observer creates observations + summary from transcript and tool events.
-5. Store writes artifacts (transcript, pre/post context), observations, and session summary.
-6. Viewer and MCP server read from SQLite.
+2. Plugin preflights raw-event ingest availability (`GET /api/raw-events/status`) and streams events (`POST /api/raw-events`).
+3. Viewer/store persist raw events and queue durable flush batches.
+4. Idle/sweeper workers claim and flush queued batches into ingest.
+5. Ingest builds transcript from user_prompt/assistant_message events.
+6. Observer creates observations + summary from transcript and tool events.
+7. Store writes artifacts (transcript, pre/post context), observations, and session summary.
+8. Viewer and MCP server read from SQLite.
 
 ## Plugin Flush Strategy
 The plugin uses an adaptive flush strategy optimized for OpenCode's multi-session environment:
 
-### Idle-based Flush (scheduled on `session.idle`)
-- **Light work:** 2 minute delay
-- **Heavy work** (10+ tools OR 5+ prompts): 60 second delay
-- **Very heavy work** (30+ tools OR 10+ prompts): 30 second delay
+### Event-based flush triggers
+- `session.idle`: flushes current buffered events
+- `session.created`: flushes current buffered events before switching session
+- `/new` boundary (detected from captured user prompt text): flushes current buffered events before switching context
+- `session.error`: immediate flush attempt
 
 ### Threshold-based Force Flush (immediate)
 - 50+ tool executions OR 15+ prompts
 - 10+ minutes continuous work
 
-### Event-based Flush (immediate)
-- `session.error` event
-
-**Note:** In OpenCode's multi-session world, `/new` command and `session.created` events don't trigger flushes. The adaptive strategy compensates by using work-based heuristics.
+**Note:** Streamed raw events are sent continuously; there is no plugin-side CLI fallback.
 
 ## Sessions and memory persistence
 - A **session** is created per ingest payload (one plugin flush).

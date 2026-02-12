@@ -604,6 +604,20 @@ class MemoryStore:
             limit=limit,
         )
 
+    def raw_events_since_by_seq(
+        self,
+        *,
+        opencode_session_id: str,
+        after_event_seq: int,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return store_raw_events.raw_events_since_by_seq(
+            self.conn,
+            opencode_session_id=opencode_session_id,
+            after_event_seq=after_event_seq,
+            limit=limit,
+        )
+
     def raw_event_sessions_pending_idle_flush(
         self,
         *,

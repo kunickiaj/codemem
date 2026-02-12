@@ -200,6 +200,19 @@ export const OpencodeMemPlugin = async ({
     process.env.CODEMEM_RAW_EVENTS || "1"
   );
   const rawEventsUrl = `http://${viewerHost}:${viewerPort}/api/raw-events`;
+  const rawEventsStatusUrl = `http://${viewerHost}:${viewerPort}/api/raw-events/status?limit=1`;
+  const rawEventsBackoffMs = parseNumber(
+    process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS || "10000",
+    10000
+  );
+  const rawEventsStatusCheckMs = parseNumber(
+    process.env.CODEMEM_RAW_EVENTS_STATUS_CHECK_MS || "30000",
+    30000
+  );
+  let streamUnavailableUntil = 0;
+  let streamErrorNoted = false;
+  let lastStatusCheckAt = 0;
+  let lastStatusAvailable = true;
   const nextEventId = () => {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
       return crypto.randomUUID();
@@ -222,7 +235,24 @@ export const OpencodeMemPlugin = async ({
     if (!rawEventsEnabled || !sessionID || !type) {
       return;
     }
+    const now = Date.now();
+    if (now < streamUnavailableUntil) {
+      return;
+    }
     try {
+      if (now - lastStatusCheckAt >= Math.max(1000, rawEventsStatusCheckMs)) {
+        const statusResp = await fetch(rawEventsStatusUrl, { method: "GET" });
+        if (!statusResp.ok) {
+          throw new Error(`raw-events status failed (${statusResp.status})`);
+        }
+        const statusJson = await statusResp.json();
+        lastStatusAvailable = statusJson?.ingest?.available !== false;
+        lastStatusCheckAt = now;
+      }
+      if (!lastStatusAvailable) {
+        throw new Error("raw-events ingest unavailable");
+      }
+
       const body = {
         opencode_session_id: sessionID,
         event_id: nextEventId(),
@@ -237,12 +267,19 @@ export const OpencodeMemPlugin = async ({
         project: project?.name || (project?.root ? String(project.root).split(/[/\\]/).filter(Boolean).pop() : null) || null,
         started_at: sessionStartedAt,
       };
-      await fetch(rawEventsUrl, {
+      const postResp = await fetch(rawEventsUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (!postResp.ok) {
+        throw new Error(`raw-events post failed (${postResp.status})`);
+      }
+      streamUnavailableUntil = 0;
+      streamErrorNoted = false;
+      lastStatusAvailable = true;
     } catch (err) {
+      streamUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
       await logLine(`raw_events.error sessionID=${sessionID} type=${type} err=${String(err).slice(0, 200)}`);
       await client.app.log({
         service: "codemem",
@@ -257,11 +294,24 @@ export const OpencodeMemPlugin = async ({
         },
       });
 
+      if (!streamErrorNoted) {
+        streamErrorNoted = true;
+        await client.app.log({
+          service: "codemem",
+          level: "error",
+          message: "codemem stream unavailable; no fallback available",
+          extra: {
+            sessionID,
+            backoffMs: rawEventsBackoffMs,
+          },
+        });
+      }
+
       if (client.tui?.showToast && shouldToast(sessionID)) {
         try {
           await client.tui.showToast({
             body: {
-              message: `codemem: failed to stream events to viewer (${viewerHost}:${viewerPort})`,
+              message: `codemem: stream unavailable (${viewerHost}:${viewerPort}); no fallback`,
               variant: "error",
             },
           });

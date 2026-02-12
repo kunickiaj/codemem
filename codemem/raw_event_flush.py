@@ -98,7 +98,7 @@ def flush_raw_events(
         started_at = meta.get("started_at")
 
     last_flushed = store.raw_event_flush_state(opencode_session_id)
-    events = store.raw_events_since(
+    events = store.raw_events_since_by_seq(
         opencode_session_id=opencode_session_id,
         after_event_seq=last_flushed,
         limit=max_events,
@@ -111,14 +111,11 @@ def flush_raw_events(
     if not event_seqs:
         return {"flushed": 0, "updated_state": 0}
 
-    # raw_events_since orders by timestamp (ts_mono_ms), which is not necessarily monotonic
-    # w.r.t. event_seq. For batch boundaries and ingestion ordering, we rely on event_seq.
     start_event_seq = min(event_seqs)
     last_event_seq = max(event_seqs)
     if last_event_seq < start_event_seq:
         return {"flushed": 0, "updated_state": 0}
 
-    events = sorted(events, key=lambda e: _event_seq(e.get("event_seq"), 0))
     batch_id, status = store.get_or_create_raw_event_flush_batch(
         opencode_session_id=opencode_session_id,
         start_event_seq=start_event_seq,

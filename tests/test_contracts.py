@@ -89,12 +89,19 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
     for path in [
         "/api/session?project=",
         "/api/raw-events?project=",
+        "/api/raw-events/status?limit=5",
         "/api/memories?project=",
         "/api/summaries?project=",
         "/api/sync/status",
     ]:
         payload = _wait_for_http_json(base + path)
         assert isinstance(payload, dict)
+
+    raw_status = _wait_for_http_json(base + "/api/raw-events/status?limit=5")
+    assert isinstance(raw_status.get("items"), list)
+    assert isinstance(raw_status.get("totals"), dict)
+    assert isinstance(raw_status.get("ingest"), dict)
+    assert raw_status["ingest"].get("available") is True
 
     sync_status = _wait_for_http_json(base + "/api/sync/status")
     assert isinstance(sync_status, dict)

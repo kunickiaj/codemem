@@ -649,6 +649,41 @@ def raw_events_since(
     return results
 
 
+def raw_events_since_by_seq(
+    conn: sqlite3.Connection,
+    *,
+    opencode_session_id: str,
+    after_event_seq: int,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    limit_clause = "LIMIT ?" if limit else ""
+    params: list[Any] = [opencode_session_id, after_event_seq]
+    if limit:
+        params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
+        FROM raw_events
+        WHERE opencode_session_id = ? AND event_seq > ?
+        ORDER BY event_seq ASC
+        {limit_clause}
+        """,
+        params,
+    ).fetchall()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        payload = db.from_json(row["payload_json"])
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["type"] = payload.get("type") or row["event_type"]
+        payload["timestamp_wall_ms"] = row["ts_wall_ms"]
+        payload["timestamp_mono_ms"] = row["ts_mono_ms"]
+        payload["event_seq"] = row["event_seq"]
+        payload["event_id"] = row["event_id"]
+        results.append(payload)
+    return results
+
+
 def raw_event_sessions_pending_idle_flush(
     conn: sqlite3.Connection,
     *,

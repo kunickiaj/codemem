@@ -285,3 +285,78 @@ def test_flush_raw_events_chunked_resume_uses_checkpoint(tmp_path: Path) -> None
         assert captured == [1, 1, 1]
     finally:
         store.close()
+
+
+def test_flush_raw_events_chunking_does_not_skip_out_of_order_timestamps(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.record_raw_events_batch(
+            opencode_session_id="sess-order",
+            events=[
+                {
+                    "event_id": "evt-0",
+                    "event_type": "user_prompt",
+                    "payload": {"type": "user_prompt", "prompt_text": "A"},
+                    "ts_wall_ms": 100,
+                    "ts_mono_ms": 3.0,
+                },
+                {
+                    "event_id": "evt-1",
+                    "event_type": "tool.execute.after",
+                    "payload": {"type": "tool.execute.after", "tool": "read"},
+                    "ts_wall_ms": 101,
+                    "ts_mono_ms": 1.0,
+                },
+                {
+                    "event_id": "evt-2",
+                    "event_type": "assistant_message",
+                    "payload": {"type": "assistant_message", "content": "done"},
+                    "ts_wall_ms": 102,
+                    "ts_mono_ms": 2.0,
+                },
+            ],
+        )
+
+        captured: list[list[int]] = []
+
+        def fake_ingest(payload: dict[str, object]) -> None:
+            events = payload.get("events")
+            assert isinstance(events, list)
+            captured.append(
+                [int(event["event_seq"]) for event in events if isinstance(event, dict)]
+            )
+
+        with patch("codemem.raw_event_flush.ingest", fake_ingest):
+            assert flush_raw_events(
+                store,
+                opencode_session_id="sess-order",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=1,
+            ) == {"flushed": 1, "updated_state": 1}
+            assert store.raw_event_flush_state("sess-order") == 0
+
+            assert flush_raw_events(
+                store,
+                opencode_session_id="sess-order",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=1,
+            ) == {"flushed": 1, "updated_state": 1}
+            assert store.raw_event_flush_state("sess-order") == 1
+
+            assert flush_raw_events(
+                store,
+                opencode_session_id="sess-order",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=1,
+            ) == {"flushed": 1, "updated_state": 1}
+            assert store.raw_event_flush_state("sess-order") == 2
+
+        assert captured == [[0], [1], [2]]
+    finally:
+        store.close()

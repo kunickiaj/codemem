@@ -378,7 +378,7 @@ When OpenCode starts, the plugin loads and:
    - Otherwise → uses `uvx --from git+ssh://...` (installed mode)
 
 2. Tracks every tool invocation (`tool.execute.after`)
-3. Flushes captured events when the session idles, errors, or compacts
+3. Flushes captured events on session boundaries (`session.idle`, `session.created`, `/new`, `session.error`)
 4. Auto-starts the viewer by default (set `CODEMEM_VIEWER_AUTO=0` to disable)
 5. Injects a memory pack into the system prompt (disable with `CODEMEM_INJECT_CONTEXT=0`)
 
@@ -407,6 +407,8 @@ When OpenCode starts, the plugin loads and:
 | `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
 | `CODEMEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
+| `CODEMEM_RAW_EVENTS_BACKOFF_MS` | Backoff window after stream failure before retrying stream POSTs (default `10000`). |
+| `CODEMEM_RAW_EVENTS_STATUS_CHECK_MS` | Minimum interval between stream-availability preflight checks (default `30000`). |
 | `CODEMEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flushing of streamed raw events (default off). |
 | `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
 | `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
@@ -450,7 +452,11 @@ When `CODEMEM_OBSERVER_PROVIDER` is set to a custom provider, `CODEMEM_OBSERVER_
 
 If you want maximum reliability ("stream now, flush later"), run stream-only and let Python decide when to flush.
 
-Important: stream-only requires the viewer to be running and reachable. If the plugin cannot POST to the viewer, it will log an error and events may be dropped.
+Stream contract:
+- The plugin first checks viewer ingest availability (`GET /api/raw-events/status`) and then streams events (`POST /api/raw-events`).
+- Non-2xx responses and network failures are treated as stream failures.
+- Stream failures have no plugin-side fallback path; events can be dropped while the viewer is unavailable.
+- Raw-event batches accepted by the viewer are durably retried by Python flush workers.
 
 ```bash
 export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
@@ -471,7 +477,7 @@ codemem raw-events-status
 
 ### Troubleshooting
 
-If `raw-events-status` shows `batches=error:N` for a session, retry those batches:
+If `raw-events-status` shows `batches=error:N` (legacy label) or `queue=... failed:N` for a session, retry those batches:
 
 ```bash
 codemem raw-events-retry <opencode_session_id>

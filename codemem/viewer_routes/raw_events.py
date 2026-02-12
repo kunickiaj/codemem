@@ -72,6 +72,11 @@ def handle_get(handler: Any, store: Any, path: str, query: str) -> bool:
             {
                 "items": store.raw_event_backlog(limit=limit),
                 "totals": store.raw_event_backlog_totals(),
+                "ingest": {
+                    "available": True,
+                    "mode": "stream_queue",
+                    "max_body_bytes": MAX_RAW_EVENTS_BODY_BYTES,
+                },
             }
         )
         return True
