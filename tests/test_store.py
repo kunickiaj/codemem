@@ -1633,6 +1633,308 @@ def test_search_index_and_timeline(tmp_path: Path) -> None:
         filters={"project": "/tmp/project-a"},
     )
     assert [item["id"] for item in timeline] == [first_id, anchor_id, last_id]
+    assert all("linked_prompt" in item for item in timeline)
+    assert all(item["linked_prompt"] is None for item in timeline)
+
+
+def test_prompt_memory_linkage_forward_reverse_and_timeline(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    prompt_id = store.add_user_prompt(
+        session,
+        project="/tmp/project-a",
+        prompt_text="Link this prompt to an observation",
+        prompt_number=3,
+    )
+    linked_memory_id = store.remember_observation(
+        session,
+        kind="discovery",
+        title="Linked observation",
+        narrative="Observed linkage behavior",
+        prompt_number=3,
+        user_prompt_id=prompt_id,
+    )
+    unlinked_memory_id = store.remember(
+        session,
+        kind="note",
+        title="Unlinked",
+        body_text="No prompt link",
+    )
+    store.end_session(session)
+
+    prompt = store.get_prompt_for_memory(linked_memory_id)
+    assert prompt is not None
+    assert prompt["id"] == prompt_id
+    assert prompt["prompt_number"] == 3
+
+    assert store.get_prompt_for_memory(unlinked_memory_id) is None
+
+    linked_memories = store.get_memories_for_prompt(prompt_id)
+    assert [item["id"] for item in linked_memories] == [linked_memory_id]
+
+    timeline = store.timeline(
+        memory_id=linked_memory_id,
+        depth_before=0,
+        depth_after=0,
+        filters={"project": "/tmp/project-a"},
+    )
+    assert len(timeline) == 1
+    item = timeline[0]
+    assert item["id"] == linked_memory_id
+    assert item["user_prompt_id"] == prompt_id
+    assert item["linked_prompt"]["id"] == prompt_id
+    assert item["linked_prompt"]["prompt_number"] == 3
+
+
+def test_remember_observation_positional_confidence_compatibility(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember_observation(
+        session,
+        "discovery",
+        "Positional confidence",
+        "Still uses confidence slot",
+        None,
+        None,
+        None,
+        None,
+        None,
+        1,
+        0.9,
+    )
+    store.end_session(session)
+
+    row = store.conn.execute(
+        "SELECT confidence, user_prompt_id FROM memory_items WHERE id = ?", (memory_id,)
+    ).fetchone()
+    assert row is not None
+    assert float(row["confidence"]) == 0.9
+    assert row["user_prompt_id"] is None
+
+
+def test_initialize_schema_cleans_orphan_prompt_links(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(session, kind="note", title="Orphan link", body_text="cleanup")
+    store.conn.execute("UPDATE memory_items SET user_prompt_id = 999999 WHERE id = ?", (memory_id,))
+    store.conn.commit()
+
+    db.initialize_schema(store.conn)
+
+    row = store.conn.execute(
+        "SELECT user_prompt_id FROM memory_items WHERE id = ?", (memory_id,)
+    ).fetchone()
+    assert row is not None
+    assert row["user_prompt_id"] is None
+    store.end_session(session)
+
+
+def test_apply_replication_ops_resolves_prompt_link_by_import_key(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    prompt_id = store.add_user_prompt(
+        session,
+        project="/tmp/project-a",
+        prompt_text="prompt for replication",
+        prompt_number=5,
+        metadata={"import_key": "export:prompt:42"},
+    )
+    store.end_session(session)
+
+    op: ReplicationOp = {
+        "op_id": "op-memory-link-1",
+        "entity_type": "memory_item",
+        "entity_id": "export:memory:1",
+        "op_type": "upsert",
+        "payload": {
+            "session_id": session,
+            "project": "project-a",
+            "kind": "discovery",
+            "title": "Replicated linked memory",
+            "body_text": "body",
+            "confidence": 0.7,
+            "tags_text": "",
+            "active": 1,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "metadata_json": {},
+            "subtitle": None,
+            "facts": [],
+            "narrative": "body",
+            "concepts": [],
+            "files_read": [],
+            "files_modified": [],
+            "prompt_number": 5,
+            "user_prompt_import_key": "export:prompt:42",
+            "import_key": "export:memory:1",
+            "deleted_at": None,
+            "rev": 1,
+        },
+        "clock": {
+            "rev": 1,
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "device_id": "peer-1",
+        },
+        "device_id": "peer-1",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+
+    result = store.apply_replication_ops([op], source_device_id="peer-1")
+    assert result["inserted"] == 1
+
+    row = store.conn.execute(
+        "SELECT user_prompt_id FROM memory_items WHERE import_key = ?",
+        ("export:memory:1",),
+    ).fetchone()
+    assert row is not None
+    assert row["user_prompt_id"] == prompt_id
+
+
+def test_apply_replication_ops_does_not_link_prompt_by_raw_numeric_id(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    prompt_id = store.add_user_prompt(
+        session,
+        project="/tmp/project-a",
+        prompt_text="local prompt",
+        prompt_number=7,
+        metadata={"import_key": "export:prompt:local"},
+    )
+    store.end_session(session)
+
+    op: ReplicationOp = {
+        "op_id": "op-memory-link-raw-id",
+        "entity_type": "memory_item",
+        "entity_id": "export:memory:raw-id",
+        "op_type": "upsert",
+        "payload": {
+            "session_id": session,
+            "project": "project-a",
+            "kind": "discovery",
+            "title": "Replicated raw-id memory",
+            "body_text": "body",
+            "confidence": 0.7,
+            "tags_text": "",
+            "active": 1,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "metadata_json": {},
+            "subtitle": None,
+            "facts": [],
+            "narrative": "body",
+            "concepts": [],
+            "files_read": [],
+            "files_modified": [],
+            "prompt_number": 7,
+            "user_prompt_id": prompt_id,
+            "import_key": "export:memory:raw-id",
+            "deleted_at": None,
+            "rev": 1,
+        },
+        "clock": {
+            "rev": 1,
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "device_id": "peer-1",
+        },
+        "device_id": "peer-1",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+
+    result = store.apply_replication_ops([op], source_device_id="peer-1")
+    assert result["inserted"] == 1
+
+    row = store.conn.execute(
+        "SELECT user_prompt_id FROM memory_items WHERE import_key = ?",
+        ("export:memory:raw-id",),
+    ).fetchone()
+    assert row is not None
+    assert row["user_prompt_id"] is None
+
+
+def test_record_replication_op_backfills_missing_prompt_import_key(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    prompt_id = store.add_user_prompt(
+        session,
+        project="/tmp/project-a",
+        prompt_text="prompt missing import key",
+        prompt_number=2,
+    )
+    memory_id = store.remember_observation(
+        session,
+        kind="discovery",
+        title="Link should sync",
+        narrative="with generated prompt import key",
+        prompt_number=2,
+        user_prompt_id=prompt_id,
+    )
+    store.end_session(session)
+
+    op_row = store.conn.execute(
+        """
+        SELECT payload_json
+        FROM replication_ops
+        WHERE entity_type = 'memory_item' AND entity_id = (
+            SELECT import_key FROM memory_items WHERE id = ?
+        )
+        ORDER BY rowid DESC
+        LIMIT 1
+        """,
+        (memory_id,),
+    ).fetchone()
+    assert op_row is not None
+    payload = db.from_json(op_row["payload_json"])
+    assert isinstance(payload.get("user_prompt_import_key"), str)
+    assert payload["user_prompt_import_key"].startswith("legacy:")
+
+    prompt_row = store.conn.execute(
+        "SELECT import_key FROM user_prompts WHERE id = ?",
+        (prompt_id,),
+    ).fetchone()
+    assert prompt_row is not None
+    assert prompt_row["import_key"] == payload["user_prompt_import_key"]
 
 
 def test_pack_semantic_fallback(monkeypatch, tmp_path: Path) -> None:

@@ -524,7 +524,45 @@ def _timeline_around(
     results = db.rows_to_dicts(rows)
     for item in results:
         item["metadata_json"] = db.from_json(item.get("metadata_json"))
+    _attach_prompt_links(store, results)
     return results
+
+
+def _attach_prompt_links(store: MemoryStore, items: list[dict[str, Any]]) -> None:
+    for item in items:
+        item["linked_prompt"] = None
+    prompt_ids = sorted(
+        {
+            int(prompt_id)
+            for item in items
+            for prompt_id in [item.get("user_prompt_id")]
+            if isinstance(prompt_id, int) and prompt_id > 0
+        }
+    )
+    if not prompt_ids:
+        return
+    placeholders = ",".join(["?"] * len(prompt_ids))
+    rows = store.conn.execute(
+        f"""
+        SELECT id, prompt_text, prompt_number, created_at
+        FROM user_prompts
+        WHERE id IN ({placeholders})
+        """,
+        prompt_ids,
+    ).fetchall()
+    prompts_by_id = {
+        int(row["id"]): {
+            "id": int(row["id"]),
+            "prompt_text": row["prompt_text"],
+            "prompt_number": row["prompt_number"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    }
+    for item in items:
+        prompt_id = item.get("user_prompt_id")
+        if isinstance(prompt_id, int) and prompt_id in prompts_by_id:
+            item["linked_prompt"] = prompts_by_id[prompt_id]
 
 
 def search(

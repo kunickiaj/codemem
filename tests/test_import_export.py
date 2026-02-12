@@ -281,6 +281,220 @@ def test_import_is_idempotent(tmp_path: Path) -> None:
     assert dest_store.conn.execute("SELECT COUNT(*) FROM user_prompts").fetchone()[0] == 1
 
 
+def test_export_import_preserves_prompt_linkage(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.sqlite"
+    source_store = MemoryStore(source_db)
+    session = source_store.start_session(
+        cwd="/tmp/myproject",
+        project="/tmp/myproject",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+    )
+    prompt_id = source_store.add_user_prompt(
+        session,
+        project="/tmp/myproject",
+        prompt_text="Link me",
+        prompt_number=1,
+        metadata={"import_key": "export:prompt:link-me"},
+    )
+    source_store.remember_observation(
+        session,
+        kind="discovery",
+        title="Linked memory",
+        narrative="This memory is linked to prompt",
+        prompt_number=1,
+        user_prompt_id=prompt_id,
+    )
+    source_store.end_session(session)
+
+    export_path = tmp_path / "export.json"
+    export_result = runner.invoke(
+        app,
+        ["export-memories", str(export_path), "--db-path", str(source_db), "--all-projects"],
+    )
+    assert export_result.exit_code == 0, export_result.output
+
+    exported = json.loads(export_path.read_text())
+    assert exported["memory_items"]
+    assert exported["memory_items"][0].get("user_prompt_import_key") == "export:prompt:link-me"
+
+    dest_db = tmp_path / "dest.sqlite"
+    import_result = runner.invoke(
+        app,
+        ["import-memories", str(export_path), "--db-path", str(dest_db)],
+    )
+    assert import_result.exit_code == 0, import_result.output
+
+    dest_store = MemoryStore(dest_db)
+    row = dest_store.conn.execute(
+        """
+        SELECT m.user_prompt_id, p.prompt_text
+        FROM memory_items m
+        LEFT JOIN user_prompts p ON p.id = m.user_prompt_id
+        WHERE m.title = 'Linked memory'
+        LIMIT 1
+        """
+    ).fetchone()
+    assert row is not None
+    assert row["user_prompt_id"] is not None
+    assert row["prompt_text"] == "Link me"
+
+
+def test_import_prefers_prompt_import_key_over_numeric_prompt_id(tmp_path: Path) -> None:
+    export_data = {
+        "version": "1.0",
+        "exported_at": "2025-01-15T10:00:00Z",
+        "export_metadata": {
+            "tool_version": "codemem",
+            "projects": ["project-a"],
+            "total_memories": 1,
+            "total_sessions": 1,
+        },
+        "sessions": [
+            {
+                "id": 10,
+                "started_at": "2025-01-15T09:00:00Z",
+                "cwd": "/tmp/project-a",
+                "project": "project-a",
+                "git_remote": None,
+                "git_branch": "main",
+                "user": "tester",
+                "tool_version": "test",
+            }
+        ],
+        "memory_items": [
+            {
+                "id": 20,
+                "session_id": 10,
+                "kind": "discovery",
+                "title": "Memory with conflicting prompt refs",
+                "body_text": "Body",
+                "confidence": 0.7,
+                "tags_text": "",
+                "active": 1,
+                "created_at": "2025-01-15T10:00:00Z",
+                "updated_at": "2025-01-15T10:00:00Z",
+                "metadata_json": {},
+                "subtitle": None,
+                "facts": [],
+                "narrative": "Body",
+                "concepts": [],
+                "files_read": [],
+                "files_modified": [],
+                "prompt_number": 1,
+                "user_prompt_id": 1,
+                "user_prompt_import_key": "export:prompt:two",
+            }
+        ],
+        "session_summaries": [],
+        "user_prompts": [
+            {
+                "id": 1,
+                "session_id": 10,
+                "project": "project-a",
+                "prompt_text": "Prompt one",
+                "prompt_number": 1,
+                "created_at": "2025-01-15T09:01:00Z",
+                "created_at_epoch": 1736931660000,
+                "metadata_json": {},
+                "import_key": "export:prompt:one",
+            },
+            {
+                "id": 2,
+                "session_id": 10,
+                "project": "project-a",
+                "prompt_text": "Prompt two",
+                "prompt_number": 2,
+                "created_at": "2025-01-15T09:02:00Z",
+                "created_at_epoch": 1736931720000,
+                "metadata_json": {},
+                "import_key": "export:prompt:two",
+            },
+        ],
+    }
+
+    export_path = tmp_path / "conflict-export.json"
+    export_path.write_text(json.dumps(export_data, ensure_ascii=False))
+
+    dest_db = tmp_path / "dest.sqlite"
+    result = runner.invoke(app, ["import-memories", str(export_path), "--db-path", str(dest_db)])
+    assert result.exit_code == 0, result.output
+
+    dest_store = MemoryStore(dest_db)
+    row = dest_store.conn.execute(
+        """
+        SELECT m.user_prompt_id, p.prompt_text
+        FROM memory_items m
+        LEFT JOIN user_prompts p ON p.id = m.user_prompt_id
+        WHERE m.title = 'Memory with conflicting prompt refs'
+        LIMIT 1
+        """
+    ).fetchone()
+    assert row is not None
+    assert row["user_prompt_id"] is not None
+    assert row["prompt_text"] == "Prompt two"
+
+
+def test_import_preserves_memory_import_key_when_present(tmp_path: Path) -> None:
+    export_data = {
+        "version": "1.0",
+        "exported_at": "2025-01-15T10:00:00Z",
+        "export_metadata": {
+            "tool_version": "codemem",
+            "projects": ["project-a"],
+            "total_memories": 1,
+            "total_sessions": 1,
+        },
+        "sessions": [
+            {
+                "id": 1,
+                "started_at": "2025-01-15T09:00:00Z",
+                "cwd": "/tmp/project-a",
+                "project": "project-a",
+                "git_remote": None,
+                "git_branch": "main",
+                "user": "tester",
+                "tool_version": "test",
+                "metadata_json": {},
+            }
+        ],
+        "memory_items": [
+            {
+                "id": 2,
+                "session_id": 1,
+                "kind": "note",
+                "title": "Memory with explicit import key",
+                "body_text": "Body",
+                "confidence": 0.6,
+                "tags_text": "",
+                "active": 1,
+                "created_at": "2025-01-15T10:00:00Z",
+                "updated_at": "2025-01-15T10:00:00Z",
+                "metadata_json": {},
+                "import_key": "export:memory:explicit-2",
+            }
+        ],
+        "session_summaries": [],
+        "user_prompts": [],
+    }
+
+    export_path = tmp_path / "memory-key-export.json"
+    export_path.write_text(json.dumps(export_data, ensure_ascii=False))
+    dest_db = tmp_path / "dest.sqlite"
+
+    result = runner.invoke(app, ["import-memories", str(export_path), "--db-path", str(dest_db)])
+    assert result.exit_code == 0, result.output
+
+    dest_store = MemoryStore(dest_db)
+    row = dest_store.conn.execute(
+        "SELECT import_key FROM memory_items WHERE title = 'Memory with explicit import key' LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["import_key"] == "export:memory:explicit-2"
+
+
 def test_import_memories_flattens_summary_metadata(tmp_path: Path) -> None:
     export_data = {
         "version": "1.0",

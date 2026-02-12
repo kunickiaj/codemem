@@ -101,6 +101,16 @@ def export_memories_cmd(
             prompt_data["metadata_json"] = from_json(prompt_data.get("metadata_json"))
             prompts.append(prompt_data)
 
+        prompt_import_keys = {
+            int(prompt["id"]): str(prompt.get("import_key") or "").strip()
+            for prompt in prompts
+            if prompt.get("id") is not None
+        }
+        for mem_data in memories:
+            prompt_id = mem_data.get("user_prompt_id")
+            if isinstance(prompt_id, int):
+                mem_data["user_prompt_import_key"] = prompt_import_keys.get(prompt_id) or None
+
         export_data = {
             "version": "1.0",
             "exported_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -243,6 +253,59 @@ def import_memories_cmd(
 
         print(f"[green]✓ Imported {imported_sessions} sessions[/green]")
 
+        print("\n[bold]Importing user prompts...[/bold]")
+        imported_prompts = 0
+        prompt_mapping: dict[int, int] = {}
+        prompt_import_key_mapping: dict[str, int] = {}
+        for prompt_data in prompts_data:
+            old_session_id = prompt_data.get("session_id")
+            if old_session_id is None:
+                continue
+            new_session_id = session_mapping.get(int(old_session_id))
+            if not new_session_id:
+                continue
+
+            project = remap_project if remap_project else prompt_data.get("project")
+            existing_import_key = prompt_data.get("import_key")
+            if isinstance(existing_import_key, str) and existing_import_key.strip():
+                import_key = existing_import_key.strip()
+            else:
+                import_key = build_import_key(
+                    "export",
+                    "prompt",
+                    prompt_data.get("id"),
+                    project=project,
+                    created_at=prompt_data.get("created_at"),
+                )
+            existing_prompt_id = store.find_imported_id("user_prompts", import_key)
+            if existing_prompt_id:
+                if isinstance(prompt_data.get("id"), int):
+                    prompt_mapping[int(prompt_data["id"])] = int(existing_prompt_id)
+                prompt_import_key_mapping[import_key] = int(existing_prompt_id)
+                continue
+
+            new_prompt_id = store.add_user_prompt(
+                new_session_id,
+                project=project,
+                prompt_text=prompt_data.get("prompt_text", ""),
+                prompt_number=prompt_data.get("prompt_number"),
+                metadata={
+                    "source": "export",
+                    "original_prompt_id": prompt_data.get("id"),
+                    "original_created_at": prompt_data.get("created_at"),
+                    "import_metadata": prompt_data.get("metadata_json"),
+                    "import_key": import_key,
+                },
+            )
+            if isinstance(prompt_data.get("id"), int):
+                prompt_mapping[int(prompt_data["id"])] = int(new_prompt_id)
+            prompt_import_key_mapping[import_key] = int(new_prompt_id)
+            imported_prompts += 1
+            if imported_prompts % 100 == 0:
+                print(f"  Imported {imported_prompts}/{len(prompts_data)} prompts...")
+
+        print(f"[green]✓ Imported {imported_prompts} user prompts[/green]")
+
         print("\n[bold]Importing memory items...[/bold]")
         imported_memories = 0
         for mem_data in memories_data:
@@ -252,15 +315,30 @@ def import_memories_cmd(
             new_session_id = session_mapping.get(int(old_session_id))
             if not new_session_id:
                 continue
-            import_key = build_import_key(
-                "export",
-                "memory",
-                mem_data.get("id"),
-                project=remap_project or mem_data.get("project"),
-                created_at=mem_data.get("created_at"),
-            )
+            existing_memory_import_key = mem_data.get("import_key")
+            if isinstance(existing_memory_import_key, str) and existing_memory_import_key.strip():
+                import_key = existing_memory_import_key.strip()
+            else:
+                import_key = build_import_key(
+                    "export",
+                    "memory",
+                    mem_data.get("id"),
+                    project=remap_project or mem_data.get("project"),
+                    created_at=mem_data.get("created_at"),
+                )
             if store.find_imported_id("memory_items", import_key):
                 continue
+
+            linked_prompt_id = None
+            prompt_import_key = mem_data.get("user_prompt_import_key")
+            if isinstance(prompt_import_key, str) and prompt_import_key.strip():
+                linked_prompt_id = prompt_import_key_mapping.get(prompt_import_key.strip())
+                if linked_prompt_id is None:
+                    linked_prompt_id = store.find_imported_id(
+                        "user_prompts", prompt_import_key.strip()
+                    )
+            elif isinstance(mem_data.get("user_prompt_id"), int):
+                linked_prompt_id = prompt_mapping.get(int(mem_data["user_prompt_id"]))
 
             import_metadata = mem_data.get("metadata_json")
             base_metadata = {
@@ -270,6 +348,8 @@ def import_memories_cmd(
                 "import_metadata": import_metadata,
                 "import_key": import_key,
             }
+            if isinstance(prompt_import_key, str) and prompt_import_key.strip():
+                base_metadata["user_prompt_import_key"] = prompt_import_key.strip()
             metadata = base_metadata
             if mem_data.get("kind") == "session_summary":
                 metadata = merge_summary_metadata(base_metadata, import_metadata)
@@ -287,6 +367,7 @@ def import_memories_cmd(
                     files_modified=mem_data.get("files_modified"),
                     prompt_number=mem_data.get("prompt_number"),
                     confidence=mem_data.get("confidence", 0.5),
+                    user_prompt_id=linked_prompt_id,
                     metadata=metadata,
                 )
             else:
@@ -300,6 +381,7 @@ def import_memories_cmd(
                     if mem_data.get("tags_text")
                     else None,
                     metadata=metadata,
+                    user_prompt_id=linked_prompt_id,
                 )
             imported_memories += 1
             if imported_memories % 100 == 0:
@@ -359,43 +441,5 @@ def import_memories_cmd(
 
         print(f"[green]✓ Imported {imported_summaries} session summaries[/green]")
 
-        print("\n[bold]Importing user prompts...[/bold]")
-        imported_prompts = 0
-        for prompt_data in prompts_data:
-            old_session_id = prompt_data.get("session_id")
-            if old_session_id is None:
-                continue
-            new_session_id = session_mapping.get(int(old_session_id))
-            if not new_session_id:
-                continue
-
-            project = remap_project if remap_project else prompt_data.get("project")
-            import_key = build_import_key(
-                "export",
-                "prompt",
-                prompt_data.get("id"),
-                project=project,
-                created_at=prompt_data.get("created_at"),
-            )
-            if store.find_imported_id("user_prompts", import_key):
-                continue
-            store.add_user_prompt(
-                new_session_id,
-                project=project,
-                prompt_text=prompt_data.get("prompt_text", ""),
-                prompt_number=prompt_data.get("prompt_number"),
-                metadata={
-                    "source": "export",
-                    "original_prompt_id": prompt_data.get("id"),
-                    "original_created_at": prompt_data.get("created_at"),
-                    "import_metadata": prompt_data.get("metadata_json"),
-                    "import_key": import_key,
-                },
-            )
-            imported_prompts += 1
-            if imported_prompts % 100 == 0:
-                print(f"  Imported {imported_prompts}/{len(prompts_data)} prompts...")
-
-        print(f"[green]✓ Imported {imported_prompts} user prompts[/green]")
     finally:
         store.close()

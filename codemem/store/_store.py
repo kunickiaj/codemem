@@ -755,6 +755,7 @@ class MemoryStore:
         confidence: float = 0.5,
         tags: Iterable[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        user_prompt_id: int | None = None,
     ) -> int:
         kind = validate_memory_kind(kind)
         created_at = self._now_iso()
@@ -789,11 +790,12 @@ class MemoryStore:
                 created_at,
                 updated_at,
                 metadata_json,
+                user_prompt_id,
                 deleted_at,
                 rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -805,6 +807,7 @@ class MemoryStore:
                 created_at,
                 created_at,
                 db.to_json(metadata_payload),
+                user_prompt_id,
                 None,
                 1,
                 import_key,
@@ -832,6 +835,7 @@ class MemoryStore:
         files_modified: list[str] | None = None,
         prompt_number: int | None = None,
         confidence: float = 0.5,
+        user_prompt_id: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
         kind = validate_memory_kind(kind)
@@ -868,6 +872,7 @@ class MemoryStore:
             "files_read": files_read or [],
             "files_modified": files_modified or [],
             "prompt_number": prompt_number,
+            "user_prompt_id": user_prompt_id,
         }
         for key, value in detail.items():
             if key in metadata_payload:
@@ -898,11 +903,12 @@ class MemoryStore:
                 files_read,
                 files_modified,
                 prompt_number,
+                user_prompt_id,
                 deleted_at,
                 rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -921,6 +927,7 @@ class MemoryStore:
                 db.to_json(files_read or []),
                 db.to_json(files_modified or []),
                 prompt_number,
+                user_prompt_id,
                 None,
                 1,
                 import_key,
@@ -1016,6 +1023,37 @@ class MemoryStore:
         if lastrowid is None:
             raise RuntimeError("Failed to add prompt")
         return int(lastrowid)
+
+    def get_prompt_for_memory(self, memory_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT p.*
+            FROM memory_items m
+            JOIN user_prompts p ON p.id = m.user_prompt_id
+            WHERE m.id = ?
+            """,
+            (memory_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["metadata_json"] = db.from_json(item.get("metadata_json"))
+        return item
+
+    def get_memories_for_prompt(self, prompt_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM memory_items
+            WHERE user_prompt_id = ? AND active = 1
+            ORDER BY created_at ASC, id ASC
+            """,
+            (prompt_id,),
+        ).fetchall()
+        items = db.rows_to_dicts(rows)
+        for item in items:
+            item["metadata_json"] = db.from_json(item.get("metadata_json"))
+        return items
 
     def add_session_summary(
         self,

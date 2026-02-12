@@ -543,6 +543,18 @@ def _memory_item_payload(store: MemoryStore, row: dict[str, Any]) -> dict[str, A
                     project = store._project_basename(raw.strip())
         except Exception:
             project = None
+    user_prompt_import_key = None
+    user_prompt_id = row.get("user_prompt_id")
+    if isinstance(user_prompt_id, int) and user_prompt_id > 0:
+        prompt_row = store.conn.execute(
+            "SELECT import_key FROM user_prompts WHERE id = ?",
+            (user_prompt_id,),
+        ).fetchone()
+        if prompt_row is not None:
+            value = prompt_row["import_key"]
+            user_prompt_import_key = str(value).strip() if isinstance(value, str) else None
+            if not user_prompt_import_key:
+                user_prompt_import_key = _ensure_prompt_import_key(store, user_prompt_id)
     return {
         "session_id": session_id,
         "project": project,
@@ -562,10 +574,25 @@ def _memory_item_payload(store: MemoryStore, row: dict[str, Any]) -> dict[str, A
         "files_read": row.get("files_read"),
         "files_modified": row.get("files_modified"),
         "prompt_number": row.get("prompt_number"),
+        "user_prompt_id": row.get("user_prompt_id"),
+        "user_prompt_import_key": user_prompt_import_key,
         "import_key": row.get("import_key"),
         "deleted_at": row.get("deleted_at"),
         "rev": row.get("rev"),
     }
+
+
+def _ensure_prompt_import_key(store: MemoryStore, prompt_id: int) -> str | None:
+    row = store.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
+    device_id = str(row["device_id"]).strip() if row else ""
+    if not device_id:
+        device_id = "local"
+    import_key = f"legacy:{device_id}:prompt:{prompt_id}"
+    store.conn.execute(
+        "UPDATE user_prompts SET import_key = COALESCE(NULLIF(TRIM(import_key), ''), ?) WHERE id = ?",
+        (import_key, prompt_id),
+    )
+    return import_key
 
 
 def _clock_from_payload(store: MemoryStore, payload: dict[str, Any]) -> ReplicationClock:
@@ -1045,6 +1072,10 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
             return "skipped"
     metadata = store._normalize_metadata(payload.get("metadata_json"))
     metadata["clock_device_id"] = clock_device_id
+    linked_prompt_id = _resolve_prompt_link_id(store, payload)
+    prompt_import_key = payload.get("user_prompt_import_key")
+    if isinstance(prompt_import_key, str) and prompt_import_key.strip():
+        metadata.setdefault("user_prompt_import_key", prompt_import_key.strip())
     metadata_json = db.to_json(metadata)
     created_at = str(payload.get("created_at") or clock.get("updated_at") or "")
     updated_at = str(payload.get("updated_at") or clock.get("updated_at") or "")
@@ -1063,12 +1094,13 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
         updated_at,
         metadata_json,
         payload.get("subtitle"),
-        payload.get("facts"),
+        _json_text(payload.get("facts")),
         payload.get("narrative"),
-        payload.get("concepts"),
-        payload.get("files_read"),
-        payload.get("files_modified"),
+        _json_text(payload.get("concepts")),
+        _json_text(payload.get("files_read")),
+        _json_text(payload.get("files_modified")),
         payload.get("prompt_number"),
+        linked_prompt_id,
         import_key,
         payload.get("deleted_at"),
         int(clock.get("rev") or payload.get("rev") or 0),
@@ -1094,11 +1126,12 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
                 files_read,
                 files_modified,
                 prompt_number,
+                user_prompt_id,
                 import_key,
                 deleted_at,
                 rev
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1123,6 +1156,7 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
             files_read = ?,
             files_modified = ?,
             prompt_number = ?,
+            user_prompt_id = ?,
             import_key = ?,
             deleted_at = ?,
             rev = ?
@@ -1131,6 +1165,24 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
         (*values, lookup_key),
     )
     return "updated"
+
+
+def _resolve_prompt_link_id(store: MemoryStore, payload: dict[str, Any]) -> int | None:
+    prompt_import_key = payload.get("user_prompt_import_key")
+    if isinstance(prompt_import_key, str) and prompt_import_key.strip():
+        row = store.conn.execute(
+            "SELECT id FROM user_prompts WHERE import_key = ? LIMIT 1",
+            (prompt_import_key.strip(),),
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+    return None
+
+
+def _json_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return db.to_json(value)
 
 
 def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
@@ -1217,11 +1269,11 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
                 updated_at,
                 metadata_json,
                 payload.get("subtitle"),
-                payload.get("facts"),
+                _json_text(payload.get("facts")),
                 payload.get("narrative"),
-                payload.get("concepts"),
-                payload.get("files_read"),
-                payload.get("files_modified"),
+                _json_text(payload.get("concepts")),
+                _json_text(payload.get("files_read")),
+                _json_text(payload.get("files_modified")),
                 payload.get("prompt_number"),
                 import_key,
                 deleted_at,

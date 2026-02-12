@@ -148,6 +148,7 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             metadata_json TEXT,
+            user_prompt_id INTEGER,
             deleted_at TEXT,
             rev INTEGER DEFAULT 0,
             import_key TEXT
@@ -354,6 +355,7 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memory_items", "files_read", "TEXT")
     _ensure_column(conn, "memory_items", "files_modified", "TEXT")
     _ensure_column(conn, "memory_items", "prompt_number", "INTEGER")
+    _ensure_column(conn, "memory_items", "user_prompt_id", "INTEGER")
     _ensure_column(conn, "memory_items", "import_key", "TEXT")
     _ensure_column(conn, "memory_items", "deleted_at", "TEXT")
     _ensure_column(conn, "memory_items", "rev", "INTEGER")
@@ -375,6 +377,9 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_import_key ON sessions(import_key)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_items_import_key ON memory_items(import_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user_prompt_id ON memory_items(user_prompt_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_session_summaries_import_key ON session_summaries(import_key)"
@@ -464,6 +469,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_vector_schema(conn)
     _ensure_raw_event_reliability_schema(conn)
     _normalize_legacy_memory_kinds(conn)
+    _cleanup_orphan_prompt_links(conn)
     if conn.in_transaction:
         conn.commit()
 
@@ -473,6 +479,19 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_typ
     if column in existing:
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
+def _cleanup_orphan_prompt_links(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE memory_items AS m
+        SET user_prompt_id = NULL
+        WHERE m.user_prompt_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM user_prompts WHERE user_prompts.id = m.user_prompt_id
+          )
+        """
+    )
 
 
 def to_json(data: Any) -> str:
