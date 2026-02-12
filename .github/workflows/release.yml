@@ -76,10 +76,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create ${{ github.ref_name }} \
-            --generate-notes \
-            --title "Release ${{ github.ref_name }}" \
-            dist/*
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release upload "${{ github.ref_name }}" dist/* --clobber
+          else
+            gh release create "${{ github.ref_name }}" \
+              --generate-notes \
+              --title "Release ${{ github.ref_name }}" \
+              dist/*
+          fi
 
   publish-pypi:
     name: Publish to PyPI
@@ -126,6 +130,7 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
+    environment: release
     permissions:
       contents: read
       id-token: write
@@ -140,4 +145,6 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Publish @kunickiaj/codemem
+        env:
+          NODE_AUTH_TOKEN: ""
         run: npm publish --access public --provenance
