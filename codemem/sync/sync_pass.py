@@ -70,6 +70,18 @@ def _cursor_advances(current: str | None, candidate: str | None) -> bool:
     return candidate > current
 
 
+def _error_detail(payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    reason = payload.get("reason")
+    if isinstance(error, str) and isinstance(reason, str):
+        return f"{error}:{reason}"
+    if isinstance(error, str):
+        return error
+    return None
+
+
 def sync_pass_preflight(
     store: MemoryStore,
     *,
@@ -147,7 +159,7 @@ def sync_once(
         if status == 200 and payload is not None:
             return
 
-        detail = payload.get("error") if isinstance(payload, dict) else None
+        detail = _error_detail(payload)
         if status == 413 and len(ops) > 1 and detail in {"payload_too_large", "too_many_ops"}:
             mid = len(ops) // 2
             _push_ops(post_url=post_url, device_id=device_id, keys_dir=keys_dir, ops=ops[:mid])
@@ -176,7 +188,7 @@ def sync_once(
                 headers=status_headers,
             )
             if status_code != 200 or not status_payload:
-                detail = status_payload.get("error") if isinstance(status_payload, dict) else None
+                detail = _error_detail(status_payload)
                 suffix = f" ({status_code}: {detail})" if detail else f" ({status_code})"
                 raise RuntimeError(f"peer status failed{suffix}")
             if status_payload.get("fingerprint") != pinned_fingerprint:
@@ -192,7 +204,7 @@ def sync_once(
             )
             status, payload = http_client.request_json("GET", get_url, headers=get_headers)
             if status != 200 or payload is None:
-                detail = payload.get("error") if isinstance(payload, dict) else None
+                detail = _error_detail(payload)
                 suffix = f" ({status}: {detail})" if detail else f" ({status})"
                 raise RuntimeError(f"peer ops fetch failed{suffix}")
             ops = payload.get("ops")

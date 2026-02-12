@@ -226,7 +226,7 @@ def test_sync_ops_canonicalizes_old_legacy_import_key(tmp_path: Path) -> None:
         store.close()
 
 
-def test_sync_auth_401_does_not_expose_internal_reason(tmp_path: Path) -> None:
+def test_sync_auth_401_hides_internal_reason_by_default(tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     keys_dir = tmp_path / "keys"
     _seed_local_peer(db_path, keys_dir)
@@ -239,6 +239,25 @@ def test_sync_auth_401_does_not_expose_internal_reason(tmp_path: Path) -> None:
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 401
         assert payload == {"error": "unauthorized"}
-        assert "reason" not in payload
+    finally:
+        server.shutdown()
+
+
+def test_sync_auth_401_includes_reason_code_when_diagnostics_enabled(
+    monkeypatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    keys_dir = tmp_path / "keys"
+    _seed_local_peer(db_path, keys_dir)
+    monkeypatch.setenv("CODEMEM_SYNC_AUTH_DIAGNOSTICS", "1")
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/v1/status", headers={})
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 401
+        assert payload == {"error": "unauthorized", "reason": "missing_headers"}
     finally:
         server.shutdown()
