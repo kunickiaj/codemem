@@ -407,7 +407,6 @@ When OpenCode starts, the plugin loads and:
 | `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
 | `CODEMEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
-| `CODEMEM_ENABLE_CLI_INGEST` | Set to `1` to allow the plugin to spawn `codemem ingest` (legacy path). Default is stream-only. |
 | `CODEMEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flushing of streamed raw events (default off). |
 | `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
 | `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
@@ -454,7 +453,6 @@ If you want maximum reliability ("stream now, flush later"), run stream-only and
 Important: stream-only requires the viewer to be running and reachable. If the plugin cannot POST to the viewer, it will log an error and events may be dropped.
 
 ```bash
-export CODEMEM_ENABLE_CLI_INGEST=0
 export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
 export CODEMEM_RAW_EVENTS_DEBOUNCE_MS=60000
 export CODEMEM_RAW_EVENTS_SWEEPER=1

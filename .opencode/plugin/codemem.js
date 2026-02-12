@@ -3,7 +3,6 @@ import { dirname } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
-const ENABLE_VALUES = ["1", "true", "on"];
 const DISABLED_VALUES = ["0", "false", "off"];
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
@@ -201,11 +200,6 @@ export const OpencodeMemPlugin = async ({
     process.env.CODEMEM_RAW_EVENTS || "1"
   );
   const rawEventsUrl = `http://${viewerHost}:${viewerPort}/api/raw-events`;
-  const enableCliIngest = envHasValue(
-    process.env.CODEMEM_ENABLE_CLI_INGEST || "0",
-    ENABLE_VALUES
-  );
-  const disableCliIngest = !enableCliIngest;
   const nextEventId = () => {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
       return crypto.randomUUID();
@@ -785,61 +779,13 @@ export const OpencodeMemPlugin = async ({
       return;
     }
 
-    if (disableCliIngest) {
-      await logLine(`flush.skip cli_ingest_disabled count=${events.length}`);
-      events.length = 0;
-      sessionStartedAt = null;
-      resetSessionContext();
-      return;
-    }
-
     // Calculate session duration
     const durationMs = sessionContext.startTime
       ? Date.now() - sessionContext.startTime
       : 0;
-
-    const payload = {
-      cwd,
-      project: project?.name || (project?.root ? String(project.root).split(/[/\\]/).filter(Boolean).pop() : null) || null,
-      started_at: sessionStartedAt || new Date().toISOString(),
-      events: [...events],
-      // Session context for comprehensive memories
-      session_context: {
-        first_prompt: sessionContext.firstPrompt,
-        prompt_count: sessionContext.promptCount,
-        tool_count: sessionContext.toolCount,
-        duration_ms: durationMs,
-        files_modified: Array.from(sessionContext.filesModified),
-        files_read: Array.from(sessionContext.filesRead),
-      },
-    };
     await logLine(
-      `flush.start count=${events.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
+      `flush.stream_only finalize count=${events.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
     );
-    const input = JSON.stringify(payload);
-    const proc = Bun.spawn({
-      cmd: [runner, ...runnerArgs, "ingest"],
-      cwd,
-      env: process.env,
-      stdin: new Blob([input]),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-      await logLine(`flush.error exitCode=${exitCode} stderr=${stderr}`);
-      await client.app.log({
-        service: "codemem",
-        level: "error",
-        message: "Failed to ingest codemem plugin events",
-        extra: { exitCode, stdout, stderr },
-      });
-      return;
-    }
     await logLine(`flush.ok count=${events.length}`);
     events.length = 0;
     sessionStartedAt = null;

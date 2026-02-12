@@ -616,6 +616,9 @@ class MemoryStore:
             limit=limit,
         )
 
+    def raw_event_sessions_with_pending_queue(self, *, limit: int = 25) -> list[str]:
+        return store_raw_events.raw_event_sessions_with_pending_queue(self.conn, limit=limit)
+
     def purge_raw_events_before(self, cutoff_ts_wall_ms: int) -> int:
         return store_raw_events.purge_raw_events_before(self.conn, cutoff_ts_wall_ms)
 

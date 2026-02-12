@@ -2,8 +2,8 @@
 
 ## Overview
 - **CLI (`codemem`)** runs ingestion, MCP server, viewer, and export/import.
-- **Plugin** captures OpenCode events and posts them to `codemem ingest`.
-- **Ingest pipeline** builds transcript from events, calls the observer, and writes memories.
+- **Plugin** captures OpenCode events and streams raw events to the viewer HTTP API.
+- **Ingest pipeline** flushes queued raw events, builds transcript, calls the observer, and writes memories.
 - **Observer** returns typed observations and a session summary.
 - **Store** persists sessions, memories, and artifacts in SQLite.
 - **Viewer** serves a static HTML dashboard backed by JSON APIs.
@@ -11,8 +11,8 @@
 
 ## Data flow
 1. Plugin collects events during an OpenCode session (user prompts, assistant messages, tool calls).
-2. Plugin flushes events to `codemem ingest` based on adaptive strategy.
-3. Ingest builds transcript from user_prompt/assistant_message events.
+2. Plugin streams raw events to `/api/raw-events` on the viewer.
+3. Python-side flush workers drain queued raw events and run ingest/observer.
 4. Observer creates observations + summary from transcript and tool events.
 5. Store writes artifacts (transcript, pre/post context), observations, and session summary.
 6. Viewer and MCP server read from SQLite.

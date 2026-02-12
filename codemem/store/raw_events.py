@@ -676,6 +676,39 @@ def raw_event_sessions_pending_idle_flush(
     return [str(row["opencode_session_id"]) for row in rows if row["opencode_session_id"]]
 
 
+def raw_event_sessions_with_pending_queue(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 25,
+) -> list[str]:
+    rows = conn.execute(
+        """
+        WITH pending_batches AS (
+            SELECT
+              b.opencode_session_id,
+              MIN(b.updated_at) AS oldest_pending_update
+            FROM raw_event_flush_batches b
+            WHERE b.status IN ('pending', 'failed', 'started', 'error')
+            GROUP BY b.opencode_session_id
+        ),
+        max_events AS (
+            SELECT opencode_session_id, MAX(event_seq) AS max_seq
+            FROM raw_events
+            GROUP BY opencode_session_id
+        )
+        SELECT b.opencode_session_id
+        FROM pending_batches b
+        JOIN max_events e ON e.opencode_session_id = b.opencode_session_id
+        LEFT JOIN raw_event_sessions s ON s.opencode_session_id = b.opencode_session_id
+        WHERE e.max_seq > COALESCE(s.last_flushed_event_seq, -1)
+        ORDER BY b.oldest_pending_update ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [str(row["opencode_session_id"]) for row in rows if row["opencode_session_id"]]
+
+
 def purge_raw_events_before(conn: sqlite3.Connection, cutoff_ts_wall_ms: int) -> int:
     cutoff_iso = dt.datetime.fromtimestamp(cutoff_ts_wall_ms / 1000.0, tz=dt.UTC).isoformat()
     conn.execute(
