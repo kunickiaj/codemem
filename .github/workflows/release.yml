@@ -31,6 +31,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate plugin dependency alignment
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(".")
+          package_json = json.loads((root / "package.json").read_text(encoding="utf-8"))
+          opencode_json = json.loads((root / ".opencode" / "package.json").read_text(encoding="utf-8"))
+
+          root_dep = package_json.get("dependencies", {}).get("@opencode-ai/plugin")
+          opencode_dep = opencode_json.get("dependencies", {}).get("@opencode-ai/plugin")
+          if not root_dep or not opencode_dep:
+            print("Missing @opencode-ai/plugin dependency declaration in package manifests")
+            sys.exit(1)
+          if root_dep != opencode_dep:
+            print("@opencode-ai/plugin version mismatch detected:")
+            print(f"- package.json: {root_dep}")
+            print(f"- .opencode/package.json: {opencode_dep}")
+            sys.exit(1)
+
+          print(f"@opencode-ai/plugin alignment OK: {root_dep}")
+          PY
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -127,7 +152,7 @@ jobs:
 
   publish-npm:
     name: Publish npm package
-    needs: ci
+    needs: [ci, build]
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
     environment: release

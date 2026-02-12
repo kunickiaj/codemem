@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 2
+    allow:
+      - dependency-name: "@opencode-ai/plugin"
+    labels:
+      - dependencies
+      - npm
+
+  - package-ecosystem: npm
+    directory: "/.opencode"
+    schedule:
+      interval: daily
+      time: "09:15"
+      timezone: "UTC"
+    open-pull-requests-limit: 2
+    allow:
+      - dependency-name: "@opencode-ai/plugin"
+    labels:
+      - dependencies
+      - npm

@@ -14,7 +14,7 @@
     ".opencode/plugin/codemem.js"
   ],
   "dependencies": {
-    "@opencode-ai/plugin": "1.1.53"
+    "@opencode-ai/plugin": "1.1.61"
   },
   "repository": {
     "type": "git",

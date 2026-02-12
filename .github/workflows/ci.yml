@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
       
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.13'
+        if: matrix.python-version == '3.14'
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
@@ -58,10 +58,77 @@ jobs:
           enable-cache: true
       
       - name: Set up Python
-        run: uv python install 3.13
-      
+        run: uv python install 3.14
+
       - name: Install dependencies
-        run: uv sync --python 3.13
+        run: uv sync --python 3.14
+
+      - name: Validate cross-ecosystem version alignment
+        run: |
+          uv run python - <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          import tomllib
+
+          root = Path(".")
+
+          pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+          py_version = pyproject["project"].get("version")
+          if not py_version:
+            print("Missing [project].version in pyproject.toml")
+            sys.exit(1)
+
+          init_text = (root / "codemem" / "__init__.py").read_text(encoding="utf-8")
+          init_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
+          if init_match is None:
+            print("Failed to find __version__ in codemem/__init__.py")
+            sys.exit(1)
+          init_version = init_match.group(1)
+
+          package_json = json.loads((root / "package.json").read_text(encoding="utf-8"))
+          npm_version = package_json.get("version")
+          if not npm_version:
+            print("Missing version in package.json")
+            sys.exit(1)
+
+          versions = {
+            "pyproject.toml": py_version,
+            "codemem/__init__.py": init_version,
+            "package.json": npm_version,
+          }
+          unique = set(versions.values())
+          if len(unique) != 1:
+            print("Version mismatch detected:")
+            for source, version in versions.items():
+              print(f"- {source}: {version}")
+            sys.exit(1)
+
+          print(f"Version alignment OK: {py_version}")
+
+          root_dep = package_json.get("dependencies", {}).get("@opencode-ai/plugin")
+          if not root_dep:
+            print("Missing @opencode-ai/plugin dependency declaration in package.json")
+            sys.exit(1)
+
+          opencode_manifest = root / ".opencode" / "package.json"
+          if opencode_manifest.exists():
+            opencode_package = json.loads(opencode_manifest.read_text(encoding="utf-8"))
+            opencode_dep = opencode_package.get("dependencies", {}).get("@opencode-ai/plugin")
+            if not opencode_dep:
+              print("Missing @opencode-ai/plugin in .opencode/package.json")
+              sys.exit(1)
+            if root_dep != opencode_dep:
+              print("@opencode-ai/plugin version mismatch detected:")
+              print(f"- package.json: {root_dep}")
+              print(f"- .opencode/package.json: {opencode_dep}")
+              sys.exit(1)
+            print(f"@opencode-ai/plugin alignment OK: {root_dep}")
+          else:
+            print(f"@opencode-ai/plugin pinned in package.json: {root_dep}")
+          PY
 
       - name: Type-check viewer UI (TypeScript)
         run: |
