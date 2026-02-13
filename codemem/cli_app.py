@@ -30,6 +30,7 @@ from .commands.maintenance_cmds import (
     backfill_discovery_tokens_cmd,
     backfill_tags_cmd,
     embed_cmd,
+    hybrid_eval_cmd,
     ingest_cmd,
     init_db_cmd,
     mcp_cmd,
@@ -629,6 +630,39 @@ def pack_benchmark(
         project=project,
         all_projects=all_projects,
         json_out=json_out,
+    )
+
+
+@app.command("hybrid-eval")
+def hybrid_eval(
+    judged_queries_path: Path = typer.Argument(
+        ...,
+        exists=True,
+        dir_okay=False,
+        file_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to judged query JSONL file",
+    ),
+    limit: int = typer.Option(8, help="Top-k results to evaluate"),
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    json_out: Path | None = typer.Option(None, help="Optional JSON output file"),
+    min_delta_precision: float | None = typer.Option(
+        None, help="Fail if precision delta is below this threshold"
+    ),
+    min_delta_recall: float | None = typer.Option(
+        None, help="Fail if recall delta is below this threshold"
+    ),
+) -> None:
+    """Evaluate baseline vs hybrid retrieval precision/recall deltas."""
+    hybrid_eval_cmd(
+        store_from_path=_store,
+        db_path=db_path,
+        judged_queries_path=judged_queries_path,
+        limit=limit,
+        json_out=json_out,
+        min_delta_precision=min_delta_precision,
+        min_delta_recall=min_delta_recall,
     )
 
 

@@ -279,6 +279,52 @@ def pack_benchmark_cmd(
         json_out.write_text(to_json(result) + "\n")
 
 
+def hybrid_eval_cmd(
+    *,
+    store_from_path,
+    db_path: str | None,
+    judged_queries_path: Path,
+    limit: int,
+    json_out: Path | None,
+    min_delta_precision: float | None,
+    min_delta_recall: float | None,
+) -> None:
+    import typer
+
+    from codemem.hybrid_eval import (
+        format_hybrid_eval_report,
+        read_judged_queries,
+        run_hybrid_eval,
+        to_json,
+    )
+
+    judged_queries = read_judged_queries(judged_queries_path.read_text())
+    store = store_from_path(db_path)
+    try:
+        result = run_hybrid_eval(store, judged_queries=judged_queries, limit=limit)
+    finally:
+        store.close()
+    print(format_hybrid_eval_report(result))
+    if json_out:
+        json_out.write_text(to_json(result) + "\n")
+
+    delta = result["summary"]["delta"]
+    if min_delta_precision is not None and float(delta["precision"]) < min_delta_precision:
+        print(
+            f"[red]threshold failed[/red]: precision delta {float(delta['precision']):+.3f} < {min_delta_precision:+.3f}"
+        )
+        raise typer.Exit(
+            code=1,
+        )
+    if min_delta_recall is not None and float(delta["recall"]) < min_delta_recall:
+        print(
+            f"[red]threshold failed[/red]: recall delta {float(delta['recall']):+.3f} < {min_delta_recall:+.3f}"
+        )
+        raise typer.Exit(
+            code=1,
+        )
+
+
 def mcp_cmd() -> None:
     """Run the MCP server for OpenCode."""
 

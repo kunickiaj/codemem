@@ -18,6 +18,7 @@ def test_root_help_shows_db_namespace() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "db" in result.stdout
+    assert "hybrid-eval" in result.stdout
 
 
 def test_db_help_shows_prune_commands() -> None:

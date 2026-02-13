@@ -36,6 +36,25 @@
 - Backfill existing memories with: `codemem embed --dry-run` then `codemem embed`.
 - If sqlite-vec fails to load, semantic recall is skipped and keyword search remains.
 
+## Hybrid retrieval evaluation
+
+- Evaluate baseline vs hybrid retrieval with judged queries:
+  - `codemem hybrid-eval /path/to/judged.jsonl --limit 8`
+- Use threshold gates for rollout decisions:
+  - `codemem hybrid-eval /path/to/judged.jsonl --min-delta-precision 0.01 --min-delta-recall 0.01`
+- Save machine-readable output:
+  - `codemem hybrid-eval /path/to/judged.jsonl --json-out .tmp/hybrid-eval.json`
+
+Judged query JSONL format:
+
+```json
+{"query":"sync diagnostics","relevant_ids":[123,456],"filters":{"project":"codemem"}}
+{"query":"viewer autostart","relevant_ids":[789]}
+```
+
+- `relevant_ids` are memory item IDs expected in top-k.
+- `filters` is optional and uses the same project/kind filter shape as normal search commands.
+
 ## Sync (Phase 2)
 
 ### Enable + run
