@@ -57,6 +57,10 @@
   );
   const syncMeta = document.getElementById("syncMeta");
   const syncHealthGrid = document.getElementById("syncHealthGrid");
+  const healthGrid = document.getElementById("healthGrid");
+  const healthMeta = document.getElementById("healthMeta");
+  const healthActions = document.getElementById("healthActions");
+  const syncActions = document.getElementById("syncActions");
   const syncStatusGrid = document.getElementById("syncStatusGrid");
   const syncDiagnostics = document.getElementById("syncDiagnostics");
   const syncPeers = document.getElementById("syncPeers");
@@ -79,6 +83,8 @@
   );
   const pairingHint = document.getElementById("pairingHint");
   const syncPairing = document.getElementById("syncPairing");
+  const detailsToggle = document.getElementById("detailsToggle");
+  const detailsRow = document.getElementById("detailsRow");
   let configDefaults = {};
   let configPath = "";
   let currentProject = "";
@@ -86,6 +92,7 @@
   const itemExpandState = /* @__PURE__ */ new Map();
   const FEED_FILTER_KEY = "codemem-feed-filter";
   const FEED_FILTERS = ["all", "observations", "summaries"];
+  const DETAILS_OPEN_KEY = "codemem-details-open";
   const SYNC_DIAGNOSTICS_KEY = "codemem-sync-diagnostics";
   const SYNC_PAIRING_KEY = "codemem-sync-pairing";
   const SYNC_REDACT_KEY = "codemem-sync-redact";
@@ -100,6 +107,9 @@
   let refreshInFlight = false;
   let refreshQueued = false;
   let refreshTimer = null;
+  let lastStatsPayload = null;
+  let lastUsagePayload = null;
+  let lastRawEventsPayload = null;
   let lastFeedSignature = "";
   let lastFeedItems = [];
   let lastFeedFilteredCount = 0;
@@ -177,6 +187,10 @@
   }
   setTheme(getTheme());
   themeToggle?.addEventListener("click", toggleTheme);
+  setDetailsOpen(isDetailsOpen());
+  detailsToggle?.addEventListener("click", () => {
+    setDetailsOpen(!isDetailsOpen());
+  });
   setSyncDiagnosticsOpen(isSyncDiagnosticsOpen());
   try {
     syncPairingOpen = localStorage.getItem(SYNC_PAIRING_KEY) === "1";
@@ -269,6 +283,18 @@
   }
   function isSyncDiagnosticsOpen() {
     return localStorage.getItem(SYNC_DIAGNOSTICS_KEY) === "1";
+  }
+  function isDetailsOpen() {
+    return localStorage.getItem(DETAILS_OPEN_KEY) === "1";
+  }
+  function setDetailsOpen(open) {
+    if (detailsRow) {
+      detailsRow.hidden = !open;
+    }
+    if (detailsToggle) {
+      detailsToggle.textContent = open ? "Hide details" : "Details";
+    }
+    localStorage.setItem(DETAILS_OPEN_KEY, open ? "1" : "0");
   }
   function setSyncDiagnosticsOpen(open) {
     if (syncDiagnostics) {
@@ -551,6 +577,263 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (Number.isNaN(date.getTime())) return String(value);
     return date.toLocaleString();
   }
+  function secondsSince(value) {
+    if (!value) return null;
+    const ts = new Date(value).getTime();
+    if (!Number.isFinite(ts)) return null;
+    const delta = Math.floor((Date.now() - ts) / 1e3);
+    return delta >= 0 ? delta : 0;
+  }
+  function formatAgeShort(seconds) {
+    if (seconds === null || seconds === void 0) return "n/a";
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+    return `${Math.floor(seconds / 86400)}d`;
+  }
+  function parsePercentValue(label) {
+    const text = String(label || "").trim();
+    if (!text.endsWith("%")) return null;
+    const raw = Number(text.replace("%", ""));
+    if (!Number.isFinite(raw)) return null;
+    return raw;
+  }
+  function titleCase(value) {
+    const text = String(value || "").trim();
+    if (!text) return "Unknown";
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+  function buildHealthCard({ label, value, detail, icon, className, title }) {
+    const card = createElement("div", `stat${className ? ` ${className}` : ""}`);
+    if (title) {
+      card.title = title;
+      card.style.cursor = "help";
+    }
+    if (icon) {
+      const iconNode = document.createElement("i");
+      iconNode.setAttribute("data-lucide", icon);
+      iconNode.className = "stat-icon";
+      card.appendChild(iconNode);
+    }
+    const content = createElement("div", "stat-content");
+    const valueNode = createElement("div", "value", value);
+    const labelNode = createElement("div", "label", label);
+    content.append(valueNode, labelNode);
+    if (detail) {
+      content.appendChild(createElement("div", "small", detail));
+    }
+    card.appendChild(content);
+    return card;
+  }
+  async function copyCommand(command, button) {
+    if (!command || !button) return;
+    const previous = button.textContent;
+    try {
+      await navigator.clipboard.writeText(command);
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = "Copy failed";
+    }
+    setTimeout(() => {
+      button.textContent = previous || "Copy";
+    }, 1200);
+  }
+  function renderActionList(container, actions) {
+    if (!container) return;
+    container.textContent = "";
+    const list = Array.isArray(actions) ? actions.filter((item) => item && item.command) : [];
+    if (!list.length) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    list.slice(0, 2).forEach((item) => {
+      const row = createElement("div", container === syncActions ? "sync-action" : "health-action");
+      const textWrap = createElement("div", container === syncActions ? "sync-action-text" : "health-action-text");
+      textWrap.textContent = item.label;
+      const command = createElement("span", container === syncActions ? "sync-action-command" : "health-action-command", item.command);
+      textWrap.appendChild(command);
+      const button = createElement("button", `settings-button ${container === syncActions ? "sync-action-copy" : "health-action-copy"}`, "Copy");
+      button.addEventListener("click", () => copyCommand(item.command, button));
+      row.append(textWrap, button);
+      container.appendChild(row);
+    });
+  }
+  function renderHealthOverview() {
+    if (!healthGrid || !healthMeta) return;
+    healthGrid.textContent = "";
+    const stats = lastStatsPayload || {};
+    const usagePayload = lastUsagePayload || {};
+    const raw = lastRawEventsPayload && typeof lastRawEventsPayload === "object" ? lastRawEventsPayload : {};
+    const syncStatus = lastSyncStatus || {};
+    const reliability = stats.reliability || {};
+    const counts = reliability.counts || {};
+    const rates = reliability.rates || {};
+    const dbStats = stats.database || {};
+    const totals = usagePayload.totals_filtered || usagePayload.totals || usagePayload.totals_global || stats.usage?.totals || {};
+    const recentPacks = Array.isArray(usagePayload.recent_packs) ? usagePayload.recent_packs : [];
+    const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : null;
+    const rawPending = Number(raw.pending || 0);
+    const erroredBatches = Number(counts.errored_batches || 0);
+    const flushSuccessRate = Number(rates.flush_success_rate || 1);
+    const droppedRate = Number(rates.dropped_event_rate || 0);
+    const reductionLabel = formatReductionPercent(totals.tokens_saved, totals.tokens_read);
+    const reductionPercent = parsePercentValue(reductionLabel);
+    const tagCoverage = Number(dbStats.tags_coverage || 0);
+    const syncState = String(syncStatus.daemon_state || "unknown");
+    const syncStateLabel = titleCase(syncState);
+    const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
+    const lastSyncAt = syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null;
+    const syncAgeSeconds = secondsSince(lastSyncAt);
+    const packAgeSeconds = secondsSince(lastPackAt);
+    const peerCount = Array.isArray(lastSyncPeers) ? lastSyncPeers.length : 0;
+    const syncLooksStale = syncAgeSeconds !== null && syncAgeSeconds > 7200;
+    const hasBacklog = rawPending >= 200;
+    let riskScore = 0;
+    const drivers = [];
+    if (rawPending >= 1e3) {
+      riskScore += 40;
+      drivers.push("high raw-event backlog");
+    } else if (rawPending >= 200) {
+      riskScore += 24;
+      drivers.push("growing raw-event backlog");
+    }
+    if (erroredBatches > 0 && rawPending >= 200) {
+      riskScore += erroredBatches >= 5 ? 10 : 6;
+      drivers.push("batch errors during backlog pressure");
+    }
+    if (flushSuccessRate < 0.95) {
+      riskScore += 20;
+      drivers.push("lower flush success");
+    }
+    if (droppedRate > 0.02) {
+      riskScore += 24;
+      drivers.push("high dropped-event rate");
+    } else if (droppedRate > 0.005) {
+      riskScore += 10;
+      drivers.push("non-trivial dropped-event rate");
+    }
+    if (!syncDisabled) {
+      if (syncState === "error") {
+        riskScore += 36;
+        drivers.push("sync daemon reports errors");
+      } else if (syncState === "stopped") {
+        riskScore += 22;
+        drivers.push("sync daemon stopped");
+      } else if (syncState === "degraded") {
+        riskScore += 20;
+        drivers.push("sync daemon degraded");
+      }
+      if (syncLooksStale) {
+        riskScore += 26;
+        drivers.push("sync looks stale");
+      } else if (syncAgeSeconds !== null && syncAgeSeconds > 1800) {
+        riskScore += 12;
+        drivers.push("sync not recent");
+      }
+    }
+    if (reductionPercent !== null && reductionPercent < 10) {
+      riskScore += 8;
+      drivers.push("low retrieval reduction");
+    }
+    if (packAgeSeconds !== null && packAgeSeconds > 86400) {
+      riskScore += 12;
+      drivers.push("memory pack activity is old");
+    }
+    let statusLabel = "Healthy";
+    let statusClass = "status-healthy";
+    if (riskScore >= 60) {
+      statusLabel = "Attention";
+      statusClass = "status-attention";
+    } else if (riskScore >= 25) {
+      statusLabel = "Degraded";
+      statusClass = "status-degraded";
+    }
+    const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens`;
+    const pipelineDetail = rawPending > 0 ? "Queue is actively draining" : "Queue is clear";
+    const syncDetail = syncDisabled
+      ? "Sync disabled"
+      : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
+    const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
+    const cards = [
+      buildHealthCard({
+        label: "Overall health",
+        value: statusLabel,
+        detail: `Weighted score ${riskScore}`,
+        icon: "heart-pulse",
+        className: `health-primary ${statusClass}`,
+        title: drivers.length ? `Main signals: ${drivers.join(", ")}` : "No major risk signals detected"
+      }),
+      buildHealthCard({
+        label: "Pipeline health",
+        value: `${rawPending.toLocaleString()} pending`,
+        detail: pipelineDetail,
+        icon: "workflow",
+        title: "Raw-event queue pressure and flush reliability"
+      }),
+      buildHealthCard({
+        label: "Retrieval impact",
+        value: reductionLabel,
+        detail: retrievalDetail,
+        icon: "sparkles",
+        title: "Reduction from memory reuse across recent usage"
+      }),
+      buildHealthCard({
+        label: "Sync health",
+        value: syncStateLabel,
+        detail: syncDetail,
+        icon: "refresh-cw",
+        title: "Daemon state and sync recency"
+      }),
+      buildHealthCard({
+        label: "Data freshness",
+        value: formatAgeShort(packAgeSeconds),
+        detail: freshnessDetail,
+        icon: "clock-3",
+        title: "Recency of last memory pack activity"
+      })
+    ];
+    cards.forEach((card) => healthGrid.appendChild(card));
+    const recommendations = [];
+    if (hasBacklog) {
+      recommendations.push({
+        label: "Pipeline needs attention. Check queue health first.",
+        command: "uv run codemem raw-events-status"
+      });
+      recommendations.push({
+        label: "Then retry failed batches for impacted sessions.",
+        command: "uv run codemem raw-events-retry <opencode_session_id>"
+      });
+    } else if (syncState === "stopped") {
+      recommendations.push({
+        label: "Sync daemon is stopped. Start the background service.",
+        command: "uv run codemem sync start"
+      });
+    } else if (!syncDisabled && (syncState === "error" || syncState === "degraded")) {
+      recommendations.push({
+        label: "Sync is unhealthy. Restart now and run one immediate pass.",
+        command: "uv run codemem sync restart && uv run codemem sync once"
+      });
+      recommendations.push({
+        label: "Then run doctor to see root cause details.",
+        command: "uv run codemem sync doctor"
+      });
+    } else if (!syncDisabled && syncLooksStale) {
+      recommendations.push({
+        label: "Sync is stale. Run one immediate sync pass.",
+        command: "uv run codemem sync once"
+      });
+    }
+    if (tagCoverage > 0 && tagCoverage < 0.7 && recommendations.length < 2) {
+      recommendations.push({
+        label: "Tag coverage is low. Preview backfill impact.",
+        command: "uv run codemem backfill-tags --dry-run"
+      });
+    }
+    renderActionList(healthActions, recommendations);
+    healthMeta.textContent = drivers.length ? `Why this status: ${drivers.join(", ")}.` : "Healthy right now. Diagnostics stay available if you want details.";
+    if (typeof globalThis.lucide !== "undefined") globalThis.lucide.createIcons();
+  }
   function redactAddress(address) {
     const raw = String(address || "");
     if (!raw) return "";
@@ -567,7 +850,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   function renderSyncStatus(status) {
     if (!syncStatusGrid) return;
     syncStatusGrid.textContent = "";
-    if (!status) return;
+    if (!status) {
+      renderActionList(syncActions, []);
+      return;
+    }
     const peers = status.peers || {};
     const pingPayload = status.ping || {};
     const syncPayload = status.sync || {};
@@ -576,12 +862,36 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const syncError = status.last_sync_error || "";
     const pingError = status.last_ping_error || "";
     const pending = Number(status.pending || 0);
-    const items = [
-      { label: "Pending events", value: pending },
-      { label: "Last sync", value: formatTimestamp(lastSync) },
-      { label: "Last ping", value: formatTimestamp(lastPing) },
-      { label: "Peers", value: Object.keys(peers).length }
-    ];
+    const daemonDetail = String(status.daemon_detail || "");
+    const daemonState = String(status.daemon_state || "unknown");
+    const daemonStateLabel = titleCase(daemonState);
+    const syncDisabled = daemonState === "disabled" || status.enabled === false;
+    if (syncMeta) {
+      const parts = syncDisabled
+        ? ["State: Disabled", "Sync is optional and currently off"]
+        : [
+            `State: ${daemonStateLabel}`,
+            `Peers: ${Object.keys(peers).length}`,
+            lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : "Last sync: never"
+          ];
+      if (daemonDetail && daemonState === "stopped") {
+        parts.push(`Detail: ${daemonDetail}`);
+      }
+      syncMeta.textContent = parts.join(" · ");
+    }
+    const items = syncDisabled
+      ? [
+          { label: "State", value: "Disabled" },
+          { label: "Mode", value: "Optional" },
+          { label: "Pending events", value: pending },
+          { label: "Last sync", value: "n/a" }
+        ]
+      : [
+          { label: "State", value: daemonStateLabel },
+          { label: "Pending events", value: pending },
+          { label: "Last sync", value: lastSync ? `${formatAgeShort(secondsSince(lastSync))} ago` : "never" },
+          { label: "Last ping", value: lastPing ? `${formatAgeShort(secondsSince(lastPing))} ago` : "never" }
+        ];
     items.forEach((item) => {
       const block = createElement("div", "stat");
       const value = createElement("div", "value", item.value);
@@ -591,7 +901,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       block.append(content);
       syncStatusGrid.appendChild(block);
     });
-    if (syncError || pingError) {
+    if (!syncDisabled && (syncError || pingError)) {
       const block = createElement("div", "stat");
       const value = createElement("div", "value", "Errors");
       const label = createElement(
@@ -604,7 +914,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       block.append(content);
       syncStatusGrid.appendChild(block);
     }
-    if (syncPayload && syncPayload.seconds_since_last) {
+    if (!syncDisabled && syncPayload && syncPayload.seconds_since_last) {
       const block = createElement("div", "stat");
       const value = createElement(
         "div",
@@ -617,7 +927,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       block.append(content);
       syncStatusGrid.appendChild(block);
     }
-    if (pingPayload && pingPayload.seconds_since_last) {
+    if (!syncDisabled && pingPayload && pingPayload.seconds_since_last) {
       const block = createElement("div", "stat");
       const value = createElement(
         "div",
@@ -630,6 +940,32 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       block.append(content);
       syncStatusGrid.appendChild(block);
     }
+    const actions = [];
+    if (daemonState === "stopped") {
+      actions.push({
+        label: "Sync daemon is stopped. Start it.",
+        command: "uv run codemem sync start"
+      });
+      actions.push({
+        label: "Then run one immediate sync pass.",
+        command: "uv run codemem sync once"
+      });
+    } else if (syncError || pingError || daemonState === "error") {
+      actions.push({
+        label: "Sync reports errors. Restart now and run one immediate pass.",
+        command: "uv run codemem sync restart && uv run codemem sync once"
+      });
+      actions.push({
+        label: "Then run doctor for root cause details.",
+        command: "uv run codemem sync doctor"
+      });
+    } else if (!syncDisabled && pending > 0) {
+      actions.push({
+        label: "Pending sync work detected. Run one pass now.",
+        command: "uv run codemem sync once"
+      });
+    }
+    renderActionList(syncActions, actions);
   }
   function pickPrimaryAddress(addresses) {
     if (!Array.isArray(addresses)) return "";
@@ -1381,9 +1717,15 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       const stats = statsPayload || {};
       const sessions = sessionsPayload || {};
       const rawEvents = rawEventsPayload || {};
+      lastStatsPayload = stats;
+      lastUsagePayload = usagePayload || {};
+      lastRawEventsPayload = rawEvents;
       renderStats(stats, usagePayload, currentProject, rawEvents);
       renderSessionSummary(sessions, usagePayload, currentProject);
-      renderSyncHealth(stats.sync_health || {});
+      if (!lastSyncStatus) {
+        renderSyncHealth(stats.sync_health || {});
+      }
+      renderHealthOverview();
     } catch {
       if (metaLine) metaLine.textContent = "Stats unavailable";
     }
@@ -1451,16 +1793,16 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       const resp = await fetch(`/api/sync/status${diagParam}`);
       if (!resp.ok) return;
       const payload = await resp.json();
-      lastSyncStatus = payload.status || null;
+      const statusPayload = payload.status && typeof payload.status === "object" ? payload.status : null;
+      if (statusPayload) {
+        lastSyncStatus = statusPayload;
+      }
       lastSyncPeers = payload.peers || [];
       lastSyncAttempts = payload.attempts || [];
       renderSyncStatus(lastSyncStatus);
       renderSyncPeers(lastSyncPeers);
       renderSyncAttempts(lastSyncAttempts);
-      if (syncMeta) {
-        const last = lastSyncStatus?.last_sync_at || lastSyncStatus?.last_sync_at_utc || "";
-        syncMeta.textContent = last ? `Last sync: ${formatTimestamp(last)}` : "Sync ready";
-      }
+      renderHealthOverview();
       renderSyncHealth({
         status: lastSyncStatus?.daemon_state || "unknown",
         details: lastSyncStatus?.daemon_state === "error" ? "daemon error" : ""

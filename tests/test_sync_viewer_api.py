@@ -27,6 +27,21 @@ def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("CODEMEM_DB", str(db_path))
     monkeypatch.setenv("CODEMEM_KEYS_DIR", str(tmp_path / "keys"))
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": [],
+                "sync_projects_exclude": [],
+            },
+        )(),
+    )
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)

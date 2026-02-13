@@ -12,6 +12,7 @@ from ..store import MemoryStore
 from ..sync.discovery import load_peer_addresses, normalize_address
 from ..sync.sync_pass import sync_once
 from ..sync_identity import ensure_device_identity, load_public_key
+from ..sync_runtime import effective_status
 
 PAIRING_FILTER_HINT = (
     "Run this on another device with codemem sync pair --accept '<payload>'. "
@@ -128,9 +129,14 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         last_error = daemon_state.get("last_error")
         last_error_at = daemon_state.get("last_error_at")
         last_ok_at = daemon_state.get("last_ok_at")
+        runtime_status = effective_status(str(config.sync_host), int(config.sync_port))
         daemon_state_value = "ok"
-        if last_error and (not last_ok_at or str(last_ok_at) < str(last_error_at or "")):
+        if not config.sync_enabled:
+            daemon_state_value = "disabled"
+        elif last_error and (not last_ok_at or str(last_ok_at) < str(last_error_at or "")):
             daemon_state_value = "error"
+        elif not runtime_status.running:
+            daemon_state_value = "stopped"
 
         include = getattr(config, "sync_projects_include", []) or []
         exclude = getattr(config, "sync_projects_exclude", []) or []
@@ -141,6 +147,8 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             "peer_count": int(peer_count["total"]) if peer_count else 0,
             "last_sync_at": last_sync["last_sync_at"] if last_sync else None,
             "daemon_state": daemon_state_value,
+            "daemon_running": bool(runtime_status.running),
+            "daemon_detail": runtime_status.detail,
             "project_filter_active": project_filter_active,
             "project_filter": {"include": include, "exclude": exclude},
             "redacted": not include_diagnostics,

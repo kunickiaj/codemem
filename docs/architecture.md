@@ -32,7 +32,11 @@ The plugin uses an adaptive flush strategy optimized for OpenCode's multi-sessio
 - 50+ tool executions OR 15+ prompts
 - 10+ minutes continuous work
 
-**Note:** Streamed raw events are sent continuously; there is no plugin-side CLI fallback.
+### Stream reliability and failure semantics
+- Plugin stream health preflight: `GET /api/raw-events/status`
+- Event ingest path: `POST /api/raw-events`
+- Stream failures are handled in-plugin with a backoff window (`CODEMEM_RAW_EVENTS_BACKOFF_MS`) and periodic preflight checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`).
+- Once batches are accepted by the viewer/store queue, flush workers own retries (`codemem raw-events-retry`, sweeper/idle flush).
 
 ## Sessions and memory persistence
 - A **session** is created per ingest payload (one plugin flush).
@@ -53,6 +57,7 @@ The plugin uses an adaptive flush strategy optimized for OpenCode's multi-sessio
 ## Viewer
 - Implemented in `codemem/viewer.py` as an embedded HTML page.
 - Serves JSON APIs for stats, sessions, memory items, and config.
+- Viewer stats cards are sourced from `/api/stats`, `/api/usage`, and `/api/raw-events`.
 - Restart required to pick up HTML changes.
 
 ## Context injection
