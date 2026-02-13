@@ -168,6 +168,9 @@ def test_is_sync_daemon_command_accepts_direct_and_wrapped_invocations() -> None
     )
     assert sync_runtime._is_sync_daemon_command("python -m codemem sync daemon")
     assert sync_runtime._is_sync_daemon_command(
+        "/opt/homebrew/bin/python3 /Users/adam/workspace/codemem/.venv/bin/codemem sync daemon --host 0.0.0.0 --port 7337"
+    )
+    assert sync_runtime._is_sync_daemon_command(
         "codemem sync daemon --db-path /home/o'connor/.codemem/mem.sqlite"
     )
 
