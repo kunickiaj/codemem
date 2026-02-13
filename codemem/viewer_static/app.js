@@ -701,11 +701,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const tagCoverage = Number(dbStats.tags_coverage || 0);
     const syncState = String(syncStatus.daemon_state || "unknown");
     const syncStateLabel = titleCase(syncState);
+    const peerCount = Array.isArray(lastSyncPeers) ? lastSyncPeers.length : 0;
     const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
+    const syncNoPeers = !syncDisabled && peerCount === 0;
+    const syncCardValue = syncDisabled ? "Disabled" : syncNoPeers ? "No peers" : syncStateLabel;
     const lastSyncAt = syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null;
     const syncAgeSeconds = secondsSince(lastSyncAt);
     const packAgeSeconds = secondsSince(lastPackAt);
-    const peerCount = Array.isArray(lastSyncPeers) ? lastSyncPeers.length : 0;
     const syncLooksStale = syncAgeSeconds !== null && syncAgeSeconds > 7200;
     const hasBacklog = rawPending >= 200;
     let riskScore = 0;
@@ -732,7 +734,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       riskScore += 10;
       drivers.push("non-trivial dropped-event rate");
     }
-    if (!syncDisabled) {
+    if (!syncDisabled && !syncNoPeers) {
       if (syncState === "error") {
         riskScore += 36;
         drivers.push("sync daemon reports errors");
@@ -770,7 +772,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens`;
     const pipelineDetail = rawPending > 0 ? "Queue is actively draining" : "Queue is clear";
-    const syncDetail = syncDisabled ? "Sync disabled" : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
+    const syncDetail = syncDisabled ? "Sync disabled" : syncNoPeers ? "No peers configured" : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
     const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
     const cards = [
       buildHealthCard({
@@ -797,7 +799,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       }),
       buildHealthCard({
         label: "Sync health",
-        value: syncStateLabel,
+        value: syncCardValue,
         detail: syncDetail,
         icon: "refresh-cw",
         title: "Daemon state and sync recency"
@@ -826,7 +828,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         label: "Sync daemon is stopped. Start the background service.",
         command: "uv run codemem sync start"
       });
-    } else if (!syncDisabled && (syncState === "error" || syncState === "degraded")) {
+    } else if (!syncDisabled && !syncNoPeers && (syncState === "error" || syncState === "degraded")) {
       recommendations.push({
         label: "Sync is unhealthy. Restart now and run one immediate pass.",
         command: "uv run codemem sync restart && uv run codemem sync once"
@@ -835,7 +837,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         label: "Then run doctor to see root cause details.",
         command: "uv run codemem sync doctor"
       });
-    } else if (!syncDisabled && syncLooksStale) {
+    } else if (!syncDisabled && !syncNoPeers && syncLooksStale) {
       recommendations.push({
         label: "Sync is stale. Run one immediate sync pass.",
         command: "uv run codemem sync once"
@@ -885,10 +887,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const daemonState = String(status.daemon_state || "unknown");
     const daemonStateLabel = titleCase(daemonState);
     const syncDisabled = daemonState === "disabled" || status.enabled === false;
+    const peerCount = Object.keys(peers).length;
+    const syncNoPeers = !syncDisabled && peerCount === 0;
     if (syncMeta) {
-      const parts = syncDisabled ? ["State: Disabled", "Sync is optional and currently off"] : [
+      const parts = syncDisabled ? ["State: Disabled", "Sync is optional and currently off"] : syncNoPeers ? ["State: No peers", "Add peers to enable replication"] : [
         `State: ${daemonStateLabel}`,
-        `Peers: ${Object.keys(peers).length}`,
+        `Peers: ${peerCount}`,
         lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : "Last sync: never"
       ];
       if (daemonDetail && daemonState === "stopped") {
@@ -899,6 +903,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const items = syncDisabled ? [
       { label: "State", value: "Disabled" },
       { label: "Mode", value: "Optional" },
+      { label: "Pending events", value: pending },
+      { label: "Last sync", value: "n/a" }
+    ] : syncNoPeers ? [
+      { label: "State", value: "No peers" },
+      { label: "Mode", value: "Idle" },
       { label: "Pending events", value: pending },
       { label: "Last sync", value: "n/a" }
     ] : [
@@ -922,7 +931,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       block.append(content);
       syncStatusGrid.appendChild(block);
     });
-    if (!syncDisabled && (syncError || pingError)) {
+    if (!syncDisabled && !syncNoPeers && (syncError || pingError)) {
       const block = createElement("div", "stat");
       const value = createElement("div", "value", "Errors");
       const label = createElement(
@@ -935,7 +944,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       block.append(content);
       syncStatusGrid.appendChild(block);
     }
-    if (!syncDisabled && syncPayload && syncPayload.seconds_since_last) {
+    if (!syncDisabled && !syncNoPeers && syncPayload && syncPayload.seconds_since_last) {
       const block = createElement("div", "stat");
       const value = createElement(
         "div",
@@ -948,7 +957,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       block.append(content);
       syncStatusGrid.appendChild(block);
     }
-    if (!syncDisabled && pingPayload && pingPayload.seconds_since_last) {
+    if (!syncDisabled && !syncNoPeers && pingPayload && pingPayload.seconds_since_last) {
       const block = createElement("div", "stat");
       const value = createElement(
         "div",
@@ -962,7 +971,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       syncStatusGrid.appendChild(block);
     }
     const actions = [];
-    if (daemonState === "stopped") {
+    if (syncNoPeers) ;
+    else if (daemonState === "stopped") {
       actions.push({
         label: "Sync daemon is stopped. Start it.",
         command: "uv run codemem sync start"
@@ -980,7 +990,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         label: "Then run doctor for root cause details.",
         command: "uv run codemem sync doctor"
       });
-    } else if (!syncDisabled && pending > 0) {
+    } else if (!syncDisabled && !syncNoPeers && pending > 0) {
       actions.push({
         label: "Pending sync work detected. Run one pass now.",
         command: "uv run codemem sync once"
