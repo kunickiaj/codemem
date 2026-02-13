@@ -220,6 +220,17 @@ def _matches_sync_daemon_invocation(
         ):
             return True
 
+    if start + 3 < len(tokens):
+        binary_name = _normalized_binary_name(tokens[start]).removesuffix(".exe")
+        script_name = _normalized_binary_name(tokens[start + 1]).removesuffix(".exe")
+        if (
+            (binary_name == "py" or binary_name.startswith("python"))
+            and script_name in allowed_binaries
+            and lowered[start + 2] == "sync"
+            and lowered[start + 3] == "daemon"
+        ):
+            return True
+
     return False
 
 
