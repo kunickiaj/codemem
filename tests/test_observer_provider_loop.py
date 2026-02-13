@@ -48,6 +48,13 @@ def _target_providers() -> list[str]:
     return ["openai", "anthropic"]
 
 
+def _selected_provider() -> str | None:
+    selected = (os.getenv("CODEMEM_TEST_PROVIDER") or "").strip().lower()
+    if selected in {"openai", "anthropic"}:
+        return selected
+    return None
+
+
 def _make_openai_backend(behavior: str, attempts: list[str]) -> SimpleNamespace:
     class OpenAIChatCompletions:
         def create(self, **_kwargs):
@@ -128,6 +135,8 @@ def test_provider_loop_scenarios_match_expected(provider: str, scenario: Scenari
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s.name for s in SCENARIOS])
 def test_provider_loop_semantics_equivalent_across_adapters(scenario: Scenario) -> None:
+    if _selected_provider() is not None:
+        pytest.skip("cross-adapter equivalence runs only when CODEMEM_TEST_PROVIDER is unset")
     openai_result = _run_scenario("openai", scenario)
     anthropic_result = _run_scenario("anthropic", scenario)
     assert openai_result["output"] == anthropic_result["output"]

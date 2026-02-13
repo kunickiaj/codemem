@@ -28,6 +28,31 @@ def test_read_judged_queries_requires_query() -> None:
         read_judged_queries('{"relevant_ids": [1]}')
 
 
+def test_read_judged_queries_requires_relevant_ids_array() -> None:
+    with pytest.raises(ValueError, match="'relevant_ids' must be an array"):
+        read_judged_queries('{"query": "alpha", "relevant_ids": "123"}')
+
+
+def test_read_judged_queries_rejects_duplicate_rows() -> None:
+    with pytest.raises(ValueError, match="duplicate judged query row"):
+        read_judged_queries(
+            """
+            {"query": "alpha", "relevant_ids": [1], "filters": {"project": "p"}}
+            {"query": "alpha", "relevant_ids": [1], "filters": {"project": "p"}}
+            """
+        )
+
+
+def test_read_judged_queries_rejects_duplicate_rows_with_permuted_relevant_ids() -> None:
+    with pytest.raises(ValueError, match="duplicate judged query row"):
+        read_judged_queries(
+            """
+            {"query": "alpha", "relevant_ids": [1, 2], "filters": {"project": "p"}}
+            {"query": "alpha", "relevant_ids": [2, 1], "filters": {"project": "p"}}
+            """
+        )
+
+
 def test_run_hybrid_eval_computes_delta_and_restores_flags() -> None:
     class FakeStore:
         def __init__(self) -> None:
@@ -93,3 +118,49 @@ def test_hybrid_eval_cmd_fails_when_threshold_not_met(
         )
     assert exc.value.exit_code == 1
     assert "threshold failed" in capsys.readouterr().out
+
+
+def test_run_hybrid_eval_precision_uses_requested_k_denominator() -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self._hybrid_retrieval_enabled = False
+            self._hybrid_retrieval_shadow_log = True
+
+        def build_memory_pack(
+            self, context, limit=8, token_budget=None, filters=None, log_usage=True
+        ):
+            if self._hybrid_retrieval_enabled:
+                return {"items": [{"id": 1}]}
+            return {"items": []}
+
+    payload = run_hybrid_eval(
+        store=FakeStore(),  # type: ignore[arg-type]
+        judged_queries=[{"query": "alpha", "relevant_ids": [1], "filters": None}],
+        limit=4,
+    )
+
+    assert payload["summary"]["hybrid"]["precision"] == 0.25
+    assert payload["summary"]["hybrid"]["recall"] == 1.0
+
+
+def test_run_hybrid_eval_deduplicates_hits_for_recall() -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self._hybrid_retrieval_enabled = False
+            self._hybrid_retrieval_shadow_log = True
+
+        def build_memory_pack(
+            self, context, limit=8, token_budget=None, filters=None, log_usage=True
+        ):
+            if self._hybrid_retrieval_enabled:
+                return {"items": [{"id": 1}, {"id": 1}]}
+            return {"items": [{"id": 1}, {"id": 1}]}
+
+    payload = run_hybrid_eval(
+        store=FakeStore(),  # type: ignore[arg-type]
+        judged_queries=[{"query": "alpha", "relevant_ids": [1], "filters": None}],
+        limit=2,
+    )
+
+    assert payload["summary"]["baseline"]["recall"] == 1.0
+    assert payload["summary"]["hybrid"]["recall"] == 1.0

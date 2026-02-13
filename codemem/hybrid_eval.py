@@ -16,6 +16,7 @@ class JudgedQuery(TypedDict):
 
 def read_judged_queries(text: str) -> list[JudgedQuery]:
     rows: list[JudgedQuery] = []
+    seen: set[tuple[str, tuple[int, ...], str]] = set()
     for line in (text or "").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -24,11 +25,24 @@ def read_judged_queries(text: str) -> list[JudgedQuery]:
         query = str(payload.get("query") or "").strip()
         if not query:
             raise ValueError("each judged query must include non-empty 'query'")
-        relevant_ids_raw = payload.get("relevant_ids") or []
+        relevant_ids_raw = payload.get("relevant_ids")
+        if relevant_ids_raw is None:
+            relevant_ids_raw = []
+        if not isinstance(relevant_ids_raw, list):
+            raise ValueError("'relevant_ids' must be an array when provided")
         relevant_ids = [int(item) for item in relevant_ids_raw]
         filters = payload.get("filters")
         if filters is not None and not isinstance(filters, dict):
             raise ValueError("'filters' must be an object when provided")
+        normalized_relevant_ids = tuple(sorted(set(relevant_ids)))
+        key = (
+            query,
+            normalized_relevant_ids,
+            json.dumps(filters or {}, sort_keys=True, separators=(",", ":")),
+        )
+        if key in seen:
+            raise ValueError("duplicate judged query row detected")
+        seen.add(key)
         rows.append(
             {
                 "query": query,
@@ -42,12 +56,14 @@ def read_judged_queries(text: str) -> list[JudgedQuery]:
 
 
 def _precision_recall(
-    result_ids: Sequence[int], relevant_ids: set[int]
+    result_ids: Sequence[int], relevant_ids: set[int], *, k: int
 ) -> tuple[float, float, int]:
-    if not result_ids:
+    if k <= 0:
         return 0.0, 0.0, 0
-    hits = sum(1 for memory_id in result_ids if memory_id in relevant_ids)
-    precision = float(hits) / float(len(result_ids))
+    top_ids = list(result_ids)[:k]
+    unique_top_ids = set(top_ids)
+    hits = len(unique_top_ids & relevant_ids)
+    precision = float(hits) / float(k)
     recall = float(hits) / float(len(relevant_ids)) if relevant_ids else 0.0
     return precision, recall, hits
 
@@ -58,6 +74,8 @@ def run_hybrid_eval(
     judged_queries: list[JudgedQuery],
     limit: int,
 ) -> dict[str, Any]:
+    if limit <= 0:
+        raise ValueError("limit must be greater than 0")
     previous_hybrid_enabled = bool(store._hybrid_retrieval_enabled)
     previous_shadow_log = bool(store._hybrid_retrieval_shadow_log)
     per_query: list[dict[str, Any]] = []
@@ -86,7 +104,7 @@ def run_hybrid_eval(
                 for item in baseline_pack.get("items") or []
                 if isinstance(item, dict) and item.get("id") is not None
             ]
-            b_precision, b_recall, b_hits = _precision_recall(baseline_ids, relevant)
+            b_precision, b_recall, b_hits = _precision_recall(baseline_ids, relevant, k=limit)
 
             store._hybrid_retrieval_enabled = True
             hybrid_pack = store.build_memory_pack(
@@ -101,7 +119,7 @@ def run_hybrid_eval(
                 for item in hybrid_pack.get("items") or []
                 if isinstance(item, dict) and item.get("id") is not None
             ]
-            h_precision, h_recall, h_hits = _precision_recall(hybrid_ids, relevant)
+            h_precision, h_recall, h_hits = _precision_recall(hybrid_ids, relevant, k=limit)
 
             baseline_precision.append(b_precision)
             baseline_recall.append(b_recall)
