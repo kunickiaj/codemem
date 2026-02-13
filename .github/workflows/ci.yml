@@ -147,3 +147,78 @@ jobs:
       
       - name: Run ruff format check
         run: uv run ruff format --check codemem tests
+
+  plugin-smoke:
+    name: Plugin Smoke (npm install + load)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install codemem runtime dependencies
+        run: uv sync --python 3.14
+
+      - name: Pack and install npm package locally
+        run: |
+          test "$(npm config get registry)" = "https://registry.npmjs.org/"
+          PACKAGE_TGZ=$(npm pack --silent)
+          mkdir -p .tmp/plugin-smoke
+          npm init -y --prefix .tmp/plugin-smoke >/dev/null
+          npm install --prefix .tmp/plugin-smoke --no-audit --no-fund --ignore-scripts "./${PACKAGE_TGZ}"
+
+      - name: Assert codemem CLI reachable via plugin runtime path
+        run: uv run --directory "${GITHUB_WORKSPACE}" codemem version
+
+      - name: Verify plugin initializes in OpenCode-like runtime
+        run: |
+          CODEMEM_RUNNER=uv \
+          CODEMEM_RUNNER_FROM="${GITHUB_WORKSPACE}" \
+          CODEMEM_VIEWER=0 \
+          CODEMEM_INJECT_CONTEXT=0 \
+          bun --cwd .tmp/plugin-smoke -e "
+            import pluginFactory from '@kunickiaj/codemem';
+            if (typeof pluginFactory !== 'function') {
+              throw new Error('default export must be a function');
+            }
+            const plugin = await pluginFactory({
+              project: { name: 'smoke-project', root: process.cwd() },
+              directory: process.cwd(),
+              worktree: process.cwd(),
+              client: {
+                app: { log: async () => {} },
+                tui: { showToast: async () => {} },
+              },
+            });
+            if (!plugin || typeof plugin !== 'object') {
+              throw new Error('plugin factory must return hooks object');
+            }
+            if (typeof plugin.event !== 'function') {
+              throw new Error('plugin must expose event hook');
+            }
+            await plugin.event({ event: { type: 'session.created' } });
+            await plugin.event({
+              event: {
+                type: 'tool.execute.after',
+                properties: { tool: 'read', args: { filePath: 'README.md' } },
+              },
+            });
+          "
