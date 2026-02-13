@@ -40,20 +40,26 @@ jobs:
 
           root = Path(".")
           package_json = json.loads((root / "package.json").read_text(encoding="utf-8"))
-          opencode_json = json.loads((root / ".opencode" / "package.json").read_text(encoding="utf-8"))
-
           root_dep = package_json.get("dependencies", {}).get("@opencode-ai/plugin")
-          opencode_dep = opencode_json.get("dependencies", {}).get("@opencode-ai/plugin")
-          if not root_dep or not opencode_dep:
-            print("Missing @opencode-ai/plugin dependency declaration in package manifests")
-            sys.exit(1)
-          if root_dep != opencode_dep:
-            print("@opencode-ai/plugin version mismatch detected:")
-            print(f"- package.json: {root_dep}")
-            print(f"- .opencode/package.json: {opencode_dep}")
+          if not root_dep:
+            print("Missing @opencode-ai/plugin dependency declaration in package.json")
             sys.exit(1)
 
-          print(f"@opencode-ai/plugin alignment OK: {root_dep}")
+          opencode_manifest = root / ".opencode" / "package.json"
+          if opencode_manifest.exists():
+            opencode_json = json.loads(opencode_manifest.read_text(encoding="utf-8"))
+            opencode_dep = opencode_json.get("dependencies", {}).get("@opencode-ai/plugin")
+            if not opencode_dep:
+              print("Missing @opencode-ai/plugin in .opencode/package.json")
+              sys.exit(1)
+            if root_dep != opencode_dep:
+              print("@opencode-ai/plugin version mismatch detected:")
+              print(f"- package.json: {root_dep}")
+              print(f"- .opencode/package.json: {opencode_dep}")
+              sys.exit(1)
+            print(f"@opencode-ai/plugin alignment OK: {root_dep}")
+          else:
+            print(f"@opencode-ai/plugin pinned in package.json: {root_dep}")
           PY
 
       - name: Set up Bun
