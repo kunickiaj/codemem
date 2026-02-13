@@ -224,6 +224,11 @@
         gap: 12px;
         margin-bottom: 10px;
       }
+      .section-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
       .section-header h2 {
         margin: 0;
       }
@@ -343,6 +348,81 @@
         color: var(--accent-3);
       }
       .stat .label { color: var(--muted); font-size: 12px; }
+      .health-strip {
+        border-width: 1.5px;
+        background: linear-gradient(
+          135deg,
+          rgba(31, 111, 92, 0.08),
+          rgba(230, 126, 77, 0.08),
+          rgba(34, 58, 94, 0.08)
+        );
+      }
+      .health-strip .grid-2 {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      }
+      .health-actions {
+        display: grid;
+        gap: 8px;
+        margin: 10px 0 14px;
+      }
+      .health-action {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.06);
+      }
+      [data-theme="dark"] .health-action {
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .health-action-text {
+        color: var(--text);
+        font-size: 13px;
+      }
+      .health-action-command {
+        display: block;
+        margin-top: 2px;
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .health-action-copy {
+        flex-shrink: 0;
+      }
+      .health-primary {
+        border-width: 2px;
+      }
+      .health-primary .value {
+        font-size: 24px;
+        letter-spacing: 0.3px;
+      }
+      .status-healthy {
+        color: var(--accent);
+      }
+      .status-degraded {
+        color: var(--accent-2);
+      }
+      .status-attention {
+        color: #b64b2f;
+      }
+      .health-primary.status-healthy .value {
+        color: var(--accent);
+      }
+      .health-primary.status-degraded .value {
+        color: var(--accent-2);
+      }
+      .health-primary.status-attention .value {
+        color: #b64b2f;
+      }
+      [data-theme="dark"] .status-attention {
+        color: #ff9664;
+      }
+      [data-theme="dark"] .health-primary.status-attention .value {
+        color: #ff9664;
+      }
       .refresh {
         margin-left: auto;
         font-size: 12px;
@@ -398,6 +478,50 @@
       }
       .sync-section .grid-2 {
         gap: 10px;
+      }
+      .sync-actions {
+        display: grid;
+        gap: 8px;
+        margin: 8px 0 12px;
+      }
+      .sync-action {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.05);
+      }
+      [data-theme="dark"] .sync-action {
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .sync-action-text {
+        font-size: 13px;
+        color: var(--text);
+      }
+      .sync-action-command {
+        display: block;
+        margin-top: 2px;
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .diag-group {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+        margin-top: 10px;
+        background: rgba(0, 0, 0, 0.03);
+      }
+      [data-theme="dark"] .diag-group {
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .diag-group summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 13px;
       }
       .peer-list {
         display: grid;
@@ -1260,7 +1384,18 @@
         </div>
       </div>
     <main>
-      <div class="summary-row">
+      <section class="health-strip">
+        <div class="section-header">
+          <h2>System health</h2>
+          <div class="section-actions">
+            <button class="settings-button" id="detailsToggle">Details</button>
+          </div>
+        </div>
+        <div class="section-meta" id="healthMeta">Assessing health signals…</div>
+        <div class="health-actions" id="healthActions"></div>
+        <div class="grid-2" id="healthGrid"></div>
+      </section>
+      <div class="summary-row" id="detailsRow" hidden>
         <section>
           <h2>Stats</h2>
           <div class="grid-2" id="statsGrid"></div>
@@ -1281,6 +1416,7 @@
           </div>
         </div>
         <div class="section-meta" id="syncMeta">Loading sync status…</div>
+        <div class="sync-actions" id="syncActions"></div>
         <div class="grid-2" id="syncHealthGrid"></div>
         <div id="syncDiagnostics" hidden>
           <div class="section-meta">
@@ -1290,8 +1426,14 @@
             </label>
           </div>
           <div class="grid-2" id="syncStatusGrid"></div>
-          <div class="peer-list" id="syncPeers"></div>
-          <div class="attempts-list" id="syncAttempts"></div>
+          <details class="diag-group">
+            <summary>Peers</summary>
+            <div class="peer-list" id="syncPeers"></div>
+          </details>
+          <details class="diag-group">
+            <summary>Recent sync attempts</summary>
+            <div class="attempts-list" id="syncAttempts"></div>
+          </details>
         </div>
           <div class="pairing-card" id="syncPairing" hidden>
           <div class="peer-title">
