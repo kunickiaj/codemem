@@ -603,7 +603,14 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (!text) return "Unknown";
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
-  function buildHealthCard({ label, value, detail, icon, className, title }) {
+  function buildHealthCard({
+    label,
+    value,
+    detail,
+    icon,
+    className,
+    title
+  }) {
     const card = createElement("div", `stat${className ? ` ${className}` : ""}`);
     if (title) {
       card.title = title;
@@ -611,7 +618,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     if (icon) {
       const iconNode = document.createElement("i");
-      iconNode.setAttribute("data-lucide", icon);
+      iconNode.setAttribute("data-lucide", String(icon));
       iconNode.className = "stat-icon";
       card.appendChild(iconNode);
     }
@@ -648,13 +655,25 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     container.hidden = false;
     list.slice(0, 2).forEach((item) => {
-      const row = createElement("div", container === syncActions ? "sync-action" : "health-action");
-      const textWrap = createElement("div", container === syncActions ? "sync-action-text" : "health-action-text");
+      const isSync = container === syncActions;
+      const row = createElement("div", isSync ? "sync-action" : "health-action");
+      const textWrap = createElement(
+        "div",
+        isSync ? "sync-action-text" : "health-action-text"
+      );
       textWrap.textContent = item.label;
-      const command = createElement("span", container === syncActions ? "sync-action-command" : "health-action-command", item.command);
+      const command = createElement(
+        "span",
+        isSync ? "sync-action-command" : "health-action-command",
+        item.command
+      );
       textWrap.appendChild(command);
-      const button = createElement("button", `settings-button ${container === syncActions ? "sync-action-copy" : "health-action-copy"}`, "Copy");
-      button.addEventListener("click", () => copyCommand(item.command, button));
+      const button = createElement(
+        "button",
+        `settings-button ${isSync ? "sync-action-copy" : "health-action-copy"}`,
+        "Copy"
+      );
+      button.addEventListener("click", () => copyCommand(String(item.command), button));
       row.append(textWrap, button);
       container.appendChild(row);
     });
@@ -675,7 +694,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : null;
     const rawPending = Number(raw.pending || 0);
     const erroredBatches = Number(counts.errored_batches || 0);
-    const flushSuccessRate = Number(rates.flush_success_rate || 1);
+    const flushSuccessRate = Number(rates.flush_success_rate ?? 1);
     const droppedRate = Number(rates.dropped_event_rate || 0);
     const reductionLabel = formatReductionPercent(totals.tokens_saved, totals.tokens_read);
     const reductionPercent = parsePercentValue(reductionLabel);
@@ -709,7 +728,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (droppedRate > 0.02) {
       riskScore += 24;
       drivers.push("high dropped-event rate");
-    } else if (droppedRate > 0.005) {
+    } else if (droppedRate > 5e-3) {
       riskScore += 10;
       drivers.push("non-trivial dropped-event rate");
     }
@@ -751,9 +770,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens`;
     const pipelineDetail = rawPending > 0 ? "Queue is actively draining" : "Queue is clear";
-    const syncDetail = syncDisabled
-      ? "Sync disabled"
-      : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
+    const syncDetail = syncDisabled ? "Sync disabled" : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
     const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
     const cards = [
       buildHealthCard({
@@ -832,7 +849,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     renderActionList(healthActions, recommendations);
     healthMeta.textContent = drivers.length ? `Why this status: ${drivers.join(", ")}.` : "Healthy right now. Diagnostics stay available if you want details.";
-    if (typeof globalThis.lucide !== "undefined") globalThis.lucide.createIcons();
+    if (typeof globalThis.lucide !== "undefined") {
+      globalThis.lucide.createIcons();
+    }
   }
   function redactAddress(address) {
     const raw = String(address || "");
@@ -867,31 +886,33 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const daemonStateLabel = titleCase(daemonState);
     const syncDisabled = daemonState === "disabled" || status.enabled === false;
     if (syncMeta) {
-      const parts = syncDisabled
-        ? ["State: Disabled", "Sync is optional and currently off"]
-        : [
-            `State: ${daemonStateLabel}`,
-            `Peers: ${Object.keys(peers).length}`,
-            lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : "Last sync: never"
-          ];
+      const parts = syncDisabled ? ["State: Disabled", "Sync is optional and currently off"] : [
+        `State: ${daemonStateLabel}`,
+        `Peers: ${Object.keys(peers).length}`,
+        lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : "Last sync: never"
+      ];
       if (daemonDetail && daemonState === "stopped") {
         parts.push(`Detail: ${daemonDetail}`);
       }
       syncMeta.textContent = parts.join(" · ");
     }
-    const items = syncDisabled
-      ? [
-          { label: "State", value: "Disabled" },
-          { label: "Mode", value: "Optional" },
-          { label: "Pending events", value: pending },
-          { label: "Last sync", value: "n/a" }
-        ]
-      : [
-          { label: "State", value: daemonStateLabel },
-          { label: "Pending events", value: pending },
-          { label: "Last sync", value: lastSync ? `${formatAgeShort(secondsSince(lastSync))} ago` : "never" },
-          { label: "Last ping", value: lastPing ? `${formatAgeShort(secondsSince(lastPing))} ago` : "never" }
-        ];
+    const items = syncDisabled ? [
+      { label: "State", value: "Disabled" },
+      { label: "Mode", value: "Optional" },
+      { label: "Pending events", value: pending },
+      { label: "Last sync", value: "n/a" }
+    ] : [
+      { label: "State", value: daemonStateLabel },
+      { label: "Pending events", value: pending },
+      {
+        label: "Last sync",
+        value: lastSync ? `${formatAgeShort(secondsSince(lastSync))} ago` : "never"
+      },
+      {
+        label: "Last ping",
+        value: lastPing ? `${formatAgeShort(secondsSince(lastPing))} ago` : "never"
+      }
+    ];
     items.forEach((item) => {
       const block = createElement("div", "stat");
       const value = createElement("div", "value", item.value);

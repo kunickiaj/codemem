@@ -7,6 +7,7 @@ from pathlib import Path
 
 from codemem import db, sync_identity
 from codemem.sync_identity import ensure_device_identity
+from codemem.sync_runtime import SyncRuntimeStatus
 from codemem.viewer import ViewerHandler
 
 
@@ -21,6 +22,28 @@ def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:
     private_key_path.parent.mkdir(parents=True, exist_ok=True)
     private_key_path.write_text("private-key")
     public_key_path.write_text("public-key")
+
+
+def _monkeypatch_sync_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": [],
+                "sync_projects_exclude": [],
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.effective_status",
+        lambda _host, _port: SyncRuntimeStatus(running=True, mechanism="test", detail=""),
+    )
 
 
 def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
@@ -121,6 +144,7 @@ def test_sync_status_marks_stale_peers_and_surfaces_recent_error(
 ) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -186,6 +210,7 @@ def test_sync_status_marks_stale_peers_and_surfaces_recent_error(
 def test_sync_status_ignores_stale_failure_for_top_level_error(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -246,6 +271,7 @@ def test_sync_status_marks_degraded_when_peer_is_fresh_but_has_error(
 ) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
