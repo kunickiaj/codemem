@@ -2,7 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 
-import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "./compat.js";
+import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "../lib/compat.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];

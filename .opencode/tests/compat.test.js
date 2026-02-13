@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "./compat.js";
+import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "../lib/compat.js";
 
 describe("parseSemver", () => {
   test("parses x.y.z versions", () => {

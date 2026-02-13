@@ -178,7 +178,7 @@ jobs:
         run: uv sync --python 3.14
 
       - name: Run plugin compatibility unit tests
-        run: bun test ./.opencode/plugin/compat.test.js
+        run: bun test ./.opencode/tests/compat.test.js
 
       - name: Pack and install npm package locally
         run: |
