@@ -76,6 +76,7 @@ codemem raw-events-retry <opencode_session_id>
 | `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` to enable; defaults to off). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
+| `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint. |
 | `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events. |
 | `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process. |
@@ -99,3 +100,14 @@ codemem raw-events-retry <opencode_session_id>
 | `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
 | `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
+
+## Compatibility guidance behavior
+
+When the plugin detects CLI/runtime version mismatch, it shows guidance based on runner mode:
+
+- `CODEMEM_RUNNER=uv`: pull latest in your repo, run `uv sync`, restart OpenCode
+- `CODEMEM_RUNNER=uvx` with git source: update `CODEMEM_RUNNER_FROM` to newer ref/source, restart OpenCode
+- `CODEMEM_RUNNER=uvx` with custom source: update `CODEMEM_RUNNER_FROM`, restart OpenCode
+- other/unknown runner: run `uv tool install --upgrade codemem`, restart OpenCode
+
+Compatibility checks are warning-only and do not block plugin startup.

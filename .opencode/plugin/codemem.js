@@ -2,6 +2,8 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 
+import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "./compat.js";
+
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
 
@@ -580,60 +582,9 @@ export const OpencodeMemPlugin = async ({
     return result;
   };
 
-  const parseSemver = (value) => {
-    const match = String(value || "").trim().match(/(\d+)\.(\d+)\.(\d+)/);
-    if (!match) return null;
-    return [Number(match[1]), Number(match[2]), Number(match[3])];
-  };
-
-  const isVersionAtLeast = (currentVersion, minVersion) => {
-    const current = parseSemver(currentVersion);
-    const minimum = parseSemver(minVersion);
-    if (!current || !minimum) return true;
-    for (let i = 0; i < 3; i += 1) {
-      if (current[i] > minimum[i]) return true;
-      if (current[i] < minimum[i]) return false;
-    }
-    return true;
-  };
-
-  const resolveUpgradeGuidance = () => {
-    const normalizedRunner = String(runner || "").trim();
-    const normalizedFrom = String(runnerFrom || "").trim();
-
-    if (normalizedRunner === "uv") {
-      return {
-        mode: "uv-dev",
-        action: "In your codemem repo, pull latest changes and run `uv sync`, then restart OpenCode.",
-        note: "detected dev repo mode",
-      };
-    }
-
-    if (normalizedRunner === "uvx") {
-      if (normalizedFrom.startsWith("git+") || normalizedFrom.includes(".git")) {
-        return {
-          mode: "uvx-git",
-          action: `Update CODEMEM_RUNNER_FROM to a newer git ref/source (current: ${normalizedFrom || "<unset>"}), then restart OpenCode.`,
-          note: "detected uvx git mode",
-        };
-      }
-      return {
-        mode: "uvx-custom",
-        action: `Update CODEMEM_RUNNER_FROM to a newer source (current: ${normalizedFrom || "<unset>"}), then restart OpenCode.`,
-        note: "detected uvx custom source mode",
-      };
-    }
-
-    return {
-      mode: "generic",
-      action: "Run `uv tool install --upgrade codemem`, then restart OpenCode.",
-      note: "fallback guidance",
-    };
-  };
-
   const verifyCliCompatibility = async () => {
     const minVersion = process.env.CODEMEM_MIN_VERSION || "0.9.20";
-    const versionResult = await runCli(["--version"]);
+    const versionResult = await runCli(["version"]);
     if (!versionResult || versionResult.exitCode !== 0) {
       await logLine(
         `compat.version_check_failed exit=${versionResult?.exitCode ?? "unknown"} stderr=${
@@ -647,7 +598,7 @@ export const OpencodeMemPlugin = async ({
     const parsedCurrent = parseSemver(currentVersion);
     const parsedMinimum = parseSemver(minVersion);
     if (!parsedCurrent || !parsedMinimum) {
-      const guidance = resolveUpgradeGuidance();
+      const guidance = resolveUpgradeGuidance({ runner, runnerFrom });
       await logLine(
         `compat.version_unparsed current=${redactLog(currentVersion || "")} required=${redactLog(minVersion)}`
       );
@@ -677,7 +628,7 @@ export const OpencodeMemPlugin = async ({
       return;
     }
 
-    const guidance = resolveUpgradeGuidance();
+    const guidance = resolveUpgradeGuidance({ runner, runnerFrom });
     const message = `codemem CLI ${currentVersion || "unknown"} is older than required ${minVersion}`;
     await log("warn", message, {
       currentVersion,

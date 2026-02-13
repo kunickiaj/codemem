@@ -11,7 +11,8 @@
     "index.js",
     "README.md",
     "LICENSE",
-    ".opencode/plugin/codemem.js"
+    ".opencode/plugin/codemem.js",
+    ".opencode/plugin/compat.js"
   ],
   "dependencies": {
     "@opencode-ai/plugin": "1.1.61"

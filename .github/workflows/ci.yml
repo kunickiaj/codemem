@@ -177,6 +177,9 @@ jobs:
       - name: Install codemem runtime dependencies
         run: uv sync --python 3.14
 
+      - name: Run plugin compatibility unit tests
+        run: bun test ./.opencode/plugin/compat.test.js
+
       - name: Pack and install npm package locally
         run: |
           test "$(npm config get registry)" = "https://registry.npmjs.org/"
@@ -192,10 +195,12 @@ jobs:
         run: |
           CODEMEM_RUNNER=uv \
           CODEMEM_RUNNER_FROM="${GITHUB_WORKSPACE}" \
+          CODEMEM_MIN_VERSION=999.0.0 \
           CODEMEM_VIEWER=0 \
           CODEMEM_INJECT_CONTEXT=0 \
           bun --cwd .tmp/plugin-smoke -e "
             import pluginFactory from '@kunickiaj/codemem';
+            const toastMessages = [];
             if (typeof pluginFactory !== 'function') {
               throw new Error('default export must be a function');
             }
@@ -205,7 +210,11 @@ jobs:
               worktree: process.cwd(),
               client: {
                 app: { log: async () => {} },
-                tui: { showToast: async () => {} },
+                tui: {
+                  showToast: async ({ body }) => {
+                    toastMessages.push(String(body?.message || ''));
+                  },
+                },
               },
             });
             if (!plugin || typeof plugin !== 'object') {
@@ -221,4 +230,10 @@ jobs:
                 properties: { tool: 'read', args: { filePath: 'README.md' } },
               },
             });
+            const sawCompatibilityWarning = toastMessages.some((msg) =>
+              msg.includes('older than required')
+            );
+            if (!sawCompatibilityWarning) {
+              throw new Error('expected compatibility warning toast from version probe');
+            }
           "
