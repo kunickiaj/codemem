@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG_PATH = Path("~/.config/codemem/config.json").expanduser()
+DEFAULT_CONFIG_PATH_JSONC = Path("~/.config/codemem/config.jsonc").expanduser()
 
 CONFIG_ENV_OVERRIDES = {
     "observer_provider": "CODEMEM_OBSERVER_PROVIDER",
@@ -31,8 +32,111 @@ CONFIG_ENV_OVERRIDES = {
 
 
 def get_config_path(path: Path | None = None) -> Path:
-    candidate = path or Path(os.getenv("CODEMEM_CONFIG", DEFAULT_CONFIG_PATH))
-    return candidate.expanduser()
+    if path is not None:
+        return path.expanduser()
+    env_path = os.getenv("CODEMEM_CONFIG")
+    if env_path:
+        return Path(env_path).expanduser()
+    if DEFAULT_CONFIG_PATH.exists():
+        return DEFAULT_CONFIG_PATH
+    if DEFAULT_CONFIG_PATH_JSONC.exists():
+        return DEFAULT_CONFIG_PATH_JSONC
+    return DEFAULT_CONFIG_PATH
+
+
+def _strip_json_comments(text: str) -> str:
+    result: list[str] = []
+    in_string = False
+    escape_next = False
+    in_block_comment = False
+    i = 0
+    while i < len(text):
+        char = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if in_block_comment:
+            if char == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+                continue
+            if char in {"\n", "\r"}:
+                result.append(char)
+            i += 1
+            continue
+        if escape_next:
+            result.append(char)
+            escape_next = False
+            i += 1
+            continue
+        if char == "\\" and in_string:
+            result.append(char)
+            escape_next = True
+            i += 1
+            continue
+        if char == '"':
+            in_string = not in_string
+            result.append(char)
+            i += 1
+            continue
+        if not in_string and char == "/" and nxt == "*":
+            in_block_comment = True
+            i += 2
+            continue
+        if not in_string and char == "/" and nxt == "/":
+            i += 2
+            while i < len(text) and text[i] not in {"\n", "\r"}:
+                i += 1
+            continue
+        result.append(char)
+        i += 1
+    if in_block_comment:
+        raise ValueError("unterminated block comment")
+    return "".join(result)
+
+
+def _strip_trailing_commas(text: str) -> str:
+    result: list[str] = []
+    in_string = False
+    escape_next = False
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if escape_next:
+            result.append(char)
+            escape_next = False
+            i += 1
+            continue
+        if char == "\\" and in_string:
+            result.append(char)
+            escape_next = True
+            i += 1
+            continue
+        if char == '"':
+            in_string = not in_string
+            result.append(char)
+            i += 1
+            continue
+        if not in_string and char == ",":
+            j = i + 1
+            while j < len(text) and text[j].isspace():
+                j += 1
+            if j < len(text) and text[j] in {"]", "}"}:
+                i += 1
+                continue
+        result.append(char)
+        i += 1
+    return "".join(result)
+
+
+def _load_json_with_jsonc_support(raw: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = _strip_json_comments(raw)
+        cleaned = _strip_trailing_commas(cleaned)
+        data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("config must be an object")
+    return data
 
 
 def read_config_file(path: Path | None = None) -> dict[str, Any]:
@@ -43,11 +147,9 @@ def read_config_file(path: Path | None = None) -> dict[str, Any]:
     if not raw.strip():
         return {}
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        data = _load_json_with_jsonc_support(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError("invalid config json") from exc
-    if not isinstance(data, dict):
-        raise ValueError("config must be an object")
     return data
 
 
@@ -121,8 +223,17 @@ def _parse_bool(value: str | None, default: bool) -> bool:
 def _parse_int(value: object, default: int, *, key: str) -> int:
     if value is None:
         return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if not isinstance(value, str):
+        warnings.warn(f"Invalid int for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+        return default
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         warnings.warn(f"Invalid int for {key}: {value!r}", RuntimeWarning, stacklevel=2)
         return default
@@ -144,8 +255,17 @@ def _coerce_bool(value: object, default: bool, *, key: str) -> bool:
 def _parse_float(value: object, default: float, *, key: str) -> float:
     if value is None:
         return default
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, float):
+        return value
+    if not isinstance(value, str):
+        warnings.warn(f"Invalid float for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+        return default
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(value)
     except (TypeError, ValueError):
         warnings.warn(f"Invalid float for {key}: {value!r}", RuntimeWarning, stacklevel=2)
         return default
@@ -171,8 +291,13 @@ def load_config(path: Path | None = None) -> OpencodeMemConfig:
     config_path = get_config_path(path)
     if config_path.exists():
         try:
-            data = json.loads(config_path.read_text())
-        except json.JSONDecodeError:
+            data = read_config_file(config_path)
+        except ValueError as exc:
+            warnings.warn(
+                f"Invalid config file {config_path}: {exc}; using defaults/env overrides",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             data = {}
         cfg = _apply_dict(cfg, data)
     cfg = _apply_env(cfg)

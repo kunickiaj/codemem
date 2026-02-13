@@ -16,6 +16,7 @@
 - Writes `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
+- Config file supports JSON and JSONC (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`).
 
 ## Memory persistence
 - A session is created per ingest payload.

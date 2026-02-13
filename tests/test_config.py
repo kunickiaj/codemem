@@ -3,12 +3,77 @@ from pathlib import Path
 
 import pytest
 
-from codemem.config import get_env_overrides, load_config, read_config_file, write_config_file
+from codemem.config import (
+    get_config_path,
+    get_env_overrides,
+    load_config,
+    read_config_file,
+    write_config_file,
+)
 
 
 def test_read_config_file_rejects_invalid_json(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text("{not-json}")
+    with pytest.raises(ValueError, match="invalid config json"):
+        read_config_file(config_path)
+
+
+def test_read_config_file_accepts_jsonc_comments_and_trailing_commas(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        """
+        {
+          // comment should be ignored
+          "observer_provider": "openai",
+          "observer_model": "gpt-5.1-codex-mini",
+        }
+        """
+    )
+
+    data = read_config_file(config_path)
+
+    assert data["observer_provider"] == "openai"
+    assert data["observer_model"] == "gpt-5.1-codex-mini"
+
+
+def test_read_config_file_accepts_jsonc_block_comments(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.jsonc"
+    config_path.write_text(
+        """
+        {
+          /* block comment */
+          "observer_provider": "anthropic",
+        }
+        """
+    )
+
+    data = read_config_file(config_path)
+
+    assert data["observer_provider"] == "anthropic"
+
+
+def test_read_config_file_preserves_comment_like_text_inside_strings(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.jsonc"
+    config_path.write_text(
+        """
+        {
+          "note": "not // a comment, keep comma, and slash",
+          "url": "https://example.com/a,b",
+        }
+        """
+    )
+
+    data = read_config_file(config_path)
+
+    assert data["note"] == "not // a comment, keep comma, and slash"
+    assert data["url"] == "https://example.com/a,b"
+
+
+def test_read_config_file_rejects_unterminated_block_comment(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.jsonc"
+    config_path.write_text('{"observer_provider": "openai"} /* broken')
+
     with pytest.raises(ValueError, match="invalid config json"):
         read_config_file(config_path)
 
@@ -19,6 +84,60 @@ def test_write_config_file_roundtrip(tmp_path: Path) -> None:
     write_config_file(data, config_path)
     assert json.loads(config_path.read_text()) == data
     assert read_config_file(config_path) == data
+
+
+def test_get_config_path_prefers_jsonc_when_json_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    json_path = tmp_path / "config.json"
+    jsonc_path = tmp_path / "config.jsonc"
+    jsonc_path.write_text('{"observer_provider": "anthropic"}\n')
+    monkeypatch.setattr("codemem.config.DEFAULT_CONFIG_PATH", json_path)
+    monkeypatch.setattr("codemem.config.DEFAULT_CONFIG_PATH_JSONC", jsonc_path)
+
+    assert get_config_path() == jsonc_path
+
+
+def test_get_config_path_prefers_json_when_both_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    json_path = tmp_path / "config.json"
+    jsonc_path = tmp_path / "config.jsonc"
+    json_path.write_text("{}\n")
+    jsonc_path.write_text("{}\n")
+    monkeypatch.setattr("codemem.config.DEFAULT_CONFIG_PATH", json_path)
+    monkeypatch.setattr("codemem.config.DEFAULT_CONFIG_PATH_JSONC", jsonc_path)
+
+    assert get_config_path() == json_path
+
+
+def test_load_config_reads_jsonc_file_when_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jsonc_path = tmp_path / "config.jsonc"
+    jsonc_path.write_text(
+        """
+        {
+          "observer_provider": "anthropic",
+          "sync_port": 7337,
+        }
+        """
+    )
+    monkeypatch.setenv("CODEMEM_CONFIG", str(jsonc_path))
+
+    cfg = load_config()
+
+    assert cfg.observer_provider == "anthropic"
+
+
+def test_load_config_warns_and_uses_defaults_on_invalid_json(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{broken-json")
+
+    with pytest.warns(RuntimeWarning, match="Invalid config file"):
+        cfg = load_config(config_path)
+
+    assert cfg.observer_provider is None
 
 
 def test_get_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
