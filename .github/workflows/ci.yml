@@ -237,3 +237,30 @@ jobs:
               throw new Error('expected compatibility warning toast from version probe');
             }
           "
+
+  provider-loop:
+    name: Provider Loop (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: ["openai", "anthropic"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --python 3.14
+
+      - name: Run provider-loop scenario suite
+        env:
+          CODEMEM_TEST_PROVIDER: ${{ matrix.provider }}
+        run: uv run pytest tests/test_observer_provider_loop.py -q -rA
