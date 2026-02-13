@@ -6,6 +6,8 @@ __pycache__/
 *.pid
 .DS_Store
 .pytest_cache/
+.coverage
+coverage.xml
 *.egg-info/
 .eggs/
 build/

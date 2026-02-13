@@ -131,6 +131,22 @@ def test_stop_pidfile_returns_ps_unavailable_reason(monkeypatch, tmp_path: Path)
     assert result.pid == 654
 
 
+def test_stop_pidfile_clears_stale_pidfile_when_process_not_running(
+    monkeypatch, tmp_path: Path
+) -> None:
+    pid_path = tmp_path / "sync.pid"
+    pid_path.write_text("98765\n")
+    monkeypatch.setenv("CODEMEM_SYNC_PID", str(pid_path))
+    monkeypatch.setattr(sync_runtime, "_pid_running", lambda pid: False)
+
+    result = sync_runtime.stop_pidfile_with_reason()
+
+    assert result.stopped is False
+    assert result.reason == "pid_not_running"
+    assert result.pid == 98765
+    assert not pid_path.exists()
+
+
 def test_pid_command_missing_ps_returns_none(monkeypatch) -> None:
     def _missing_ps(*_args, **_kwargs):
         raise FileNotFoundError
