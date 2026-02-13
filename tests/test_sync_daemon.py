@@ -512,6 +512,134 @@ def test_sync_once_includes_auth_reason_in_status_failure_detail(
         store.close()
 
 
+def test_sync_once_reports_per_address_failures(monkeypatch, tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.ensure_device_identity",
+            lambda conn, keys_dir=None: ("dev-local", "fp-local"),
+        )
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.build_auth_headers",
+            lambda **kwargs: {},
+        )
+
+        def fake_request_json(method: str, url: str, **kwargs):
+            if url.startswith("http://a1.local/") and url.endswith("/v1/status"):
+                return 401, {"error": "unauthorized", "reason": "unknown_peer"}
+            if url.startswith("http://a2.local/") and url.endswith("/v1/status"):
+                return 503, {"error": "unavailable"}
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+        monkeypatch.setattr(http_client, "request_json", fake_request_json)
+
+        result = sync_pass.sync_once(store, "peer-1", ["a1.local", "a2.local"], limit=10)
+        assert result["ok"] is False
+        assert str(result["error"]).startswith("all addresses failed | ")
+        assert "http://a1.local: peer status failed (401: unauthorized:unknown_peer)" in str(
+            result["error"]
+        )
+        assert "http://a2.local: peer status failed (503: unavailable)" in str(result["error"])
+        assert result["address_errors"] == [
+            {
+                "address": "http://a1.local",
+                "error": "peer status failed (401: unauthorized:unknown_peer)",
+            },
+            {"address": "http://a2.local", "error": "peer status failed (503: unavailable)"},
+        ]
+        attempt_row = store.conn.execute(
+            "SELECT error FROM sync_attempts WHERE peer_device_id = ? ORDER BY id DESC LIMIT 1",
+            ("peer-1",),
+        ).fetchone()
+        assert attempt_row is not None
+        assert "http://a1.local: peer status failed (401: unauthorized:unknown_peer)" in str(
+            attempt_row["error"]
+        )
+        assert "http://a2.local: peer status failed (503: unavailable)" in str(attempt_row["error"])
+    finally:
+        store.close()
+
+
+def test_sync_once_reports_transport_failure_in_per_address_errors(
+    monkeypatch, tmp_path: Path
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.ensure_device_identity",
+            lambda conn, keys_dir=None: ("dev-local", "fp-local"),
+        )
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.build_auth_headers",
+            lambda **kwargs: {},
+        )
+
+        def fake_request_json(method: str, url: str, **kwargs):
+            if url.startswith("http://a1.local/") and url.endswith("/v1/status"):
+                raise TimeoutError
+            if url.startswith("http://a2.local/") and url.endswith("/v1/status"):
+                return 401, {"error": "unauthorized", "reason": "unknown_peer"}
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+        monkeypatch.setattr(http_client, "request_json", fake_request_json)
+
+        result = sync_pass.sync_once(store, "peer-1", ["a1.local", "a2.local"], limit=10)
+
+        assert result["ok"] is False
+        assert result["address_errors"] == [
+            {"address": "http://a1.local", "error": "TimeoutError"},
+            {
+                "address": "http://a2.local",
+                "error": "peer status failed (401: unauthorized:unknown_peer)",
+            },
+        ]
+    finally:
+        store.close()
+
+
+def test_sync_once_reports_actionable_error_when_no_dialable_addresses(
+    monkeypatch, tmp_path: Path
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "fp-peer", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.ensure_device_identity",
+            lambda conn, keys_dir=None: ("dev-local", "fp-local"),
+        )
+
+        result = sync_pass.sync_once(store, "peer-1", ["", "   "], limit=10)
+
+        assert result["ok"] is False
+        assert result["error"] == "no dialable peer addresses"
+        assert result["address_errors"] == []
+        attempt_row = store.conn.execute(
+            "SELECT error FROM sync_attempts WHERE peer_device_id = ? ORDER BY id DESC LIMIT 1",
+            ("peer-1",),
+        ).fetchone()
+        assert attempt_row is not None
+        assert attempt_row["error"] == "no dialable peer addresses"
+    finally:
+        store.close()
+
+
 def test_sync_once_advances_last_acked_when_outbound_filtered(monkeypatch, tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:

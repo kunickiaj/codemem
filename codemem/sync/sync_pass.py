@@ -82,6 +82,13 @@ def _error_detail(payload: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _summarize_address_errors(address_errors: list[dict[str, str]]) -> str | None:
+    if not address_errors:
+        return None
+    parts = [f"{item['address']}: {item['error']}" for item in address_errors]
+    return "all addresses failed | " + " || ".join(parts)
+
+
 def sync_pass_preflight(
     store: MemoryStore,
     *,
@@ -129,6 +136,8 @@ def sync_once(
     keys_dir = Path(keys_dir_value).expanduser() if keys_dir_value else None
     device_id, _ = ensure_device_identity(store.conn, keys_dir=keys_dir)
     error: str | None = None
+    address_errors: list[dict[str, str]] = []
+    attempted_any = False
 
     def _push_ops(
         *,
@@ -173,6 +182,7 @@ def sync_once(
         base_url = http_client.build_base_url(address)
         if not base_url:
             continue
+        attempted_any = True
         try:
             status_url = f"{base_url}/v1/status"
             status_headers = build_auth_headers(
@@ -287,10 +297,16 @@ def sync_once(
                 "ops_out": len(outbound_ops),
             }
         except Exception as exc:
-            error = f"{base_url}: {exc}"
+            detail = str(exc).strip() or exc.__class__.__name__
+            address_errors.append({"address": base_url, "error": detail})
             continue
+    error = _summarize_address_errors(address_errors) or error
+    if not attempted_any:
+        error = "no dialable peer addresses"
+    if not error:
+        error = "sync failed without diagnostic detail"
     discovery.record_sync_attempt(store.conn, peer_device_id, ok=False, error=error)
-    return {"ok": False, "error": error}
+    return {"ok": False, "error": error, "address_errors": address_errors}
 
 
 def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
