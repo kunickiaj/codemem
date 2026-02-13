@@ -109,15 +109,6 @@ export CODEMEM_DB=~/.codemem/mem.sqlite
 - `codemem export-memories` / `codemem import-memories` – export and import memories by project for sharing or backup.
 - `codemem sync` – enable peer sync, pair devices, and run the sync daemon.
 
-## Runtime hook behavior (plugin)
-
-- The plugin captures tool activity via `tool.execute.after` and conversation messages from event payloads.
-- Flush boundaries are event-driven: `session.idle`, `session.created`, `/new` prompt, and `session.error`.
-- Force-flush triggers fire on heavy sessions: `>=50` tools, `>=15` prompts, or `>=10m` session duration.
-- Raw events are delivered to the viewer ingest API (`/api/raw-events`).
-
-For usage and troubleshooting details, see `docs/user-guide.md` and `docs/plugin-reference.md`.
-
 ### Sync project filters
 
 By default, sync replicates all projects. You can restrict which projects a device will apply by

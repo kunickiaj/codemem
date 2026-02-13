@@ -64,26 +64,6 @@ If `raw-events-status` shows `batches=error:N` (legacy label) or `queue=... fail
 codemem raw-events-retry <opencode_session_id>
 ```
 
-## Hook lifecycle and flush boundaries
-
-The plugin uses OpenCode event hooks and flushes on explicit lifecycle boundaries:
-
-- `tool.execute.after`: queue tool event; contributes to force-flush thresholds.
-- `session.idle`: immediate flush attempt.
-- `session.created`: flush previous session buffer before switching context.
-- `/new` prompt boundary: flush before session reset.
-- `session.error`: immediate flush attempt.
-
-Force-flush thresholds (immediate flush):
-- `>=50` tool events, or
-- `>=15` prompts, or
-- `>=10` minutes session duration.
-
-Failure semantics:
-- Stream POST failures are backoff-gated in plugin runtime (`CODEMEM_RAW_EVENTS_BACKOFF_MS`).
-- Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`).
-- Accepted raw-event batches are retried by viewer/store queue workers (`codemem raw-events-retry`).
-
 ## Environment hints
 
 | Env var | Description |
