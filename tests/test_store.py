@@ -205,6 +205,92 @@ def test_replication_ops_roundtrip(tmp_path: Path) -> None:
         store_b.close()
 
 
+def test_replication_payload_prefers_opencode_session_import_key(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="/tmp/project-a",
+        )
+        store.conn.execute(
+            """
+            INSERT INTO opencode_sessions(opencode_session_id, session_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            ("oc-session-1", session_id, dt.datetime.now(dt.UTC).isoformat()),
+        )
+        store.conn.commit()
+
+        store.remember(session_id, kind="note", title="Alpha", body_text="Alpha body")
+        ops, _ = store.load_replication_ops_since(None, limit=10)
+        assert len(ops) == 1
+        payload = ops[0]["payload"]
+        assert isinstance(payload, dict)
+        assert payload.get("session_import_key") == "opencode:oc-session-1"
+    finally:
+        store.close()
+
+
+def test_apply_replication_ops_uses_session_import_key_to_avoid_numeric_collisions(
+    tmp_path: Path,
+) -> None:
+    store_a = MemoryStore(tmp_path / "a.sqlite")
+    store_b = MemoryStore(tmp_path / "b.sqlite")
+    try:
+        local_session = store_b.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="greenroom",
+        )
+
+        remote_session = store_a.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+            metadata={"import_key": "opencode:remote-session-1"},
+        )
+        store_a.remember(remote_session, kind="note", title="Synced", body_text="From remote")
+        ops, _ = store_a.load_replication_ops_since(None, limit=10)
+        assert len(ops) == 1
+
+        result = store_b.apply_replication_ops(ops)
+        assert result["inserted"] == 1
+
+        synced_row = store_b.conn.execute(
+            """
+            SELECT m.session_id, s.project, s.import_key
+            FROM memory_items m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE m.import_key = ?
+            """,
+            (ops[0]["entity_id"],),
+        ).fetchone()
+        assert synced_row is not None
+        assert int(synced_row["session_id"]) != local_session
+        assert synced_row["project"] == "codemem"
+        assert synced_row["import_key"] == "opencode:remote-session-1"
+
+        local_row = store_b.conn.execute(
+            "SELECT project FROM sessions WHERE id = ?",
+            (local_session,),
+        ).fetchone()
+        assert local_row is not None
+        assert local_row["project"] == "greenroom"
+    finally:
+        store_a.close()
+        store_b.close()
+
+
 def test_replication_ops_idempotent(tmp_path: Path) -> None:
     store_a = MemoryStore(tmp_path / "a.sqlite")
     store_b = MemoryStore(tmp_path / "b.sqlite")

@@ -531,18 +531,25 @@ def _memory_item_payload(store: MemoryStore, row: dict[str, Any]) -> dict[str, A
     metadata = store._normalize_metadata(row.get("metadata_json"))
     session_id = row.get("session_id")
     project = None
+    session_import_key = None
     if session_id is not None:
         try:
             session_row = store.conn.execute(
-                "SELECT project FROM sessions WHERE id = ?",
+                "SELECT project, import_key FROM sessions WHERE id = ?",
                 (int(session_id),),
             ).fetchone()
             if session_row is not None:
                 raw = session_row["project"]
                 if isinstance(raw, str) and raw.strip():
                     project = store._project_basename(raw.strip())
+                session_import_key = _session_import_key_for_replication(
+                    store,
+                    int(session_id),
+                    session_row=session_row,
+                )
         except Exception:
             project = None
+            session_import_key = None
     user_prompt_import_key = None
     user_prompt_id = row.get("user_prompt_id")
     if isinstance(user_prompt_id, int) and user_prompt_id > 0:
@@ -557,6 +564,7 @@ def _memory_item_payload(store: MemoryStore, row: dict[str, Any]) -> dict[str, A
                 user_prompt_import_key = _ensure_prompt_import_key(store, user_prompt_id)
     return {
         "session_id": session_id,
+        "session_import_key": session_import_key,
         "project": project,
         "kind": row.get("kind"),
         "title": row.get("title"),
@@ -593,6 +601,44 @@ def _ensure_prompt_import_key(store: MemoryStore, prompt_id: int) -> str | None:
         (import_key, prompt_id),
     )
     return import_key
+
+
+def _session_import_key_for_replication(
+    store: MemoryStore,
+    session_id: int,
+    *,
+    session_row: sqlite3.Row | dict[str, Any] | None = None,
+) -> str:
+    import_key = None
+    if session_row is not None:
+        value = session_row["import_key"]
+        if isinstance(value, str) and value.strip():
+            import_key = value.strip()
+    if import_key:
+        return import_key
+
+    opencode_row = store.conn.execute(
+        """
+        SELECT opencode_session_id
+        FROM opencode_sessions
+        WHERE session_id = ?
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if opencode_row is not None:
+        opencode_session_id = opencode_row["opencode_session_id"]
+        if isinstance(opencode_session_id, str) and opencode_session_id.strip():
+            return f"opencode:{opencode_session_id.strip()}"
+
+    device_row = store.conn.execute("SELECT device_id FROM sync_device LIMIT 1").fetchone()
+    device_id = str(device_row["device_id"] or "").strip() if device_row else ""
+    if not device_id:
+        device_id = str(store.device_id or "").strip()
+    if not device_id:
+        device_id = "local"
+    return f"legacy:{device_id}:session:{session_id}"
 
 
 def _clock_from_payload(store: MemoryStore, payload: dict[str, Any]) -> ReplicationClock:
@@ -719,11 +765,13 @@ def backfill_replication_ops(store: MemoryStore, *, limit: int = 200) -> int:
 
 def _ensure_session_for_replication(
     store: MemoryStore,
-    session_id: int,
+    session_id: int | None,
     started_at: str | None,
     *,
     project: str | None = None,
-) -> None:
+) -> int | None:
+    if session_id is None:
+        return None
     row = store.conn.execute(
         "SELECT id, project FROM sessions WHERE id = ?",
         (session_id,),
@@ -735,12 +783,61 @@ def _ensure_session_for_replication(
                 "UPDATE sessions SET project = ? WHERE id = ?",
                 (project, session_id),
             )
-        return
+        return session_id
     created_at = started_at or store._now_iso()
     store.conn.execute(
         "INSERT INTO sessions(id, started_at, project) VALUES (?, ?, ?)",
         (session_id, created_at, project),
     )
+    return session_id
+
+
+def _ensure_session_for_replication_by_import_key(
+    store: MemoryStore,
+    *,
+    session_import_key: str,
+    started_at: str | None,
+    project: str | None,
+) -> int:
+    row = store.conn.execute(
+        "SELECT id, project FROM sessions WHERE import_key = ? ORDER BY id ASC LIMIT 1",
+        (session_import_key,),
+    ).fetchone()
+    if row is not None:
+        session_id = int(row["id"])
+        if project and (not row["project"] or not str(row["project"]).strip()):
+            store.conn.execute(
+                "UPDATE sessions SET project = ? WHERE id = ?",
+                (project, session_id),
+            )
+        return session_id
+    created_at = started_at or store._now_iso()
+    cur = store.conn.execute(
+        """
+        INSERT INTO sessions(
+            started_at,
+            cwd,
+            project,
+            git_remote,
+            git_branch,
+            user,
+            tool_version,
+            metadata_json,
+            import_key
+        )
+        VALUES (?, NULL, ?, NULL, NULL, 'sync', 'sync_replication', ?, ?)
+        """,
+        (
+            created_at,
+            project,
+            db.to_json({"source": "sync", "session_import_key": session_import_key}),
+            session_import_key,
+        ),
+    )
+    lastrowid = cur.lastrowid
+    if lastrowid is None:
+        raise RuntimeError("Failed to create session for replication")
+    return int(lastrowid)
 
 
 def _replication_op_exists(store: MemoryStore, op_id: str) -> bool:
@@ -1045,8 +1142,14 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
     payload = op.get("payload") or {}
     entity_id = str(op.get("entity_id") or "")
     import_key = str(payload.get("import_key") or entity_id)
-    session_id = payload.get("session_id")
-    if not import_key or session_id is None:
+    raw_session_import_key = payload.get("session_import_key")
+    session_import_key = (
+        raw_session_import_key.strip()
+        if isinstance(raw_session_import_key, str) and raw_session_import_key.strip()
+        else None
+    )
+    raw_session_id = payload.get("session_id")
+    if not import_key or (raw_session_id is None and not session_import_key):
         return "skipped"
     clock = cast(ReplicationClock, op.get("clock") or {})
     clock_device_id = str(clock.get("device_id") or "")
@@ -1081,9 +1184,34 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
     updated_at = str(payload.get("updated_at") or clock.get("updated_at") or "")
     project_value = payload.get("project")
     project = project_value if isinstance(project_value, str) and project_value.strip() else None
-    _ensure_session_for_replication(store, int(session_id), created_at, project=project)
+    session_id_value: int | None
+    if isinstance(raw_session_id, int):
+        session_id_value = raw_session_id
+    elif isinstance(raw_session_id, str) and raw_session_id.strip().isdigit():
+        session_id_value = int(raw_session_id)
+    else:
+        session_id_value = None
+
+    resolved_session_id = None
+    if session_import_key:
+        resolved_session_id = _ensure_session_for_replication_by_import_key(
+            store,
+            session_import_key=session_import_key,
+            started_at=created_at,
+            project=project,
+        )
+    if resolved_session_id is None:
+        resolved_session_id = _ensure_session_for_replication(
+            store,
+            session_id_value,
+            created_at,
+            project=project,
+        )
+    if resolved_session_id is None:
+        return "skipped"
+
     values = (
-        int(session_id),
+        resolved_session_id,
         _normalize_memory_kind(payload.get("kind")),
         str(payload.get("title") or ""),
         str(payload.get("body_text") or ""),
@@ -1220,8 +1348,14 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
     updated_at = deleted_at
     rev = int(clock.get("rev") or payload.get("rev") or 0)
     if row is None:
-        session_id = payload.get("session_id")
-        if session_id is None:
+        raw_session_import_key = payload.get("session_import_key")
+        session_import_key = (
+            raw_session_import_key.strip()
+            if isinstance(raw_session_import_key, str) and raw_session_import_key.strip()
+            else None
+        )
+        raw_session_id = payload.get("session_id")
+        if raw_session_id is None and not session_import_key:
             return "skipped"
         created_at = str(payload.get("created_at") or deleted_at)
         delete_project_value = payload.get("project")
@@ -1230,7 +1364,33 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
             if isinstance(delete_project_value, str) and delete_project_value.strip()
             else None
         )
-        _ensure_session_for_replication(store, int(session_id), created_at, project=delete_project)
+
+        session_id_value: int | None
+        if isinstance(raw_session_id, int):
+            session_id_value = raw_session_id
+        elif isinstance(raw_session_id, str) and raw_session_id.strip().isdigit():
+            session_id_value = int(raw_session_id)
+        else:
+            session_id_value = None
+
+        resolved_session_id = None
+        if session_import_key:
+            resolved_session_id = _ensure_session_for_replication_by_import_key(
+                store,
+                session_import_key=session_import_key,
+                started_at=created_at,
+                project=delete_project,
+            )
+        if resolved_session_id is None:
+            resolved_session_id = _ensure_session_for_replication(
+                store,
+                session_id_value,
+                created_at,
+                project=delete_project,
+            )
+        if resolved_session_id is None:
+            return "skipped"
+
         store.conn.execute(
             """
             INSERT INTO memory_items(
@@ -1258,7 +1418,7 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(session_id),
+                resolved_session_id,
                 _normalize_memory_kind(payload.get("kind")),
                 str(payload.get("title") or ""),
                 str(payload.get("body_text") or ""),

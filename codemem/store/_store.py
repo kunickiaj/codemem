@@ -357,9 +357,9 @@ class MemoryStore:
         return grouped_total + ungrouped_total
 
     def _ensure_session_for_replication(
-        self, session_id: int, started_at: str | None, *, project: str | None = None
-    ) -> None:
-        store_replication._ensure_session_for_replication(
+        self, session_id: int | None, started_at: str | None, *, project: str | None = None
+    ) -> int | None:
+        return store_replication._ensure_session_for_replication(
             self, session_id, started_at, project=project
         )
 
