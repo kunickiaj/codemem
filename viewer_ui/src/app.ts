@@ -6,6 +6,7 @@
 /* global marked, lucide */
 
 const refreshStatus = document.getElementById('refreshStatus');
+const refreshAnnouncer = document.getElementById('refreshAnnouncer');
 const statsGrid = document.getElementById('statsGrid');
 const metaLine = document.getElementById('metaLine');
 const feedList = document.getElementById('feedList');
@@ -57,9 +58,9 @@ const syncMdnsInput = document.getElementById(
 const projectFilter = document.getElementById(
   'projectFilter',
 ) as HTMLSelectElement | null;
-const themeToggle = document.getElementById(
-  'themeToggle',
-) as HTMLButtonElement | null;
+const themeSelect = document.getElementById(
+  'themeSelect',
+) as HTMLSelectElement | null;
 const syncMeta = document.getElementById('syncMeta');
 const syncHealthGrid = document.getElementById('syncHealthGrid');
 const healthGrid = document.getElementById('healthGrid');
@@ -103,6 +104,20 @@ const DETAILS_OPEN_KEY = 'codemem-details-open';
 const SYNC_DIAGNOSTICS_KEY = 'codemem-sync-diagnostics';
 const SYNC_PAIRING_KEY = 'codemem-sync-pairing';
 const SYNC_REDACT_KEY = 'codemem-sync-redact';
+
+type ThemeOption = {
+  id: string;
+  label: string;
+  mode: 'light' | 'dark';
+};
+
+const THEME_OPTIONS: ThemeOption[] = [
+  { id: 'light', label: 'Light (Classic)', mode: 'light' },
+  { id: 'light-warm', label: 'Light (Warm)', mode: 'light' },
+  { id: 'dark', label: 'Dark (Classic)', mode: 'dark' },
+  { id: 'dark-nocturne', label: 'Dark (Nocturne)', mode: 'dark' },
+  { id: 'dark-aurora', label: 'Dark (Aurora)', mode: 'dark' },
+];
 let feedTypeFilter = 'all';
 let pairingPayloadRaw: any = null;
 let pairingCommandRaw = '';
@@ -129,7 +144,9 @@ let feedQuery = '';
 // Previously used for a manual "apply new items" banner.
 // Kept null to preserve compatibility with older builds, but unused now.
 let pendingFeedItems: any[] | null = null;
-let refreshState: 'idle' | 'refreshing' | 'paused' | 'error' = 'idle';
+type RefreshState = 'idle' | 'refreshing' | 'paused' | 'error';
+let refreshState: RefreshState = 'idle';
+let lastAnnouncedRefreshState: RefreshState | null = null;
 
 const newItemKeys = new Set<string>();
 
@@ -146,9 +163,16 @@ function isSettingsOpen() {
   return Boolean(settingsModal && !settingsModal.hasAttribute('hidden'));
 }
 
-function setRefreshStatus(state: typeof refreshState, detail?: string) {
+function setRefreshStatus(state: RefreshState, detail?: string) {
   refreshState = state;
   if (!refreshStatus) return;
+
+  const announce = (message: string) => {
+    if (!refreshAnnouncer) return;
+    if (lastAnnouncedRefreshState === state) return;
+    refreshAnnouncer.textContent = message;
+    lastAnnouncedRefreshState = state;
+  };
 
   if (state === 'refreshing') {
     refreshStatus.innerHTML = "<span class='dot'></span>refreshing…";
@@ -156,15 +180,18 @@ function setRefreshStatus(state: typeof refreshState, detail?: string) {
   }
   if (state === 'paused') {
     refreshStatus.innerHTML = "<span class='dot'></span>paused";
+    announce('Auto refresh paused.');
     return;
   }
   if (state === 'error') {
     refreshStatus.innerHTML = "<span class='dot'></span>refresh failed";
+    announce('Refresh failed.');
     return;
   }
   const suffix = detail ? ` ${detail}` : '';
   refreshStatus.innerHTML =
     "<span class='dot'></span>updated " + new Date().toLocaleTimeString() + suffix;
+  lastAnnouncedRefreshState = null;
 }
 
 function stopPolling() {
@@ -202,38 +229,55 @@ function isUserInteracting() {
 
 
 
+function resolveTheme(themeId: string): ThemeOption {
+  const exact = THEME_OPTIONS.find((theme) => theme.id === themeId);
+  if (exact) return exact;
+  const fallback = themeId.startsWith('dark') ? 'dark' : 'light';
+  return THEME_OPTIONS.find((theme) => theme.id === fallback) || THEME_OPTIONS[0];
+}
+
 // Theme management
 function getTheme() {
   const saved = localStorage.getItem('codemem-theme');
-  if (saved) return saved;
+  if (saved) return resolveTheme(saved).id;
   return window.matchMedia('(prefers-color-scheme: dark)').matches
     ? 'dark'
     : 'light';
 }
 
 function setTheme(theme: string) {
-  document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('codemem-theme', theme);
-  if (themeToggle) {
-    themeToggle.innerHTML =
-      theme === 'dark'
-        ? '<i data-lucide="sun"></i>'
-        : '<i data-lucide="moon"></i>';
-    themeToggle.title =
-      theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  const selectedTheme = resolveTheme(theme);
+  document.documentElement.setAttribute('data-theme', selectedTheme.mode);
+  document.documentElement.setAttribute('data-color-mode', selectedTheme.mode);
+  if (selectedTheme.id === selectedTheme.mode) {
+    document.documentElement.removeAttribute('data-theme-variant');
+  } else {
+    document.documentElement.setAttribute('data-theme-variant', selectedTheme.id);
   }
-  if (typeof (globalThis as any).lucide !== 'undefined')
-    (globalThis as any).lucide.createIcons();
+  localStorage.setItem('codemem-theme', selectedTheme.id);
+  if (themeSelect) {
+    themeSelect.value = selectedTheme.id;
+  }
 }
 
-function toggleTheme() {
-  const current = getTheme();
-  setTheme(current === 'dark' ? 'light' : 'dark');
+function initThemeSelect() {
+  if (!themeSelect) return;
+  themeSelect.textContent = '';
+  THEME_OPTIONS.forEach((theme) => {
+    const option = document.createElement('option');
+    option.value = theme.id;
+    option.textContent = theme.label;
+    themeSelect.appendChild(option);
+  });
+  themeSelect.value = getTheme();
+  themeSelect.addEventListener('change', () => {
+    setTheme(themeSelect.value || 'dark');
+  });
 }
 
 // Initialize theme
+initThemeSelect();
 setTheme(getTheme());
-themeToggle?.addEventListener('click', toggleTheme);
 setDetailsOpen(isDetailsOpen());
 detailsToggle?.addEventListener('click', () => {
   setDetailsOpen(!isDetailsOpen());
@@ -2110,6 +2154,11 @@ settingsClose?.addEventListener('click', closeSettings);
 settingsBackdrop?.addEventListener('click', closeSettings);
 settingsModal?.addEventListener('click', (event) => {
   if (event.target === settingsModal) {
+    closeSettings();
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && isSettingsOpen()) {
     closeSettings();
   }
 });
