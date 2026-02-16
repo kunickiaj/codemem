@@ -2276,6 +2276,7 @@ def test_search_finds_by_tag_only(tmp_path: Path) -> None:
 def test_merge_ranked_results_shadow_logs_without_changing_baseline(
     monkeypatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "0")
     monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "1")
     monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE", "1")
     store = MemoryStore(tmp_path / "mem.sqlite")
@@ -2349,6 +2350,7 @@ def test_merge_ranked_results_shadow_logs_without_changing_baseline(
 def test_merge_ranked_results_can_activate_hybrid(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "1")
     monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "1")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE", "1")
     store = MemoryStore(tmp_path / "mem.sqlite")
     monkeypatch.setattr(
         "codemem.store.search._semantic_search",
@@ -2415,6 +2417,7 @@ def test_merge_ranked_results_can_activate_hybrid(monkeypatch, tmp_path: Path) -
 def test_merge_ranked_results_shadow_sample_rate_zero_skips_logging(
     monkeypatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "0")
     monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "1")
     monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE", "0")
     store = MemoryStore(tmp_path / "mem.sqlite")
@@ -2447,6 +2450,8 @@ def test_merge_ranked_results_shadow_sample_rate_zero_skips_logging(
 def test_merge_ranked_results_skips_hybrid_compute_when_flags_off(
     monkeypatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED", "0")
+    monkeypatch.setenv("CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG", "0")
     store = MemoryStore(tmp_path / "mem.sqlite")
     monkeypatch.setattr("codemem.store.search._semantic_search", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
