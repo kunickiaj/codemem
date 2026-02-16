@@ -144,8 +144,9 @@ let feedQuery = '';
 // Previously used for a manual "apply new items" banner.
 // Kept null to preserve compatibility with older builds, but unused now.
 let pendingFeedItems: any[] | null = null;
-let refreshState: 'idle' | 'refreshing' | 'paused' | 'error' = 'idle';
-let lastAnnouncedRefreshState: typeof refreshState | null = null;
+type RefreshState = 'idle' | 'refreshing' | 'paused' | 'error';
+let refreshState: RefreshState = 'idle';
+let lastAnnouncedRefreshState: RefreshState | null = null;
 
 const newItemKeys = new Set<string>();
 
@@ -162,7 +163,7 @@ function isSettingsOpen() {
   return Boolean(settingsModal && !settingsModal.hasAttribute('hidden'));
 }
 
-function setRefreshStatus(state: typeof refreshState, detail?: string) {
+function setRefreshStatus(state: RefreshState, detail?: string) {
   refreshState = state;
   if (!refreshStatus) return;
 
