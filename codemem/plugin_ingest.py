@@ -69,6 +69,7 @@ from .observer import ObserverClient
 from .observer_prompts import ObserverContext, ToolEvent
 from .store import MemoryStore
 from .summarizer import is_low_signal_observation
+from .utils import resolve_project
 from .xml_parser import ParsedSummary, has_meaningful_observation
 
 CONFIG: object | None = None
@@ -261,6 +262,44 @@ def _extract_prompts(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return prompts
 
 
+def _normalize_project_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if "/" in text or "\\" in text:
+        return Path(text).name or None
+    return text
+
+
+def _resolve_ingest_project(cwd: str, payload_project: Any, pre_project: Any) -> str | None:
+    env_project = _normalize_project_label(os.environ.get("CODEMEM_PROJECT"))
+    if env_project:
+        return env_project
+
+    payload_label = _normalize_project_label(payload_project)
+    pre_label = _normalize_project_label(pre_project)
+    cwd_project = _normalize_project_label(resolve_project(cwd))
+    if payload_label:
+        if not cwd_project:
+            return payload_label
+        if payload_label == cwd_project:
+            return payload_label
+        if not pre_label:
+            return cwd_project
+        if pre_label and payload_label == pre_label:
+            return cwd_project
+        return payload_label
+
+    if cwd_project:
+        return cwd_project
+
+    return pre_label
+
+
 def ingest(payload: dict[str, Any]) -> None:
     cwd = payload.get("cwd") or os.getcwd()
     events = payload.get("events") or []
@@ -285,14 +324,7 @@ def ingest(payload: dict[str, Any]) -> None:
         capture_post=capture_post_context,
     )
     diff_summary = post.get("git_diff") or ""
-    env_project = os.environ.get("CODEMEM_PROJECT")
-    raw_project = env_project or payload.get("project") or pre.get("project")
-    # Normalize: if the value looks like a filesystem path, extract just the directory name.
-    # The plugin may send project.root (a full path) instead of project.name.
-    if raw_project and ("/" in raw_project or "\\" in raw_project):
-        project = Path(raw_project).name
-    else:
-        project = raw_project
+    project = _resolve_ingest_project(cwd, payload.get("project"), pre.get("project"))
     repo_root = pre.get("project") or None
     db_path = os.environ.get("CODEMEM_DB")
     store = MemoryStore(Path(db_path) if db_path else db.DEFAULT_DB_PATH)
