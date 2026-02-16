@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ from codemem.plugin_ingest import (
     _budget_tool_events,
     _build_transcript,
     _event_to_tool_event,
+    _resolve_ingest_project,
     ingest,
 )
 
@@ -126,6 +128,90 @@ def test_tool_events_are_json_serializable() -> None:
     assert parsed[1]["tool_name"] == "read"
 
 
+def test_resolve_ingest_project_prefers_env_override() -> None:
+    with (
+        patch.dict("os.environ", {"CODEMEM_PROJECT": " canonical "}, clear=True),
+        patch("codemem.plugin_ingest.resolve_project", return_value="codemem"),
+    ):
+        project = _resolve_ingest_project(
+            "/tmp/worktree",
+            payload_project="crisp-canyon",
+            pre_project="/Users/adam/workspace/codemem",
+        )
+    assert project == "canonical"
+
+
+def test_resolve_ingest_project_prefers_cwd_project_over_workspace_label() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("codemem.plugin_ingest.resolve_project", return_value="codemem"),
+    ):
+        project = _resolve_ingest_project(
+            "/tmp/worktree",
+            payload_project="crisp-canyon",
+            pre_project="/Users/adam/.local/share/opencode/worktree/abc123/crisp-canyon",
+        )
+    assert project == "codemem"
+
+
+def test_resolve_ingest_project_falls_back_to_payload_and_pre_project() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("codemem.plugin_ingest.resolve_project", return_value=None),
+    ):
+        from_payload = _resolve_ingest_project(
+            "/tmp/worktree",
+            payload_project="/Users/adam/workspace/opencode-mem",
+            pre_project="/Users/adam/workspace/codemem",
+        )
+        from_pre = _resolve_ingest_project(
+            "/tmp/worktree",
+            payload_project=None,
+            pre_project="/Users/adam/workspace/codemem",
+        )
+    assert from_payload == "opencode-mem"
+    assert from_pre == "codemem"
+
+
+def test_resolve_ingest_project_keeps_custom_payload_label_when_distinct() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("codemem.plugin_ingest.resolve_project", return_value="codemem"),
+    ):
+        project = _resolve_ingest_project(
+            "/tmp/worktree",
+            payload_project="client-demo",
+            pre_project="/Users/adam/.local/share/opencode/worktree/abc123/crisp-canyon",
+        )
+    assert project == "client-demo"
+
+
+def test_resolve_ingest_project_prefers_cwd_when_pre_context_is_missing() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("codemem.plugin_ingest.resolve_project", return_value="codemem"),
+    ):
+        project = _resolve_ingest_project(
+            "/tmp/worktree",
+            payload_project="crisp-canyon",
+            pre_project=None,
+        )
+    assert project == "codemem"
+
+
+def test_resolve_ingest_project_ignores_non_string_payload_values() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("codemem.plugin_ingest.resolve_project", return_value="codemem"),
+    ):
+        project = _resolve_ingest_project(
+            "/tmp/worktree",
+            payload_project={"name": "crisp-canyon"},
+            pre_project="/Users/adam/.local/share/opencode/worktree/abc123/crisp-canyon",
+        )
+    assert project == "codemem"
+
+
 def test_ingest_with_tool_events_does_not_crash(tmp_path: Path) -> None:
     """Ingest should handle payloads with tool events without JSON serialization errors."""
     db_path = tmp_path / "test.sqlite"
@@ -182,6 +268,55 @@ def test_ingest_with_tool_events_does_not_crash(tmp_path: Path) -> None:
         ingest(payload)
 
     assert db_path.exists(), "Database should be created"
+
+
+def test_ingest_uses_cwd_project_when_payload_matches_worktree_label(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.sqlite"
+    payload = {
+        "cwd": str(tmp_path),
+        "project": "crisp-canyon",
+        "started_at": "2026-01-14T19:00:00Z",
+        "events": [
+            {
+                "type": "user_prompt",
+                "prompt_text": "Fix the bug",
+                "prompt_number": 1,
+                "timestamp": "2026-01-14T19:00:01Z",
+            },
+            {
+                "type": "assistant_message",
+                "assistant_text": "Done.",
+                "timestamp": "2026-01-14T19:00:02Z",
+            },
+        ],
+    }
+
+    mock_response = MagicMock()
+    mock_response.parsed.observations = []
+    mock_response.parsed.summary = None
+    mock_response.parsed.skip_summary_reason = None
+
+    with (
+        patch.dict("os.environ", {"CODEMEM_DB": str(db_path)}),
+        patch("codemem.plugin_ingest.resolve_project", return_value="codemem"),
+        patch("codemem.plugin_ingest.OBSERVER") as mock_observer,
+        patch("codemem.plugin_ingest.capture_pre_context") as mock_pre,
+        patch("codemem.plugin_ingest.capture_post_context") as mock_post,
+    ):
+        mock_observer.observe.return_value = mock_response
+        mock_pre.return_value = {
+            "project": "/Users/adam/.local/share/opencode/worktree/abc123/crisp-canyon"
+        }
+        mock_post.return_value = {"git_diff": "", "recent_files": ""}
+        ingest(payload)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT project FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row[0] == "codemem"
 
 
 def test_read_tool_output_is_compacted() -> None:
