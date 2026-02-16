@@ -228,15 +228,9 @@ function isUserInteracting() {
 
 
 function resolveTheme(themeId: string): ThemeOption {
-  const aliases: Record<string, string> = {
-    'light-warm': 'light',
-    'dark-nocturne': 'dark-aurora',
-    'dark-violet': 'dark-aurora',
-  };
-  const normalized = aliases[themeId] || themeId;
-  const exact = THEME_OPTIONS.find((theme) => theme.id === normalized);
+  const exact = THEME_OPTIONS.find((theme) => theme.id === themeId);
   if (exact) return exact;
-  const fallback = normalized.startsWith('dark') ? 'dark' : 'light';
+  const fallback = themeId.startsWith('dark') ? 'dark' : 'light';
   return THEME_OPTIONS.find((theme) => theme.id === fallback) || THEME_OPTIONS[0];
 }
 

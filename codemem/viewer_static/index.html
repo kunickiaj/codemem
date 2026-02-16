@@ -14,19 +14,11 @@
           if (!rawTheme) {
             return;
           }
-          var normalizedTheme = rawTheme;
-          if (rawTheme === 'light-warm') {
-            normalizedTheme = 'light';
-          } else if (rawTheme === 'dark-nocturne') {
-            normalizedTheme = 'dark-aurora';
-          } else if (rawTheme === 'dark-violet') {
-            normalizedTheme = 'dark-aurora';
-          }
-          var mode = normalizedTheme.indexOf('dark') === 0 ? 'dark' : 'light';
+          var mode = rawTheme.indexOf('dark') === 0 ? 'dark' : 'light';
           document.documentElement.setAttribute('data-theme', mode);
           document.documentElement.setAttribute('data-color-mode', mode);
-          if (normalizedTheme !== mode) {
-            document.documentElement.setAttribute('data-theme-variant', normalizedTheme);
+          if (rawTheme !== mode) {
+            document.documentElement.setAttribute('data-theme-variant', rawTheme);
           }
         } catch (_error) {
           // Ignore localStorage access errors before app init.
