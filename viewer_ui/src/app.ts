@@ -113,9 +113,8 @@ type ThemeOption = {
 
 const THEME_OPTIONS: ThemeOption[] = [
   { id: 'light', label: 'Light (Classic)', mode: 'light' },
-  { id: 'light-warm', label: 'Light (Warm)', mode: 'light' },
   { id: 'dark', label: 'Dark (Classic)', mode: 'dark' },
-  { id: 'dark-nocturne', label: 'Dark (Nocturne)', mode: 'dark' },
+  { id: 'dark-violet', label: 'Dark (Violet)', mode: 'dark' },
   { id: 'dark-aurora', label: 'Dark (Aurora)', mode: 'dark' },
 ];
 let feedTypeFilter = 'all';
@@ -230,9 +229,14 @@ function isUserInteracting() {
 
 
 function resolveTheme(themeId: string): ThemeOption {
-  const exact = THEME_OPTIONS.find((theme) => theme.id === themeId);
+  const aliases: Record<string, string> = {
+    'light-warm': 'light',
+    'dark-nocturne': 'dark-violet',
+  };
+  const normalized = aliases[themeId] || themeId;
+  const exact = THEME_OPTIONS.find((theme) => theme.id === normalized);
   if (exact) return exact;
-  const fallback = themeId.startsWith('dark') ? 'dark' : 'light';
+  const fallback = normalized.startsWith('dark') ? 'dark' : 'light';
   return THEME_OPTIONS.find((theme) => theme.id === fallback) || THEME_OPTIONS[0];
 }
 
