@@ -90,6 +90,13 @@ def _peer_status(peer: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _all_peers_in_state(peers_items: list[dict[str, Any]], expected_state: str) -> bool:
+    if not peers_items:
+        return False
+    peer_states = [str((peer.get("status") or {}).get("peer_state") or "") for peer in peers_items]
+    return bool(peer_states) and all(state == expected_state for state in peer_states)
+
+
 def _find_peer_device_id_for_address(store: MemoryStore, address: str) -> str | None:
     needle = normalize_address(address)
     if not needle:
@@ -229,11 +236,19 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 and attempts_items[0].get("status") == "error"
                 and _is_recent_iso(attempts_items[0].get("finished_at"))
             )
+            all_offline = _all_peers_in_state(peers_items, "offline")
             if latest_failed_recently:
                 has_live_peer = bool(peer_states & {"online", "degraded"})
-                daemon_state_value = "degraded" if has_live_peer else "error"
+                if has_live_peer:
+                    daemon_state_value = "degraded"
+                elif all_offline:
+                    daemon_state_value = "offline-peers"
+                elif peers_items:
+                    daemon_state_value = "stale"
             elif "degraded" in peer_states:
                 daemon_state_value = "degraded"
+            elif all_offline:
+                daemon_state_value = "offline-peers"
             elif peers_items and "online" not in peer_states:
                 daemon_state_value = "stale"
         status_payload["daemon_state"] = daemon_state_value
