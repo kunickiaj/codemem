@@ -139,7 +139,7 @@ def test_sync_status_endpoint_includes_diagnostics_when_requested(
         server.shutdown()
 
 
-def test_sync_status_marks_stale_peers_and_surfaces_recent_error(
+def test_sync_status_keeps_stale_when_recent_attempt_fails_without_live_peer(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_path = tmp_path / "mem.sqlite"
@@ -196,13 +196,79 @@ def test_sync_status_marks_stale_peers_and_surfaces_recent_error(
         resp = conn.getresponse()
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 200
-        assert payload.get("daemon_state") == "error"
+        assert payload.get("daemon_state") == "stale"
         peers = payload.get("peers") or []
         assert peers
         peer_status = peers[0].get("status") or {}
         assert peer_status.get("peer_state") == "stale"
         assert peer_status.get("sync_status") == "stale"
         assert peer_status.get("ping_status") == "stale"
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_marks_offline_peers_as_informational_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        stale_ts = (
+            (dt.datetime.now(dt.UTC) - dt.timedelta(hours=11)).isoformat().replace("+00:00", "Z")
+        )
+        failed_ts = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        conn.execute(
+            """
+            INSERT INTO sync_peers(
+                peer_device_id, name, pinned_fingerprint, addresses_json,
+                last_seen_at, last_sync_at, last_error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                "work",
+                "fp-peer",
+                json.dumps(["http://peer.local:7337"]),
+                stale_ts,
+                stale_ts,
+                "dial timeout",
+                stale_ts,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO sync_attempts(peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                0,
+                "http://peer.local:7337: timeout",
+                failed_ts,
+                failed_ts,
+                0,
+                0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status?includeDiagnostics=1")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload.get("daemon_state") == "offline-peers"
+        peers = payload.get("peers") or []
+        assert peers
+        peer_status = peers[0].get("status") or {}
+        assert peer_status.get("peer_state") == "offline"
     finally:
         server.shutdown()
 

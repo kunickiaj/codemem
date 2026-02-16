@@ -700,7 +700,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const reductionPercent = parsePercentValue(reductionLabel);
     const tagCoverage = Number(dbStats.tags_coverage || 0);
     const syncState = String(syncStatus.daemon_state || "unknown");
-    const syncStateLabel = titleCase(syncState);
+    const syncStateLabel = syncState === "offline-peers" ? "Offline peers" : titleCase(syncState);
     const peerCount = Array.isArray(lastSyncPeers) ? lastSyncPeers.length : 0;
     const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
     const syncNoPeers = !syncDisabled && peerCount === 0;
@@ -837,7 +837,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         label: "Then run doctor to see root cause details.",
         command: "uv run codemem sync doctor"
       });
-    } else if (!syncDisabled && !syncNoPeers && syncLooksStale) {
+    } else if (!syncDisabled && !syncNoPeers && syncState === "offline-peers") ;
+    else if (!syncDisabled && !syncNoPeers && syncLooksStale) {
       recommendations.push({
         label: "Sync is stale. Run one immediate sync pass.",
         command: "uv run codemem sync once"
@@ -885,7 +886,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const pending = Number(status.pending || 0);
     const daemonDetail = String(status.daemon_detail || "");
     const daemonState = String(status.daemon_state || "unknown");
-    const daemonStateLabel = titleCase(daemonState);
+    const daemonStateLabel = daemonState === "offline-peers" ? "Offline peers" : titleCase(daemonState);
     const syncDisabled = daemonState === "disabled" || status.enabled === false;
     const peerCount = Object.keys(peers).length;
     const syncNoPeers = !syncDisabled && peerCount === 0;
@@ -895,6 +896,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         `Peers: ${peerCount}`,
         lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : "Last sync: never"
       ];
+      if (daemonState === "offline-peers") {
+        parts.push("All peers are currently offline; sync will resume automatically");
+      }
       if (daemonDetail && daemonState === "stopped") {
         parts.push(`Detail: ${daemonDetail}`);
       }
@@ -972,6 +976,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     const actions = [];
     if (syncNoPeers) ;
+    else if (daemonState === "offline-peers") ;
     else if (daemonState === "stopped") {
       actions.push({
         label: "Sync daemon is stopped. Start it.",
