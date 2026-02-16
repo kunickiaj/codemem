@@ -65,3 +65,5 @@ sync-branch: "beads-sync"
 # - linear.api-key
 # - github.org
 # - github.repo
+
+remote-sync-interval: 5m
