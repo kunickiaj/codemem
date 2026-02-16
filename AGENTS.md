@@ -207,6 +207,17 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
   - `codemem/viewer.py` (UI kind lists)
   - `tests/test_e2e_pipeline.py` coverage around documented types
 
+## PR Hygiene (Required)
+
+- Always use `.github/PULL_REQUEST_TEMPLATE.md` for every PR.
+- Replace all template placeholder text before requesting review.
+- Complete all checklist sections accurately:
+  - Type of Change
+  - Testing
+  - Checklist
+- Apply this to every PR in a stack (base PR and each follow-up PR).
+- Keep PR titles/bodies and commit messages free of private inspiration references or other non-public context.
+
 ## Releases
 - Bump versions:
   - `pyproject.toml` (semver)
