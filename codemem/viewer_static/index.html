@@ -14,17 +14,11 @@
           if (!rawTheme) {
             return;
           }
-          var normalizedTheme = rawTheme;
-          if (rawTheme === 'light-warm') {
-            normalizedTheme = 'light';
-          } else if (rawTheme === 'dark-nocturne') {
-            normalizedTheme = 'dark-violet';
-          }
-          var mode = normalizedTheme.indexOf('dark') === 0 ? 'dark' : 'light';
+          var mode = rawTheme.indexOf('dark') === 0 ? 'dark' : 'light';
           document.documentElement.setAttribute('data-theme', mode);
           document.documentElement.setAttribute('data-color-mode', mode);
-          if (normalizedTheme !== mode) {
-            document.documentElement.setAttribute('data-theme-variant', normalizedTheme);
+          if (rawTheme !== mode) {
+            document.documentElement.setAttribute('data-theme-variant', rawTheme);
           }
         } catch (_error) {
           // Ignore localStorage access errors before app init.
@@ -173,41 +167,6 @@
         --body-base-mid: #1f1e1d;
         --body-base-end: #242322;
         --dot-color: rgba(255, 255, 255, 0.04);
-      }
-      [data-theme-variant="dark-violet"] {
-        --bg: #0b0f1f;
-        --ink: #f7f3ff;
-        --text: #f7f3ff;
-        --muted: #cdc7ee;
-        --card: #2a315f;
-        --accent: #9d8cff;
-        --accent-2: #cf9aff;
-        --accent-3: #d4c3ff;
-        --border: #50588e;
-        --control-text: #e0beff;
-        --control-hover-text: #f2deff;
-        --toggle-active-bg: rgba(224, 190, 255, 0.28);
-        --toggle-active-text: #f2e7ff;
-        --toggle-hover-bg: rgba(224, 190, 255, 0.2);
-        --toggle-hover-text: #f7efff;
-        --feed-hover-bg: var(--item-bg);
-        --feed-hover-border: #f070ff;
-        --feed-hover-border-left: #f070ff;
-        --placeholder-text: #efe8ff;
-        --status-attention: #ff9e7a;
-        --focus-ring: rgba(157, 140, 255, 0.3);
-        --header-bg: rgba(20, 26, 52, 0.9);
-        --input-bg: rgba(48, 58, 107, 0.95);
-        --item-bg: rgba(57, 68, 122, 0.95);
-        --item-hover-bg: rgba(69, 80, 143, 0.97);
-        --stat-bg: #3a457f;
-        --body-grad-1: rgba(157, 140, 255, 0.2);
-        --body-grad-2: rgba(207, 154, 255, 0.16);
-        --body-grad-3: rgba(113, 226, 255, 0.1);
-        --body-base-start: #090c1a;
-        --body-base-mid: #101733;
-        --body-base-end: #171f45;
-        --dot-color: rgba(224, 217, 255, 0.05);
       }
       [data-theme-variant="dark-aurora"] {
         --bg: #0d1420;
