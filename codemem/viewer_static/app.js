@@ -703,6 +703,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const syncStateLabel = syncState === "offline-peers" ? "Offline peers" : titleCase(syncState);
     const peerCount = Array.isArray(lastSyncPeers) ? lastSyncPeers.length : 0;
     const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
+    const syncOfflinePeers = syncState === "offline-peers";
     const syncNoPeers = !syncDisabled && peerCount === 0;
     const syncCardValue = syncDisabled ? "Disabled" : syncNoPeers ? "No peers" : syncStateLabel;
     const lastSyncAt = syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null;
@@ -745,12 +746,21 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         riskScore += 20;
         drivers.push("sync daemon degraded");
       }
-      if (syncLooksStale) {
-        riskScore += 26;
-        drivers.push("sync looks stale");
-      } else if (syncAgeSeconds !== null && syncAgeSeconds > 1800) {
-        riskScore += 12;
-        drivers.push("sync not recent");
+      if (syncOfflinePeers) {
+        riskScore += 4;
+        drivers.push("all peers currently offline");
+        if (syncLooksStale) {
+          riskScore += 4;
+          drivers.push("offline peers and sync not recent");
+        }
+      } else {
+        if (syncLooksStale) {
+          riskScore += 26;
+          drivers.push("sync looks stale");
+        } else if (syncAgeSeconds !== null && syncAgeSeconds > 1800) {
+          riskScore += 12;
+          drivers.push("sync not recent");
+        }
       }
     }
     if (reductionPercent !== null && reductionPercent < 10) {
@@ -772,7 +782,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens`;
     const pipelineDetail = rawPending > 0 ? "Queue is actively draining" : "Queue is clear";
-    const syncDetail = syncDisabled ? "Sync disabled" : syncNoPeers ? "No peers configured" : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
+    const syncDetail = syncDisabled ? "Sync disabled" : syncNoPeers ? "No peers configured" : syncOfflinePeers ? `${peerCount} peers offline · last sync ${formatAgeShort(syncAgeSeconds)} ago` : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
     const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
     const cards = [
       buildHealthCard({

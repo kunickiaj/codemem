@@ -869,6 +869,7 @@ function renderHealthOverview() {
   const syncStateLabel = syncState === 'offline-peers' ? 'Offline peers' : titleCase(syncState);
   const peerCount = Array.isArray(lastSyncPeers) ? lastSyncPeers.length : 0;
   const syncDisabled = syncState === 'disabled' || syncStatus.enabled === false;
+  const syncOfflinePeers = syncState === 'offline-peers';
   const syncNoPeers = !syncDisabled && peerCount === 0;
   const syncCardValue = syncDisabled
     ? 'Disabled'
@@ -916,12 +917,21 @@ function renderHealthOverview() {
       riskScore += 20;
       drivers.push('sync daemon degraded');
     }
-    if (syncLooksStale) {
-      riskScore += 26;
-      drivers.push('sync looks stale');
-    } else if (syncAgeSeconds !== null && syncAgeSeconds > 1800) {
-      riskScore += 12;
-      drivers.push('sync not recent');
+    if (syncOfflinePeers) {
+      riskScore += 4;
+      drivers.push('all peers currently offline');
+      if (syncLooksStale) {
+        riskScore += 4;
+        drivers.push('offline peers and sync not recent');
+      }
+    } else {
+      if (syncLooksStale) {
+        riskScore += 26;
+        drivers.push('sync looks stale');
+      } else if (syncAgeSeconds !== null && syncAgeSeconds > 1800) {
+        riskScore += 12;
+        drivers.push('sync not recent');
+      }
     }
   }
   if (reductionPercent !== null && reductionPercent < 10) {
@@ -949,7 +959,9 @@ function renderHealthOverview() {
     ? 'Sync disabled'
     : syncNoPeers
       ? 'No peers configured'
-      : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
+      : syncOfflinePeers
+        ? `${peerCount} peers offline · last sync ${formatAgeShort(syncAgeSeconds)} ago`
+        : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
   const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
 
   const cards = [
