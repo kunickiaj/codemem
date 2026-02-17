@@ -15,7 +15,7 @@
     ".opencode/lib/compat.js"
   ],
   "dependencies": {
-    "@opencode-ai/plugin": "1.2.5"
+    "@opencode-ai/plugin": "1.2.6"
   },
   "repository": {
     "type": "git",
