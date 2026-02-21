@@ -743,14 +743,32 @@
       return;
     }
     container.hidden = false;
-    actions.slice(0, 2).forEach((item) => {
+    actions.slice(0, 3).forEach((item) => {
       const row = el("div", "health-action");
       const textWrap = el("div", "health-action-text");
       textWrap.textContent = item.label;
-      textWrap.appendChild(el("span", "health-action-command", item.command));
-      const btn = el("button", "settings-button health-action-copy", "Copy");
-      btn.addEventListener("click", () => copyToClipboard(item.command, btn));
-      row.append(textWrap, btn);
+      if (item.command) textWrap.appendChild(el("span", "health-action-command", item.command));
+      const btnWrap = el("div", "health-action-buttons");
+      if (item.action) {
+        const actionBtn = el("button", "settings-button", item.actionLabel || "Run");
+        actionBtn.addEventListener("click", async () => {
+          actionBtn.disabled = true;
+          actionBtn.textContent = "Running…";
+          try {
+            await item.action();
+          } catch {
+          }
+          actionBtn.disabled = false;
+          actionBtn.textContent = item.actionLabel || "Run";
+        });
+        btnWrap.appendChild(actionBtn);
+      }
+      if (item.command) {
+        const copyBtn = el("button", "settings-button health-action-copy", "Copy");
+        copyBtn.addEventListener("click", () => copyToClipboard(item.command, copyBtn));
+        btnWrap.appendChild(copyBtn);
+      }
+      row.append(textWrap, btnWrap);
       container.appendChild(row);
     });
   }
@@ -876,6 +894,7 @@
       buildHealthCard({ label: "Data freshness", value: formatAgeShort(packAgeSeconds), detail: freshnessDetail, icon: "clock-3", title: "Recency of last memory pack activity" })
     ];
     cards.forEach((c) => healthGrid.appendChild(c));
+    const triggerSync$1 = () => triggerSync();
     const recommendations = [];
     if (hasBacklog) {
       recommendations.push({ label: "Pipeline needs attention. Check queue health first.", command: "uv run codemem raw-events-status" });
@@ -883,10 +902,10 @@
     } else if (syncState === "stopped") {
       recommendations.push({ label: "Sync daemon is stopped. Start the background service.", command: "uv run codemem sync start" });
     } else if (!syncDisabled && !syncNoPeers && (syncState === "error" || syncState === "degraded")) {
-      recommendations.push({ label: "Sync is unhealthy. Restart now and run one immediate pass.", command: "uv run codemem sync restart && uv run codemem sync once" });
+      recommendations.push({ label: "Sync is unhealthy. Restart and run one immediate pass.", command: "uv run codemem sync restart", action: triggerSync$1, actionLabel: "Sync now" });
       recommendations.push({ label: "Then run doctor to see root cause details.", command: "uv run codemem sync doctor" });
     } else if (!syncDisabled && !syncNoPeers && syncLooksStale) {
-      recommendations.push({ label: "Sync is stale. Run one immediate sync pass.", command: "uv run codemem sync once" });
+      recommendations.push({ label: "Sync is stale. Run one immediate sync pass.", command: "uv run codemem sync once", action: triggerSync$1, actionLabel: "Sync now" });
     }
     if (tagCoverage > 0 && tagCoverage < 0.7 && recommendations.length < 2) {
       recommendations.push({ label: "Tag coverage is low. Preview backfill impact.", command: "uv run codemem backfill-tags --dry-run" });
