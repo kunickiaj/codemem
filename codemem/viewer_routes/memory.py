@@ -94,7 +94,12 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
 
     if path == "/api/observations":
         params = parse_qs(query)
-        limit = int(params.get("limit", ["20"])[0])
+        try:
+            limit = max(1, int(params.get("limit", ["20"])[0]))
+            offset = max(0, int(params.get("offset", ["0"])[0]))
+        except ValueError:
+            handler._send_json({"error": "limit and offset must be int"}, status=400)
+            return True
         project = params.get("project", [None])[0]
         kinds = [
             "bugfix",
@@ -106,21 +111,54 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             "refactor",
         ]
         obs_filters = {"project": project} if project else None
-        items = store.recent_by_kinds(limit=limit, kinds=kinds, filters=obs_filters)
+        items = store.recent_by_kinds(
+            limit=limit + 1, kinds=kinds, filters=obs_filters, offset=offset
+        )
+        has_more = len(items) > limit
+        if has_more:
+            items = items[:limit]
         _attach_session_fields(store, items)
-        handler._send_json({"items": items})
+        handler._send_json(
+            {
+                "items": items,
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "next_offset": offset + len(items) if has_more else None,
+                    "has_more": has_more,
+                },
+            }
+        )
         return True
 
     if path == "/api/summaries":
         params = parse_qs(query)
-        limit = int(params.get("limit", ["50"])[0])
+        try:
+            limit = max(1, int(params.get("limit", ["50"])[0]))
+            offset = max(0, int(params.get("offset", ["0"])[0]))
+        except ValueError:
+            handler._send_json({"error": "limit and offset must be int"}, status=400)
+            return True
         project = params.get("project", [None])[0]
         filters: dict[str, Any] = {"kind": "session_summary"}
         if project:
             filters["project"] = project
-        items = store.recent(limit=limit, filters=filters)
+        items = store.recent(limit=limit + 1, filters=filters, offset=offset)
+        has_more = len(items) > limit
+        if has_more:
+            items = items[:limit]
         _attach_session_fields(store, items)
-        handler._send_json({"items": items})
+        handler._send_json(
+            {
+                "items": items,
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "next_offset": offset + len(items) if has_more else None,
+                    "has_more": has_more,
+                },
+            }
+        )
         return True
 
     if path == "/api/session":

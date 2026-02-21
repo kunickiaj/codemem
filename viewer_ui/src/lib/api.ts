@@ -23,11 +23,35 @@ export async function loadRawEvents(project: string): Promise<any> {
 }
 
 export async function loadMemories(project: string): Promise<any> {
-  return fetchJson(`/api/memories?project=${encodeURIComponent(project)}`);
+  return loadMemoriesPage(project);
+}
+
+function buildProjectParams(project: string, limit?: number, offset?: number): string {
+  const params = new URLSearchParams();
+  params.set('project', project || '');
+  if (typeof limit === 'number') params.set('limit', String(limit));
+  if (typeof offset === 'number') params.set('offset', String(offset));
+  return params.toString();
+}
+
+export async function loadMemoriesPage(
+  project: string,
+  options?: { limit?: number; offset?: number },
+): Promise<any> {
+  const query = buildProjectParams(project, options?.limit, options?.offset);
+  return fetchJson(`/api/memories?${query}`);
 }
 
 export async function loadSummaries(project: string): Promise<any> {
-  return fetchJson(`/api/summaries?project=${encodeURIComponent(project)}`);
+  return loadSummariesPage(project);
+}
+
+export async function loadSummariesPage(
+  project: string,
+  options?: { limit?: number; offset?: number },
+): Promise<any> {
+  const query = buildProjectParams(project, options?.limit, options?.offset);
+  return fetchJson(`/api/summaries?${query}`);
 }
 
 export async function loadConfig(): Promise<any> {

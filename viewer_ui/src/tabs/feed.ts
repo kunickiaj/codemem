@@ -70,6 +70,57 @@ function itemKey(item: any): string {
 
 type ItemViewMode = 'summary' | 'facts' | 'narrative';
 
+const OBSERVATION_PAGE_SIZE = 20;
+const SUMMARY_PAGE_SIZE = 50;
+const FEED_SCROLL_THRESHOLD_PX = 560;
+
+let lastFeedProject = '';
+let observationOffset = 0;
+let summaryOffset = 0;
+let observationHasMore = true;
+let summaryHasMore = true;
+let loadMoreInFlight = false;
+let feedScrollHandlerBound = false;
+
+function resetPagination(project: string) {
+  lastFeedProject = project;
+  observationOffset = 0;
+  summaryOffset = 0;
+  observationHasMore = true;
+  summaryHasMore = true;
+}
+
+function isNearFeedBottom(): boolean {
+  const root = document.documentElement;
+  const height = Math.max(root.scrollHeight, document.body.scrollHeight);
+  return window.innerHeight + window.scrollY >= height - FEED_SCROLL_THRESHOLD_PX;
+}
+
+function pageHasMore(payload: any, count: number, limit: number): boolean {
+  const value = payload?.pagination?.has_more;
+  if (typeof value === 'boolean') return value;
+  return count >= limit;
+}
+
+function pageNextOffset(payload: any, count: number): number {
+  const value = payload?.pagination?.next_offset;
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  return count;
+}
+
+function hasMorePages(): boolean {
+  return observationHasMore || summaryHasMore;
+}
+
+function mergeFeedItems(currentItems: any[], incomingItems: any[]): any[] {
+  const byKey = new Map<string, any>();
+  currentItems.forEach((item) => byKey.set(itemKey(item), item));
+  incomingItems.forEach((item) => byKey.set(itemKey(item), item));
+  return Array.from(byKey.values()).sort((a, b) => {
+    return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+  });
+}
+
 /* ── Summary object extraction ───────────────────────────── */
 
 function getSummaryObject(item: any): Record<string, any> | null {
@@ -359,6 +410,59 @@ function countNewItems(nextItems: any[], currentItems: any[]): number {
   return nextItems.filter((i) => !seen.has(itemKey(i))).length;
 }
 
+async function loadMoreFeedPage() {
+  if (loadMoreInFlight || !hasMorePages()) return;
+  loadMoreInFlight = true;
+  try {
+    const [observations, summaries] = await Promise.all([
+      observationHasMore
+        ? api.loadMemoriesPage(state.currentProject, {
+            limit: OBSERVATION_PAGE_SIZE,
+            offset: observationOffset,
+          })
+        : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: observationOffset } }),
+      summaryHasMore
+        ? api.loadSummariesPage(state.currentProject, {
+            limit: SUMMARY_PAGE_SIZE,
+            offset: summaryOffset,
+          })
+        : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: summaryOffset } }),
+    ]);
+
+    const summaryItems = summaries.items || [];
+    const observationItems = observations.items || [];
+    const filtered = observationItems.filter((i: any) => !isLowSignalObservation(i));
+    state.lastFeedFilteredCount += observationItems.length - filtered.length;
+
+    summaryHasMore = pageHasMore(summaries, summaryItems.length, SUMMARY_PAGE_SIZE);
+    observationHasMore = pageHasMore(observations, observationItems.length, OBSERVATION_PAGE_SIZE);
+    summaryOffset = pageNextOffset(summaries, summaryOffset + summaryItems.length);
+    observationOffset = pageNextOffset(observations, observationOffset + observationItems.length);
+
+    const incoming = [...summaryItems, ...filtered];
+    const feedItems = mergeFeedItems(state.lastFeedItems, incoming);
+    const newCount = countNewItems(feedItems, state.lastFeedItems);
+    if (newCount) {
+      const seen = new Set(state.lastFeedItems.map(itemKey));
+      feedItems.forEach((item: any) => {
+        if (!seen.has(itemKey(item))) state.newItemKeys.add(itemKey(item));
+      });
+    }
+
+    state.lastFeedItems = feedItems;
+    updateFeedView();
+  } finally {
+    loadMoreInFlight = false;
+  }
+}
+
+function maybeLoadMoreFeedPage() {
+  if (state.activeTab !== 'feed') return;
+  if (!hasMorePages()) return;
+  if (!isNearFeedBottom()) return;
+  void loadMoreFeedPage();
+}
+
 /* ── Public API ──────────────────────────────────────────── */
 
 export function initFeedTab() {
@@ -379,6 +483,13 @@ export function initFeedTab() {
     state.feedQuery = feedSearch.value || '';
     updateFeedView();
   });
+
+  if (!feedScrollHandlerBound) {
+    window.addEventListener('scroll', () => {
+      maybeLoadMoreFeedPage();
+    }, { passive: true });
+    feedScrollHandlerBound = true;
+  }
 }
 
 export function updateFeedTypeToggle() {
@@ -407,7 +518,8 @@ export function updateFeedView() {
   if (feedMeta) {
     const filteredLabel = !state.feedQuery.trim() && state.lastFeedFilteredCount ? ` · ${state.lastFeedFilteredCount} observations filtered` : '';
     const queryLabel = state.feedQuery.trim() ? ` · matching "${state.feedQuery.trim()}"` : '';
-    feedMeta.textContent = `${visible.length} items${filterLabel}${queryLabel}${filteredLabel}`;
+    const moreLabel = hasMorePages() ? ' · scroll for more' : '';
+    feedMeta.textContent = `${visible.length} items${filterLabel}${queryLabel}${filteredLabel}${moreLabel}`;
   }
 
   if (changed) {
@@ -421,12 +533,21 @@ export function updateFeedView() {
   }
 
   window.scrollTo({ top: scrollY });
+  maybeLoadMoreFeedPage();
 }
 
 export async function loadFeedData() {
+  const project = state.currentProject || '';
+  if (project !== lastFeedProject) {
+    resetPagination(project);
+  }
+
+  const observationsLimit = Math.max(OBSERVATION_PAGE_SIZE, observationOffset || OBSERVATION_PAGE_SIZE);
+  const summariesLimit = Math.max(SUMMARY_PAGE_SIZE, summaryOffset || SUMMARY_PAGE_SIZE);
+
   const [observations, summaries] = await Promise.all([
-    api.loadMemories(state.currentProject),
-    api.loadSummaries(state.currentProject),
+    api.loadMemoriesPage(project, { limit: observationsLimit, offset: 0 }),
+    api.loadSummariesPage(project, { limit: summariesLimit, offset: 0 }),
   ]);
 
   const summaryItems = summaries.items || [];
@@ -448,5 +569,9 @@ export async function loadFeedData() {
   state.pendingFeedItems = null;
   state.lastFeedItems = feedItems;
   state.lastFeedFilteredCount = filteredCount;
+  summaryHasMore = pageHasMore(summaries, summaryItems.length, summariesLimit);
+  observationHasMore = pageHasMore(observations, observationItems.length, observationsLimit);
+  summaryOffset = pageNextOffset(summaries, summaryItems.length);
+  observationOffset = pageNextOffset(observations, observationItems.length);
   updateFeedView();
 }
