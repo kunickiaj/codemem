@@ -323,7 +323,6 @@ _CONNECTIVITY_ERROR_PATTERNS = (
     "timed out",
     "name or service not known",
     "nodename nor servname provided",
-    "all addresses failed",
     "errno 65",
     "errno 61",
     "errno 60",

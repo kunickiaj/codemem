@@ -851,3 +851,20 @@ def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> Non
         assert set(called) == {"peer-1", "peer-2"}
     finally:
         store.close()
+
+
+def test_is_connectivity_error_ignores_generic_address_failure_prefix() -> None:
+    error = (
+        "all addresses failed | "
+        "http://a1.local: peer status failed (401: unauthorized:unknown_peer)"
+    )
+    assert sync_pass._is_connectivity_error(error) is False
+
+
+def test_is_connectivity_error_matches_connectivity_detail_in_address_summary() -> None:
+    error = (
+        "all addresses failed | "
+        "http://a1.local: peer status failed (503: unavailable) || "
+        "http://a2.local: [Errno 61] Connection refused"
+    )
+    assert sync_pass._is_connectivity_error(error) is True
