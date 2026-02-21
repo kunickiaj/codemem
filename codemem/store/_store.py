@@ -1225,7 +1225,7 @@ class MemoryStore:
         return results
 
     def recent(
-        self, limit: int = 10, filters: dict[str, Any] | None = None
+        self, limit: int = 10, filters: dict[str, Any] | None = None, offset: int = 0
     ) -> list[dict[str, Any]]:
         filters = filters or {}
         params: list[Any] = []
@@ -1245,8 +1245,11 @@ class MemoryStore:
         if join_sessions:
             from_clause = "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
         rows = self.conn.execute(
-            f"SELECT memory_items.* FROM {from_clause} WHERE {where_clause} ORDER BY created_at DESC LIMIT ?",
-            (*params, limit),
+            (
+                f"SELECT memory_items.* FROM {from_clause} "
+                f"WHERE {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            ),
+            (*params, limit, max(offset, 0)),
         ).fetchall()
         results = db.rows_to_dicts(rows)
         for item in results:
@@ -1260,6 +1263,7 @@ class MemoryStore:
             tokens_read=tokens_read,
             metadata={
                 "limit": limit,
+                "offset": offset,
                 "results": len(results),
                 "kind": filters.get("kind"),
                 "project": filters.get("project"),
@@ -1272,6 +1276,7 @@ class MemoryStore:
         kinds: Iterable[str],
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         filters = filters or {}
         kinds_list = [str(kind) for kind in kinds if kind]
@@ -1294,8 +1299,11 @@ class MemoryStore:
         if join_sessions:
             from_clause = "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
         rows = self.conn.execute(
-            f"SELECT memory_items.* FROM {from_clause} WHERE {where_clause} ORDER BY created_at DESC LIMIT ?",
-            (*params, limit),
+            (
+                f"SELECT memory_items.* FROM {from_clause} "
+                f"WHERE {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            ),
+            (*params, limit, max(offset, 0)),
         ).fetchall()
         results = db.rows_to_dicts(rows)
         for item in results:
@@ -1309,6 +1317,7 @@ class MemoryStore:
             tokens_read=tokens_read,
             metadata={
                 "limit": limit,
+                "offset": offset,
                 "results": len(results),
                 "kinds": kinds_list,
                 "project": filters.get("project"),
