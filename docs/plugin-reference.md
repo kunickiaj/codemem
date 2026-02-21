@@ -84,6 +84,17 @@ Failure semantics:
 - Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`).
 - Accepted raw-event batches are retried by viewer/store queue workers (`codemem raw-events-retry`).
 
+## Project label normalization
+
+When ingesting plugin payloads, CodeMem stores a normalized project label instead of a full path.
+
+- Path-like labels are reduced to the basename (for example, `/Users/adam/workspace/codemem` -> `codemem`).
+- Windows-style paths are normalized with Windows path rules on every OS runtime.
+  - `C:\Users\adam\workspace\codemem` -> `codemem`
+  - `D:/dev/client-demo` -> `client-demo`
+  - `\\server\share\team\project-x` -> `project-x`
+- `CODEMEM_PROJECT` still has highest precedence and is normalized the same way.
+
 ## Environment hints
 
 | Env var | Description |
