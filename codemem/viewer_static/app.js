@@ -416,8 +416,10 @@
   let summaryHasMore = true;
   let loadMoreInFlight = false;
   let feedScrollHandlerBound = false;
+  let feedProjectGeneration = 0;
   function resetPagination(project) {
     lastFeedProject = project;
+    feedProjectGeneration += 1;
     observationOffset = 0;
     summaryOffset = 0;
     observationHasMore = true;
@@ -448,6 +450,11 @@
     return Array.from(byKey.values()).sort((a, b) => {
       return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });
+  }
+  function mergeRefreshFeedItems(currentItems, firstPageItems) {
+    const firstPageKeys = new Set(firstPageItems.map(itemKey));
+    const olderItems = currentItems.filter((item) => !firstPageKeys.has(itemKey(item)));
+    return mergeFeedItems(olderItems, firstPageItems);
   }
   function getSummaryObject(item) {
     const preferredKeys = ["request", "outcome", "plan", "completed", "learned", "investigated", "next", "next_steps", "notes"];
@@ -696,26 +703,33 @@
   }
   async function loadMoreFeedPage() {
     if (loadMoreInFlight || !hasMorePages()) return;
+    const requestProject = state.currentProject || "";
+    const requestGeneration = feedProjectGeneration;
+    const startObservationOffset = observationOffset;
+    const startSummaryOffset = summaryOffset;
     loadMoreInFlight = true;
     try {
       const [observations, summaries] = await Promise.all([
-        observationHasMore ? loadMemoriesPage(state.currentProject, {
+        observationHasMore ? loadMemoriesPage(requestProject, {
           limit: OBSERVATION_PAGE_SIZE,
-          offset: observationOffset
-        }) : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: observationOffset } }),
-        summaryHasMore ? loadSummariesPage(state.currentProject, {
+          offset: startObservationOffset
+        }) : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: startObservationOffset } }),
+        summaryHasMore ? loadSummariesPage(requestProject, {
           limit: SUMMARY_PAGE_SIZE,
-          offset: summaryOffset
-        }) : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: summaryOffset } })
+          offset: startSummaryOffset
+        }) : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: startSummaryOffset } })
       ]);
+      if (requestGeneration !== feedProjectGeneration || requestProject !== (state.currentProject || "")) {
+        return;
+      }
       const summaryItems = summaries.items || [];
       const observationItems = observations.items || [];
       const filtered = observationItems.filter((i) => !isLowSignalObservation(i));
       state.lastFeedFilteredCount += observationItems.length - filtered.length;
       summaryHasMore = pageHasMore(summaries, summaryItems.length, SUMMARY_PAGE_SIZE);
       observationHasMore = pageHasMore(observations, observationItems.length, OBSERVATION_PAGE_SIZE);
-      summaryOffset = pageNextOffset(summaries, summaryOffset + summaryItems.length);
-      observationOffset = pageNextOffset(observations, observationOffset + observationItems.length);
+      summaryOffset = pageNextOffset(summaries, startSummaryOffset + summaryItems.length);
+      observationOffset = pageNextOffset(observations, startObservationOffset + observationItems.length);
       const incoming = [...summaryItems, ...filtered];
       const feedItems = mergeFeedItems(state.lastFeedItems, incoming);
       const newCount = countNewItems(feedItems, state.lastFeedItems);
@@ -801,19 +815,24 @@
     if (project !== lastFeedProject) {
       resetPagination(project);
     }
-    const observationsLimit = Math.max(OBSERVATION_PAGE_SIZE, observationOffset || OBSERVATION_PAGE_SIZE);
-    const summariesLimit = Math.max(SUMMARY_PAGE_SIZE, summaryOffset || SUMMARY_PAGE_SIZE);
+    const requestGeneration = feedProjectGeneration;
+    const observationsLimit = OBSERVATION_PAGE_SIZE;
+    const summariesLimit = SUMMARY_PAGE_SIZE;
     const [observations, summaries] = await Promise.all([
       loadMemoriesPage(project, { limit: observationsLimit, offset: 0 }),
       loadSummariesPage(project, { limit: summariesLimit, offset: 0 })
     ]);
+    if (requestGeneration !== feedProjectGeneration || project !== (state.currentProject || "")) {
+      return;
+    }
     const summaryItems = summaries.items || [];
     const observationItems = observations.items || [];
     const filtered = observationItems.filter((i) => !isLowSignalObservation(i));
     const filteredCount = observationItems.length - filtered.length;
-    const feedItems = [...summaryItems, ...filtered].sort((a, b) => {
+    const firstPageFeedItems = [...summaryItems, ...filtered].sort((a, b) => {
       return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });
+    const feedItems = mergeRefreshFeedItems(state.lastFeedItems, firstPageFeedItems);
     const newCount = countNewItems(feedItems, state.lastFeedItems);
     if (newCount) {
       const seen = new Set(state.lastFeedItems.map(itemKey));
@@ -823,11 +842,11 @@
     }
     state.pendingFeedItems = null;
     state.lastFeedItems = feedItems;
-    state.lastFeedFilteredCount = filteredCount;
+    state.lastFeedFilteredCount = Math.max(state.lastFeedFilteredCount, filteredCount);
     summaryHasMore = pageHasMore(summaries, summaryItems.length, summariesLimit);
     observationHasMore = pageHasMore(observations, observationItems.length, observationsLimit);
-    summaryOffset = pageNextOffset(summaries, summaryItems.length);
-    observationOffset = pageNextOffset(observations, observationItems.length);
+    summaryOffset = Math.max(summaryOffset, pageNextOffset(summaries, summaryItems.length));
+    observationOffset = Math.max(observationOffset, pageNextOffset(observations, observationItems.length));
     updateFeedView();
   }
   function buildHealthCard({ label, value, detail, icon, className, title }) {
