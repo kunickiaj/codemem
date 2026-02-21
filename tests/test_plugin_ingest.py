@@ -11,6 +11,7 @@ from codemem.plugin_ingest import (
     _budget_tool_events,
     _build_transcript,
     _event_to_tool_event,
+    _normalize_project_label,
     _resolve_ingest_project,
     ingest,
 )
@@ -210,6 +211,21 @@ def test_resolve_ingest_project_ignores_non_string_payload_values() -> None:
             pre_project="/Users/adam/.local/share/opencode/worktree/abc123/crisp-canyon",
         )
     assert project == "codemem"
+
+
+def test_normalize_project_label_uses_windows_path_rules_for_backslashes() -> None:
+    value = r"C:\Users\adam\workspace\codemem"
+    assert _normalize_project_label(value) == "codemem"
+
+
+def test_normalize_project_label_uses_windows_path_rules_for_drive_prefix_with_slashes() -> None:
+    value = "D:/dev/client-demo"
+    assert _normalize_project_label(value) == "client-demo"
+
+
+def test_normalize_project_label_uses_windows_path_rules_for_unc_paths() -> None:
+    value = r"\\server\share\team\project-x"
+    assert _normalize_project_label(value) == "project-x"
 
 
 def test_ingest_with_tool_events_does_not_crash(tmp_path: Path) -> None:

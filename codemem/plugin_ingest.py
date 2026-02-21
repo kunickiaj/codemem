@@ -5,7 +5,7 @@ import os
 import sys
 from collections.abc import Iterable
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from . import db
@@ -271,6 +271,11 @@ def _normalize_project_label(value: Any) -> str | None:
     if not text:
         return None
     if "/" in text or "\\" in text:
+        looks_like_windows_path = "\\" in text or (
+            len(text) >= 2 and text[1] == ":" and text[0].isalpha()
+        )
+        if looks_like_windows_path:
+            return PureWindowsPath(text).name or None
         return Path(text).name or None
     return text
 
