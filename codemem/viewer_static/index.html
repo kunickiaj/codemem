@@ -837,8 +837,9 @@
         background: var(--surface-2);
       }
 
-      .health-action-text, .sync-action-text { font-size: 13px; color: var(--text-primary); }
+      .health-action-text, .sync-action-text { font-size: 13px; color: var(--text-primary); flex: 1; min-width: 0; }
       .health-action-command, .sync-action-command { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); }
+      .health-action-buttons { display: flex; gap: 6px; flex-shrink: 0; }
 
       /* ── Diagnostics ───────────────────────────────────────── */
 

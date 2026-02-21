@@ -14,6 +14,14 @@ import {
 import { state, isDetailsOpen, setDetailsOpen } from '../lib/state';
 import * as api from '../lib/api';
 
+type HealthAction = {
+  label: string;
+  command: string;
+  /** If set, show an actionable button that triggers this async function. */
+  action?: () => Promise<void>;
+  actionLabel?: string;
+};
+
 /* ── Health card builder ─────────────────────────────────── */
 
 type HealthCardInput = {
@@ -41,19 +49,34 @@ function buildHealthCard({ label, value, detail, icon, className, title }: Healt
   return card;
 }
 
-function renderActionList(container: HTMLElement | null, actions: Array<{ label: string; command: string }>) {
+function renderActionList(container: HTMLElement | null, actions: HealthAction[]) {
   if (!container) return;
   container.textContent = '';
   if (!actions.length) { (container as any).hidden = true; return; }
   (container as any).hidden = false;
-  actions.slice(0, 2).forEach((item) => {
+  actions.slice(0, 3).forEach((item) => {
     const row = el('div', 'health-action');
     const textWrap = el('div', 'health-action-text');
     textWrap.textContent = item.label;
-    textWrap.appendChild(el('span', 'health-action-command', item.command));
-    const btn = el('button', 'settings-button health-action-copy', 'Copy') as HTMLButtonElement;
-    btn.addEventListener('click', () => copyToClipboard(item.command, btn));
-    row.append(textWrap, btn);
+    if (item.command) textWrap.appendChild(el('span', 'health-action-command', item.command));
+    const btnWrap = el('div', 'health-action-buttons');
+    if (item.action) {
+      const actionBtn = el('button', 'settings-button', item.actionLabel || 'Run') as HTMLButtonElement;
+      actionBtn.addEventListener('click', async () => {
+        actionBtn.disabled = true;
+        actionBtn.textContent = 'Running…';
+        try { await item.action!(); } catch {}
+        actionBtn.disabled = false;
+        actionBtn.textContent = item.actionLabel || 'Run';
+      });
+      btnWrap.appendChild(actionBtn);
+    }
+    if (item.command) {
+      const copyBtn = el('button', 'settings-button health-action-copy', 'Copy') as HTMLButtonElement;
+      copyBtn.addEventListener('click', () => copyToClipboard(item.command, copyBtn));
+      btnWrap.appendChild(copyBtn);
+    }
+    row.append(textWrap, btnWrap);
     container.appendChild(row);
   });
 }
@@ -146,17 +169,18 @@ export function renderHealthOverview() {
   cards.forEach((c) => healthGrid.appendChild(c));
 
   // Recommendations
-  const recommendations: Array<{ label: string; command: string }> = [];
+  const triggerSync = () => api.triggerSync();
+  const recommendations: HealthAction[] = [];
   if (hasBacklog) {
     recommendations.push({ label: 'Pipeline needs attention. Check queue health first.', command: 'uv run codemem raw-events-status' });
     recommendations.push({ label: 'Then retry failed batches for impacted sessions.', command: 'uv run codemem raw-events-retry <opencode_session_id>' });
   } else if (syncState === 'stopped') {
     recommendations.push({ label: 'Sync daemon is stopped. Start the background service.', command: 'uv run codemem sync start' });
   } else if (!syncDisabled && !syncNoPeers && (syncState === 'error' || syncState === 'degraded')) {
-    recommendations.push({ label: 'Sync is unhealthy. Restart now and run one immediate pass.', command: 'uv run codemem sync restart && uv run codemem sync once' });
+    recommendations.push({ label: 'Sync is unhealthy. Restart and run one immediate pass.', command: 'uv run codemem sync restart', action: triggerSync, actionLabel: 'Sync now' });
     recommendations.push({ label: 'Then run doctor to see root cause details.', command: 'uv run codemem sync doctor' });
   } else if (!syncDisabled && !syncNoPeers && syncLooksStale) {
-    recommendations.push({ label: 'Sync is stale. Run one immediate sync pass.', command: 'uv run codemem sync once' });
+    recommendations.push({ label: 'Sync is stale. Run one immediate sync pass.', command: 'uv run codemem sync once', action: triggerSync, actionLabel: 'Sync now' });
   }
   if (tagCoverage > 0 && tagCoverage < 0.7 && recommendations.length < 2) {
     recommendations.push({ label: 'Tag coverage is low. Preview backfill impact.', command: 'uv run codemem backfill-tags --dry-run' });
