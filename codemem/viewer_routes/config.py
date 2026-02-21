@@ -33,8 +33,8 @@ def handle_get(
     config_path = get_config_path()
     try:
         config_data = read_config_file(config_path)
-    except ValueError as exc:
-        handler._send_json({"error": str(exc), "path": str(config_path)}, status=500)
+    except ValueError:
+        handler._send_json({"error": "config file could not be read"}, status=500)
         return True
     effective = asdict(load_config(config_path))
     handler._send_json(
@@ -91,8 +91,8 @@ def handle_post(
     config_path = get_config_path()
     try:
         config_data = read_config_file(config_path)
-    except ValueError as exc:
-        handler._send_json({"error": str(exc)}, status=500)
+    except ValueError:
+        handler._send_json({"error": "config file could not be read"}, status=500)
         return True
 
     for key in allowed_keys:

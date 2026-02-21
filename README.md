@@ -13,7 +13,9 @@ A lightweight persistent-memory companion for OpenCode. Captures terminal sessio
 
 ## What it looks like
 
-![codemem viewer overview](docs/images/codemem-viewer.png)
+| Light | Dark |
+|-------|------|
+| ![codemem viewer – light theme](docs/images/codemem-light.png) | ![codemem viewer – dark theme](docs/images/codemem-dark.png) |
 
 ## Prerequisites
 
