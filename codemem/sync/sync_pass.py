@@ -315,6 +315,94 @@ def sync_once(
     return {"ok": False, "error": error, "address_errors": address_errors}
 
 
+# Connectivity errors that indicate a peer is offline (not a protocol/auth issue).
+_CONNECTIVITY_ERROR_PATTERNS = (
+    "no route to host",
+    "connection refused",
+    "network is unreachable",
+    "timed out",
+    "name or service not known",
+    "nodename nor servname provided",
+    "errno 65",
+    "errno 61",
+    "errno 60",
+    "errno 111",
+)
+
+# After consecutive connectivity failures, back off: 2min, 4min, 8min, ..., max 30min.
+_PEER_BACKOFF_BASE_S = 120
+_PEER_BACKOFF_MAX_S = 1800
+
+
+def _is_connectivity_error(error: str | None) -> bool:
+    """Return True if the error string indicates a network connectivity failure."""
+    if not error:
+        return False
+    lower = error.lower()
+    return any(pattern in lower for pattern in _CONNECTIVITY_ERROR_PATTERNS)
+
+
+def _consecutive_connectivity_failures(
+    store: MemoryStore, peer_device_id: str, limit: int = 10
+) -> int:
+    """Count the number of consecutive recent failures that are connectivity errors."""
+    rows = store.conn.execute(
+        """
+        SELECT ok, error FROM sync_attempts
+        WHERE peer_device_id = ?
+        ORDER BY started_at DESC
+        LIMIT ?
+        """,
+        (peer_device_id, limit),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        if row["ok"]:
+            break
+        if _is_connectivity_error(row["error"]):
+            count += 1
+        else:
+            break
+    return count
+
+
+def _peer_backoff_seconds(consecutive_failures: int) -> int:
+    """Calculate backoff duration based on consecutive connectivity failures."""
+    if consecutive_failures <= 1:
+        return 0
+    exponent = min(consecutive_failures - 1, 8)
+    return min(_PEER_BACKOFF_BASE_S * (2 ** (exponent - 1)), _PEER_BACKOFF_MAX_S)
+
+
+def _should_skip_offline_peer(store: MemoryStore, peer_device_id: str) -> bool:
+    """Return True if we should skip this peer due to repeated connectivity failures."""
+    failures = _consecutive_connectivity_failures(store, peer_device_id)
+    if failures < 2:
+        return False
+    backoff_s = _peer_backoff_seconds(failures)
+    if backoff_s <= 0:
+        return False
+    # Check when the last attempt was.
+    row = store.conn.execute(
+        """
+        SELECT started_at FROM sync_attempts
+        WHERE peer_device_id = ?
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (peer_device_id,),
+    ).fetchone()
+    if not row or not row["started_at"]:
+        return False
+    try:
+        last_attempt = dt.datetime.fromisoformat(row["started_at"])
+        now = dt.datetime.now(dt.UTC)
+        elapsed = (now - last_attempt).total_seconds()
+        return elapsed < backoff_s
+    except (ValueError, TypeError):
+        return False
+
+
 def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
     sync_pass_preflight(store)
     rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
@@ -322,5 +410,8 @@ def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for row in rows:
         peer_device_id = str(row["peer_device_id"])
+        if _should_skip_offline_peer(store, peer_device_id):
+            results.append({"ok": False, "skipped": True, "reason": "peer offline (backoff)"})
+            continue
         results.append(run_sync_pass(store, peer_device_id, mdns_entries=mdns_entries))
     return results
