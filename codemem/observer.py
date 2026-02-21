@@ -22,6 +22,30 @@ DEFAULT_CODEX_ENDPOINT = _observer_codex.DEFAULT_CODEX_ENDPOINT
 
 logger = logging.getLogger(__name__)
 
+
+class ObserverAuthError(Exception):
+    """Raised when the observer encounters an authentication/authorization failure.
+
+    Auth errors (expired tokens, invalid keys, 401/403) are non-retryable until
+    credentials are refreshed.  The raw-event sweeper uses this to back off
+    instead of retrying every tick cycle.
+    """
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Detect authentication/authorization errors from provider SDKs."""
+    # OpenAI SDK: AuthenticationError (401) and PermissionDeniedError (403)
+    type_name = type(exc).__name__
+    if type_name in ("AuthenticationError", "PermissionDeniedError"):
+        return True
+    # Anthropic SDK: AuthenticationError
+    if type_name == "AuthenticationError":
+        return True
+    # HTTP status code check for generic cases
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    return isinstance(status, int) and status in (401, 403)
+
+
 _REDACT_PATTERNS = _observer_codex._REDACT_PATTERNS
 _build_codex_headers = _observer_auth._build_codex_headers
 _extract_oauth_access = _observer_auth._extract_oauth_access
@@ -224,6 +248,14 @@ class ObserverClient:
             )
             return resp.choices[0].message.content
         except Exception as exc:  # pragma: no cover
+            if _is_auth_error(exc):
+                logger.warning(
+                    "observer auth error: %s (provider=%s, model=%s)",
+                    exc,
+                    self.provider,
+                    self.model,
+                )
+                raise ObserverAuthError(str(exc)) from exc
             logger.exception(
                 "observer call failed",
                 extra={"provider": self.provider, "model": self.model},
@@ -317,6 +349,8 @@ class ObserverClient:
                     message = "observer codex oauth call failed"
                     if error_summary:
                         message = f"{message}: {error_summary}"
+                    if response.status_code in (401, 403):
+                        raise ObserverAuthError(message)
                     logger.error(
                         message,
                         extra={
@@ -353,6 +387,8 @@ class ObserverClient:
             except Exception:
                 request_url = None
 
+            if status_code in (401, 403) or _is_auth_error(exc):
+                raise ObserverAuthError(message) from exc
             logger.exception(
                 message,
                 extra={

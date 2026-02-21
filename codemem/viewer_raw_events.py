@@ -8,10 +8,14 @@ import threading
 import time
 
 from .db import DEFAULT_DB_PATH
+from .observer import ObserverAuthError
 from .raw_event_flush import flush_raw_events
 from .store import MemoryStore
 
 logger = logging.getLogger(__name__)
+
+# Back off for 5 minutes after an auth error before retrying (seconds).
+_AUTH_BACKOFF_S = 300
 
 
 class RawEventAutoFlusher:
@@ -83,6 +87,8 @@ class RawEventSweeper:
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._auth_backoff_until: float = 0.0  # epoch ms; skip flushes until this time
+        self._auth_error_logged: bool = False
 
     def enabled(self) -> bool:
         value = (os.environ.get("CODEMEM_RAW_EVENTS_SWEEPER") or "1").strip().lower()
@@ -133,10 +139,32 @@ class RawEventSweeper:
         except (TypeError, ValueError):
             return 300000
 
+    def _handle_auth_error(self, exc: ObserverAuthError) -> None:
+        """Set backoff and log once per backoff window."""
+        self._auth_backoff_until = time.time() + _AUTH_BACKOFF_S
+        if not self._auth_error_logged:
+            self._auth_error_logged = True
+            msg = (
+                f"codemem: observer auth error — backing off for {_AUTH_BACKOFF_S}s. "
+                f"Refresh your provider credentials or update observer_provider in settings. "
+                f"({exc})"
+            )
+            logger.warning(msg)
+            print(msg, file=sys.stderr)
+
     def tick(self) -> None:
         if not self.enabled():
             return
-        now_ms = int(time.time() * 1000)
+
+        # Skip observer-dependent flushes while backing off from an auth error.
+        now = time.time()
+        if now < self._auth_backoff_until:
+            return
+        # Backoff expired — reset so next auth error gets logged again.
+        if self._auth_error_logged:
+            self._auth_error_logged = False
+
+        now_ms = int(now * 1000)
         idle_before = now_ms - self.idle_ms()
         store = MemoryStore(os.environ.get("CODEMEM_DB") or DEFAULT_DB_PATH)
         try:
@@ -166,6 +194,9 @@ class RawEventSweeper:
                         max_events=max_events,
                     )
                     drained.add(opencode_session_id)
+                except ObserverAuthError as exc:
+                    self._handle_auth_error(exc)
+                    return  # Stop all flush work during auth backoff.
                 except Exception as exc:
                     logger.exception(
                         "raw event queue worker flush failed",
@@ -174,7 +205,8 @@ class RawEventSweeper:
                     )
                     if not logging.getLogger().hasHandlers():
                         print(
-                            f"codemem: raw event queue worker flush failed for {opencode_session_id}: {exc}",
+                            f"codemem: raw event queue worker flush failed"
+                            f" for {opencode_session_id}: {exc}",
                             file=sys.stderr,
                         )
                     continue
@@ -195,9 +227,10 @@ class RawEventSweeper:
                         started_at=None,
                         max_events=max_events,
                     )
+                except ObserverAuthError as exc:
+                    self._handle_auth_error(exc)
+                    return  # Stop all flush work during auth backoff.
                 except Exception as exc:
-                    # Never silently swallow flush failures: they can cause the backlog to grow
-                    # indefinitely and mask observer/auth issues.
                     logger.exception(
                         "raw event sweeper flush failed",
                         extra={"opencode_session_id": opencode_session_id},
@@ -205,7 +238,8 @@ class RawEventSweeper:
                     )
                     if not logging.getLogger().hasHandlers():
                         print(
-                            f"codemem: raw event sweeper flush failed for {opencode_session_id}: {exc}",
+                            f"codemem: raw event sweeper flush failed"
+                            f" for {opencode_session_id}: {exc}",
                             file=sys.stderr,
                         )
                     continue
