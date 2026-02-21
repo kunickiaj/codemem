@@ -16,7 +16,7 @@ include = [
 
 [project]
 name = "codemem"
-version = "0.12.0"
+version = "0.13.0"
 description = "Persistent memory layer for OpenCode CLI with MCP server and wrapper capture"
 authors = [{name = "OpenCode", email = "hello@opencode.dev"}]
 requires-python = ">=3.11,<3.15"
