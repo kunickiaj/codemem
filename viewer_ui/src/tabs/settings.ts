@@ -5,6 +5,46 @@ import { state } from '../lib/state';
 import * as api from '../lib/api';
 
 let settingsOpen = false;
+let previouslyFocused: HTMLElement | null = null;
+
+function getFocusableNodes(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+  const selector = [
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[href]',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(',');
+  return Array.from(container.querySelectorAll(selector)).filter((node) => {
+    const el = node as HTMLElement;
+    return !el.hidden && el.offsetParent !== null;
+  }) as HTMLElement[];
+}
+
+function trapModalFocus(event: KeyboardEvent) {
+  if (!settingsOpen || event.key !== 'Tab') return;
+  const modal = $('settingsModal');
+  const focusable = getFocusableNodes(modal as HTMLElement | null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+
+  if (event.shiftKey) {
+    if (!active || active === first || !modal?.contains(active)) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+
+  if (!active || active === last || !modal?.contains(active)) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 
 export function isSettingsOpen(): boolean {
   return settingsOpen;
@@ -64,9 +104,13 @@ function setDirty(dirty: boolean) {
 
 export function openSettings(stopPolling: () => void) {
   settingsOpen = true;
+  previouslyFocused = document.activeElement as HTMLElement | null;
   stopPolling();
   show($('settingsBackdrop'));
   show($('settingsModal'));
+  const modal = $('settingsModal') as HTMLElement | null;
+  const firstFocusable = getFocusableNodes(modal)[0];
+  (firstFocusable || modal)?.focus();
 }
 
 export function closeSettings(startPolling: () => void, refreshCallback: () => void) {
@@ -76,6 +120,11 @@ export function closeSettings(startPolling: () => void, refreshCallback: () => v
   settingsOpen = false;
   hide($('settingsBackdrop'));
   hide($('settingsModal'));
+  const restoreTarget = previouslyFocused && typeof previouslyFocused.focus === 'function'
+    ? previouslyFocused
+    : $button('settingsButton');
+  restoreTarget?.focus();
+  previouslyFocused = null;
   startPolling();
   refreshCallback();
 }
@@ -135,6 +184,7 @@ export function initSettings(stopPolling: () => void, startPolling: () => void, 
   settingsSave?.addEventListener('click', () => saveSettings(startPolling, refreshCallback));
 
   document.addEventListener('keydown', (e) => {
+    trapModalFocus(e);
     if (e.key === 'Escape' && settingsOpen) closeSettings(startPolling, refreshCallback);
   });
 

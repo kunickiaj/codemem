@@ -1013,13 +1013,14 @@
 
     <!-- ── Settings modal ──────────────────────────────────── -->
     <div class="modal-backdrop" id="settingsBackdrop" hidden></div>
-    <div class="modal" id="settingsModal" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal" id="settingsModal" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle" aria-describedby="settingsDescription" tabindex="-1">
       <div class="modal-card">
         <div class="modal-header">
           <h2 id="settingsTitle">Observer settings</h2>
-          <button class="modal-close" id="settingsClose">close</button>
+          <button class="modal-close" id="settingsClose" aria-label="Close settings">close</button>
         </div>
         <div class="modal-body">
+          <div class="small" id="settingsDescription">Update observer and sync defaults for this viewer.</div>
           <div class="field">
             <label for="observerProvider">Observer provider</label>
             <select id="observerProvider"><option value="">auto (default)</option></select>

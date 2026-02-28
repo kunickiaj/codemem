@@ -1438,6 +1438,42 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     });
   }
   let settingsOpen = false;
+  let previouslyFocused = null;
+  function getFocusableNodes(container) {
+    if (!container) return [];
+    const selector = [
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[href]",
+      '[tabindex]:not([tabindex="-1"])'
+    ].join(",");
+    return Array.from(container.querySelectorAll(selector)).filter((node) => {
+      const el2 = node;
+      return !el2.hidden && el2.offsetParent !== null;
+    });
+  }
+  function trapModalFocus(event) {
+    if (!settingsOpen || event.key !== "Tab") return;
+    const modal = $("settingsModal");
+    const focusable = getFocusableNodes(modal);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (!active || active === first || !modal?.contains(active)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (!active || active === last || !modal?.contains(active)) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
   function isSettingsOpen() {
     return settingsOpen;
   }
@@ -1489,9 +1525,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   }
   function openSettings(stopPolling2) {
     settingsOpen = true;
+    previouslyFocused = document.activeElement;
     stopPolling2();
     show($("settingsBackdrop"));
     show($("settingsModal"));
+    const modal = $("settingsModal");
+    const firstFocusable = getFocusableNodes(modal)[0];
+    (firstFocusable || modal)?.focus();
   }
   function closeSettings(startPolling2, refreshCallback) {
     if (state.settingsDirty) {
@@ -1500,6 +1540,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     settingsOpen = false;
     hide($("settingsBackdrop"));
     hide($("settingsModal"));
+    const restoreTarget = previouslyFocused && typeof previouslyFocused.focus === "function" ? previouslyFocused : $button("settingsButton");
+    restoreTarget?.focus();
+    previouslyFocused = null;
     startPolling2();
     refreshCallback();
   }
@@ -1555,6 +1598,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     });
     settingsSave?.addEventListener("click", () => saveSettings(startPolling2, refreshCallback));
     document.addEventListener("keydown", (e) => {
+      trapModalFocus(e);
       if (e.key === "Escape" && settingsOpen) closeSettings(startPolling2, refreshCallback);
     });
     const inputs = ["observerProvider", "observerModel", "observerMaxChars", "packObservationLimit", "packSessionLimit", "syncEnabled", "syncHost", "syncPort", "syncInterval", "syncMdns"];
