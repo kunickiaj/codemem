@@ -105,6 +105,70 @@ def _item_tags(item: MemoryResult | dict[str, Any]) -> str:
     return str(_item_value(item, "tags_text", "") or "")
 
 
+def _normalize_dedupe_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def _exact_dedupe_key(item: MemoryResult | dict[str, Any]) -> tuple[str, str, str] | None:
+    kind = _item_kind(item)
+    if kind == "session_summary":
+        return None
+    title = _normalize_dedupe_text(_item_title(item))
+    body = _normalize_dedupe_text(_item_body(item))
+    if not title and not body:
+        return None
+    return (kind, title, body)
+
+
+def _collapse_exact_duplicates(
+    items: Sequence[MemoryResult | dict[str, Any]],
+    *,
+    canonical_by_key: dict[tuple[str, str, str], int],
+    duplicate_ids: dict[int, set[int]],
+) -> list[MemoryResult | dict[str, Any]]:
+    collapsed: list[MemoryResult | dict[str, Any]] = []
+    for item in items:
+        candidate_id = _item_id(item)
+        if candidate_id is None:
+            continue
+        key = _exact_dedupe_key(item)
+        if key is None:
+            collapsed.append(item)
+            continue
+        canonical_id = canonical_by_key.get(key)
+        if canonical_id is None:
+            canonical_by_key[key] = candidate_id
+            collapsed.append(item)
+            continue
+        if canonical_id == candidate_id:
+            collapsed.append(item)
+            continue
+        duplicate_ids.setdefault(canonical_id, set()).add(candidate_id)
+    return collapsed
+
+
+def _unique_item_ids(
+    items: Sequence[MemoryResult | dict[str, Any]],
+) -> set[int]:
+    unique: set[int] = set()
+    for item in items:
+        item_id = _item_id(item)
+        if item_id is None:
+            continue
+        unique.add(item_id)
+    return unique
+
+
+def _count_collapsed_for_canonical_ids(
+    duplicate_ids: dict[int, set[int]],
+    canonical_ids: set[int],
+) -> int:
+    total = 0
+    for canonical_id in canonical_ids:
+        total += len(duplicate_ids.get(canonical_id, set()))
+    return total
+
+
 def _sort_recent(
     items: Sequence[MemoryResult | dict[str, Any]],
 ) -> list[MemoryResult | dict[str, Any]]:
@@ -179,7 +243,8 @@ def build_memory_pack(
     telemetry_sources = {"semantic": 0, "fts": 0, "fuzzy": 0, "timeline": 0}
     telemetry_candidates = {"semantic": 0, "fts": 0, "fuzzy": 0}
 
-    semantic_matches = []
+    matches: list[Any] = []
+    semantic_matches: list[dict[str, Any]] = []
     try:
         semantic_matches = store._semantic_search(context, limit=limit, filters=filters)
         telemetry_candidates["semantic"] = len(semantic_matches)
@@ -187,31 +252,30 @@ def build_memory_pack(
         pass
 
     if store._query_looks_like_tasks(context):
-        matches = store.search(
-            store._task_query_hint(), limit=limit, filters=filters, log_usage=False
+        task_matches = list(
+            store.search(store._task_query_hint(), limit=limit, filters=filters, log_usage=False)
         )
-        telemetry_candidates["fts"] = len(matches)
-
-        matches = list(matches)
+        telemetry_candidates["fts"] = len(task_matches)
+        match_dicts = [m.__dict__ for m in task_matches]
 
         if semantic_matches:
-            matches.extend(semantic_matches)
+            match_dicts.extend(semantic_matches)
 
-        if not matches:
+        if not match_dicts:
             fuzzy_matches = store._fuzzy_search(context, limit=limit, filters=filters)
             telemetry_candidates["fuzzy"] = len(fuzzy_matches)
             if fuzzy_matches:
-                matches = fuzzy_matches
+                match_dicts = fuzzy_matches
                 fallback_used = True
             else:
-                matches = store._task_fallback_recent(limit, filters)
+                match_dicts = store._task_fallback_recent(limit, filters)
                 fallback_used = True
-        else:
-            pass
-
-        if matches:
-            match_dicts = [m.__dict__ if not isinstance(m, dict) else m for m in matches]
-            recent_matches = store._filter_recent_results(match_dicts, store.TASK_RECENCY_DAYS)
+        if match_dicts:
+            recent_matches = [
+                item
+                for item in store._filter_recent_results(match_dicts, store.TASK_RECENCY_DAYS)
+                if isinstance(item, dict)
+            ]
 
             if recent_matches:
                 matches = store._prioritize_task_results(recent_matches, limit)
@@ -222,31 +286,31 @@ def build_memory_pack(
         recall_mode = True
         recall_filters = dict(filters or {})
         recall_filters["kind"] = "session_summary"
-        matches = store.search(
+        recall_raw = store.search(
             context or store._recall_query_hint(),
             limit=limit,
             filters=recall_filters,
             log_usage=False,
         )
-        telemetry_candidates["fts"] = len(matches)
-        matches = list(matches)
+        telemetry_candidates["fts"] = len(recall_raw)
+        recall_dicts = [m.__dict__ for m in recall_raw]
 
         if semantic_matches:
-            matches.extend(semantic_matches)
+            recall_dicts.extend(semantic_matches)
 
-        if not matches:
+        if not recall_dicts:
             fuzzy_matches = store._fuzzy_search(context, limit=limit, filters=filters)
             telemetry_candidates["fuzzy"] = len(fuzzy_matches)
             if fuzzy_matches:
-                matches = fuzzy_matches
+                recall_dicts = fuzzy_matches
                 fallback_used = True
             else:
-                matches = store._recall_fallback_recent(limit, filters)
+                recall_dicts = store._recall_fallback_recent(limit, filters)
                 fallback_used = True
 
-        if matches:
-            match_dicts = [m.__dict__ if not isinstance(m, dict) else m for m in matches]
-            matches = store._prioritize_recall_results(match_dicts, limit)
+        if recall_dicts:
+            recall_items: list[MemoryResult | dict[str, Any]] = [item for item in recall_dicts]
+            matches = store._prioritize_recall_results(recall_items, limit)
 
         if matches:
             depth_before = max(0, limit // 2)
@@ -343,6 +407,26 @@ def build_memory_pack(
         timeline_items = timeline_candidates[:timeline_limit]
     observation_items = observation_candidates[:observation_limit]
 
+    exact_dedupe_enabled = bool(getattr(store, "_pack_exact_dedupe_enabled", True))
+    duplicate_ids: dict[int, set[int]] = {}
+    if exact_dedupe_enabled:
+        canonical_by_key: dict[tuple[str, str, str], int] = {}
+        summary_items = _collapse_exact_duplicates(
+            summary_items,
+            canonical_by_key=canonical_by_key,
+            duplicate_ids=duplicate_ids,
+        )
+        timeline_items = _collapse_exact_duplicates(
+            timeline_items,
+            canonical_by_key=canonical_by_key,
+            duplicate_ids=duplicate_ids,
+        )
+        observation_items = _collapse_exact_duplicates(
+            observation_items,
+            canonical_by_key=canonical_by_key,
+            duplicate_ids=duplicate_ids,
+        )
+
     if not merge_results and observation_items:
         seen = set()
         deduped: list[MemoryResult | dict[str, Any]] = []
@@ -429,12 +513,16 @@ def build_memory_pack(
             "body": _item_body(m),
             "confidence": _item_confidence(m),
             "tags": _item_tags(m),
+            "support_count": 1 + len(duplicate_ids.get(_item_id(m) or -1, set())),
+            "duplicate_ids": sorted(duplicate_ids.get(_item_id(m) or -1, set())),
         }
         for m in final_items
     ]
 
     section_blocks = []
+    section_unique_ids: set[int] = set()
     for title, items in sections:
+        section_unique_ids.update(_unique_item_ids(items))
         lines = [
             f"[{_item_id(m)}] ({_item_kind(m)}) {_item_title(m)} - {_item_body(m)}" for m in items
         ]
@@ -490,6 +578,27 @@ def build_memory_pack(
     if avoided_tokens_total > 0:
         avoided_work_ratio = float(avoided_tokens_total) / float(pack_tokens or 1)
 
+    returned_unique_ids = _unique_item_ids(final_items)
+    returned_duplicates_collapsed = _count_collapsed_for_canonical_ids(
+        duplicate_ids, returned_unique_ids
+    )
+    returned_candidates_total = len(returned_unique_ids) + returned_duplicates_collapsed
+    returned_reduction_percent = 0.0
+    if returned_candidates_total > 0:
+        returned_reduction_percent = (
+            float(returned_duplicates_collapsed) / float(returned_candidates_total)
+        ) * 100.0
+
+    pack_duplicates_collapsed = _count_collapsed_for_canonical_ids(
+        duplicate_ids, section_unique_ids
+    )
+    pack_candidates_total = len(section_unique_ids) + pack_duplicates_collapsed
+    pack_reduction_percent = 0.0
+    if pack_candidates_total > 0:
+        pack_reduction_percent = (
+            float(pack_duplicates_collapsed) / float(pack_candidates_total)
+        ) * 100.0
+
     metrics = {
         "limit": limit,
         "items": len(formatted),
@@ -516,6 +625,16 @@ def build_memory_pack(
         else True,
         "semantic_candidates": semantic_candidates,
         "semantic_hits": semantic_hits,
+        "exact_dedupe_enabled": exact_dedupe_enabled,
+        "exact_duplicates_collapsed": returned_duplicates_collapsed,
+        "exact_candidates_total": returned_candidates_total,
+        "exact_dedupe_reduction_percent": returned_reduction_percent,
+        "exact_unique_items": len(returned_unique_ids),
+        "exact_pack_duplicates_collapsed": pack_duplicates_collapsed,
+        "exact_pack_candidates_total": pack_candidates_total,
+        "exact_pack_dedupe_reduction_percent": pack_reduction_percent,
+        "exact_returned_duplicates_collapsed": returned_duplicates_collapsed,
+        "exact_returned_unique_items": len(returned_unique_ids),
     }
     if log_usage:
         store.record_usage(

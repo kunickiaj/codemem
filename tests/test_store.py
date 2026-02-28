@@ -7,6 +7,8 @@ from http.server import HTTPServer
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from codemem import db
 from codemem import store as store_module
 from codemem import viewer as viewer_module
@@ -418,6 +420,136 @@ def test_pack_reuse_savings(tmp_path: Path) -> None:
     stats = store.stats()
     usage = {event["event"]: event for event in stats["usage"]["events"]}
     assert usage["pack"]["tokens_saved"] > 0
+
+
+def test_pack_collapses_exact_duplicate_memories(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    first = store.remember(
+        session,
+        kind="note",
+        title="Techdocs parser update",
+        body_text="use cheerio for server-side html parsing",
+    )
+    second = store.remember(
+        session,
+        kind="note",
+        title="Techdocs parser update",
+        body_text="use cheerio for server-side html parsing",
+    )
+    third = store.remember(
+        session,
+        kind="note",
+        title="Techdocs auth wiring",
+        body_text="add discovery and auth services to collector",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack("techdocs", limit=10, filters={"project": "/tmp/project-a"})
+    items = pack.get("items") or []
+    ids = {int(item["id"]) for item in items if item.get("id") is not None}
+
+    canonical_id = first if first in ids else second
+    duplicate_id = second if canonical_id == first else first
+    assert canonical_id in ids
+    assert duplicate_id not in ids
+    assert third in ids
+
+    duplicate_item = next(item for item in items if int(item.get("id") or 0) == canonical_id)
+    assert duplicate_item.get("support_count") == 2
+    assert duplicate_item.get("duplicate_ids") == [duplicate_id]
+
+    metrics = pack.get("metrics") or {}
+    collapsed = int(metrics.get("exact_duplicates_collapsed") or 0)
+    unique_items = int(metrics.get("exact_unique_items") or 0)
+    candidates_total = int(metrics.get("exact_candidates_total") or 0)
+    reduction = float(metrics.get("exact_dedupe_reduction_percent") or 0.0)
+    assert collapsed >= 1
+    assert candidates_total == unique_items + collapsed
+    assert int(metrics.get("exact_returned_unique_items") or 0) == len(ids)
+    assert int(metrics.get("exact_returned_duplicates_collapsed") or 0) == collapsed
+    if candidates_total > 0:
+        assert reduction == pytest.approx((collapsed / candidates_total) * 100.0)
+
+
+def test_pack_exact_dedupe_normalizes_case_and_whitespace(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    first = store.remember(
+        session,
+        kind="note",
+        title="Techdocs Parser Update",
+        body_text="Use   Cheerio   for parser",
+    )
+    second = store.remember(
+        session,
+        kind="note",
+        title="  techdocs   parser update  ",
+        body_text="use cheerio for parser",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack(
+        "techdocs parser", limit=10, filters={"project": "/tmp/project-a"}
+    )
+    items = pack.get("items") or []
+    ids = {int(item["id"]) for item in items if item.get("id") is not None}
+
+    assert len({first, second} & ids) == 1
+    metrics = pack.get("metrics") or {}
+    assert int(metrics.get("exact_duplicates_collapsed") or 0) >= 1
+
+
+def test_pack_exact_dedupe_can_be_disabled_via_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CODEMEM_PACK_EXACT_DEDUPE_ENABLED", "0")
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    first = store.remember(
+        session,
+        kind="note",
+        title="Techdocs parser update",
+        body_text="use cheerio for server-side html parsing",
+    )
+    second = store.remember(
+        session,
+        kind="note",
+        title="Techdocs parser update",
+        body_text="use cheerio for server-side html parsing",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack(
+        "techdocs parser", limit=10, filters={"project": "/tmp/project-a"}
+    )
+    items = pack.get("items") or []
+    ids = {int(item["id"]) for item in items if item.get("id") is not None}
+
+    assert first in ids
+    assert second in ids
+    metrics = pack.get("metrics") or {}
+    assert metrics.get("exact_dedupe_enabled") is False
+    assert int(metrics.get("exact_duplicates_collapsed") or 0) == 0
 
 
 def test_pack_metrics_dedupe_work_by_discovery_group(tmp_path: Path) -> None:
