@@ -214,6 +214,37 @@ def test_load_config_hybrid_retrieval_invalid_env_uses_default(
     assert cfg.hybrid_retrieval_enabled is False
 
 
+def test_load_config_pack_exact_dedupe_default_true(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+
+    cfg = load_config(config_path)
+
+    assert cfg.pack_exact_dedupe_enabled is True
+
+
+def test_load_config_reads_pack_exact_dedupe_from_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"pack_exact_dedupe_enabled": false}\n')
+
+    cfg = load_config(config_path)
+
+    assert cfg.pack_exact_dedupe_enabled is False
+
+
+def test_load_config_reads_pack_exact_dedupe_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_PACK_EXACT_DEDUPE_ENABLED", "0")
+
+    cfg = load_config(config_path)
+
+    assert cfg.pack_exact_dedupe_enabled is False
+
+
 def test_load_config_reads_hybrid_shadow_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

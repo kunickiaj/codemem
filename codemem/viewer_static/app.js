@@ -922,6 +922,8 @@
     const totals = usagePayload.totals_filtered || usagePayload.totals || usagePayload.totals_global || stats.usage?.totals || {};
     const recentPacks = Array.isArray(usagePayload.recent_packs) ? usagePayload.recent_packs : [];
     const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : null;
+    const latestPackMeta = recentPacks.length ? recentPacks[0]?.metadata_json || {} : {};
+    const latestPackDeduped = Number(latestPackMeta?.exact_duplicates_collapsed || 0);
     const rawPending = Number(raw.pending || 0);
     const erroredBatches = Number(counts.errored_batches || 0);
     const flushSuccessRate = Number(rates.flush_success_rate ?? 1);
@@ -1014,7 +1016,7 @@
       healthDot.className = `health-dot ${statusClass}`;
       healthDot.title = statusLabel;
     }
-    const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens`;
+    const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens · ${latestPackDeduped.toLocaleString()} deduped in latest pack`;
     const pipelineDetail = rawPending > 0 ? "Queue is actively draining" : "Queue is clear";
     const syncDetail = syncDisabled ? "Sync disabled" : syncNoPeers ? "No peers configured" : syncOfflinePeers ? `${peerCount} peers offline · last sync ${formatAgeShort(syncAgeSeconds)} ago` : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
     const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
@@ -1114,10 +1116,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const packEvent = events.find((e) => e?.event === "pack") || null;
     const recentPacks = Array.isArray(usagePayload?.recent_packs) ? usagePayload.recent_packs : [];
     const latestPack = recentPacks.length ? recentPacks[0] : null;
+    const latestPackMeta = latestPack?.metadata_json || {};
     const lastPackAt = latestPack?.created_at || "";
     const packCount = Number(packEvent?.count || 0);
     const packTokens = Number(latestPack?.tokens_read || 0);
     const savedTokens = Number(latestPack?.tokens_saved || 0);
+    const dedupedCount = Number(latestPackMeta?.exact_duplicates_collapsed || 0);
+    const dedupeEnabled = !!latestPackMeta?.exact_dedupe_enabled;
     const reductionPercent = formatReductionPercent(savedTokens, packTokens);
     const packLine = packCount ? `${packCount} packs` : "No packs yet";
     const lastPackLine = lastPackAt ? `Last pack: ${formatTimestamp(lastPackAt)}` : "";
@@ -1126,6 +1131,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const items = [
       { label: "Last pack savings", value: latestPack ? `${savedTokens.toLocaleString()} (${reductionPercent})` : "n/a", icon: "trending-up" },
       { label: "Last pack size", value: latestPack ? packTokens.toLocaleString() : "n/a", icon: "package" },
+      { label: "Last pack deduped", value: latestPack ? dedupedCount.toLocaleString() : "n/a", icon: "copy-check" },
+      { label: "Exact dedupe", value: latestPack ? dedupeEnabled ? "On" : "Off" : "n/a", icon: "shield-check" },
       { label: "Packs", value: packCount || 0, icon: "archive" }
     ];
     items.forEach((item) => {

@@ -16,6 +16,7 @@ CONFIG_ENV_OVERRIDES = {
     "observer_max_chars": "CODEMEM_OBSERVER_MAX_CHARS",
     "pack_observation_limit": "CODEMEM_PACK_OBSERVATION_LIMIT",
     "pack_session_limit": "CODEMEM_PACK_SESSION_LIMIT",
+    "pack_exact_dedupe_enabled": "CODEMEM_PACK_EXACT_DEDUPE_ENABLED",
     "hybrid_retrieval_enabled": "CODEMEM_HYBRID_RETRIEVAL_ENABLED",
     "hybrid_retrieval_shadow_log": "CODEMEM_HYBRID_RETRIEVAL_SHADOW_LOG",
     "hybrid_retrieval_shadow_sample_rate": "CODEMEM_HYBRID_RETRIEVAL_SHADOW_SAMPLE_RATE",
@@ -184,6 +185,7 @@ class OpencodeMemConfig:
     summary_max_chars: int = 6000
     pack_observation_limit: int = 50
     pack_session_limit: int = 10
+    pack_exact_dedupe_enabled: bool = True
     hybrid_retrieval_enabled: bool = False
     hybrid_retrieval_shadow_log: bool = False
     hybrid_retrieval_shadow_sample_rate: float = 1.0
@@ -327,6 +329,7 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
             continue
         if key in {
             "use_opencode_run",
+            "pack_exact_dedupe_enabled",
             "hybrid_retrieval_enabled",
             "hybrid_retrieval_shadow_log",
             "viewer_auto",
@@ -377,6 +380,10 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
         os.getenv("CODEMEM_PACK_SESSION_LIMIT"),
         cfg.pack_session_limit,
         key="pack_session_limit",
+    )
+    cfg.pack_exact_dedupe_enabled = _parse_bool(
+        os.getenv("CODEMEM_PACK_EXACT_DEDUPE_ENABLED"),
+        cfg.pack_exact_dedupe_enabled,
     )
     cfg.hybrid_retrieval_enabled = _parse_bool(
         os.getenv("CODEMEM_HYBRID_RETRIEVAL_ENABLED"), cfg.hybrid_retrieval_enabled
