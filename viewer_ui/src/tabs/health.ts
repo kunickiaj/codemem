@@ -104,6 +104,9 @@ export function renderHealthOverview() {
   const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : null;
   const latestPackMeta = recentPacks.length ? (recentPacks[0]?.metadata_json || {}) : {};
   const latestPackDeduped = Number(latestPackMeta?.exact_duplicates_collapsed || 0);
+  const latestPackNudges = Number(
+    latestPackMeta?.procedure_nudges_applied_count ?? latestPackMeta?.procedure_nudges_count ?? 0
+  );
   const rawPending = Number(raw.pending || 0);
   const erroredBatches = Number(counts.errored_batches || 0);
   const flushSuccessRate = Number(rates.flush_success_rate ?? 1);
@@ -154,7 +157,7 @@ export function renderHealthOverview() {
     healthDot.title = statusLabel;
   }
 
-  const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens · ${latestPackDeduped.toLocaleString()} deduped in latest pack`;
+  const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens · ${latestPackDeduped.toLocaleString()} deduped · ${latestPackNudges.toLocaleString()} nudges`;
   const pipelineDetail = rawPending > 0 ? 'Queue is actively draining' : 'Queue is clear';
   const syncDetail = syncDisabled ? 'Sync disabled' : syncNoPeers ? 'No peers configured'
     : syncOfflinePeers ? `${peerCount} peers offline · last sync ${formatAgeShort(syncAgeSeconds)} ago`
@@ -277,6 +280,13 @@ export function renderSessionSummary() {
   const savedTokens = Number(latestPack?.tokens_saved || 0);
   const dedupedCount = Number(latestPackMeta?.exact_duplicates_collapsed || 0);
   const dedupeEnabled = !!latestPackMeta?.exact_dedupe_enabled;
+  const nudgeCount = Number(
+    latestPackMeta?.procedure_nudges_applied_count ?? latestPackMeta?.procedure_nudges_count ?? 0
+  );
+  const driftDetected = !!latestPackMeta?.procedure_drift_detected;
+  const driftLabel = driftDetected
+    ? (nudgeCount > 0 ? 'Detected' : 'Detected (not applied: budget)')
+    : 'Clear';
   const reductionPercent = formatReductionPercent(savedTokens, packTokens);
 
   const packLine = packCount ? `${packCount} packs` : 'No packs yet';
@@ -289,6 +299,8 @@ export function renderSessionSummary() {
     { label: 'Last pack size', value: latestPack ? packTokens.toLocaleString() : 'n/a', icon: 'package' },
     { label: 'Last pack deduped', value: latestPack ? dedupedCount.toLocaleString() : 'n/a', icon: 'copy-check' },
     { label: 'Exact dedupe', value: latestPack ? (dedupeEnabled ? 'On' : 'Off') : 'n/a', icon: 'shield-check' },
+    { label: 'Last pack nudges', value: latestPack ? nudgeCount.toLocaleString() : 'n/a', icon: 'siren' },
+    { label: 'Procedure drift', value: latestPack ? driftLabel : 'n/a', icon: 'shield-alert' },
     { label: 'Packs', value: packCount || 0, icon: 'archive' },
   ];
 

@@ -552,6 +552,138 @@ def test_pack_exact_dedupe_can_be_disabled_via_env(tmp_path: Path, monkeypatch) 
     assert int(metrics.get("exact_duplicates_collapsed") or 0) == 0
 
 
+def test_pack_adds_memory_informed_procedure_nudges(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="decision",
+        title="Release hygiene",
+        body_text="Before push, run tests and lint, then request review approval.",
+    )
+    store.remember(
+        session,
+        kind="feature",
+        title="Collector update",
+        body_text="Added parser for remote docs.",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack(
+        "need to push release update after tests and lint",
+        limit=10,
+        filters={"project": "/tmp/project-a"},
+    )
+
+    assert "## Procedure Nudges" in pack["pack_text"]
+    assert "Release hygiene" in pack["pack_text"]
+    metrics = pack.get("metrics") or {}
+    assert int(metrics.get("procedure_nudges_count") or 0) >= 1
+    assert int(metrics.get("procedure_nudges_applied_count") or 0) >= 1
+    assert bool(metrics.get("procedure_drift_detected")) is True
+
+
+def test_pack_skips_procedure_nudges_when_not_relevant(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="decision",
+        title="Database rollback protocol",
+        body_text="Before migration, verify backups and run rollback rehearsal.",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack(
+        "frontend color palette experiments",
+        limit=10,
+        filters={"project": "/tmp/project-a"},
+    )
+
+    assert "## Procedure Nudges" not in pack["pack_text"]
+    metrics = pack.get("metrics") or {}
+    assert int(metrics.get("procedure_nudges_count") or 0) == 0
+    assert int(metrics.get("procedure_nudges_applied_count") or 0) == 0
+    assert bool(metrics.get("procedure_drift_detected")) is False
+
+
+def test_pack_token_budget_can_drop_procedure_nudges(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="decision",
+        title="Release gate",
+        body_text="Before push, run tests and lint, then request review approval.",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack(
+        "release push tests lint",
+        limit=10,
+        token_budget=1,
+        filters={"project": "/tmp/project-a"},
+    )
+
+    assert "## Procedure Nudges" not in pack["pack_text"]
+    metrics = pack.get("metrics") or {}
+    assert int(metrics.get("procedure_nudges_count") or 0) == 0
+    assert int(metrics.get("procedure_nudges_applied_count") or 0) == 0
+    assert bool(metrics.get("procedure_drift_detected")) is True
+
+
+def test_pack_skips_procedure_nudges_for_short_query(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="decision",
+        title="Release protocol",
+        body_text="Before push, run tests and lint, then request review approval.",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack(
+        "ok",
+        limit=10,
+        filters={"project": "/tmp/project-a"},
+    )
+
+    assert "## Procedure Nudges" not in pack["pack_text"]
+    metrics = pack.get("metrics") or {}
+    assert int(metrics.get("procedure_nudges_count") or 0) == 0
+    assert int(metrics.get("procedure_nudges_applied_count") or 0) == 0
+    assert bool(metrics.get("procedure_drift_detected")) is False
+
+
 def test_pack_metrics_dedupe_work_by_discovery_group(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

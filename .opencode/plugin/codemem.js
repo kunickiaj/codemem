@@ -184,8 +184,13 @@ export const OpencodeMemPlugin = async ({
   const injectLimit = injectLimitEnv ? parseNumber(injectLimitEnv, null) : null;
   const injectTokenBudgetEnv = process.env.CODEMEM_INJECT_TOKEN_BUDGET;
   const injectTokenBudget = injectTokenBudgetEnv ? parseNumber(injectTokenBudgetEnv, null) : null;
+  const injectRefreshMs = parseNumber(process.env.CODEMEM_INJECT_REFRESH_MS || "45000", 45000);
+  const injectRefreshFailureBackoffMs = parseNumber(
+    process.env.CODEMEM_INJECT_REFRESH_FAILURE_BACKOFF_MS || "20000",
+    20000
+  );
   const injectedSessions = new Map();
-  const injectionToastShown = new Set();
+  const injectionToastState = new Map();
   let sessionStartedAt = null;
   let viewerStarted = false;
   let promptCounter = 0;
@@ -230,6 +235,17 @@ export const OpencodeMemPlugin = async ({
       return false;
     }
     lastToastAtBySession.set(sessionID, now);
+    return true;
+  };
+
+  const lastInjectToastAtBySession = new Map();
+  const shouldInjectToast = (sessionID) => {
+    const now = Date.now();
+    const last = lastInjectToastAtBySession.get(sessionID) || 0;
+    if (now - last < 60000) {
+      return false;
+    }
+    lastInjectToastAtBySession.set(sessionID, now);
     return true;
   };
 
@@ -881,20 +897,58 @@ export const OpencodeMemPlugin = async ({
           } tui_toast=${Boolean(client.tui?.showToast)}`
         );
       }
-      const cached = injectedSessions.get(input.sessionID);
+      const sessionKey = input?.sessionID || null;
+      if (!sessionKey) {
+        const injected = await buildInjectedContext(query);
+        const fallbackText = injected?.text || "";
+        if (!fallbackText) {
+          return;
+        }
+        if (!Array.isArray(output.system)) {
+          output.system = [];
+        }
+        output.system.push(fallbackText);
+        return;
+      }
+      const now = Date.now();
+      const cached = injectedSessions.get(sessionKey);
       let contextText = cached?.text || "";
-      if (!contextText || cached?.query !== query) {
+      const refreshWindowMs = Math.max(1000, injectRefreshMs);
+      const failureBackoffMs = Math.max(1000, injectRefreshFailureBackoffMs);
+      const nextRefreshAt = Number.isFinite(cached?.nextRefreshAt)
+        ? cached.nextRefreshAt
+        : Number.NEGATIVE_INFINITY;
+      const shouldRefresh = now >= nextRefreshAt;
+      const queryChanged = cached?.query !== query;
+      const needsRecompute = !contextText || queryChanged || shouldRefresh;
+      if (needsRecompute) {
         const injected = await buildInjectedContext(query);
         if (injected?.text) {
-          injectedSessions.set(input.sessionID, {
+          const refreshedAt = Date.now();
+          injectedSessions.set(sessionKey, {
             query,
             text: injected.text,
             metrics: injected.metrics || null,
+            refreshedAt,
+            nextRefreshAt: refreshedAt + refreshWindowMs,
+            refreshFailures: 0,
           });
           contextText = injected.text;
 
-          if (!injectionToastShown.has(input.sessionID) && client.tui?.showToast) {
-            injectionToastShown.add(input.sessionID);
+          const procedureNudges = Number(
+            injected.metrics?.procedure_nudges_applied_count ??
+              injected.metrics?.procedure_nudges_count ??
+              0
+          );
+          const procedureDrift = Boolean(injected.metrics?.procedure_drift_detected);
+          const showWarning = procedureDrift && procedureNudges > 0;
+          const previousToast = injectionToastState.get(sessionKey);
+          const warningEscalated = showWarning && !previousToast?.warned;
+          const queryChangedSinceToast = !previousToast || previousToast.query !== query;
+          const shouldShowToast =
+            warningEscalated || (queryChangedSinceToast && shouldInjectToast(sessionKey));
+
+          if (shouldShowToast && client.tui?.showToast) {
             try {
               const items = injected.metrics?.items;
               const packTokens = injected.metrics?.pack_tokens;
@@ -906,16 +960,34 @@ export const OpencodeMemPlugin = async ({
               if (typeof packTokens === "number") messageParts.push(`~${packTokens} tokens`);
               if (typeof avoided === "number" && avoided > 0 && avoidedKnown >= avoidedUnknown)
                 messageParts.push(`avoided work ~${avoided} tokens`);
+              if (procedureDrift && procedureNudges > 0) {
+                messageParts.push(`drift guard: ${procedureNudges} nudge${procedureNudges === 1 ? "" : "s"}`);
+              }
               await client.tui.showToast({
                 body: {
                   message: messageParts.join(" · "),
-                  variant: "info",
+                  variant: procedureDrift && procedureNudges > 0 ? "warning" : "info",
                 },
               });
             } catch (toastErr) {
               // best-effort only
             }
           }
+          injectionToastState.set(sessionKey, {
+            query,
+            warned: showWarning,
+          });
+        } else if (cached && !queryChanged) {
+          const failures = Number(cached.refreshFailures || 0) + 1;
+          injectedSessions.set(sessionKey, {
+            ...cached,
+            refreshFailures: failures,
+            nextRefreshAt: now + failureBackoffMs,
+          });
+          contextText = cached.text || "";
+        } else {
+          injectedSessions.delete(sessionKey);
+          contextText = "";
         }
       }
       if (!contextText) {
@@ -1092,6 +1164,12 @@ export const OpencodeMemPlugin = async ({
       }
 
       if (eventType === "session.created") {
+        if (sessionID) {
+          injectedSessions.delete(sessionID);
+          injectionToastState.delete(sessionID);
+          lastToastAtBySession.delete(sessionID);
+          lastInjectToastAtBySession.delete(sessionID);
+        }
         if (events.length) {
           await flushEvents();
         }
@@ -1100,9 +1178,21 @@ export const OpencodeMemPlugin = async ({
         lastPromptText = null;
         lastAssistantText = null;
         resetSessionContext();
+        messageRoles.clear();
+        messageTexts.clear();
+        assistantUsageCaptured.clear();
         startViewer();
       }
       if (eventType === "session.deleted") {
+        if (sessionID) {
+          injectedSessions.delete(sessionID);
+          injectionToastState.delete(sessionID);
+          lastToastAtBySession.delete(sessionID);
+          lastInjectToastAtBySession.delete(sessionID);
+        }
+        messageRoles.clear();
+        messageTexts.clear();
+        assistantUsageCaptured.clear();
         await stopViewer();
       }
     },

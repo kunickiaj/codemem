@@ -169,6 +169,132 @@ def _count_collapsed_for_canonical_ids(
     return total
 
 
+_PACK_QUERY_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "your",
+    "have",
+    "will",
+    "about",
+    "what",
+    "when",
+    "where",
+    "which",
+    "does",
+    "did",
+    "can",
+    "should",
+}
+
+_PROCEDURE_KIND_WEIGHT = {
+    "decision": 4,
+    "discovery": 3,
+    "change": 2,
+    "refactor": 2,
+    "bugfix": 2,
+    "feature": 1,
+    "exploration": 1,
+    "note": 1,
+}
+
+_PROCEDURE_CUE_PATTERN = re.compile(
+    r"\b("
+    r"must|always|never|do\s+not|don't|required|requirement|workflow|procedure|protocol|"
+    r"checklist|approval|review|first|then|before|after|verify|validate|test|lint|build|"
+    r"commit|push|sync|rollback"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _tokenize_query(text: str) -> set[str]:
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9_]+", text.lower())
+        if len(token) >= 3 and token not in _PACK_QUERY_STOPWORDS
+    }
+    return tokens
+
+
+def _compact_text(value: str, *, limit: int = 180) -> str:
+    squashed = " ".join(value.split())
+    if len(squashed) <= limit:
+        return squashed
+    return squashed[: max(limit - 3, 0)] + "..."
+
+
+def _procedure_signal_count(text: str) -> int:
+    return len(_PROCEDURE_CUE_PATTERN.findall(text))
+
+
+def _select_procedure_nudges(
+    context: str,
+    items: Sequence[MemoryResult | dict[str, Any]],
+    *,
+    limit: int = 3,
+) -> tuple[list[MemoryResult | dict[str, Any]], int]:
+    query_tokens = _tokenize_query(context)
+    if not query_tokens:
+        return [], 0
+    seen_ids: set[int] = set()
+    scored: list[tuple[int, str, MemoryResult | dict[str, Any]]] = []
+
+    for item in items:
+        candidate_id = _item_id(item)
+        if candidate_id is None or candidate_id in seen_ids:
+            continue
+        seen_ids.add(candidate_id)
+
+        kind = _item_kind(item)
+        kind_weight = _PROCEDURE_KIND_WEIGHT.get(kind, 0)
+        if kind_weight <= 0:
+            continue
+
+        title = _item_title(item)
+        body = _item_body(item)
+        text = f"{title} {body}".strip()
+        if not text:
+            continue
+
+        cue_count = _procedure_signal_count(text)
+        if cue_count <= 0:
+            continue
+
+        item_tokens = _tokenize_query(text)
+        overlap = len(query_tokens.intersection(item_tokens))
+        if query_tokens and overlap <= 0:
+            continue
+
+        score = (kind_weight * 10) + (overlap * 5) + cue_count
+        scored.append((score, _item_created_at(item), item))
+
+    scored.sort(key=lambda value: (value[0], value[1]), reverse=True)
+    selected = [item for _, _, item in scored[:limit]]
+    return selected, len(scored)
+
+
+def _format_procedure_nudge(item: MemoryResult | dict[str, Any]) -> str:
+    candidate_id = _item_id(item)
+    kind = _item_kind(item)
+    title = _compact_text(_item_title(item), limit=90)
+    body = _compact_text(_item_body(item), limit=180)
+
+    prefix = f"[{candidate_id}] ({kind})" if candidate_id is not None else f"({kind})"
+    if title and body:
+        return f"{prefix} {title}: {body}"
+    if title:
+        return f"{prefix} {title}"
+    if body:
+        return f"{prefix} {body}"
+    return prefix
+
+
 def _sort_recent(
     items: Sequence[MemoryResult | dict[str, Any]],
 ) -> list[MemoryResult | dict[str, Any]]:
@@ -458,6 +584,16 @@ def build_memory_pack(
     else:
         sections.append(("Observations", []))
 
+    procedure_nudge_candidates = (
+        list(summary_items) + list(timeline_items) + list(observation_items)
+    )
+    procedure_nudges, procedure_nudge_candidate_count = _select_procedure_nudges(
+        context,
+        procedure_nudge_candidates,
+    )
+    procedure_nudges_selected_count = len(procedure_nudges)
+    procedure_nudge_lines = [_format_procedure_nudge(item) for item in procedure_nudges]
+
     required_titles = {"Summary", "Timeline", "Observations"}
     if token_budget:
         running = 0
@@ -480,6 +616,22 @@ def build_memory_pack(
             if budget_exhausted:
                 break
         sections = trimmed_sections
+
+        if procedure_nudge_lines:
+            nudge_header_tokens = store.estimate_tokens("## Procedure Nudges")
+            nudge_running = 0
+            trimmed_nudge_items: list[MemoryResult | dict[str, Any]] = []
+            trimmed_nudge_lines: list[str] = []
+            for item, line in zip(procedure_nudges, procedure_nudge_lines, strict=True):
+                line_tokens = store.estimate_tokens(line)
+                projected = running + nudge_header_tokens + nudge_running + line_tokens
+                if projected > token_budget:
+                    break
+                nudge_running += line_tokens
+                trimmed_nudge_items.append(item)
+                trimmed_nudge_lines.append(line)
+            procedure_nudges = trimmed_nudge_items
+            procedure_nudge_lines = trimmed_nudge_lines
 
     final_items: list[MemoryResult | dict[str, Any]] = []
     if merge_results:
@@ -530,6 +682,10 @@ def build_memory_pack(
             section_blocks.append(f"## {title}\n" + "\n".join(lines))
         else:
             section_blocks.append(f"## {title}\n")
+    if procedure_nudge_lines:
+        section_unique_ids.update(_unique_item_ids(procedure_nudges))
+        nudge_lines = [f"- {line}" for line in procedure_nudge_lines]
+        section_blocks.append("## Procedure Nudges\n" + "\n".join(nudge_lines))
     pack_text = "\n\n".join(section_blocks)
     pack_tokens = store.estimate_tokens(pack_text)
     work_tokens_sum = sum(_estimate_work_tokens(store, m) for m in final_items)
@@ -563,7 +719,7 @@ def build_memory_pack(
         work_source_label = "estimate"
     semantic_hits = 0
     if merge_results:
-        semantic_ids = {item.get("id") for item in store._semantic_search(context, limit, filters)}
+        semantic_ids = {item.get("id") for item in semantic_matches if isinstance(item, dict)}
         for item in formatted:
             if item.get("id") in semantic_ids:
                 semantic_hits += 1
@@ -635,6 +791,11 @@ def build_memory_pack(
         "exact_pack_dedupe_reduction_percent": pack_reduction_percent,
         "exact_returned_duplicates_collapsed": returned_duplicates_collapsed,
         "exact_returned_unique_items": len(returned_unique_ids),
+        "procedure_drift_detected": procedure_nudge_candidate_count > 0,
+        "procedure_nudges_selected_count": procedure_nudges_selected_count,
+        "procedure_nudges_applied_count": len(procedure_nudge_lines),
+        "procedure_nudges_count": len(procedure_nudge_lines),
+        "procedure_nudge_candidates": procedure_nudge_candidate_count,
     }
     if log_usage:
         store.record_usage(
