@@ -424,6 +424,13 @@
     summaryOffset = 0;
     observationHasMore = true;
     summaryHasMore = true;
+    state.lastFeedItems = [];
+    state.pendingFeedItems = null;
+    state.lastFeedFilteredCount = 0;
+    state.lastFeedSignature = "";
+    state.newItemKeys.clear();
+    state.itemViewState.clear();
+    state.itemExpandState.clear();
   }
   function isNearFeedBottom() {
     const root = document.documentElement;
@@ -501,6 +508,55 @@
   function clampClass(mode) {
     return mode === "summary" ? ["clamp", "clamp-3"] : ["clamp", "clamp-5"];
   }
+  function isSafeHref(value) {
+    const href = String(value || "").trim();
+    if (!href) return false;
+    if (href.startsWith("#") || href.startsWith("/")) return true;
+    const lower = href.toLowerCase();
+    return lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:");
+  }
+  function sanitizeHtml(html) {
+    const template = document.createElement("template");
+    template.innerHTML = String(html || "");
+    const allowedTags = /* @__PURE__ */ new Set(["p", "br", "strong", "em", "code", "pre", "ul", "ol", "li", "blockquote", "a", "h1", "h2", "h3", "h4", "h5", "h6", "hr"]);
+    template.content.querySelectorAll("script, iframe, object, embed, link, style").forEach((node) => {
+      node.remove();
+    });
+    template.content.querySelectorAll("*").forEach((node) => {
+      const tag = node.tagName.toLowerCase();
+      if (!allowedTags.has(tag)) {
+        node.replaceWith(document.createTextNode(node.textContent || ""));
+        return;
+      }
+      const allowedAttrs = tag === "a" ? /* @__PURE__ */ new Set(["href", "title"]) : /* @__PURE__ */ new Set();
+      for (const attr of Array.from(node.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (!allowedAttrs.has(name)) {
+          node.removeAttribute(attr.name);
+        }
+      }
+      if (tag === "a") {
+        const href = node.getAttribute("href") || "";
+        if (!isSafeHref(href)) {
+          node.removeAttribute("href");
+        } else {
+          node.setAttribute("rel", "noopener noreferrer");
+          node.setAttribute("target", "_blank");
+        }
+      }
+    });
+    return template.innerHTML;
+  }
+  function renderMarkdownSafe(value) {
+    const source = String(value || "");
+    try {
+      const rawHtml = globalThis.marked.parse(source);
+      return sanitizeHtml(rawHtml);
+    } catch {
+      const escaped = source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return escaped;
+    }
+  }
   function renderSummaryObject(summary) {
     const preferred = ["request", "outcome", "plan", "completed", "learned", "investigated", "next", "next_steps", "notes"];
     const keys = Object.keys(summary);
@@ -514,11 +570,7 @@
       const row = el("div", "summary-section");
       const label = el("div", "summary-section-label", toTitleLabel(key));
       const value = el("div", "summary-section-content");
-      try {
-        value.innerHTML = globalThis.marked.parse(content);
-      } catch {
-        value.textContent = content;
-      }
+      value.innerHTML = renderMarkdownSafe(content);
       row.append(label, value);
       container.appendChild(row);
     });
@@ -541,11 +593,7 @@
     const content = String(narrative || "").trim();
     if (!content) return null;
     const body = el("div", "feed-body");
-    try {
-      body.innerHTML = globalThis.marked.parse(content);
-    } catch {
-      body.textContent = content;
-    }
+    body.innerHTML = renderMarkdownSafe(content);
     return body;
   }
   function renderObservationBody(data, mode) {
@@ -695,7 +743,7 @@
   }
   function computeSignature(items) {
     const parts = items.map((i) => `${itemSignature(i)}:${i.kind || ""}:${i.created_at_utc || i.created_at || ""}`);
-    return `${state.feedTypeFilter}|${state.currentProject}|${parts.join("|")}`;
+    return `${state.feedTypeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join("|")}`;
   }
   function countNewItems(nextItems, currentItems) {
     const seen = new Set(currentItems.map(itemKey));
@@ -750,6 +798,17 @@
     if (!hasMorePages()) return;
     if (!isNearFeedBottom()) return;
     void loadMoreFeedPage();
+  }
+  function renderProjectSwitchLoadingState() {
+    const feedList = document.getElementById("feedList");
+    const feedMeta = document.getElementById("feedMeta");
+    if (feedList) {
+      feedList.textContent = "";
+      feedList.appendChild(el("div", "small", "Loading selected project..."));
+    }
+    if (feedMeta) {
+      feedMeta.textContent = "Loading selected project...";
+    }
   }
   function initFeedTab() {
     const feedTypeToggle = document.getElementById("feedTypeToggle");
@@ -814,6 +873,7 @@
     const project = state.currentProject || "";
     if (project !== lastFeedProject) {
       resetPagination(project);
+      renderProjectSwitchLoadingState();
     }
     const requestGeneration = feedProjectGeneration;
     const observationsLimit = OBSERVATION_PAGE_SIZE;

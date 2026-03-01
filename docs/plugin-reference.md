@@ -108,6 +108,7 @@ When ingesting plugin payloads, CodeMem stores a normalized project label instea
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` to enable; defaults to off). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
+| `CODEMEM_BACKEND_UPDATE_POLICY` | Backend update behavior on compatibility mismatch: `notify` (default), `auto`, or `off`. |
 | `CODEMEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint. |
 | `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events. |
 | `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process. |
@@ -141,4 +142,12 @@ When the plugin detects CLI/runtime version mismatch, it shows guidance based on
 - `CODEMEM_RUNNER=uvx` with custom source: update `CODEMEM_RUNNER_FROM`, restart OpenCode
 - other/unknown runner: run `uv tool install --upgrade codemem`, restart OpenCode
 
-Compatibility checks are warning-only and do not block plugin startup.
+Update policy:
+
+- `CODEMEM_BACKEND_UPDATE_POLICY=notify` (default): show warning toast with suggested action
+- `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible runners, then warn if still outdated
+  - skipped in `uv` dev mode
+  - skipped when `CODEMEM_RUNNER_FROM` is pinned to a git ref (for example `...git@vX.Y.Z`)
+- `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
+
+Compatibility checks do not block plugin startup.
