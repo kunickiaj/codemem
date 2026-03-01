@@ -382,11 +382,12 @@ When OpenCode starts, the plugin loads and:
 
 1. **Auto-detects mode**:
    - If in the `codemem` repo → uses `uv run` (dev mode, picks up changes)
-   - Otherwise → uses `uvx --from git+ssh://...` (installed mode)
+   - Otherwise → uses `uvx --from git+https://...` (installed mode; configurable via `CODEMEM_RUNNER_FROM`)
 
 2. Tracks every tool invocation (`tool.execute.after`)
 3. Flushes captured events on session boundaries (`session.idle`, `session.created`, `/new`, `session.error`)
 4. Auto-starts the viewer by default (set `CODEMEM_VIEWER_AUTO=0` to disable)
 5. Injects a memory pack into the system prompt (disable with `CODEMEM_INJECT_CONTEXT=0`)
+6. Checks backend CLI compatibility at startup and shows update guidance (`CODEMEM_BACKEND_UPDATE_POLICY=auto` enables best-effort auto-update)
 
 Observer/settings panel and advanced plugin controls are documented in `docs/plugin-reference.md`.

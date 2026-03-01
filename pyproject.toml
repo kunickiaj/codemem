@@ -7,16 +7,18 @@ packages = ["codemem"]
 
 [tool.hatch.build.targets.wheel.force-include]
 ".opencode/plugin/codemem.js" = "codemem/.opencode/plugin/codemem.js"
+".opencode/lib/compat.js" = "codemem/.opencode/lib/compat.js"
 
 [tool.hatch.build.targets.sdist]
 include = [
   "codemem/",
   ".opencode/plugin/codemem.js",
+  ".opencode/lib/compat.js",
 ]
 
 [project]
 name = "codemem"
-version = "0.14.0"
+version = "0.14.1"
 description = "Persistent memory layer for OpenCode CLI with MCP server and wrapper capture"
 authors = [{name = "OpenCode", email = "hello@opencode.dev"}]
 requires-python = ">=3.11,<3.15"

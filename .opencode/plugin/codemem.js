@@ -2,7 +2,13 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 
-import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "../lib/compat.js";
+import {
+  isVersionAtLeast,
+  parseBackendUpdatePolicy,
+  parseSemver,
+  resolveAutoUpdatePlan,
+  resolveUpgradeGuidance,
+} from "../lib/compat.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
@@ -170,6 +176,9 @@ export const OpencodeMemPlugin = async ({
   const commandTimeout = Number.parseInt(
     process.env.CODEMEM_PLUGIN_CMD_TIMEOUT || "20000",
     10
+  );
+  const backendUpdatePolicy = parseBackendUpdatePolicy(
+    process.env.CODEMEM_BACKEND_UPDATE_POLICY || "notify"
   );
 
   const parseNumber = (value, fallback) => {
@@ -548,9 +557,9 @@ export const OpencodeMemPlugin = async ({
     });
   };
 
-  const runCli = async (args) => {
+  const runCommand = async (cmd) => {
     const proc = Bun.spawn({
-      cmd: [runner, ...runnerArgs, ...args],
+      cmd,
       cwd,
       env: process.env,
       stdout: "pipe",
@@ -582,6 +591,44 @@ export const OpencodeMemPlugin = async ({
     return result;
   };
 
+  const runCli = async (args) => runCommand([runner, ...runnerArgs, ...args]);
+
+  const showToast = async (message, variant = "warning") => {
+    if (backendUpdatePolicy === "off") {
+      return;
+    }
+    if (!client.tui?.showToast) {
+      return;
+    }
+    try {
+      await client.tui.showToast({
+        body: {
+          message,
+          variant,
+        },
+      });
+    } catch (toastErr) {
+      // best-effort only
+    }
+  };
+
+  const restartViewerAfterAutoUpdate = async () => {
+    if (!viewerEnabled || !viewerAutoStart || !viewerStarted) {
+      return { attempted: false, ok: false };
+    }
+    const restartResult = await runCli(["serve", "--restart"]);
+    if (restartResult?.exitCode === 0) {
+      await logLine("compat.auto_update_viewer_restart ok");
+      return { attempted: true, ok: true };
+    }
+    await logLine(
+      `compat.auto_update_viewer_restart_failed exit=${restartResult?.exitCode ?? "unknown"} stderr=${redactLog(
+        (restartResult?.stderr || "").trim()
+      )}`
+    );
+    return { attempted: true, ok: false };
+  };
+
   const verifyCliCompatibility = async () => {
     const minVersion = process.env.CODEMEM_MIN_VERSION || "0.9.20";
     const versionResult = await runCli(["version"]);
@@ -606,21 +653,13 @@ export const OpencodeMemPlugin = async ({
         currentVersion,
         minVersion,
         runner,
-        runnerFrom,
+        runnerFromSet: Boolean(String(runnerFrom || "").trim()),
         upgradeMode: guidance.mode,
       });
-      if (client.tui?.showToast) {
-        try {
-          await client.tui.showToast({
-            body: {
-              message: `codemem compatibility check could not parse versions (cli='${currentVersion || "unknown"}', required='${minVersion}'). Suggested action: ${guidance.action}`,
-              variant: "warning",
-            },
-          });
-        } catch (toastErr) {
-          // best-effort only
-        }
-      }
+      await showToast(
+        `codemem compatibility check could not parse versions (cli='${currentVersion || "unknown"}', required='${minVersion}'). Suggested action: ${guidance.action}`,
+        "warning"
+      );
       return;
     }
 
@@ -634,25 +673,68 @@ export const OpencodeMemPlugin = async ({
       currentVersion,
       minVersion,
       runner,
-      runnerFrom,
+      runnerFromSet: Boolean(String(runnerFrom || "").trim()),
       upgradeMode: guidance.mode,
       upgradeAction: guidance.action,
     });
     await logLine(
       `compat.version_mismatch current=${currentVersion} required=${minVersion} mode=${guidance.mode} note=${redactLog(guidance.note)}`
     );
-    if (client.tui?.showToast) {
-      try {
-        await client.tui.showToast({
-          body: {
-            message: `${message}. Suggested action: ${guidance.action}`,
-            variant: "warning",
-          },
-        });
-      } catch (toastErr) {
-        // best-effort only
+
+    const autoPlan = resolveAutoUpdatePlan({ runner, runnerFrom });
+    if (backendUpdatePolicy === "auto") {
+      if (autoPlan.allowed && Array.isArray(autoPlan.command) && autoPlan.command.length > 0) {
+        const commandText = autoPlan.commandText || autoPlan.command.join(" ");
+        await logLine(`compat.auto_update_start cmd=${redactLog(commandText)}`);
+        const updateResult = await runCommand(autoPlan.command);
+        await logLine(
+          `compat.auto_update_result exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog(
+            (updateResult?.stderr || "").trim()
+          )}`
+        );
+
+        const refreshedResult = await runCli(["version"]);
+        const refreshedVersion = (refreshedResult?.stdout || "").trim();
+        if (
+          updateResult?.exitCode === 0
+          && refreshedResult?.exitCode === 0
+          && isVersionAtLeast(refreshedVersion, minVersion)
+        ) {
+          const viewerRestart = await restartViewerAfterAutoUpdate();
+          await logLine(
+            `compat.auto_update_success before=${currentVersion} after=${refreshedVersion}`
+          );
+          await showToast(
+            `Updated codemem backend from ${currentVersion || "unknown"} to ${refreshedVersion}.`,
+            "success"
+          );
+          if (viewerRestart.attempted && !viewerRestart.ok) {
+            await showToast(
+              "Backend updated, but viewer restart failed. Run `codemem serve --restart`.",
+              "warning"
+            );
+          }
+          return;
+        }
+
+        await showToast(
+          `${message}. Auto-update did not resolve it. Suggested action: ${guidance.action}`,
+          "warning"
+        );
+        return;
       }
+
+      await logLine(
+        `compat.auto_update_skipped reason=${autoPlan.reason || "not-eligible"}`
+      );
+      await showToast(
+        `${message}. Auto-update skipped (${autoPlan.reason || "not eligible"}). Suggested action: ${guidance.action}`,
+        "warning"
+      );
+      return;
     }
+
+    await showToast(`${message}. Suggested action: ${guidance.action}`, "warning");
   };
 
   const resolveInjectQuery = () => {
@@ -803,7 +885,11 @@ export const OpencodeMemPlugin = async ({
   await log("info", "codemem plugin initialized", { cwd, version });
   await logLine(`plugin initialized cwd=${cwd} version=${version}`);
   startViewer();
-  await verifyCliCompatibility();
+  void verifyCliCompatibility().catch(async (err) => {
+    await logLine(
+      `compat.version_check_error message=${String(err?.message || err || "unknown")}`
+    );
+  });
 
   const truncate = (value) => {
     if (value === undefined || value === null) {
