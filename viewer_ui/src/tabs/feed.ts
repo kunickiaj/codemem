@@ -90,6 +90,13 @@ function resetPagination(project: string) {
   summaryOffset = 0;
   observationHasMore = true;
   summaryHasMore = true;
+  state.lastFeedItems = [];
+  state.pendingFeedItems = null;
+  state.lastFeedFilteredCount = 0;
+  state.lastFeedSignature = '';
+  state.newItemKeys.clear();
+  state.itemViewState.clear();
+  state.itemExpandState.clear();
 }
 
 function isNearFeedBottom(): boolean {
@@ -207,6 +214,66 @@ function clampClass(mode: ItemViewMode): string[] {
   return mode === 'summary' ? ['clamp', 'clamp-3'] : ['clamp', 'clamp-5'];
 }
 
+function isSafeHref(value: string): boolean {
+  const href = String(value || '').trim();
+  if (!href) return false;
+  if (href.startsWith('#') || href.startsWith('/')) return true;
+  const lower = href.toLowerCase();
+  return lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('mailto:');
+}
+
+function sanitizeHtml(html: string): string {
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '');
+  const allowedTags = new Set(['p', 'br', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li', 'blockquote', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr']);
+
+  template.content.querySelectorAll('script, iframe, object, embed, link, style').forEach((node) => {
+    node.remove();
+  });
+
+  template.content.querySelectorAll('*').forEach((node) => {
+    const tag = node.tagName.toLowerCase();
+    if (!allowedTags.has(tag)) {
+      node.replaceWith(document.createTextNode(node.textContent || ''));
+      return;
+    }
+
+    const allowedAttrs = tag === 'a' ? new Set(['href', 'title']) : new Set<string>();
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (!allowedAttrs.has(name)) {
+        node.removeAttribute(attr.name);
+      }
+    }
+
+    if (tag === 'a') {
+      const href = node.getAttribute('href') || '';
+      if (!isSafeHref(href)) {
+        node.removeAttribute('href');
+      } else {
+        node.setAttribute('rel', 'noopener noreferrer');
+        node.setAttribute('target', '_blank');
+      }
+    }
+  });
+
+  return template.innerHTML;
+}
+
+function renderMarkdownSafe(value: string): string {
+  const source = String(value || '');
+  try {
+    const rawHtml = (globalThis as any).marked.parse(source);
+    return sanitizeHtml(rawHtml);
+  } catch {
+    const escaped = source
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped;
+  }
+}
+
 /* ── Rendering functions ─────────────────────────────────── */
 
 function renderSummaryObject(summary: Record<string, any>): HTMLElement | null {
@@ -222,7 +289,7 @@ function renderSummaryObject(summary: Record<string, any>): HTMLElement | null {
     const row = el('div', 'summary-section');
     const label = el('div', 'summary-section-label', toTitleLabel(key));
     const value = el('div', 'summary-section-content');
-    try { value.innerHTML = (globalThis as any).marked.parse(content); } catch { value.textContent = content; }
+    value.innerHTML = renderMarkdownSafe(content);
     row.append(label, value);
     container.appendChild(row);
   });
@@ -243,7 +310,7 @@ function renderNarrative(narrative: string): HTMLElement | null {
   const content = String(narrative || '').trim();
   if (!content) return null;
   const body = el('div', 'feed-body');
-  try { body.innerHTML = (globalThis as any).marked.parse(content); } catch { body.textContent = content; }
+  body.innerHTML = renderMarkdownSafe(content);
   return body;
 }
 
@@ -410,7 +477,7 @@ function filterByQuery(items: any[]): any[] {
 
 function computeSignature(items: any[]): string {
   const parts = items.map((i) => `${itemSignature(i)}:${i.kind || ''}:${i.created_at_utc || i.created_at || ''}`);
-  return `${state.feedTypeFilter}|${state.currentProject}|${parts.join('|')}`;
+  return `${state.feedTypeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join('|')}`;
 }
 
 function countNewItems(nextItems: any[], currentItems: any[]): number {
@@ -477,6 +544,18 @@ function maybeLoadMoreFeedPage() {
   if (!hasMorePages()) return;
   if (!isNearFeedBottom()) return;
   void loadMoreFeedPage();
+}
+
+function renderProjectSwitchLoadingState() {
+  const feedList = document.getElementById('feedList');
+  const feedMeta = document.getElementById('feedMeta');
+  if (feedList) {
+    feedList.textContent = '';
+    feedList.appendChild(el('div', 'small', 'Loading selected project...'));
+  }
+  if (feedMeta) {
+    feedMeta.textContent = 'Loading selected project...';
+  }
 }
 
 /* ── Public API ──────────────────────────────────────────── */
@@ -556,6 +635,7 @@ export async function loadFeedData() {
   const project = state.currentProject || '';
   if (project !== lastFeedProject) {
     resetPagination(project);
+    renderProjectSwitchLoadingState();
   }
   const requestGeneration = feedProjectGeneration;
 

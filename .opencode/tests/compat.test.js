@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "../lib/compat.js";
+import {
+  isVersionAtLeast,
+  parseBackendUpdatePolicy,
+  parseSemver,
+  resolveAutoUpdatePlan,
+  resolveUpgradeGuidance,
+} from "../lib/compat.js";
 
 describe("parseSemver", () => {
   test("parses x.y.z versions", () => {
@@ -60,5 +66,98 @@ describe("resolveUpgradeGuidance", () => {
     });
     expect(guidance.mode).toBe("generic");
     expect(guidance.action).toContain("uv tool install --upgrade codemem");
+  });
+});
+
+describe("parseBackendUpdatePolicy", () => {
+  test("defaults to notify", () => {
+    expect(parseBackendUpdatePolicy("")).toBe("notify");
+    expect(parseBackendUpdatePolicy(undefined)).toBe("notify");
+  });
+
+  test("supports explicit modes", () => {
+    expect(parseBackendUpdatePolicy("notify")).toBe("notify");
+    expect(parseBackendUpdatePolicy("auto")).toBe("auto");
+    expect(parseBackendUpdatePolicy("off")).toBe("off");
+  });
+
+  test("maps boolean-like values", () => {
+    expect(parseBackendUpdatePolicy("1")).toBe("auto");
+    expect(parseBackendUpdatePolicy("true")).toBe("auto");
+    expect(parseBackendUpdatePolicy("0")).toBe("off");
+    expect(parseBackendUpdatePolicy("false")).toBe("off");
+  });
+});
+
+describe("resolveAutoUpdatePlan", () => {
+  test("blocks auto-update in uv dev mode", () => {
+    const plan = resolveAutoUpdatePlan({ runner: "uv", runnerFrom: "/tmp/codemem" });
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("dev-runner");
+  });
+
+  test("returns uvx refresh command for unpinned git source", () => {
+    const plan = resolveAutoUpdatePlan({
+      runner: "uvx",
+      runnerFrom: "git+https://github.com/kunickiaj/codemem.git",
+    });
+    expect(plan.allowed).toBe(true);
+    expect(plan.command).toEqual([
+      "uvx",
+      "--refresh",
+      "--from",
+      "git+https://github.com/kunickiaj/codemem.git",
+      "codemem",
+      "version",
+    ]);
+  });
+
+  test("blocks auto-update for pinned git source", () => {
+    const plan = resolveAutoUpdatePlan({
+      runner: "uvx",
+      runnerFrom: "git+https://github.com/kunickiaj/codemem.git@v0.14.0",
+    });
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("pinned-source");
+  });
+
+  test("allows unpinned ssh git source", () => {
+    const plan = resolveAutoUpdatePlan({
+      runner: "uvx",
+      runnerFrom: "git+ssh://git@github.com/kunickiaj/codemem.git",
+    });
+    expect(plan.allowed).toBe(true);
+  });
+
+  test("blocks pinned ssh git source", () => {
+    const plan = resolveAutoUpdatePlan({
+      runner: "uvx",
+      runnerFrom: "git+ssh://git@github.com/kunickiaj/codemem.git@v0.14.1",
+    });
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("pinned-source");
+  });
+
+  test("blocks auto-update when uvx source missing", () => {
+    const plan = resolveAutoUpdatePlan({ runner: "uvx", runnerFrom: "" });
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("missing-source");
+  });
+
+  test("allows unpinned git source with query string", () => {
+    const plan = resolveAutoUpdatePlan({
+      runner: "uvx",
+      runnerFrom: "git+https://github.com/kunickiaj/codemem.git?subdirectory=plugin",
+    });
+    expect(plan.allowed).toBe(true);
+  });
+
+  test("blocks pinned git source with fragment", () => {
+    const plan = resolveAutoUpdatePlan({
+      runner: "uvx",
+      runnerFrom: "git+https://github.com/kunickiaj/codemem.git@v0.14.1#egg=codemem",
+    });
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("pinned-source");
   });
 });

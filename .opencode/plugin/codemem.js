@@ -2,7 +2,13 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 
-import { isVersionAtLeast, parseSemver, resolveUpgradeGuidance } from "../lib/compat.js";
+import {
+  isVersionAtLeast,
+  parseBackendUpdatePolicy,
+  parseSemver,
+  resolveAutoUpdatePlan,
+  resolveUpgradeGuidance,
+} from "../lib/compat.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
@@ -12,6 +18,24 @@ const envHasValue = (value, truthyValues) =>
   truthyValues.includes(normalizeEnvValue(value));
 const envNotDisabled = (value) =>
   !DISABLED_VALUES.includes(normalizeEnvValue(value));
+
+const nowMs = () =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+
+const resolveProcedureLkaMode = (env) => {
+  const modeRaw = normalizeEnvValue(env.CODEMEM_PROCEDURE_LKA_MODE || "off");
+  const enabled = envHasValue(env.CODEMEM_PROCEDURE_LKA_ENABLED, TRUTHY_VALUES);
+  const inferenceEnabled = envHasValue(
+    env.CODEMEM_PROCEDURE_LKA_TRIGGER_INFERENCE_ENABLED,
+    TRUTHY_VALUES
+  );
+  if (!enabled || modeRaw === "off") {
+    return "off";
+  }
+  return inferenceEnabled ? "inferred" : "static";
+};
 
 const resolveLogPath = (logPathEnvRaw, cwd, homeDir) => {
   const logPathEnv = normalizeEnvValue(logPathEnvRaw);
@@ -171,6 +195,9 @@ export const OpencodeMemPlugin = async ({
     process.env.CODEMEM_PLUGIN_CMD_TIMEOUT || "20000",
     10
   );
+  const backendUpdatePolicy = parseBackendUpdatePolicy(
+    process.env.CODEMEM_BACKEND_UPDATE_POLICY || "notify"
+  );
 
   const parseNumber = (value, fallback) => {
     const parsed = Number.parseInt(value, 10);
@@ -189,6 +216,7 @@ export const OpencodeMemPlugin = async ({
     process.env.CODEMEM_INJECT_REFRESH_FAILURE_BACKOFF_MS || "20000",
     20000
   );
+  const procedureLkaMode = resolveProcedureLkaMode(process.env);
   const injectedSessions = new Map();
   const injectionToastState = new Map();
   let sessionStartedAt = null;
@@ -564,9 +592,9 @@ export const OpencodeMemPlugin = async ({
     });
   };
 
-  const runCli = async (args) => {
+  const runCommand = async (cmd) => {
     const proc = Bun.spawn({
-      cmd: [runner, ...runnerArgs, ...args],
+      cmd,
       cwd,
       env: process.env,
       stdout: "pipe",
@@ -598,6 +626,27 @@ export const OpencodeMemPlugin = async ({
     return result;
   };
 
+  const runCli = async (args) => runCommand([runner, ...runnerArgs, ...args]);
+
+  const showToast = async (message, variant = "warning") => {
+    if (backendUpdatePolicy === "off") {
+      return;
+    }
+    if (!client.tui?.showToast) {
+      return;
+    }
+    try {
+      await client.tui.showToast({
+        body: {
+          message,
+          variant,
+        },
+      });
+    } catch (toastErr) {
+      // best-effort only
+    }
+  };
+
   const verifyCliCompatibility = async () => {
     const minVersion = process.env.CODEMEM_MIN_VERSION || "0.9.20";
     const versionResult = await runCli(["version"]);
@@ -622,21 +671,13 @@ export const OpencodeMemPlugin = async ({
         currentVersion,
         minVersion,
         runner,
-        runnerFrom,
+        runnerFromSet: Boolean(String(runnerFrom || "").trim()),
         upgradeMode: guidance.mode,
       });
-      if (client.tui?.showToast) {
-        try {
-          await client.tui.showToast({
-            body: {
-              message: `codemem compatibility check could not parse versions (cli='${currentVersion || "unknown"}', required='${minVersion}'). Suggested action: ${guidance.action}`,
-              variant: "warning",
-            },
-          });
-        } catch (toastErr) {
-          // best-effort only
-        }
-      }
+      await showToast(
+        `codemem compatibility check could not parse versions (cli='${currentVersion || "unknown"}', required='${minVersion}'). Suggested action: ${guidance.action}`,
+        "warning"
+      );
       return;
     }
 
@@ -650,25 +691,61 @@ export const OpencodeMemPlugin = async ({
       currentVersion,
       minVersion,
       runner,
-      runnerFrom,
+      runnerFromSet: Boolean(String(runnerFrom || "").trim()),
       upgradeMode: guidance.mode,
       upgradeAction: guidance.action,
     });
     await logLine(
       `compat.version_mismatch current=${currentVersion} required=${minVersion} mode=${guidance.mode} note=${redactLog(guidance.note)}`
     );
-    if (client.tui?.showToast) {
-      try {
-        await client.tui.showToast({
-          body: {
-            message: `${message}. Suggested action: ${guidance.action}`,
-            variant: "warning",
-          },
-        });
-      } catch (toastErr) {
-        // best-effort only
+
+    const autoPlan = resolveAutoUpdatePlan({ runner, runnerFrom });
+    if (backendUpdatePolicy === "auto") {
+      if (autoPlan.allowed && Array.isArray(autoPlan.command) && autoPlan.command.length > 0) {
+        const commandText = autoPlan.commandText || autoPlan.command.join(" ");
+        await logLine(`compat.auto_update_start cmd=${redactLog(commandText)}`);
+        const updateResult = await runCommand(autoPlan.command);
+        await logLine(
+          `compat.auto_update_result exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog(
+            (updateResult?.stderr || "").trim()
+          )}`
+        );
+
+        const refreshedResult = await runCli(["version"]);
+        const refreshedVersion = (refreshedResult?.stdout || "").trim();
+        if (
+          updateResult?.exitCode === 0
+          && refreshedResult?.exitCode === 0
+          && isVersionAtLeast(refreshedVersion, minVersion)
+        ) {
+          await logLine(
+            `compat.auto_update_success before=${currentVersion} after=${refreshedVersion}`
+          );
+          await showToast(
+            `Updated codemem backend from ${currentVersion || "unknown"} to ${refreshedVersion}.`,
+            "success"
+          );
+          return;
+        }
+
+        await showToast(
+          `${message}. Auto-update did not resolve it. Suggested action: ${guidance.action}`,
+          "warning"
+        );
+        return;
       }
+
+      await logLine(
+        `compat.auto_update_skipped reason=${autoPlan.reason || "not-eligible"}`
+      );
+      await showToast(
+        `${message}. Auto-update skipped (${autoPlan.reason || "not eligible"}). Suggested action: ${guidance.action}`,
+        "warning"
+      );
+      return;
     }
+
+    await showToast(`${message}. Suggested action: ${guidance.action}`, "warning");
   };
 
   const resolveInjectQuery = () => {
@@ -728,6 +805,17 @@ export const OpencodeMemPlugin = async ({
     return args;
   };
 
+  const buildSafePackArgs = () => {
+    const args = ["pack", "[query_redacted]"];
+    if (injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0) {
+      args.push("--limit", String(injectLimit));
+    }
+    if (injectTokenBudget !== null && Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
+      args.push("--token-budget", String(injectTokenBudget));
+    }
+    return args;
+  };
+
   const parsePackText = (stdout) => {
     if (!stdout || !stdout.trim()) {
       return "";
@@ -760,31 +848,48 @@ export const OpencodeMemPlugin = async ({
 
   const buildInjectedContext = async (query) => {
     const packArgs = buildPackArgs(query);
+    const lookupStart = nowMs();
     const result = await runCli(packArgs);
+    const lkaRuleLookupMs = Math.max(0, nowMs() - lookupStart);
     if (!result || result.exitCode !== 0) {
       const exitCode = result?.exitCode ?? "unknown";
       const stderr = redactLog(result?.stderr ? result.stderr.trim() : "");
       const stdout = redactLog(result?.stdout ? result.stdout.trim() : "");
-      const cmd = [runner, ...runnerArgs, ...packArgs].join(" ");
+      const cmd = [runner, ...runnerArgs, ...buildSafePackArgs()].join(" ");
       await logLine(
         `inject.pack.error ${exitCode} cmd=${cmd}` +
           `${stderr ? ` stderr=${stderr}` : ""}` +
           `${stdout ? ` stdout=${stdout}` : ""}`
       );
-      return "";
-    }
-    const packText = parsePackText(result.stdout);
-    if (!packText) {
-      return "";
-    }
-    const metrics = parsePackMetrics(result.stdout);
-    if (metrics) {
       return {
-        text: `[codemem context]\n${packText}`,
-        metrics,
+        text: "",
+        perf: {
+          lka_rule_lookup_ms: lkaRuleLookupMs,
+          lka_rank_ms: 0,
+        },
       };
     }
-    return { text: `[codemem context]\n${packText}` };
+    const rankStart = nowMs();
+    const packText = parsePackText(result.stdout);
+    const metrics = parsePackMetrics(result.stdout);
+    const lkaRankMs = Math.max(0, nowMs() - rankStart);
+    if (!packText) {
+      return {
+        text: "",
+        perf: {
+          lka_rule_lookup_ms: lkaRuleLookupMs,
+          lka_rank_ms: lkaRankMs,
+        },
+      };
+    }
+    return {
+      text: `[codemem context]\n${packText}`,
+      metrics,
+      perf: {
+        lka_rule_lookup_ms: lkaRuleLookupMs,
+        lka_rank_ms: lkaRankMs,
+      },
+    };
   };
 
   const stopViewer = async () => {
@@ -819,7 +924,11 @@ export const OpencodeMemPlugin = async ({
   await log("info", "codemem plugin initialized", { cwd, version });
   await logLine(`plugin initialized cwd=${cwd} version=${version}`);
   startViewer();
-  await verifyCliCompatibility();
+  void verifyCliCompatibility().catch(async (err) => {
+    await logLine(
+      `compat.version_check_error message=${String(err?.message || err || "unknown")}`
+    );
+  });
 
   const truncate = (value) => {
     if (value === undefined || value === null) {
@@ -889,7 +998,9 @@ export const OpencodeMemPlugin = async ({
       if (!injectEnabled) {
         return;
       }
+      const lkaStart = nowMs();
       const query = resolveInjectQuery();
+      const lkaDetectMs = Math.max(0, nowMs() - lkaStart);
       if (debug) {
         await logLine(
           `inject.transform sessionID=${input.sessionID} query_len=${
@@ -900,6 +1011,16 @@ export const OpencodeMemPlugin = async ({
       const sessionKey = input?.sessionID || null;
       if (!sessionKey) {
         const injected = await buildInjectedContext(query);
+        const lkaRuleLookupMs = Number(injected?.perf?.lka_rule_lookup_ms || 0);
+        const lkaRankMs = Number(injected?.perf?.lka_rank_ms || 0);
+        const lkaTotalMs = Math.max(0, nowMs() - lkaStart);
+        await logLine(
+          `lka_perf mode=${procedureLkaMode} ` +
+            `lka_detect_ms=${lkaDetectMs.toFixed(3)} ` +
+            `lka_rule_lookup_ms=${lkaRuleLookupMs.toFixed(3)} ` +
+            `lka_rank_ms=${lkaRankMs.toFixed(3)} ` +
+            `lka_total_ms=${lkaTotalMs.toFixed(3)}`
+        );
         const fallbackText = injected?.text || "";
         if (!fallbackText) {
           return;
@@ -921,8 +1042,12 @@ export const OpencodeMemPlugin = async ({
       const shouldRefresh = now >= nextRefreshAt;
       const queryChanged = cached?.query !== query;
       const needsRecompute = !contextText || queryChanged || shouldRefresh;
+      let lkaRuleLookupMs = 0;
+      let lkaRankMs = 0;
       if (needsRecompute) {
         const injected = await buildInjectedContext(query);
+        lkaRuleLookupMs = Number(injected?.perf?.lka_rule_lookup_ms || 0);
+        lkaRankMs = Number(injected?.perf?.lka_rank_ms || 0);
         if (injected?.text) {
           const refreshedAt = Date.now();
           injectedSessions.set(sessionKey, {
@@ -990,6 +1115,14 @@ export const OpencodeMemPlugin = async ({
           contextText = "";
         }
       }
+      const lkaTotalMs = Math.max(0, nowMs() - lkaStart);
+      await logLine(
+        `lka_perf mode=${procedureLkaMode} ` +
+          `lka_detect_ms=${lkaDetectMs.toFixed(3)} ` +
+          `lka_rule_lookup_ms=${lkaRuleLookupMs.toFixed(3)} ` +
+          `lka_rank_ms=${lkaRankMs.toFixed(3)} ` +
+          `lka_total_ms=${lkaTotalMs.toFixed(3)}`
+      );
       if (!contextText) {
         return;
       }
