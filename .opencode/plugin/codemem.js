@@ -612,6 +612,23 @@ export const OpencodeMemPlugin = async ({
     }
   };
 
+  const restartViewerAfterAutoUpdate = async () => {
+    if (!viewerEnabled || !viewerAutoStart || !viewerStarted) {
+      return { attempted: false, ok: false };
+    }
+    const restartResult = await runCli(["serve", "--restart"]);
+    if (restartResult?.exitCode === 0) {
+      await logLine("compat.auto_update_viewer_restart ok");
+      return { attempted: true, ok: true };
+    }
+    await logLine(
+      `compat.auto_update_viewer_restart_failed exit=${restartResult?.exitCode ?? "unknown"} stderr=${redactLog(
+        (restartResult?.stderr || "").trim()
+      )}`
+    );
+    return { attempted: true, ok: false };
+  };
+
   const verifyCliCompatibility = async () => {
     const minVersion = process.env.CODEMEM_MIN_VERSION || "0.9.20";
     const versionResult = await runCli(["version"]);
@@ -683,6 +700,7 @@ export const OpencodeMemPlugin = async ({
           && refreshedResult?.exitCode === 0
           && isVersionAtLeast(refreshedVersion, minVersion)
         ) {
+          const viewerRestart = await restartViewerAfterAutoUpdate();
           await logLine(
             `compat.auto_update_success before=${currentVersion} after=${refreshedVersion}`
           );
@@ -690,6 +708,12 @@ export const OpencodeMemPlugin = async ({
             `Updated codemem backend from ${currentVersion || "unknown"} to ${refreshedVersion}.`,
             "success"
           );
+          if (viewerRestart.attempted && !viewerRestart.ok) {
+            await showToast(
+              "Backend updated, but viewer restart failed. Run `codemem serve --restart`.",
+              "warning"
+            );
+          }
           return;
         }
 
