@@ -230,9 +230,13 @@ jobs:
                 properties: { tool: 'read', args: { filePath: 'README.md' } },
               },
             });
-            const sawCompatibilityWarning = toastMessages.some((msg) =>
-              msg.includes('older than required')
-            );
+            const hasCompatibilityWarning = () =>
+              toastMessages.some((msg) => msg.includes('older than required'));
+            const waitUntil = Date.now() + 5000;
+            while (!hasCompatibilityWarning() && Date.now() < waitUntil) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            const sawCompatibilityWarning = hasCompatibilityWarning();
             if (!sawCompatibilityWarning) {
               throw new Error('expected compatibility warning toast from version probe');
             }
