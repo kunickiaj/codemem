@@ -1348,6 +1348,24 @@ class MemoryStore:
             filters=filters,
         )
 
+    def explain(
+        self,
+        *,
+        query: str | None = None,
+        ids: Sequence[Any] | None = None,
+        limit: int = 10,
+        filters: dict[str, Any] | None = None,
+        include_pack_context: bool = False,
+    ) -> dict[str, Any]:
+        return store_search.explain(
+            self,
+            query=query,
+            ids=ids,
+            limit=limit,
+            filters=filters,
+            include_pack_context=include_pack_context,
+        )
+
     def _expand_query(self, query: str) -> str:
         return store_search._expand_query(query)
 
