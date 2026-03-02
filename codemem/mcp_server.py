@@ -141,6 +141,27 @@ def build_server() -> FastMCP:
         return with_store(handler)
 
     @mcp.tool()
+    def memory_explain(
+        query: str | None = None,
+        ids: list[int] | None = None,
+        limit: int = 10,
+        project: str | None = None,
+        include_pack_context: bool = False,
+    ) -> dict[str, Any]:
+        def handler(store: MemoryStore) -> dict[str, Any]:
+            resolved_project = project or default_project
+            filters = {"project": resolved_project} if resolved_project else None
+            return store.explain(
+                query=query,
+                ids=ids,
+                limit=limit,
+                filters=filters,
+                include_pack_context=include_pack_context,
+            )
+
+        return with_store(handler)
+
+    @mcp.tool()
     def memory_get(memory_id: int) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
             item = store.get(memory_id)
