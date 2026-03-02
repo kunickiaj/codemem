@@ -113,6 +113,53 @@ const appendWorkingSetFileArgs = (args, workingSetFiles) => {
   return args;
 };
 
+const asNonNegativeCount = (value) => {
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.trunc(value));
+  }
+  return null;
+};
+
+const asFiniteNonNegativeInt = (value) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  if (value < 0) {
+    return null;
+  }
+  return Math.trunc(value);
+};
+
+export const buildInjectionToastMessage = (metrics) => {
+  const items = asFiniteNonNegativeInt(metrics?.items);
+  const packTokens = asFiniteNonNegativeInt(metrics?.pack_tokens);
+  const avoided = asFiniteNonNegativeInt(metrics?.avoided_work_tokens);
+  const avoidedUnknown = asNonNegativeCount(metrics?.avoided_work_unknown_items);
+  const avoidedKnown = asNonNegativeCount(metrics?.avoided_work_known_items);
+  const addedCount = asNonNegativeCount(metrics?.added_ids);
+  const removedCount = asNonNegativeCount(metrics?.removed_ids);
+
+  const messageParts = ["codemem injected"];
+  if (items !== null) messageParts.push(`${items} items`);
+  if (packTokens !== null) messageParts.push(`~${packTokens} tokens`);
+  if (
+    avoided !== null
+    && avoided > 0
+    && avoidedKnown !== null
+    && avoidedUnknown !== null
+    && avoidedKnown >= avoidedUnknown
+  ) {
+    messageParts.push(`avoided work ~${avoided} tokens`);
+  }
+  if (addedCount !== null || removedCount !== null) {
+    messageParts.push(`delta +${addedCount || 0}/-${removedCount || 0}`);
+  }
+  return messageParts.join(" · ");
+};
+
 const detectRunner = ({ cwd, envRunner }) => {
   if (envRunner) {
     return envRunner;
@@ -1020,25 +1067,15 @@ export const OpencodeMemPlugin = async ({
           });
           contextText = injected.text;
 
-          if (!injectionToastShown.has(input.sessionID) && client.tui?.showToast) {
-            injectionToastShown.add(input.sessionID);
-            try {
-              const items = injected.metrics?.items;
-              const packTokens = injected.metrics?.pack_tokens;
-              const avoided = injected.metrics?.avoided_work_tokens;
-              const avoidedUnknown = injected.metrics?.avoided_work_unknown_items || 0;
-              const avoidedKnown = injected.metrics?.avoided_work_known_items || 0;
-              const messageParts = ["codemem injected"];
-              if (typeof items === "number") messageParts.push(`${items} items`);
-              if (typeof packTokens === "number") messageParts.push(`~${packTokens} tokens`);
-              if (typeof avoided === "number" && avoided > 0 && avoidedKnown >= avoidedUnknown)
-                messageParts.push(`avoided work ~${avoided} tokens`);
-              await client.tui.showToast({
-                body: {
-                  message: messageParts.join(" · "),
-                  variant: "info",
-                },
-              });
+            if (!injectionToastShown.has(input.sessionID) && client.tui?.showToast) {
+              injectionToastShown.add(input.sessionID);
+              try {
+                await client.tui.showToast({
+                  body: {
+                    message: buildInjectionToastMessage(injected.metrics),
+                    variant: "info",
+                  },
+                });
             } catch (toastErr) {
               // best-effort only
             }
