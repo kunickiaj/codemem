@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from .. import db
+from ..memory_kinds import MEMORY_KIND_BONUS
 from ..semantic import embed_texts
 from .types import MemoryResult
 
@@ -216,17 +217,9 @@ def _recency_score(created_at: str) -> float:
 
 
 def _kind_bonus(kind: str | None) -> float:
-    if kind == "session_summary":
-        return 0.25
-    if kind == "decision":
-        return 0.2
-    if kind == "note":
-        return 0.15
-    if kind == "observation":
-        return 0.1
-    if kind == "entities":
-        return 0.05
-    return 0.0
+    if not kind:
+        return 0.0
+    return MEMORY_KIND_BONUS.get(kind, 0.0)
 
 
 def _filter_recent_results(
