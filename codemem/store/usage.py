@@ -162,7 +162,7 @@ def recent_pack_events(
             LEFT JOIN sessions ON sessions.id = usage_events.session_id
             WHERE event = 'pack'
               AND ({session_clause} OR {meta_clause})
-            ORDER BY usage_events.created_at DESC
+            ORDER BY usage_events.created_at DESC, usage_events.id DESC
             LIMIT ?
             """,
             (*session_params, *meta_params, limit),
@@ -174,7 +174,7 @@ def recent_pack_events(
                    created_at, metadata_json
             FROM usage_events
             WHERE event = 'pack'
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
             (limit,),

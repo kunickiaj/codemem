@@ -3065,6 +3065,220 @@ def test_pack_reports_avoided_work_metrics(tmp_path: Path) -> None:
     assert metrics.get("avoided_work_known_items") == 1
 
 
+def test_pack_delta_defaults_without_prior_pack(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(session, kind="note", title="Alpha", body_text="alpha")
+    store.end_session(session)
+
+    pack = store.build_memory_pack("alpha", limit=1)
+    metrics = pack.get("metrics") or {}
+
+    assert isinstance(metrics.get("pack_item_ids"), list)
+    assert metrics.get("pack_delta_available") is False
+    assert metrics.get("added_ids") == []
+    assert metrics.get("removed_ids") == []
+    assert metrics.get("retained_ids") == []
+    assert metrics.get("pack_token_delta") == 0
+
+
+def test_pack_delta_legacy_prior_without_pack_item_ids_is_unavailable(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(session, kind="note", title="Alpha", body_text="alpha")
+    store.record_usage(
+        "pack",
+        session_id=session,
+        tokens_read=111,
+        metadata={"pack_tokens": 111},
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack("alpha", limit=1)
+    metrics = pack.get("metrics") or {}
+
+    assert metrics.get("pack_delta_available") is False
+    assert metrics.get("added_ids") == []
+    assert metrics.get("removed_ids") == []
+    assert metrics.get("retained_ids") == []
+    assert metrics.get("pack_token_delta") == 0
+
+
+def test_pack_delta_invalid_prior_pack_item_ids_is_unavailable(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(session, kind="note", title="Alpha", body_text="alpha")
+    store.record_usage(
+        "pack",
+        session_id=session,
+        tokens_read=111,
+        metadata={"pack_tokens": 111, "pack_item_ids": "bad"},
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack("alpha", limit=1)
+    metrics = pack.get("metrics") or {}
+
+    assert metrics.get("pack_delta_available") is False
+    assert metrics.get("added_ids") == []
+    assert metrics.get("removed_ids") == []
+    assert metrics.get("retained_ids") == []
+    assert metrics.get("pack_token_delta") == 0
+
+
+def test_pack_delta_for_changed_consecutive_packs(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    alpha_id = store.remember(session, kind="note", title="Alpha", body_text="alpha")
+    beta_id = store.remember(session, kind="note", title="Beta", body_text="beta")
+    store.end_session(session)
+
+    first_pack = store.build_memory_pack("alpha", limit=1)
+    second_pack = store.build_memory_pack("beta", limit=1)
+    first_metrics = first_pack.get("metrics") or {}
+    second_metrics = second_pack.get("metrics") or {}
+
+    assert first_metrics.get("pack_item_ids") == [alpha_id]
+    assert second_metrics.get("pack_item_ids") == [beta_id]
+    assert second_metrics.get("pack_delta_available") is True
+    assert second_metrics.get("added_ids") == [beta_id]
+    assert second_metrics.get("removed_ids") == [alpha_id]
+    assert second_metrics.get("retained_ids") == []
+    assert second_metrics.get("pack_token_delta") == (
+        int(second_metrics.get("pack_tokens") or 0) - int(first_metrics.get("pack_tokens") or 0)
+    )
+
+
+def test_pack_delta_for_unchanged_consecutive_packs(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    alpha_id = store.remember(session, kind="note", title="Alpha", body_text="alpha")
+    store.end_session(session)
+
+    _first_pack = store.build_memory_pack("alpha", limit=1)
+    second_pack = store.build_memory_pack("alpha", limit=1)
+    second_metrics = second_pack.get("metrics") or {}
+
+    assert second_metrics.get("pack_item_ids") == [alpha_id]
+    assert second_metrics.get("pack_delta_available") is True
+    assert second_metrics.get("added_ids") == []
+    assert second_metrics.get("removed_ids") == []
+    assert second_metrics.get("retained_ids") == [alpha_id]
+    assert second_metrics.get("pack_token_delta") == 0
+
+
+def test_pack_delta_ids_track_emitted_pack_text_items(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="session_summary",
+        title="Alpha summary",
+        body_text="Alpha summary body",
+    )
+    store.remember(
+        session,
+        kind="note",
+        title="Alpha detail",
+        body_text="Alpha detail body",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack("alpha", limit=5)
+    metrics = pack.get("metrics") or {}
+    pack_text = str(pack.get("pack_text") or "")
+
+    ids_in_pack_text: list[int] = []
+    for line in pack_text.splitlines():
+        if not line.startswith("["):
+            continue
+        close_idx = line.find("]")
+        if close_idx <= 1:
+            continue
+        raw_id = line[1:close_idx]
+        if not raw_id.isdigit():
+            continue
+        item_id = int(raw_id)
+        if item_id not in ids_in_pack_text:
+            ids_in_pack_text.append(item_id)
+
+    assert metrics.get("pack_item_ids") == ids_in_pack_text
+
+
+def test_recent_pack_events_stable_tiebreaker_by_id(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.record_usage("pack", session_id=session, tokens_read=10, metadata={"marker": "a"})
+    store.record_usage("pack", session_id=session, tokens_read=20, metadata={"marker": "b"})
+    store.end_session(session)
+
+    row_ids = [
+        int(row["id"])
+        for row in store.conn.execute(
+            "SELECT id FROM usage_events WHERE event = 'pack' ORDER BY id ASC"
+        ).fetchall()
+    ]
+    assert len(row_ids) == 2
+    tied_created_at = "2026-03-01T00:00:00+00:00"
+    store.conn.execute(
+        "UPDATE usage_events SET created_at = ? WHERE id IN (?, ?)",
+        (tied_created_at, row_ids[0], row_ids[1]),
+    )
+    store.conn.commit()
+
+    rows = store.recent_pack_events(limit=2)
+    assert [int(row["id"]) for row in rows] == [row_ids[1], row_ids[0]]
+
+
 def test_viewer_accepts_raw_events(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("CODEMEM_DB", str(db_path))
