@@ -11,6 +11,8 @@ from codemem.plugin_ingest import (
     _budget_tool_events,
     _build_transcript,
     _event_to_tool_event,
+    _extract_prompts,
+    _extract_tool_events,
     _normalize_project_label,
     _resolve_ingest_project,
     ingest,
@@ -84,6 +86,67 @@ def test_build_transcript_strips_private_blocks() -> None:
     assert "Hello" in transcript
 
 
+def test_build_transcript_uses_adapter_projection_for_prompt_and_assistant() -> None:
+    events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "",
+            "timestamp": "2026-01-14T19:00:00Z",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:prompt:1",
+                "event_type": "prompt",
+                "ts": "2026-01-14T19:00:00Z",
+                "payload": {"text": "Adapter prompt"},
+            },
+        },
+        {
+            "type": "assistant_message",
+            "assistant_text": "",
+            "timestamp": "2026-01-14T19:00:01Z",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:assistant:1",
+                "event_type": "assistant",
+                "ts": "2026-01-14T19:00:01Z",
+                "payload": {"text": "Adapter assistant"},
+            },
+        },
+    ]
+
+    transcript = _build_transcript(events)
+
+    assert "User: Adapter prompt" in transcript
+    assert "Assistant: Adapter assistant" in transcript
+
+
+def test_build_transcript_falls_back_when_adapter_assistant_text_empty() -> None:
+    events = [
+        {
+            "type": "assistant_message",
+            "assistant_text": "Legacy assistant response",
+            "timestamp": "2026-01-14T19:00:01Z",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:assistant:1",
+                "event_type": "assistant",
+                "ts": "2026-01-14T19:00:01Z",
+                "payload": {"text": ""},
+            },
+        }
+    ]
+
+    transcript = _build_transcript(events)
+
+    assert "Assistant: Legacy assistant response" in transcript
+
+
 def test_build_transcript_empty_events() -> None:
     """Empty events should produce empty transcript."""
     assert _build_transcript([]) == ""
@@ -100,6 +163,124 @@ def test_build_transcript_no_messages() -> None:
         },
     ]
     assert _build_transcript(events) == ""
+
+
+def test_extract_prompts_prefers_adapter_payload_text() -> None:
+    events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "",
+            "timestamp": "2026-01-14T19:00:00Z",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:prompt:1",
+                "event_type": "prompt",
+                "ts": "2026-01-14T19:00:00Z",
+                "payload": {"text": "Adapter-first prompt", "prompt_number": 3},
+            },
+        }
+    ]
+
+    prompts = _extract_prompts(events)
+    assert prompts == [
+        {
+            "prompt_text": "Adapter-first prompt",
+            "prompt_number": 3,
+            "timestamp": "2026-01-14T19:00:00Z",
+        }
+    ]
+
+
+def test_extract_prompts_falls_back_when_adapter_envelope_invalid() -> None:
+    events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "Legacy prompt fallback",
+            "prompt_number": 4,
+            "timestamp": "2026-01-14T19:00:00Z",
+            "_adapter": {
+                "schema_version": "0.9",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:prompt:1",
+                "event_type": "prompt",
+                "ts": "2026-01-14T19:00:00Z",
+                "payload": {"text": "Adapter prompt should be ignored"},
+            },
+        }
+    ]
+
+    prompts = _extract_prompts(events)
+
+    assert prompts == [
+        {
+            "prompt_text": "Legacy prompt fallback",
+            "prompt_number": 4,
+            "timestamp": "2026-01-14T19:00:00Z",
+        }
+    ]
+
+
+def test_extract_prompts_falls_back_when_adapter_prompt_text_empty() -> None:
+    events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "Legacy prompt text",
+            "prompt_number": 5,
+            "timestamp": "2026-01-14T19:00:00Z",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:prompt:1",
+                "event_type": "prompt",
+                "ts": "2026-01-14T19:00:00Z",
+                "payload": {"text": "   "},
+            },
+        }
+    ]
+
+    prompts = _extract_prompts(events)
+
+    assert prompts == [
+        {
+            "prompt_text": "Legacy prompt text",
+            "prompt_number": 5,
+            "timestamp": "2026-01-14T19:00:00Z",
+        }
+    ]
+
+
+def test_extract_prompts_uses_legacy_prompt_number_when_adapter_omits_it() -> None:
+    events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "Legacy prompt text",
+            "prompt_number": 7,
+            "timestamp": "2026-01-14T19:00:00Z",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:prompt:1",
+                "event_type": "prompt",
+                "ts": "2026-01-14T19:00:00Z",
+                "payload": {"text": "Adapter prompt text"},
+            },
+        }
+    ]
+
+    prompts = _extract_prompts(events)
+
+    assert prompts == [
+        {
+            "prompt_text": "Adapter prompt text",
+            "prompt_number": 7,
+            "timestamp": "2026-01-14T19:00:00Z",
+        }
+    ]
 
 
 def test_tool_events_are_json_serializable() -> None:
@@ -127,6 +308,166 @@ def test_tool_events_are_json_serializable() -> None:
     assert len(parsed) == 2
     assert parsed[0]["tool_name"] == "bash"
     assert parsed[1]["tool_name"] == "read"
+
+
+def test_event_to_tool_event_supports_adapter_tool_result() -> None:
+    event = {
+        "type": "tool.execute.after",
+        "tool": "ignored",
+        "args": {},
+        "result": None,
+        "error": None,
+        "timestamp": "2026-01-14T19:00:03Z",
+        "_adapter": {
+            "schema_version": "1.0",
+            "source": "opencode",
+            "session_id": "sess-1",
+            "event_id": "sess-1:tool_result:1",
+            "event_type": "tool_result",
+            "ts": "2026-01-14T19:00:03Z",
+            "payload": {
+                "tool_name": "bash",
+                "status": "error",
+                "tool_input": {"command": "uv run pytest"},
+                "tool_output": "failed",
+                "error": "1 test failed",
+            },
+        },
+    }
+
+    tool_event = _event_to_tool_event(event, max_chars=5000)
+
+    assert tool_event is not None
+    assert tool_event.tool_name == "bash"
+    assert tool_event.tool_input == {"command": "uv run pytest"}
+    assert tool_event.tool_output == "failed"
+    assert tool_event.tool_error == "1 test failed"
+
+
+def test_event_to_tool_event_supports_adapter_tool_result_output_alias() -> None:
+    event = {
+        "type": "tool.execute.after",
+        "tool": "ignored",
+        "args": {},
+        "result": None,
+        "error": None,
+        "timestamp": "2026-01-14T19:00:03Z",
+        "_adapter": {
+            "schema_version": "1.0",
+            "source": "opencode",
+            "session_id": "sess-1",
+            "event_id": "sess-1:tool_result:1",
+            "event_type": "tool_result",
+            "ts": "2026-01-14T19:00:03Z",
+            "payload": {
+                "tool_name": "bash",
+                "status": "ok",
+                "tool_input": {"command": "echo hi"},
+                "output": "redacted output",
+            },
+        },
+    }
+
+    tool_event = _event_to_tool_event(event, max_chars=5000)
+
+    assert tool_event is not None
+    assert tool_event.tool_name == "bash"
+    assert tool_event.tool_input == {"command": "echo hi"}
+    assert tool_event.tool_output == "redacted output"
+    assert tool_event.tool_error is None
+
+
+def test_event_to_tool_event_ignores_adapter_tool_call() -> None:
+    event = {
+        "type": "tool.execute.after",
+        "tool": "ignored",
+        "args": {},
+        "result": None,
+        "error": None,
+        "timestamp": "2026-01-14T19:00:03Z",
+        "_adapter": {
+            "schema_version": "1.0",
+            "source": "claude",
+            "session_id": "sess-1",
+            "event_id": "sess-1:tool_call:1",
+            "event_type": "tool_call",
+            "ts": "2026-01-14T19:00:03Z",
+            "payload": {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo pretool"},
+            },
+        },
+    }
+
+    tool_event = _event_to_tool_event(event, max_chars=5000)
+
+    assert tool_event is None
+
+
+def test_event_to_tool_event_falls_back_when_adapter_envelope_invalid() -> None:
+    event = {
+        "type": "tool.execute.after",
+        "tool": "bash",
+        "args": {"command": "uv run pytest -q"},
+        "result": "legacy ok",
+        "error": None,
+        "timestamp": "2026-01-14T19:00:03Z",
+        "_adapter": {
+            "schema_version": "1.0",
+            "source": "",
+            "session_id": "sess-1",
+            "event_id": "sess-1:tool_result:1",
+            "event_type": "tool_result",
+            "ts": "2026-01-14T19:00:03Z",
+            "payload": {
+                "tool_name": "read",
+                "status": "ok",
+                "tool_input": {"filePath": "/tmp/x"},
+                "tool_output": "adapter should be ignored",
+            },
+        },
+    }
+
+    tool_event = _event_to_tool_event(event, max_chars=5000)
+
+    assert tool_event is not None
+    assert tool_event.tool_name == "bash"
+    assert tool_event.tool_input == {"command": "uv run pytest -q"}
+    assert tool_event.tool_output == "legacy ok"
+
+
+def test_extract_tool_events_uses_adapter_projection_before_legacy() -> None:
+    events = [
+        {
+            "type": "tool.execute.after",
+            "tool": "ignored",
+            "args": {"filePath": "/tmp/ignored"},
+            "result": None,
+            "error": None,
+            "timestamp": "2026-01-14T19:00:03Z",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "opencode",
+                "session_id": "sess-1",
+                "event_id": "sess-1:tool_result:1",
+                "event_type": "tool_result",
+                "ts": "2026-01-14T19:00:03Z",
+                "payload": {
+                    "tool_name": "bash",
+                    "status": "ok",
+                    "tool_input": {"command": "echo adapter"},
+                    "tool_output": "adapter output",
+                },
+            },
+        }
+    ]
+
+    tool_events = _extract_tool_events(events, max_chars=5000)
+
+    assert len(tool_events) == 1
+    assert tool_events[0].tool_name == "bash"
+    assert tool_events[0].tool_input == {"command": "echo adapter"}
+    assert tool_events[0].tool_output == "adapter output"
 
 
 def test_resolve_ingest_project_prefers_env_override() -> None:
