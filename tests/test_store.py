@@ -3202,6 +3202,51 @@ def test_pack_delta_for_unchanged_consecutive_packs(tmp_path: Path) -> None:
     assert second_metrics.get("pack_token_delta") == 0
 
 
+def test_pack_delta_ids_track_emitted_pack_text_items(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd=str(tmp_path),
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(
+        session,
+        kind="session_summary",
+        title="Alpha summary",
+        body_text="Alpha summary body",
+    )
+    store.remember(
+        session,
+        kind="note",
+        title="Alpha detail",
+        body_text="Alpha detail body",
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack("alpha", limit=5)
+    metrics = pack.get("metrics") or {}
+    pack_text = str(pack.get("pack_text") or "")
+
+    ids_in_pack_text: list[int] = []
+    for line in pack_text.splitlines():
+        if not line.startswith("["):
+            continue
+        close_idx = line.find("]")
+        if close_idx <= 1:
+            continue
+        raw_id = line[1:close_idx]
+        if not raw_id.isdigit():
+            continue
+        item_id = int(raw_id)
+        if item_id not in ids_in_pack_text:
+            ids_in_pack_text.append(item_id)
+
+    assert metrics.get("pack_item_ids") == ids_in_pack_text
+
+
 def test_recent_pack_events_stable_tiebreaker_by_id(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

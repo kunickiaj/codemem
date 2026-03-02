@@ -597,7 +597,10 @@ def build_memory_pack(
             section_blocks.append(f"## {title}\n")
     pack_text = "\n\n".join(section_blocks)
     pack_tokens = store.estimate_tokens(pack_text)
-    current_pack_ids = _dedupe_int_ids([_item_id(item) for item in final_items])
+    emitted_items: list[MemoryResult | dict[str, Any]] = []
+    for _title, section_items in sections:
+        emitted_items.extend(section_items)
+    current_pack_ids = _dedupe_int_ids([_item_id(item) for item in emitted_items])
     previous_pack_ids, previous_pack_tokens = _pack_delta_baseline(
         store,
         project=(filters or {}).get("project"),
