@@ -123,3 +123,73 @@ def test_memory_explain_requires_query_or_ids(tmp_path: Path, monkeypatch) -> No
     assert payload["items"] == []
     assert payload["missing_ids"] == []
     assert any(error["field"] == "query" for error in payload["errors"])
+
+
+def test_memory_explain_include_pack_context_shape(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    _memory_query, memory_id_only = _seed_store_for_query_and_ids(db_path)
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+
+    server = build_server()
+    payload = _call_tool(
+        server,
+        "memory_explain",
+        {
+            "ids": [memory_id_only],
+            "include_pack_context": True,
+            "project": "/tmp/project-a",
+        },
+    )
+
+    pack_context = payload["items"][0]["pack_context"]
+    assert isinstance(pack_context, dict)
+    assert pack_context["included"] is None
+    assert pack_context["section"] is None
+    assert payload["metadata"]["include_pack_context"] is True
+    assert payload["errors"] == []
+
+
+def test_memory_explain_uses_default_project_scope_when_project_omitted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    store = MemoryStore(db_path)
+    session_a = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_a = store.remember(session_a, kind="note", title="A", body_text="A body")
+    store.end_session(session_a)
+    session_b = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-b",
+    )
+    memory_b = store.remember(session_b, kind="note", title="B", body_text="B body")
+    store.end_session(session_b)
+    store.close()
+
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_PROJECT", "/tmp/project-a")
+    server = build_server()
+
+    payload = _call_tool(
+        server,
+        "memory_explain",
+        {
+            "ids": [memory_a, memory_b],
+        },
+    )
+
+    assert [item["id"] for item in payload["items"]] == [memory_a]
+    assert payload["missing_ids"] == [memory_b]
+    assert {error["code"] for error in payload["errors"]} == {"PROJECT_MISMATCH"}
+    mismatch = next(error for error in payload["errors"] if error["code"] == "PROJECT_MISMATCH")
+    assert mismatch["ids"] == [memory_b]
