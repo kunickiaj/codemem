@@ -169,6 +169,71 @@ def _count_collapsed_for_canonical_ids(
     return total
 
 
+def _dedupe_int_ids(values: Sequence[int | None]) -> list[int]:
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for raw in values:
+        if raw is None:
+            continue
+        item_id = int(raw)
+        if item_id <= 0 or item_id in seen:
+            continue
+        seen.add(item_id)
+        deduped.append(item_id)
+    return deduped
+
+
+def _coerce_pack_item_ids(value: Any) -> tuple[list[int], bool]:
+    if not isinstance(value, list):
+        return [], False
+    parsed: list[int | None] = []
+    for raw in value:
+        if raw is None:
+            return [], False
+        if isinstance(raw, bool):
+            return [], False
+        try:
+            parsed.append(int(raw))
+        except (TypeError, ValueError):
+            return [], False
+    return _dedupe_int_ids(parsed), True
+
+
+def _coerce_non_negative_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _pack_delta_baseline(
+    store: MemoryStore,
+    *,
+    project: str | None,
+) -> tuple[list[int] | None, int | None]:
+    rows = store.recent_pack_events(limit=1, project=project)
+    if not rows:
+        return None, None
+    metadata = rows[0].get("metadata_json")
+    if not isinstance(metadata, dict):
+        return None, None
+    if "pack_item_ids" not in metadata:
+        return None, None
+    previous_ids, ids_valid = _coerce_pack_item_ids(metadata.get("pack_item_ids"))
+    if not ids_valid:
+        return None, None
+    previous_pack_tokens_raw = metadata.get("pack_tokens", rows[0].get("tokens_read"))
+    previous_pack_tokens = _coerce_non_negative_int(previous_pack_tokens_raw)
+    if previous_pack_tokens is None:
+        return None, None
+    return previous_ids, previous_pack_tokens
+
+
 def _sort_recent(
     items: Sequence[MemoryResult | dict[str, Any]],
 ) -> list[MemoryResult | dict[str, Any]]:
@@ -532,6 +597,26 @@ def build_memory_pack(
             section_blocks.append(f"## {title}\n")
     pack_text = "\n\n".join(section_blocks)
     pack_tokens = store.estimate_tokens(pack_text)
+    current_pack_ids = _dedupe_int_ids([_item_id(item) for item in final_items])
+    previous_pack_ids, previous_pack_tokens = _pack_delta_baseline(
+        store,
+        project=(filters or {}).get("project"),
+    )
+    added_ids: list[int] = []
+    removed_ids: list[int] = []
+    retained_ids: list[int] = []
+    pack_token_delta = 0
+    pack_delta_available = bool(previous_pack_ids is not None and previous_pack_tokens is not None)
+    if pack_delta_available:
+        previous_set = set(previous_pack_ids or [])
+        current_set = set(current_pack_ids)
+        added_ids = [item_id for item_id in current_pack_ids if item_id not in previous_set]
+        removed_ids = [
+            item_id for item_id in (previous_pack_ids or []) if item_id not in current_set
+        ]
+        retained_ids = [item_id for item_id in current_pack_ids if item_id in previous_set]
+        pack_token_delta = int(pack_tokens) - int(previous_pack_tokens or 0)
+
     work_tokens_sum = sum(_estimate_work_tokens(store, m) for m in final_items)
     group_work: dict[str, int] = {}
     for item in final_items:
@@ -609,6 +694,12 @@ def build_memory_pack(
         "work_tokens": work_tokens_sum,
         "pack_tokens": pack_tokens,
         "tokens_saved": tokens_saved,
+        "pack_item_ids": current_pack_ids,
+        "added_ids": added_ids,
+        "removed_ids": removed_ids,
+        "retained_ids": retained_ids,
+        "pack_token_delta": pack_token_delta,
+        "pack_delta_available": pack_delta_available,
         "compression_ratio": compression_ratio,
         "overhead_tokens": overhead_tokens,
         "avoided_work_tokens": avoided_tokens_total,
