@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     from ._store import MemoryStore
 
 
+SQLITE_INT64_MIN = -(2**63)
+SQLITE_INT64_MAX = (2**63) - 1
+
+
 def search_index(
     store: MemoryStore,
     query: str,
@@ -82,6 +86,197 @@ def timeline(
     return timeline_items
 
 
+def explain(
+    store: MemoryStore,
+    *,
+    query: str | None = None,
+    ids: Sequence[Any] | None = None,
+    limit: int = 10,
+    filters: dict[str, Any] | None = None,
+    include_pack_context: bool = False,
+) -> dict[str, Any]:
+    filters = dict(filters or {})
+    normalized_query = (query or "").strip()
+    ordered_ids, invalid_ids = _dedupe_ordered_ids(ids or [])
+    errors: list[dict[str, Any]] = []
+    if invalid_ids:
+        errors.append(
+            {
+                "code": "INVALID_ARGUMENT",
+                "field": "ids",
+                "message": "some ids are not valid integers",
+                "ids": invalid_ids,
+            }
+        )
+
+    if not normalized_query and not ordered_ids:
+        errors.append(
+            {
+                "code": "INVALID_ARGUMENT",
+                "field": "query",
+                "message": "at least one of query or ids is required",
+            }
+        )
+        return {
+            "items": [],
+            "missing_ids": [],
+            "errors": errors,
+            "metadata": {
+                "query": None,
+                "project": filters.get("project"),
+                "requested_ids_count": len(ordered_ids),
+                "returned_items_count": 0,
+                "include_pack_context": include_pack_context,
+            },
+        }
+
+    query_results: list[MemoryResult] = []
+    if normalized_query:
+        query_results = search(
+            store,
+            normalized_query,
+            limit=max(1, int(limit)),
+            filters=filters or None,
+            log_usage=False,
+        )
+
+    query_rank = {item.id: index for index, item in enumerate(query_results, start=1)}
+    id_rows, missing_not_found, missing_project_mismatch, missing_filter_mismatch = (
+        _load_items_by_ids_for_explain(
+            store,
+            ordered_ids,
+            filters,
+        )
+    )
+    id_by_id = {
+        int(item["id"]): MemoryResult(
+            id=int(item["id"]),
+            kind=str(item["kind"]),
+            title=str(item["title"]),
+            body_text=str(item["body_text"]),
+            confidence=float(item.get("confidence") or 0.0),
+            created_at=str(item["created_at"]),
+            updated_at=str(item["updated_at"]),
+            tags_text=str(item.get("tags_text") or ""),
+            score=float(item.get("score") or 0.0),
+            session_id=int(item["session_id"]),
+            metadata=(
+                item["metadata_json"]
+                if isinstance(item.get("metadata_json"), dict)
+                else db.from_json(item.get("metadata_json"))
+            ),
+        )
+        for item in id_rows
+    }
+
+    ordered_items: list[tuple[MemoryResult, str, int | None]] = []
+    selected_ids: set[int] = set()
+    explicit_id_set = set(ordered_ids)
+    for item in query_results:
+        selected_ids.add(item.id)
+        source = "query+id_lookup" if item.id in explicit_id_set else "query"
+        ordered_items.append((item, source, query_rank.get(item.id)))
+    for memory_id in ordered_ids:
+        if memory_id in selected_ids:
+            continue
+        item = id_by_id.get(memory_id)
+        if item is None:
+            continue
+        ordered_items.append((item, "id_lookup", None))
+        selected_ids.add(memory_id)
+
+    session_projects = _load_session_projects(
+        store,
+        {item.session_id for item, _, _ in ordered_items},
+    )
+    query_tokens = _tokenize_query(normalized_query, store.STOPWORDS) if normalized_query else []
+    reference_now = dt.datetime.now(dt.UTC)
+
+    items_payload = [
+        _explain_item(
+            store,
+            item=item,
+            source=source,
+            rank=rank,
+            query_tokens=query_tokens,
+            project_filter=filters.get("project"),
+            project_value=session_projects.get(item.session_id),
+            include_pack_context=include_pack_context,
+            reference_now=reference_now,
+        )
+        for item, source, rank in ordered_items
+    ]
+
+    missing_not_found_set = set(missing_not_found)
+    missing_project_mismatch_set = set(missing_project_mismatch)
+    missing_filter_mismatch_set = set(missing_filter_mismatch)
+    missing_ids = [
+        memory_id
+        for memory_id in ordered_ids
+        if (
+            memory_id in missing_not_found_set
+            or memory_id in missing_project_mismatch_set
+            or memory_id in missing_filter_mismatch_set
+        )
+    ]
+    if missing_not_found:
+        errors.append(
+            {
+                "code": "NOT_FOUND",
+                "field": "ids",
+                "message": "some requested ids were not found",
+                "ids": missing_not_found,
+            }
+        )
+    if missing_project_mismatch:
+        errors.append(
+            {
+                "code": "PROJECT_MISMATCH",
+                "field": "project",
+                "message": "some requested ids are outside the requested project scope",
+                "ids": missing_project_mismatch,
+            }
+        )
+    if missing_filter_mismatch:
+        errors.append(
+            {
+                "code": "FILTER_MISMATCH",
+                "field": "filters",
+                "message": "some requested ids do not match the provided filters",
+                "ids": missing_filter_mismatch,
+            }
+        )
+
+    tokens_read = sum(
+        store.estimate_tokens(f"{item.title} {item.body_text}") for item, _, _ in ordered_items
+    )
+    store.record_usage(
+        "search_explain",
+        tokens_read=tokens_read,
+        metadata={
+            "query_present": bool(normalized_query),
+            "requested_ids": len(ordered_ids),
+            "returned_items": len(items_payload),
+            "missing_ids": len(missing_ids),
+            "project": filters.get("project"),
+            "include_pack_context": include_pack_context,
+        },
+    )
+
+    return {
+        "items": items_payload,
+        "missing_ids": missing_ids,
+        "errors": errors,
+        "metadata": {
+            "query": normalized_query or None,
+            "project": filters.get("project"),
+            "requested_ids_count": len(ordered_ids),
+            "returned_items_count": len(items_payload),
+            "include_pack_context": include_pack_context,
+        },
+    }
+
+
 def _expand_query(query: str) -> str:
     tokens = re.findall(r"[A-Za-z0-9_]+", query)
     tokens = [token for token in tokens if token.lower() not in {"or", "and", "not"}]
@@ -90,6 +285,209 @@ def _expand_query(query: str) -> str:
     if len(tokens) == 1:
         return tokens[0]
     return " OR ".join(tokens)
+
+
+def _dedupe_ordered_ids(ids: Sequence[Any]) -> tuple[list[int], list[str]]:
+    deduped: list[int] = []
+    seen: set[int] = set()
+    invalid: list[str] = []
+    for raw_id in ids:
+        if isinstance(raw_id, bool):
+            invalid.append(str(raw_id))
+            continue
+        if isinstance(raw_id, float):
+            invalid.append(str(raw_id))
+            continue
+        try:
+            memory_id = int(raw_id)
+        except (TypeError, ValueError, OverflowError):
+            invalid.append(str(raw_id))
+            continue
+        if not isinstance(raw_id, int) and not (isinstance(raw_id, str) and raw_id.isdigit()):
+            invalid.append(str(raw_id))
+            continue
+        if memory_id < SQLITE_INT64_MIN or memory_id > SQLITE_INT64_MAX:
+            invalid.append(str(raw_id))
+            continue
+        if memory_id <= 0:
+            invalid.append(str(raw_id))
+            continue
+        if memory_id in seen:
+            continue
+        seen.add(memory_id)
+        deduped.append(memory_id)
+    return deduped, invalid
+
+
+def _load_items_by_ids_for_explain(
+    store: MemoryStore,
+    ids: list[int],
+    filters: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[int], list[int], list[int]]:
+    if not ids:
+        return [], [], [], []
+    placeholders = ",".join("?" for _ in ids)
+    rows = store.conn.execute(
+        f"""
+        SELECT memory_items.*
+        FROM memory_items
+        WHERE memory_items.active = 1
+          AND memory_items.id IN ({placeholders})
+        """,
+        ids,
+    ).fetchall()
+    all_rows = db.rows_to_dicts(rows)
+    all_found_ids = {int(item["id"]) for item in all_rows}
+
+    project_scoped = all_rows
+    project_scoped_ids = all_found_ids
+    project_clause = ""
+    project_params: list[Any] = []
+    if filters.get("project"):
+        project_clause, project_params = store._project_clause(str(filters["project"]))
+        if project_clause:
+            project_scoped_rows = store.conn.execute(
+                f"""
+                SELECT memory_items.*
+                FROM memory_items
+                JOIN sessions ON sessions.id = memory_items.session_id
+                WHERE memory_items.active = 1
+                  AND memory_items.id IN ({placeholders})
+                  AND {project_clause}
+                """,
+                [*ids, *project_params],
+            ).fetchall()
+            project_scoped = db.rows_to_dicts(project_scoped_rows)
+            project_scoped_ids = {int(item["id"]) for item in project_scoped}
+
+    scoped_where_clauses = ["memory_items.active = 1", f"memory_items.id IN ({placeholders})"]
+    scoped_params: list[Any] = list(ids)
+    join_sessions = False
+    if filters.get("kind"):
+        scoped_where_clauses.append("memory_items.kind = ?")
+        scoped_params.append(filters["kind"])
+    if filters.get("session_id"):
+        scoped_where_clauses.append("memory_items.session_id = ?")
+        scoped_params.append(filters["session_id"])
+    if filters.get("since"):
+        scoped_where_clauses.append("memory_items.created_at >= ?")
+        scoped_params.append(filters["since"])
+    if filters.get("project") and project_clause:
+        scoped_where_clauses.append(project_clause)
+        scoped_params.extend(project_params)
+        join_sessions = True
+    scoped_join = "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
+    scoped_rows = store.conn.execute(
+        f"""
+        SELECT memory_items.*
+        FROM memory_items
+        {scoped_join}
+        WHERE {" AND ".join(scoped_where_clauses)}
+        """,
+        scoped_params,
+    ).fetchall()
+    scoped = db.rows_to_dicts(scoped_rows)
+    scoped_ids = {int(item["id"]) for item in scoped}
+
+    missing_not_found = [memory_id for memory_id in ids if memory_id not in all_found_ids]
+    missing_project_mismatch = [
+        memory_id
+        for memory_id in ids
+        if memory_id in all_found_ids and memory_id not in project_scoped_ids
+    ]
+    missing_filter_mismatch = [
+        memory_id
+        for memory_id in ids
+        if memory_id in project_scoped_ids and memory_id not in scoped_ids
+    ]
+    return scoped, missing_not_found, missing_project_mismatch, missing_filter_mismatch
+
+
+def _load_session_projects(store: MemoryStore, session_ids: set[int]) -> dict[int, str | None]:
+    if not session_ids:
+        return {}
+    ordered_ids = sorted(session_ids)
+    placeholders = ",".join("?" for _ in ordered_ids)
+    rows = store.conn.execute(
+        f"SELECT id, project FROM sessions WHERE id IN ({placeholders})",
+        ordered_ids,
+    ).fetchall()
+    return {int(row["id"]): row["project"] for row in rows}
+
+
+def _project_matches_filter(
+    store: MemoryStore,
+    project_filter: str | None,
+    item_project: str | None,
+) -> bool:
+    if not project_filter:
+        return True
+    if not item_project:
+        return False
+    normalized_filter = project_filter.strip().replace("\\", "/")
+    if not normalized_filter:
+        return True
+    if "/" in normalized_filter:
+        filter_value = store._project_basename(normalized_filter)
+    else:
+        filter_value = normalized_filter
+    normalized_project = item_project.replace("\\", "/")
+    return normalized_project == filter_value or normalized_project.endswith(f"/{filter_value}")
+
+
+def _explain_item(
+    store: MemoryStore,
+    *,
+    item: MemoryResult,
+    source: str,
+    rank: int | None,
+    query_tokens: list[str],
+    project_filter: str | None,
+    project_value: str | None,
+    include_pack_context: bool,
+    reference_now: dt.datetime,
+) -> dict[str, Any]:
+    text = f"{item.title} {item.body_text} {item.tags_text}".lower()
+    matched_terms = [token for token in query_tokens if token in text]
+    base_score: float | None = item.score if source in {"query", "query+id_lookup"} else None
+    recency_component = _recency_score(item.created_at, now=reference_now)
+    kind_component = _kind_bonus(item.kind)
+    total_score: float | None = None
+    if base_score is not None:
+        total_score = (base_score * 1.5) + recency_component + kind_component
+
+    return {
+        "id": item.id,
+        "kind": item.kind,
+        "title": item.title,
+        "created_at": item.created_at,
+        "project": project_value,
+        "retrieval": {
+            "source": source,
+            "rank": rank,
+        },
+        "score": {
+            "total": total_score,
+            "components": {
+                "base": base_score,
+                "recency": recency_component,
+                "kind_bonus": kind_component,
+                "semantic_boost": None,
+            },
+        },
+        "matches": {
+            "query_terms": matched_terms,
+            "project_match": _project_matches_filter(store, project_filter, project_value),
+        },
+        "pack_context": (
+            {
+                "included": None,
+                "section": None,
+            }
+            if include_pack_context
+            else None
+        ),
+    }
 
 
 def _query_looks_like_tasks(query: str) -> bool:
@@ -207,11 +605,12 @@ def _parse_created_at(value: str) -> dt.datetime | None:
     return parsed
 
 
-def _recency_score(created_at: str) -> float:
+def _recency_score(created_at: str, *, now: dt.datetime | None = None) -> float:
     parsed = _parse_created_at(created_at)
     if not parsed:
         return 0.0
-    days_ago = (dt.datetime.now(dt.UTC) - parsed).days
+    reference_now = now or dt.datetime.now(dt.UTC)
+    days_ago = (reference_now - parsed).days
     return 1.0 / (1.0 + (days_ago / 7.0))
 
 
@@ -395,9 +794,14 @@ def _rerank_results(
         recent_results = _filter_recent_results(results, recency_days)
         if recent_results:
             results = cast(list[MemoryResult], list(recent_results))
+    reference_now = dt.datetime.now(dt.UTC)
 
     def score(item: MemoryResult) -> float:
-        return (item.score * 1.5) + _recency_score(item.created_at) + _kind_bonus(item.kind)
+        return (
+            (item.score * 1.5)
+            + _recency_score(item.created_at, now=reference_now)
+            + _kind_bonus(item.kind)
+        )
 
     ordered = sorted(results, key=score, reverse=True)
     return ordered[:limit]
@@ -414,12 +818,13 @@ def _rerank_results_hybrid(
         recent_results = _filter_recent_results(results, recency_days)
         if recent_results:
             results = cast(list[MemoryResult], list(recent_results))
+    reference_now = dt.datetime.now(dt.UTC)
 
     def score(item: MemoryResult) -> float:
         semantic_boost = 0.35 if item.id in semantic_ids else 0.0
         return (
             (item.score * 1.2)
-            + (_recency_score(item.created_at) * 0.8)
+            + (_recency_score(item.created_at, now=reference_now) * 0.8)
             + _kind_bonus(item.kind)
             + semantic_boost
         )
@@ -716,7 +1121,7 @@ def search(
         JOIN memory_items ON memory_items.id = memory_fts.rowid
         {join_clause}
         WHERE {where}
-        ORDER BY (score * 1.5 + recency) DESC
+        ORDER BY (score * 1.5 + recency) DESC, memory_items.created_at DESC, memory_items.id DESC
         LIMIT ?
     """
     params.append(limit)

@@ -2405,6 +2405,198 @@ def test_search_finds_by_tag_only(tmp_path: Path) -> None:
     assert any(result.id == memory_id for result in results)
 
 
+def test_explain_requires_query_or_ids(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+
+    payload = store.explain()
+
+    assert payload["items"] == []
+    assert payload["missing_ids"] == []
+    assert payload["errors"][0]["code"] == "INVALID_ARGUMENT"
+    assert payload["metadata"]["returned_items_count"] == 0
+
+
+def test_explain_reports_invalid_ids_without_crashing(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha body")
+    store.end_session(session)
+
+    payload = store.explain(
+        query="alpha",
+        ids=[memory_id, True, 1.9, "2.4", "bad", None],
+    )
+
+    assert [item["id"] for item in payload["items"]] == [memory_id]
+    invalid_error = next(error for error in payload["errors"] if error["field"] == "ids")
+    assert invalid_error["code"] == "INVALID_ARGUMENT"
+    assert invalid_error["ids"] == ["True", "1.9", "2.4", "bad", "None"]
+
+
+def test_explain_invalid_ids_without_query_returns_structured_errors(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+
+    payload = store.explain(ids=["bad"], query=None)
+
+    assert payload["items"] == []
+    assert payload["missing_ids"] == []
+    assert {error["field"] for error in payload["errors"]} == {"ids", "query"}
+
+
+def test_search_stable_tiebreaker_prefers_newer_id_on_equal_scores(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    first_id = store.remember(session, kind="note", title="alpha", body_text="alpha")
+    second_id = store.remember(session, kind="note", title="alpha", body_text="alpha")
+    store.end_session(session)
+
+    fixed_created_at = "2026-01-01T00:00:00+00:00"
+    store.conn.execute(
+        "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id IN (?, ?)",
+        (fixed_created_at, fixed_created_at, first_id, second_id),
+    )
+    store.conn.commit()
+
+    results = store.search("alpha", limit=2)
+
+    assert [item.id for item in results] == [second_id, first_id]
+
+
+def test_explain_ids_reports_missing_and_project_mismatch(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session_a = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_a = store.remember(session_a, kind="note", title="A", body_text="A body")
+    store.end_session(session_a)
+
+    session_b = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-b",
+    )
+    memory_b = store.remember(session_b, kind="note", title="B", body_text="B body")
+    store.end_session(session_b)
+
+    payload = store.explain(
+        ids=[memory_a, memory_b, 999999],
+        filters={"project": "project-a"},
+    )
+
+    assert [item["id"] for item in payload["items"]] == [memory_a]
+    assert payload["missing_ids"] == [memory_b, 999999]
+    codes = {error["code"] for error in payload["errors"]}
+    assert codes == {"NOT_FOUND", "PROJECT_MISMATCH"}
+    assert payload["items"][0]["matches"]["project_match"] is True
+    assert payload["metadata"]["requested_ids_count"] == 3
+    assert payload["metadata"]["returned_items_count"] == 1
+
+
+def test_explain_ids_respect_non_project_filters(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    note_id = store.remember(session, kind="note", title="N", body_text="note body")
+    decision_id = store.remember(session, kind="decision", title="D", body_text="decision body")
+    store.end_session(session)
+
+    payload = store.explain(
+        ids=[note_id, decision_id],
+        filters={"project": "/tmp/project-a", "kind": "note"},
+    )
+
+    assert [item["id"] for item in payload["items"]] == [note_id]
+    assert payload["missing_ids"] == [decision_id]
+    errors_by_code = {error["code"]: error for error in payload["errors"]}
+    assert set(errors_by_code) == {"FILTER_MISMATCH"}
+    assert errors_by_code["FILTER_MISMATCH"]["ids"] == [decision_id]
+
+
+def test_explain_combines_query_and_ids_with_sources(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_query = store.remember(
+        session,
+        kind="decision",
+        title="Cache tuning decision",
+        body_text="Picked cache tuning strategy",
+    )
+    memory_id_only = store.remember(
+        session,
+        kind="note",
+        title="Follow-up",
+        body_text="Review benchmark numbers",
+    )
+    store.end_session(session)
+
+    payload = store.explain(
+        query="cache tuning",
+        ids=[memory_query, memory_id_only],
+        filters={"project": "/tmp/project-a"},
+    )
+
+    assert [item["id"] for item in payload["items"]] == [memory_query, memory_id_only]
+    assert payload["items"][0]["retrieval"] == {"source": "query+id_lookup", "rank": 1}
+    assert payload["items"][1]["retrieval"] == {"source": "id_lookup", "rank": None}
+    assert payload["items"][0]["score"]["components"]["base"] is not None
+    assert payload["items"][1]["score"]["components"]["base"] is None
+    assert payload["items"][0]["matches"]["query_terms"] == ["cache", "tuning"]
+    assert payload["items"][0]["pack_context"] is None
+
+
+def test_explain_include_pack_context_returns_deterministic_shape(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha body")
+    store.end_session(session)
+
+    payload = store.explain(ids=[memory_id], include_pack_context=True)
+
+    assert payload["items"][0]["pack_context"] == {"included": None, "section": None}
+
+
 def test_merge_ranked_results_shadow_logs_without_changing_baseline(
     monkeypatch, tmp_path: Path
 ) -> None:
