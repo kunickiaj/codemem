@@ -141,6 +141,43 @@ def test_ingest_claude_hook_cmd_processes_stop_hook() -> None:
     assert called["count"] == 2
 
 
+def test_ingest_claude_hook_cmd_flushes_stop_hook_when_assistant_text_missing() -> None:
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-1",
+    }
+    called = {"record": 0, "flush": 0}
+
+    class _FakeStore:
+        def __init__(self, _: object) -> None:
+            pass
+
+        def record_raw_event(self, **_: object) -> bool:
+            called["record"] += 1
+            return True
+
+        def update_raw_event_session_meta(self, **_: object) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    def _fake_flush(*_: object, **kwargs: object) -> dict[str, int]:
+        called["flush"] += 1
+        assert kwargs["opencode_session_id"] == "claude:sess-1"
+        return {"flushed": 0, "updated_state": 0}
+
+    with (
+        patch("sys.stdin", io.StringIO(json.dumps(payload))),
+        patch("codemem.commands.claude_integration_cmds.MemoryStore", _FakeStore),
+        patch("codemem.commands.claude_integration_cmds.flush_raw_events", _fake_flush),
+    ):
+        ingest_claude_hook_cmd()
+
+    assert called["record"] == 0
+    assert called["flush"] == 1
+
+
 def test_ingest_claude_hook_cmd_noops_on_invalid_json() -> None:
     called = {"count": 0}
 

@@ -38,6 +38,18 @@ def _adapter_stream_id(*, source: str, session_id: str, cwd: str | None) -> str:
     return f"{source}:{session_id}"
 
 
+def _hook_stream_id(hook_payload: dict[str, Any]) -> str | None:
+    session_id = str(hook_payload.get("session_id") or "").strip()
+    if not session_id:
+        return None
+    source = str(hook_payload.get("source") or "claude").strip() or "claude"
+    return _adapter_stream_id(
+        source=source,
+        session_id=session_id,
+        cwd=hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None,
+    )
+
+
 def _iso_to_wall_ms(ts: str | None) -> int:
     if isinstance(ts, str) and ts.strip():
         try:
@@ -235,14 +247,31 @@ def ingest_claude_hook_cmd() -> None:
     hook_event_name = str(hook_payload.get("hook_event_name") or "").strip()
     if hook_event_name not in ALLOWED_HOOK_EVENTS:
         return
+    should_flush = _should_flush(hook_event_name)
     db_path = os.environ.get("CODEMEM_DB") or DEFAULT_DB_PATH
     store = MemoryStore(db_path)
     try:
         queued = _queue_adapter_event(hook_payload, store=store)
         if queued is None:
+            if should_flush:
+                stream_id = _hook_stream_id(hook_payload)
+                if not stream_id:
+                    return
+                flush_raw_events(
+                    store,
+                    opencode_session_id=stream_id,
+                    cwd=hook_payload.get("cwd")
+                    if isinstance(hook_payload.get("cwd"), str)
+                    else None,
+                    project=hook_payload.get("project")
+                    if isinstance(hook_payload.get("project"), str)
+                    else None,
+                    started_at=None,
+                    max_events=None,
+                )
             return
         stream_id, _ = queued
-        if not _should_flush(hook_event_name):
+        if not should_flush:
             return
         flush_raw_events(
             store,

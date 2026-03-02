@@ -163,10 +163,12 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     if unknown:
         meta["hook_fields"] = unknown
 
+    event_id_ts_seed = normalized_raw_ts or ts
+
     event_id = _stable_event_id(
         session_id,
         hook_event,
-        str(normalized_raw_ts or ""),
+        event_id_ts_seed,
         tool_use_id,
         hashlib.sha256(
             json.dumps(event_payload, sort_keys=True, default=str).encode("utf-8")
