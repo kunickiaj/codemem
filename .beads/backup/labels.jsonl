@@ -63,6 +63,13 @@
 {"issue_id":"codemem-afm.4","label":"multi-agent"}
 {"issue_id":"codemem-afm.4","label":"planning"}
 {"issue_id":"codemem-afm.4","label":"rollout"}
+{"issue_id":"codemem-afm.5","label":"adapters"}
+{"issue_id":"codemem-afm.5","label":"claude-code"}
+{"issue_id":"codemem-afm.5","label":"future"}
+{"issue_id":"codemem-afm.5","label":"integration"}
+{"issue_id":"codemem-afm.5","label":"multi-agent"}
+{"issue_id":"codemem-afm.5","label":"planning"}
+{"issue_id":"codemem-afm.5","label":"transcript"}
 {"issue_id":"codemem-chf","label":"audit"}
 {"issue_id":"codemem-chf","label":"feature-gap"}
 {"issue_id":"codemem-chf","label":"mcp"}
