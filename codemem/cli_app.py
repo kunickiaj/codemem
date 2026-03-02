@@ -373,6 +373,11 @@ def pack(
     context: str,
     limit: int = typer.Option(None, help="Max memory items in the pack"),
     token_budget: int = typer.Option(None, help="Approx token budget for pack"),
+    working_set_files: list[str] = typer.Option(
+        None,
+        "--working-set-file",
+        help="Recently modified file path used as ranking hint (repeat option for multiple files)",
+    ),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
@@ -386,6 +391,7 @@ def pack(
         context=context,
         limit=limit,
         token_budget=token_budget,
+        working_set_files=working_set_files,
         project=project,
         all_projects=all_projects,
     )
@@ -396,6 +402,11 @@ def inject(
     context: str,
     limit: int = typer.Option(None, help="Max memory items in the pack"),
     token_budget: int = typer.Option(None, help="Approx token budget for injection"),
+    working_set_files: list[str] = typer.Option(
+        None,
+        "--working-set-file",
+        help="Recently modified file path used as ranking hint (repeat option for multiple files)",
+    ),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
     project: str = typer.Option(None, help="Project identifier (defaults to git repo root)"),
     all_projects: bool = typer.Option(False, help="Search across all projects"),
@@ -409,6 +420,7 @@ def inject(
         context=context,
         limit=limit,
         token_budget=token_budget,
+        working_set_files=working_set_files,
         project=project,
         all_projects=all_projects,
     )

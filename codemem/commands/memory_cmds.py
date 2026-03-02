@@ -128,6 +128,7 @@ def pack_cmd(
     context: str,
     limit: int | None,
     token_budget: int | None,
+    working_set_files: list[str] | None,
     project: str | None,
     all_projects: bool,
 ) -> None:
@@ -137,12 +138,15 @@ def pack_cmd(
     try:
         resolved_project = resolve_project(os.getcwd(), project, all_projects=all_projects)
         config = load_config()
-        filters = {"project": resolved_project} if resolved_project else None
+        filters: dict[str, object] = {"project": resolved_project} if resolved_project else {}
+        working_set_paths = [path for path in (working_set_files or []) if path]
+        if working_set_paths:
+            filters["working_set_paths"] = working_set_paths
         pack = store.build_memory_pack(
             context=context,
             limit=limit or config.pack_observation_limit,
             token_budget=token_budget,
-            filters=filters,
+            filters=filters or None,
         )
         print(json.dumps(pack, indent=2))
     finally:
@@ -158,6 +162,7 @@ def inject_cmd(
     context: str,
     limit: int | None,
     token_budget: int | None,
+    working_set_files: list[str] | None,
     project: str | None,
     all_projects: bool,
 ) -> None:
@@ -167,12 +172,15 @@ def inject_cmd(
     try:
         resolved_project = resolve_project(os.getcwd(), project, all_projects=all_projects)
         config = load_config()
-        filters = {"project": resolved_project} if resolved_project else None
+        filters: dict[str, object] = {"project": resolved_project} if resolved_project else {}
+        working_set_paths = [path for path in (working_set_files or []) if path]
+        if working_set_paths:
+            filters["working_set_paths"] = working_set_paths
         pack = store.build_memory_pack(
             context=context,
             limit=limit or config.pack_observation_limit,
             token_budget=token_budget,
-            filters=filters,
+            filters=filters or None,
         )
         print(pack.get("pack_text", ""))
     finally:

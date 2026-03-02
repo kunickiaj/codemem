@@ -2476,6 +2476,232 @@ def test_search_stable_tiebreaker_prefers_newer_id_on_equal_scores(tmp_path: Pat
     assert [item.id for item in results] == [second_id, first_id]
 
 
+def test_search_working_set_hint_boost_prefers_file_overlap(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    matching_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Refactor parser module",
+        narrative="Refactor parser module",
+        files_modified=["src/auth/service.py"],
+    )
+    nonmatching_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Refactor parser module",
+        narrative="Refactor parser module",
+        files_modified=["docs/readme.md"],
+    )
+    store.end_session(session)
+
+    fixed_created_at = "2026-01-01T00:00:00+00:00"
+    store.conn.execute(
+        "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id IN (?, ?)",
+        (fixed_created_at, fixed_created_at, matching_id, nonmatching_id),
+    )
+    store.conn.commit()
+
+    baseline = store.search(
+        "refactor parser",
+        limit=2,
+        filters={"project": "/tmp/project-a"},
+    )
+    boosted = store.search(
+        "refactor parser",
+        limit=2,
+        filters={
+            "project": "/tmp/project-a",
+            "working_set_paths": ["src/auth/service.py"],
+        },
+    )
+
+    assert [item.id for item in baseline] == [nonmatching_id, matching_id]
+    assert [item.id for item in boosted] == [matching_id, nonmatching_id]
+
+
+def test_search_working_set_hint_unset_or_empty_keeps_order(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    first_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Alpha parser",
+        narrative="Alpha parser",
+        files_modified=["src/a.py"],
+    )
+    second_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Alpha parser",
+        narrative="Alpha parser",
+        files_modified=["src/b.py"],
+    )
+    store.end_session(session)
+
+    fixed_created_at = "2026-01-01T00:00:00+00:00"
+    store.conn.execute(
+        "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id IN (?, ?)",
+        (fixed_created_at, fixed_created_at, first_id, second_id),
+    )
+    store.conn.commit()
+
+    no_hint = store.search("alpha parser", limit=2, filters={"project": "/tmp/project-a"})
+    empty_hint = store.search(
+        "alpha parser",
+        limit=2,
+        filters={"project": "/tmp/project-a", "working_set_paths": []},
+    )
+
+    assert [item.id for item in no_hint] == [second_id, first_id]
+    assert [item.id for item in empty_hint] == [second_id, first_id]
+
+
+def test_search_working_set_hint_can_promote_outside_top_limit(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    matching_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Parser cleanup",
+        narrative="Parser cleanup",
+        files_modified=["src/auth/service.py"],
+    )
+    store.remember_observation(
+        session,
+        kind="note",
+        title="Parser cleanup",
+        narrative="Parser cleanup",
+        files_modified=["src/other/a.py"],
+    )
+    newest_nonmatching_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Parser cleanup",
+        narrative="Parser cleanup",
+        files_modified=["src/other/b.py"],
+    )
+    store.end_session(session)
+
+    fixed_created_at = "2026-01-01T00:00:00+00:00"
+    store.conn.execute(
+        "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE session_id = ?",
+        (fixed_created_at, fixed_created_at, session),
+    )
+    store.conn.commit()
+
+    baseline = store.search("parser cleanup", limit=1, filters={"project": "/tmp/project-a"})
+    boosted = store.search(
+        "parser cleanup",
+        limit=1,
+        filters={
+            "project": "/tmp/project-a",
+            "working_set_paths": ["src/auth/service.py"],
+        },
+    )
+
+    assert [item.id for item in baseline] == [newest_nonmatching_id]
+    assert [item.id for item in boosted] == [matching_id]
+
+
+def test_search_working_set_hint_matches_absolute_and_relative_paths(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    matching_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Index parser",
+        narrative="Index parser",
+        files_modified=["/tmp/project-a/src/auth/service.py"],
+    )
+    nonmatching_id = store.remember_observation(
+        session,
+        kind="note",
+        title="Index parser",
+        narrative="Index parser",
+        files_modified=["docs/readme.md"],
+    )
+    store.end_session(session)
+
+    fixed_created_at = "2026-01-01T00:00:00+00:00"
+    store.conn.execute(
+        "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id IN (?, ?)",
+        (fixed_created_at, fixed_created_at, matching_id, nonmatching_id),
+    )
+    store.conn.commit()
+
+    baseline = store.search("index parser", limit=2, filters={"project": "/tmp/project-a"})
+    boosted = store.search(
+        "index parser",
+        limit=2,
+        filters={
+            "project": "/tmp/project-a",
+            "working_set_paths": ["src/auth/service.py"],
+        },
+    )
+
+    assert [item.id for item in baseline] == [nonmatching_id, matching_id]
+    assert [item.id for item in boosted] == [matching_id, nonmatching_id]
+
+
+def test_search_handles_non_object_metadata_json(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(
+        session,
+        kind="note",
+        title="Alpha",
+        body_text="Alpha body",
+    )
+    store.end_session(session)
+
+    store.conn.execute(
+        "UPDATE memory_items SET metadata_json = ? WHERE id = ?",
+        (db.to_json(["unexpected", "shape"]), memory_id),
+    )
+    store.conn.commit()
+
+    results = store.search("Alpha", limit=5, filters={"project": "/tmp/project-a"})
+
+    assert results
+    assert isinstance(results[0].metadata, dict)
+
+
 def test_explain_ids_reports_missing_and_project_mismatch(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session_a = store.start_session(
