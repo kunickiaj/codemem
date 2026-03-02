@@ -77,6 +77,42 @@ const createDebugLogger = ({ debug, client, logTimeoutMs, getLogLine }) =>
     }
   };
 
+const extractApplyPatchPaths = (patchText) => {
+  if (!patchText || typeof patchText !== "string") {
+    return [];
+  }
+  const paths = [];
+  const seen = new Set();
+  const lines = patchText.split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/);
+    if (!match) {
+      continue;
+    }
+    const path = String(match[1] || "").trim();
+    if (!path || seen.has(path)) {
+      continue;
+    }
+    seen.add(path);
+    paths.push(path);
+  }
+  return paths;
+};
+
+const appendWorkingSetFileArgs = (args, workingSetFiles) => {
+  if (!Array.isArray(workingSetFiles) || workingSetFiles.length === 0) {
+    return args;
+  }
+  for (const file of workingSetFiles) {
+    const normalized = String(file || "").trim();
+    if (!normalized) {
+      continue;
+    }
+    args.push("--working-set-file", normalized.slice(0, 400));
+  }
+  return args;
+};
+
 const detectRunner = ({ cwd, envRunner }) => {
   if (envRunner) {
     return envRunner;
@@ -784,6 +820,10 @@ export const OpencodeMemPlugin = async ({
   };
 
   const buildPackArgs = (query) => {
+    const workingSetFiles = Array.from(sessionContext.filesModified)
+      .slice(-8)
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
     const args = ["pack", query];
     if (injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0) {
       args.push("--limit", String(injectLimit));
@@ -791,6 +831,7 @@ export const OpencodeMemPlugin = async ({
     if (injectTokenBudget !== null && Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
       args.push("--token-budget", String(injectTokenBudget));
     }
+    appendWorkingSetFileArgs(args, workingSetFiles);
     return args;
   };
 
@@ -1212,6 +1253,12 @@ export const OpencodeMemPlugin = async ({
           sessionContext.filesRead.add(filePath);
         }
       }
+      if (toolName.toLowerCase() === "apply_patch") {
+        const patchPaths = extractApplyPatchPaths(args.patchText);
+        for (const path of patchPaths) {
+          sessionContext.filesModified.add(path);
+        }
+      }
 
       captureEvent(input?.sessionID || null, {
         type: "tool.execute.after",
@@ -1281,3 +1328,4 @@ export const OpencodeMemPlugin = async ({
 };
 
 export default OpencodeMemPlugin;
+export const __testUtils = { appendWorkingSetFileArgs, extractApplyPatchPaths };

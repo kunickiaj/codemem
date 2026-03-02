@@ -927,7 +927,7 @@ def _merge_ranked_results(
         if created_at is None or updated_at is None or session_id is None:
             continue
         raw_metadata = item.get("metadata_json") or item.get("metadata")
-        metadata = raw_metadata if isinstance(raw_metadata, dict) else db.from_json(raw_metadata)
+        metadata = _coerce_metadata_dict(raw_metadata)
         reranked.append(
             MemoryResult(
                 id=int(memory_id),
@@ -1076,6 +1076,116 @@ def _attach_prompt_links(store: MemoryStore, items: list[dict[str, Any]]) -> Non
             item["linked_prompt"] = prompts_by_id[prompt_id]
 
 
+def _normalize_working_set_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, str):
+            continue
+        path = _canonical_path(raw)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        normalized.append(path)
+    return normalized
+
+
+def _canonical_path(raw_path: str) -> str:
+    path = raw_path.strip().replace("\\", "/")
+    if path.startswith("./"):
+        path = path[2:]
+    parts = [part for part in path.split("/") if part and part != "."]
+    if not parts:
+        return ""
+    return "/".join(parts).lower()
+
+
+def _path_segments(path: str) -> tuple[str, ...]:
+    canonical = _canonical_path(path)
+    if not canonical:
+        return ()
+    return tuple(canonical.split("/"))
+
+
+def _path_segments_overlap(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    if not a or not b:
+        return False
+    if len(a) <= len(b):
+        return b[-len(a) :] == a
+    return a[-len(b) :] == b
+
+
+def _path_basename(path: str) -> str:
+    segments = _path_segments(path)
+    if not segments:
+        return ""
+    return segments[-1]
+
+
+def _memory_files_modified(item: MemoryResult) -> list[str]:
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    raw_paths = metadata.get("files_modified")
+    if not isinstance(raw_paths, list):
+        return []
+    normalized: list[str] = []
+    for raw in raw_paths:
+        if not isinstance(raw, str):
+            continue
+        path = _canonical_path(raw)
+        if path:
+            normalized.append(path)
+    return normalized
+
+
+def _working_set_overlap_boost(item: MemoryResult, working_set_paths: list[str]) -> float:
+    if not working_set_paths:
+        return 0.0
+    item_paths = _memory_files_modified(item)
+    item_path_set = set(item_paths)
+    item_path_segments = [_path_segments(path) for path in item_path_set]
+    working_set_segments = [_path_segments(path) for path in set(working_set_paths)]
+    item_basenames = {_path_basename(path) for path in item_paths if _path_basename(path)}
+    working_set_basenames = {
+        _path_basename(path) for path in working_set_paths if _path_basename(path)
+    }
+    direct_hits = 0
+    for item_segment in item_path_segments:
+        if any(
+            _path_segments_overlap(item_segment, ws_segment) for ws_segment in working_set_segments
+        ):
+            direct_hits += 1
+    basename_hits = len(item_basenames.intersection(working_set_basenames))
+    boost = (direct_hits * 0.16) + (basename_hits * 0.06)
+    return min(0.32, boost)
+
+
+def _rerank_with_working_set(
+    results: list[MemoryResult],
+    base_scores: dict[int, float],
+    working_set_paths: list[str],
+) -> list[MemoryResult]:
+    if not results or not working_set_paths:
+        return list(results)
+    scored: list[tuple[float, float, str, int, MemoryResult]] = []
+    for item in results:
+        boost = _working_set_overlap_boost(item, working_set_paths)
+        base_score = float(base_scores.get(item.id, item.score))
+        scored.append((base_score + boost, boost, item.created_at, item.id, item))
+    scored.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3]), reverse=True)
+    return [entry[4] for entry in scored]
+
+
+def _coerce_metadata_dict(raw_metadata: Any) -> dict[str, Any]:
+    if isinstance(raw_metadata, dict):
+        return raw_metadata
+    parsed = db.from_json(raw_metadata)
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
 def search(
     store: MemoryStore,
     query: str,
@@ -1084,6 +1194,11 @@ def search(
     log_usage: bool = True,
 ) -> list[MemoryResult]:
     filters = filters or {}
+    effective_limit = max(1, int(limit))
+    working_set_paths = _normalize_working_set_paths(filters.get("working_set_paths"))
+    query_limit = effective_limit
+    if working_set_paths:
+        query_limit = max(effective_limit, min(max(effective_limit * 4, effective_limit + 8), 200))
     expanded_query = _expand_query(query)
     if not expanded_query:
         return []
@@ -1117,11 +1232,17 @@ def search(
         ORDER BY (score * 1.5 + recency) DESC, memory_items.created_at DESC, memory_items.id DESC
         LIMIT ?
     """
-    params.append(limit)
+    params.append(query_limit)
     rows = store.conn.execute(sql, params).fetchall()
     results: list[MemoryResult] = []
+    base_scores: dict[int, float] = {}
     for row in rows:
-        metadata = db.from_json(row["metadata_json"])
+        metadata = _coerce_metadata_dict(row["metadata_json"])
+        files_modified = db.from_json(row["files_modified"])
+        if isinstance(files_modified, list):
+            metadata = dict(metadata)
+            metadata.setdefault("files_modified", files_modified)
+        base_score = (float(row["score"]) * 1.5) + float(row["recency"])
         results.append(
             MemoryResult(
                 id=row["id"],
@@ -1137,6 +1258,12 @@ def search(
                 metadata=metadata,
             )
         )
+        base_scores[int(row["id"])] = base_score
+
+    if working_set_paths:
+        results = _rerank_with_working_set(results, base_scores, working_set_paths)
+        results = results[:effective_limit]
+
     if log_usage:
         tokens_read = sum(
             store.estimate_tokens(f"{item.title} {item.body_text}") for item in results
@@ -1149,6 +1276,7 @@ def search(
                 "results": len(results),
                 "kind": filters.get("kind"),
                 "project": filters.get("project"),
+                "working_set_paths": len(working_set_paths),
             },
         )
     return results
