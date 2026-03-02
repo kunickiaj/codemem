@@ -16,6 +16,20 @@ ALLOWED_MEMORY_KINDS: Final[tuple[str, ...]] = (
     "exploration",
 )
 
+MEMORY_KIND_BONUS: Final[dict[str, float]] = {
+    "session_summary": 0.25,
+    "decision": 0.2,
+    "feature": 0.18,
+    "bugfix": 0.18,
+    "refactor": 0.17,
+    "note": 0.15,
+    "change": 0.12,
+    "discovery": 0.12,
+    "observation": 0.1,
+    "exploration": 0.1,
+    "entities": 0.05,
+}
+
 
 def normalize_memory_kind(kind: str) -> str:
     return (kind or "").strip().lower()
