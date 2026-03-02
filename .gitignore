@@ -18,3 +18,7 @@ node_modules/
 viewer_ui/node_modules/
 viewer_ui/.vite/
 opencode_mem/viewer_static/app.js.map
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
