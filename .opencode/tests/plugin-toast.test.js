@@ -10,6 +10,7 @@ describe("buildInjectionToastMessage", () => {
       avoided_work_tokens: 4000,
       avoided_work_known_items: 1,
       avoided_work_unknown_items: 0,
+      pack_delta_available: true,
       added_ids: [11, 22],
       removed_ids: [7],
     });
@@ -25,8 +26,9 @@ describe("buildInjectionToastMessage", () => {
     const message = buildInjectionToastMessage({
       items: 1,
       pack_tokens: 50,
-      added_ids: null,
-      removed_ids: undefined,
+      pack_delta_available: false,
+      added_ids: [11],
+      removed_ids: [7],
     });
 
     expect(message).toContain("codemem injected");
@@ -62,6 +64,7 @@ describe("buildInjectionToastMessage", () => {
       avoided_work_tokens: -10,
       avoided_work_known_items: -1,
       avoided_work_unknown_items: 2,
+      pack_delta_available: true,
       added_ids: -5,
       removed_ids: Number.NaN,
     });

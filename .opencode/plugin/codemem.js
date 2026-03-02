@@ -141,6 +141,7 @@ export const buildInjectionToastMessage = (metrics) => {
   const avoidedKnown = asNonNegativeCount(metrics?.avoided_work_known_items);
   const addedCount = asNonNegativeCount(metrics?.added_ids);
   const removedCount = asNonNegativeCount(metrics?.removed_ids);
+  const deltaAvailable = metrics?.pack_delta_available === true;
 
   const messageParts = ["codemem injected"];
   if (items !== null) messageParts.push(`${items} items`);
@@ -154,7 +155,7 @@ export const buildInjectionToastMessage = (metrics) => {
   ) {
     messageParts.push(`avoided work ~${avoided} tokens`);
   }
-  if (addedCount !== null || removedCount !== null) {
+  if (deltaAvailable && (addedCount !== null || removedCount !== null)) {
     messageParts.push(`delta +${addedCount || 0}/-${removedCount || 0}`);
   }
   return messageParts.join(" · ");
