@@ -2514,6 +2514,32 @@ def test_explain_ids_reports_missing_and_project_mismatch(tmp_path: Path) -> Non
     assert payload["metadata"]["returned_items_count"] == 1
 
 
+def test_explain_ids_respect_non_project_filters(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    note_id = store.remember(session, kind="note", title="N", body_text="note body")
+    decision_id = store.remember(session, kind="decision", title="D", body_text="decision body")
+    store.end_session(session)
+
+    payload = store.explain(
+        ids=[note_id, decision_id],
+        filters={"project": "/tmp/project-a", "kind": "note"},
+    )
+
+    assert [item["id"] for item in payload["items"]] == [note_id]
+    assert payload["missing_ids"] == [decision_id]
+    errors_by_code = {error["code"]: error for error in payload["errors"]}
+    assert set(errors_by_code) == {"FILTER_MISMATCH"}
+    assert errors_by_code["FILTER_MISMATCH"]["ids"] == [decision_id]
+
+
 def test_explain_combines_query_and_ids_with_sources(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

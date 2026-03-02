@@ -141,10 +141,12 @@ def explain(
         )
 
     query_rank = {item.id: index for index, item in enumerate(query_results, start=1)}
-    id_rows, missing_not_found, missing_project_mismatch = _load_items_by_ids_for_explain(
-        store,
-        ordered_ids,
-        filters,
+    id_rows, missing_not_found, missing_project_mismatch, missing_filter_mismatch = (
+        _load_items_by_ids_for_explain(
+            store,
+            ordered_ids,
+            filters,
+        )
     )
     id_by_id = {
         int(item["id"]): MemoryResult(
@@ -207,10 +209,15 @@ def explain(
 
     missing_not_found_set = set(missing_not_found)
     missing_project_mismatch_set = set(missing_project_mismatch)
+    missing_filter_mismatch_set = set(missing_filter_mismatch)
     missing_ids = [
         memory_id
         for memory_id in ordered_ids
-        if memory_id in missing_not_found_set or memory_id in missing_project_mismatch_set
+        if (
+            memory_id in missing_not_found_set
+            or memory_id in missing_project_mismatch_set
+            or memory_id in missing_filter_mismatch_set
+        )
     ]
     if missing_not_found:
         errors.append(
@@ -228,6 +235,15 @@ def explain(
                 "field": "project",
                 "message": "some requested ids are outside the requested project scope",
                 "ids": missing_project_mismatch,
+            }
+        )
+    if missing_filter_mismatch:
+        errors.append(
+            {
+                "code": "FILTER_MISMATCH",
+                "field": "filters",
+                "message": "some requested ids do not match the provided filters",
+                "ids": missing_filter_mismatch,
             }
         )
 
@@ -307,9 +323,9 @@ def _load_items_by_ids_for_explain(
     store: MemoryStore,
     ids: list[int],
     filters: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[int], list[int]]:
+) -> tuple[list[dict[str, Any]], list[int], list[int], list[int]]:
     if not ids:
-        return [], [], []
+        return [], [], [], []
     placeholders = ",".join("?" for _ in ids)
     rows = store.conn.execute(
         f"""
@@ -323,22 +339,50 @@ def _load_items_by_ids_for_explain(
     all_rows = db.rows_to_dicts(rows)
     all_found_ids = {int(item["id"]) for item in all_rows}
 
-    if not filters.get("project"):
-        return all_rows, [memory_id for memory_id in ids if memory_id not in all_found_ids], []
+    project_scoped = all_rows
+    project_scoped_ids = all_found_ids
+    project_clause = ""
+    project_params: list[Any] = []
+    if filters.get("project"):
+        project_clause, project_params = store._project_clause(str(filters["project"]))
+        if project_clause:
+            project_scoped_rows = store.conn.execute(
+                f"""
+                SELECT memory_items.*
+                FROM memory_items
+                JOIN sessions ON sessions.id = memory_items.session_id
+                WHERE memory_items.active = 1
+                  AND memory_items.id IN ({placeholders})
+                  AND {project_clause}
+                """,
+                [*ids, *project_params],
+            ).fetchall()
+            project_scoped = db.rows_to_dicts(project_scoped_rows)
+            project_scoped_ids = {int(item["id"]) for item in project_scoped}
 
+    scoped_where_clauses = ["memory_items.active = 1", f"memory_items.id IN ({placeholders})"]
     scoped_params: list[Any] = list(ids)
-    project_clause, project_params = store._project_clause(str(filters["project"]))
-    if not project_clause:
-        return all_rows, [memory_id for memory_id in ids if memory_id not in all_found_ids], []
-    scoped_params.extend(project_params)
+    join_sessions = False
+    if filters.get("kind"):
+        scoped_where_clauses.append("memory_items.kind = ?")
+        scoped_params.append(filters["kind"])
+    if filters.get("session_id"):
+        scoped_where_clauses.append("memory_items.session_id = ?")
+        scoped_params.append(filters["session_id"])
+    if filters.get("since"):
+        scoped_where_clauses.append("memory_items.created_at >= ?")
+        scoped_params.append(filters["since"])
+    if filters.get("project") and project_clause:
+        scoped_where_clauses.append(project_clause)
+        scoped_params.extend(project_params)
+        join_sessions = True
+    scoped_join = "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
     scoped_rows = store.conn.execute(
         f"""
         SELECT memory_items.*
         FROM memory_items
-        JOIN sessions ON sessions.id = memory_items.session_id
-        WHERE memory_items.active = 1
-          AND memory_items.id IN ({placeholders})
-          AND {project_clause}
+        {scoped_join}
+        WHERE {" AND ".join(scoped_where_clauses)}
         """,
         scoped_params,
     ).fetchall()
@@ -347,9 +391,16 @@ def _load_items_by_ids_for_explain(
 
     missing_not_found = [memory_id for memory_id in ids if memory_id not in all_found_ids]
     missing_project_mismatch = [
-        memory_id for memory_id in ids if memory_id in all_found_ids and memory_id not in scoped_ids
+        memory_id
+        for memory_id in ids
+        if memory_id in all_found_ids and memory_id not in project_scoped_ids
     ]
-    return scoped, missing_not_found, missing_project_mismatch
+    missing_filter_mismatch = [
+        memory_id
+        for memory_id in ids
+        if memory_id in project_scoped_ids and memory_id not in scoped_ids
+    ]
+    return scoped, missing_not_found, missing_project_mismatch, missing_filter_mismatch
 
 
 def _load_session_projects(store: MemoryStore, session_ids: set[int]) -> dict[int, str | None]:
