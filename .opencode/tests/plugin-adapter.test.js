@@ -156,6 +156,13 @@ describe("opencode adapter event mapping", () => {
     expect(envelope.event_id).toBe("stable-raw-id");
   });
 
+  test("parsePositiveInt falls back for invalid values", () => {
+    expect(__testUtils.parsePositiveInt("200", 10)).toBe(200);
+    expect(__testUtils.parsePositiveInt("0", 10)).toBe(10);
+    expect(__testUtils.parsePositiveInt("-5", 10)).toBe(10);
+    expect(__testUtils.parsePositiveInt("NaN", 10)).toBe(10);
+  });
+
   test("trimEventQueue drops enqueued events first", () => {
     const events = [
       { _raw_event_id: "a", _raw_enqueued: false },
