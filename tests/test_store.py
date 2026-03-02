@@ -2702,6 +2702,38 @@ def test_search_handles_non_object_metadata_json(tmp_path: Path) -> None:
     assert isinstance(results[0].metadata, dict)
 
 
+def test_search_working_set_large_limit_returns_requested_count(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    for idx in range(230):
+        store.remember_observation(
+            session,
+            kind="note",
+            title=f"Item {idx}",
+            narrative="shared query text",
+            files_modified=["src/auth/service.py"],
+        )
+    store.end_session(session)
+
+    results = store.search(
+        "shared query text",
+        limit=230,
+        filters={
+            "project": "/tmp/project-a",
+            "working_set_paths": ["src/auth/service.py"],
+        },
+    )
+
+    assert len(results) == 230
+
+
 def test_explain_ids_reports_missing_and_project_mismatch(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session_a = store.start_session(

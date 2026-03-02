@@ -1198,7 +1198,7 @@ def search(
     working_set_paths = _normalize_working_set_paths(filters.get("working_set_paths"))
     query_limit = effective_limit
     if working_set_paths:
-        query_limit = min(max(effective_limit * 4, effective_limit + 8), 200)
+        query_limit = max(effective_limit, min(max(effective_limit * 4, effective_limit + 8), 200))
     expanded_query = _expand_query(query)
     if not expanded_query:
         return []
