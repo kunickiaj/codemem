@@ -1,5 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 import { tool } from "@opencode-ai/plugin";
 
 import {
@@ -111,6 +112,215 @@ const appendWorkingSetFileArgs = (args, workingSetFiles) => {
     args.push("--working-set-file", normalized.slice(0, 400));
   }
   return args;
+};
+
+const mapOpencodeEventTypeToAdapterType = (eventType) => {
+  if (eventType === "user_prompt") {
+    return "prompt";
+  }
+  if (eventType === "assistant_message") {
+    return "assistant";
+  }
+  if (eventType === "tool.execute.after") {
+    return "tool_result";
+  }
+  return null;
+};
+
+const buildOpencodeAdapterPayload = (event) => {
+  const eventType = event?.type;
+  if (eventType === "user_prompt") {
+    const text = String(event?.prompt_text || "").trim();
+    if (!text) {
+      return null;
+    }
+    return {
+      text,
+      prompt_number:
+        typeof event?.prompt_number === "number" ? event.prompt_number : null,
+    };
+  }
+
+  if (eventType === "assistant_message") {
+    const text = String(event?.assistant_text || "").trim();
+    if (!text) {
+      return null;
+    }
+    return { text };
+  }
+
+  if (eventType === "tool.execute.after") {
+    const toolName = String(event?.tool || "unknown");
+    return {
+      tool_name: toolName,
+      status: event?.error ? "error" : "ok",
+      tool_input: event?.args || {},
+      tool_output: event?.result ?? null,
+      error: event?.error ?? null,
+    };
+  }
+
+  return null;
+};
+
+const stableStringify = (value) => {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const keys = Object.keys(value).sort();
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .join(",")}}`;
+};
+
+const stableDigest = (value) =>
+  createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 20);
+
+const sanitizeIdPart = (value, fallback, maxChars) => {
+  const normalized = String(value || "")
+    .replace(/[^A-Za-z0-9._:-]/g, "_")
+    .slice(0, maxChars);
+  return normalized || fallback;
+};
+
+const buildAdapterEventId = ({ sessionID, eventType, event, payload, ts }) => {
+  const safeSessionID = sanitizeIdPart(sessionID, "unknown", 48);
+  const safeType = sanitizeIdPart(eventType, "event", 24);
+  const rawTimestamp =
+    typeof event?.timestamp === "string" && event.timestamp.trim()
+      ? event.timestamp.trim()
+      : ts;
+  const digest = stableDigest({
+    session_id: String(sessionID || ""),
+    event_type: String(eventType || ""),
+    raw_event_type: String(event?.type || ""),
+    timestamp: rawTimestamp,
+    payload,
+  });
+  return `oc:${safeSessionID}:${safeType}:${digest}`.slice(0, 128);
+};
+
+const buildOpencodeAdapterEvent = ({ sessionID, event }) => {
+  if (!sessionID || !event || typeof event !== "object") {
+    return null;
+  }
+  const adapterType = mapOpencodeEventTypeToAdapterType(event.type);
+  if (!adapterType) {
+    return null;
+  }
+  const payload = buildOpencodeAdapterPayload(event);
+  if (!payload) {
+    return null;
+  }
+  const ts = typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString();
+  return {
+    schema_version: "1.0",
+    source: "opencode",
+    session_id: String(sessionID),
+    event_id: buildAdapterEventId({
+      sessionID,
+      eventType: adapterType,
+      event,
+      payload,
+      ts,
+    }),
+    event_type: adapterType,
+    ts,
+    ordering_confidence: "low",
+    payload,
+    meta: {
+      original_event_type: String(event.type || "unknown"),
+    },
+  };
+};
+
+const resolveProjectName = (project) =>
+  project?.name ||
+  (project?.root
+    ? String(project.root).split(/[/\\]/).filter(Boolean).pop()
+    : null) ||
+  null;
+
+const selectRawEventId = ({ payload, nextEventId }) => {
+  const fromPayload =
+    payload &&
+    typeof payload === "object" &&
+    payload._raw_event_id;
+  return String(fromPayload || nextEventId());
+};
+
+const buildRawEventEnvelope = ({
+  sessionID,
+  type,
+  payload,
+  cwd,
+  project,
+  startedAt,
+  nowMs,
+  nowMono,
+  nextEventId,
+}) => ({
+  opencode_session_id: sessionID,
+  event_id: selectRawEventId({ payload, nextEventId }),
+  event_type: type,
+  ts_wall_ms: nowMs,
+  ts_mono_ms: nowMono,
+  payload,
+  cwd,
+  project,
+  started_at: startedAt,
+});
+
+const trimEventQueue = ({ events, maxEvents, hardMaxEvents, onUnsentPressure, onForcedDrop }) => {
+  if (!Number.isFinite(maxEvents) || maxEvents <= 0) {
+    return;
+  }
+  while (events.length > maxEvents) {
+    const droppableIndex = events.findIndex(
+      (queued) => queued && typeof queued === "object" && queued._raw_enqueued
+    );
+    if (droppableIndex >= 0) {
+      events.splice(droppableIndex, 1);
+      continue;
+    }
+    if (typeof onUnsentPressure === "function") {
+      onUnsentPressure(events.length, maxEvents);
+    }
+    if (
+      Number.isFinite(hardMaxEvents) &&
+      hardMaxEvents > 0 &&
+      events.length > hardMaxEvents
+    ) {
+      const dropped = events.shift();
+      if (typeof onForcedDrop === "function") {
+        onForcedDrop(dropped, events.length, hardMaxEvents);
+      }
+      continue;
+    }
+    break;
+  }
+};
+
+const attachAdapterEvent = ({ sessionID, event }) => {
+  if (!event || typeof event !== "object") {
+    return event;
+  }
+  let adapterEvent = null;
+  try {
+    adapterEvent = buildOpencodeAdapterEvent({ sessionID, event });
+  } catch (err) {
+    return event;
+  }
+  if (!adapterEvent) {
+    return event;
+  }
+  return {
+    ...event,
+    _adapter: adapterEvent,
+  };
 };
 
 const asNonNegativeCount = (value) => {
@@ -280,6 +490,7 @@ export const OpencodeMemPlugin = async ({
   const injectedSessions = new Map();
   const injectionToastShown = new Set();
   let sessionStartedAt = null;
+  let activeSessionID = null;
   let viewerStarted = false;
   let promptCounter = 0;
   let lastPromptText = null;
@@ -304,8 +515,13 @@ export const OpencodeMemPlugin = async ({
     process.env.CODEMEM_RAW_EVENTS_STATUS_CHECK_MS || "30000",
     30000
   );
+  const rawEventsHardMax = parseNumber(
+    process.env.CODEMEM_RAW_EVENTS_HARD_MAX || "2000",
+    2000
+  );
   let streamUnavailableUntil = 0;
   let streamErrorNoted = false;
+  let fallbackFailureNoted = false;
   let lastStatusCheckAt = 0;
   let lastStatusAvailable = true;
   const nextEventId = () => {
@@ -313,6 +529,18 @@ export const OpencodeMemPlugin = async ({
       return crypto.randomUUID();
     }
     return `${Date.now()}-${Math.random()}`;
+  };
+
+  const queueRawEventViaCli = async (body) => {
+    const result = await runCli(["enqueue-raw-event"], {
+      stdinText: JSON.stringify(body),
+    });
+    if (result?.exitCode !== 0) {
+      throw new Error(
+        `enqueue-raw-event failed (${result?.exitCode ?? "unknown"})`
+      );
+    }
+    return true;
   };
 
   const lastToastAtBySession = new Map();
@@ -327,12 +555,72 @@ export const OpencodeMemPlugin = async ({
   };
 
   const emitRawEvent = async ({ sessionID, type, payload }) => {
-    if (!rawEventsEnabled || !sessionID || !type) {
-      return;
+    if (!rawEventsEnabled) {
+      return true;
+    }
+    if (!sessionID || !type) {
+      return false;
     }
     const now = Date.now();
+    const body = buildRawEventEnvelope({
+      sessionID,
+      type,
+      payload,
+      cwd,
+      project: resolveProjectName(project),
+      startedAt: sessionStartedAt,
+      nowMs: now,
+      nowMono:
+        typeof performance !== "undefined" && performance.now
+          ? performance.now()
+          : null,
+      nextEventId,
+    });
+
     if (now < streamUnavailableUntil) {
-      return;
+      try {
+        await queueRawEventViaCli(body);
+        fallbackFailureNoted = false;
+        if (payload && typeof payload === "object") {
+          payload._raw_enqueued = true;
+        }
+        return true;
+      } catch (fallbackErr) {
+        await logLine(
+          `raw_events.fallback.error sessionID=${sessionID} type=${type} err=${String(
+            fallbackErr
+          ).slice(0, 200)}`
+        );
+        if (!fallbackFailureNoted) {
+          fallbackFailureNoted = true;
+          try {
+            await client.app.log({
+              service: "codemem",
+              level: "error",
+              message: "codemem fallback enqueue failed during stream backoff",
+              extra: {
+                sessionID,
+                backoffMs: rawEventsBackoffMs,
+              },
+            });
+          } catch (logErr) {
+            // best-effort logging only
+          }
+          if (client.tui?.showToast && shouldToast(sessionID)) {
+            try {
+              await client.tui.showToast({
+                body: {
+                  message: "codemem: fallback enqueue failed while stream is down",
+                  variant: "error",
+                },
+              });
+            } catch (toastErr) {
+              // best-effort only
+            }
+          }
+        }
+        return false;
+      }
     }
     try {
       if (now - lastStatusCheckAt >= Math.max(1000, rawEventsStatusCheckMs)) {
@@ -348,20 +636,6 @@ export const OpencodeMemPlugin = async ({
         throw new Error("raw-events ingest unavailable");
       }
 
-      const body = {
-        opencode_session_id: sessionID,
-        event_id: nextEventId(),
-        event_type: type,
-        ts_wall_ms: Date.now(),
-        ts_mono_ms:
-          typeof performance !== "undefined" && performance.now
-            ? performance.now()
-            : null,
-        payload,
-        cwd,
-        project: project?.name || (project?.root ? String(project.root).split(/[/\\]/).filter(Boolean).pop() : null) || null,
-        started_at: sessionStartedAt,
-      };
       const postResp = await fetch(rawEventsUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -372,48 +646,110 @@ export const OpencodeMemPlugin = async ({
       }
       streamUnavailableUntil = 0;
       streamErrorNoted = false;
+      fallbackFailureNoted = false;
       lastStatusAvailable = true;
+      if (payload && typeof payload === "object") {
+        payload._raw_enqueued = true;
+      }
+      return true;
     } catch (err) {
       streamUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
       await logLine(`raw_events.error sessionID=${sessionID} type=${type} err=${String(err).slice(0, 200)}`);
-      await client.app.log({
-        service: "codemem",
-        level: "error",
-        message: "Failed to stream raw events to codemem viewer",
-        extra: {
-          sessionID,
-          type,
-          viewerHost,
-          viewerPort,
-          error: String(err),
-        },
-      });
-
-      if (!streamErrorNoted) {
-        streamErrorNoted = true;
+      try {
         await client.app.log({
           service: "codemem",
           level: "error",
-          message: "codemem stream unavailable; no fallback available",
+          message: "Failed to stream raw events to codemem viewer",
           extra: {
             sessionID,
-            backoffMs: rawEventsBackoffMs,
+            type,
+            viewerHost,
+            viewerPort,
+            error: String(err),
           },
         });
+      } catch (logErr) {
+        // best-effort logging only
+      }
+
+      let fallbackOk = false;
+      try {
+        await queueRawEventViaCli(body);
+        fallbackOk = true;
+      } catch (fallbackErr) {
+        await logLine(
+          `raw_events.fallback.error sessionID=${sessionID} type=${type} err=${String(
+            fallbackErr
+          ).slice(0, 200)}`
+        );
+      }
+
+      if (fallbackOk) {
+        fallbackFailureNoted = false;
+        if (payload && typeof payload === "object") {
+          payload._raw_enqueued = true;
+        }
+        if (!streamErrorNoted) {
+          streamErrorNoted = true;
+          try {
+            await client.app.log({
+              service: "codemem",
+              level: "warn",
+              message: "codemem stream unavailable; queued raw event via CLI fallback",
+              extra: {
+                sessionID,
+                backoffMs: rawEventsBackoffMs,
+              },
+            });
+          } catch (logErr) {
+            // best-effort logging only
+          }
+        }
+        if (client.tui?.showToast && shouldToast(sessionID)) {
+          try {
+            await client.tui.showToast({
+              body: {
+                message: "codemem: viewer stream unavailable; queue fallback active",
+                variant: "warning",
+              },
+            });
+          } catch (toastErr) {
+            // best-effort only
+          }
+        }
+        return true;
+      }
+
+      if (!streamErrorNoted) {
+        streamErrorNoted = true;
+        try {
+          await client.app.log({
+            service: "codemem",
+            level: "error",
+            message: "codemem stream unavailable; fallback enqueue failed",
+            extra: {
+              sessionID,
+              backoffMs: rawEventsBackoffMs,
+            },
+          });
+        } catch (logErr) {
+          // best-effort logging only
+        }
       }
 
       if (client.tui?.showToast && shouldToast(sessionID)) {
         try {
-          await client.tui.showToast({
-            body: {
-              message: `codemem: stream unavailable (${viewerHost}:${viewerPort}); no fallback`,
-              variant: "error",
-            },
-          });
+            await client.tui.showToast({
+              body: {
+                message: `codemem: stream unavailable (${viewerHost}:${viewerPort}); fallback failed`,
+                variant: "error",
+              },
+            });
         } catch (toastErr) {
           // best-effort only
         }
       }
+      return false;
     }
   };
 
@@ -641,14 +977,39 @@ export const OpencodeMemPlugin = async ({
     });
   };
 
-  const runCommand = async (cmd) => {
+  const runCommand = async (cmd, options = {}) => {
+    const { stdinText = null } = options;
     const proc = Bun.spawn({
       cmd,
       cwd,
       env: process.env,
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     });
+    let stdinFailure = null;
+    if (typeof stdinText === "string") {
+      try {
+        proc.stdin.write(stdinText);
+      } catch (stdinErr) {
+        stdinFailure = `stdin write failed: ${String(stdinErr)}`;
+      }
+    }
+    try {
+      proc.stdin.end();
+    } catch (stdinErr) {
+      if (!stdinFailure) {
+        stdinFailure = `stdin close failed: ${String(stdinErr)}`;
+      }
+    }
+    if (stdinFailure) {
+      try {
+        proc.kill();
+      } catch (killErr) {
+        // ignore
+      }
+      return { exitCode: 1, stdout: "", stderr: stdinFailure };
+    }
     const resultPromise = Promise.all([
       proc.exited,
       new Response(proc.stdout).text(),
@@ -675,7 +1036,8 @@ export const OpencodeMemPlugin = async ({
     return result;
   };
 
-  const runCli = async (args) => runCommand([runner, ...runnerArgs, ...args]);
+  const runCli = async (args, options = {}) =>
+    runCommand([runner, ...runnerArgs, ...args], options);
 
   const showToast = async (message, variant = "warning") => {
     if (backendUpdatePolicy === "off") {
@@ -840,11 +1202,7 @@ export const OpencodeMemPlugin = async ({
     }
 
     // Project name for scoping
-    const projectName =
-      project?.name ||
-      (project?.root
-        ? String(project.root).split(/[/\\]/).filter(Boolean).pop()
-        : null);
+    const projectName = resolveProjectName(project);
     if (projectName) {
       parts.push(projectName);
     }
@@ -1010,18 +1368,54 @@ export const OpencodeMemPlugin = async ({
 
   const recordEvent = (event) => {
     events.push(event);
-    if (
-      Number.isFinite(maxEvents) &&
-      maxEvents > 0 &&
-      events.length > maxEvents
-    ) {
-      events.splice(0, events.length - maxEvents);
-    }
+    trimEventQueue({
+      events,
+      maxEvents,
+      hardMaxEvents: Math.max(maxEvents, rawEventsHardMax),
+      onUnsentPressure: (queuedCount, cap) => {
+        void logLine(`queue.pressure unsent_preserved queued=${queuedCount} max_events=${cap}`);
+      },
+      onForcedDrop: (dropped, queuedCount, hardCap) => {
+        void logLine(
+          `queue.drop hard_cap event_id=${dropped?._raw_event_id || "unknown"} queued=${queuedCount} hard_max=${hardCap}`
+        );
+      },
+    });
   };
 
   const captureEvent = (sessionID, event) => {
-    recordEvent(event);
-    void emitRawEvent({ sessionID, type: event?.type || "unknown", payload: event });
+    const normalizedSessionID =
+      typeof sessionID === "string" && sessionID.trim() ? sessionID.trim() : null;
+    if (normalizedSessionID) {
+      activeSessionID = normalizedSessionID;
+    }
+    const effectiveSessionID = normalizedSessionID || activeSessionID;
+    const resolvedSessionID =
+      effectiveSessionID || `missing:${Date.now()}:${String(nextEventId()).slice(0, 8)}`;
+    if (!effectiveSessionID) {
+      activeSessionID = resolvedSessionID;
+      void logLine(`capture.fallback_session_id ${resolvedSessionID}`);
+    }
+    const adapterAnnotatedEvent = attachAdapterEvent({
+      sessionID: resolvedSessionID,
+      event,
+    });
+    const rawEventId =
+      adapterAnnotatedEvent?._adapter?.event_id ||
+      (adapterAnnotatedEvent && adapterAnnotatedEvent._raw_event_id) ||
+      nextEventId();
+    const queuedEvent = {
+      ...adapterAnnotatedEvent,
+      _raw_event_id: rawEventId,
+      _raw_session_id: resolvedSessionID,
+      _raw_retry_count: 0,
+    };
+    recordEvent(queuedEvent);
+    void emitRawEvent({
+      sessionID: resolvedSessionID,
+      type: queuedEvent?.type || "unknown",
+      payload: queuedEvent,
+    });
   };
 
   const flushEvents = async () => {
@@ -1030,15 +1424,52 @@ export const OpencodeMemPlugin = async ({
       return;
     }
 
+    const batch = events.splice(0, events.length);
+    if (!batch.length) {
+      await logLine("flush.skip empty");
+      return;
+    }
+
+    const failed = [];
+    for (const queuedEvent of batch) {
+      if (queuedEvent && typeof queuedEvent === "object" && queuedEvent._raw_enqueued) {
+        continue;
+      }
+      const queuedSessionID =
+        queuedEvent?._raw_session_id ||
+        queuedEvent?.properties?.sessionID ||
+        null;
+      const ok = await emitRawEvent({
+        sessionID: queuedSessionID,
+        type: queuedEvent?.type || "unknown",
+        payload: queuedEvent,
+      });
+      if (!ok) {
+        const currentRetry =
+          typeof queuedEvent?._raw_retry_count === "number" && Number.isFinite(queuedEvent._raw_retry_count)
+            ? queuedEvent._raw_retry_count
+            : 0;
+        const nextRetry = currentRetry + 1;
+        failed.push({
+          ...queuedEvent,
+          _raw_retry_count: nextRetry,
+        });
+      }
+    }
+    if (failed.length) {
+      events.unshift(...failed);
+      await logLine(`flush.retry_deferred count=${failed.length}`);
+      return;
+    }
+
     // Calculate session duration
     const durationMs = sessionContext.startTime
       ? Date.now() - sessionContext.startTime
       : 0;
     await logLine(
-      `flush.stream_only finalize count=${events.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
+      `flush.stream_only finalize count=${batch.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
     );
-    await logLine(`flush.ok count=${events.length}`);
-    events.length = 0;
+    await logLine(`flush.ok count=${batch.length}`);
     sessionStartedAt = null;
     resetSessionContext();
   };
@@ -1260,6 +1691,7 @@ export const OpencodeMemPlugin = async ({
         if (events.length) {
           await flushEvents();
         }
+        activeSessionID = sessionID || null;
         sessionStartedAt = new Date().toISOString();
         promptCounter = 0;
         lastPromptText = null;
@@ -1268,6 +1700,7 @@ export const OpencodeMemPlugin = async ({
         startViewer();
       }
       if (eventType === "session.deleted") {
+        activeSessionID = null;
         await stopViewer();
       }
     },
@@ -1366,4 +1799,14 @@ export const OpencodeMemPlugin = async ({
 };
 
 export default OpencodeMemPlugin;
-export const __testUtils = { appendWorkingSetFileArgs, extractApplyPatchPaths };
+export const __testUtils = {
+  appendWorkingSetFileArgs,
+  extractApplyPatchPaths,
+  mapOpencodeEventTypeToAdapterType,
+  buildOpencodeAdapterPayload,
+  buildOpencodeAdapterEvent,
+  attachAdapterEvent,
+  selectRawEventId,
+  buildRawEventEnvelope,
+  trimEventQueue,
+};

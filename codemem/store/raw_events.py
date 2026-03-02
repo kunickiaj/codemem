@@ -558,7 +558,12 @@ def update_raw_event_session_meta(
             cwd = COALESCE(excluded.cwd, raw_event_sessions.cwd),
             project = COALESCE(excluded.project, raw_event_sessions.project),
             started_at = COALESCE(excluded.started_at, raw_event_sessions.started_at),
-            last_seen_ts_wall_ms = COALESCE(excluded.last_seen_ts_wall_ms, raw_event_sessions.last_seen_ts_wall_ms),
+            last_seen_ts_wall_ms = CASE
+                WHEN excluded.last_seen_ts_wall_ms IS NULL THEN raw_event_sessions.last_seen_ts_wall_ms
+                WHEN raw_event_sessions.last_seen_ts_wall_ms IS NULL THEN excluded.last_seen_ts_wall_ms
+                WHEN excluded.last_seen_ts_wall_ms > raw_event_sessions.last_seen_ts_wall_ms THEN excluded.last_seen_ts_wall_ms
+                ELSE raw_event_sessions.last_seen_ts_wall_ms
+            END,
             updated_at = excluded.updated_at
         """,
         (opencode_session_id, cwd, project, started_at, last_seen_ts_wall_ms, now),
