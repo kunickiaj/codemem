@@ -41,7 +41,15 @@ export-state/
 
 # Dolt runtime artifacts (local only)
 dolt/
+backup/
 dolt-access.lock
+dolt-server.activity
+dolt-server.lock
+dolt-server.log
+dolt-server.pid
+dolt-server.port
+dolt-monitor.pid
+ephemeral.sqlite3
 sql-server.pid
 sql-server.log
 *.corrupt.backup/
