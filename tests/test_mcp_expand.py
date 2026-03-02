@@ -119,3 +119,76 @@ def test_memory_expand_uses_default_project_scope_when_project_omitted(
     assert payload["metadata"]["project"] == "/tmp/project-a"
     assert payload["metadata"]["requested_ids_count"] == 2
     assert payload["metadata"]["returned_anchor_count"] == 1
+
+
+def test_memory_expand_project_match_is_case_insensitive(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    memory_a1, _memory_a2, _memory_b1 = _seed_two_projects(db_path)
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+
+    server = build_server()
+    payload = _call_tool(
+        server,
+        "memory_expand",
+        {
+            "ids": [memory_a1],
+            "project": "/TMP/PROJECT-A",
+        },
+    )
+
+    assert [item["id"] for item in payload["anchors"]] == [memory_a1]
+    assert payload["errors"] == []
+
+
+def test_memory_expand_explicit_empty_project_does_not_use_default_scope(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    memory_a1, _memory_a2, memory_b1 = _seed_two_projects(db_path)
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setenv("CODEMEM_PROJECT", "/tmp/project-a")
+
+    server = build_server()
+    payload = _call_tool(
+        server,
+        "memory_expand",
+        {
+            "ids": [memory_a1, memory_b1],
+            "project": "",
+        },
+    )
+
+    assert [item["id"] for item in payload["anchors"]] == [memory_a1, memory_b1]
+    assert payload["errors"] == []
+
+
+def test_memory_expand_empty_project_clause_does_not_flag_sessionless_item(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    memory_a1, _memory_a2, _memory_b1 = _seed_two_projects(db_path)
+    original_get = MemoryStore.get
+
+    def fake_get(self: MemoryStore, memory_id: int) -> dict[str, Any] | None:
+        item = original_get(self, memory_id)
+        if item and item.get("id") == memory_a1:
+            item = dict(item)
+            item["session_id"] = 0
+        return item
+
+    monkeypatch.setattr(MemoryStore, "get", fake_get)
+
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+
+    server = build_server()
+    payload = _call_tool(
+        server,
+        "memory_expand",
+        {
+            "ids": [memory_a1],
+            "project": "/",
+        },
+    )
+
+    assert [item["id"] for item in payload["anchors"]] == [memory_a1]
+    assert payload["errors"] == []

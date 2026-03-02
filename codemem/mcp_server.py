@@ -87,17 +87,6 @@ def build_server() -> FastMCP:
             seen.add(memory_id)
         return deduped, invalid
 
-    def _project_matches_scope(scope_project: str, item_project: str | None) -> bool:
-        if item_project is None:
-            return False
-        scope_value = scope_project.strip().replace("\\", "/")
-        if not scope_value:
-            return True
-        if "/" in scope_value:
-            scope_value = Path(scope_value).name
-        normalized_item = item_project.replace("\\", "/")
-        return normalized_item == scope_value or normalized_item.endswith(f"/{scope_value}")
-
     @mcp.tool()
     def memory_search_index(
         query: str,
@@ -150,9 +139,17 @@ def build_server() -> FastMCP:
         project: str | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
-            resolved_project = project or default_project
+            resolved_project = project if project is not None else default_project
+            if isinstance(resolved_project, str):
+                resolved_project = resolved_project.strip()
+            if not resolved_project:
+                resolved_project = None
             filters = {"project": resolved_project} if resolved_project else None
             ordered_ids, invalid_ids = _dedupe_ordered_ids(ids)
+            project_clause = ""
+            project_clause_params: list[Any] = []
+            if resolved_project:
+                project_clause, project_clause_params = store._project_clause(resolved_project)
 
             errors: list[dict[str, Any]] = []
             if invalid_ids:
@@ -171,7 +168,7 @@ def build_server() -> FastMCP:
             timeline_items: list[dict[str, Any]] = []
             timeline_seen: set[int] = set()
 
-            session_projects: dict[int, str | None] = {}
+            session_scope_matches: dict[int, bool] = {}
 
             for memory_id in ordered_ids:
                 item = store.get(memory_id)
@@ -180,16 +177,17 @@ def build_server() -> FastMCP:
                     continue
 
                 session_id = int(item.get("session_id") or 0)
-                item_project = session_projects.get(session_id)
-                if session_id and session_id not in session_projects:
-                    row = store.conn.execute(
-                        "SELECT project FROM sessions WHERE id = ?",
-                        (session_id,),
-                    ).fetchone()
-                    item_project = row["project"] if row else None
-                    session_projects[session_id] = item_project
-
-                if resolved_project and not _project_matches_scope(resolved_project, item_project):
+                if resolved_project and project_clause and session_id:
+                    if session_id not in session_scope_matches:
+                        row = store.conn.execute(
+                            f"SELECT 1 FROM sessions WHERE id = ? AND {project_clause}",
+                            [session_id, *project_clause_params],
+                        ).fetchone()
+                        session_scope_matches[session_id] = row is not None
+                    if not session_scope_matches[session_id]:
+                        missing_project_mismatch.append(memory_id)
+                        continue
+                elif resolved_project and project_clause and session_id <= 0:
                     missing_project_mismatch.append(memory_id)
                     continue
 
