@@ -76,17 +76,18 @@ In the pack-building path — CLI `pack`/`inject`, MCP `memory_pack`, and plugin
 The re-ranking formula in hybrid mode (`_rerank_results_hybrid`):
 
 ```
-score = (fts_score * 1.2) + (recency * 0.8) + kind_bonus + semantic_boost
+score = (base_score * 1.2) + (recency * 0.8) + kind_bonus + semantic_boost
 
 where:
-  fts_score    = -bm25(memory_fts, 1.0, 1.0, 0.25)
+  base_score   = lexical candidates: -bm25(memory_fts, 1.0, 1.0, 0.25)
+                 semantic-only candidates: 1.0 / (1.0 + distance)
   recency      = 1.0 / (1.0 + days_ago / 7.0)
   kind_bonus   = 0.25 (session_summary), 0.2 (decision), 0.15 (note),
                  0.1 (observation), 0.05 (entities), 0.0 (others)
   semantic_boost = 0.35 if the memory ID was returned by vector search, else 0.0
 ```
 
-In baseline mode (hybrid disabled), the formula is slightly different: `fts_score * 1.5 + recency + kind_bonus` with no semantic boost.
+In baseline mode (hybrid disabled), the formula is slightly different: `base_score * 1.5 + recency + kind_bonus` with no semantic boost.
 
 **Scope note:** Hybrid merge/re-rank only runs in the pack-building path. Direct search endpoints (`codemem search`, MCP `memory_search`) use FTS5 scoring with recency weighting but don't merge semantic results.
 
@@ -219,13 +220,15 @@ H --> J["Write to memory_fts and memory_vectors"]
 
 ## Plugin flush strategy
 
-The plugin buffers events in memory and flushes them to the viewer API on session boundaries.
+The plugin streams each captured event immediately to the viewer API (`captureEvent` -> `emitRawEvent`).
 
-### Event-based triggers
-- `session.idle` — flushes current buffer
-- `session.created` — flushes before switching to a new session
-- `/new` command — detected from user prompt text, flushes before context switch
-- `session.error` — immediate flush
+It also keeps an in-memory event list for session accounting and reset behavior; `flushEvents` finalizes and clears local state, but does not send queued events to the API.
+
+### Session finalization triggers
+- `session.idle` — finalizes current local buffer
+- `session.created` — finalizes before switching to a new session
+- `/new` command — detected from user prompt text, finalizes before context switch
+- `session.error` — immediate finalize
 
 ### Threshold-based force flush
 - 50+ tool executions OR 15+ prompts
@@ -233,8 +236,8 @@ The plugin buffers events in memory and flushes them to the viewer API on sessio
 
 ### Stream reliability
 - Preflight check: `GET /api/raw-events/status` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`)
-- Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`
-- Once batches are accepted by the viewer/store queue, flush workers handle retries
+- Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; events are sent best-effort with no local fallback queue in the plugin
+- Once events are accepted by the viewer/store queue, flush workers handle retries
 
 ## Design tradeoffs
 
