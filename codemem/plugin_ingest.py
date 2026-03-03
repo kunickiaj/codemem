@@ -478,10 +478,15 @@ def ingest(payload: dict[str, Any]) -> None:
     store = MemoryStore(Path(db_path) if db_path else db.DEFAULT_DB_PATH)
     try:
         started_at = payload.get("started_at")
-        opencode_session_id = session_context.get("opencode_session_id")
-        if isinstance(opencode_session_id, str) and opencode_session_id.strip():
-            session_id = store.get_or_create_opencode_session(
-                opencode_session_id=opencode_session_id,
+        source = str(session_context.get("source") or "opencode").strip().lower() or "opencode"
+        stream_id_raw = session_context.get("stream_id") or session_context.get(
+            "opencode_session_id"
+        )
+        stream_id = str(stream_id_raw or "").strip()
+        if stream_id:
+            session_id = store.get_or_create_stream_session(
+                source=source,
+                stream_id=stream_id,
                 cwd=cwd,
                 project=project,
                 metadata={
@@ -613,11 +618,12 @@ def ingest(payload: dict[str, Any]) -> None:
             discovery_tokens = store.estimate_tokens(discovery_text)
 
         discovery_group = None
-        if isinstance(opencode_session_id, str) and opencode_session_id.strip():
+        if stream_id:
+            stream_key = stream_id if source == "opencode" else f"{source}:{stream_id}"
             if prompt_number is not None:
-                discovery_group = f"{opencode_session_id.strip()}:p{prompt_number}"
+                discovery_group = f"{stream_key}:p{prompt_number}"
             else:
-                discovery_group = f"{opencode_session_id.strip()}:unknown"
+                discovery_group = f"{stream_key}:unknown"
         elif prompt_number is not None:
             discovery_group = f"session:{session_id}:p{prompt_number}"
 

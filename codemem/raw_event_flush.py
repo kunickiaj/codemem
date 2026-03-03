@@ -68,6 +68,7 @@ def flush_raw_events(
     store: MemoryStore,
     *,
     opencode_session_id: str,
+    source: str = "opencode",
     cwd: str | None,
     project: str | None,
     started_at: str | None,
@@ -89,7 +90,8 @@ def flush_raw_events(
         except (TypeError, ValueError):
             return None
 
-    meta = store.raw_event_session_meta(opencode_session_id)
+    source = source.strip().lower() or "opencode"
+    meta = store.raw_event_session_meta(opencode_session_id, source=source)
     if cwd is None:
         cwd = meta.get("cwd") or os.getcwd()
     if project is None:
@@ -97,9 +99,10 @@ def flush_raw_events(
     if started_at is None:
         started_at = meta.get("started_at")
 
-    last_flushed = store.raw_event_flush_state(opencode_session_id)
+    last_flushed = store.raw_event_flush_state(opencode_session_id, source=source)
     events = store.raw_events_since_by_seq(
         opencode_session_id=opencode_session_id,
+        source=source,
         after_event_seq=last_flushed,
         limit=max_events,
     )
@@ -118,18 +121,21 @@ def flush_raw_events(
 
     batch_id, status = store.get_or_create_raw_event_flush_batch(
         opencode_session_id=opencode_session_id,
+        source=source,
         start_event_seq=start_event_seq,
         end_event_seq=last_event_seq,
         extractor_version=EXTRACTOR_VERSION,
     )
     if status == "completed":
-        store.update_raw_event_flush_state(opencode_session_id, last_event_seq)
+        store.update_raw_event_flush_state(opencode_session_id, last_event_seq, source=source)
         return {"flushed": 0, "updated_state": 1}
 
     if not store.claim_raw_event_flush_batch(batch_id):
         return {"flushed": 0, "updated_state": 0}
     session_context = build_session_context(events)
     session_context["opencode_session_id"] = opencode_session_id
+    session_context["source"] = source
+    session_context["stream_id"] = opencode_session_id
     session_context["start_event_seq"] = start_event_seq
     session_context["end_event_seq"] = last_event_seq
     session_context["flusher"] = "raw_events"
@@ -153,5 +159,5 @@ def flush_raw_events(
         store.update_raw_event_flush_batch_status(batch_id, RAW_EVENT_QUEUE_FAILED)
         raise
     store.update_raw_event_flush_batch_status(batch_id, "completed")
-    store.update_raw_event_flush_state(opencode_session_id, last_event_seq)
+    store.update_raw_event_flush_state(opencode_session_id, last_event_seq, source=source)
     return {"flushed": len(events), "updated_state": 1}

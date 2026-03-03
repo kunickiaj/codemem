@@ -21,8 +21,8 @@ _AUTH_BACKOFF_S = 300
 class RawEventAutoFlusher:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._timers: dict[str, threading.Timer] = {}
-        self._flushing: set[str] = set()
+        self._timers: dict[tuple[str, str], threading.Timer] = {}
+        self._flushing: set[tuple[str, str]] = set()
 
     def enabled(self) -> bool:
         return os.environ.get("CODEMEM_RAW_EVENTS_AUTO_FLUSH") == "1"
@@ -34,32 +34,40 @@ class RawEventAutoFlusher:
         except (TypeError, ValueError):
             return 60000
 
-    def note_activity(self, opencode_session_id: str) -> None:
+    def note_activity(self, opencode_session_id: str, *, source: str = "opencode") -> None:
         if not opencode_session_id:
             return
         if not self.enabled():
             return
+        source_norm = source.strip().lower() or "opencode"
+        key = (source_norm, opencode_session_id)
         delay_ms = self.debounce_ms()
         if delay_ms <= 0:
-            self.flush_now(opencode_session_id)
+            self.flush_now(opencode_session_id, source=source_norm)
             return
         with self._lock:
-            existing = self._timers.pop(opencode_session_id, None)
+            existing = self._timers.pop(key, None)
             if existing:
                 existing.cancel()
-            timer = threading.Timer(delay_ms / 1000.0, self.flush_now, args=(opencode_session_id,))
+            timer = threading.Timer(
+                delay_ms / 1000.0,
+                self.flush_now,
+                kwargs={"opencode_session_id": opencode_session_id, "source": source_norm},
+            )
             timer.daemon = True
-            self._timers[opencode_session_id] = timer
+            self._timers[key] = timer
             timer.start()
 
-    def flush_now(self, opencode_session_id: str) -> None:
+    def flush_now(self, opencode_session_id: str, *, source: str = "opencode") -> None:
         if not opencode_session_id:
             return
+        source_norm = source.strip().lower() or "opencode"
+        key = (source_norm, opencode_session_id)
         with self._lock:
-            if opencode_session_id in self._flushing:
+            if key in self._flushing:
                 return
-            self._flushing.add(opencode_session_id)
-            timer = self._timers.pop(opencode_session_id, None)
+            self._flushing.add(key)
+            timer = self._timers.pop(key, None)
         if timer:
             timer.cancel()
         try:
@@ -68,6 +76,7 @@ class RawEventAutoFlusher:
                 flush_raw_events(
                     store,
                     opencode_session_id=opencode_session_id,
+                    source=source_norm,
                     cwd=None,
                     project=None,
                     started_at=None,
@@ -77,7 +86,7 @@ class RawEventAutoFlusher:
                 store.close()
         finally:
             with self._lock:
-                self._flushing.discard(opencode_session_id)
+                self._flushing.discard(key)
 
 
 RAW_EVENT_FLUSHER = RawEventAutoFlusher()
@@ -181,19 +190,24 @@ class RawEventSweeper:
                 )
 
             max_events = self.worker_max_events()
-            drained: set[str] = set()
+            drained: set[tuple[str, str]] = set()
             queue_session_ids = store.raw_event_sessions_with_pending_queue(limit=self.limit())
-            for opencode_session_id in queue_session_ids:
+            for item in queue_session_ids:
+                source = str(item.get("source") or "opencode")
+                opencode_session_id = str(item.get("stream_id") or "")
+                if not opencode_session_id:
+                    continue
                 try:
                     flush_raw_events(
                         store,
                         opencode_session_id=opencode_session_id,
+                        source=source,
                         cwd=None,
                         project=None,
                         started_at=None,
                         max_events=max_events,
                     )
-                    drained.add(opencode_session_id)
+                    drained.add((source, opencode_session_id))
                 except ObserverAuthError as exc:
                     self._handle_auth_error(exc)
                     return  # Stop all flush work during auth backoff.
@@ -215,13 +229,18 @@ class RawEventSweeper:
                 idle_before_ts_wall_ms=idle_before,
                 limit=self.limit(),
             )
-            for opencode_session_id in session_ids:
-                if opencode_session_id in drained:
+            for item in session_ids:
+                source = str(item.get("source") or "opencode")
+                opencode_session_id = str(item.get("stream_id") or "")
+                if not opencode_session_id:
+                    continue
+                if (source, opencode_session_id) in drained:
                     continue
                 try:
                     flush_raw_events(
                         store,
                         opencode_session_id=opencode_session_id,
+                        source=source,
                         cwd=None,
                         project=None,
                         started_at=None,

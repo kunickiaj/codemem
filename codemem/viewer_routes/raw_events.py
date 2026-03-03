@@ -31,7 +31,7 @@ class _ViewerHandler(Protocol):
 
 
 class _RawEventFlusher(Protocol):
-    def note_activity(self, opencode_session_id: str) -> None: ...
+    def note_activity(self, opencode_session_id: str, *, source: str = "opencode") -> None: ...
 
 
 class _Store(Protocol):
@@ -297,7 +297,7 @@ def handle_post(
                 last_seen_ts_wall_ms=last_seen_by_session.get(meta_session_id),
             )
             try:
-                flusher.note_activity(meta_session_id)
+                flusher.note_activity(meta_session_id, source="opencode")
             except Exception as exc:  # pragma: no cover
                 logger.warning(
                     "raw event flusher note_activity failed",

@@ -23,7 +23,8 @@ class DummyFlusher:
     def __init__(self) -> None:
         self.noted: list[str] = []
 
-    def note_activity(self, opencode_session_id: str) -> None:
+    def note_activity(self, opencode_session_id: str, *, source: str = "opencode") -> None:
+        _ = source
         self.noted.append(opencode_session_id)
 
 
@@ -259,8 +260,9 @@ def test_handle_post_flusher_failure_does_not_fail_ingest() -> None:
     store = DummyStore()
 
     class FailingFlusher:
-        def note_activity(self, opencode_session_id: str) -> None:
+        def note_activity(self, opencode_session_id: str, *, source: str = "opencode") -> None:
             _ = opencode_session_id
+            _ = source
             raise RuntimeError("flush failed")
 
     handled = raw_events.handle_post(

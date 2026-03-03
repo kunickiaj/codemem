@@ -15,7 +15,7 @@ LEGACY_DEFAULT_DB_PATHS = (
     Path.home() / ".codemem.sqlite",
     Path.home() / ".opencode-mem.sqlite",
 )
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _sidecar_paths(path: Path) -> list[Path]:
@@ -196,6 +196,8 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS raw_events (
             id INTEGER PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL DEFAULT '',
             opencode_session_id TEXT NOT NULL,
             event_id TEXT,
             event_seq INTEGER NOT NULL,
@@ -204,31 +206,40 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             ts_mono_ms REAL,
             payload_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            UNIQUE(opencode_session_id, event_seq)
+            UNIQUE(source, stream_id, event_seq),
+            UNIQUE(source, stream_id, event_id)
         );
         CREATE INDEX IF NOT EXISTS idx_raw_events_session_seq ON raw_events(opencode_session_id, event_seq);
         CREATE INDEX IF NOT EXISTS idx_raw_events_created_at ON raw_events(created_at DESC);
 
         CREATE TABLE IF NOT EXISTS raw_event_sessions (
-            opencode_session_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL DEFAULT '',
+            opencode_session_id TEXT NOT NULL,
             cwd TEXT,
             project TEXT,
             started_at TEXT,
             last_seen_ts_wall_ms INTEGER,
             last_received_event_seq INTEGER NOT NULL DEFAULT -1,
             last_flushed_event_seq INTEGER NOT NULL DEFAULT -1,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (source, stream_id)
         );
 
         CREATE TABLE IF NOT EXISTS opencode_sessions (
-            opencode_session_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL DEFAULT '',
+            opencode_session_id TEXT NOT NULL,
             session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (source, stream_id)
         );
         CREATE INDEX IF NOT EXISTS idx_opencode_sessions_session_id ON opencode_sessions(session_id);
 
         CREATE TABLE IF NOT EXISTS raw_event_flush_batches (
             id INTEGER PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL DEFAULT '',
             opencode_session_id TEXT NOT NULL,
             start_event_seq INTEGER NOT NULL,
             end_event_seq INTEGER NOT NULL,
@@ -236,7 +247,7 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(opencode_session_id, start_event_seq, end_event_seq, extractor_version)
+            UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)
         );
         CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_session ON raw_event_flush_batches(opencode_session_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_status ON raw_event_flush_batches(status, updated_at DESC);
@@ -369,10 +380,6 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "raw_event_sessions", "started_at", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "last_seen_ts_wall_ms", "INTEGER")
     _ensure_column(conn, "raw_event_sessions", "last_received_event_seq", "INTEGER")
-    _ensure_column(conn, "raw_events", "event_id", "TEXT")
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_events_event_id ON raw_events(opencode_session_id, event_id)"
-    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_import_key ON sessions(import_key)")
     conn.execute(
@@ -387,6 +394,498 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_user_prompts_import_key ON user_prompts(import_key)"
     )
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _table_pk_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    pk_rows = [row for row in rows if int(row[5] or 0) > 0]
+    pk_rows.sort(key=lambda row: int(row[5]))
+    return [str(row[1]) for row in pk_rows]
+
+
+def _table_create_sql(conn: sqlite3.Connection, table: str) -> str:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return ""
+    return " ".join(str(row[0]).lower().split())
+
+
+def _raw_event_identity_needs_rebuild(conn: sqlite3.Connection) -> bool:
+    if not _table_exists(conn, "raw_event_sessions") or not _table_exists(
+        conn, "opencode_sessions"
+    ):
+        return False
+    if _table_pk_columns(conn, "raw_event_sessions") != [
+        "source",
+        "stream_id",
+    ]:
+        return True
+    if _table_pk_columns(conn, "opencode_sessions") != ["source", "stream_id"]:
+        return True
+
+    raw_events_sql = _table_create_sql(conn, "raw_events")
+    if "unique(source, stream_id, event_seq)" not in raw_events_sql:
+        return True
+    if "unique(source, stream_id, event_id)" not in raw_events_sql:
+        return True
+
+    batches_sql = _table_create_sql(conn, "raw_event_flush_batches")
+    return (
+        "unique(source, stream_id, start_event_seq, end_event_seq, extractor_version)"
+        not in batches_sql
+    )
+
+
+def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
+    checks = [
+        (
+            "raw_events(source, stream_id, event_seq)",
+            """
+            SELECT source, stream_id, event_seq
+            FROM raw_events
+            GROUP BY source, stream_id, event_seq
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """,
+        ),
+        (
+            "raw_events(source, stream_id, event_id)",
+            """
+            SELECT source, stream_id, event_id
+            FROM raw_events
+            WHERE event_id IS NOT NULL
+            GROUP BY source, stream_id, event_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """,
+        ),
+        (
+            "raw_event_sessions(source, stream_id)",
+            """
+            SELECT source, stream_id
+            FROM raw_event_sessions
+            GROUP BY source, stream_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """,
+        ),
+        (
+            "raw_event_flush_batches(source, stream_id, start_event_seq, end_event_seq, extractor_version)",
+            """
+            SELECT source, stream_id, start_event_seq, end_event_seq, extractor_version
+            FROM raw_event_flush_batches
+            GROUP BY source, stream_id, start_event_seq, end_event_seq, extractor_version
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """,
+        ),
+        (
+            "opencode_sessions(source, stream_id)",
+            """
+            SELECT source, stream_id
+            FROM opencode_sessions
+            GROUP BY source, stream_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """,
+        ),
+    ]
+    for label, sql in checks:
+        row = conn.execute(sql).fetchone()
+        if row is not None:
+            raise RuntimeError(f"Raw-event identity migration collision detected in {label}")
+
+
+def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
+    _assert_no_raw_event_identity_collisions(conn)
+
+    before_counts = {
+        "raw_events": int(conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0]),
+        "raw_event_sessions": int(
+            conn.execute("SELECT COUNT(*) FROM raw_event_sessions").fetchone()[0]
+        ),
+        "raw_event_flush_batches": int(
+            conn.execute("SELECT COUNT(*) FROM raw_event_flush_batches").fetchone()[0]
+        ),
+        "opencode_sessions": int(
+            conn.execute("SELECT COUNT(*) FROM opencode_sessions").fetchone()[0]
+        ),
+    }
+
+    batch_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(raw_event_flush_batches)").fetchall()
+    }
+    batch_attempt_expr = "COALESCE(attempt_count, 0)" if "attempt_count" in batch_columns else "0"
+
+    conn.executescript(
+        """
+        CREATE TABLE raw_events_v2 (
+            id INTEGER PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL,
+            opencode_session_id TEXT NOT NULL,
+            event_id TEXT,
+            event_seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            ts_wall_ms INTEGER,
+            ts_mono_ms REAL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(source, stream_id, event_seq),
+            UNIQUE(source, stream_id, event_id)
+        );
+
+        CREATE TABLE raw_event_sessions_v2 (
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL,
+            opencode_session_id TEXT NOT NULL,
+            cwd TEXT,
+            project TEXT,
+            started_at TEXT,
+            last_seen_ts_wall_ms INTEGER,
+            last_received_event_seq INTEGER NOT NULL DEFAULT -1,
+            last_flushed_event_seq INTEGER NOT NULL DEFAULT -1,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (source, stream_id)
+        );
+
+        CREATE TABLE raw_event_flush_batches_v2 (
+            id INTEGER PRIMARY KEY,
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL,
+            opencode_session_id TEXT NOT NULL,
+            start_event_seq INTEGER NOT NULL,
+            end_event_seq INTEGER NOT NULL,
+            extractor_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)
+        );
+
+        CREATE TABLE opencode_sessions_v2 (
+            source TEXT NOT NULL DEFAULT 'opencode',
+            stream_id TEXT NOT NULL,
+            opencode_session_id TEXT NOT NULL,
+            session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (source, stream_id)
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO raw_events_v2(
+            id,
+            source,
+            stream_id,
+            opencode_session_id,
+            event_id,
+            event_seq,
+            event_type,
+            ts_wall_ms,
+            ts_mono_ms,
+            payload_json,
+            created_at
+        )
+        SELECT
+            id,
+            source,
+            stream_id,
+            stream_id,
+            event_id,
+            event_seq,
+            event_type,
+            ts_wall_ms,
+            ts_mono_ms,
+            payload_json,
+            created_at
+        FROM raw_events
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_event_sessions_v2(
+            source,
+            stream_id,
+            opencode_session_id,
+            cwd,
+            project,
+            started_at,
+            last_seen_ts_wall_ms,
+            last_received_event_seq,
+            last_flushed_event_seq,
+            updated_at
+        )
+        SELECT
+            source,
+            stream_id,
+            stream_id,
+            cwd,
+            project,
+            started_at,
+            last_seen_ts_wall_ms,
+            last_received_event_seq,
+            last_flushed_event_seq,
+            updated_at
+        FROM raw_event_sessions
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO raw_event_flush_batches_v2(
+            id,
+            source,
+            stream_id,
+            opencode_session_id,
+            start_event_seq,
+            end_event_seq,
+            extractor_version,
+            status,
+            created_at,
+            updated_at,
+            attempt_count
+        )
+        SELECT
+            id,
+            source,
+            stream_id,
+            stream_id,
+            start_event_seq,
+            end_event_seq,
+            extractor_version,
+            status,
+            created_at,
+            updated_at,
+            {batch_attempt_expr}
+        FROM raw_event_flush_batches
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO opencode_sessions_v2(
+            source,
+            stream_id,
+            opencode_session_id,
+            session_id,
+            created_at
+        )
+        SELECT
+            os.source,
+            os.stream_id,
+            os.stream_id,
+            CASE
+                WHEN os.session_id IS NULL THEN NULL
+                WHEN EXISTS(SELECT 1 FROM sessions s WHERE s.id = os.session_id) THEN os.session_id
+                ELSE NULL
+            END,
+            os.created_at
+        FROM opencode_sessions os
+        """
+    )
+
+    after_counts = {
+        "raw_events": int(conn.execute("SELECT COUNT(*) FROM raw_events_v2").fetchone()[0]),
+        "raw_event_sessions": int(
+            conn.execute("SELECT COUNT(*) FROM raw_event_sessions_v2").fetchone()[0]
+        ),
+        "raw_event_flush_batches": int(
+            conn.execute("SELECT COUNT(*) FROM raw_event_flush_batches_v2").fetchone()[0]
+        ),
+        "opencode_sessions": int(
+            conn.execute("SELECT COUNT(*) FROM opencode_sessions_v2").fetchone()[0]
+        ),
+    }
+    if before_counts != after_counts:
+        raise RuntimeError(
+            "Raw-event identity migration row-count mismatch; aborting rebuild "
+            f"(before={before_counts}, after={after_counts})"
+        )
+
+    conn.executescript(
+        """
+        DROP TABLE raw_events;
+        ALTER TABLE raw_events_v2 RENAME TO raw_events;
+
+        DROP TABLE raw_event_sessions;
+        ALTER TABLE raw_event_sessions_v2 RENAME TO raw_event_sessions;
+
+        DROP TABLE raw_event_flush_batches;
+        ALTER TABLE raw_event_flush_batches_v2 RENAME TO raw_event_flush_batches;
+
+        DROP TABLE opencode_sessions;
+        ALTER TABLE opencode_sessions_v2 RENAME TO opencode_sessions;
+        """
+    )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_session_seq ON raw_events(opencode_session_id, event_seq)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_created_at ON raw_events(created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_event_id ON raw_events(opencode_session_id, event_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_source_stream_event_id ON raw_events(source, stream_id, event_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_events_source_stream_seq ON raw_events(source, stream_id, event_seq)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_event_sessions_source_stream ON raw_event_sessions(source, stream_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_event_sessions_legacy_session ON raw_event_sessions(opencode_session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_session ON raw_event_flush_batches(opencode_session_id, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_source_stream ON raw_event_flush_batches(source, stream_id, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_status ON raw_event_flush_batches(status, updated_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_opencode_sessions_session_id ON opencode_sessions(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_opencode_sessions_source_stream ON opencode_sessions(source, stream_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_opencode_sessions_legacy_session ON opencode_sessions(opencode_session_id)"
+    )
+
+
+def _ensure_raw_event_identity_schema(conn: sqlite3.Connection, *, migrate_data: bool) -> None:
+    if _table_exists(conn, "raw_event_sessions"):
+        _ensure_column(conn, "raw_event_sessions", "source", "TEXT NOT NULL DEFAULT 'opencode'")
+        _ensure_column(conn, "raw_event_sessions", "stream_id", "TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_raw_event_sessions_source_stream ON raw_event_sessions(source, stream_id)"
+        )
+
+    if _table_exists(conn, "raw_events"):
+        _ensure_column(conn, "raw_events", "event_id", "TEXT")
+        _ensure_column(conn, "raw_events", "source", "TEXT NOT NULL DEFAULT 'opencode'")
+        _ensure_column(conn, "raw_events", "stream_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "raw_events", "ts_wall_ms", "INTEGER")
+        _ensure_column(conn, "raw_events", "ts_mono_ms", "REAL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_raw_events_event_id ON raw_events(opencode_session_id, event_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_raw_events_source_stream_event_id ON raw_events(source, stream_id, event_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_raw_events_source_stream_seq ON raw_events(source, stream_id, event_seq)"
+        )
+
+    if _table_exists(conn, "raw_event_flush_batches"):
+        _ensure_column(
+            conn, "raw_event_flush_batches", "source", "TEXT NOT NULL DEFAULT 'opencode'"
+        )
+        _ensure_column(conn, "raw_event_flush_batches", "stream_id", "TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_raw_event_flush_batches_source_stream ON raw_event_flush_batches(source, stream_id, created_at DESC)"
+        )
+
+    if _table_exists(conn, "opencode_sessions"):
+        _ensure_column(conn, "opencode_sessions", "source", "TEXT NOT NULL DEFAULT 'opencode'")
+        _ensure_column(conn, "opencode_sessions", "stream_id", "TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_opencode_sessions_source_stream ON opencode_sessions(source, stream_id)"
+        )
+
+    if not migrate_data:
+        return
+    _backfill_raw_event_identity_columns(conn)
+    if _raw_event_identity_needs_rebuild(conn):
+        _rebuild_raw_event_identity_tables(conn)
+
+
+def _backfill_raw_event_identity_columns(conn: sqlite3.Connection) -> None:
+    known_prefixes = {"opencode", "claude", "cursor", "codex"}
+
+    def _normalize_legacy_identity(key: str, source: str, stream_id: str) -> tuple[str, str]:
+        source_norm = source.strip().lower() or "opencode"
+        stream_norm = stream_id.strip()
+        if stream_norm:
+            if ":" in stream_norm:
+                prefix, remainder = stream_norm.split(":", 1)
+                prefix = prefix.strip().lower()
+                remainder = remainder.strip()
+                if (
+                    prefix in known_prefixes
+                    and remainder
+                    and (source_norm == "opencode" or source_norm == prefix)
+                ):
+                    return prefix, remainder
+            return source_norm, stream_norm
+
+        key_norm = key.strip()
+        if not key_norm:
+            return source_norm, key_norm
+        if ":" in key_norm:
+            prefix, remainder = key_norm.split(":", 1)
+            prefix = prefix.strip().lower()
+            remainder = remainder.strip()
+            if (
+                prefix in known_prefixes
+                and remainder
+                and (source_norm == "opencode" or source_norm == prefix)
+            ):
+                return prefix, remainder
+        return source_norm, key_norm
+
+    targets = [
+        ("raw_events", "opencode_session_id"),
+        ("raw_event_sessions", "opencode_session_id"),
+        ("raw_event_flush_batches", "opencode_session_id"),
+        ("opencode_sessions", "opencode_session_id"),
+    ]
+    for table, key_col in targets:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if key_col not in columns or "source" not in columns or "stream_id" not in columns:
+            continue
+        rows = conn.execute(
+            f"SELECT rowid AS _rid, {key_col}, source, stream_id FROM {table}"
+        ).fetchall()
+        updates: list[tuple[str, str, int]] = []
+        for row in rows:
+            key = str(row[key_col] or "").strip()
+            if not key:
+                continue
+            current_source = str(row["source"] or "").strip().lower() or "opencode"
+            current_stream = str(row["stream_id"] or "").strip()
+            source, stream_id = _normalize_legacy_identity(
+                key=key,
+                source=current_source,
+                stream_id=current_stream,
+            )
+            if current_source == source and current_stream == stream_id:
+                continue
+            updates.append((source, stream_id, int(row["_rid"])))
+        if updates:
+            conn.executemany(
+                f"UPDATE {table} SET source = ?, stream_id = ? WHERE rowid = ?",
+                updates,
+            )
 
 
 def _schema_user_version(conn: sqlite3.Connection) -> int:
@@ -463,8 +962,12 @@ def _ensure_raw_event_reliability_schema(conn: sqlite3.Connection) -> None:
 
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
-    if _schema_user_version(conn) < SCHEMA_VERSION:
+    current_version = _schema_user_version(conn)
+    if current_version < 1:
         _initialize_schema_v1(conn)
+        current_version = 1
+    _ensure_raw_event_identity_schema(conn, migrate_data=current_version < SCHEMA_VERSION)
+    if current_version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     _ensure_vector_schema(conn)
     _ensure_raw_event_reliability_schema(conn)

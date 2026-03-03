@@ -81,6 +81,7 @@ def enqueue_raw_event_cmd(store: MemoryStore) -> None:
 
     try:
         opencode_session_id = _require_non_empty_str(payload, "opencode_session_id")
+        source = _coerce_optional_str(payload, "source") or "opencode"
         event_type = _require_non_empty_str(payload, "event_type")
         event_payload = payload.get("payload")
         if event_payload is None:
@@ -111,6 +112,7 @@ def enqueue_raw_event_cmd(store: MemoryStore) -> None:
 
     inserted = store.record_raw_event(
         opencode_session_id=opencode_session_id,
+        source=source,
         event_id=event_id,
         event_type=event_type,
         payload=event_payload,
@@ -119,6 +121,7 @@ def enqueue_raw_event_cmd(store: MemoryStore) -> None:
     )
     store.update_raw_event_session_meta(
         opencode_session_id=opencode_session_id,
+        source=source,
         cwd=cwd,
         project=project,
         started_at=started_at,
@@ -131,6 +134,7 @@ def flush_raw_events_cmd(
     store: MemoryStore,
     *,
     opencode_session_id: str,
+    source: str,
     cwd: str | None,
     project: str | None,
     started_at: str | None,
@@ -143,6 +147,7 @@ def flush_raw_events_cmd(
     result = flush(
         store,
         opencode_session_id=opencode_session_id,
+        source=source,
         cwd=cwd,
         project=project,
         started_at=started_at,
@@ -159,10 +164,12 @@ def raw_events_status_cmd(store: MemoryStore, *, limit: int) -> None:
         print("No pending raw events")
         return
     for item in items:
-        legacy_counts = store.raw_event_batch_status_counts(item["opencode_session_id"])
-        queue_counts = store.raw_event_queue_status_counts(item["opencode_session_id"])
+        source = str(item.get("source") or "opencode")
+        stream_id = str(item.get("stream_id") or item["opencode_session_id"])
+        legacy_counts = store.raw_event_batch_status_counts(stream_id, source=source)
+        queue_counts = store.raw_event_queue_status_counts(stream_id, source=source)
         print(
-            f"- {item['opencode_session_id']} pending={item['pending']} "
+            f"- {source}:{stream_id} pending={item['pending']} "
             f"max_seq={item['max_seq']} last_flushed={item['last_flushed_event_seq']} "
             f"batches=started:{legacy_counts['started']} running:{legacy_counts['running']} error:{legacy_counts['error']} completed:{legacy_counts['completed']} "
             f"queue=pending:{queue_counts['pending']} claimed:{queue_counts['claimed']} failed:{queue_counts['failed']} done:{queue_counts['completed']} "
@@ -174,23 +181,25 @@ def raw_events_retry_cmd(
     store: MemoryStore,
     *,
     opencode_session_id: str,
+    source: str,
     limit: int,
 ) -> None:
     """Retry error raw-event flush batches for a session."""
 
     from codemem.raw_event_flush import flush_raw_events as flush
 
-    errors = store.raw_event_error_batches(opencode_session_id, limit=limit)
+    errors = store.raw_event_error_batches(opencode_session_id, source=source, limit=limit)
     if not errors:
         print("No error batches")
         return
     for batch in errors:
         # Re-run extraction by forcing last_flushed back to the batch start-1.
         start_seq = int(batch["start_event_seq"])
-        store.update_raw_event_flush_state(opencode_session_id, start_seq - 1)
+        store.update_raw_event_flush_state(opencode_session_id, start_seq - 1, source=source)
         result = flush(
             store,
             opencode_session_id=opencode_session_id,
+            source=source,
             cwd=None,
             project=None,
             started_at=None,

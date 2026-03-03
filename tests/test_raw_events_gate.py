@@ -15,21 +15,23 @@ def _seed_reliability_fixture(store: MemoryStore) -> None:
     now = dt.datetime.now(dt.UTC).isoformat()
     store.conn.execute(
         """
-        INSERT INTO raw_event_sessions(opencode_session_id, project, started_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO raw_event_sessions(source, stream_id, opencode_session_id, project, started_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("sess-a", "proj-a", now, now),
+        ("opencode", "sess-a", "sess-a", "proj-a", now, now),
     )
     store.conn.execute(
         """
-        INSERT INTO raw_event_sessions(opencode_session_id, project, started_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO raw_event_sessions(source, stream_id, opencode_session_id, project, started_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("sess-b", "proj-b", None, now),
+        ("opencode", "sess-b", "sess-b", "proj-b", None, now),
     )
     store.conn.execute(
         """
         INSERT INTO raw_events(
+            source,
+            stream_id,
             opencode_session_id,
             event_id,
             event_seq,
@@ -39,13 +41,15 @@ def _seed_reliability_fixture(store: MemoryStore) -> None:
             payload_json,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("sess-a", "evt-a-1", 0, "user_prompt", 1, 1.0, "{}", now),
+        ("opencode", "sess-a", "sess-a", "evt-a-1", 0, "user_prompt", 1, 1.0, "{}", now),
     )
     store.conn.execute(
         """
         INSERT INTO raw_events(
+            source,
+            stream_id,
             opencode_session_id,
             event_id,
             event_seq,
@@ -55,9 +59,9 @@ def _seed_reliability_fixture(store: MemoryStore) -> None:
             payload_json,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("sess-b", "evt-b-1", 0, "user_prompt", 2, 2.0, "{}", now),
+        ("opencode", "sess-b", "sess-b", "evt-b-1", 0, "user_prompt", 2, 2.0, "{}", now),
     )
 
     store.conn.execute(
@@ -99,6 +103,8 @@ def _seed_reliability_fixture(store: MemoryStore) -> None:
         store.conn.execute(
             """
             INSERT INTO raw_event_flush_batches(
+                source,
+                stream_id,
                 opencode_session_id,
                 start_event_seq,
                 end_event_seq,
@@ -107,13 +113,15 @@ def _seed_reliability_fixture(store: MemoryStore) -> None:
                 created_at,
                 updated_at,
                 attempt_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("sess-a", i, i, "v1", "completed", now, now, 1),
+            ("opencode", "sess-a", "sess-a", i, i, "v1", "completed", now, now, 1),
         )
     store.conn.execute(
         """
         INSERT INTO raw_event_flush_batches(
+            source,
+            stream_id,
             opencode_session_id,
             start_event_seq,
             end_event_seq,
@@ -122,9 +130,9 @@ def _seed_reliability_fixture(store: MemoryStore) -> None:
             created_at,
             updated_at,
             attempt_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("sess-a", 10, 10, "v1", "error", now, now, 2),
+        ("opencode", "sess-a", "sess-a", 10, 10, "v1", "error", now, now, 2),
     )
     store.conn.commit()
 

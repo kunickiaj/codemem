@@ -24,6 +24,14 @@ _RAW_EVENT_QUEUE_DB_TO_CANONICAL = {
 }
 
 
+def _normalize_stream_identity(*, source: str, stream_id: str) -> tuple[str, str]:
+    source_norm = source.strip().lower() or "opencode"
+    stream_norm = stream_id.strip()
+    if not stream_norm:
+        raise ValueError("stream_id is required")
+    return source_norm, stream_norm
+
+
 def _update_raw_event_ingest_stats(
     conn: sqlite3.Connection,
     *,
@@ -82,14 +90,21 @@ def get_or_create_raw_event_flush_batch(
     conn: sqlite3.Connection,
     *,
     opencode_session_id: str,
+    source: str = "opencode",
     start_event_seq: int,
     end_event_seq: int,
     extractor_version: str,
 ) -> tuple[int, str]:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     now = dt.datetime.now(dt.UTC).isoformat()
     cur = conn.execute(
         """
         INSERT INTO raw_event_flush_batches(
+            source,
+            stream_id,
             opencode_session_id,
             start_event_seq,
             end_event_seq,
@@ -98,13 +113,15 @@ def get_or_create_raw_event_flush_batch(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(opencode_session_id, start_event_seq, end_event_seq, extractor_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, stream_id, start_event_seq, end_event_seq, extractor_version)
         DO UPDATE SET updated_at = excluded.updated_at
         RETURNING id, status
         """,
         (
-            opencode_session_id,
+            source,
+            stream_id,
+            stream_id,
             start_event_seq,
             end_event_seq,
             extractor_version,
@@ -136,6 +153,7 @@ def record_raw_event(
     conn: sqlite3.Connection,
     *,
     opencode_session_id: str,
+    source: str = "opencode",
     event_id: str,
     event_type: str,
     payload: dict[str, Any],
@@ -148,11 +166,15 @@ def record_raw_event(
         raise ValueError("event_id is required")
     if not event_type.strip():
         raise ValueError("event_type is required")
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
 
     # Server-assigned sequencing. This avoids event_seq collisions when the plugin reloads.
     cur = conn.execute(
-        "SELECT 1 FROM raw_events WHERE opencode_session_id = ? AND event_id = ?",
-        (opencode_session_id, event_id),
+        "SELECT 1 FROM raw_events WHERE source = ? AND stream_id = ? AND event_id = ?",
+        (source, stream_id, event_id),
     ).fetchone()
     if cur is not None:
         _update_raw_event_ingest_stats(
@@ -166,17 +188,17 @@ def record_raw_event(
         return False
 
     existing = conn.execute(
-        "SELECT 1 FROM raw_event_sessions WHERE opencode_session_id = ?",
-        (opencode_session_id,),
+        "SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
+        (source, stream_id),
     ).fetchone()
     if existing is None:
         now = dt.datetime.now(dt.UTC).isoformat()
         conn.execute(
             """
-            INSERT INTO raw_event_sessions(opencode_session_id, updated_at)
-            VALUES (?, ?)
+            INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at)
+            VALUES (?, ?, ?, ?)
             """,
-            (opencode_session_id, now),
+            (stream_id, source, stream_id, now),
         )
 
     row = conn.execute(
@@ -184,10 +206,10 @@ def record_raw_event(
         UPDATE raw_event_sessions
         SET last_received_event_seq = last_received_event_seq + 1,
             updated_at = ?
-        WHERE opencode_session_id = ?
+        WHERE source = ? AND stream_id = ?
         RETURNING last_received_event_seq
         """,
-        (dt.datetime.now(dt.UTC).isoformat(), opencode_session_id),
+        (dt.datetime.now(dt.UTC).isoformat(), source, stream_id),
     ).fetchone()
     if row is None:
         raise RuntimeError("Failed to allocate raw event seq")
@@ -197,6 +219,8 @@ def record_raw_event(
     conn.execute(
         """
         INSERT INTO raw_events(
+            source,
+            stream_id,
             opencode_session_id,
             event_id,
             event_seq,
@@ -206,10 +230,12 @@ def record_raw_event(
             payload_json,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            opencode_session_id,
+            source,
+            stream_id,
+            stream_id,
             event_id,
             event_seq,
             event_type,
@@ -234,10 +260,15 @@ def record_raw_events_batch(
     conn: sqlite3.Connection,
     *,
     opencode_session_id: str,
+    source: str = "opencode",
     events: list[dict[str, Any]],
 ) -> dict[str, int]:
     if not opencode_session_id.strip():
         raise ValueError("opencode_session_id is required")
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     inserted = 0
     skipped_invalid = 0
     skipped_duplicate = 0
@@ -245,13 +276,13 @@ def record_raw_events_batch(
     now = dt.datetime.now(dt.UTC).isoformat()
     with conn:
         existing = conn.execute(
-            "SELECT 1 FROM raw_event_sessions WHERE opencode_session_id = ?",
-            (opencode_session_id,),
+            "SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
+            (source, stream_id),
         ).fetchone()
         if existing is None:
             conn.execute(
-                "INSERT INTO raw_event_sessions(opencode_session_id, updated_at) VALUES (?, ?)",
-                (opencode_session_id, now),
+                "INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at) VALUES (?, ?, ?, ?)",
+                (stream_id, source, stream_id, now),
             )
 
         normalized: list[dict[str, Any]] = []
@@ -298,8 +329,8 @@ def record_raw_events_batch(
             chunk = normalized[i : i + chunk_size]
             placeholders = ",".join("?" for _ in chunk)
             rows = conn.execute(
-                f"SELECT event_id FROM raw_events WHERE opencode_session_id = ? AND event_id IN ({placeholders})",
-                [opencode_session_id, *[e["event_id"] for e in chunk]],
+                f"SELECT event_id FROM raw_events WHERE source = ? AND stream_id = ? AND event_id IN ({placeholders})",
+                [source, stream_id, *[e["event_id"] for e in chunk]],
             ).fetchall()
             for row in rows:
                 existing_ids.add(str(row["event_id"]))
@@ -322,10 +353,10 @@ def record_raw_events_batch(
             UPDATE raw_event_sessions
             SET last_received_event_seq = last_received_event_seq + ?,
                 updated_at = ?
-            WHERE opencode_session_id = ?
+            WHERE source = ? AND stream_id = ?
             RETURNING last_received_event_seq
             """,
-            (len(new_events), now, opencode_session_id),
+            (len(new_events), now, source, stream_id),
         ).fetchone()
         if row is None:
             raise RuntimeError("Failed to allocate raw event seq")
@@ -337,6 +368,8 @@ def record_raw_events_batch(
                 conn.execute(
                     """
                     INSERT INTO raw_events(
+                        source,
+                        stream_id,
                         opencode_session_id,
                         event_id,
                         event_seq,
@@ -346,10 +379,12 @@ def record_raw_events_batch(
                         payload_json,
                         created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        opencode_session_id,
+                        source,
+                        stream_id,
+                        stream_id,
                         event["event_id"],
                         start_seq + offset,
                         event["event_type"],
@@ -452,14 +487,14 @@ def raw_event_reliability_metrics_windowed(
 
     boundary_query = """
         WITH has_events AS (
-            SELECT DISTINCT opencode_session_id
+            SELECT DISTINCT source, stream_id
             FROM raw_events
         )
         SELECT
             COUNT(1) AS sessions_with_events,
             SUM(CASE WHEN COALESCE(s.started_at, '') != '' THEN 1 ELSE 0 END) AS sessions_with_started_at
         FROM has_events e
-        LEFT JOIN raw_event_sessions s ON s.opencode_session_id = e.opencode_session_id
+        LEFT JOIN raw_event_sessions s ON s.source = e.source AND s.stream_id = e.stream_id
     """
     if cutoff_iso is None:
         boundary_counts = conn.execute(boundary_query).fetchone()
@@ -467,7 +502,7 @@ def raw_event_reliability_metrics_windowed(
         boundary_counts = conn.execute(
             """
             WITH has_events AS (
-                SELECT DISTINCT opencode_session_id
+                SELECT DISTINCT source, stream_id
                 FROM raw_events
                 WHERE created_at >= ?
             )
@@ -475,7 +510,7 @@ def raw_event_reliability_metrics_windowed(
                 COUNT(1) AS sessions_with_events,
                 SUM(CASE WHEN COALESCE(s.started_at, '') != '' THEN 1 ELSE 0 END) AS sessions_with_started_at
             FROM has_events e
-            LEFT JOIN raw_event_sessions s ON s.opencode_session_id = e.opencode_session_id
+            LEFT JOIN raw_event_sessions s ON s.source = e.source AND s.stream_id = e.stream_id
             """,
             (cutoff_iso,),
         ).fetchone()
@@ -523,10 +558,19 @@ def raw_event_reliability_metrics_windowed(
     }
 
 
-def raw_event_flush_state(conn: sqlite3.Connection, opencode_session_id: str) -> int:
+def raw_event_flush_state(
+    conn: sqlite3.Connection,
+    opencode_session_id: str,
+    *,
+    source: str = "opencode",
+) -> int:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     row = conn.execute(
-        "SELECT last_flushed_event_seq FROM raw_event_sessions WHERE opencode_session_id = ?",
-        (opencode_session_id,),
+        "SELECT last_flushed_event_seq FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
+        (source, stream_id),
     ).fetchone()
     if row is None:
         return -1
@@ -537,24 +581,32 @@ def update_raw_event_session_meta(
     conn: sqlite3.Connection,
     *,
     opencode_session_id: str,
+    source: str = "opencode",
     cwd: str | None = None,
     project: str | None = None,
     started_at: str | None = None,
     last_seen_ts_wall_ms: int | None = None,
 ) -> None:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     now = dt.datetime.now(dt.UTC).isoformat()
     conn.execute(
         """
         INSERT INTO raw_event_sessions(
             opencode_session_id,
+            source,
+            stream_id,
             cwd,
             project,
             started_at,
             last_seen_ts_wall_ms,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(opencode_session_id) DO UPDATE SET
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, stream_id) DO UPDATE SET
+            opencode_session_id = excluded.opencode_session_id,
             cwd = COALESCE(excluded.cwd, raw_event_sessions.cwd),
             project = COALESCE(excluded.project, raw_event_sessions.project),
             started_at = COALESCE(excluded.started_at, raw_event_sessions.started_at),
@@ -566,19 +618,37 @@ def update_raw_event_session_meta(
             END,
             updated_at = excluded.updated_at
         """,
-        (opencode_session_id, cwd, project, started_at, last_seen_ts_wall_ms, now),
+        (
+            stream_id,
+            source,
+            stream_id,
+            cwd,
+            project,
+            started_at,
+            last_seen_ts_wall_ms,
+            now,
+        ),
     )
     conn.commit()
 
 
-def raw_event_session_meta(conn: sqlite3.Connection, opencode_session_id: str) -> dict[str, Any]:
+def raw_event_session_meta(
+    conn: sqlite3.Connection,
+    opencode_session_id: str,
+    *,
+    source: str = "opencode",
+) -> dict[str, Any]:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     row = conn.execute(
         """
         SELECT cwd, project, started_at, last_seen_ts_wall_ms, last_flushed_event_seq
         FROM raw_event_sessions
-        WHERE opencode_session_id = ?
+        WHERE source = ? AND stream_id = ?
         """,
-        (opencode_session_id,),
+        (source, stream_id),
     ).fetchone()
     if row is None:
         return {}
@@ -592,26 +662,44 @@ def raw_event_session_meta(conn: sqlite3.Connection, opencode_session_id: str) -
 
 
 def update_raw_event_flush_state(
-    conn: sqlite3.Connection, opencode_session_id: str, last_flushed: int
+    conn: sqlite3.Connection,
+    opencode_session_id: str,
+    last_flushed: int,
+    *,
+    source: str = "opencode",
 ) -> None:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     now = dt.datetime.now(dt.UTC).isoformat()
     conn.execute(
         """
-        INSERT INTO raw_event_sessions(opencode_session_id, last_flushed_event_seq, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(opencode_session_id) DO UPDATE SET
+        INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, last_flushed_event_seq, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(source, stream_id) DO UPDATE SET
+            opencode_session_id = excluded.opencode_session_id,
             last_flushed_event_seq = excluded.last_flushed_event_seq,
             updated_at = excluded.updated_at
         """,
-        (opencode_session_id, last_flushed, now),
+        (stream_id, source, stream_id, last_flushed, now),
     )
     conn.commit()
 
 
-def max_raw_event_seq(conn: sqlite3.Connection, opencode_session_id: str) -> int:
+def max_raw_event_seq(
+    conn: sqlite3.Connection,
+    opencode_session_id: str,
+    *,
+    source: str = "opencode",
+) -> int:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     row = conn.execute(
-        "SELECT MAX(event_seq) AS max_seq FROM raw_events WHERE opencode_session_id = ?",
-        (opencode_session_id,),
+        "SELECT MAX(event_seq) AS max_seq FROM raw_events WHERE source = ? AND stream_id = ?",
+        (source, stream_id),
     ).fetchone()
     if row is None:
         return -1
@@ -623,18 +711,23 @@ def raw_events_since(
     conn: sqlite3.Connection,
     *,
     opencode_session_id: str,
+    source: str = "opencode",
     after_event_seq: int,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     limit_clause = "LIMIT ?" if limit else ""
-    params: list[Any] = [opencode_session_id, after_event_seq]
+    params: list[Any] = [source, stream_id, after_event_seq]
     if limit:
         params.append(limit)
     rows = conn.execute(
         f"""
         SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
         FROM raw_events
-        WHERE opencode_session_id = ? AND event_seq > ?
+        WHERE source = ? AND stream_id = ? AND event_seq > ?
         ORDER BY (ts_mono_ms IS NULL) ASC, ts_mono_ms ASC, event_seq ASC
         {limit_clause}
         """,
@@ -658,18 +751,23 @@ def raw_events_since_by_seq(
     conn: sqlite3.Connection,
     *,
     opencode_session_id: str,
+    source: str = "opencode",
     after_event_seq: int,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     limit_clause = "LIMIT ?" if limit else ""
-    params: list[Any] = [opencode_session_id, after_event_seq]
+    params: list[Any] = [source, stream_id, after_event_seq]
     if limit:
         params.append(limit)
     rows = conn.execute(
         f"""
         SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
         FROM raw_events
-        WHERE opencode_session_id = ? AND event_seq > ?
+        WHERE source = ? AND stream_id = ? AND event_seq > ?
         ORDER BY event_seq ASC
         {limit_clause}
         """,
@@ -694,17 +792,17 @@ def raw_event_sessions_pending_idle_flush(
     *,
     idle_before_ts_wall_ms: int,
     limit: int = 25,
-) -> list[str]:
+) -> list[dict[str, str]]:
     rows = conn.execute(
         """
         WITH max_events AS (
-            SELECT opencode_session_id, MAX(event_seq) AS max_seq
+            SELECT source, stream_id, MAX(event_seq) AS max_seq
             FROM raw_events
-            GROUP BY opencode_session_id
+            GROUP BY source, stream_id
         )
-        SELECT s.opencode_session_id
+        SELECT s.source, s.stream_id
         FROM raw_event_sessions s
-        JOIN max_events e ON e.opencode_session_id = s.opencode_session_id
+        JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
         WHERE s.last_seen_ts_wall_ms IS NOT NULL
           AND s.last_seen_ts_wall_ms <= ?
           AND e.max_seq > s.last_flushed_event_seq
@@ -713,40 +811,49 @@ def raw_event_sessions_pending_idle_flush(
         """,
         (idle_before_ts_wall_ms, limit),
     ).fetchall()
-    return [str(row["opencode_session_id"]) for row in rows if row["opencode_session_id"]]
+    return [
+        {"source": str(row["source"] or "opencode"), "stream_id": str(row["stream_id"] or "")}
+        for row in rows
+        if row["stream_id"]
+    ]
 
 
 def raw_event_sessions_with_pending_queue(
     conn: sqlite3.Connection,
     *,
     limit: int = 25,
-) -> list[str]:
+) -> list[dict[str, str]]:
     rows = conn.execute(
         """
         WITH pending_batches AS (
             SELECT
-              b.opencode_session_id,
+              b.source,
+              b.stream_id,
               MIN(b.updated_at) AS oldest_pending_update
             FROM raw_event_flush_batches b
             WHERE b.status IN ('pending', 'failed', 'started', 'error')
-            GROUP BY b.opencode_session_id
+            GROUP BY b.source, b.stream_id
         ),
         max_events AS (
-            SELECT opencode_session_id, MAX(event_seq) AS max_seq
+            SELECT source, stream_id, MAX(event_seq) AS max_seq
             FROM raw_events
-            GROUP BY opencode_session_id
+            GROUP BY source, stream_id
         )
-        SELECT b.opencode_session_id
+        SELECT b.source, b.stream_id
         FROM pending_batches b
-        JOIN max_events e ON e.opencode_session_id = b.opencode_session_id
-        LEFT JOIN raw_event_sessions s ON s.opencode_session_id = b.opencode_session_id
+        JOIN max_events e ON e.source = b.source AND e.stream_id = b.stream_id
+        LEFT JOIN raw_event_sessions s ON s.source = b.source AND s.stream_id = b.stream_id
         WHERE e.max_seq > COALESCE(s.last_flushed_event_seq, -1)
         ORDER BY b.oldest_pending_update ASC
         LIMIT ?
         """,
         (limit,),
     ).fetchall()
-    return [str(row["opencode_session_id"]) for row in rows if row["opencode_session_id"]]
+    return [
+        {"source": str(row["source"] or "opencode"), "stream_id": str(row["stream_id"] or "")}
+        for row in rows
+        if row["stream_id"]
+    ]
 
 
 def purge_raw_events_before(conn: sqlite3.Connection, cutoff_ts_wall_ms: int) -> int:
@@ -775,12 +882,14 @@ def raw_event_backlog(conn: sqlite3.Connection, *, limit: int = 25) -> list[dict
     rows = conn.execute(
         """
         WITH max_events AS (
-            SELECT opencode_session_id, MAX(event_seq) AS max_seq
+            SELECT source, stream_id, MAX(event_seq) AS max_seq
             FROM raw_events
-            GROUP BY opencode_session_id
+            GROUP BY source, stream_id
         )
         SELECT
           s.opencode_session_id,
+          s.source,
+          s.stream_id,
           s.project,
           s.cwd,
           s.started_at,
@@ -789,7 +898,7 @@ def raw_event_backlog(conn: sqlite3.Connection, *, limit: int = 25) -> list[dict
           e.max_seq,
           (e.max_seq - s.last_flushed_event_seq) AS pending
         FROM raw_event_sessions s
-        JOIN max_events e ON e.opencode_session_id = s.opencode_session_id
+        JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
         WHERE e.max_seq > s.last_flushed_event_seq
         ORDER BY s.last_seen_ts_wall_ms DESC
         LIMIT ?
@@ -803,15 +912,15 @@ def raw_event_backlog_totals(conn: sqlite3.Connection) -> dict[str, int]:
     row = conn.execute(
         """
         WITH max_events AS (
-            SELECT opencode_session_id, MAX(event_seq) AS max_seq
+            SELECT source, stream_id, MAX(event_seq) AS max_seq
             FROM raw_events
-            GROUP BY opencode_session_id
+            GROUP BY source, stream_id
         )
         SELECT
           COUNT(1) AS sessions,
           SUM(e.max_seq - s.last_flushed_event_seq) AS pending
         FROM raw_event_sessions s
-        JOIN max_events e ON e.opencode_session_id = s.opencode_session_id
+        JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
         WHERE e.max_seq > s.last_flushed_event_seq
         """
     ).fetchone()
@@ -823,16 +932,23 @@ def raw_event_backlog_totals(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def raw_event_batch_status_counts(
-    conn: sqlite3.Connection, opencode_session_id: str
+    conn: sqlite3.Connection,
+    opencode_session_id: str,
+    *,
+    source: str = "opencode",
 ) -> dict[str, int]:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     rows = conn.execute(
         """
         SELECT status, COUNT(*) AS n
         FROM raw_event_flush_batches
-        WHERE opencode_session_id = ?
+        WHERE source = ? AND stream_id = ?
         GROUP BY status
         """,
-        (opencode_session_id,),
+        (source, stream_id),
     ).fetchall()
     counts = {"started": 0, "running": 0, "completed": 0, "error": 0}
     for row in rows:
@@ -850,16 +966,23 @@ def raw_event_batch_status_counts(
 
 
 def raw_event_queue_status_counts(
-    conn: sqlite3.Connection, opencode_session_id: str
+    conn: sqlite3.Connection,
+    opencode_session_id: str,
+    *,
+    source: str = "opencode",
 ) -> dict[str, int]:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     rows = conn.execute(
         """
         SELECT status, COUNT(*) AS n
         FROM raw_event_flush_batches
-        WHERE opencode_session_id = ?
+        WHERE source = ? AND stream_id = ?
         GROUP BY status
         """,
-        (opencode_session_id,),
+        (source, stream_id),
     ).fetchall()
     counts = {
         RAW_EVENT_QUEUE_PENDING: 0,
@@ -898,17 +1021,25 @@ def claim_raw_event_flush_batch(conn: sqlite3.Connection, batch_id: int) -> bool
 
 
 def raw_event_error_batches(
-    conn: sqlite3.Connection, opencode_session_id: str, limit: int = 10
+    conn: sqlite3.Connection,
+    opencode_session_id: str,
+    *,
+    source: str = "opencode",
+    limit: int = 10,
 ) -> list[dict[str, Any]]:
+    source, stream_id = _normalize_stream_identity(
+        source=source,
+        stream_id=opencode_session_id,
+    )
     rows = conn.execute(
         """
         SELECT id, start_event_seq, end_event_seq, extractor_version, status, updated_at
         FROM raw_event_flush_batches
-        WHERE opencode_session_id = ? AND status IN ('error', ?)
+        WHERE source = ? AND stream_id = ? AND status IN ('error', ?)
         ORDER BY updated_at DESC
         LIMIT ?
         """,
-        (opencode_session_id, RAW_EVENT_QUEUE_FAILED, limit),
+        (source, stream_id, RAW_EVENT_QUEUE_FAILED, limit),
     ).fetchall()
     items: list[dict[str, Any]] = []
     for row in rows:

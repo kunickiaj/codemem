@@ -165,7 +165,7 @@ def test_ingest_claude_hook_cmd_flushes_stop_hook_when_assistant_text_missing() 
 
     def _fake_flush(*_: object, **kwargs: object) -> dict[str, int]:
         called["flush"] += 1
-        assert kwargs["opencode_session_id"] == "claude:sess-1"
+        assert kwargs["opencode_session_id"] == "sess-1"
         return {"flushed": 0, "updated_state": 0}
 
     with (
@@ -231,8 +231,8 @@ def test_hooks_template_matches_allowlist_events() -> None:
 
 
 def test_adapter_stream_id_uses_source_and_session_only() -> None:
-    stream_id = _adapter_stream_id(source="claude", session_id="sess-1", cwd="/tmp/worktree-a")
-    assert stream_id == "claude:sess-1"
+    stream_id = _adapter_stream_id(session_id="sess-1")
+    assert stream_id == "sess-1"
 
 
 def test_queue_adapter_event_writes_claude_hook_payload() -> None:
@@ -258,7 +258,7 @@ def test_queue_adapter_event_writes_claude_hook_payload() -> None:
     assert queued is not None
     stream_id, inserted = queued
     assert inserted is True
-    assert stream_id == "claude:sess-queue"
+    assert stream_id == "sess-queue"
     record = calls["record"]
     assert isinstance(record, dict)
     assert record["event_type"] == "claude.hook"
