@@ -132,3 +132,29 @@ def test_map_claude_hook_payload_marks_generated_timestamp_when_missing() -> Non
     assert mapped is not None
     assert mapped["meta"]["ts_normalized"] == "generated"
     assert mapped["event_id"].startswith("cld_evt_")
+
+
+def test_map_claude_hook_payload_missing_ts_generates_distinct_event_ids(
+    monkeypatch,
+) -> None:
+    payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": "sess-repeat",
+        "source": "startup",
+    }
+    generated = iter(
+        [
+            "2026-03-02T20:00:00.000000Z",
+            "2026-03-02T20:00:00.000001Z",
+        ]
+    )
+
+    monkeypatch.setattr("codemem.claude_hooks._now_iso", lambda: next(generated))
+
+    first = map_claude_hook_payload(payload)
+    second = map_claude_hook_payload(payload)
+
+    assert first is not None
+    assert second is not None
+    assert first["ts"] != second["ts"]
+    assert first["event_id"] != second["event_id"]
