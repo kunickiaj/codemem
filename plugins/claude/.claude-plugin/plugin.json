@@ -1,0 +1,18 @@
+{
+  "name": "codemem",
+  "description": "Persistent memory for Claude Code. Capture work across sessions and recall relevant context.",
+  "version": "0.15.0",
+  "author": {
+    "name": "Adam Kunicki"
+  },
+  "repository": "https://github.com/kunickiaj/codemem",
+  "license": "MIT",
+  "mcpServers": {
+    "codemem": {
+      "command": "codemem",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

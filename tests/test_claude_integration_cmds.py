@@ -5,82 +5,13 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from codemem import __version__
 from codemem.commands.claude_integration_cmds import (
     ALLOWED_HOOK_EVENTS,
     _adapter_stream_id,
-    _build_install_report,
-    _load_json_or_empty,
-    _merge_enabled_plugins,
     _queue_adapter_event,
     ingest_claude_hook_cmd,
-    install_claude_integration_cmd,
 )
-
-
-def test_merge_enabled_plugins_preserves_existing_entries() -> None:
-    settings = {
-        "enabledPlugins": ["./plugins/existing"],
-        "other": {"x": 1},
-    }
-
-    merged = _merge_enabled_plugins(settings, "./plugins/codemem")
-
-    assert merged["enabledPlugins"] == ["./plugins/existing", "./plugins/codemem"]
-    assert merged["other"] == {"x": 1}
-
-
-def test_build_install_report_shape() -> None:
-    report = _build_install_report(
-        plugin_dir=Path("/tmp/.claude/plugins/codemem"),
-        settings_path=Path("/tmp/.claude/settings.json"),
-        plugin_ref="./plugins/codemem",
-    )
-
-    assert set(report.keys()) == {
-        "plugin_dir",
-        "settings_path",
-        "enabled_plugin",
-        "hook_entrypoint",
-    }
-    assert report["enabled_plugin"] == "./plugins/codemem"
-
-
-def test_install_claude_integration_writes_plugin_and_settings(monkeypatch, tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    (source / ".claude-plugin").mkdir(parents=True)
-    (source / "hooks").mkdir(parents=True)
-    (source / "scripts").mkdir(parents=True)
-    (source / ".claude-plugin" / "plugin.json").write_text('{"name":"codemem"}\n')
-    (source / "hooks" / "hooks.json").write_text('{"hooks":{}}\n')
-    (source / "scripts" / "ingest-hook.sh").write_text("#!/usr/bin/env bash\n")
-
-    monkeypatch.setattr(
-        "codemem.commands.claude_integration_cmds._resolve_claude_plugin_source",
-        lambda: source,
-    )
-
-    report = install_claude_integration_cmd(force=False, cwd=tmp_path)
-
-    assert report["enabled_plugin"] == "./plugins/codemem"
-    installed_plugin = (
-        tmp_path / ".claude" / "plugins" / "codemem" / ".claude-plugin" / "plugin.json"
-    )
-    settings_path = tmp_path / ".claude" / "settings.json"
-    assert installed_plugin.exists()
-    assert settings_path.exists()
-    assert "./plugins/codemem" in settings_path.read_text()
-
-
-def test_load_json_or_empty_rejects_non_object(tmp_path: Path) -> None:
-    path = tmp_path / "settings.json"
-    path.write_text("[]\n")
-
-    try:
-        _load_json_or_empty(path)
-    except ValueError as exc:
-        assert "JSON object" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError for non-object JSON")
 
 
 def test_ingest_claude_hook_cmd_skips_pre_tool_use_hook() -> None:
@@ -224,10 +155,43 @@ def test_ingest_claude_hook_cmd_skips_unmappable_hook() -> None:
 
 def test_hooks_template_matches_allowlist_events() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    hooks_path = repo_root / ".claude" / "plugin" / "codemem" / "hooks" / "hooks.json"
+    hooks_path = repo_root / "plugins" / "claude" / "hooks" / "hooks.json"
     hooks_payload = json.loads(hooks_path.read_text())
 
     assert set(hooks_payload["hooks"].keys()) == ALLOWED_HOOK_EVENTS
+
+
+def test_claude_plugin_manifest_version_matches_package_version() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    plugin_manifest_path = repo_root / "plugins" / "claude" / ".claude-plugin" / "plugin.json"
+    plugin_manifest = json.loads(plugin_manifest_path.read_text())
+
+    assert plugin_manifest["name"] == "codemem"
+    assert plugin_manifest["version"] == __version__
+    assert plugin_manifest["description"].startswith("Persistent memory for Claude Code")
+    assert "hooks" not in plugin_manifest
+    mcp_servers = plugin_manifest["mcpServers"]
+    assert mcp_servers["codemem"]["command"] == "codemem"
+    assert mcp_servers["codemem"]["args"] == ["mcp"]
+
+
+def test_marketplace_manifest_points_to_codemem_plugin() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    marketplace_path = repo_root / ".claude-plugin" / "marketplace.json"
+    marketplace = json.loads(marketplace_path.read_text())
+
+    assert marketplace["name"] == "codemem-marketplace"
+    plugins = marketplace["plugins"]
+    assert isinstance(plugins, list)
+    assert len(plugins) == 1
+    codemem_plugin = plugins[0]
+    assert codemem_plugin["name"] == "codemem"
+    assert codemem_plugin["source"] == "./plugins/claude"
+    assert codemem_plugin["version"] == __version__
+    assert codemem_plugin["description"].startswith("Persistent memory for Claude Code")
+
+    resolved_plugin_path = repo_root / codemem_plugin["source"]
+    assert resolved_plugin_path.exists()
 
 
 def test_adapter_stream_id_uses_source_and_session_only() -> None:

@@ -1,6 +1,0 @@
-{
-  "name": "codemem",
-  "description": "codemem hook-first ingestion for Claude Code",
-  "version": "0.1.0",
-  "hooks": "./hooks/hooks.json"
-}

@@ -10,10 +10,7 @@ import typer
 from rich import print
 
 from . import __version__, db
-from .commands.claude_integration_cmds import (
-    ingest_claude_hook_cmd,
-    install_claude_integration_cmd,
-)
+from .commands.claude_integration_cmds import ingest_claude_hook_cmd
 from .commands.common import (
     compact_lines,
     compact_list,
@@ -1199,17 +1196,6 @@ def install_mcp(
 ) -> None:
     """Install the codemem MCP entry into OpenCode's config."""
     install_mcp_cmd(force=force)
-
-
-@app.command("install-claude-integration")
-def install_claude_integration(
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Overwrite existing Claude plugin files"
-    ),
-) -> None:
-    """Install codemem Claude plugin + hook scaffolding in the current project."""
-
-    install_claude_integration_cmd(force=force)
 
 
 def main() -> None:

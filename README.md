@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/kunickiaj/codemem/branch/main/graph/badge.svg)](https://codecov.io/gh/kunickiaj/codemem) [![Release](https://img.shields.io/github/v/release/kunickiaj/codemem)](https://github.com/kunickiaj/codemem/releases)
 
-Persistent memory for [OpenCode](https://opencode.ai). codemem captures what you work on across sessions, retrieves relevant context using hybrid search, and injects it into future prompts automatically.
+Persistent memory for [OpenCode](https://opencode.ai) and Claude Code. codemem captures what you work on across sessions, retrieves relevant context using hybrid search, and injects relevant context automatically in OpenCode.
 
 - **Local-first** — everything lives in SQLite on your machine
 - **Hybrid retrieval** — FTS5 BM25 lexical search + sqlite-vec semantic search, merged and re-ranked
 - **Automatic injection** — the OpenCode plugin injects context into every prompt, no manual steps
+- **Claude Code plugin support** — install from the codemem marketplace source
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
 - **Peer-to-peer sync** — replicate memories across machines without a central service
 
@@ -42,11 +43,22 @@ codemem raw-events-status
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
 
+### Claude Code (marketplace install)
+
+In Claude Code, add the codemem marketplace source and install the plugin:
+
+```text
+/plugin marketplace add kunickiaj/codemem
+/plugin install codemem
+```
+
+Claude hook events are ingested through `codemem ingest-claude-hook` and share the same raw-event queue pipeline used by OpenCode.
+
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 
 ## How it works
 
-The plugin hooks into OpenCode's event system. It captures tool calls and conversation messages, flushes them through an observer pipeline that produces typed memories, and injects relevant context back into future prompts.
+Adapters hook into runtime event systems (OpenCode plugin and Claude hooks). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
 
 ```mermaid
 sequenceDiagram

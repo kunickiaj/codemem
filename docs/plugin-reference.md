@@ -13,17 +13,21 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 3. Use `codemem stats` and `codemem recent` to confirm ingestion.
 4. Browse the viewer at the printed URL.
 
-## Claude integration commands
+## Claude marketplace install
 
-CodeMem's Claude integration is currently hook-first: it installs a Claude plugin template and ingests Claude hook payloads from stdin.
-Claude hook payloads are spooled into the same raw-event queue pipeline used by OpenCode stream ingestion.
+CodeMem's Claude integration is hook-first and distributed through a Claude plugin marketplace source in this repo (`.claude-plugin/marketplace.json`).
 
-Install or refresh the Claude integration in the current project:
+In Claude Code, add the marketplace and install the plugin:
 
-```bash
-codemem install-claude-integration
-# overwrite template files if already installed
-codemem install-claude-integration --force
+```text
+/plugin marketplace add kunickiaj/codemem
+/plugin install codemem
+```
+
+You can update an existing marketplace install with:
+
+```text
+/plugin marketplace update codemem-marketplace
 ```
 
 Ingest one Claude hook payload from stdin (this is what the installed hook script calls):
@@ -34,7 +38,7 @@ printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/t
 
 By default, `Stop` and `SessionEnd` trigger an immediate queue flush attempt. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to disable that behavior.
 
-The installed template currently registers these hook events in `.claude/plugins/codemem/hooks/hooks.json`:
+The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
 - `UserPromptSubmit`
 - `PostToolUse`
