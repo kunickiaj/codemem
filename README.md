@@ -124,8 +124,15 @@ Common overrides:
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 
 The viewer includes a Settings modal for observer provider/model plus runtime/auth fields.
-Observer auth sources in `0.16` are API-style (`env`, `file`, `command`) and support
-templated headers like `Authorization: Bearer ${auth.token}` for gateway flows.
+
+Observer runtime/auth in `0.16`:
+
+- Runtime options: `api_http` and `claude_sidecar` (reserved; currently not implemented, so it falls back to `api_http` with a warning).
+- Auth sources: `auto`, `env`, `file`, `command`, `none`.
+- `observer_auth_command` must be a JSON string array (argv), not a space-separated string.
+  - Config file example: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
+  - Env var example: `CODEMEM_OBSERVER_AUTH_COMMAND='["iap-auth","--audience","example"]'`
+- Header templates support `${auth.token}`, `${auth.type}`, and `${auth.source}` (for example `Authorization: Bearer ${auth.token}`).
 
 ## Export and import
 

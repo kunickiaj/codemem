@@ -87,9 +87,11 @@ Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
 
 Observer execution in `0.16` uses API-style auth paths.
 
+- Runtime values: `api_http`, `claude_sidecar`.
+- `claude_sidecar` is reserved/not implemented yet; codemem logs a warning and runs through `api_http`.
+- Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - Supported: API keys and gateway tokens codemem can read directly.
-- Supported token sources: `env`, `file`, `command`.
-- Not yet supported: direct Pro/Max subscription observer runtime bridge.
+- Custom provider path does not implicitly fall back to OpenCode/IAP env tokens; use provider key, `CODEMEM_OBSERVER_API_KEY`, `file`, or `command`.
 
 For command-refreshed gateway auth, configure a command token source plus templated headers:
 
@@ -98,7 +100,7 @@ For command-refreshed gateway auth, configure a command token source plus templa
   "observer_provider": "your-gateway-provider",
   "observer_runtime": "api_http",
   "observer_auth_source": "command",
-  "observer_auth_command": ["iap-auth"],
+  "observer_auth_command": ["iap-auth", "--audience", "example"],
   "observer_auth_timeout_ms": 1500,
   "observer_auth_cache_ttl_s": 300,
   "observer_headers": {
@@ -107,13 +109,21 @@ For command-refreshed gateway auth, configure a command token source plus templa
 }
 ```
 
+`observer_auth_command` is direct argv execution (no shell interpolation).
+
+- Config key type: JSON string array (`["cmd", "arg1", "arg2"]`).
+- Env var `CODEMEM_OBSERVER_AUTH_COMMAND` must also be a JSON string array (for example `'["iap-auth","--audience","example"]'`), not a space-separated command string.
+
 Header template variables:
 
 - `${auth.token}`
 - `${auth.type}`
 - `${auth.source}`
 
-`observer_auth_command` runs as direct argv execution (no shell interpolation).
+Command/file token cache behavior:
+
+- Successful token resolutions are cached for `observer_auth_cache_ttl_s`.
+- Failed token resolutions are not cached.
 
 ## Stream-only mode (advanced)
 
@@ -211,7 +221,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_OBSERVER_PROVIDER` | Force `openai`, `anthropic`, or a custom provider key (optional). |
 | `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
-| `CODEMEM_OBSERVER_RUNTIME` | Observer runtime mode (`api_http`, `claude_sidecar`; sidecar reserved for follow-up). |
+| `CODEMEM_OBSERVER_RUNTIME` | Observer runtime mode (`api_http`, `claude_sidecar`; `claude_sidecar` is reserved/not implemented yet). |
 | `CODEMEM_OBSERVER_AUTH_SOURCE` | Observer auth source (`auto`, `env`, `file`, `command`, `none`). |
 | `CODEMEM_OBSERVER_AUTH_FILE` | Path to token file used when auth source is `file`. |
 | `CODEMEM_OBSERVER_AUTH_COMMAND` | Command argv as a JSON string array used when auth source is `command`. |

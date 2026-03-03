@@ -20,18 +20,27 @@
 
 ## Observer auth configuration
 
-- `0.16` observer flow supports API key/gateway token auth sources: `env`, `file`, `command`.
-- Pro/Max subscription runtime bridging for observer calls is a follow-up item.
+- Runtime choices are `api_http` and `claude_sidecar`.
+- `claude_sidecar` is currently reserved/not implemented; codemem logs a warning and uses `api_http`.
+- Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
+- `observer_auth_command` is argv and must be a JSON string array, not a space-separated string.
+  - Config file form: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
+  - Env var form (`CODEMEM_OBSERVER_AUTH_COMMAND`): `'["iap-auth","--audience","example"]'`
+- Header templates can use `${auth.token}`, `${auth.type}`, and `${auth.source}`.
 
 Example command-token gateway config:
 
 ```json
 {
   "observer_provider": "your-gateway-provider",
+  "observer_runtime": "api_http",
   "observer_auth_source": "command",
-  "observer_auth_command": ["iap-auth"],
+  "observer_auth_command": ["iap-auth", "--audience", "example"],
+  "observer_auth_timeout_ms": 1500,
+  "observer_auth_cache_ttl_s": 300,
   "observer_headers": {
-    "Authorization": "Bearer ${auth.token}"
+    "Authorization": "Bearer ${auth.token}",
+    "X-Auth-Source": "${auth.source}"
   }
 }
 ```
@@ -41,6 +50,11 @@ Header template variables:
 - `${auth.token}`
 - `${auth.type}`
 - `${auth.source}`
+
+Command/file token caching notes:
+
+- Successful `file`/`command` token resolutions are cached for `observer_auth_cache_ttl_s`.
+- Failed `file`/`command` resolutions are not cached (codemem clears stale cache and retries on the next call).
 
 ## Memory persistence
 - A session is created per ingest payload.
