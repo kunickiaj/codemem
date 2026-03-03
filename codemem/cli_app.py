@@ -10,6 +10,10 @@ import typer
 from rich import print
 
 from . import __version__, db
+from .commands.claude_integration_cmds import (
+    ingest_claude_hook_cmd,
+    install_claude_integration_cmd,
+)
 from .commands.common import (
     compact_lines,
     compact_list,
@@ -51,6 +55,7 @@ from .commands.memory_cmds import (
 )
 from .commands.opencode_integration_cmds import install_mcp_cmd, install_plugin_cmd
 from .commands.raw_events_cmds import (
+    enqueue_raw_event_cmd,
     flush_raw_events_cmd,
     raw_events_gate_cmd,
     raw_events_retry_cmd,
@@ -551,6 +556,19 @@ def flush_raw_events(
         store.close()
 
 
+@app.command("enqueue-raw-event")
+def enqueue_raw_event(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+) -> None:
+    """Enqueue one raw event from stdin into the durable queue."""
+
+    store = _store(db_path)
+    try:
+        enqueue_raw_event_cmd(store)
+    finally:
+        store.close()
+
+
 @app.command("raw-events-status")
 def raw_events_status(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
@@ -688,6 +706,13 @@ def mcp() -> None:
 def ingest() -> None:
     """Ingest plugin events from stdin."""
     ingest_cmd()
+
+
+@app.command("ingest-claude-hook")
+def ingest_claude_hook() -> None:
+    """Ingest one Claude hook payload from stdin."""
+
+    ingest_claude_hook_cmd()
 
 
 @app.command()
@@ -1174,6 +1199,17 @@ def install_mcp(
 ) -> None:
     """Install the codemem MCP entry into OpenCode's config."""
     install_mcp_cmd(force=force)
+
+
+@app.command("install-claude-integration")
+def install_claude_integration(
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Overwrite existing Claude plugin files"
+    ),
+) -> None:
+    """Install codemem Claude plugin + hook scaffolding in the current project."""
+
+    install_claude_integration_cmd(force=force)
 
 
 def main() -> None:

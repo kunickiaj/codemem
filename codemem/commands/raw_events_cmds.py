@@ -1,9 +1,117 @@
 from __future__ import annotations
 
+import json
+import sys
+from typing import Any
+
 import typer
 from rich import print
 
 from codemem.store import MemoryStore
+
+
+def _coerce_optional_str(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be string")
+    text = value.strip()
+    return text or None
+
+
+def _require_non_empty_str(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be string")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{key} required")
+    return text
+
+
+def _coerce_optional_int(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be int")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be int") from exc
+
+
+def _coerce_optional_float(payload: dict[str, Any], key: str) -> float | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        raise ValueError(f"{key} must be number")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be number") from exc
+
+
+def enqueue_raw_event_cmd(store: MemoryStore) -> None:
+    """Read one raw event from stdin and enqueue it."""
+
+    raw = sys.stdin.read()
+    if not raw.strip():
+        raise typer.BadParameter("stdin payload required")
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter("stdin must be valid JSON object") from exc
+    if not isinstance(payload, dict):
+        raise typer.BadParameter("payload must be an object")
+
+    try:
+        opencode_session_id = _require_non_empty_str(payload, "opencode_session_id")
+        event_type = _require_non_empty_str(payload, "event_type")
+        event_payload = payload.get("payload")
+        if event_payload is None:
+            event_payload = {}
+        if not isinstance(event_payload, dict):
+            raise ValueError("payload must be an object")
+
+        event_id_value = payload.get("event_id")
+        if event_id_value is None:
+            event_id_value = event_payload.get("_raw_event_id")
+        if event_id_value is None:
+            raise ValueError("event_id required")
+        if not isinstance(event_id_value, str):
+            raise ValueError("event_id must be string")
+        event_id = event_id_value.strip()
+        if not event_id:
+            raise ValueError("event_id required")
+
+        ts_wall_ms = _coerce_optional_int(payload, "ts_wall_ms")
+        ts_mono_ms = _coerce_optional_float(payload, "ts_mono_ms")
+        cwd = _coerce_optional_str(payload, "cwd")
+        project = _coerce_optional_str(payload, "project")
+        started_at = _coerce_optional_str(payload, "started_at")
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    inserted = store.record_raw_event(
+        opencode_session_id=opencode_session_id,
+        event_id=event_id,
+        event_type=event_type,
+        payload=event_payload,
+        ts_wall_ms=ts_wall_ms,
+        ts_mono_ms=ts_mono_ms,
+    )
+    store.update_raw_event_session_meta(
+        opencode_session_id=opencode_session_id,
+        cwd=cwd,
+        project=project,
+        started_at=started_at,
+        last_seen_ts_wall_ms=ts_wall_ms,
+    )
+    print(json.dumps({"inserted": int(inserted)}))
 
 
 def flush_raw_events_cmd(
