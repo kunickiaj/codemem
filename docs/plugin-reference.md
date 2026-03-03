@@ -42,7 +42,7 @@ The installed template currently registers these hook events in `.claude/plugins
 - `Stop`
 - `SessionEnd`
 
-`PreToolUse` is intentionally deferred in the default template until tool-call persistence is enabled end-to-end.
+`PreToolUse` is intentionally deferred in the default template. Current memory extraction uses `PostToolUse` / `PostToolUseFailure` (`tool_result`) as the shipped Claude tool signal.
 
 ## Post-restart config sanity checklist
 
@@ -143,6 +143,10 @@ When ingesting plugin payloads, CodeMem stores a normalized project label instea
   - `D:/dev/client-demo` -> `client-demo`
   - `\\server\share\team\project-x` -> `project-x`
 - `CODEMEM_PROJECT` still has highest precedence and is normalized the same way.
+
+### Multi-adapter project unification
+
+If you run multiple adapters for the same project (for example OpenCode + Claude), set a shared `CODEMEM_PROJECT` value in both runtimes to guarantee unified project grouping in memory retrieval.
 
 ## Environment hints
 
