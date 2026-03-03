@@ -29,7 +29,9 @@ def _safe_json_list(value: str | None) -> list[str]:
     return items
 
 
-def _session_discovery_tokens_from_raw_events(store: MemoryStore, opencode_session_id: str) -> int:
+def _session_discovery_tokens_from_raw_events(
+    store: MemoryStore, *, source: str, stream_id: str
+) -> int:
     row = store.conn.execute(
         """
         SELECT
@@ -45,11 +47,12 @@ def _session_discovery_tokens_from_raw_events(store: MemoryStore, opencode_sessi
                 0
             ) AS total_tokens
         FROM raw_events
-        WHERE opencode_session_id = ?
+        WHERE source = ?
+          AND stream_id = ?
           AND event_type = 'assistant_usage'
           AND json_valid(payload_json) = 1
         """,
-        (opencode_session_id,),
+        (source, stream_id),
     ).fetchone()
     if row is None:
         return 0
@@ -57,7 +60,7 @@ def _session_discovery_tokens_from_raw_events(store: MemoryStore, opencode_sessi
 
 
 def _session_discovery_tokens_by_prompt(
-    store: MemoryStore, opencode_session_id: str
+    store: MemoryStore, *, source: str, stream_id: str
 ) -> dict[int, int]:
     rows = store.conn.execute(
         """
@@ -75,13 +78,14 @@ def _session_discovery_tokens_by_prompt(
                 0
             ) AS total_tokens
         FROM raw_events
-        WHERE opencode_session_id = ?
+        WHERE source = ?
+          AND stream_id = ?
           AND event_type = 'assistant_usage'
           AND json_valid(payload_json) = 1
           AND json_extract(payload_json, '$.prompt_number') IS NOT NULL
         GROUP BY CAST(json_extract(payload_json, '$.prompt_number') AS INTEGER)
         """,
-        (opencode_session_id,),
+        (source, stream_id),
     ).fetchall()
     totals: dict[int, int] = {}
     for row in rows:
@@ -178,7 +182,11 @@ def backfill_discovery_tokens(store: MemoryStore, *, limit_sessions: int = 50) -
 
     target_rows = store.conn.execute(
         """
-        SELECT DISTINCT s.id AS session_id, os.opencode_session_id AS opencode_session_id
+        SELECT DISTINCT
+            s.id AS session_id,
+            os.source AS source,
+            os.stream_id AS stream_id,
+            os.opencode_session_id AS opencode_session_id
         FROM sessions s
         JOIN opencode_sessions os ON os.session_id = s.id
         JOIN memory_items mi ON mi.session_id = s.id
@@ -196,8 +204,9 @@ def backfill_discovery_tokens(store: MemoryStore, *, limit_sessions: int = 50) -
     updated = 0
     for row in target_rows:
         session_id = int(row["session_id"])
-        opencode_session_id = str(row["opencode_session_id"] or "").strip()
-        if not opencode_session_id:
+        source = str(row["source"] or "").strip().lower() or "opencode"
+        stream_id = str(row["stream_id"] or "").strip()
+        if not stream_id:
             continue
 
         items = store.conn.execute(
@@ -229,14 +238,18 @@ def backfill_discovery_tokens(store: MemoryStore, *, limit_sessions: int = 50) -
         if not grouped:
             continue
 
-        by_prompt = _session_discovery_tokens_by_prompt(store, opencode_session_id)
-        session_tokens = _session_discovery_tokens_from_raw_events(store, opencode_session_id)
+        by_prompt = _session_discovery_tokens_by_prompt(store, source=source, stream_id=stream_id)
+        session_tokens = _session_discovery_tokens_from_raw_events(
+            store,
+            source=source,
+            stream_id=stream_id,
+        )
         source_label = "usage" if session_tokens > 0 else "estimate"
         if session_tokens <= 0:
             session_tokens = _session_discovery_tokens_from_transcript(store, session_id)
 
         group_tokens: dict[int | None, int] = {}
-        keys = sorted(grouped.keys(), key=lambda k: (-1 if k is None else k))
+        keys = sorted(grouped.keys(), key=lambda k: -1 if k is None else k)
         if by_prompt:
             assigned = 0
             for key in keys:
@@ -269,11 +282,9 @@ def backfill_discovery_tokens(store: MemoryStore, *, limit_sessions: int = 50) -
                     group_tokens[key] = max(0, int(total))
 
         now = store._now_iso()
+        stream_key = stream_id if source == "opencode" else f"{source}:{stream_id}"
         for key, group_items in grouped.items():
-            if key is None:
-                group_id = f"{opencode_session_id}:unknown"
-            else:
-                group_id = f"{opencode_session_id}:p{key}"
+            group_id = f"{stream_key}:unknown" if key is None else f"{stream_key}:p{key}"
             tokens_value = group_tokens.get(key)
             tokens = int(tokens_value) if isinstance(tokens_value, int) else 0
             for memory_id, meta in group_items:
@@ -481,7 +492,7 @@ def normalize_projects(store: MemoryStore, *, dry_run: bool = True) -> dict[str,
         "SELECT id, cwd, project FROM sessions ORDER BY started_at DESC"
     ).fetchall()
     raw_rows = store.conn.execute(
-        "SELECT opencode_session_id, cwd, project FROM raw_event_sessions"
+        "SELECT source, stream_id, cwd, project FROM raw_event_sessions"
     ).fetchall()
     usage_rows = store.conn.execute(
         "SELECT id, metadata_json FROM usage_events WHERE event = 'pack'"
@@ -513,9 +524,12 @@ def normalize_projects(store: MemoryStore, *, dry_run: bool = True) -> dict[str,
         if new_value is not None and new_value != proj:
             session_updates.append((new_value, session_id))
 
-    raw_updates: list[tuple[str | None, str]] = []
+    raw_updates: list[tuple[str | None, str, str]] = []
     for row in raw_rows:
-        opencode_session_id = str(row["opencode_session_id"])
+        source = str(row["source"] or "").strip().lower() or "opencode"
+        stream_id = str(row["stream_id"] or "").strip()
+        if not stream_id:
+            continue
         cwd = row["cwd"]
         project = row["project"]
         if not project or not isinstance(project, str):
@@ -533,7 +547,7 @@ def normalize_projects(store: MemoryStore, *, dry_run: bool = True) -> dict[str,
                 new_value = base
                 rewritten_paths.setdefault(proj, base)
         if new_value is not None and new_value != proj:
-            raw_updates.append((new_value, opencode_session_id))
+            raw_updates.append((new_value, source, stream_id))
 
     usage_updates: list[tuple[str, int]] = []
     for row in usage_rows:
@@ -572,10 +586,10 @@ def normalize_projects(store: MemoryStore, *, dry_run: bool = True) -> dict[str,
             "UPDATE sessions SET project = ? WHERE id = ?",
             (project, session_id),
         )
-    for project, opencode_session_id in raw_updates:
+    for project, source, stream_id in raw_updates:
         store.conn.execute(
-            "UPDATE raw_event_sessions SET project = ? WHERE opencode_session_id = ?",
-            (project, opencode_session_id),
+            "UPDATE raw_event_sessions SET project = ? WHERE source = ? AND stream_id = ?",
+            (project, source, stream_id),
         )
     for metadata_json, usage_id in usage_updates:
         store.conn.execute(
@@ -626,7 +640,7 @@ def rename_project(
 
     raw_rows = store.conn.execute(
         """
-        SELECT opencode_session_id, project FROM raw_event_sessions
+        SELECT source, stream_id, project FROM raw_event_sessions
         WHERE project = ?
            OR project LIKE ? ESCAPE '!'
            OR project LIKE ? ESCAPE '!'
@@ -668,8 +682,12 @@ def rename_project(
             )
         for row in raw_rows:
             store.conn.execute(
-                "UPDATE raw_event_sessions SET project = ? WHERE opencode_session_id = ?",
-                (new_basename, str(row["opencode_session_id"])),
+                "UPDATE raw_event_sessions SET project = ? WHERE source = ? AND stream_id = ?",
+                (
+                    new_basename,
+                    str(row["source"] or "").strip().lower() or "opencode",
+                    str(row["stream_id"] or "").strip(),
+                ),
             )
         for metadata_json, usage_id in usage_updates:
             store.conn.execute(

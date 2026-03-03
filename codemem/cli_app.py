@@ -533,8 +533,9 @@ def backfill_discovery_tokens(
 
 @app.command("flush-raw-events")
 def flush_raw_events(
-    opencode_session_id: str = typer.Argument(..., help="OpenCode session id"),
+    stream_id: str = typer.Argument(..., help="Stream id"),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
+    source: str = typer.Option("opencode", help="Adapter source for the stream"),
     cwd: str | None = typer.Option(None, help="Working directory for capture context"),
     project: str | None = typer.Option(None, help="Project identifier"),
     started_at: str | None = typer.Option(None, help="ISO timestamp for session start"),
@@ -546,7 +547,8 @@ def flush_raw_events(
     try:
         flush_raw_events_cmd(
             store,
-            opencode_session_id=opencode_session_id,
+            opencode_session_id=stream_id,
+            source=source,
             cwd=cwd,
             project=project,
             started_at=started_at,
@@ -585,15 +587,21 @@ def raw_events_status(
 
 @app.command("raw-events-retry")
 def raw_events_retry(
-    opencode_session_id: str = typer.Argument(..., help="OpenCode session id"),
+    stream_id: str = typer.Argument(..., help="Stream id"),
     db_path: str = typer.Option(None, help="Path to SQLite database"),
+    source: str = typer.Option("opencode", help="Adapter source for the stream"),
     limit: int = typer.Option(5, help="Max error batches to retry"),
 ) -> None:
     """Retry error raw-event flush batches for a session."""
 
     store = _store(db_path)
     try:
-        raw_events_retry_cmd(store, opencode_session_id=opencode_session_id, limit=limit)
+        raw_events_retry_cmd(
+            store,
+            opencode_session_id=stream_id,
+            source=source,
+            limit=limit,
+        )
     finally:
         store.close()
 

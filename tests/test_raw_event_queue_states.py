@@ -20,6 +20,8 @@ def test_raw_event_queue_status_counts_maps_legacy_states(tmp_path: Path) -> Non
             store.conn.execute(
                 """
                 INSERT INTO raw_event_flush_batches(
+                    source,
+                    stream_id,
                     opencode_session_id,
                     start_event_seq,
                     end_event_seq,
@@ -27,9 +29,9 @@ def test_raw_event_queue_status_counts_maps_legacy_states(tmp_path: Path) -> Non
                     status,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("sess", seq, seq, "v1", status, now, now),
+                ("opencode", "sess", "sess", seq, seq, "v1", status, now, now),
             )
         store.conn.commit()
 
@@ -54,6 +56,8 @@ def test_raw_event_batch_status_counts_handles_canonical_states(tmp_path: Path) 
             store.conn.execute(
                 """
                 INSERT INTO raw_event_flush_batches(
+                    source,
+                    stream_id,
                     opencode_session_id,
                     start_event_seq,
                     end_event_seq,
@@ -61,9 +65,9 @@ def test_raw_event_batch_status_counts_handles_canonical_states(tmp_path: Path) 
                     status,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("sess", seq, seq, "v1", status, now, now),
+                ("opencode", "sess", "sess", seq, seq, "v1", status, now, now),
             )
         store.conn.commit()
 
@@ -136,6 +140,8 @@ def test_raw_event_failed_canonical_batch_is_recoverable_by_reclaim(tmp_path: Pa
         store.conn.execute(
             """
             INSERT INTO raw_event_flush_batches(
+                source,
+                stream_id,
                 opencode_session_id,
                 start_event_seq,
                 end_event_seq,
@@ -144,9 +150,9 @@ def test_raw_event_failed_canonical_batch_is_recoverable_by_reclaim(tmp_path: Pa
                 created_at,
                 updated_at,
                 attempt_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("sess", 10, 11, "v1", "failed", now, now, 1),
+            ("opencode", "sess", "sess", 10, 11, "v1", "failed", now, now, 1),
         )
         batch_id = int(store.conn.execute("SELECT id FROM raw_event_flush_batches").fetchone()[0])
         store.conn.commit()

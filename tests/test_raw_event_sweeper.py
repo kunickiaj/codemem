@@ -225,6 +225,8 @@ def test_raw_event_sweeper_skips_stale_queue_sessions_without_backlog(
         store.conn.execute(
             """
             INSERT INTO raw_event_flush_batches(
+                source,
+                stream_id,
                 opencode_session_id,
                 start_event_seq,
                 end_event_seq,
@@ -232,9 +234,11 @@ def test_raw_event_sweeper_skips_stale_queue_sessions_without_backlog(
                 status,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                "opencode",
+                "sess-stale",
                 "sess-stale",
                 0,
                 0,
@@ -247,6 +251,8 @@ def test_raw_event_sweeper_skips_stale_queue_sessions_without_backlog(
         store.conn.execute(
             """
             INSERT INTO raw_event_flush_batches(
+                source,
+                stream_id,
                 opencode_session_id,
                 start_event_seq,
                 end_event_seq,
@@ -254,9 +260,11 @@ def test_raw_event_sweeper_skips_stale_queue_sessions_without_backlog(
                 status,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                "opencode",
+                "sess-real",
                 "sess-real",
                 0,
                 1,

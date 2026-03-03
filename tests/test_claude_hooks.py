@@ -68,7 +68,9 @@ def test_build_ingest_payload_wraps_adapter_event() -> None:
     ingest_payload = build_ingest_payload_from_hook(payload)
 
     assert ingest_payload is not None
-    assert ingest_payload["session_context"]["opencode_session_id"] == "claude:sess-xyz"
+    assert ingest_payload["session_context"]["source"] == "claude"
+    assert ingest_payload["session_context"]["stream_id"] == "sess-xyz"
+    assert ingest_payload["session_context"]["opencode_session_id"] == "sess-xyz"
     event = ingest_payload["events"][0]
     assert event["_adapter"]["event_type"] == "session_start"
 
