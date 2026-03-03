@@ -1,12 +1,12 @@
 # Architecture
 
-codemem has five main pieces: a **plugin** that captures OpenCode activity, an **ingest pipeline** that turns raw events into typed memories, a **store** backed by SQLite, a **retrieval system** that combines keyword and semantic search, and a **viewer** for browsing everything.
+codemem has five main pieces: **adapters** that capture shell/runtime activity, an **ingest pipeline** that turns raw events into typed memories, a **store** backed by SQLite, a **retrieval system** that combines keyword and semantic search, and a **viewer** for browsing everything.
 
 ## Components
 
 | Component | What it does | Key files |
 |-----------|-------------|-----------|
-| Plugin | Captures OpenCode events, streams them to the viewer API | `.opencode/plugin/codemem.js` |
+| Adapters | Capture OpenCode/Claude events and enqueue raw events for ingest | `.opencode/plugin/codemem.js`, `codemem/commands/claude_integration_cmds.py`, `codemem/claude_hooks.py` |
 | Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `codemem/plugin_ingest.py`, `codemem/ingest/` |
 | Observer | Produces typed observations and session summaries from transcripts | `codemem/observer_prompts.py`, `codemem/xml_parser.py` |
 | Store | SQLite persistence for sessions, memories, artifacts, embeddings | `codemem/store/`, `codemem/db.py` |
@@ -18,8 +18,10 @@ codemem has five main pieces: a **plugin** that captures OpenCode activity, an *
 
 ```mermaid
 flowchart LR
-    OC["OpenCode"] -->|tool.execute.after\nmessage events| PL["Plugin"]
-    PL -->|POST /api/raw-events| VW["Viewer API"]
+    OC["OpenCode"] -->|tool/message events| OCA["OpenCode adapter"]
+    OCA -->|POST /api/raw-events| VW["Viewer API"]
+    OCA -->|fallback: enqueue-raw-event CLI| DB
+    CH["Claude hooks"] -->|ingest-claude-hook| DB
     VW --> DB["SQLite"]
     DB -->|flush batch claimed| IN["Ingest pipeline"]
     IN --> OB["Observer"]
@@ -29,14 +31,15 @@ flowchart LR
     DB --> VW
 ```
 
-1. The plugin captures tool calls and conversation messages during an OpenCode session.
-2. It streams raw events to the viewer's ingest API (`POST /api/raw-events`) with preflight health checks (`GET /api/raw-events/status`).
-3. The viewer/store persists raw events and queues durable flush batches.
-4. Idle and sweeper workers claim batches and run them through ingest.
-5. Ingest builds a transcript from user prompts and assistant messages, then hands it to the observer.
-6. The observer returns typed observations and an optional session summary as XML.
-7. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
-8. The viewer, MCP server, and CLI all read from the same SQLite database.
+1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
+2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail.
+3. Claude hook ingestion writes to the same durable raw-event queue family through `codemem ingest-claude-hook`.
+4. The viewer/store persists raw events and queues durable flush batches.
+5. Idle and sweeper workers claim batches and run them through ingest.
+6. Ingest builds a transcript from user prompts and assistant messages, then hands it to the observer.
+7. The observer returns typed observations and an optional session summary as XML.
+8. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
+9. The viewer, MCP server, and CLI all read from the same SQLite database.
 
 ## Retrieval
 
@@ -218,13 +221,15 @@ G --> I["Persist session summary"]
 H --> J["Write to memory_fts and memory_vectors"]
 ```
 
-## Plugin flush strategy
+## Adapter flush strategy
 
-The plugin streams each captured event immediately to the viewer API (`captureEvent` -> `emitRawEvent`).
+The OpenCode adapter streams each captured event to the viewer API (`captureEvent` -> `emitRawEvent`) and keeps an in-memory event list for session accounting and reset behavior.
 
-It also keeps an in-memory event list for session accounting and reset behavior; `flushEvents` finalizes and clears local state, but does not send queued events to the API.
+When stream delivery is unavailable, the adapter can enqueue raw events through the CLI fallback path (`enqueue-raw-event`) so events still enter durable queue processing.
 
-### Session finalization triggers
+Claude hook ingestion writes directly to raw-event queue storage and flushes on configured lifecycle boundaries.
+
+### OpenCode session finalization triggers
 - `session.idle` — finalizes current local buffer
 - `session.created` — finalizes before switching to a new session
 - `/new` command — detected from user prompt text, finalizes before context switch
@@ -234,10 +239,14 @@ It also keeps an in-memory event list for session accounting and reset behavior;
 - 50+ tool executions OR 15+ prompts
 - 10+ minutes of continuous work
 
-### Stream reliability
+### OpenCode stream reliability
 - Preflight check: `GET /api/raw-events/status` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`)
-- Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; events are sent best-effort with no local fallback queue in the plugin
+- Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; on stream failure the plugin can fall back to CLI enqueue for durable persistence
 - Once events are accepted by the viewer/store queue, flush workers handle retries
+
+### Claude hook flush boundaries
+- `Stop` and `SessionEnd` trigger immediate flush attempts by default
+- `CODEMEM_CLAUDE_HOOK_FLUSH=0` disables immediate boundary flush attempts
 
 ## Design tradeoffs
 
