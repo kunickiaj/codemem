@@ -1,0 +1,220 @@
+{
+  "schema": "adapter-event-v1",
+  "schema_version": "1.0",
+  "examples": [
+    {
+      "name": "opencode-prompt-high-ordering",
+      "event": {
+        "schema_version": "1.0",
+        "source": "opencode",
+        "session_id": "oc_20260302_0001",
+        "event_id": "oc_20260302_0001_prompt_0001",
+        "event_type": "prompt",
+        "ts": "2026-03-02T18:02:10Z",
+        "seq": 1,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "text": "Add a schema spec for adapter events."
+        },
+        "redacted": false,
+        "meta": {
+          "provider": "openai",
+          "model": "gpt-5.3-codex"
+        }
+      }
+    },
+    {
+      "name": "opencode-tool-result-redacted",
+      "event": {
+        "schema_version": "1.0",
+        "source": "opencode",
+        "session_id": "oc_20260302_0001",
+        "event_id": "oc_20260302_0001_tool_result_0002",
+        "event_type": "tool_result",
+        "ts": "2026-03-02T18:02:24Z",
+        "seq": 2,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "tool_name": "bash",
+          "status": "ok",
+          "output": "Authorization: [REDACTED]"
+        },
+        "redacted": true,
+        "meta": {
+          "redaction_matches": 1
+        }
+      }
+    },
+    {
+      "name": "claude-hook-session-start",
+      "event": {
+        "schema_version": "1.0",
+        "source": "claude",
+        "session_id": "cld_20260302_0099",
+        "event_id": "cld_evt_session_start_0001",
+        "event_type": "session_start",
+        "ts": "2026-03-02T18:09:58Z",
+        "seq": 1,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "source": "startup"
+        },
+        "redacted": false,
+        "meta": {
+          "hook_event_name": "SessionStart"
+        }
+      }
+    },
+    {
+      "name": "claude-hook-user-prompt-submit",
+      "event": {
+        "schema_version": "1.0",
+        "source": "claude",
+        "session_id": "cld_20260302_0099",
+        "event_id": "cld_evt_user_prompt_submit_0002",
+        "event_type": "prompt",
+        "ts": "2026-03-02T18:10:03Z",
+        "seq": 2,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "text": "Run the unit tests and fix any failures."
+        },
+        "redacted": false,
+        "meta": {
+          "hook_event_name": "UserPromptSubmit"
+        }
+      }
+    },
+    {
+      "name": "claude-structured-assistant-authoritative",
+      "event": {
+        "schema_version": "1.0",
+        "source": "claude",
+        "session_id": "cld_20260302_0099",
+        "event_id": "cld_evt_8f2b95a4",
+        "event_type": "assistant",
+        "ts": "2026-03-02T18:10:12Z",
+        "seq": 14,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "text": "Assistant response captured from Claude hook stream."
+        },
+        "redacted": false,
+        "meta": {
+          "hook_event_name": "Stop"
+        }
+      }
+    },
+    {
+      "name": "claude-hook-tool-call-pretooluse",
+      "event": {
+        "schema_version": "1.0",
+        "source": "claude",
+        "session_id": "cld_20260302_0099",
+        "event_id": "cld_evt_pretooluse_0015",
+        "event_type": "tool_call",
+        "ts": "2026-03-02T18:10:14Z",
+        "seq": 15,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "tool_name": "Bash",
+          "tool_input": {
+            "command": "uv run pytest tests/test_store.py"
+          }
+        },
+        "redacted": false,
+        "meta": {
+          "hook_event_name": "PreToolUse",
+          "tool_use_id": "toolu_01h4"
+        }
+      }
+    },
+    {
+      "name": "claude-hook-tool-result-posttoolusefailure",
+      "event": {
+        "schema_version": "1.0",
+        "source": "claude",
+        "session_id": "cld_20260302_0099",
+        "event_id": "cld_evt_posttoolusefailure_0016",
+        "event_type": "tool_result",
+        "ts": "2026-03-02T18:10:15Z",
+        "seq": 16,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "tool_name": "Bash",
+          "status": "error",
+          "error": "pytest failed: 1 test failed"
+        },
+        "redacted": false,
+        "meta": {
+          "hook_event_name": "PostToolUseFailure",
+          "tool_use_id": "toolu_01h4"
+        }
+      }
+    },
+    {
+      "name": "claude-hook-tool-result-posttooluse-success",
+      "event": {
+        "schema_version": "1.0",
+        "source": "claude",
+        "session_id": "cld_20260302_0099",
+        "event_id": "cld_evt_posttooluse_0017",
+        "event_type": "tool_result",
+        "ts": "2026-03-02T18:10:16Z",
+        "seq": 17,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "tool_name": "Bash",
+          "status": "ok",
+          "tool_output": {
+            "exit_code": 0,
+            "stdout": "1 passed"
+          }
+        },
+        "redacted": false,
+        "meta": {
+          "hook_event_name": "PostToolUse",
+          "tool_use_id": "toolu_01h5"
+        }
+      }
+    },
+    {
+      "name": "claude-session-end",
+      "event": {
+        "schema_version": "1.0",
+        "source": "claude",
+        "session_id": "cld_20260302_0099",
+        "event_id": "cld_evt_session_end_0020",
+        "event_type": "session_end",
+        "ts": "2026-03-02T18:11:02Z",
+        "seq": 20,
+        "ordering_confidence": "high",
+        "project": "codemem",
+        "cwd": "/Users/adam/workspace/codemem",
+        "payload": {
+          "reason": "prompt_input_exit"
+        },
+        "redacted": false,
+        "meta": {
+          "hook_event_name": "SessionEnd"
+        }
+      }
+    }
+  ]
+}

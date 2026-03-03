@@ -5,6 +5,7 @@ import os
 import sys
 from collections.abc import Iterable
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -21,9 +22,6 @@ from .ingest.events import (
 )
 from .ingest.events import (
     event_to_tool_event as _event_to_tool_event_impl,
-)
-from .ingest.events import (
-    extract_tool_events as _extract_tool_events_impl,
 )
 from .ingest.events import (
     is_internal_memory_tool as _is_internal_memory_tool_impl,
@@ -127,6 +125,13 @@ def _normalize_tool_name(event: dict[str, Any]) -> str:
 def _extract_assistant_messages(events: Iterable[dict[str, Any]]) -> list[str]:
     messages: list[str] = []
     for event in events:
+        adapter = _extract_adapter_event(event)
+        if adapter and adapter.get("event_type") == "assistant":
+            payload = adapter.get("payload")
+            text = str(payload.get("text") or "").strip() if isinstance(payload, dict) else ""
+            if text:
+                messages.append(text)
+                continue
         if event.get("type") != "assistant_message":
             continue
         text = str(event.get("assistant_text") or "").strip()
@@ -165,15 +170,32 @@ def _extract_assistant_usage(events: Iterable[dict[str, Any]]) -> list[dict[str,
 def _build_transcript(events: Iterable[dict[str, Any]]) -> str:
     """Build a transcript from user prompts and assistant messages in chronological order."""
 
-    return _build_transcript_impl(events, strip_private=_strip_private)
+    normalized_events = [_event_with_adapter_projection(event) for event in events]
+    return _build_transcript_impl(normalized_events, strip_private=_strip_private)
 
 
 def _event_to_tool_event(event: dict[str, Any], max_chars: int) -> ToolEvent | None:
+    adapter = _extract_adapter_event(event)
+    if adapter:
+        if adapter.get("event_type") == "tool_call":
+            return None
+        adapted = _project_adapter_tool_event(adapter, event=event)
+        if adapted is not None:
+            return _event_to_tool_event_impl(
+                adapted,
+                max_chars=max_chars,
+                low_signal_tools=LOW_SIGNAL_TOOLS,
+            )
     return _event_to_tool_event_impl(event, max_chars=max_chars, low_signal_tools=LOW_SIGNAL_TOOLS)
 
 
 def _extract_tool_events(events: Iterable[dict[str, Any]], max_chars: int) -> list[ToolEvent]:
-    return _extract_tool_events_impl(events, max_chars)
+    tool_events: list[ToolEvent] = []
+    for event in events:
+        tool_event = _event_to_tool_event(event, max_chars=max_chars)
+        if tool_event:
+            tool_events.append(tool_event)
+    return tool_events
 
 
 def _budget_tool_events(
@@ -247,6 +269,21 @@ def _normalize_paths(paths: list[str], repo_root: str | None) -> list[str]:
 def _extract_prompts(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     prompts: list[dict[str, Any]] = []
     for event in events:
+        adapter = _extract_adapter_event(event)
+        if adapter and adapter.get("event_type") == "prompt":
+            payload = adapter.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            prompt_text = str(payload.get("text") or "").strip()
+            if prompt_text:
+                prompts.append(
+                    {
+                        "prompt_text": prompt_text,
+                        "prompt_number": payload.get("prompt_number", event.get("prompt_number")),
+                        "timestamp": adapter.get("ts") or event.get("timestamp"),
+                    }
+                )
+                continue
         if event.get("type") != "user_prompt":
             continue
         prompt_text = str(event.get("prompt_text") or "").strip()
@@ -260,6 +297,112 @@ def _extract_prompts(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return prompts
+
+
+def _extract_adapter_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    adapter = event.get("_adapter")
+    if not isinstance(adapter, dict):
+        return None
+    schema_version = adapter.get("schema_version")
+    if schema_version != "1.0":
+        return None
+    source = adapter.get("source")
+    if not isinstance(source, str) or not source.strip():
+        return None
+    session_id = adapter.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    event_id = adapter.get("event_id")
+    if not isinstance(event_id, str) or not event_id.strip():
+        return None
+    event_type = adapter.get("event_type")
+    if not isinstance(event_type, str):
+        return None
+    if event_type not in {
+        "prompt",
+        "assistant",
+        "tool_call",
+        "tool_result",
+        "session_start",
+        "session_end",
+        "error",
+    }:
+        return None
+    payload = adapter.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    ts = adapter.get("ts")
+    if not isinstance(ts, str):
+        return None
+    text = ts.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return adapter
+
+
+def _project_adapter_tool_event(
+    adapter: dict[str, Any], *, event: dict[str, Any]
+) -> dict[str, Any] | None:
+    event_type = str(adapter.get("event_type") or "")
+    payload = adapter.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    if event_type != "tool_result":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    tool_error = payload.get("tool_error")
+    if tool_error is None and payload.get("status") == "error":
+        tool_error = payload.get("error")
+    tool_output = payload.get("tool_output")
+    if tool_output is None and "output" in payload:
+        tool_output = payload.get("output")
+    return {
+        "type": "tool.execute.after",
+        "tool": payload.get("tool_name"),
+        "args": tool_input,
+        "result": tool_output,
+        "error": tool_error,
+        "timestamp": adapter.get("ts"),
+        "cwd": event.get("cwd"),
+    }
+
+
+def _event_with_adapter_projection(event: dict[str, Any]) -> dict[str, Any]:
+    adapter = _extract_adapter_event(event)
+    if not adapter:
+        return event
+    payload = adapter.get("payload")
+    if not isinstance(payload, dict):
+        return event
+    event_type = str(adapter.get("event_type") or "")
+    if event_type == "prompt":
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return event
+        return {
+            "type": "user_prompt",
+            "prompt_text": text,
+            "prompt_number": payload.get("prompt_number"),
+            "timestamp": adapter.get("ts"),
+        }
+    if event_type == "assistant":
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return event
+        return {
+            "type": "assistant_message",
+            "assistant_text": text,
+            "timestamp": adapter.get("ts"),
+        }
+    return event
 
 
 def _normalize_project_label(value: Any) -> str | None:

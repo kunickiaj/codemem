@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codemem://schemas/adapter-event-v1",
+  "title": "CodeMem Adapter Event V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "session_id",
+    "event_id",
+    "event_type",
+    "ts",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Adapter source key (for example: opencode, claude, codex, windsurf, cursor)."
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Stable idempotency key at the adapter event level."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "prompt",
+        "assistant",
+        "tool_call",
+        "tool_result",
+        "session_start",
+        "session_end",
+        "error"
+      ]
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic sequence number within session when available."
+    },
+    "ordering_confidence": {
+      "type": "string",
+      "enum": [
+        "high",
+        "low"
+      ],
+      "description": "high when strict ordering is known; low when ordering is inferred."
+    },
+    "project": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cwd": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "redacted": {
+      "type": "boolean",
+      "default": false,
+      "description": "True when payload text was masked with [REDACTED]."
+    },
+    "payload": {
+      "type": "object"
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Adapter-specific optional metadata."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "required": [
+            "seq"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "ordering_confidence"
+        ],
+        "properties": {
+          "ordering_confidence": {
+            "const": "low"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "enum": [
+              "prompt",
+              "assistant"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "tool_call"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "tool_name"
+            ],
+            "properties": {
+              "tool_name": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "tool_result"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "tool_name",
+              "status"
+            ],
+            "properties": {
+              "tool_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "error"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "error"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "message"
+            ],
+            "properties": {
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  ]
+}
