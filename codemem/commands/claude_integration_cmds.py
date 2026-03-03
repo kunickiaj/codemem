@@ -29,9 +29,8 @@ def _env_truthy(name: str, default: bool) -> bool:
     return default
 
 
-def _adapter_stream_id(*, source: str, session_id: str, cwd: str | None) -> str:
-    _ = cwd
-    return f"{source}:{session_id}"
+def _adapter_stream_id(*, session_id: str) -> str:
+    return session_id
 
 
 def _hook_stream_id(hook_payload: dict[str, Any]) -> str | None:
@@ -39,9 +38,7 @@ def _hook_stream_id(hook_payload: dict[str, Any]) -> str | None:
     if not session_id:
         return None
     return _adapter_stream_id(
-        source="claude",
         session_id=session_id,
-        cwd=hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None,
     )
 
 
@@ -76,9 +73,7 @@ def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[s
     if not session_id:
         return None
     stream_id = _adapter_stream_id(
-        source=source,
         session_id=session_id,
-        cwd=hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None,
     )
     ts = str(adapter_event.get("ts") or "")
     payload = {
@@ -89,6 +84,7 @@ def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[s
     payload = _strip_private_obj(payload)
     inserted = store.record_raw_event(
         opencode_session_id=stream_id,
+        source=source,
         event_id=str(adapter_event.get("event_id") or ""),
         event_type="claude.hook",
         payload=payload,
@@ -96,6 +92,7 @@ def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[s
     )
     store.update_raw_event_session_meta(
         opencode_session_id=stream_id,
+        source=source,
         cwd=hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None,
         project=hook_payload.get("project")
         if isinstance(hook_payload.get("project"), str)
@@ -138,6 +135,7 @@ def ingest_claude_hook_cmd() -> None:
                 flush_raw_events(
                     store,
                     opencode_session_id=stream_id,
+                    source="claude",
                     cwd=hook_payload.get("cwd")
                     if isinstance(hook_payload.get("cwd"), str)
                     else None,
@@ -154,6 +152,7 @@ def ingest_claude_hook_cmd() -> None:
         flush_raw_events(
             store,
             opencode_session_id=stream_id,
+            source="claude",
             cwd=hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None,
             project=hook_payload.get("project")
             if isinstance(hook_payload.get("project"), str)

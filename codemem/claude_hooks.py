@@ -205,6 +205,8 @@ def build_ingest_payload_from_hook(hook_payload: dict[str, Any]) -> dict[str, An
             }
         ],
         "session_context": {
-            "opencode_session_id": f"claude:{session_id}",
+            "source": "claude",
+            "stream_id": session_id,
+            "opencode_session_id": session_id,
         },
     }

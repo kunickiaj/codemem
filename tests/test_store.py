@@ -1433,6 +1433,82 @@ def test_backfill_discovery_tokens_uses_existing_when_no_artifacts(tmp_path: Pat
     assert meta_a["discovery_source"] == "fallback"
 
 
+def test_backfill_discovery_tokens_scopes_raw_events_by_source_and_stream(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    shared_stream = "shared-stream"
+    open_session = store.get_or_create_stream_session(
+        source="opencode",
+        stream_id=shared_stream,
+        cwd="/tmp",
+        project="/tmp/project-a",
+    )
+    claude_session = store.get_or_create_stream_session(
+        source="claude",
+        stream_id=shared_stream,
+        cwd="/tmp",
+        project="/tmp/project-a",
+    )
+
+    store.remember(
+        open_session,
+        kind="feature",
+        title="OpenCode",
+        body_text="OpenCode body",
+        metadata={"source": "observer"},
+    )
+    store.remember(
+        claude_session,
+        kind="feature",
+        title="Claude",
+        body_text="Claude body",
+        metadata={"source": "observer"},
+    )
+
+    store.record_raw_events_batch(
+        opencode_session_id=shared_stream,
+        source="opencode",
+        events=[
+            {
+                "event_id": "open-usage",
+                "event_type": "assistant_usage",
+                "payload": {"usage": {"input_tokens": 10, "output_tokens": 2}},
+            }
+        ],
+    )
+    store.record_raw_events_batch(
+        opencode_session_id=shared_stream,
+        source="claude",
+        events=[
+            {
+                "event_id": "claude-usage",
+                "event_type": "assistant_usage",
+                "payload": {"usage": {"input_tokens": 20, "output_tokens": 5}},
+            }
+        ],
+    )
+
+    updated = store.backfill_discovery_tokens(limit_sessions=10)
+    assert updated == 2
+
+    open_meta = json.loads(
+        store.conn.execute(
+            "SELECT metadata_json FROM memory_items WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+            (open_session,),
+        ).fetchone()["metadata_json"]
+    )
+    claude_meta = json.loads(
+        store.conn.execute(
+            "SELECT metadata_json FROM memory_items WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+            (claude_session,),
+        ).fetchone()["metadata_json"]
+    )
+
+    assert open_meta["discovery_tokens"] == 12
+    assert claude_meta["discovery_tokens"] == 25
+    assert open_meta["discovery_group"] == "shared-stream:unknown"
+    assert claude_meta["discovery_group"] == "claude:shared-stream:unknown"
+
+
 def test_deactivate_low_signal_observations(tmp_path: Path) -> None:
     """Test the deactivation mechanism works - with empty patterns, nothing is deactivated."""
     store = MemoryStore(tmp_path / "mem.sqlite")
@@ -1608,13 +1684,47 @@ def test_rename_project_updates_sessions_raw_event_sessions_and_usage_events(
         # raw_event_sessions: path-like project
         store.conn.execute(
             """
-            INSERT INTO raw_event_sessions(opencode_session_id, cwd, project, started_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO raw_event_sessions(
+                source,
+                stream_id,
+                opencode_session_id,
+                cwd,
+                project,
+                started_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                "opencode",
+                "ses_test",
                 "ses_test",
                 "/tmp/greenroom/wt/product-context",
                 "/tmp/greenroom/wt/product-context",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        # Same stream_id across a different source should not be updated.
+        store.conn.execute(
+            """
+            INSERT INTO raw_event_sessions(
+                source,
+                stream_id,
+                opencode_session_id,
+                cwd,
+                project,
+                started_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "claude",
+                "ses_test",
+                "ses_test",
+                "/tmp/claude",
+                "claude-project",
                 "2026-01-01T00:00:00Z",
                 "2026-01-01T00:00:00Z",
             ),
@@ -1645,11 +1755,18 @@ def test_rename_project_updates_sessions_raw_event_sessions_and_usage_events(
         assert [r["project"] for r in rows] == ["greenroom", "greenroom"]
 
         row = store.conn.execute(
-            "SELECT project FROM raw_event_sessions WHERE opencode_session_id = ?",
-            ("ses_test",),
+            "SELECT project FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
+            ("opencode", "ses_test"),
         ).fetchone()
         assert row is not None
         assert row["project"] == "greenroom"
+
+        other = store.conn.execute(
+            "SELECT project FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
+            ("claude", "ses_test"),
+        ).fetchone()
+        assert other is not None
+        assert other["project"] == "claude-project"
 
         row = store.conn.execute(
             "SELECT metadata_json FROM usage_events WHERE event = 'search_index' LIMIT 1"
@@ -3758,7 +3875,8 @@ def test_viewer_multi_session_updates_meta_and_notes_activity(monkeypatch, tmp_p
     noted: list[str] = []
 
     class DummyFlusher:
-        def note_activity(self, opencode_session_id: str) -> None:
+        def note_activity(self, opencode_session_id: str, *, source: str = "opencode") -> None:
+            _ = source
             noted.append(opencode_session_id)
 
     monkeypatch.setattr(viewer_module, "RAW_EVENT_FLUSHER", DummyFlusher())

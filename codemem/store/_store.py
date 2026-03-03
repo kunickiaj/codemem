@@ -485,9 +485,31 @@ class MemoryStore:
         project: str | None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
+        return self.get_or_create_stream_session(
+            source="opencode",
+            stream_id=opencode_session_id,
+            cwd=cwd,
+            project=project,
+            metadata=metadata,
+        )
+
+    def get_or_create_stream_session(
+        self,
+        *,
+        source: str,
+        stream_id: str,
+        cwd: str,
+        project: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        source_norm = source.strip().lower() or "opencode"
+        stream_norm = stream_id.strip()
+        if not stream_norm:
+            raise ValueError("stream_id is required")
+
         row = self.conn.execute(
-            "SELECT session_id FROM opencode_sessions WHERE opencode_session_id = ?",
-            (opencode_session_id,),
+            "SELECT session_id FROM opencode_sessions WHERE source = ? AND stream_id = ?",
+            (source_norm, stream_norm),
         ).fetchone()
         if row is not None and row["session_id"] is not None:
             return int(row["session_id"])
@@ -504,11 +526,13 @@ class MemoryStore:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         self.conn.execute(
             """
-            INSERT INTO opencode_sessions(opencode_session_id, session_id, created_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(opencode_session_id) DO UPDATE SET session_id = excluded.session_id
+            INSERT INTO opencode_sessions(opencode_session_id, source, stream_id, session_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(source, stream_id) DO UPDATE SET
+                opencode_session_id = excluded.opencode_session_id,
+                session_id = excluded.session_id
             """,
-            (opencode_session_id, session_id, created_at),
+            (stream_norm, source_norm, stream_norm, session_id, created_at),
         )
         self.conn.commit()
         return session_id
@@ -517,6 +541,7 @@ class MemoryStore:
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         start_event_seq: int,
         end_event_seq: int,
         extractor_version: str,
@@ -524,6 +549,7 @@ class MemoryStore:
         return store_raw_events.get_or_create_raw_event_flush_batch(
             self.conn,
             opencode_session_id=opencode_session_id,
+            source=source,
             start_event_seq=start_event_seq,
             end_event_seq=end_event_seq,
             extractor_version=extractor_version,
@@ -536,6 +562,7 @@ class MemoryStore:
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         event_id: str,
         event_type: str,
         payload: dict[str, Any],
@@ -545,6 +572,7 @@ class MemoryStore:
         return store_raw_events.record_raw_event(
             self.conn,
             opencode_session_id=opencode_session_id,
+            source=source,
             event_id=event_id,
             event_type=event_type,
             payload=payload,
@@ -556,21 +584,28 @@ class MemoryStore:
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         events: list[dict[str, Any]],
     ) -> dict[str, int]:
         return store_raw_events.record_raw_events_batch(
             self.conn,
             opencode_session_id=opencode_session_id,
+            source=source,
             events=events,
         )
 
-    def raw_event_flush_state(self, opencode_session_id: str) -> int:
-        return store_raw_events.raw_event_flush_state(self.conn, opencode_session_id)
+    def raw_event_flush_state(self, opencode_session_id: str, *, source: str = "opencode") -> int:
+        return store_raw_events.raw_event_flush_state(
+            self.conn,
+            opencode_session_id,
+            source=source,
+        )
 
     def update_raw_event_session_meta(
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         cwd: str | None = None,
         project: str | None = None,
         started_at: str | None = None,
@@ -579,31 +614,55 @@ class MemoryStore:
         store_raw_events.update_raw_event_session_meta(
             self.conn,
             opencode_session_id=opencode_session_id,
+            source=source,
             cwd=cwd,
             project=project,
             started_at=started_at,
             last_seen_ts_wall_ms=last_seen_ts_wall_ms,
         )
 
-    def raw_event_session_meta(self, opencode_session_id: str) -> dict[str, Any]:
-        return store_raw_events.raw_event_session_meta(self.conn, opencode_session_id)
+    def raw_event_session_meta(
+        self, opencode_session_id: str, *, source: str = "opencode"
+    ) -> dict[str, Any]:
+        return store_raw_events.raw_event_session_meta(
+            self.conn,
+            opencode_session_id,
+            source=source,
+        )
 
-    def update_raw_event_flush_state(self, opencode_session_id: str, last_flushed: int) -> None:
-        store_raw_events.update_raw_event_flush_state(self.conn, opencode_session_id, last_flushed)
+    def update_raw_event_flush_state(
+        self,
+        opencode_session_id: str,
+        last_flushed: int,
+        *,
+        source: str = "opencode",
+    ) -> None:
+        store_raw_events.update_raw_event_flush_state(
+            self.conn,
+            opencode_session_id,
+            last_flushed,
+            source=source,
+        )
 
-    def max_raw_event_seq(self, opencode_session_id: str) -> int:
-        return store_raw_events.max_raw_event_seq(self.conn, opencode_session_id)
+    def max_raw_event_seq(self, opencode_session_id: str, *, source: str = "opencode") -> int:
+        return store_raw_events.max_raw_event_seq(
+            self.conn,
+            opencode_session_id,
+            source=source,
+        )
 
     def raw_events_since(
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         after_event_seq: int,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         return store_raw_events.raw_events_since(
             self.conn,
             opencode_session_id=opencode_session_id,
+            source=source,
             after_event_seq=after_event_seq,
             limit=limit,
         )
@@ -612,12 +671,14 @@ class MemoryStore:
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         after_event_seq: int,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         return store_raw_events.raw_events_since_by_seq(
             self.conn,
             opencode_session_id=opencode_session_id,
+            source=source,
             after_event_seq=after_event_seq,
             limit=limit,
         )
@@ -627,14 +688,14 @@ class MemoryStore:
         *,
         idle_before_ts_wall_ms: int,
         limit: int = 25,
-    ) -> list[str]:
+    ) -> list[dict[str, str]]:
         return store_raw_events.raw_event_sessions_pending_idle_flush(
             self.conn,
             idle_before_ts_wall_ms=idle_before_ts_wall_ms,
             limit=limit,
         )
 
-    def raw_event_sessions_with_pending_queue(self, *, limit: int = 25) -> list[str]:
+    def raw_event_sessions_with_pending_queue(self, *, limit: int = 25) -> list[dict[str, str]]:
         return store_raw_events.raw_event_sessions_with_pending_queue(self.conn, limit=limit)
 
     def purge_raw_events_before(self, cutoff_ts_wall_ms: int) -> int:
@@ -649,21 +710,44 @@ class MemoryStore:
     def raw_event_backlog_totals(self) -> dict[str, int]:
         return store_raw_events.raw_event_backlog_totals(self.conn)
 
-    def raw_event_batch_status_counts(self, opencode_session_id: str) -> dict[str, int]:
-        return store_raw_events.raw_event_batch_status_counts(self.conn, opencode_session_id)
+    def raw_event_batch_status_counts(
+        self,
+        opencode_session_id: str,
+        *,
+        source: str = "opencode",
+    ) -> dict[str, int]:
+        return store_raw_events.raw_event_batch_status_counts(
+            self.conn,
+            opencode_session_id,
+            source=source,
+        )
 
-    def raw_event_queue_status_counts(self, opencode_session_id: str) -> dict[str, int]:
-        return store_raw_events.raw_event_queue_status_counts(self.conn, opencode_session_id)
+    def raw_event_queue_status_counts(
+        self,
+        opencode_session_id: str,
+        *,
+        source: str = "opencode",
+    ) -> dict[str, int]:
+        return store_raw_events.raw_event_queue_status_counts(
+            self.conn,
+            opencode_session_id,
+            source=source,
+        )
 
     def claim_raw_event_flush_batch(self, batch_id: int) -> bool:
         return store_raw_events.claim_raw_event_flush_batch(self.conn, batch_id)
 
     def raw_event_error_batches(
-        self, opencode_session_id: str, limit: int = 10
+        self,
+        opencode_session_id: str,
+        *,
+        source: str = "opencode",
+        limit: int = 10,
     ) -> list[dict[str, Any]]:
         return store_raw_events.raw_event_error_batches(
             self.conn,
             opencode_session_id,
+            source=source,
             limit=limit,
         )
 

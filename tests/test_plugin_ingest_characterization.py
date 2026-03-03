@@ -18,6 +18,9 @@ class FakeStore:
     def get_or_create_opencode_session(self, *_args: Any, **_kwargs: Any) -> int:
         return 1
 
+    def get_or_create_stream_session(self, *_args: Any, **_kwargs: Any) -> int:
+        return 1
+
     def start_session(self, *_args: Any, **_kwargs: Any) -> int:
         return 1
 
@@ -216,3 +219,36 @@ def test_ingest_early_exit_on_trivial_request(monkeypatch: Any) -> None:
     assert not plugin_ingest.build_artifact_bundle.called
     assert store.ended
     assert store.closed
+
+
+def test_ingest_discovery_group_uses_unprefixed_opencode_stream(monkeypatch: Any) -> None:
+    store = FakeStore()
+    captured: dict[str, Any] = {}
+
+    def fake_persist_observations(*_args: Any, **kwargs: Any) -> None:
+        captured["discovery_group"] = kwargs.get("discovery_group")
+
+    _set_common_patches(monkeypatch, store)
+    monkeypatch.setattr(plugin_ingest, "build_artifact_bundle", lambda *_: [])
+    monkeypatch.setattr(plugin_ingest, "_persist_observations_impl", fake_persist_observations)
+    monkeypatch.setattr(
+        plugin_ingest, "OBSERVER", SimpleNamespace(observe=lambda _ctx: _make_response())
+    )
+
+    payload = {
+        "cwd": "/tmp",
+        "project": "demo",
+        "started_at": "2026-01-28T00:00:00Z",
+        "session_context": {"source": "opencode", "stream_id": "sess-1"},
+        "events": [
+            {
+                "type": "user_prompt",
+                "prompt_text": "Please implement the feature",
+                "prompt_number": 2,
+            }
+        ],
+    }
+
+    plugin_ingest.ingest(payload)
+
+    assert captured["discovery_group"] == "sess-1:p2"
