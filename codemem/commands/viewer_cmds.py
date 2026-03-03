@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import signal
 import subprocess
@@ -64,10 +65,10 @@ def _port_open(host: str, port: int) -> bool:
             return False
 
 
-def _pid_for_port(port: int) -> int | None:
+def _pid_for_port(host: str, port: int) -> int | None:
     try:
         result = subprocess.run(
-            ["lsof", "-ti", f"tcp:{port}"],
+            ["lsof", "-nP", "-ti", f"TCP@{host}:{port}"],
             capture_output=True,
             text=True,
             check=False,
@@ -106,7 +107,8 @@ def serve(
 
     if stop or restart:
         pid = _read_pid(pid_path)
-        port_pid = _pid_for_port(port) if _port_open(host, port) else None
+        listening = _port_open(host, port)
+        port_pid = _pid_for_port(host, port)
         if pid is not None and port_pid is not None and pid != port_pid:
             print(
                 f"[yellow]Viewer PID file mismatch (file {pid}, port {port_pid}); using port pid[/yellow]"
@@ -115,15 +117,16 @@ def serve(
         if pid is None and port_pid is not None:
             pid = port_pid
             print(f"[yellow]Found viewer pid {pid} by port scan[/yellow]")
+        port_bound_by_pid = pid is not None and port_pid is not None and pid == port_pid
         if pid is None:
-            if _port_open(host, port):
+            if listening:
                 print("[yellow]Viewer is running but no PID file was found[/yellow]")
             else:
                 print("[yellow]No background viewer found[/yellow]")
         elif not _pid_running(pid):
             _clear_pid(pid_path)
             print("[yellow]Removed stale viewer PID file[/yellow]")
-        elif not _port_open(host, port):
+        elif not listening and not port_bound_by_pid:
             _clear_pid(pid_path)
             print("[yellow]Removed stale viewer PID file (port not listening)[/yellow]")
         else:
@@ -177,5 +180,18 @@ def serve(
     if _port_open(host, port):
         print(f"[yellow]Viewer already running at http://{host}:{port}[/yellow]")
         return
-    print(f"[green]Viewer running at http://{host}:{port}[/green]")
-    start_viewer(host=host, port=port, background=False)
+    print(f"[green]Starting viewer at http://{host}:{port}[/green]")
+    try:
+        start_viewer(host=host, port=port, background=False)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            in_use_pid = _pid_for_port(host, port)
+            if in_use_pid is not None:
+                print(
+                    f"[yellow]Port {port} is already in use by pid {in_use_pid}; "
+                    "viewer may already be running[/yellow]"
+                )
+            else:
+                print(f"[yellow]Port {port} is already in use[/yellow]")
+            return
+        raise
