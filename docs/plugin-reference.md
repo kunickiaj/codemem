@@ -13,6 +13,55 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 3. Use `codemem stats` and `codemem recent` to confirm ingestion.
 4. Browse the viewer at the printed URL.
 
+## Claude integration commands
+
+CodeMem's Claude integration is currently hook-first: it installs a Claude plugin template and ingests Claude hook payloads from stdin.
+Claude hook payloads are spooled into the same raw-event queue pipeline used by OpenCode stream ingestion.
+
+Install or refresh the Claude integration in the current project:
+
+```bash
+codemem install-claude-integration
+# overwrite template files if already installed
+codemem install-claude-integration --force
+```
+
+Ingest one Claude hook payload from stdin (this is what the installed hook script calls):
+
+```bash
+printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem ingest-claude-hook
+```
+
+By default, `Stop` and `SessionEnd` trigger an immediate queue flush attempt. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to disable that behavior.
+
+The installed template currently registers these hook events in `.claude/plugins/codemem/hooks/hooks.json`:
+- `SessionStart`
+- `UserPromptSubmit`
+- `PostToolUse`
+- `PostToolUseFailure`
+- `Stop`
+- `SessionEnd`
+
+`PreToolUse` is intentionally deferred in the default template until tool-call persistence is enabled end-to-end.
+
+## Post-restart config sanity checklist
+
+After restarting OpenCode or the viewer, run this quick check when behavior looks off:
+
+1. Confirm plugin + viewer are talking to the same DB path.
+2. Check backend stats and recent writes (`codemem stats`, `codemem recent`).
+3. Verify runner mode and source (`CODEMEM_RUNNER`, `CODEMEM_RUNNER_FROM`) match your install strategy.
+4. Confirm injection controls are what you expect (`CODEMEM_INJECT_CONTEXT`, `CODEMEM_INJECT_LIMIT`, `CODEMEM_INJECT_TOKEN_BUDGET`).
+5. If stream mode is enabled, check backlog health (`codemem raw-events-status`).
+
+If needed, restart viewer + plugin flow:
+
+```bash
+codemem serve --restart
+```
+
+If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
+
 ## Plugin tools exposed to the model
 
 - `mem-status` - show viewer URL, log path, stats, and recent entries.
@@ -106,6 +155,7 @@ When ingesting plugin payloads, CodeMem stores a normalized project label instea
 | `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
 | `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` to enable; defaults to off). |
+| `CODEMEM_PLUGIN_LOG_PATH` | Explicit log file path for Claude hook script logging (overrides `CODEMEM_PLUGIN_LOG` for that script). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Backend update behavior on compatibility mismatch: `notify` (default), `auto`, or `off`. |
@@ -124,6 +174,7 @@ When ingesting plugin payloads, CodeMem stores a normalized project label instea
 | `CODEMEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
 | `CODEMEM_RAW_EVENTS_BACKOFF_MS` | Backoff window after stream failure before retrying stream POSTs (default `10000`). |
 | `CODEMEM_RAW_EVENTS_STATUS_CHECK_MS` | Minimum interval between stream availability preflight checks (default `30000`). |
+| `CODEMEM_RAW_EVENTS_HARD_MAX` | Hard upper bound for in-memory plugin queue under sustained failure pressure (default `2000`). |
 | `CODEMEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flush of streamed raw events (default off). |
 | `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
 | `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
@@ -132,6 +183,8 @@ When ingesting plugin payloads, CodeMem stores a normalized project label instea
 | `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
 | `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
+| `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate flush attempts on Claude `Stop`/`SessionEnd` hooks (default on). |
+| `CODEMEM_HOOK_ALLOW_UVX` | Set to `1` to allow Claude hook script fallback to `uvx --from codemem` when `codemem` binary is not found (default off). |
 
 ## Compatibility guidance behavior
 
