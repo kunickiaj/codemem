@@ -343,6 +343,14 @@ const asFiniteNonNegativeInt = (value) => {
   return Math.trunc(value);
 };
 
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+};
+
 export const buildInjectionToastMessage = (metrics) => {
   const items = asFiniteNonNegativeInt(metrics?.items);
   const packTokens = asFiniteNonNegativeInt(metrics?.pack_tokens);
@@ -400,10 +408,7 @@ export const OpencodeMemPlugin = async ({
   worktree,
 }) => {
   const events = [];
-  const maxEvents = Number.parseInt(
-    process.env.CODEMEM_PLUGIN_MAX_EVENTS || "200",
-    10
-  );
+  const maxEvents = parsePositiveInt(process.env.CODEMEM_PLUGIN_MAX_EVENTS, 200);
   const maxChars = Number.parseInt(
     process.env.CODEMEM_PLUGIN_MAX_EVENT_CHARS || "8000",
     10
@@ -1809,4 +1814,5 @@ export const __testUtils = {
   selectRawEventId,
   buildRawEventEnvelope,
   trimEventQueue,
+  parsePositiveInt,
 };

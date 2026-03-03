@@ -7,6 +7,7 @@ from typing import Any
 import typer
 from rich import print
 
+from codemem.ingest_sanitize import _strip_private
 from codemem.store import MemoryStore
 
 
@@ -54,6 +55,16 @@ def _coerce_optional_float(payload: dict[str, Any], key: str) -> float | None:
         raise ValueError(f"{key} must be number") from exc
 
 
+def _strip_private_obj(value: Any) -> Any:
+    if isinstance(value, str):
+        return _strip_private(value)
+    if isinstance(value, list):
+        return [_strip_private_obj(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_private_obj(item) for key, item in value.items()}
+    return value
+
+
 def enqueue_raw_event_cmd(store: MemoryStore) -> None:
     """Read one raw event from stdin and enqueue it."""
 
@@ -95,6 +106,8 @@ def enqueue_raw_event_cmd(store: MemoryStore) -> None:
         started_at = _coerce_optional_str(payload, "started_at")
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+    event_payload = _strip_private_obj(event_payload)
 
     inserted = store.record_raw_event(
         opencode_session_id=opencode_session_id,
