@@ -145,6 +145,7 @@ def test_ingest_claude_hook_cmd_flushes_stop_hook_when_assistant_text_missing() 
     payload = {
         "hook_event_name": "Stop",
         "session_id": "sess-1",
+        "source": "startup",
     }
     called = {"record": 0, "flush": 0}
 

@@ -42,9 +42,8 @@ def _hook_stream_id(hook_payload: dict[str, Any]) -> str | None:
     session_id = str(hook_payload.get("session_id") or "").strip()
     if not session_id:
         return None
-    source = str(hook_payload.get("source") or "claude").strip() or "claude"
     return _adapter_stream_id(
-        source=source,
+        source="claude",
         session_id=session_id,
         cwd=hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None,
     )
