@@ -13,6 +13,7 @@ from rich import print
 
 from codemem.claude_hooks import MAPPABLE_CLAUDE_HOOK_EVENTS, map_claude_hook_payload
 from codemem.db import DEFAULT_DB_PATH
+from codemem.ingest_sanitize import _strip_private
 from codemem.raw_event_flush import flush_raw_events
 from codemem.store import MemoryStore
 
@@ -61,6 +62,16 @@ def _iso_to_wall_ms(ts: str | None) -> int:
     return int(dt.datetime.now(dt.UTC).timestamp() * 1000)
 
 
+def _strip_private_obj(value: Any) -> Any:
+    if isinstance(value, str):
+        return _strip_private(value)
+    if isinstance(value, list):
+        return [_strip_private_obj(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_private_obj(item) for key, item in value.items()}
+    return value
+
+
 def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[str, bool] | None:
     adapter_event = map_claude_hook_payload(hook_payload)
     if adapter_event is None:
@@ -80,6 +91,7 @@ def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[s
         "timestamp": ts,
         "_adapter": adapter_event,
     }
+    payload = _strip_private_obj(payload)
     inserted = store.record_raw_event(
         opencode_session_id=stream_id,
         event_id=str(adapter_event.get("event_id") or ""),

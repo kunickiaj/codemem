@@ -262,3 +262,33 @@ def test_queue_adapter_event_writes_claude_hook_payload() -> None:
     record = calls["record"]
     assert isinstance(record, dict)
     assert record["event_type"] == "claude.hook"
+
+
+def test_queue_adapter_event_strips_private_tags_from_payload() -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-redact",
+        "prompt": "before <private>secret</private> after",
+        "tool_input": {"note": "x<private>hidden</private>y"},
+        "cwd": "/tmp/worktree-a",
+    }
+
+    calls: dict[str, object] = {}
+
+    class _FakeStore:
+        def record_raw_event(self, **kwargs: object) -> bool:
+            calls["record"] = kwargs
+            return True
+
+        def update_raw_event_session_meta(self, **kwargs: object) -> None:
+            calls["meta"] = kwargs
+
+    queued = _queue_adapter_event(payload, store=_FakeStore())
+
+    assert queued is not None
+    record = calls["record"]
+    assert isinstance(record, dict)
+    stored_payload = json.dumps(record["payload"], sort_keys=True)
+    assert "<private>" not in stored_payload
+    assert "secret" not in stored_payload
+    assert "hidden" not in stored_payload
