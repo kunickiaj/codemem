@@ -16,6 +16,11 @@ from codemem.observer import (
     _load_opencode_oauth_cache,
     _resolve_oauth_provider,
 )
+from codemem.observer_auth import (
+    ObserverAuthAdapter,
+    ObserverAuthMaterial,
+    _render_observer_headers,
+)
 
 
 class OpenAIStub:
@@ -239,3 +244,150 @@ def test_opencode_run_enabled_when_no_auth(monkeypatch: pytest.MonkeyPatch) -> N
         client = ObserverClient()
         assert client.use_opencode_run is True
         assert client.client is None
+
+
+def test_auth_adapter_command_source_caches_until_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = ObserverAuthAdapter(
+        source="command",
+        command=("iap-auth",),
+        timeout_ms=1000,
+        cache_ttl_s=300,
+    )
+    calls: list[int] = []
+
+    def fake_run(_cmd: tuple[str, ...], _timeout_ms: int) -> str:
+        calls.append(1)
+        return "token-a"
+
+    monkeypatch.setattr("codemem.observer_auth._run_auth_command", fake_run)
+
+    first = adapter.resolve()
+    second = adapter.resolve()
+
+    assert first.token == "token-a"
+    assert second.token == "token-a"
+    assert len(calls) == 1
+
+
+def test_auth_adapter_command_force_refresh_bypasses_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = ObserverAuthAdapter(
+        source="command",
+        command=("iap-auth",),
+        timeout_ms=1000,
+        cache_ttl_s=300,
+    )
+    tokens = iter(["token-a", "token-b"])
+
+    def fake_run(_cmd: tuple[str, ...], _timeout_ms: int) -> str:
+        return next(tokens)
+
+    monkeypatch.setattr("codemem.observer_auth._run_auth_command", fake_run)
+
+    first = adapter.resolve()
+    second = adapter.resolve(force_refresh=True)
+
+    assert first.token == "token-a"
+    assert second.token == "token-b"
+
+
+def test_auth_adapter_command_source_does_not_cache_failed_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = ObserverAuthAdapter(
+        source="command",
+        command=("iap-auth",),
+        timeout_ms=1000,
+        cache_ttl_s=300,
+    )
+    calls: list[int] = []
+    tokens = iter([None, "token-b"])
+
+    def fake_run(_cmd: tuple[str, ...], _timeout_ms: int) -> str | None:
+        calls.append(1)
+        return next(tokens)
+
+    monkeypatch.setattr("codemem.observer_auth._run_auth_command", fake_run)
+
+    first = adapter.resolve()
+    second = adapter.resolve()
+
+    assert first.token is None
+    assert second.token == "token-b"
+    assert len(calls) == 2
+
+
+def test_custom_provider_none_auth_source_does_not_use_api_key() -> None:
+    cfg = OpencodeMemConfig(
+        observer_provider="gateway",
+        observer_model="gateway-model",
+        observer_api_key="should-not-be-used",
+        observer_auth_source="none",
+    )
+    openai_module = SimpleNamespace(OpenAI=OpenAIStub)
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer._list_custom_providers", return_value={"gateway"}),
+        patch("codemem.observer._get_opencode_provider_config", return_value={}),
+        patch(
+            "codemem.observer._resolve_custom_provider_model",
+            return_value=("https://gateway.example/v1", "gateway-model", {}),
+        ),
+        patch("codemem.observer._get_provider_api_key", return_value=None),
+        patch.dict(sys.modules, {"openai": openai_module}),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+
+    assert isinstance(client.client, OpenAIStub)
+    assert client.client.kwargs["api_key"] == "unused"
+    assert client.auth.token is None
+    assert client.auth.source == "none"
+
+
+def test_observer_runtime_claude_sidecar_falls_back_to_api_http() -> None:
+    cfg = OpencodeMemConfig(
+        observer_provider="openai",
+        observer_api_key="stub-key",
+        observer_runtime="claude_sidecar",
+    )
+    openai_module = SimpleNamespace(OpenAI=OpenAIStub)
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch.dict(sys.modules, {"openai": openai_module}),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+
+    assert client.runtime == "api_http"
+
+
+def test_render_observer_headers_injects_auth_token() -> None:
+    auth = ObserverAuthMaterial(token="secret-token", auth_type="bearer", source="command")
+    headers = _render_observer_headers(
+        {
+            "Authorization": "Bearer ${auth.token}",
+            "X-Auth-Source": "${auth.source}",
+        },
+        auth,
+    )
+
+    assert headers["Authorization"] == "Bearer secret-token"
+    assert headers["X-Auth-Source"] == "command"
+
+
+def test_render_observer_headers_skips_token_placeholder_when_missing() -> None:
+    auth = ObserverAuthMaterial(token=None, auth_type="none", source="none")
+    headers = _render_observer_headers(
+        {
+            "Authorization": "Bearer ${auth.token}",
+            "X-Mode": "${auth.type}",
+        },
+        auth,
+    )
+
+    assert "Authorization" not in headers
+    assert headers["X-Mode"] == "none"

@@ -59,6 +59,13 @@ export function renderConfigModal(payload: any) {
 
   const observerProvider = $select('observerProvider');
   const observerModel = $input('observerModel');
+  const observerRuntime = $select('observerRuntime');
+  const observerAuthSource = $select('observerAuthSource');
+  const observerAuthFile = $input('observerAuthFile');
+  const observerAuthCommand = document.getElementById('observerAuthCommand') as HTMLTextAreaElement | null;
+  const observerAuthTimeoutMs = $input('observerAuthTimeoutMs');
+  const observerAuthCacheTtlS = $input('observerAuthCacheTtlS');
+  const observerHeaders = document.getElementById('observerHeaders') as HTMLTextAreaElement | null;
   const observerMaxChars = $input('observerMaxChars');
   const packObservationLimit = $input('packObservationLimit');
   const packSessionLimit = $input('packSessionLimit');
@@ -73,6 +80,21 @@ export function renderConfigModal(payload: any) {
 
   if (observerProvider) observerProvider.value = config.observer_provider || '';
   if (observerModel) observerModel.value = config.observer_model || '';
+  if (observerRuntime) observerRuntime.value = config.observer_runtime || 'api_http';
+  if (observerAuthSource) observerAuthSource.value = config.observer_auth_source || 'auto';
+  if (observerAuthFile) observerAuthFile.value = config.observer_auth_file || '';
+  if (observerAuthCommand) {
+    const argv = Array.isArray(config.observer_auth_command) ? config.observer_auth_command : [];
+    observerAuthCommand.value = argv.length ? JSON.stringify(argv, null, 2) : '';
+  }
+  if (observerAuthTimeoutMs) observerAuthTimeoutMs.value = config.observer_auth_timeout_ms || '';
+  if (observerAuthCacheTtlS) observerAuthCacheTtlS.value = config.observer_auth_cache_ttl_s || '';
+  if (observerHeaders) {
+    const headers = config.observer_headers && typeof config.observer_headers === 'object'
+      ? config.observer_headers
+      : {};
+    observerHeaders.value = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : '';
+  }
   if (observerMaxChars) observerMaxChars.value = config.observer_max_chars || '';
   if (packObservationLimit) packObservationLimit.value = config.pack_observation_limit || '';
   if (packSessionLimit) packSessionLimit.value = config.pack_session_limit || '';
@@ -91,9 +113,48 @@ export function renderConfigModal(payload: any) {
     settingsEffective.textContent = payload.env_overrides ? 'Effective config differs (env overrides active)' : '';
   }
 
+  updateAuthSourceVisibility();
+
   setDirty(false);
   const settingsStatus = $('settingsStatus');
   if (settingsStatus) settingsStatus.textContent = 'Ready';
+}
+
+function parseCommandArgv(raw: string): string[] {
+  const text = raw.trim();
+  if (!text) return [];
+  const parsed = JSON.parse(text);
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+    throw new Error('observer auth command must be a JSON string array');
+  }
+  return parsed;
+}
+
+function parseObserverHeaders(raw: string): Record<string, string> {
+  const text = raw.trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('observer headers must be a JSON object');
+  }
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof key !== 'string' || !key.trim() || typeof value !== 'string') {
+      throw new Error('observer headers must map string keys to string values');
+    }
+    headers[key.trim()] = value;
+  }
+  return headers;
+}
+
+function updateAuthSourceVisibility() {
+  const source = $select('observerAuthSource')?.value || 'auto';
+  const fileField = document.getElementById('observerAuthFileField');
+  const commandField = document.getElementById('observerAuthCommandField');
+  const commandNote = document.getElementById('observerAuthCommandNote');
+  if (fileField) fileField.hidden = source !== 'file';
+  if (commandField) commandField.hidden = source !== 'command';
+  if (commandNote) commandNote.hidden = source !== 'command';
 }
 
 function setDirty(dirty: boolean) {
@@ -138,9 +199,26 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
   status.textContent = 'Saving...';
 
   try {
+    const authCommandInput = (document.getElementById('observerAuthCommand') as HTMLTextAreaElement | null)?.value || '';
+    const observerHeadersInput = (document.getElementById('observerHeaders') as HTMLTextAreaElement | null)?.value || '';
+    const authCacheTtlInput = ($input('observerAuthCacheTtlS')?.value || '').trim();
+    const authCommand = parseCommandArgv(authCommandInput);
+    const headers = parseObserverHeaders(observerHeadersInput);
+    const authCacheTtl = authCacheTtlInput === '' ? '' : Number(authCacheTtlInput);
+    if (authCacheTtlInput !== '' && !Number.isFinite(authCacheTtl)) {
+      throw new Error('observer auth cache ttl must be a number');
+    }
+
     await api.saveConfig({
       observer_provider: $select('observerProvider')?.value || '',
       observer_model: $input('observerModel')?.value || '',
+      observer_runtime: $select('observerRuntime')?.value || 'api_http',
+      observer_auth_source: $select('observerAuthSource')?.value || 'auto',
+      observer_auth_file: $input('observerAuthFile')?.value || '',
+      observer_auth_command: authCommand,
+      observer_auth_timeout_ms: Number($input('observerAuthTimeoutMs')?.value || 0) || '',
+      observer_auth_cache_ttl_s: authCacheTtl,
+      observer_headers: headers,
       observer_max_chars: Number($input('observerMaxChars')?.value || 0) || '',
       pack_observation_limit: Number($input('packObservationLimit')?.value || 0) || '',
       pack_session_limit: Number($input('packSessionLimit')?.value || 0) || '',
@@ -153,8 +231,9 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
     status.textContent = 'Saved';
     setDirty(false);
     closeSettings(startPolling, refreshCallback);
-  } catch {
-    status.textContent = 'Save failed';
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown error';
+    status.textContent = `Save failed: ${message}`;
   } finally {
     saveBtn.disabled = !state.settingsDirty;
   }
@@ -189,11 +268,31 @@ export function initSettings(stopPolling: () => void, startPolling: () => void, 
   });
 
   // Mark dirty on any input change
-  const inputs = ['observerProvider', 'observerModel', 'observerMaxChars', 'packObservationLimit', 'packSessionLimit', 'syncEnabled', 'syncHost', 'syncPort', 'syncInterval', 'syncMdns'];
+  const inputs = [
+    'observerProvider',
+    'observerModel',
+    'observerRuntime',
+    'observerAuthSource',
+    'observerAuthFile',
+    'observerAuthCommand',
+    'observerAuthTimeoutMs',
+    'observerAuthCacheTtlS',
+    'observerHeaders',
+    'observerMaxChars',
+    'packObservationLimit',
+    'packSessionLimit',
+    'syncEnabled',
+    'syncHost',
+    'syncPort',
+    'syncInterval',
+    'syncMdns',
+  ];
   inputs.forEach((id) => {
     const input = document.getElementById(id);
     if (!input) return;
     input.addEventListener('input', () => setDirty(true));
     input.addEventListener('change', () => setDirty(true));
   });
+
+  $select('observerAuthSource')?.addEventListener('change', () => updateAuthSourceVisibility());
 }

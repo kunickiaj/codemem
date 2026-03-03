@@ -51,9 +51,11 @@ _build_codex_headers = _observer_auth._build_codex_headers
 _extract_oauth_access = _observer_auth._extract_oauth_access
 _extract_oauth_account_id = _observer_auth._extract_oauth_account_id
 _extract_oauth_expires = _observer_auth._extract_oauth_expires
-_get_iap_token = _observer_auth._get_iap_token
 _get_opencode_auth_path = _observer_auth._get_opencode_auth_path
 _now_ms = _observer_auth._now_ms
+ObserverAuthAdapter = _observer_auth.ObserverAuthAdapter
+ObserverAuthMaterial = _observer_auth.ObserverAuthMaterial
+_render_observer_headers = _observer_auth._render_observer_headers
 _redact_text = _observer_codex._redact_text
 _resolve_oauth_provider = _observer_auth._resolve_oauth_provider
 
@@ -126,9 +128,24 @@ class ObserverClient:
             resolved_provider = "openai"
 
         self.provider = resolved_provider
+        self._configured_provider = provider or None
         self.use_opencode_run = cfg.use_opencode_run
+        runtime = (cfg.observer_runtime or "api_http").strip().lower()
+        if runtime == "claude_sidecar":
+            logger.warning("observer runtime claude_sidecar is not implemented yet; using api_http")
+            runtime = "api_http"
+        self.runtime = runtime if runtime in {"api_http"} else "api_http"
         self.opencode_model = cfg.opencode_model
         self.opencode_agent = cfg.opencode_agent
+        self.observer_headers = dict(cfg.observer_headers or {})
+        self.auth_adapter = ObserverAuthAdapter(
+            source=cfg.observer_auth_source,
+            file_path=cfg.observer_auth_file,
+            command=tuple(cfg.observer_auth_command or []),
+            timeout_ms=max(100, int(cfg.observer_auth_timeout_ms or 1500)),
+            cache_ttl_s=max(0, int(cfg.observer_auth_cache_ttl_s or 300)),
+        )
+        self.auth = ObserverAuthMaterial(token=None, auth_type="none", source="none")
         if model:
             self.model = model
         elif resolved_provider == "anthropic":
@@ -143,73 +160,106 @@ class ObserverClient:
         self.client: object | None = None
         self.codex_access: str | None = None
         self.codex_account_id: str | None = None
+
+        self._init_provider_client(force_refresh=False)
+
+    def _init_provider_client(self, *, force_refresh: bool) -> None:
+        self.client = None
+        self.codex_access = None
+        self.codex_account_id = None
+
         oauth_cache = _load_opencode_oauth_cache()
         oauth_access = None
         oauth_expires = None
         oauth_provider = None
-        if resolved_provider in {"openai", "anthropic"}:
-            oauth_provider = _resolve_oauth_provider(provider or None, self.model)
+        if self.provider in {"openai", "anthropic"}:
+            oauth_provider = _resolve_oauth_provider(self._configured_provider, self.model)
             oauth_access = _extract_oauth_access(oauth_cache, oauth_provider)
             oauth_expires = _extract_oauth_expires(oauth_cache, oauth_provider)
-            if oauth_access and (oauth_expires is None or oauth_expires > _now_ms()):
-                self.codex_access = oauth_access
-                self.codex_account_id = _extract_oauth_account_id(oauth_cache, oauth_provider)
+            if oauth_access and oauth_expires is not None and oauth_expires <= _now_ms():
+                oauth_access = None
         if self.use_opencode_run:
             logger.info("observer auth: using opencode run")
             return
-        if resolved_provider not in {"openai", "anthropic"}:
-            provider_config = _get_opencode_provider_config(resolved_provider)
+
+        if self.provider not in {"openai", "anthropic"}:
+            provider_config = _get_opencode_provider_config(self.provider)
             base_url, model_id, headers = _resolve_custom_provider_model(
-                resolved_provider,
+                self.provider,
                 self.model,
             )
             if not base_url or not model_id:
                 logger.warning("observer auth: missing custom provider config")
                 return
             api_key = _get_provider_api_key(provider_config) or self.api_key
+            merged_headers = dict(headers)
+            merged_headers.update(self.observer_headers)
+            self.auth = self.auth_adapter.resolve(
+                explicit_token=api_key,
+                env_tokens=(os.getenv("CODEMEM_OBSERVER_API_KEY") or "",),
+                force_refresh=force_refresh,
+            )
+            rendered_headers = _render_observer_headers(merged_headers, self.auth)
             try:
                 from openai import OpenAI  # type: ignore
 
                 self.client = OpenAI(
-                    api_key=api_key or "unused",
+                    api_key=self.auth.token or "unused",
                     base_url=base_url,
-                    default_headers=headers or None,
+                    default_headers=rendered_headers or None,
                 )
                 self.model = model_id
             except Exception as exc:  # pragma: no cover
                 logger.exception("observer auth: custom provider client init failed", exc_info=exc)
                 self.client = None
-        elif resolved_provider == "anthropic":
-            if not self.api_key:
-                self.api_key = os.getenv("ANTHROPIC_API_KEY") or oauth_access
-            if not self.api_key:
+        elif self.provider == "anthropic":
+            self.auth = self.auth_adapter.resolve(
+                explicit_token=self.api_key,
+                env_tokens=(os.getenv("ANTHROPIC_API_KEY") or "",),
+                oauth_token=oauth_access,
+                force_refresh=force_refresh,
+            )
+            if not self.auth.token:
                 logger.warning("observer auth: missing anthropic api key")
                 return
             try:
                 import anthropic  # type: ignore
 
-                self.client = anthropic.Anthropic(api_key=self.api_key)
+                self.client = anthropic.Anthropic(api_key=self.auth.token)
             except Exception as exc:  # pragma: no cover
                 logger.exception("observer auth: anthropic client init failed", exc_info=exc)
                 self.client = None
         else:
-            if not self.api_key:
-                self.api_key = (
-                    os.getenv("OPENCODE_API_KEY")
-                    or os.getenv("OPENAI_API_KEY")
-                    or os.getenv("CODEX_API_KEY")
-                    or oauth_access
+            self.auth = self.auth_adapter.resolve(
+                explicit_token=self.api_key,
+                env_tokens=(
+                    os.getenv("OPENCODE_API_KEY") or "",
+                    os.getenv("OPENAI_API_KEY") or "",
+                    os.getenv("CODEX_API_KEY") or "",
+                ),
+                oauth_token=oauth_access,
+                force_refresh=force_refresh,
+            )
+            if self.auth.source == "oauth" and oauth_access:
+                self.codex_access = oauth_access
+                self.codex_account_id = _extract_oauth_account_id(
+                    oauth_cache, oauth_provider or "openai"
                 )
-            if not self.api_key:
+            if not self.auth.token:
                 logger.warning("observer auth: missing openai api key")
                 return
             try:
                 from openai import OpenAI  # type: ignore
 
-                self.client = OpenAI(api_key=self.api_key)
+                self.client = OpenAI(api_key=self.auth.token)
             except Exception as exc:  # pragma: no cover
                 logger.exception("observer auth: openai client init failed", exc_info=exc)
                 self.client = None
+
+    def _refresh_provider_client(self) -> bool:
+        self.auth_adapter.invalidate_cache()
+        self._init_provider_client(force_refresh=True)
+        return self.client is not None or bool(self.codex_access)
 
     def observe(self, context: ObserverContext) -> ObserverResponse:
         prompt = build_observer_prompt(context)
@@ -222,6 +272,20 @@ class ObserverClient:
     def _call(self, prompt: str) -> str | None:
         if self.use_opencode_run:
             return self._call_opencode_run(prompt)
+        try:
+            return self._call_once(prompt)
+        except ObserverAuthError as exc:
+            logger.warning(
+                "observer auth error: %s (provider=%s, model=%s)",
+                exc,
+                self.provider,
+                self.model,
+            )
+            if not self._refresh_provider_client():
+                raise
+            return self._call_once(prompt)
+
+    def _call_once(self, prompt: str) -> str | None:
         if self.codex_access:
             return self._call_codex(prompt)
         if not self.client:
@@ -236,7 +300,6 @@ class ObserverClient:
                     max_tokens_to_sample=self.max_tokens,
                 )
                 return resp.completion
-            # OpenAI and custom providers use OpenAI-compatible APIs
             resp = self.client.chat.completions.create(  # type: ignore[union-attr]
                 model=self.model,
                 messages=[
@@ -249,12 +312,6 @@ class ObserverClient:
             return resp.choices[0].message.content
         except Exception as exc:  # pragma: no cover
             if _is_auth_error(exc):
-                logger.warning(
-                    "observer auth error: %s (provider=%s, model=%s)",
-                    exc,
-                    self.provider,
-                    self.model,
-                )
                 raise ObserverAuthError(str(exc)) from exc
             logger.exception(
                 "observer call failed",
@@ -303,6 +360,13 @@ class ObserverClient:
             logger.warning("observer auth: missing codex access token")
             return None
         headers = _build_codex_headers(self.codex_access, self.codex_account_id)
+        if self.observer_headers:
+            codex_auth = ObserverAuthMaterial(
+                token=self.codex_access,
+                auth_type="bearer",
+                source=self.auth.source,
+            )
+            headers.update(_render_observer_headers(self.observer_headers, codex_auth))
         payload = _build_codex_payload(self.model, prompt, self.max_tokens)
         endpoint = _resolve_codex_endpoint()
 

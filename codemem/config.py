@@ -13,6 +13,13 @@ DEFAULT_CONFIG_PATH_JSONC = Path("~/.config/codemem/config.jsonc").expanduser()
 CONFIG_ENV_OVERRIDES = {
     "observer_provider": "CODEMEM_OBSERVER_PROVIDER",
     "observer_model": "CODEMEM_OBSERVER_MODEL",
+    "observer_runtime": "CODEMEM_OBSERVER_RUNTIME",
+    "observer_auth_source": "CODEMEM_OBSERVER_AUTH_SOURCE",
+    "observer_auth_file": "CODEMEM_OBSERVER_AUTH_FILE",
+    "observer_auth_command": "CODEMEM_OBSERVER_AUTH_COMMAND",
+    "observer_auth_timeout_ms": "CODEMEM_OBSERVER_AUTH_TIMEOUT_MS",
+    "observer_auth_cache_ttl_s": "CODEMEM_OBSERVER_AUTH_CACHE_TTL_S",
+    "observer_headers": "CODEMEM_OBSERVER_HEADERS",
     "observer_max_chars": "CODEMEM_OBSERVER_MAX_CHARS",
     "pack_observation_limit": "CODEMEM_PACK_OBSERVATION_LIMIT",
     "pack_session_limit": "CODEMEM_PACK_SESSION_LIMIT",
@@ -180,6 +187,13 @@ class OpencodeMemConfig:
     observer_provider: str | None = None
     observer_model: str | None = None
     observer_api_key: str | None = None
+    observer_runtime: str = "api_http"
+    observer_auth_source: str = "auto"
+    observer_auth_file: str | None = None
+    observer_auth_command: list[str] = field(default_factory=list)
+    observer_auth_timeout_ms: int = 1500
+    observer_auth_cache_ttl_s: int = 300
+    observer_headers: dict[str, str] = field(default_factory=dict)
     observer_max_chars: int = 12000
     observer_max_tokens: int = 4000
     summary_max_chars: int = 6000
@@ -288,6 +302,69 @@ def _coerce_str_list(value: object, *, key: str) -> list[str] | None:
     return None
 
 
+def _coerce_command(value: object, *, key: str) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        if any(not isinstance(item, str) for item in value):
+            warnings.warn(
+                f"Invalid command list for {key}: {value!r}", RuntimeWarning, stacklevel=2
+            )
+            return None
+        return list(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            warnings.warn(
+                f"Invalid command list for {key}: {value!r}", RuntimeWarning, stacklevel=2
+            )
+            return None
+        if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+            warnings.warn(
+                f"Invalid command list for {key}: {value!r}", RuntimeWarning, stacklevel=2
+            )
+            return None
+        return list(parsed)
+    warnings.warn(f"Invalid command for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+    return None
+
+
+def _coerce_str_map(value: object, *, key: str) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            value = json.loads(text)
+        except Exception:
+            warnings.warn(f"Invalid object for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+            return None
+    if not isinstance(value, dict):
+        warnings.warn(f"Invalid object for {key}: {value!r}", RuntimeWarning, stacklevel=2)
+        return None
+    parsed: dict[str, str] = {}
+    for map_key, map_value in value.items():
+        if not isinstance(map_key, str) or not isinstance(map_value, str):
+            warnings.warn(
+                f"Invalid header entry for {key}: {map_key!r}", RuntimeWarning, stacklevel=2
+            )
+            return None
+        key_str = map_key.strip()
+        if not key_str:
+            warnings.warn(
+                f"Invalid header key for {key}: {map_key!r}", RuntimeWarning, stacklevel=2
+            )
+            return None
+        parsed[key_str] = map_value
+    return parsed
+
+
 def load_config(path: Path | None = None) -> OpencodeMemConfig:
     cfg = OpencodeMemConfig()
     config_path = get_config_path(path)
@@ -311,6 +388,8 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
         if not hasattr(cfg, key):
             continue
         if key in {
+            "observer_auth_timeout_ms",
+            "observer_auth_cache_ttl_s",
             "observer_max_chars",
             "observer_max_tokens",
             "summary_max_chars",
@@ -340,6 +419,16 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
         }:
             setattr(cfg, key, _coerce_bool(value, getattr(cfg, key), key=key))
             continue
+        if key == "observer_auth_command":
+            parsed = _coerce_command(value, key=key)
+            if parsed is not None:
+                setattr(cfg, key, parsed)
+            continue
+        if key == "observer_headers":
+            parsed = _coerce_str_map(value, key=key)
+            if parsed is not None:
+                setattr(cfg, key, parsed)
+            continue
         if key in {"sync_projects_include", "sync_projects_exclude"}:
             parsed = _coerce_str_list(value, key=key)
             if parsed is not None:
@@ -358,6 +447,31 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.observer_provider = os.getenv("CODEMEM_OBSERVER_PROVIDER", cfg.observer_provider)
     cfg.observer_model = os.getenv("CODEMEM_OBSERVER_MODEL", cfg.observer_model)
     cfg.observer_api_key = os.getenv("CODEMEM_OBSERVER_API_KEY", cfg.observer_api_key)
+    cfg.observer_runtime = os.getenv("CODEMEM_OBSERVER_RUNTIME", cfg.observer_runtime)
+    cfg.observer_auth_source = os.getenv("CODEMEM_OBSERVER_AUTH_SOURCE", cfg.observer_auth_source)
+    cfg.observer_auth_file = os.getenv("CODEMEM_OBSERVER_AUTH_FILE", cfg.observer_auth_file)
+    parsed_auth_command = _coerce_command(
+        os.getenv("CODEMEM_OBSERVER_AUTH_COMMAND"),
+        key="observer_auth_command",
+    )
+    if parsed_auth_command is not None:
+        cfg.observer_auth_command = parsed_auth_command
+    parsed_headers = _coerce_str_map(
+        os.getenv("CODEMEM_OBSERVER_HEADERS"),
+        key="observer_headers",
+    )
+    if parsed_headers is not None:
+        cfg.observer_headers = parsed_headers
+    cfg.observer_auth_timeout_ms = _parse_int(
+        os.getenv("CODEMEM_OBSERVER_AUTH_TIMEOUT_MS"),
+        cfg.observer_auth_timeout_ms,
+        key="observer_auth_timeout_ms",
+    )
+    cfg.observer_auth_cache_ttl_s = _parse_int(
+        os.getenv("CODEMEM_OBSERVER_AUTH_CACHE_TTL_S"),
+        cfg.observer_auth_cache_ttl_s,
+        key="observer_auth_cache_ttl_s",
+    )
     cfg.observer_max_chars = _parse_int(
         os.getenv("CODEMEM_OBSERVER_MAX_CHARS"),
         cfg.observer_max_chars,

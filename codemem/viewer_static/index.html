@@ -908,7 +908,8 @@
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
 
       .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-      .field input, .field select { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .field input, .field select, .field textarea { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .field textarea { resize: vertical; min-height: 84px; }
       .settings-save {
         border: 1px solid var(--control-border);
         background: var(--control-bg);
@@ -1030,6 +1031,51 @@
             <label for="observerModel">Observer model</label>
             <input id="observerModel" placeholder="leave empty for default" />
             <div class="small">Override the observer model.</div>
+          </div>
+          <div class="field">
+            <label for="observerRuntime">Observer runtime</label>
+            <select id="observerRuntime">
+              <option value="api_http">api_http (default)</option>
+              <option value="claude_sidecar">claude_sidecar (reserved)</option>
+            </select>
+            <div class="small">`claude_sidecar` is reserved for a follow-up runtime bridge.</div>
+          </div>
+          <div class="field">
+            <label for="observerAuthSource">Observer auth source</label>
+            <select id="observerAuthSource">
+              <option value="auto">auto (default)</option>
+              <option value="env">env</option>
+              <option value="file">file</option>
+              <option value="command">command</option>
+              <option value="none">none</option>
+            </select>
+            <div class="small">Choose how observer credentials are resolved.</div>
+          </div>
+          <div class="field" id="observerAuthFileField" hidden>
+            <label for="observerAuthFile">Observer auth file</label>
+            <input id="observerAuthFile" placeholder="~/.codemem/work-token.txt" />
+            <div class="small">Read token from this file when auth source is `file`.</div>
+          </div>
+          <div class="field" id="observerAuthCommandField" hidden>
+            <label for="observerAuthCommand">Observer auth command</label>
+            <textarea id="observerAuthCommand" rows="3" placeholder='["iap-auth", "--audience", "gateway"]'></textarea>
+            <div class="small">Command stdout is used as the token when source is `command` (argv only; no shell).</div>
+          </div>
+          <div class="small" id="observerAuthCommandNote" hidden>
+            Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
+          </div>
+          <div class="field">
+            <label for="observerAuthTimeoutMs">Observer auth timeout (ms)</label>
+            <input id="observerAuthTimeoutMs" type="number" min="1" />
+          </div>
+          <div class="field">
+            <label for="observerAuthCacheTtlS">Observer auth cache TTL (s)</label>
+            <input id="observerAuthCacheTtlS" type="number" min="0" />
+          </div>
+          <div class="field">
+            <label for="observerHeaders">Observer headers (JSON object)</label>
+            <textarea id="observerHeaders" rows="4" placeholder='{"Authorization":"Bearer ${auth.token}"}'></textarea>
+            <div class="small">Template variables: `${auth.token}`, `${auth.type}`, `${auth.source}`.</div>
           </div>
           <div class="field">
             <label for="observerMaxChars">Observer max chars</label>

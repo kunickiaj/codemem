@@ -13,10 +13,34 @@
 
 ## Settings modal
 - Open via the Settings button in the header.
-- Writes `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
+- Writes observer runtime/auth settings (`observer_runtime`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, `observer_headers`) plus `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 - Config file supports JSON and JSONC (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`).
+
+## Observer auth configuration
+
+- `0.16` observer flow supports API key/gateway token auth sources: `env`, `file`, `command`.
+- Pro/Max subscription runtime bridging for observer calls is a follow-up item.
+
+Example command-token gateway config:
+
+```json
+{
+  "observer_provider": "your-gateway-provider",
+  "observer_auth_source": "command",
+  "observer_auth_command": ["iap-auth"],
+  "observer_headers": {
+    "Authorization": "Bearer ${auth.token}"
+  }
+}
+```
+
+Header template variables:
+
+- `${auth.token}`
+- `${auth.type}`
+- `${auth.source}`
 
 ## Memory persistence
 - A session is created per ingest payload.

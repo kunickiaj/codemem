@@ -123,7 +123,9 @@ Common overrides:
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 
-The viewer includes a Settings modal for observer provider, model, and max chars.
+The viewer includes a Settings modal for observer provider/model plus runtime/auth fields.
+Observer auth sources in `0.16` are API-style (`env`, `file`, `command`) and support
+templated headers like `Authorization: Bearer ${auth.token}` for gateway flows.
 
 ## Export and import
 

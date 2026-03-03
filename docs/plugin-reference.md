@@ -83,6 +83,38 @@ slash commands in the OpenCode chat input.
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
 `CODEMEM_OBSERVER_MODEL`. Custom providers are loaded from OpenCode config.
 
+### Observer auth modes (0.16)
+
+Observer execution in `0.16` uses API-style auth paths.
+
+- Supported: API keys and gateway tokens codemem can read directly.
+- Supported token sources: `env`, `file`, `command`.
+- Not yet supported: direct Pro/Max subscription observer runtime bridge.
+
+For command-refreshed gateway auth, configure a command token source plus templated headers:
+
+```json
+{
+  "observer_provider": "your-gateway-provider",
+  "observer_runtime": "api_http",
+  "observer_auth_source": "command",
+  "observer_auth_command": ["iap-auth"],
+  "observer_auth_timeout_ms": 1500,
+  "observer_auth_cache_ttl_s": 300,
+  "observer_headers": {
+    "Authorization": "Bearer ${auth.token}"
+  }
+}
+```
+
+Header template variables:
+
+- `${auth.token}`
+- `${auth.type}`
+- `${auth.source}`
+
+`observer_auth_command` runs as direct argv execution (no shell interpolation).
+
 ## Stream-only mode (advanced)
 
 Stream contract:
@@ -179,6 +211,13 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_OBSERVER_PROVIDER` | Force `openai`, `anthropic`, or a custom provider key (optional). |
 | `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
+| `CODEMEM_OBSERVER_RUNTIME` | Observer runtime mode (`api_http`, `claude_sidecar`; sidecar reserved for follow-up). |
+| `CODEMEM_OBSERVER_AUTH_SOURCE` | Observer auth source (`auto`, `env`, `file`, `command`, `none`). |
+| `CODEMEM_OBSERVER_AUTH_FILE` | Path to token file used when auth source is `file`. |
+| `CODEMEM_OBSERVER_AUTH_COMMAND` | Command argv as a JSON string array used when auth source is `command`. |
+| `CODEMEM_OBSERVER_AUTH_TIMEOUT_MS` | Command auth timeout in milliseconds (default `1500`). |
+| `CODEMEM_OBSERVER_AUTH_CACHE_TTL_S` | Cache TTL for command/file auth resolution in seconds (default `300`). |
+| `CODEMEM_OBSERVER_HEADERS` | JSON object of templated observer headers, e.g. `{"Authorization":"Bearer ${auth.token}"}`. |
 | `CODEMEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
 | `CODEMEM_RAW_EVENTS_BACKOFF_MS` | Backoff window after stream failure before retrying stream POSTs (default `10000`). |
 | `CODEMEM_RAW_EVENTS_STATUS_CHECK_MS` | Minimum interval between stream availability preflight checks (default `30000`). |

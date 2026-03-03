@@ -271,3 +271,92 @@ def test_load_config_clamps_hybrid_shadow_sample_rate(
     cfg = load_config(config_path)
 
     assert cfg.hybrid_retrieval_shadow_sample_rate == 1.0
+
+
+def test_load_config_reads_observer_auth_fields(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "observer_runtime": "api_http",
+                "observer_auth_source": "command",
+                "observer_auth_file": "~/.codemem/token.txt",
+                "observer_auth_command": ["iap-auth", "--audience", "gateway"],
+                "observer_auth_timeout_ms": 2500,
+                "observer_auth_cache_ttl_s": 120,
+                "observer_headers": {
+                    "Authorization": "Bearer ${auth.token}",
+                    "X-Auth-Source": "${auth.source}",
+                },
+            }
+        )
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.observer_runtime == "api_http"
+    assert cfg.observer_auth_source == "command"
+    assert cfg.observer_auth_file == "~/.codemem/token.txt"
+    assert cfg.observer_auth_command == ["iap-auth", "--audience", "gateway"]
+    assert cfg.observer_auth_timeout_ms == 2500
+    assert cfg.observer_auth_cache_ttl_s == 120
+    assert cfg.observer_headers["Authorization"] == "Bearer ${auth.token}"
+
+
+def test_load_config_parses_observer_auth_command_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv(
+        "CODEMEM_OBSERVER_AUTH_COMMAND",
+        '["iap-auth", "--audience", "gateway"]',
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.observer_auth_command == ["iap-auth", "--audience", "gateway"]
+
+
+def test_load_config_rejects_non_json_observer_auth_command_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_OBSERVER_AUTH_COMMAND", "iap-auth --audience gateway")
+
+    with pytest.warns(RuntimeWarning, match="observer_auth_command"):
+        cfg = load_config(config_path)
+
+    assert cfg.observer_auth_command == []
+
+
+def test_load_config_parses_observer_headers_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv(
+        "CODEMEM_OBSERVER_HEADERS",
+        '{"Authorization":"Bearer ${auth.token}","X-Auth-Source":"${auth.source}"}',
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.observer_headers == {
+        "Authorization": "Bearer ${auth.token}",
+        "X-Auth-Source": "${auth.source}",
+    }
+
+
+def test_load_config_invalid_observer_headers_warns_and_uses_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"observer_headers": {"Authorization": 1}}\n')
+
+    with pytest.warns(RuntimeWarning, match="observer_headers"):
+        cfg = load_config(config_path)
+
+    assert cfg.observer_headers == {}
