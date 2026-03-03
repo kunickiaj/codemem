@@ -1,0 +1,22 @@
+{
+  "name": "codemem-marketplace",
+  "owner": {
+    "name": "Adam Kunicki"
+  },
+  "metadata": {
+    "description": "Official CodeMem plugins for Claude Code",
+    "version": "0.15.0"
+  },
+  "plugins": [
+    {
+      "name": "codemem",
+      "source": "./plugins/claude",
+      "description": "Persistent memory for Claude Code. Capture work across sessions and recall relevant context.",
+      "version": "0.15.0",
+      "author": {
+        "name": "Adam Kunicki"
+      },
+      "repository": "https://github.com/kunickiaj/codemem"
+    }
+  ]
+}
