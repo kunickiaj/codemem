@@ -72,7 +72,7 @@ def test_ingest_claude_hook_cmd_processes_stop_hook_without_default_flush() -> N
     assert called["count"] == 1
 
 
-def test_ingest_claude_hook_cmd_flushes_session_end_by_default() -> None:
+def test_ingest_claude_hook_cmd_does_not_flush_session_end_by_default() -> None:
     payload = {
         "hook_event_name": "SessionEnd",
         "session_id": "sess-1",
@@ -101,6 +101,44 @@ def test_ingest_claude_hook_cmd_flushes_session_end_by_default() -> None:
 
     with (
         patch("sys.stdin", io.StringIO(json.dumps(payload))),
+        patch("codemem.commands.claude_integration_cmds.MemoryStore", _FakeStore),
+        patch("codemem.commands.claude_integration_cmds.flush_raw_events", _fake_flush),
+    ):
+        ingest_claude_hook_cmd()
+
+    assert called["count"] == 1
+
+
+def test_ingest_claude_hook_cmd_flushes_session_end_when_enabled() -> None:
+    payload = {
+        "hook_event_name": "SessionEnd",
+        "session_id": "sess-1",
+        "stop_reason": "end_turn",
+    }
+    called = {"count": 0}
+
+    class _FakeStore:
+        def __init__(self, _: object) -> None:
+            pass
+
+        def record_raw_event(self, **kwargs: object) -> bool:
+            called["count"] += 1
+            assert kwargs["event_type"] == "claude.hook"
+            return True
+
+        def update_raw_event_session_meta(self, **_: object) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    def _fake_flush(*_: object, **__: object) -> dict[str, int]:
+        called["count"] += 1
+        return {"flushed": 1, "updated_state": 1}
+
+    with (
+        patch("sys.stdin", io.StringIO(json.dumps(payload))),
+        patch.dict("os.environ", {"CODEMEM_CLAUDE_HOOK_FLUSH": "1"}, clear=False),
         patch("codemem.commands.claude_integration_cmds.MemoryStore", _FakeStore),
         patch("codemem.commands.claude_integration_cmds.flush_raw_events", _fake_flush),
     ):
@@ -138,7 +176,14 @@ def test_ingest_claude_hook_cmd_flushes_stop_hook_when_assistant_text_missing() 
 
     with (
         patch("sys.stdin", io.StringIO(json.dumps(payload))),
-        patch.dict("os.environ", {"CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP": "1"}, clear=False),
+        patch.dict(
+            "os.environ",
+            {
+                "CODEMEM_CLAUDE_HOOK_FLUSH": "1",
+                "CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP": "1",
+            },
+            clear=False,
+        ),
         patch("codemem.commands.claude_integration_cmds.MemoryStore", _FakeStore),
         patch("codemem.commands.claude_integration_cmds.flush_raw_events", _fake_flush),
     ):
@@ -241,6 +286,12 @@ def test_claude_hook_script_has_version_pinned_uvx_fallback() -> None:
     assert 'UVX_PACKAGE_SPEC="codemem"' in hook_script
     assert 'UVX_PACKAGE_SPEC="codemem==${PLUGIN_VERSION}"' in hook_script
     assert 'uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook' in hook_script
+    assert "CODEMEM_PLUGIN_IGNORE=1 codemem ingest-claude-hook" in hook_script
+    assert 'CODEMEM_PLUGIN_IGNORE=1 uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook' in hook_script
+    assert (
+        'LOCK_DIR="${CODEMEM_CLAUDE_HOOK_LOCK_DIR:-$HOME/.codemem/claude-hook-ingest.lock}"'
+        in hook_script
+    )
     assert "CODEMEM_HOOK_ALLOW_UVX" not in hook_script
 
 

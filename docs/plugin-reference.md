@@ -273,7 +273,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
 | `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
-| `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate hook flush attempts (default on). |
+| `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `1` to enable immediate hook flush attempts for `SessionEnd` (default off; enqueue-only). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP` | Set to `1` to flush on Claude `Stop` hooks in addition to `SessionEnd` (default off). |
 
 ## Compatibility guidance behavior
