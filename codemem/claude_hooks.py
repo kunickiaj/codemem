@@ -220,11 +220,10 @@ def _extract_from_transcript(transcript_path: Any) -> tuple[str | None, dict[str
                 if role != "assistant":
                     continue
                 text = _text_from_content(content_value)
-                if text:
-                    assistant_text = text
-                usage = _normalize_usage(usage_value)
-                if usage is not None:
-                    assistant_usage = usage
+                if not text:
+                    continue
+                assistant_text = text
+                assistant_usage = _normalize_usage(usage_value)
     except OSError:
         return None, None
 
@@ -246,6 +245,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     tool_use_id = str(payload.get("tool_use_id") or "").strip()
     event_type: str
     event_payload: dict[str, Any]
+    event_id_payload: dict[str, Any]
     consumed: set[str] = {
         "hook_event_name",
         "session_id",
@@ -260,6 +260,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     if hook_event == "SessionStart":
         event_type = "session_start"
         event_payload = {"source": payload.get("source")}
+        event_id_payload = dict(event_payload)
         consumed.add("source")
     elif hook_event == "UserPromptSubmit":
         text = str(payload.get("prompt") or "").strip()
@@ -267,6 +268,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             return None
         event_type = "prompt"
         event_payload = {"text": text}
+        event_id_payload = dict(event_payload)
         consumed.add("prompt")
     elif hook_event == "PreToolUse":
         tool_name = str(payload.get("tool_name") or "").strip()
@@ -280,6 +282,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             "tool_name": tool_name,
             "tool_input": tool_input,
         }
+        event_id_payload = dict(event_payload)
         consumed.update({"tool_name", "tool_input"})
     elif hook_event == "PostToolUse":
         tool_name = str(payload.get("tool_name") or "").strip()
@@ -297,6 +300,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             "tool_output": tool_response,
             "tool_error": None,
         }
+        event_id_payload = dict(event_payload)
         consumed.update({"tool_name", "tool_input", "tool_response"})
     elif hook_event == "PostToolUseFailure":
         tool_name = str(payload.get("tool_name") or "").strip()
@@ -314,10 +318,13 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             "tool_output": None,
             "error": error,
         }
+        event_id_payload = dict(event_payload)
         consumed.update({"tool_name", "tool_input", "error", "is_interrupt"})
     elif hook_event == "Stop":
-        assistant_text = str(payload.get("last_assistant_message") or "").strip()
-        usage = _normalize_usage(payload.get("usage"))
+        raw_assistant_text = str(payload.get("last_assistant_message") or "").strip()
+        raw_usage = _normalize_usage(payload.get("usage"))
+        assistant_text = raw_assistant_text
+        usage = raw_usage
         if not assistant_text or usage is None:
             transcript_text, transcript_usage = _extract_from_transcript(
                 payload.get("transcript_path")
@@ -332,10 +339,18 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         event_payload = {"text": assistant_text}
         if usage is not None:
             event_payload["usage"] = usage
+        event_id_payload = {"text": raw_assistant_text}
+        if raw_usage is not None:
+            event_id_payload["usage"] = raw_usage
+        if not raw_assistant_text and raw_usage is None:
+            transcript_path = payload.get("transcript_path")
+            if isinstance(transcript_path, str) and transcript_path.strip():
+                event_id_payload["transcript_path"] = transcript_path.strip()
         consumed.update({"stop_hook_active", "last_assistant_message", "usage"})
     else:
         event_type = "session_end"
         event_payload = {"reason": payload.get("reason")}
+        event_id_payload = dict(event_payload)
         consumed.add("reason")
 
     meta: dict[str, Any] = {
@@ -359,7 +374,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         event_id_ts_seed,
         tool_use_id,
         hashlib.sha256(
-            json.dumps(event_payload, sort_keys=True, default=str).encode("utf-8")
+            json.dumps(event_id_payload, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest(),
     )
 
