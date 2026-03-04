@@ -46,7 +46,7 @@ uv tool install --upgrade codemem
 
 Claude MCP launch uses `uvx`; startup can be slower on first run because it may install dependencies on demand.
 
-Claude hook ingestion uses the same version-pinned fallback when local `codemem` is not available:
+Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks` to the local codemem server) with a version-pinned CLI fallback when the server path is unavailable:
 
 - `uvx codemem==<plugin-version> ingest-claude-hook`
 
@@ -62,7 +62,7 @@ Ingest one Claude hook payload from stdin (this is what the installed hook scrip
 printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem ingest-claude-hook
 ```
 
-By default, `SessionEnd` triggers an immediate queue flush attempt. Set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to also flush on `Stop`, or `CODEMEM_CLAUDE_HOOK_FLUSH=0` to disable hook-triggered flushes entirely.
+By default, Claude hooks are enqueue-only. Set `CODEMEM_CLAUDE_HOOK_FLUSH=1` to enable immediate flush on `SessionEnd`, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to also flush on `Stop`.
 
 The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
@@ -237,6 +237,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` to enable; defaults to off). |
 | `CODEMEM_PLUGIN_LOG_PATH` | Explicit log file path for Claude hook script logging (overrides `CODEMEM_PLUGIN_LOG` for that script). |
+| `CODEMEM_CLAUDE_HOOK_HTTP_CONNECT_TIMEOUT_S` | Claude hook HTTP enqueue connect timeout in seconds (default `1`). |
+| `CODEMEM_CLAUDE_HOOK_HTTP_MAX_TIME_S` | Claude hook HTTP enqueue total timeout in seconds (default `2`). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Backend update behavior on compatibility mismatch: `notify` (default), `auto`, or `off`. |

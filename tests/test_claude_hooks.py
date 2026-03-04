@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from codemem.claude_hooks import build_ingest_payload_from_hook, map_claude_hook_payload
+from codemem.claude_hooks import (
+    build_ingest_payload_from_hook,
+    build_raw_event_envelope_from_hook,
+    map_claude_hook_payload,
+)
 
 
 def test_map_user_prompt_submit_to_prompt_event() -> None:
@@ -160,3 +164,24 @@ def test_map_claude_hook_payload_missing_ts_generates_distinct_event_ids(
     assert second is not None
     assert first["ts"] != second["ts"]
     assert first["event_id"] != second["event_id"]
+
+
+def test_build_raw_event_envelope_from_hook_includes_queue_fields() -> None:
+    payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": "sess-enqueue",
+        "source": "startup",
+        "cwd": "/tmp/repo",
+        "project": "codemem",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["opencode_session_id"] == "sess-enqueue"
+    assert envelope["source"] == "claude"
+    assert envelope["event_type"] == "claude.hook"
+    assert envelope["started_at"] == "2026-03-04T01:00:00Z"
+    assert envelope["payload"]["_adapter"]["event_type"] == "session_start"
+    assert envelope["ts_wall_ms"] == 1772586000000

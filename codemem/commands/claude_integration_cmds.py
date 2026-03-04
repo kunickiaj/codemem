@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import datetime as dt
 import json
 import os
 import sys
 from typing import Any
 
-from codemem.claude_hooks import MAPPABLE_CLAUDE_HOOK_EVENTS, map_claude_hook_payload
+from codemem.claude_hooks import MAPPABLE_CLAUDE_HOOK_EVENTS, build_raw_event_envelope_from_hook
 from codemem.db import DEFAULT_DB_PATH
 from codemem.ingest_sanitize import _strip_private
 from codemem.raw_event_flush import flush_raw_events
@@ -42,18 +41,6 @@ def _hook_stream_id(hook_payload: dict[str, Any]) -> str | None:
     )
 
 
-def _iso_to_wall_ms(ts: str | None) -> int:
-    if isinstance(ts, str) and ts.strip():
-        try:
-            parsed = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=dt.UTC)
-            return int(parsed.timestamp() * 1000)
-        except ValueError:
-            pass
-    return int(dt.datetime.now(dt.UTC).timestamp() * 1000)
-
-
 def _strip_private_obj(value: Any) -> Any:
     if isinstance(value, str):
         return _strip_private(value)
@@ -65,40 +52,30 @@ def _strip_private_obj(value: Any) -> Any:
 
 
 def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[str, bool] | None:
-    adapter_event = map_claude_hook_payload(hook_payload)
-    if adapter_event is None:
+    envelope = build_raw_event_envelope_from_hook(hook_payload)
+    if envelope is None:
         return None
-    source = str(adapter_event.get("source") or "claude")
-    session_id = str(adapter_event.get("session_id") or "").strip()
-    if not session_id:
-        return None
-    stream_id = _adapter_stream_id(
-        session_id=session_id,
-    )
-    ts = str(adapter_event.get("ts") or "")
-    payload = {
-        "type": "claude.hook",
-        "timestamp": ts,
-        "_adapter": adapter_event,
-    }
-    payload = _strip_private_obj(payload)
+
+    stream_id = _adapter_stream_id(session_id=str(envelope["opencode_session_id"]))
+    source = str(envelope.get("source") or "claude")
+    payload = _strip_private_obj(envelope["payload"])
     inserted = store.record_raw_event(
         opencode_session_id=stream_id,
         source=source,
-        event_id=str(adapter_event.get("event_id") or ""),
+        event_id=str(envelope.get("event_id") or ""),
         event_type="claude.hook",
         payload=payload,
-        ts_wall_ms=_iso_to_wall_ms(ts),
+        ts_wall_ms=int(envelope.get("ts_wall_ms") or 0),
     )
     store.update_raw_event_session_meta(
         opencode_session_id=stream_id,
         source=source,
-        cwd=hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None,
-        project=hook_payload.get("project")
-        if isinstance(hook_payload.get("project"), str)
+        cwd=envelope.get("cwd") if isinstance(envelope.get("cwd"), str) else None,
+        project=envelope.get("project") if isinstance(envelope.get("project"), str) else None,
+        started_at=envelope.get("started_at")
+        if isinstance(envelope.get("started_at"), str)
         else None,
-        started_at=ts if str(hook_payload.get("hook_event_name") or "") == "SessionStart" else None,
-        last_seen_ts_wall_ms=_iso_to_wall_ms(ts),
+        last_seen_ts_wall_ms=int(envelope.get("ts_wall_ms") or 0),
     )
     return stream_id, inserted
 

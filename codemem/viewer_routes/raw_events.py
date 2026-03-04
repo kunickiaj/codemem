@@ -8,6 +8,8 @@ from collections.abc import Callable
 from typing import Any, Protocol
 from urllib.parse import parse_qs
 
+from codemem.claude_hooks import build_raw_event_envelope_from_hook
+
 
 def _safe_int_env(name: str, default: int) -> int:
     value = os.getenv(name)
@@ -45,10 +47,23 @@ class _Store(Protocol):
         self, *, opencode_session_id: str, events: list[dict[str, Any]]
     ) -> dict: ...
 
+    def record_raw_event(
+        self,
+        *,
+        opencode_session_id: str,
+        source: str,
+        event_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        ts_wall_ms: int | None = None,
+        ts_mono_ms: float | None = None,
+    ) -> bool: ...
+
     def update_raw_event_session_meta(
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         cwd: str | None,
         project: str | None,
         started_at: str | None,
@@ -86,6 +101,95 @@ def handle_get(handler: Any, store: Any, path: str, query: str) -> bool:
     return True
 
 
+def _read_payload_object(handler: _ViewerHandler) -> dict[str, Any] | None:
+    try:
+        length = int(handler.headers.get("Content-Length", "0") or 0)
+    except (TypeError, ValueError):
+        handler._send_json({"error": "invalid content-length"}, status=400)
+        return None
+    if length < 0:
+        handler._send_json({"error": "invalid content-length"}, status=400)
+        return None
+    if length > MAX_RAW_EVENTS_BODY_BYTES:
+        handler._send_json(
+            {
+                "error": "payload too large",
+                "max_bytes": MAX_RAW_EVENTS_BODY_BYTES,
+            },
+            status=413,
+        )
+        return None
+    raw = handler.rfile.read(length).decode("utf-8") if length else ""
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        handler._send_json({"error": "invalid json"}, status=400)
+        return None
+    if not isinstance(payload, dict):
+        handler._send_json({"error": "payload must be an object"}, status=400)
+        return None
+    return payload
+
+
+def _handle_post_claude_hooks(
+    handler: _ViewerHandler,
+    *,
+    store_factory: Callable[[str], _Store],
+    default_db_path: str,
+    flusher: _RawEventFlusher,
+    strip_private_obj: Callable[[Any], Any],
+) -> bool:
+    payload = _read_payload_object(handler)
+    if payload is None:
+        return True
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+    if envelope is None:
+        handler._send_json({"inserted": 0, "skipped": 1})
+        return True
+
+    try:
+        store: _Store = store_factory(os.environ.get("CODEMEM_DB") or default_db_path)
+    except Exception as exc:  # pragma: no cover
+        response: dict[str, Any] = {"error": "internal server error"}
+        if os.environ.get("CODEMEM_VIEWER_DEBUG") == "1":
+            response["detail"] = str(exc)
+        handler._send_json(response, status=500)
+        return True
+
+    try:
+        opencode_session_id = str(envelope["opencode_session_id"])
+        source = str(envelope.get("source") or "claude")
+        payload_obj = strip_private_obj(envelope["payload"])
+        inserted = store.record_raw_event(
+            opencode_session_id=opencode_session_id,
+            source=source,
+            event_id=str(envelope["event_id"]),
+            event_type="claude.hook",
+            payload=payload_obj,
+            ts_wall_ms=int(envelope["ts_wall_ms"]),
+        )
+        store.update_raw_event_session_meta(
+            opencode_session_id=opencode_session_id,
+            source=source,
+            cwd=envelope.get("cwd") if isinstance(envelope.get("cwd"), str) else None,
+            project=envelope.get("project") if isinstance(envelope.get("project"), str) else None,
+            started_at=envelope.get("started_at")
+            if isinstance(envelope.get("started_at"), str)
+            else None,
+            last_seen_ts_wall_ms=int(envelope["ts_wall_ms"]),
+        )
+        try:
+            flusher.note_activity(opencode_session_id, source=source)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("raw event flusher note_activity failed", extra={"source": source})
+            logger.debug("raw event flusher error", exc_info=exc)
+        handler._send_json({"inserted": int(inserted), "skipped": 0})
+        return True
+    finally:
+        store.close()
+
+
 def handle_post(
     handler: _ViewerHandler,
     *,
@@ -95,34 +199,19 @@ def handle_post(
     flusher: _RawEventFlusher,
     strip_private_obj: Callable[[Any], Any],
 ) -> bool:
+    if path == "/api/claude-hooks":
+        return _handle_post_claude_hooks(
+            handler,
+            store_factory=store_factory,
+            default_db_path=default_db_path,
+            flusher=flusher,
+            strip_private_obj=strip_private_obj,
+        )
     if path != "/api/raw-events":
         return False
 
-    try:
-        length = int(handler.headers.get("Content-Length", "0") or 0)
-    except (TypeError, ValueError):
-        handler._send_json({"error": "invalid content-length"}, status=400)
-        return True
-    if length < 0:
-        handler._send_json({"error": "invalid content-length"}, status=400)
-        return True
-    if length > MAX_RAW_EVENTS_BODY_BYTES:
-        handler._send_json(
-            {
-                "error": "payload too large",
-                "max_bytes": MAX_RAW_EVENTS_BODY_BYTES,
-            },
-            status=413,
-        )
-        return True
-    raw = handler.rfile.read(length).decode("utf-8") if length else ""
-    try:
-        payload = json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        handler._send_json({"error": "invalid json"}, status=400)
-        return True
-    if not isinstance(payload, dict):
-        handler._send_json({"error": "payload must be an object"}, status=400)
+    payload = _read_payload_object(handler)
+    if payload is None:
         return True
 
     try:

@@ -285,6 +285,8 @@ def test_claude_hook_script_has_version_pinned_uvx_fallback() -> None:
 
     assert 'UVX_PACKAGE_SPEC="codemem"' in hook_script
     assert 'UVX_PACKAGE_SPEC="codemem==${PLUGIN_VERSION}"' in hook_script
+    assert 'CLAUDE_HOOK_URL="http://${VIEWER_HOST}:${VIEWER_PORT}/api/claude-hooks"' in hook_script
+    assert "curl -sS" in hook_script
     assert 'uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook' in hook_script
     assert "CODEMEM_PLUGIN_IGNORE=1 codemem ingest-claude-hook" in hook_script
     assert 'CODEMEM_PLUGIN_IGNORE=1 uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook' in hook_script
