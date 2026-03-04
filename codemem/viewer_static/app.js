@@ -1548,6 +1548,65 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     return { model: DEFAULT_OPENAI_MODEL, source: "Default (openai)" };
   }
+  function configuredValueForKey(config, key) {
+    switch (key) {
+      case "observer_provider":
+      case "observer_model":
+      case "observer_auth_file":
+      case "sync_host":
+        return normalizeTextValue(asInputString(config?.[key]));
+      case "observer_runtime":
+        return normalizeTextValue(asInputString(config?.observer_runtime));
+      case "observer_auth_source":
+        return normalizeTextValue(asInputString(config?.observer_auth_source));
+      case "observer_auth_command": {
+        const value = config?.observer_auth_command;
+        if (!Array.isArray(value)) return [];
+        return value.filter((item) => typeof item === "string");
+      }
+      case "observer_headers": {
+        const value = config?.observer_headers;
+        if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+        const headers = {};
+        Object.entries(value).forEach(([header, headerValue]) => {
+          if (typeof header === "string" && header.trim() && typeof headerValue === "string") {
+            headers[header.trim()] = headerValue;
+          }
+        });
+        return headers;
+      }
+      case "observer_auth_timeout_ms":
+      case "observer_max_chars":
+      case "pack_observation_limit":
+      case "pack_session_limit":
+      case "raw_events_sweeper_interval_s":
+      case "sync_port":
+      case "sync_interval_s": {
+        if (!hasOwn(config, key)) return "";
+        const parsed = Number(config[key]);
+        return Number.isFinite(parsed) && parsed !== 0 ? parsed : "";
+      }
+      case "observer_auth_cache_ttl_s": {
+        if (!hasOwn(config, key)) return "";
+        const parsed = Number(config[key]);
+        return Number.isFinite(parsed) ? parsed : "";
+      }
+      case "sync_enabled":
+      case "sync_mdns":
+        return Boolean(config?.[key]);
+      default:
+        return hasOwn(config, key) ? config[key] : "";
+    }
+  }
+  function mergeOverrideBaseline(baseline, config, envOverrides) {
+    const next = { ...baseline };
+    Object.keys(envOverrides).forEach((key) => {
+      if (hasOwn(next, key)) {
+        next[key] = configuredValueForKey(config, key);
+      }
+    });
+    return next;
+  }
   function renderObserverModelHint() {
     const hint = $("observerModelHint");
     if (!hint) return;
@@ -1555,7 +1614,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const provider = ($select("observerProvider")?.value || "").trim();
     const configuredModel = normalizeTextValue($input("observerModel")?.value || "");
     const inferred = inferObserverModel(runtime, provider, configuredModel);
-    const source = hasOwn(settingsEnvOverrides, "observer_model") ? "Env override" : inferred.source;
+    const overrideActive = ["observer_model", "observer_provider", "observer_runtime"].some(
+      (key) => hasOwn(settingsEnvOverrides, key)
+    );
+    const source = overrideActive ? "Env override" : inferred.source;
     hint.textContent = `${source}: ${inferred.model}`;
   }
   function setProviderOptions(selectEl, providers, currentValue) {
@@ -1702,7 +1764,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     updateAuthSourceVisibility();
     setSettingsTab(settingsActiveTab);
     try {
-      settingsBaseline = collectSettingsPayload();
+      const baseline = collectSettingsPayload();
+      settingsBaseline = mergeOverrideBaseline(baseline, config, envOverrides);
     } catch {
       settingsBaseline = {};
     }
