@@ -185,3 +185,71 @@ def test_build_raw_event_envelope_from_hook_includes_queue_fields() -> None:
     assert envelope["started_at"] == "2026-03-04T01:00:00Z"
     assert envelope["payload"]["_adapter"]["event_type"] == "session_start"
     assert envelope["ts_wall_ms"] == 1772586000000
+
+
+def test_build_raw_event_envelope_prefers_codemem_project_env(monkeypatch) -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-env-project",
+        "prompt": "ship it",
+        "cwd": "/tmp/repo",
+        "project": "payload-project",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.setenv("CODEMEM_PROJECT", "env-project")
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "env-project"
+
+
+def test_build_raw_event_envelope_infers_project_from_cwd(monkeypatch) -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-cwd-project",
+        "prompt": "ship it",
+        "cwd": "/tmp/worktrees/codemem",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+    monkeypatch.setattr("codemem.claude_hooks.resolve_project", lambda cwd: "codemem-main")
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "codemem-main"
+
+
+def test_build_raw_event_envelope_prefers_cwd_project_over_payload_project(monkeypatch) -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-cwd-over-payload",
+        "prompt": "ship it",
+        "cwd": "/tmp/worktrees/codemem",
+        "project": "main",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+    monkeypatch.setattr("codemem.claude_hooks.resolve_project", lambda cwd: "codemem")
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "codemem"
+
+
+def test_build_raw_event_envelope_uses_payload_project_without_cwd(monkeypatch) -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-payload-project",
+        "prompt": "ship it",
+        "project": "payload-project",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "payload-project"
