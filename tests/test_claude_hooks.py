@@ -74,6 +74,8 @@ def test_build_ingest_payload_wraps_adapter_event() -> None:
     assert ingest_payload is not None
     assert ingest_payload["session_context"]["source"] == "claude"
     assert ingest_payload["session_context"]["stream_id"] == "sess-xyz"
+    assert ingest_payload["session_context"]["session_stream_id"] == "sess-xyz"
+    assert ingest_payload["session_context"]["session_id"] == "sess-xyz"
     assert ingest_payload["session_context"]["opencode_session_id"] == "sess-xyz"
     event = ingest_payload["events"][0]
     assert event["_adapter"]["event_type"] == "session_start"
@@ -179,6 +181,8 @@ def test_build_raw_event_envelope_from_hook_includes_queue_fields() -> None:
     envelope = build_raw_event_envelope_from_hook(payload)
 
     assert envelope is not None
+    assert envelope["session_stream_id"] == "sess-enqueue"
+    assert envelope["session_id"] == "sess-enqueue"
     assert envelope["opencode_session_id"] == "sess-enqueue"
     assert envelope["source"] == "claude"
     assert envelope["event_type"] == "claude.hook"

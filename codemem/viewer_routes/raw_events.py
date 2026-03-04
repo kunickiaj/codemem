@@ -31,6 +31,18 @@ SESSION_ID_KEYS = (
 )
 
 
+def _with_session_aliases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        stream_id = str(item.get("stream_id") or item.get("opencode_session_id") or "")
+        entry = dict(item)
+        if stream_id:
+            entry["session_stream_id"] = stream_id
+            entry["session_id"] = stream_id
+        normalized.append(entry)
+    return normalized
+
+
 class _ViewerHandler(Protocol):
     headers: Any
     rfile: Any
@@ -91,7 +103,7 @@ def handle_get(handler: Any, store: Any, path: str, query: str) -> bool:
             return True
         handler._send_json(
             {
-                "items": store.raw_event_backlog(limit=limit),
+                "items": _with_session_aliases(store.raw_event_backlog(limit=limit)),
                 "totals": store.raw_event_backlog_totals(),
                 "ingest": {
                     "available": True,
