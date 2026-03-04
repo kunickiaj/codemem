@@ -7,7 +7,20 @@ case "${LOG_PATH_ENV}" in
   "1"|"true"|"yes") LOG_PATH="$HOME/.codemem/plugin.log" ;;
   *) LOG_PATH="${LOG_PATH_ENV}" ;;
 esac
-ALLOW_UVX="${CODEMEM_HOOK_ALLOW_UVX:-0}"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "${PLUGIN_ROOT}" ]; then
+  SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  PLUGIN_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
+fi
+PLUGIN_MANIFEST="${PLUGIN_ROOT}/.claude-plugin/plugin.json"
+UVX_PACKAGE_SPEC="codemem"
+
+if [ -f "${PLUGIN_MANIFEST}" ]; then
+  PLUGIN_VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${PLUGIN_MANIFEST}" | sed -n '1p')"
+  if [ -n "${PLUGIN_VERSION}" ]; then
+    UVX_PACKAGE_SPEC="codemem==${PLUGIN_VERSION}"
+  fi
+fi
 
 log_line() {
   mkdir -p "$(dirname "${LOG_PATH}")" >/dev/null 2>&1 || true
@@ -28,19 +41,15 @@ if command -v codemem >/dev/null 2>&1; then
   exit 0
 fi
 
-if [ "${ALLOW_UVX}" = "1" ] && command -v uvx >/dev/null 2>&1; then
+if command -v uvx >/dev/null 2>&1; then
   (
-    if ! printf '%s' "${payload}" | uvx --from codemem codemem ingest-claude-hook >/dev/null 2>&1; then
+    if ! printf '%s' "${payload}" | uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook >/dev/null 2>&1; then
       log_line "codemem ingest-claude-hook failed via uvx"
     fi
   ) &
   exit 0
 fi
 
-if [ "${ALLOW_UVX}" = "1" ]; then
-  log_line "codemem ingest-claude-hook skipped: codemem and uvx not found"
-else
-  log_line "codemem ingest-claude-hook skipped: codemem binary not found"
-fi
+log_line "codemem ingest-claude-hook skipped: codemem and uvx not found"
 
 exit 0

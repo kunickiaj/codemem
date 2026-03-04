@@ -11,7 +11,7 @@
     "codemem": {
       "command": "uvx",
       "args": [
-        "codemem",
+        "codemem==0.16.0",
         "mcp"
       ]
     }
