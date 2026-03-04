@@ -319,6 +319,24 @@ def test_auth_adapter_command_source_does_not_cache_failed_resolution(
     assert len(calls) == 2
 
 
+def test_auth_adapter_env_source_uses_environment_tokens_only() -> None:
+    adapter = ObserverAuthAdapter(source="env")
+
+    resolved = adapter.resolve(explicit_token="config-token", env_tokens=("env-token",))
+
+    assert resolved.token == "env-token"
+    assert resolved.source == "env"
+
+
+def test_auth_adapter_env_source_ignores_explicit_token_when_env_missing() -> None:
+    adapter = ObserverAuthAdapter(source="env")
+
+    resolved = adapter.resolve(explicit_token="config-token", env_tokens=())
+
+    assert resolved.token is None
+    assert resolved.source == "none"
+
+
 def test_custom_provider_none_auth_source_does_not_use_api_key() -> None:
     cfg = OpencodeMemConfig(
         observer_provider="gateway",
@@ -347,6 +365,47 @@ def test_custom_provider_none_auth_source_does_not_use_api_key() -> None:
     assert client.client.kwargs["api_key"] == "unused"
     assert client.auth.token is None
     assert client.auth.source == "none"
+
+
+def test_observer_retries_auth_resolution_when_client_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OpencodeMemConfig(
+        observer_provider="openai",
+        observer_auth_source="command",
+        observer_auth_command=["iap-auth"],
+    )
+    tokens = iter([None, "token-2"])
+
+    def fake_run(_cmd: tuple[str, ...], _timeout_ms: int) -> str | None:
+        return next(tokens)
+
+    class OpenAIWithChatStub:
+        def __init__(self, **_kwargs: object) -> None:
+            self.kwargs = _kwargs
+
+            class _Completions:
+                def create(self, **_payload: object) -> object:
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content="observer-ok"))]
+                    )
+
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    monkeypatch.setattr("codemem.observer_auth._run_auth_command", fake_run)
+    openai_module = SimpleNamespace(OpenAI=OpenAIWithChatStub)
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch.dict(sys.modules, {"openai": openai_module}),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+        assert client.client is None
+        output = client._call("hello")
+
+    assert output == "observer-ok"
 
 
 def _claude_sidecar_payload(*, result: str, is_error: bool = False) -> str:

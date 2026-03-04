@@ -417,8 +417,12 @@ class ObserverClient:
         if self.codex_access:
             return self._call_codex(prompt)
         if not self.client:
-            logger.warning("observer auth: missing client and codex token")
-            return None
+            self._refresh_provider_client()
+            if self.codex_access:
+                return self._call_codex(prompt)
+            if not self.client:
+                logger.warning("observer auth: missing client and codex token")
+                return None
         try:
             if self.provider == "anthropic":
                 resp = self.client.completions.create(  # type: ignore[union-attr]

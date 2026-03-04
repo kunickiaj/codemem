@@ -1070,12 +1070,13 @@
               <div class="field">
                 <label for="observerProvider">Observer provider</label>
                 <select id="observerProvider"><option value="">auto (default)</option></select>
-                <div class="small">Leave blank to use defaults.</div>
+                <div class="small">`auto` uses provider defaults for the selected runtime.</div>
               </div>
               <div class="field">
                 <label for="observerModel">Observer model</label>
                 <input id="observerModel" placeholder="leave empty for default" />
                 <div class="small">Default: `gpt-5.1-codex-mini` for `api_http`; `claude-4.5-haiku` for `claude_sidecar`.</div>
+                <div class="small" id="observerModelHint"></div>
               </div>
               <div class="field">
                 <label for="observerRuntime">Observer runtime</label>

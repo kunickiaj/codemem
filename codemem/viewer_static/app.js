@@ -1507,6 +1507,39 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   let settingsOpen = false;
   let previouslyFocused = null;
   let settingsActiveTab = "observer";
+  function hasOwn(obj, key) {
+    return typeof obj === "object" && obj !== null && Object.prototype.hasOwnProperty.call(obj, key);
+  }
+  function configuredOrEffective(config, effective, key) {
+    if (hasOwn(config, key)) return config[key];
+    if (hasOwn(effective, key)) return effective[key];
+    return void 0;
+  }
+  function asInputString(value) {
+    if (value === void 0 || value === null) return "";
+    return String(value);
+  }
+  function toProviderList(value) {
+    if (!Array.isArray(value)) return [];
+    return value.filter((item) => typeof item === "string" && item.trim().length > 0);
+  }
+  function setProviderOptions(selectEl, providers, currentValue) {
+    if (!selectEl) return;
+    const values = new Set(providers);
+    if (currentValue) values.add(currentValue);
+    selectEl.innerHTML = "";
+    const autoOption = document.createElement("option");
+    autoOption.value = "";
+    autoOption.textContent = "auto (default)";
+    selectEl.append(autoOption);
+    Array.from(values).sort((a, b) => a.localeCompare(b)).forEach((provider) => {
+      const option = document.createElement("option");
+      option.value = provider;
+      option.textContent = provider;
+      selectEl.append(option);
+    });
+    selectEl.value = currentValue;
+  }
   function getFocusableNodes(container) {
     if (!container) return [];
     const selector = [
@@ -1549,6 +1582,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (!payload || typeof payload !== "object") return;
     const defaults = payload.defaults || {};
     const config = payload.config || {};
+    const effective = payload.effective || {};
+    const envOverrides = payload.env_overrides && typeof payload.env_overrides === "object" ? payload.env_overrides : {};
+    const providers = toProviderList(payload.providers);
     state.configDefaults = defaults;
     state.configPath = payload.path || "";
     const observerProvider = $select("observerProvider");
@@ -1570,48 +1606,60 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const syncInterval = $input("syncInterval");
     const syncMdns = $input("syncMdns");
     const settingsPath = $("settingsPath");
+    const observerModelHint = $("observerModelHint");
     const observerMaxCharsHint = $("observerMaxCharsHint");
     const settingsEffective = $("settingsEffective");
-    if (observerProvider) observerProvider.value = config.observer_provider || "";
-    if (observerModel) observerModel.value = config.observer_model || "";
-    if (observerRuntime) observerRuntime.value = config.observer_runtime || "api_http";
-    if (observerAuthSource) observerAuthSource.value = config.observer_auth_source || "auto";
-    if (observerAuthFile) observerAuthFile.value = config.observer_auth_file || "";
+    const observerProviderValue = asInputString(configuredOrEffective(config, effective, "observer_provider"));
+    setProviderOptions(observerProvider, providers, observerProviderValue);
+    const observerModelValue = asInputString(configuredOrEffective(config, effective, "observer_model"));
+    if (observerModel) observerModel.value = observerModelValue;
+    if (observerRuntime) observerRuntime.value = asInputString(configuredOrEffective(config, effective, "observer_runtime")) || "api_http";
+    if (observerAuthSource) observerAuthSource.value = asInputString(configuredOrEffective(config, effective, "observer_auth_source")) || "auto";
+    if (observerAuthFile) observerAuthFile.value = asInputString(configuredOrEffective(config, effective, "observer_auth_file"));
     if (observerAuthCommand) {
-      const argv = Array.isArray(config.observer_auth_command) ? config.observer_auth_command : [];
-      observerAuthCommand.value = argv.length ? JSON.stringify(argv, null, 2) : "";
+      const argv = configuredOrEffective(config, effective, "observer_auth_command");
+      const command = Array.isArray(argv) ? argv : [];
+      const commandStrings = command.filter((item) => typeof item === "string");
+      observerAuthCommand.value = commandStrings.length ? JSON.stringify(commandStrings, null, 2) : "";
     }
     if (observerAuthTimeoutMs) {
-      const timeoutMs = config.observer_auth_timeout_ms;
-      observerAuthTimeoutMs.value = timeoutMs === void 0 || timeoutMs === null ? "" : String(timeoutMs);
+      observerAuthTimeoutMs.value = asInputString(configuredOrEffective(config, effective, "observer_auth_timeout_ms"));
     }
     if (observerAuthCacheTtlS) {
-      const cacheTtl = config.observer_auth_cache_ttl_s;
-      observerAuthCacheTtlS.value = cacheTtl === void 0 || cacheTtl === null ? "" : String(cacheTtl);
+      observerAuthCacheTtlS.value = asInputString(configuredOrEffective(config, effective, "observer_auth_cache_ttl_s"));
     }
     if (observerHeaders) {
-      const headers = config.observer_headers && typeof config.observer_headers === "object" ? config.observer_headers : {};
+      const headerValue = configuredOrEffective(config, effective, "observer_headers");
+      const headers = headerValue && typeof headerValue === "object" ? headerValue : {};
       observerHeaders.value = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : "";
     }
-    if (observerMaxChars) observerMaxChars.value = config.observer_max_chars || "";
-    if (packObservationLimit) packObservationLimit.value = config.pack_observation_limit || "";
-    if (packSessionLimit) packSessionLimit.value = config.pack_session_limit || "";
+    if (observerMaxChars) observerMaxChars.value = asInputString(configuredOrEffective(config, effective, "observer_max_chars"));
+    if (packObservationLimit) packObservationLimit.value = asInputString(configuredOrEffective(config, effective, "pack_observation_limit"));
+    if (packSessionLimit) packSessionLimit.value = asInputString(configuredOrEffective(config, effective, "pack_session_limit"));
     if (rawEventsSweeperIntervalS) {
-      const intervalS = config.raw_events_sweeper_interval_s;
-      rawEventsSweeperIntervalS.value = intervalS === void 0 || intervalS === null ? "" : String(intervalS);
+      rawEventsSweeperIntervalS.value = asInputString(configuredOrEffective(config, effective, "raw_events_sweeper_interval_s"));
     }
-    if (syncEnabled) syncEnabled.checked = Boolean(config.sync_enabled);
-    if (syncHost) syncHost.value = config.sync_host || "";
-    if (syncPort) syncPort.value = config.sync_port || "";
-    if (syncInterval) syncInterval.value = config.sync_interval_s || "";
-    if (syncMdns) syncMdns.checked = Boolean(config.sync_mdns);
+    if (syncEnabled) syncEnabled.checked = Boolean(configuredOrEffective(config, effective, "sync_enabled"));
+    if (syncHost) syncHost.value = asInputString(configuredOrEffective(config, effective, "sync_host"));
+    if (syncPort) syncPort.value = asInputString(configuredOrEffective(config, effective, "sync_port"));
+    if (syncInterval) syncInterval.value = asInputString(configuredOrEffective(config, effective, "sync_interval_s"));
+    if (syncMdns) syncMdns.checked = Boolean(configuredOrEffective(config, effective, "sync_mdns"));
     if (settingsPath) settingsPath.textContent = state.configPath ? `Config path: ${state.configPath}` : "Config path: n/a";
+    if (observerModelHint) {
+      const source = hasOwn(config, "observer_model") ? "Configured" : "Default";
+      const effectiveModel = observerModelValue || "n/a";
+      observerModelHint.textContent = `${source} model: ${effectiveModel}`;
+    }
     if (observerMaxCharsHint) {
       const def = defaults?.observer_max_chars || "";
       observerMaxCharsHint.textContent = def ? `Default: ${def}` : "";
     }
     if (settingsEffective) {
-      settingsEffective.textContent = payload.env_overrides ? "Effective config differs (env overrides active)" : "";
+      settingsEffective.textContent = Object.keys(envOverrides).length > 0 ? "Effective config differs (env overrides active)" : "";
+    }
+    const overrides = $("settingsOverrides");
+    if (overrides) {
+      overrides.hidden = Object.keys(envOverrides).length === 0;
     }
     updateAuthSourceVisibility();
     setSettingsTab(settingsActiveTab);
@@ -1754,8 +1802,6 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     try {
       const payload = await loadConfig();
       renderConfigModal(payload);
-      const overrides = $("settingsOverrides");
-      if (overrides) overrides.hidden = !payload?.config?.has_env_overrides;
     } catch {
     }
   }

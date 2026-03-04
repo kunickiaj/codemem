@@ -218,7 +218,7 @@ class ObserverAuthAdapter:
 
         token = None
         token_source = "none"
-        if source in {"auto", "env"}:
+        if source == "auto":
             if explicit_token:
                 token = explicit_token
                 token_source = "explicit"
@@ -229,6 +229,10 @@ class ObserverAuthAdapter:
             if not token and oauth_token and source == "auto":
                 token = oauth_token
                 token_source = "oauth"
+        elif source == "env":
+            token = next((value for value in env_tokens if value), None)
+            if token:
+                token_source = "env"
 
         if source in {"auto", "file"} and not token:
             token = _read_auth_file(self.file_path)
