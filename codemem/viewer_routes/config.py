@@ -58,6 +58,20 @@ def _as_command_argv(value: Any) -> list[str] | None:
     return list(value)
 
 
+def _as_executable_argv(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        token = item.strip()
+        if not token:
+            return None
+        normalized.append(token)
+    return normalized
+
+
 def handle_get(
     handler: _ViewerHandler,
     *,
@@ -112,6 +126,7 @@ def handle_post(
         return True
 
     allowed_keys = {
+        "claude_command",
         "observer_provider",
         "observer_model",
         "observer_runtime",
@@ -159,6 +174,16 @@ def handle_post(
                 )
                 return True
             config_data[key] = provider
+            continue
+        if key == "claude_command":
+            argv = _as_executable_argv(value)
+            if argv is None:
+                handler._send_json({"error": "claude_command must be string array"}, status=400)
+                return True
+            if argv:
+                config_data[key] = argv
+            else:
+                config_data.pop(key, None)
             continue
         if key == "observer_model":
             if not isinstance(value, str):

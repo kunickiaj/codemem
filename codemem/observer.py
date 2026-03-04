@@ -157,6 +157,13 @@ class ObserverClient:
         model = cfg.observer_model or ""
         self._configured_model = model.strip() or None
         self._sidecar_model = self._configured_model or DEFAULT_ANTHROPIC_MODEL
+        self._claude_command = []
+        for part in cfg.claude_command or []:
+            token = str(part).strip()
+            if token:
+                self._claude_command.append(token)
+        if not self._claude_command:
+            self._claude_command = ["claude"]
         custom_providers = _list_custom_providers()
 
         if provider and provider not in {"openai", "anthropic"} | custom_providers:
@@ -337,7 +344,7 @@ class ObserverClient:
 
     def _claude_sidecar_cmd(self, prompt: str, *, use_model: bool) -> list[str]:
         cmd = [
-            "claude",
+            *self._claude_command,
             "-p",
             "--output-format",
             "json",
@@ -372,8 +379,10 @@ class ObserverClient:
                 env=env,
             )
         except FileNotFoundError:
-            logger.warning("observer claude_sidecar unavailable: claude command not found")
-            return None, "claude command not found"
+            logger.warning(
+                "observer claude_sidecar unavailable: configured claude command not found"
+            )
+            return None, "configured claude command not found"
         except subprocess.TimeoutExpired:
             logger.warning(
                 "observer claude_sidecar timed out", extra={"timeout_s": _CLAUDE_SIDECAR_TIMEOUT_S}

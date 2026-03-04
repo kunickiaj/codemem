@@ -1550,6 +1550,17 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   }
   function configuredValueForKey(config, key) {
     switch (key) {
+      case "claude_command": {
+        const value = config?.claude_command;
+        if (!Array.isArray(value)) return [];
+        const normalized = [];
+        value.forEach((item) => {
+          if (typeof item !== "string") return;
+          const token = item.trim();
+          if (token) normalized.push(token);
+        });
+        return normalized;
+      }
       case "observer_provider":
       case "observer_model":
       case "observer_auth_file":
@@ -1686,6 +1697,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     state.configDefaults = defaults;
     state.configPath = payload.path || "";
     const observerProvider = $select("observerProvider");
+    const claudeCommand = document.getElementById("claudeCommand");
     const observerModel = $input("observerModel");
     const observerRuntime = $select("observerRuntime");
     const observerAuthSource = $select("observerAuthSource");
@@ -1709,6 +1721,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const settingsEffective = $("settingsEffective");
     const observerProviderValue = asInputString(effectiveOrConfigured(config, effective, "observer_provider"));
     setProviderOptions(observerProvider, providers, observerProviderValue);
+    if (claudeCommand) {
+      const value = effectiveOrConfigured(config, effective, "claude_command");
+      const argv = Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+      claudeCommand.value = argv.length ? JSON.stringify(argv, null, 2) : "";
+    }
     const observerModelValue = asInputString(effectiveOrConfigured(config, effective, "observer_model"));
     if (observerModel) observerModel.value = observerModelValue;
     if (observerRuntime) observerRuntime.value = asInputString(effectiveOrConfigured(config, effective, "observer_runtime")) || "api_http";
@@ -1773,14 +1790,21 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const settingsStatus = $("settingsStatus");
     if (settingsStatus) settingsStatus.textContent = "Ready";
   }
-  function parseCommandArgv(raw) {
+  function parseCommandArgv(raw, options) {
     const text = raw.trim();
     if (!text) return [];
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
-      throw new Error("observer auth command must be a JSON string array");
+      throw new Error(`${options.label} must be a JSON string array`);
     }
-    return parsed;
+    if (!options.normalize && !options.requireNonEmpty) {
+      return parsed;
+    }
+    const values = options.normalize ? parsed.map((item) => item.trim()) : parsed;
+    if (options.requireNonEmpty && values.some((item) => item.trim() === "")) {
+      throw new Error(`${options.label} cannot contain empty command tokens`);
+    }
+    return values;
   }
   function parseObserverHeaders(raw) {
     const text = raw.trim();
@@ -1799,11 +1823,17 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     return headers;
   }
   function collectSettingsPayload() {
+    const claudeCommandInput = document.getElementById("claudeCommand")?.value || "";
     const authCommandInput = document.getElementById("observerAuthCommand")?.value || "";
     const observerHeadersInput = document.getElementById("observerHeaders")?.value || "";
     const authCacheTtlInput = ($input("observerAuthCacheTtlS")?.value || "").trim();
     const sweeperIntervalInput = ($input("rawEventsSweeperIntervalS")?.value || "").trim();
-    const authCommand = parseCommandArgv(authCommandInput);
+    const claudeCommand = parseCommandArgv(claudeCommandInput, {
+      label: "claude command",
+      normalize: true,
+      requireNonEmpty: true
+    });
+    const authCommand = parseCommandArgv(authCommandInput, { label: "observer auth command" });
     const headers = parseObserverHeaders(observerHeadersInput);
     const authCacheTtl = authCacheTtlInput === "" ? "" : Number(authCacheTtlInput);
     const sweeperIntervalNum = Number(sweeperIntervalInput);
@@ -1815,6 +1845,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       throw new Error("raw-event sweeper interval must be a positive number");
     }
     return {
+      claude_command: claudeCommand,
       observer_provider: normalizeTextValue($select("observerProvider")?.value || ""),
       observer_model: normalizeTextValue($input("observerModel")?.value || ""),
       observer_runtime: normalizeTextValue($select("observerRuntime")?.value || "api_http") || "api_http",
@@ -1945,6 +1976,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       if (e.key === "Escape" && settingsOpen) closeSettings(startPolling2, refreshCallback);
     });
     const inputs = [
+      "claudeCommand",
       "observerProvider",
       "observerModel",
       "observerRuntime",

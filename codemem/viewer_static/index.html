@@ -1087,6 +1087,11 @@
                 <div class="small">Run observer calls through local Claude runtime auth.</div>
               </div>
               <div class="field">
+                <label for="claudeCommand">Claude command (JSON argv)</label>
+                <textarea id="claudeCommand" rows="2" placeholder='["claude"]'></textarea>
+                <div class="small">Used by `claude_sidecar` runtime. Example wrapper: `["wrapper", "claude", "--"]`.</div>
+              </div>
+              <div class="field">
                 <label for="observerMaxChars">Observer max chars</label>
                 <input id="observerMaxChars" type="number" min="1" />
                 <div class="small" id="observerMaxCharsHint"></div>

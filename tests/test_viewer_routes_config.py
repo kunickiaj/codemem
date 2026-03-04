@@ -33,6 +33,7 @@ def test_config_route_accepts_observer_auth_fields(
 
     handler = DummyHandler(
         {
+            "claude_command": ["wrapper", "claude", "--"],
             "observer_provider": "openai",
             "observer_runtime": "api_http",
             "observer_auth_source": "command",
@@ -53,6 +54,7 @@ def test_config_route_accepts_observer_auth_fields(
     assert handled is True
     assert handler.status == 200
     saved = read_config_file(config_path)
+    assert saved["claude_command"] == ["wrapper", "claude", "--"]
     assert saved["observer_auth_source"] == "command"
     assert saved["observer_auth_command"] == ["iap-auth"]
     assert saved["observer_auth_timeout_ms"] == 2000
@@ -111,6 +113,67 @@ def test_config_route_rejects_invalid_observer_auth_command(
     assert handled is True
     assert handler.status == 400
     assert handler.response == {"error": "observer_auth_command must be string array"}
+
+
+def test_config_route_rejects_invalid_claude_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler({"claude_command": "wrapper claude"})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "claude_command must be string array"}
+
+
+def test_config_route_rejects_claude_command_with_empty_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler({"claude_command": ["wrapper", " ", "--"]})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "claude_command must be string array"}
+
+
+def test_config_route_clears_claude_command_with_empty_array(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"claude_command": ["wrapper", "claude", "--"]}\n')
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler({"claude_command": []})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    saved = read_config_file(config_path)
+    assert "claude_command" not in saved
 
 
 def test_config_route_rejects_invalid_observer_headers(

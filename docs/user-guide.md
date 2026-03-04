@@ -15,7 +15,7 @@
 - Open via the Settings button in the header.
 - Shows effective values (configured or default) to avoid blank/ambiguous fields.
 - Persists only changed settings on save (unchanged effective defaults are not rewritten to config).
-- Observer/runtime settings include `observer_runtime`, `observer_provider`, `observer_model`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
+- Observer/runtime settings include `claude_command`, `observer_runtime`, `observer_provider`, `observer_model`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 - Config file supports JSON and JSONC (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`).
@@ -24,6 +24,8 @@
 
 - Runtime choices are `api_http` and `claude_sidecar`.
 - `claude_sidecar` runs observer calls through the local Claude runtime (subscription/session auth) and does not require `ANTHROPIC_API_KEY`.
+- `claude_command` controls how `claude_sidecar` invokes Claude CLI (default `["claude"]`).
+  - Wrapper example: `"claude_command": ["wrapper", "claude", "--"]`
 - Default model selection:
   - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
   - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
