@@ -10,6 +10,7 @@ import typer
 from rich import print
 
 from . import __version__, db
+from .commands.claude_hook_runtime_cmds import claude_hook_ingest_cmd, claude_hook_inject_cmd
 from .commands.claude_integration_cmds import ingest_claude_hook_cmd
 from .commands.common import (
     compact_lines,
@@ -740,6 +741,20 @@ def ingest_claude_hook() -> None:
     """Ingest one Claude hook payload from stdin."""
 
     ingest_claude_hook_cmd()
+
+
+@app.command("claude-hook-ingest")
+def claude_hook_ingest() -> None:
+    """Run Claude hook ingest runtime (HTTP-first with queue fallback)."""
+
+    claude_hook_ingest_cmd()
+
+
+@app.command("claude-hook-inject")
+def claude_hook_inject() -> None:
+    """Build Claude UserPromptSubmit additionalContext hook output from stdin."""
+
+    claude_hook_inject_cmd()
 
 
 @app.command()

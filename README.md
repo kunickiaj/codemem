@@ -78,7 +78,13 @@ Claude MCP launch uses `uvx`; first startup may be slower because `uvx` can fetc
 
 Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and auto-falls back to `codemem ingest-claude-hook` / `uvx codemem==<plugin-version> ingest-claude-hook` when the local server path is unavailable.
 
-Claude hook events share the same raw-event queue pipeline used by OpenCode.
+Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` runs
+capture ingest in the background and injects memory context via Claude `additionalContext` using the
+local `/api/pack` endpoint.
+
+The packaged Claude hook shell scripts are thin wrappers over Python runtime commands:
+`codemem claude-hook-ingest` and `codemem claude-hook-inject`.
+`claude-hook-inject` does not use `uvx` fallback by default to keep prompt-submit latency low.
 
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 

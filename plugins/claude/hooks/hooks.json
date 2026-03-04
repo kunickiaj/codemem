@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ingest-hook.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-hook.sh"
           }
         ]
       }

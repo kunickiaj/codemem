@@ -242,6 +242,10 @@ def test_hooks_template_matches_allowlist_events() -> None:
     hooks_payload = json.loads(hooks_path.read_text())
 
     assert set(hooks_payload["hooks"].keys()) == ALLOWED_HOOK_EVENTS
+    user_prompt_hooks = hooks_payload["hooks"]["UserPromptSubmit"]
+    assert user_prompt_hooks[0]["hooks"][0]["command"] == (
+        "${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-hook.sh"
+    )
 
 
 def test_claude_plugin_manifest_version_matches_package_version() -> None:
@@ -285,42 +289,34 @@ def test_claude_hook_script_has_version_pinned_uvx_fallback() -> None:
 
     assert 'UVX_PACKAGE_SPEC="codemem"' in hook_script
     assert 'UVX_PACKAGE_SPEC="codemem==${PLUGIN_VERSION}"' in hook_script
-    assert 'CLAUDE_HOOK_URL="http://${VIEWER_HOST}:${VIEWER_PORT}/api/claude-hooks"' in hook_script
-    assert "curl -sS" in hook_script
-    assert 'uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook' in hook_script
-    assert (
-        "CODEMEM_PLUGIN_IGNORE=1 "
-        'CODEMEM_CLAUDE_HOOK_FLUSH="${CODEMEM_CLAUDE_HOOK_FLUSH:-1}" '
-        "codemem ingest-claude-hook"
-    ) in hook_script
-    assert (
-        "CODEMEM_PLUGIN_IGNORE=1 "
-        'CODEMEM_CLAUDE_HOOK_FLUSH="${CODEMEM_CLAUDE_HOOK_FLUSH:-1}" '
-        'uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook'
-    ) in hook_script
-    assert (
-        'LOCK_DIR="${CODEMEM_CLAUDE_HOOK_LOCK_DIR:-$HOME/.codemem/claude-hook-ingest.lock}"'
-        in hook_script
-    )
-    assert 'LOCK_TTL_S="${CODEMEM_CLAUDE_HOOK_LOCK_TTL_S:-300}"' in hook_script
-    assert 'LOCK_GRACE_S="${CODEMEM_CLAUDE_HOOK_LOCK_GRACE_S:-2}"' in hook_script
-    assert (
-        'SPOOL_DIR="${CODEMEM_CLAUDE_HOOK_SPOOL_DIR:-$HOME/.codemem/claude-hook-spool}"'
-        in hook_script
-    )
-    assert 'mktemp "${SPOOL_DIR}/.hook-tmp-XXXXXX"' in hook_script
-    assert "normalize_payload_ts()" in hook_script
-    assert 'timestamp = obj.get("timestamp")' in hook_script
-    assert "should_force_boundary_flush()" in hook_script
-    assert "spool_payload()" in hook_script
-    assert "drain_spool()" in hook_script
-    assert "cleanup_lock_dir()" in hook_script
-    assert "lock_is_stale()" in hook_script
-    assert "lock busy; trying unlocked fallback" in hook_script
-    assert "fallback and spool failed" in hook_script
-    assert "all fallback attempts failed" in hook_script
-    assert "should_force_boundary_flush; then" in hook_script
+    assert "codemem claude-hook-ingest" in hook_script
+    assert 'uvx "${UVX_PACKAGE_SPEC}" claude-hook-ingest' in hook_script
+    assert "CODEMEM_PLUGIN_IGNORE=1" not in hook_script
     assert "CODEMEM_HOOK_ALLOW_UVX" not in hook_script
+
+
+def test_user_prompt_hook_script_runs_ingest_and_inject() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    hook_script_path = repo_root / "plugins" / "claude" / "scripts" / "user-prompt-hook.sh"
+    hook_script = hook_script_path.read_text()
+
+    assert '"${SCRIPT_DIR}/ingest-hook.sh"' in hook_script
+    assert '"${SCRIPT_DIR}/inject-context-hook.sh"' in hook_script
+    assert "mktemp" in hook_script
+    assert "nohup bash -c" in hook_script
+    assert '{"continue":true}' in hook_script
+
+
+def test_inject_context_hook_script_returns_additional_context_payload() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    hook_script_path = repo_root / "plugins" / "claude" / "scripts" / "inject-context-hook.sh"
+    hook_script = hook_script_path.read_text()
+
+    assert "codemem claude-hook-inject" in hook_script
+    assert "CODEMEM_INJECT_ALLOW_UVX:-0" in hook_script
+    assert 'uvx "${UVX_PACKAGE_SPEC}" claude-hook-inject' in hook_script
+    assert "CODEMEM_PLUGIN_IGNORE=1" not in hook_script
+    assert '{"continue":true}' in hook_script
 
 
 def test_adapter_stream_id_uses_source_and_session_only() -> None:

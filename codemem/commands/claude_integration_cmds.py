@@ -80,30 +80,23 @@ def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[s
     return stream_id, inserted
 
 
-def _should_flush(hook_event_name: str) -> bool:
+def _should_flush(hook_event_name: str, *, default_flush: bool) -> bool:
     if hook_event_name not in {"Stop", "SessionEnd"}:
         return False
-    if not _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH", False):
+    if not _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH", default_flush):
         return False
     if hook_event_name == "SessionEnd":
         return True
     return _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP", False)
 
 
-def ingest_claude_hook_cmd() -> None:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return
-    try:
-        hook_payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return
-    if not isinstance(hook_payload, dict):
-        return
+def ingest_claude_hook_payload(
+    hook_payload: dict[str, Any], *, flush_default: bool = False
+) -> None:
     hook_event_name = str(hook_payload.get("hook_event_name") or "").strip()
     if hook_event_name not in ALLOWED_HOOK_EVENTS:
         return
-    should_flush = _should_flush(hook_event_name)
+    should_flush = _should_flush(hook_event_name, default_flush=flush_default)
     db_path = os.environ.get("CODEMEM_DB") or DEFAULT_DB_PATH
     store = MemoryStore(db_path)
     try:
@@ -143,3 +136,16 @@ def ingest_claude_hook_cmd() -> None:
         )
     finally:
         store.close()
+
+
+def ingest_claude_hook_cmd() -> None:
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return
+    try:
+        hook_payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(hook_payload, dict):
+        return
+    ingest_claude_hook_payload(hook_payload, flush_default=False)
