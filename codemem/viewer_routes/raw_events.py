@@ -23,6 +23,12 @@ def _safe_int_env(name: str, default: int) -> int:
 
 MAX_RAW_EVENTS_BODY_BYTES = _safe_int_env("CODEMEM_RAW_EVENTS_MAX_BODY_BYTES", 1048576)
 logger = logging.getLogger(__name__)
+SESSION_ID_KEYS = (
+    "session_stream_id",
+    "session_id",
+    "stream_id",
+    "opencode_session_id",
+)
 
 
 class _ViewerHandler(Protocol):
@@ -129,6 +135,30 @@ def _read_payload_object(handler: _ViewerHandler) -> dict[str, Any] | None:
         handler._send_json({"error": "payload must be an object"}, status=400)
         return None
     return payload
+
+
+def _resolve_session_stream_id(payload: dict[str, Any]) -> str | None:
+    values: dict[str, str] = {}
+    for key in SESSION_ID_KEYS:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be string")
+        text = value.strip()
+        if text:
+            values[key] = text
+
+    if values:
+        unique = set(values.values())
+        if len(unique) > 1:
+            raise ValueError("conflicting session id fields")
+        for key in SESSION_ID_KEYS:
+            if key in values:
+                return values[key]
+    return None
 
 
 def _handle_post_claude_hooks(
@@ -257,9 +287,13 @@ def handle_post(
             handler._send_json({"error": "events must be a list"}, status=400)
             return True
 
-        default_session_id = str(payload.get("opencode_session_id") or "")
+        try:
+            default_session_id = _resolve_session_stream_id(payload) or ""
+        except ValueError as exc:
+            handler._send_json({"error": str(exc)}, status=400)
+            return True
         if default_session_id.startswith("msg_"):
-            handler._send_json({"error": "invalid opencode_session_id"}, status=400)
+            handler._send_json({"error": "invalid session id"}, status=400)
             return True
 
         inserted = 0
@@ -272,12 +306,17 @@ def handle_post(
             if not isinstance(item, dict):
                 handler._send_json({"error": "event must be an object"}, status=400)
                 return True
-            opencode_session_id = str(item.get("opencode_session_id") or default_session_id or "")
+            try:
+                item_session_id = _resolve_session_stream_id(item)
+            except ValueError as exc:
+                handler._send_json({"error": str(exc)}, status=400)
+                return True
+            opencode_session_id = str(item_session_id or default_session_id or "")
             if not opencode_session_id:
-                handler._send_json({"error": "opencode_session_id required"}, status=400)
+                handler._send_json({"error": "session id required"}, status=400)
                 return True
             if opencode_session_id.startswith("msg_"):
-                handler._send_json({"error": "invalid opencode_session_id"}, status=400)
+                handler._send_json({"error": "invalid session id"}, status=400)
                 return True
             event_id = str(item.get("event_id") or "")
             event_type = str(item.get("event_type") or "")

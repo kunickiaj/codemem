@@ -53,6 +53,50 @@ def test_enqueue_raw_event_cmd_writes_event_and_meta(tmp_path: Path) -> None:
         store.close()
 
 
+def test_enqueue_raw_event_cmd_accepts_session_stream_id_alias(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    payload = {
+        "session_stream_id": "sess-stream-alias",
+        "event_id": "evt-1",
+        "event_type": "assistant_message",
+        "payload": {"type": "assistant_message", "assistant_text": "done"},
+    }
+
+    result = runner.invoke(
+        app,
+        ["enqueue-raw-event", "--db-path", str(db_path)],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code == 0
+    store = MemoryStore(db_path)
+    try:
+        events = store.raw_events_since(opencode_session_id="sess-stream-alias", after_event_seq=-1)
+        assert len(events) == 1
+    finally:
+        store.close()
+
+
+def test_enqueue_raw_event_cmd_rejects_conflicting_session_id_fields(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    payload = {
+        "session_stream_id": "sess-a",
+        "opencode_session_id": "sess-b",
+        "event_id": "evt-1",
+        "event_type": "assistant_message",
+        "payload": {"type": "assistant_message", "assistant_text": "done"},
+    }
+
+    result = runner.invoke(
+        app,
+        ["enqueue-raw-event", "--db-path", str(db_path)],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code != 0
+    assert "conflicting session id fields" in result.output
+
+
 def test_enqueue_raw_event_cmd_rejects_empty_stdin(tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     result = runner.invoke(app, ["enqueue-raw-event", "--db-path", str(db_path)], input="\n")
