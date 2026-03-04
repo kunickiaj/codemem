@@ -14,6 +14,11 @@ if [ -z "${PLUGIN_ROOT}" ]; then
 fi
 PLUGIN_MANIFEST="${PLUGIN_ROOT}/.claude-plugin/plugin.json"
 UVX_PACKAGE_SPEC="codemem"
+VIEWER_HOST="${CODEMEM_VIEWER_HOST:-127.0.0.1}"
+VIEWER_PORT="${CODEMEM_VIEWER_PORT:-38888}"
+CLAUDE_HOOK_URL="http://${VIEWER_HOST}:${VIEWER_PORT}/api/claude-hooks"
+HTTP_CONNECT_TIMEOUT_S="${CODEMEM_CLAUDE_HOOK_HTTP_CONNECT_TIMEOUT_S:-1}"
+HTTP_MAX_TIME_S="${CODEMEM_CLAUDE_HOOK_HTTP_MAX_TIME_S:-2}"
 
 if [ -f "${PLUGIN_MANIFEST}" ]; then
   PLUGIN_VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${PLUGIN_MANIFEST}" | sed -n '1p')"
@@ -61,6 +66,31 @@ if ! acquire_lock; then
   exit 0
 fi
 trap 'release_lock' EXIT
+
+enqueue_via_http() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+  status_code="$(
+    printf '%s' "${payload}" | \
+      curl -sS \
+        --connect-timeout "${HTTP_CONNECT_TIMEOUT_S}" \
+        --max-time "${HTTP_MAX_TIME_S}" \
+        -H 'Content-Type: application/json' \
+        --data-binary @- \
+        -o /dev/null \
+        -w '%{http_code}' \
+        "${CLAUDE_HOOK_URL}" 2>/dev/null
+  )"
+  case "${status_code}" in
+    2*) return 0 ;;
+  esac
+  return 1
+}
+
+if enqueue_via_http; then
+  exit 0
+fi
 
 if command -v codemem >/dev/null 2>&1; then
   if ! printf '%s' "${payload}" | CODEMEM_PLUGIN_IGNORE=1 codemem ingest-claude-hook >/dev/null 2>&1; then

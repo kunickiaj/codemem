@@ -54,6 +54,13 @@ def _coerce_session_id(payload: dict[str, Any]) -> str | None:
     return value or None
 
 
+def _iso_to_wall_ms(value: str) -> int:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
+
+
 def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     hook_event = str(payload.get("hook_event_name") or "").strip()
     if hook_event not in MAPPABLE_CLAUDE_HOOK_EVENTS:
@@ -209,4 +216,39 @@ def build_ingest_payload_from_hook(hook_payload: dict[str, Any]) -> dict[str, An
             "stream_id": session_id,
             "opencode_session_id": session_id,
         },
+    }
+
+
+def build_raw_event_envelope_from_hook(hook_payload: dict[str, Any]) -> dict[str, Any] | None:
+    adapter_event = map_claude_hook_payload(hook_payload)
+    if adapter_event is None:
+        return None
+
+    session_id = str(adapter_event.get("session_id") or "").strip()
+    if not session_id:
+        return None
+
+    ts = str(adapter_event.get("ts") or "").strip()
+    if not ts:
+        return None
+
+    source = str(adapter_event.get("source") or "claude")
+    hook_event_name = str(hook_payload.get("hook_event_name") or "")
+    cwd = hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None
+    project = hook_payload.get("project") if isinstance(hook_payload.get("project"), str) else None
+
+    return {
+        "opencode_session_id": session_id,
+        "source": source,
+        "event_id": str(adapter_event.get("event_id") or ""),
+        "event_type": "claude.hook",
+        "payload": {
+            "type": "claude.hook",
+            "timestamp": ts,
+            "_adapter": adapter_event,
+        },
+        "ts_wall_ms": _iso_to_wall_ms(ts),
+        "cwd": cwd,
+        "project": project,
+        "started_at": ts if hook_event_name == "SessionStart" else None,
     }
