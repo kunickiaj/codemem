@@ -15,7 +15,9 @@
 - Open via the Settings button in the header.
 - Shows effective values (configured or default) to avoid blank/ambiguous fields.
 - Persists only changed settings on save (unchanged effective defaults are not rewritten to config).
-- Observer/runtime settings include `observer_runtime`, `observer_provider`, `observer_model`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
+- Uses task-oriented sections: `Connection`, `Processing`, and `Device Sync`.
+- Includes a `Show advanced controls` toggle for technical tuning fields (JSON headers, cache/timeout, network overrides, and pack limits).
+- Connection/auth settings map to `observer_runtime`, `observer_provider`, `observer_model`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 - Config file supports JSON and JSONC (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`).
@@ -33,7 +35,7 @@
   - Config file form: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
   - Env var form (`CODEMEM_OBSERVER_AUTH_COMMAND`): `'["iap-auth","--audience","example"]'`
 - Header templates can use `${auth.token}`, `${auth.type}`, and `${auth.source}`.
-- Settings are grouped into `Observer`, `Queue`, and `Sync` sections to reduce modal clutter.
+- Settings are grouped into `Connection`, `Processing`, and `Device Sync` sections with shell-agnostic labels.
 - Queue settings include `raw_events_sweeper_interval_s` (seconds), which controls background pending-event drain cadence.
 
 Example command-token gateway config:

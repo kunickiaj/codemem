@@ -920,8 +920,8 @@
       }
       .settings-tab:hover { border-color: var(--border-hover); }
       .settings-tab.active {
-        border-color: var(--accent-border);
-        color: var(--accent-strong);
+        border-color: var(--control-hover-border);
+        color: var(--accent);
         background: var(--accent-subtle);
       }
       .settings-panel { display: none; flex-direction: column; gap: var(--sp-3); }
@@ -943,8 +943,111 @@
         color: var(--text-tertiary);
       }
 
+      .field-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .help-icon {
+        width: 16px;
+        height: 16px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        user-select: none;
+        background: var(--surface-0);
+        position: relative;
+        padding: 0;
+      }
+
+      .help-icon:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
+
+      .help-tooltip {
+        position: fixed;
+        min-width: 190px;
+        max-width: 280px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        font-size: 12px;
+        line-height: 1.4;
+        box-shadow: var(--shadow-sm);
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(-2px);
+        transition: opacity 0.08s ease, transform 0.08s ease;
+        z-index: 1000;
+      }
+
+      .help-tooltip.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .settings-advanced-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-0);
+      }
+
+      .settings-advanced-toolbar input {
+        width: 14px;
+        height: 14px;
+      }
+
+      .settings-advanced[hidden] {
+        display: none !important;
+      }
+
       .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-      .field input, .field select, .field textarea { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .field input:not([type="checkbox"]), .field select, .field textarea { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .field-checkbox { flex-direction: row; align-items: center; gap: 8px; }
+      .field-checkbox input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
+      .field-checkbox label { margin: 0; }
+      .cm-checkbox {
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border: 1px solid var(--border-hover);
+        border-radius: 4px;
+        background: var(--surface-1);
+        position: relative;
+        cursor: pointer;
+      }
+      .cm-checkbox:checked {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .cm-checkbox:checked::after {
+        content: "";
+        position: absolute;
+        left: 4px;
+        top: 1px;
+        width: 4px;
+        height: 8px;
+        border: solid var(--text-inverse);
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+      .cm-checkbox:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
       .field textarea { resize: vertical; min-height: 84px; }
       .settings-save {
         border: 1px solid var(--control-border);
@@ -1053,50 +1156,67 @@
     <div class="modal" id="settingsModal" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle" aria-describedby="settingsDescription" tabindex="-1">
       <div class="modal-card">
         <div class="modal-header">
-          <h2 id="settingsTitle">Observer settings</h2>
+          <h2 id="settingsTitle">Memory & model settings</h2>
           <button class="modal-close" id="settingsClose" aria-label="Close settings">close</button>
         </div>
         <div class="modal-body">
-          <div class="small" id="settingsDescription">Update observer and sync defaults for this viewer.</div>
+          <div class="small" id="settingsDescription">Configure connection, authentication, processing, and sync behavior.</div>
           <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-            <button class="settings-tab active" id="settingsTabObserver" data-settings-tab="observer" role="tab" aria-selected="true">Observer</button>
-            <button class="settings-tab" id="settingsTabQueue" data-settings-tab="queue" role="tab" aria-selected="false">Queue</button>
-            <button class="settings-tab" id="settingsTabSync" data-settings-tab="sync" role="tab" aria-selected="false">Sync</button>
+            <button class="settings-tab active" id="settingsTabObserver" data-settings-tab="observer" role="tab" aria-selected="true">Connection</button>
+            <button class="settings-tab" id="settingsTabQueue" data-settings-tab="queue" role="tab" aria-selected="false">Processing</button>
+            <button class="settings-tab" id="settingsTabSync" data-settings-tab="sync" role="tab" aria-selected="false">Device Sync</button>
+          </div>
+          <div class="settings-advanced-toolbar field-checkbox">
+            <input class="cm-checkbox" id="settingsAdvancedToggle" type="checkbox" />
+            <label for="settingsAdvancedToggle">Show advanced controls</label>
+            <button class="help-icon" type="button" data-tooltip="Advanced controls include JSON fields, tuning values, and network overrides." aria-label="About advanced controls">?</button>
           </div>
 
           <div class="settings-panel active" id="settingsPanelObserver" data-settings-panel="observer">
             <div class="settings-group">
-              <h3 class="settings-group-title">Model Runtime</h3>
+              <h3 class="settings-group-title">Connection</h3>
               <div class="field">
-                <label for="observerProvider">Observer provider</label>
+                <div class="field-label">
+                  <label for="observerProvider">Model provider</label>
+                  <button class="help-icon" type="button" data-tooltip="Choose where model requests are sent. Use auto for recommended defaults." aria-label="About model provider">?</button>
+                </div>
                 <select id="observerProvider"><option value="">auto (default)</option></select>
-                <div class="small">`auto` uses provider defaults for the selected runtime.</div>
+                <div class="small">`auto` uses recommended defaults for the selected connection mode.</div>
               </div>
               <div class="field">
-                <label for="observerModel">Observer model</label>
+                <div class="field-label">
+                  <label for="observerModel">Model</label>
+                  <button class="help-icon" type="button" data-tooltip="Leave blank to use a recommended model for your selected mode/provider." aria-label="About model defaults">?</button>
+                </div>
                 <input id="observerModel" placeholder="leave empty for default" />
-                <div class="small">Default: `gpt-5.1-codex-mini` for `api_http`; `claude-4.5-haiku` for `claude_sidecar`.</div>
+                <div class="small">Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.</div>
                 <div class="small" id="observerModelHint"></div>
               </div>
               <div class="field">
-                <label for="observerRuntime">Observer runtime</label>
+                <div class="field-label">
+                  <label for="observerRuntime">Connection mode</label>
+                  <button class="help-icon" type="button" data-tooltip="Direct API uses provider credentials. Local Claude session uses local Claude runtime auth." aria-label="About connection mode">?</button>
+                </div>
                 <select id="observerRuntime">
-                  <option value="api_http">api_http (default)</option>
-                  <option value="claude_sidecar">claude_sidecar</option>
+                  <option value="api_http">Direct API (default)</option>
+                  <option value="claude_sidecar">Local Claude session</option>
                 </select>
-                <div class="small">Run observer calls through local Claude runtime auth.</div>
+                <div class="small">Switch between provider API credentials and local Claude session auth.</div>
               </div>
-              <div class="field">
-                <label for="observerMaxChars">Observer max chars</label>
+              <div class="field settings-advanced" hidden>
+                <label for="observerMaxChars">Request size limit (chars)</label>
                 <input id="observerMaxChars" type="number" min="1" />
                 <div class="small" id="observerMaxCharsHint"></div>
               </div>
             </div>
 
             <div class="settings-group">
-              <h3 class="settings-group-title">Auth Adapter</h3>
+              <h3 class="settings-group-title">Authentication</h3>
               <div class="field">
-                <label for="observerAuthSource">Observer auth source</label>
+                <div class="field-label">
+                  <label for="observerAuthSource">Authentication method</label>
+                  <button class="help-icon" type="button" data-tooltip="Choose how credentials are resolved: environment, file, command, or none." aria-label="About authentication method">?</button>
+                </div>
                 <select id="observerAuthSource">
                   <option value="auto">auto (default)</option>
                   <option value="env">env</option>
@@ -1104,31 +1224,37 @@
                   <option value="command">command</option>
                   <option value="none">none</option>
                 </select>
-                <div class="small">Choose how observer credentials are resolved.</div>
+                <div class="small">Use `auto` unless you need a specific token source.</div>
               </div>
               <div class="field" id="observerAuthFileField" hidden>
-                <label for="observerAuthFile">Observer auth file</label>
+                <label for="observerAuthFile">Token file path</label>
                 <input id="observerAuthFile" placeholder="~/.codemem/work-token.txt" />
-                <div class="small">Read token from this file when auth source is `file`.</div>
+                <div class="small">Reads token text from this file when method is `file`.</div>
               </div>
               <div class="field" id="observerAuthCommandField" hidden>
-                <label for="observerAuthCommand">Observer auth command</label>
+                <div class="field-label">
+                  <label for="observerAuthCommand">Token command</label>
+                  <button class="help-icon" type="button" data-tooltip="Runs this command and uses stdout as the token. JSON argv only, no shell parsing." aria-label="About token command">?</button>
+                </div>
                 <textarea id="observerAuthCommand" rows="3" placeholder='["iap-auth", "--audience", "gateway"]'></textarea>
-                <div class="small">Command stdout is used as the token when source is `command` (argv only; no shell).</div>
+                <div class="small">When method is `command`, command stdout is used as the token.</div>
               </div>
               <div class="small" id="observerAuthCommandNote" hidden>
                 Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
               </div>
-              <div class="field">
-                <label for="observerAuthTimeoutMs">Observer auth timeout (ms)</label>
+              <div class="field settings-advanced" hidden>
+                <label for="observerAuthTimeoutMs">Token command timeout (ms)</label>
                 <input id="observerAuthTimeoutMs" type="number" min="1" />
               </div>
-              <div class="field">
-                <label for="observerAuthCacheTtlS">Observer auth cache TTL (s)</label>
+              <div class="field settings-advanced" hidden>
+                <label for="observerAuthCacheTtlS">Token cache time (s)</label>
                 <input id="observerAuthCacheTtlS" type="number" min="0" />
               </div>
-              <div class="field">
-                <label for="observerHeaders">Observer headers (JSON object)</label>
+              <div class="field settings-advanced" hidden>
+                <div class="field-label">
+                  <label for="observerHeaders">Request headers (JSON)</label>
+                  <button class="help-icon" type="button" data-tooltip="Optional extra headers. Supports templates like ${auth.token}, ${auth.type}, ${auth.source}." aria-label="About request headers">?</button>
+                </div>
                 <textarea id="observerHeaders" rows="4" placeholder='{"Authorization":"Bearer ${auth.token}"}'></textarea>
                 <div class="small">Template variables: `${auth.token}`, `${auth.type}`, `${auth.source}`.</div>
               </div>
@@ -1137,22 +1263,25 @@
 
           <div class="settings-panel" id="settingsPanelQueue" data-settings-panel="queue">
             <div class="settings-group">
-              <h3 class="settings-group-title">Processing Cadence</h3>
+              <h3 class="settings-group-title">Processing</h3>
               <div class="field">
-                <label for="rawEventsSweeperIntervalS">Raw-event sweeper interval (seconds)</label>
+                <div class="field-label">
+                  <label for="rawEventsSweeperIntervalS">Background processing interval (seconds)</label>
+                  <button class="help-icon" type="button" data-tooltip="How often codemem checks for queued events to process in the background." aria-label="About background processing interval">?</button>
+                </div>
                 <input id="rawEventsSweeperIntervalS" type="number" min="1" />
                 <div class="small">How often background flush checks pending raw events.</div>
               </div>
             </div>
-            <div class="settings-group">
-              <h3 class="settings-group-title">Pack Defaults</h3>
-              <div class="field">
-                <label for="packObservationLimit">Pack observation limit</label>
+            <div class="settings-group settings-advanced" hidden>
+              <h3 class="settings-group-title">Context Pack Limits</h3>
+              <div class="field settings-advanced" hidden>
+                <label for="packObservationLimit">Observation limit</label>
                 <input id="packObservationLimit" type="number" min="1" />
                 <div class="small">Default number of observations to include in a pack.</div>
               </div>
-              <div class="field">
-                <label for="packSessionLimit">Pack session limit</label>
+              <div class="field settings-advanced" hidden>
+                <label for="packSessionLimit">Session summary limit</label>
                 <input id="packSessionLimit" type="number" min="1" />
                 <div class="small">Default number of session summaries to include in a pack.</div>
               </div>
@@ -1161,18 +1290,18 @@
 
           <div class="settings-panel" id="settingsPanelSync" data-settings-panel="sync">
             <div class="settings-group">
-              <h3 class="settings-group-title">Peer Sync</h3>
-              <div class="field"><label for="syncEnabled">Sync enabled</label><input id="syncEnabled" type="checkbox" /></div>
-              <div class="field"><label for="syncHost">Sync host</label><input id="syncHost" placeholder="127.0.0.1" /></div>
-              <div class="field"><label for="syncPort">Sync port</label><input id="syncPort" type="number" min="1" /></div>
+              <h3 class="settings-group-title">Device Sync</h3>
+              <div class="field field-checkbox"><input class="cm-checkbox" id="syncEnabled" type="checkbox" /><label for="syncEnabled">Enable sync</label></div>
               <div class="field"><label for="syncInterval">Sync interval (seconds)</label><input id="syncInterval" type="number" min="10" /></div>
-              <div class="field"><label for="syncMdns">mDNS discovery</label><input id="syncMdns" type="checkbox" /></div>
+              <div class="field settings-advanced" hidden><label for="syncHost">Sync host</label><input id="syncHost" placeholder="127.0.0.1" /></div>
+              <div class="field settings-advanced" hidden><label for="syncPort">Sync port</label><input id="syncPort" type="number" min="1" /></div>
+              <div class="field field-checkbox settings-advanced" hidden><input class="cm-checkbox" id="syncMdns" type="checkbox" /><label for="syncMdns">Enable mDNS discovery</label></div>
             </div>
           </div>
 
           <div class="small mono" id="settingsPath"></div>
           <div class="small" id="settingsEffective"></div>
-          <div class="settings-note" id="settingsOverrides">Environment variables override file settings.</div>
+          <div class="settings-note" id="settingsOverrides">Some values are controlled outside this screen and take priority.</div>
         </div>
         <div class="modal-footer">
           <div class="small" id="settingsStatus">Ready</div>

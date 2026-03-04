@@ -1509,8 +1509,47 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   let settingsActiveTab = "observer";
   let settingsBaseline = {};
   let settingsEnvOverrides = {};
+  let settingsTouchedKeys = /* @__PURE__ */ new Set();
+  let helpTooltipEl = null;
+  let helpTooltipAnchor = null;
+  let helpTooltipBound = false;
+  const SETTINGS_ADVANCED_KEY = "codemem-settings-advanced";
+  let settingsShowAdvanced = loadAdvancedPreference();
   const DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini";
   const DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku";
+  const INPUT_TO_CONFIG_KEY = {
+    observerProvider: "observer_provider",
+    observerModel: "observer_model",
+    observerRuntime: "observer_runtime",
+    observerAuthSource: "observer_auth_source",
+    observerAuthFile: "observer_auth_file",
+    observerAuthCommand: "observer_auth_command",
+    observerAuthTimeoutMs: "observer_auth_timeout_ms",
+    observerAuthCacheTtlS: "observer_auth_cache_ttl_s",
+    observerHeaders: "observer_headers",
+    observerMaxChars: "observer_max_chars",
+    packObservationLimit: "pack_observation_limit",
+    packSessionLimit: "pack_session_limit",
+    rawEventsSweeperIntervalS: "raw_events_sweeper_interval_s",
+    syncEnabled: "sync_enabled",
+    syncHost: "sync_host",
+    syncPort: "sync_port",
+    syncInterval: "sync_interval_s",
+    syncMdns: "sync_mdns"
+  };
+  function loadAdvancedPreference() {
+    try {
+      return globalThis.localStorage?.getItem(SETTINGS_ADVANCED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function persistAdvancedPreference(show2) {
+    try {
+      globalThis.localStorage?.setItem(SETTINGS_ADVANCED_KEY, show2 ? "1" : "0");
+    } catch {
+    }
+  }
   function hasOwn(obj, key) {
     return typeof obj === "object" && obj !== null && Object.prototype.hasOwnProperty.call(obj, key);
   }
@@ -1538,15 +1577,15 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   function inferObserverModel(runtime, provider, configuredModel) {
     if (configuredModel) return { model: configuredModel, source: "Configured" };
     if (runtime === "claude_sidecar") {
-      return { model: DEFAULT_ANTHROPIC_MODEL, source: "Default (claude_sidecar)" };
+      return { model: DEFAULT_ANTHROPIC_MODEL, source: "Recommended (local Claude session)" };
     }
     if (provider === "anthropic") {
-      return { model: DEFAULT_ANTHROPIC_MODEL, source: "Default (anthropic)" };
+      return { model: DEFAULT_ANTHROPIC_MODEL, source: "Recommended (Anthropic provider)" };
     }
     if (provider && provider !== "openai") {
-      return { model: "provider default", source: "Default (provider)" };
+      return { model: "provider default", source: "Recommended (provider default)" };
     }
-    return { model: DEFAULT_OPENAI_MODEL, source: "Default (openai)" };
+    return { model: DEFAULT_OPENAI_MODEL, source: "Recommended (direct API)" };
   }
   function configuredValueForKey(config, key) {
     switch (key) {
@@ -1619,6 +1658,95 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     );
     const source = overrideActive ? "Env override" : inferred.source;
     hint.textContent = `${source}: ${inferred.model}`;
+  }
+  function setAdvancedVisibility(show2) {
+    settingsShowAdvanced = show2;
+    const toggle = $input("settingsAdvancedToggle");
+    if (toggle) {
+      toggle.checked = show2;
+    }
+    document.querySelectorAll(".settings-advanced").forEach((node) => {
+      const el2 = node;
+      el2.hidden = !show2;
+    });
+  }
+  function ensureHelpTooltipElement() {
+    if (helpTooltipEl) return helpTooltipEl;
+    const el2 = document.createElement("div");
+    el2.className = "help-tooltip";
+    el2.hidden = true;
+    document.body.appendChild(el2);
+    helpTooltipEl = el2;
+    return el2;
+  }
+  function positionHelpTooltip(anchor) {
+    const el2 = ensureHelpTooltipElement();
+    const rect = anchor.getBoundingClientRect();
+    const margin = 8;
+    const gap = 8;
+    const width = el2.offsetWidth;
+    const height = el2.offsetHeight;
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.max(margin, Math.min(left, globalThis.innerWidth - width - margin));
+    let top = rect.bottom + gap;
+    if (top + height > globalThis.innerHeight - margin) {
+      top = rect.top - height - gap;
+    }
+    top = Math.max(margin, top);
+    el2.style.left = `${Math.round(left)}px`;
+    el2.style.top = `${Math.round(top)}px`;
+  }
+  function showHelpTooltip(anchor) {
+    const content = anchor.dataset.tooltip?.trim();
+    if (!content) return;
+    const el2 = ensureHelpTooltipElement();
+    helpTooltipAnchor = anchor;
+    el2.textContent = content;
+    el2.hidden = false;
+    requestAnimationFrame(() => {
+      positionHelpTooltip(anchor);
+      el2.classList.add("visible");
+    });
+  }
+  function hideHelpTooltip() {
+    if (!helpTooltipEl) return;
+    helpTooltipEl.classList.remove("visible");
+    helpTooltipEl.hidden = true;
+    helpTooltipAnchor = null;
+  }
+  function bindHelpTooltips() {
+    if (helpTooltipBound) return;
+    helpTooltipBound = true;
+    document.querySelectorAll(".help-icon[data-tooltip]").forEach((node) => {
+      const button = node;
+      button.addEventListener("mouseenter", () => showHelpTooltip(button));
+      button.addEventListener("mouseleave", () => hideHelpTooltip());
+      button.addEventListener("focus", () => showHelpTooltip(button));
+      button.addEventListener("blur", () => hideHelpTooltip());
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        if (helpTooltipAnchor === button && helpTooltipEl && !helpTooltipEl.hidden) {
+          hideHelpTooltip();
+          return;
+        }
+        showHelpTooltip(button);
+      });
+    });
+    globalThis.addEventListener("resize", () => {
+      if (helpTooltipAnchor) {
+        positionHelpTooltip(helpTooltipAnchor);
+      }
+    });
+    document.addEventListener("scroll", () => {
+      if (helpTooltipAnchor) {
+        positionHelpTooltip(helpTooltipAnchor);
+      }
+    }, true);
+  }
+  function markFieldTouched(inputId) {
+    const key = INPUT_TO_CONFIG_KEY[inputId];
+    if (!key) return;
+    settingsTouchedKeys.add(key);
   }
   function setProviderOptions(selectEl, providers, currentValue) {
     if (!selectEl) return;
@@ -1755,14 +1883,16 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       observerMaxCharsHint.textContent = def ? `Default: ${def}` : "";
     }
     if (settingsEffective) {
-      settingsEffective.textContent = Object.keys(envOverrides).length > 0 ? "Effective config differs (env overrides active)" : "";
+      settingsEffective.textContent = Object.keys(envOverrides).length > 0 ? "Some fields are managed by environment settings." : "";
     }
     const overrides = $("settingsOverrides");
     if (overrides) {
       overrides.hidden = Object.keys(envOverrides).length === 0;
     }
     updateAuthSourceVisibility();
+    setAdvancedVisibility(settingsShowAdvanced);
     setSettingsTab(settingsActiveTab);
+    settingsTouchedKeys = /* @__PURE__ */ new Set();
     try {
       const baseline = collectSettingsPayload();
       settingsBaseline = mergeOverrideBaseline(baseline, config, envOverrides);
@@ -1798,13 +1928,38 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     }
     return headers;
   }
-  function collectSettingsPayload() {
+  function collectSettingsPayload(options = {}) {
+    const allowUntouchedParseErrors = options.allowUntouchedParseErrors === true;
     const authCommandInput = document.getElementById("observerAuthCommand")?.value || "";
     const observerHeadersInput = document.getElementById("observerHeaders")?.value || "";
     const authCacheTtlInput = ($input("observerAuthCacheTtlS")?.value || "").trim();
     const sweeperIntervalInput = ($input("rawEventsSweeperIntervalS")?.value || "").trim();
-    const authCommand = parseCommandArgv(authCommandInput);
-    const headers = parseObserverHeaders(observerHeadersInput);
+    let authCommand = [];
+    try {
+      authCommand = parseCommandArgv(authCommandInput);
+    } catch (error) {
+      if (!allowUntouchedParseErrors || settingsTouchedKeys.has("observer_auth_command")) {
+        throw error;
+      }
+      const baseline = settingsBaseline.observer_auth_command;
+      authCommand = Array.isArray(baseline) ? baseline.filter((item) => typeof item === "string") : [];
+    }
+    let headers = {};
+    try {
+      headers = parseObserverHeaders(observerHeadersInput);
+    } catch (error) {
+      if (!allowUntouchedParseErrors || settingsTouchedKeys.has("observer_headers")) {
+        throw error;
+      }
+      const baseline = settingsBaseline.observer_headers;
+      if (baseline && typeof baseline === "object" && !Array.isArray(baseline)) {
+        Object.entries(baseline).forEach(([key, value]) => {
+          if (typeof key === "string" && key.trim() && typeof value === "string") {
+            headers[key] = value;
+          }
+        });
+      }
+    }
     const authCacheTtl = authCacheTtlInput === "" ? "" : Number(authCacheTtlInput);
     const sweeperIntervalNum = Number(sweeperIntervalInput);
     const sweeperInterval = sweeperIntervalInput === "" ? "" : sweeperIntervalNum;
@@ -1882,9 +2037,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     settingsOpen = false;
     hide($("settingsBackdrop"));
     hide($("settingsModal"));
+    hideHelpTooltip();
     const restoreTarget = previouslyFocused && typeof previouslyFocused.focus === "function" ? previouslyFocused : $button("settingsButton");
     restoreTarget?.focus();
     previouslyFocused = null;
+    settingsTouchedKeys = /* @__PURE__ */ new Set();
     startPolling2();
     refreshCallback();
   }
@@ -1895,9 +2052,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     saveBtn.disabled = true;
     status.textContent = "Saving...";
     try {
-      const current = collectSettingsPayload();
+      const current = collectSettingsPayload({ allowUntouchedParseErrors: true });
       const changed = {};
       Object.entries(current).forEach(([key, value]) => {
+        if (hasOwn(settingsEnvOverrides, key) && !settingsTouchedKeys.has(key)) {
+          return;
+        }
         if (!isEqualValue(value, settingsBaseline[key])) {
           changed[key] = value;
         }
@@ -1940,6 +2100,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       if (e.target === settingsModal) closeSettings(startPolling2, refreshCallback);
     });
     settingsSave?.addEventListener("click", () => saveSettings(startPolling2, refreshCallback));
+    bindHelpTooltips();
     document.addEventListener("keydown", (e) => {
       trapModalFocus(e);
       if (e.key === "Escape" && settingsOpen) closeSettings(startPolling2, refreshCallback);
@@ -1967,13 +2128,24 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     inputs.forEach((id) => {
       const input = document.getElementById(id);
       if (!input) return;
-      input.addEventListener("input", () => setDirty(true));
-      input.addEventListener("change", () => setDirty(true));
+      input.addEventListener("input", () => {
+        markFieldTouched(id);
+        setDirty(true);
+      });
+      input.addEventListener("change", () => {
+        markFieldTouched(id);
+        setDirty(true);
+      });
     });
     $select("observerAuthSource")?.addEventListener("change", () => updateAuthSourceVisibility());
     $select("observerProvider")?.addEventListener("change", () => renderObserverModelHint());
     $select("observerRuntime")?.addEventListener("change", () => renderObserverModelHint());
     $input("observerModel")?.addEventListener("input", () => renderObserverModelHint());
+    $input("settingsAdvancedToggle")?.addEventListener("change", () => {
+      const checked = Boolean($input("settingsAdvancedToggle")?.checked);
+      setAdvancedVisibility(checked);
+      persistAdvancedPreference(checked);
+    });
     document.querySelectorAll("[data-settings-tab]").forEach((node) => {
       node.addEventListener("click", () => {
         const tab = node.dataset.settingsTab || "observer";
