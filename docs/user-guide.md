@@ -13,7 +13,9 @@
 
 ## Settings modal
 - Open via the Settings button in the header.
-- Writes observer runtime/auth settings (`observer_runtime`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, `observer_headers`) plus `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
+- Shows effective values (configured or default) to avoid blank/ambiguous fields.
+- Persists only changed settings on save (unchanged effective defaults are not rewritten to config).
+- Observer/runtime settings include `observer_runtime`, `observer_provider`, `observer_model`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 - Config file supports JSON and JSONC (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`).

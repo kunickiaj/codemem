@@ -7,14 +7,19 @@ import * as api from '../lib/api';
 let settingsOpen = false;
 let previouslyFocused: HTMLElement | null = null;
 let settingsActiveTab = 'observer';
+let settingsBaseline: Record<string, unknown> = {};
+let settingsEnvOverrides: Record<string, unknown> = {};
+
+const DEFAULT_OPENAI_MODEL = 'gpt-5.1-codex-mini';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-4.5-haiku';
 
 function hasOwn(obj: unknown, key: string): boolean {
   return typeof obj === 'object' && obj !== null && Object.prototype.hasOwnProperty.call(obj, key);
 }
 
-function configuredOrEffective(config: any, effective: any, key: string): any {
-  if (hasOwn(config, key)) return config[key];
+function effectiveOrConfigured(config: any, effective: any, key: string): any {
   if (hasOwn(effective, key)) return effective[key];
+  if (hasOwn(config, key)) return config[key];
   return undefined;
 }
 
@@ -26,6 +31,109 @@ function asInputString(value: unknown): string {
 function toProviderList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+function isEqualValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function normalizeTextValue(value: string): string {
+  const trimmed = value.trim();
+  return trimmed === '' ? '' : trimmed;
+}
+
+function inferObserverModel(runtime: string, provider: string, configuredModel: string): { model: string; source: string } {
+  if (configuredModel) return { model: configuredModel, source: 'Configured' };
+  if (runtime === 'claude_sidecar') {
+    return { model: DEFAULT_ANTHROPIC_MODEL, source: 'Default (claude_sidecar)' };
+  }
+  if (provider === 'anthropic') {
+    return { model: DEFAULT_ANTHROPIC_MODEL, source: 'Default (anthropic)' };
+  }
+  if (provider && provider !== 'openai') {
+    return { model: 'provider default', source: 'Default (provider)' };
+  }
+  return { model: DEFAULT_OPENAI_MODEL, source: 'Default (openai)' };
+}
+
+function configuredValueForKey(config: any, key: string): unknown {
+  switch (key) {
+    case 'observer_provider':
+    case 'observer_model':
+    case 'observer_auth_file':
+    case 'sync_host':
+      return normalizeTextValue(asInputString(config?.[key]));
+    case 'observer_runtime':
+      return normalizeTextValue(asInputString(config?.observer_runtime));
+    case 'observer_auth_source':
+      return normalizeTextValue(asInputString(config?.observer_auth_source));
+    case 'observer_auth_command': {
+      const value = config?.observer_auth_command;
+      if (!Array.isArray(value)) return [];
+      return value.filter((item) => typeof item === 'string');
+    }
+    case 'observer_headers': {
+      const value = config?.observer_headers;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+      const headers: Record<string, string> = {};
+      Object.entries(value as Record<string, unknown>).forEach(([header, headerValue]) => {
+        if (typeof header === 'string' && header.trim() && typeof headerValue === 'string') {
+          headers[header.trim()] = headerValue;
+        }
+      });
+      return headers;
+    }
+    case 'observer_auth_timeout_ms':
+    case 'observer_max_chars':
+    case 'pack_observation_limit':
+    case 'pack_session_limit':
+    case 'raw_events_sweeper_interval_s':
+    case 'sync_port':
+    case 'sync_interval_s': {
+      if (!hasOwn(config, key)) return '';
+      const parsed = Number(config[key]);
+      return Number.isFinite(parsed) && parsed !== 0 ? parsed : '';
+    }
+    case 'observer_auth_cache_ttl_s': {
+      if (!hasOwn(config, key)) return '';
+      const parsed = Number(config[key]);
+      return Number.isFinite(parsed) ? parsed : '';
+    }
+    case 'sync_enabled':
+    case 'sync_mdns':
+      return Boolean(config?.[key]);
+    default:
+      return hasOwn(config, key) ? config[key] : '';
+  }
+}
+
+function mergeOverrideBaseline(
+  baseline: Record<string, unknown>,
+  config: any,
+  envOverrides: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...baseline };
+  Object.keys(envOverrides).forEach((key) => {
+    if (hasOwn(next, key)) {
+      next[key] = configuredValueForKey(config, key);
+    }
+  });
+  return next;
+}
+
+function renderObserverModelHint() {
+  const hint = $('observerModelHint');
+  if (!hint) return;
+  const runtime = ($select('observerRuntime')?.value || 'api_http').trim();
+  const provider = ($select('observerProvider')?.value || '').trim();
+  const configuredModel = normalizeTextValue($input('observerModel')?.value || '');
+  const inferred = inferObserverModel(runtime, provider, configuredModel);
+  const overrideActive = ['observer_model', 'observer_provider', 'observer_runtime'].some(
+    (key) => hasOwn(settingsEnvOverrides, key),
+  );
+  const source = overrideActive ? 'Env override' : inferred.source;
+  hint.textContent = `${source}: ${inferred.model}`;
 }
 
 function setProviderOptions(
@@ -106,6 +214,7 @@ export function renderConfigModal(payload: any) {
   const envOverrides = payload.env_overrides && typeof payload.env_overrides === 'object'
     ? payload.env_overrides
     : {};
+  settingsEnvOverrides = envOverrides;
   const providers = toProviderList(payload.providers);
   state.configDefaults = defaults;
   state.configPath = payload.path || '';
@@ -133,49 +242,51 @@ export function renderConfigModal(payload: any) {
   const observerMaxCharsHint = $('observerMaxCharsHint');
   const settingsEffective = $('settingsEffective');
 
-  const observerProviderValue = asInputString(configuredOrEffective(config, effective, 'observer_provider'));
+  const observerProviderValue = asInputString(effectiveOrConfigured(config, effective, 'observer_provider'));
   setProviderOptions(observerProvider, providers, observerProviderValue);
 
-  const observerModelValue = asInputString(configuredOrEffective(config, effective, 'observer_model'));
+  const observerModelValue = asInputString(effectiveOrConfigured(config, effective, 'observer_model'));
   if (observerModel) observerModel.value = observerModelValue;
-  if (observerRuntime) observerRuntime.value = asInputString(configuredOrEffective(config, effective, 'observer_runtime')) || 'api_http';
-  if (observerAuthSource) observerAuthSource.value = asInputString(configuredOrEffective(config, effective, 'observer_auth_source')) || 'auto';
-  if (observerAuthFile) observerAuthFile.value = asInputString(configuredOrEffective(config, effective, 'observer_auth_file'));
+  if (observerRuntime) observerRuntime.value = asInputString(effectiveOrConfigured(config, effective, 'observer_runtime')) || 'api_http';
+  if (observerAuthSource) observerAuthSource.value = asInputString(effectiveOrConfigured(config, effective, 'observer_auth_source')) || 'auto';
+  if (observerAuthFile) observerAuthFile.value = asInputString(effectiveOrConfigured(config, effective, 'observer_auth_file'));
   if (observerAuthCommand) {
-    const argv = configuredOrEffective(config, effective, 'observer_auth_command');
+    const argv = effectiveOrConfigured(config, effective, 'observer_auth_command');
     const command = Array.isArray(argv) ? argv : [];
     const commandStrings = command.filter((item) => typeof item === 'string');
     observerAuthCommand.value = commandStrings.length ? JSON.stringify(commandStrings, null, 2) : '';
   }
   if (observerAuthTimeoutMs) {
-    observerAuthTimeoutMs.value = asInputString(configuredOrEffective(config, effective, 'observer_auth_timeout_ms'));
+    observerAuthTimeoutMs.value = asInputString(effectiveOrConfigured(config, effective, 'observer_auth_timeout_ms'));
   }
   if (observerAuthCacheTtlS) {
-    observerAuthCacheTtlS.value = asInputString(configuredOrEffective(config, effective, 'observer_auth_cache_ttl_s'));
+    observerAuthCacheTtlS.value = asInputString(effectiveOrConfigured(config, effective, 'observer_auth_cache_ttl_s'));
   }
   if (observerHeaders) {
-    const headerValue = configuredOrEffective(config, effective, 'observer_headers');
+    const headerValue = effectiveOrConfigured(config, effective, 'observer_headers');
     const headers = headerValue && typeof headerValue === 'object' ? headerValue : {};
-    observerHeaders.value = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : '';
+    const normalized: Record<string, string> = {};
+    Object.entries(headers as Record<string, unknown>).forEach(([key, value]) => {
+      if (typeof key === 'string' && key.trim() && typeof value === 'string') {
+        normalized[key] = value;
+      }
+    });
+    observerHeaders.value = Object.keys(normalized).length ? JSON.stringify(normalized, null, 2) : '';
   }
-  if (observerMaxChars) observerMaxChars.value = asInputString(configuredOrEffective(config, effective, 'observer_max_chars'));
-  if (packObservationLimit) packObservationLimit.value = asInputString(configuredOrEffective(config, effective, 'pack_observation_limit'));
-  if (packSessionLimit) packSessionLimit.value = asInputString(configuredOrEffective(config, effective, 'pack_session_limit'));
+  if (observerMaxChars) observerMaxChars.value = asInputString(effectiveOrConfigured(config, effective, 'observer_max_chars'));
+  if (packObservationLimit) packObservationLimit.value = asInputString(effectiveOrConfigured(config, effective, 'pack_observation_limit'));
+  if (packSessionLimit) packSessionLimit.value = asInputString(effectiveOrConfigured(config, effective, 'pack_session_limit'));
   if (rawEventsSweeperIntervalS) {
-    rawEventsSweeperIntervalS.value = asInputString(configuredOrEffective(config, effective, 'raw_events_sweeper_interval_s'));
+    rawEventsSweeperIntervalS.value = asInputString(effectiveOrConfigured(config, effective, 'raw_events_sweeper_interval_s'));
   }
-  if (syncEnabled) syncEnabled.checked = Boolean(configuredOrEffective(config, effective, 'sync_enabled'));
-  if (syncHost) syncHost.value = asInputString(configuredOrEffective(config, effective, 'sync_host'));
-  if (syncPort) syncPort.value = asInputString(configuredOrEffective(config, effective, 'sync_port'));
-  if (syncInterval) syncInterval.value = asInputString(configuredOrEffective(config, effective, 'sync_interval_s'));
-  if (syncMdns) syncMdns.checked = Boolean(configuredOrEffective(config, effective, 'sync_mdns'));
+  if (syncEnabled) syncEnabled.checked = Boolean(effectiveOrConfigured(config, effective, 'sync_enabled'));
+  if (syncHost) syncHost.value = asInputString(effectiveOrConfigured(config, effective, 'sync_host'));
+  if (syncPort) syncPort.value = asInputString(effectiveOrConfigured(config, effective, 'sync_port'));
+  if (syncInterval) syncInterval.value = asInputString(effectiveOrConfigured(config, effective, 'sync_interval_s'));
+  if (syncMdns) syncMdns.checked = Boolean(effectiveOrConfigured(config, effective, 'sync_mdns'));
 
   if (settingsPath) settingsPath.textContent = state.configPath ? `Config path: ${state.configPath}` : 'Config path: n/a';
-  if (observerModelHint) {
-    const source = hasOwn(config, 'observer_model') ? 'Configured' : 'Default';
-    const effectiveModel = observerModelValue || 'n/a';
-    observerModelHint.textContent = `${source} model: ${effectiveModel}`;
-  }
+  if (observerModelHint) renderObserverModelHint();
   if (observerMaxCharsHint) {
     const def = defaults?.observer_max_chars || '';
     observerMaxCharsHint.textContent = def ? `Default: ${def}` : '';
@@ -192,6 +303,12 @@ export function renderConfigModal(payload: any) {
 
   updateAuthSourceVisibility();
   setSettingsTab(settingsActiveTab);
+  try {
+    const baseline = collectSettingsPayload();
+    settingsBaseline = mergeOverrideBaseline(baseline, config, envOverrides);
+  } catch {
+    settingsBaseline = {};
+  }
 
   setDirty(false);
   const settingsStatus = $('settingsStatus');
@@ -223,6 +340,46 @@ function parseObserverHeaders(raw: string): Record<string, string> {
     headers[key.trim()] = value;
   }
   return headers;
+}
+
+function collectSettingsPayload(): Record<string, unknown> {
+  const authCommandInput = (document.getElementById('observerAuthCommand') as HTMLTextAreaElement | null)?.value || '';
+  const observerHeadersInput = (document.getElementById('observerHeaders') as HTMLTextAreaElement | null)?.value || '';
+  const authCacheTtlInput = ($input('observerAuthCacheTtlS')?.value || '').trim();
+  const sweeperIntervalInput = ($input('rawEventsSweeperIntervalS')?.value || '').trim();
+  const authCommand = parseCommandArgv(authCommandInput);
+  const headers = parseObserverHeaders(observerHeadersInput);
+  const authCacheTtl = authCacheTtlInput === '' ? '' : Number(authCacheTtlInput);
+  const sweeperIntervalNum = Number(sweeperIntervalInput);
+  const sweeperInterval = sweeperIntervalInput === '' ? '' : sweeperIntervalNum;
+
+  if (authCacheTtlInput !== '' && !Number.isFinite(authCacheTtl)) {
+    throw new Error('observer auth cache ttl must be a number');
+  }
+  if (sweeperIntervalInput !== '' && (!Number.isFinite(sweeperIntervalNum) || sweeperIntervalNum <= 0)) {
+    throw new Error('raw-event sweeper interval must be a positive number');
+  }
+
+  return {
+    observer_provider: normalizeTextValue($select('observerProvider')?.value || ''),
+    observer_model: normalizeTextValue($input('observerModel')?.value || ''),
+    observer_runtime: normalizeTextValue($select('observerRuntime')?.value || 'api_http') || 'api_http',
+    observer_auth_source: normalizeTextValue($select('observerAuthSource')?.value || 'auto') || 'auto',
+    observer_auth_file: normalizeTextValue($input('observerAuthFile')?.value || ''),
+    observer_auth_command: authCommand,
+    observer_auth_timeout_ms: Number($input('observerAuthTimeoutMs')?.value || 0) || '',
+    observer_auth_cache_ttl_s: authCacheTtl,
+    observer_headers: headers,
+    observer_max_chars: Number($input('observerMaxChars')?.value || 0) || '',
+    pack_observation_limit: Number($input('packObservationLimit')?.value || 0) || '',
+    pack_session_limit: Number($input('packSessionLimit')?.value || 0) || '',
+    raw_events_sweeper_interval_s: sweeperInterval,
+    sync_enabled: $input('syncEnabled')?.checked || false,
+    sync_host: normalizeTextValue($input('syncHost')?.value || ''),
+    sync_port: Number($input('syncPort')?.value || 0) || '',
+    sync_interval_s: Number($input('syncInterval')?.value || 0) || '',
+    sync_mdns: $input('syncMdns')?.checked || false,
+  };
 }
 
 function updateAuthSourceVisibility() {
@@ -294,42 +451,21 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
   status.textContent = 'Saving...';
 
   try {
-    const authCommandInput = (document.getElementById('observerAuthCommand') as HTMLTextAreaElement | null)?.value || '';
-    const observerHeadersInput = (document.getElementById('observerHeaders') as HTMLTextAreaElement | null)?.value || '';
-    const authCacheTtlInput = ($input('observerAuthCacheTtlS')?.value || '').trim();
-    const sweeperIntervalInput = ($input('rawEventsSweeperIntervalS')?.value || '').trim();
-    const authCommand = parseCommandArgv(authCommandInput);
-    const headers = parseObserverHeaders(observerHeadersInput);
-    const authCacheTtl = authCacheTtlInput === '' ? '' : Number(authCacheTtlInput);
-    const sweeperIntervalNum = Number(sweeperIntervalInput);
-    const sweeperInterval = sweeperIntervalInput === '' ? '' : sweeperIntervalNum;
-    if (authCacheTtlInput !== '' && !Number.isFinite(authCacheTtl)) {
-      throw new Error('observer auth cache ttl must be a number');
-    }
-    if (sweeperIntervalInput !== '' && (!Number.isFinite(sweeperIntervalNum) || sweeperIntervalNum <= 0)) {
-      throw new Error('raw-event sweeper interval must be a positive number');
+    const current = collectSettingsPayload();
+    const changed: Record<string, unknown> = {};
+    Object.entries(current).forEach(([key, value]) => {
+      if (!isEqualValue(value, settingsBaseline[key])) {
+        changed[key] = value;
+      }
+    });
+    if (Object.keys(changed).length === 0) {
+      status.textContent = 'No changes';
+      setDirty(false);
+      closeSettings(startPolling, refreshCallback);
+      return;
     }
 
-    await api.saveConfig({
-      observer_provider: $select('observerProvider')?.value || '',
-      observer_model: $input('observerModel')?.value || '',
-      observer_runtime: $select('observerRuntime')?.value || 'api_http',
-      observer_auth_source: $select('observerAuthSource')?.value || 'auto',
-      observer_auth_file: $input('observerAuthFile')?.value || '',
-      observer_auth_command: authCommand,
-      observer_auth_timeout_ms: Number($input('observerAuthTimeoutMs')?.value || 0) || '',
-      observer_auth_cache_ttl_s: authCacheTtl,
-      observer_headers: headers,
-      observer_max_chars: Number($input('observerMaxChars')?.value || 0) || '',
-      pack_observation_limit: Number($input('packObservationLimit')?.value || 0) || '',
-      pack_session_limit: Number($input('packSessionLimit')?.value || 0) || '',
-      raw_events_sweeper_interval_s: sweeperInterval,
-      sync_enabled: $input('syncEnabled')?.checked || false,
-      sync_host: $input('syncHost')?.value || '',
-      sync_port: Number($input('syncPort')?.value || 0) || '',
-      sync_interval_s: Number($input('syncInterval')?.value || 0) || '',
-      sync_mdns: $input('syncMdns')?.checked || false,
-    });
+    await api.saveConfig(changed);
     status.textContent = 'Saved';
     setDirty(false);
     closeSettings(startPolling, refreshCallback);
@@ -396,6 +532,9 @@ export function initSettings(stopPolling: () => void, startPolling: () => void, 
   });
 
   $select('observerAuthSource')?.addEventListener('change', () => updateAuthSourceVisibility());
+  $select('observerProvider')?.addEventListener('change', () => renderObserverModelHint());
+  $select('observerRuntime')?.addEventListener('change', () => renderObserverModelHint());
+  $input('observerModel')?.addEventListener('input', () => renderObserverModelHint());
   document.querySelectorAll('[data-settings-tab]').forEach((node) => {
     node.addEventListener('click', () => {
       const tab = (node as HTMLElement).dataset.settingsTab || 'observer';
