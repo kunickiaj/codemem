@@ -106,7 +106,11 @@ def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[s
 def _should_flush(hook_event_name: str) -> bool:
     if hook_event_name not in {"Stop", "SessionEnd"}:
         return False
-    return _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH", True)
+    if not _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH", True):
+        return False
+    if hook_event_name == "SessionEnd":
+        return True
+    return _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP", False)
 
 
 def ingest_claude_hook_cmd() -> None:

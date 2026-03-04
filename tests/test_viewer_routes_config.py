@@ -40,6 +40,7 @@ def test_config_route_accepts_observer_auth_fields(
             "observer_auth_timeout_ms": 2000,
             "observer_auth_cache_ttl_s": 60,
             "observer_headers": {"Authorization": "Bearer ${auth.token}"},
+            "raw_events_sweeper_interval_s": 45,
         }
     )
 
@@ -57,6 +58,7 @@ def test_config_route_accepts_observer_auth_fields(
     assert saved["observer_auth_timeout_ms"] == 2000
     assert saved["observer_auth_cache_ttl_s"] == 60
     assert saved["observer_headers"] == {"Authorization": "Bearer ${auth.token}"}
+    assert saved["raw_events_sweeper_interval_s"] == 45
 
 
 def test_config_route_preserves_observer_auth_command_exactly(
@@ -133,3 +135,23 @@ def test_config_route_rejects_invalid_observer_headers(
     assert handled is True
     assert handler.status == 400
     assert handler.response == {"error": "observer_headers must be object of string values"}
+
+
+def test_config_route_rejects_invalid_raw_events_sweeper_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler({"raw_events_sweeper_interval_s": 0})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "raw_events_sweeper_interval_s must be int"}

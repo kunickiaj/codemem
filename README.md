@@ -123,16 +123,18 @@ Common overrides:
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 
-The viewer includes a Settings modal for observer provider/model plus runtime/auth fields.
+The viewer includes a grouped Settings modal (`Observer`, `Queue`, `Sync`) for observer controls, queue cadence, and sync defaults.
 
 Observer runtime/auth in `0.16`:
 
-- Runtime options: `api_http` and `claude_sidecar` (reserved; currently not implemented, so it falls back to `api_http` with a warning).
+- Runtime options: `api_http` and `claude_sidecar`.
+- `claude_sidecar` runs observer calls through local Claude runtime auth; if an explicit `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
 - Auth sources: `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` must be a JSON string array (argv), not a space-separated string.
   - Config file example: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
   - Env var example: `CODEMEM_OBSERVER_AUTH_COMMAND='["iap-auth","--audience","example"]'`
 - Header templates support `${auth.token}`, `${auth.type}`, and `${auth.source}` (for example `Authorization: Bearer ${auth.token}`).
+- Queue cadence is configurable with `raw_events_sweeper_interval_s` (seconds) in Settings/config.
 
 ## Export and import
 

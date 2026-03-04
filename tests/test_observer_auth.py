@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from codemem.config import OpencodeMemConfig
 from codemem.observer import (
+    ObserverAuthError,
     _build_codex_headers,
     _extract_oauth_account_id,
     _extract_oauth_expires,
@@ -346,12 +348,118 @@ def test_custom_provider_none_auth_source_does_not_use_api_key() -> None:
     assert client.auth.source == "none"
 
 
-def test_observer_runtime_claude_sidecar_falls_back_to_api_http() -> None:
+def _claude_sidecar_payload(*, result: str, is_error: bool = False) -> str:
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": is_error,
+            "result": result,
+        }
+    )
+
+
+def test_observer_runtime_claude_sidecar_uses_sidecar_call() -> None:
     cfg = OpencodeMemConfig(
-        observer_provider="openai",
-        observer_api_key="stub-key",
         observer_runtime="claude_sidecar",
     )
+    run_mock = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_claude_sidecar_payload(result="hello from sidecar"),
+            stderr="",
+        )
+    )
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer.subprocess.run", run_mock),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+        output = client._call("hello")
+
+    assert client.runtime == "claude_sidecar"
+    assert client.client is None
+    assert output == "hello from sidecar"
+    assert run_mock.call_count == 1
+    called_cmd = run_mock.call_args.args[0]
+    assert called_cmd[:4] == ["claude", "-p", "--output-format", "json"]
+
+
+def test_observer_runtime_claude_sidecar_retries_without_model_on_model_error() -> None:
+    cfg = OpencodeMemConfig(
+        observer_runtime="claude_sidecar",
+        observer_model="claude-4.5-haiku",
+    )
+    run_mock = Mock(
+        side_effect=[
+            subprocess.CompletedProcess(
+                args=["claude"],
+                returncode=0,
+                stdout=_claude_sidecar_payload(
+                    result=(
+                        "There's an issue with the selected model (claude-4.5-haiku). "
+                        "Run --model to pick a different model."
+                    ),
+                    is_error=True,
+                ),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["claude"],
+                returncode=0,
+                stdout=_claude_sidecar_payload(result="hello from fallback"),
+                stderr="",
+            ),
+        ]
+    )
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer.subprocess.run", run_mock),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+        output = client._call("hello")
+
+    assert output == "hello from fallback"
+    assert run_mock.call_count == 2
+    first_cmd = run_mock.call_args_list[0].args[0]
+    second_cmd = run_mock.call_args_list[1].args[0]
+    assert "--model" in first_cmd
+    assert "claude-4.5-haiku" in first_cmd
+    assert "--model" not in second_cmd
+
+
+def test_observer_runtime_claude_sidecar_raises_auth_error() -> None:
+    cfg = OpencodeMemConfig(observer_runtime="claude_sidecar")
+    run_mock = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_claude_sidecar_payload(result="Please login first.", is_error=True),
+            stderr="",
+        )
+    )
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer.subprocess.run", run_mock),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+        with pytest.raises(ObserverAuthError):
+            client._call("hello")
+
+
+def test_observer_runtime_non_string_falls_back_to_api_http() -> None:
+    cfg = OpencodeMemConfig(observer_provider="openai", observer_api_key="stub-key")
+    cfg.observer_runtime = 1  # type: ignore[assignment]
     openai_module = SimpleNamespace(OpenAI=OpenAIStub)
     with (
         patch("codemem.observer.load_config", return_value=cfg),

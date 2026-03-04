@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 
+from .config import load_config
 from .db import DEFAULT_DB_PATH
 from .observer import ObserverAuthError
 from .raw_event_flush import flush_raw_events
@@ -104,11 +105,14 @@ class RawEventSweeper:
         return value not in {"0", "false", "off"}
 
     def interval_ms(self) -> int:
-        value = os.environ.get("CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS", "30000")
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 30000
+        env_value = os.environ.get("CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS")
+        if env_value is not None:
+            try:
+                return int(env_value)
+            except (TypeError, ValueError):
+                return 30000
+        interval_s = load_config().raw_events_sweeper_interval_s
+        return max(1000, int(interval_s) * 1000)
 
     def idle_ms(self) -> int:
         value = os.environ.get("CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS", "120000")

@@ -6,6 +6,7 @@ import * as api from '../lib/api';
 
 let settingsOpen = false;
 let previouslyFocused: HTMLElement | null = null;
+let settingsActiveTab = 'observer';
 
 function getFocusableNodes(container: HTMLElement | null): HTMLElement[] {
   if (!container) return [];
@@ -69,6 +70,7 @@ export function renderConfigModal(payload: any) {
   const observerMaxChars = $input('observerMaxChars');
   const packObservationLimit = $input('packObservationLimit');
   const packSessionLimit = $input('packSessionLimit');
+  const rawEventsSweeperIntervalS = $input('rawEventsSweeperIntervalS');
   const syncEnabled = $input('syncEnabled');
   const syncHost = $input('syncHost');
   const syncPort = $input('syncPort');
@@ -87,8 +89,14 @@ export function renderConfigModal(payload: any) {
     const argv = Array.isArray(config.observer_auth_command) ? config.observer_auth_command : [];
     observerAuthCommand.value = argv.length ? JSON.stringify(argv, null, 2) : '';
   }
-  if (observerAuthTimeoutMs) observerAuthTimeoutMs.value = config.observer_auth_timeout_ms || '';
-  if (observerAuthCacheTtlS) observerAuthCacheTtlS.value = config.observer_auth_cache_ttl_s || '';
+  if (observerAuthTimeoutMs) {
+    const timeoutMs = config.observer_auth_timeout_ms;
+    observerAuthTimeoutMs.value = timeoutMs === undefined || timeoutMs === null ? '' : String(timeoutMs);
+  }
+  if (observerAuthCacheTtlS) {
+    const cacheTtl = config.observer_auth_cache_ttl_s;
+    observerAuthCacheTtlS.value = cacheTtl === undefined || cacheTtl === null ? '' : String(cacheTtl);
+  }
   if (observerHeaders) {
     const headers = config.observer_headers && typeof config.observer_headers === 'object'
       ? config.observer_headers
@@ -98,6 +106,10 @@ export function renderConfigModal(payload: any) {
   if (observerMaxChars) observerMaxChars.value = config.observer_max_chars || '';
   if (packObservationLimit) packObservationLimit.value = config.pack_observation_limit || '';
   if (packSessionLimit) packSessionLimit.value = config.pack_session_limit || '';
+  if (rawEventsSweeperIntervalS) {
+    const intervalS = config.raw_events_sweeper_interval_s;
+    rawEventsSweeperIntervalS.value = intervalS === undefined || intervalS === null ? '' : String(intervalS);
+  }
   if (syncEnabled) syncEnabled.checked = Boolean(config.sync_enabled);
   if (syncHost) syncHost.value = config.sync_host || '';
   if (syncPort) syncPort.value = config.sync_port || '';
@@ -114,6 +126,7 @@ export function renderConfigModal(payload: any) {
   }
 
   updateAuthSourceVisibility();
+  setSettingsTab(settingsActiveTab);
 
   setDirty(false);
   const settingsStatus = $('settingsStatus');
@@ -155,6 +168,23 @@ function updateAuthSourceVisibility() {
   if (fileField) fileField.hidden = source !== 'file';
   if (commandField) commandField.hidden = source !== 'command';
   if (commandNote) commandNote.hidden = source !== 'command';
+}
+
+function setSettingsTab(tab: string) {
+  const next = ['observer', 'queue', 'sync'].includes(tab) ? tab : 'observer';
+  settingsActiveTab = next;
+  document.querySelectorAll('[data-settings-tab]').forEach((node) => {
+    const button = node as HTMLButtonElement;
+    const active = button.dataset.settingsTab === next;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-settings-panel]').forEach((node) => {
+    const panel = node as HTMLElement;
+    const active = panel.dataset.settingsPanel === next;
+    panel.classList.toggle('active', active);
+    panel.hidden = !active;
+  });
 }
 
 function setDirty(dirty: boolean) {
@@ -202,11 +232,16 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
     const authCommandInput = (document.getElementById('observerAuthCommand') as HTMLTextAreaElement | null)?.value || '';
     const observerHeadersInput = (document.getElementById('observerHeaders') as HTMLTextAreaElement | null)?.value || '';
     const authCacheTtlInput = ($input('observerAuthCacheTtlS')?.value || '').trim();
+    const sweeperIntervalInput = ($input('rawEventsSweeperIntervalS')?.value || '').trim();
     const authCommand = parseCommandArgv(authCommandInput);
     const headers = parseObserverHeaders(observerHeadersInput);
     const authCacheTtl = authCacheTtlInput === '' ? '' : Number(authCacheTtlInput);
+    const sweeperInterval = sweeperIntervalInput === '' ? '' : Number(sweeperIntervalInput);
     if (authCacheTtlInput !== '' && !Number.isFinite(authCacheTtl)) {
       throw new Error('observer auth cache ttl must be a number');
+    }
+    if (sweeperIntervalInput !== '' && (!Number.isFinite(sweeperInterval) || sweeperInterval <= 0)) {
+      throw new Error('raw-event sweeper interval must be a positive number');
     }
 
     await api.saveConfig({
@@ -222,6 +257,7 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
       observer_max_chars: Number($input('observerMaxChars')?.value || 0) || '',
       pack_observation_limit: Number($input('packObservationLimit')?.value || 0) || '',
       pack_session_limit: Number($input('packSessionLimit')?.value || 0) || '',
+      raw_events_sweeper_interval_s: sweeperInterval,
       sync_enabled: $input('syncEnabled')?.checked || false,
       sync_host: $input('syncHost')?.value || '',
       sync_port: Number($input('syncPort')?.value || 0) || '',
@@ -281,6 +317,7 @@ export function initSettings(stopPolling: () => void, startPolling: () => void, 
     'observerMaxChars',
     'packObservationLimit',
     'packSessionLimit',
+    'rawEventsSweeperIntervalS',
     'syncEnabled',
     'syncHost',
     'syncPort',
@@ -295,4 +332,10 @@ export function initSettings(stopPolling: () => void, startPolling: () => void, 
   });
 
   $select('observerAuthSource')?.addEventListener('change', () => updateAuthSourceVisibility());
+  document.querySelectorAll('[data-settings-tab]').forEach((node) => {
+    node.addEventListener('click', () => {
+      const tab = (node as HTMLElement).dataset.settingsTab || 'observer';
+      setSettingsTab(tab);
+    });
+  });
 }

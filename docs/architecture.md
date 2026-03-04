@@ -172,7 +172,8 @@ The observer turns raw session transcripts into typed, structured memories. It's
 
 - The observer still uses one pipeline (extract -> prompt -> parse -> persist); runtime/auth choices are adapter inputs, not a separate path.
 - Supported runtime values are `api_http` and `claude_sidecar`.
-- `claude_sidecar` is currently reserved/not implemented; runtime selection falls back to `api_http` with a warning.
+- `claude_sidecar` executes observer prompts through local Claude runtime auth and bypasses provider API-key client initialization.
+- If a configured `observer_model` is not available in Claude CLI, codemem retries once with Claude's default model.
 - Supported auth sources are `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` is argv data and must be a JSON string array when passed via env (`CODEMEM_OBSERVER_AUTH_COMMAND`).
 - Header templating supports `${auth.token}`, `${auth.type}`, `${auth.source}`.

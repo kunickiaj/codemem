@@ -36,6 +36,7 @@ CONFIG_ENV_OVERRIDES = {
     "sync_advertise": "CODEMEM_SYNC_ADVERTISE",
     "sync_projects_include": "CODEMEM_SYNC_PROJECTS_INCLUDE",
     "sync_projects_exclude": "CODEMEM_SYNC_PROJECTS_EXCLUDE",
+    "raw_events_sweeper_interval_s": "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
 }
 
 
@@ -219,6 +220,8 @@ class OpencodeMemConfig:
 
     sync_advertise: str = "auto"
 
+    raw_events_sweeper_interval_s: int = 30
+
     # Basename-based project filters for syncing memory_items.
     # When include is non-empty, only those projects will sync.
     # Exclude always takes precedence.
@@ -399,6 +402,7 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
             "plugin_cmd_timeout_ms",
             "sync_port",
             "sync_interval_s",
+            "raw_events_sweeper_interval_s",
         }:
             setattr(cfg, key, _parse_int(value, getattr(cfg, key), key=key))
             continue
@@ -534,6 +538,11 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.sync_port = _parse_int(os.getenv("CODEMEM_SYNC_PORT"), cfg.sync_port, key="sync_port")
     cfg.sync_interval_s = _parse_int(
         os.getenv("CODEMEM_SYNC_INTERVAL_S"), cfg.sync_interval_s, key="sync_interval_s"
+    )
+    cfg.raw_events_sweeper_interval_s = _parse_int(
+        os.getenv("CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S"),
+        cfg.raw_events_sweeper_interval_s,
+        key="raw_events_sweeper_interval_s",
     )
     cfg.sync_mdns = _parse_bool(os.getenv("CODEMEM_SYNC_MDNS"), cfg.sync_mdns)
     cfg.sync_key_store = os.getenv("CODEMEM_SYNC_KEY_STORE", cfg.sync_key_store)

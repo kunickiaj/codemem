@@ -360,3 +360,25 @@ def test_load_config_invalid_observer_headers_warns_and_uses_default(tmp_path: P
         cfg = load_config(config_path)
 
     assert cfg.observer_headers == {}
+
+
+def test_load_config_reads_raw_events_sweeper_interval_from_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"raw_events_sweeper_interval_s": 90}\n')
+
+    cfg = load_config(config_path)
+
+    assert cfg.raw_events_sweeper_interval_s == 90
+
+
+def test_load_config_reads_raw_events_sweeper_interval_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S", "75")
+
+    cfg = load_config(config_path)
+
+    assert cfg.raw_events_sweeper_interval_s == 75

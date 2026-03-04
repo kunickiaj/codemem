@@ -22,6 +22,8 @@ DEFAULT_CODEX_ENDPOINT = _observer_codex.DEFAULT_CODEX_ENDPOINT
 
 logger = logging.getLogger(__name__)
 
+_CLAUDE_SIDECAR_TIMEOUT_S = 45
+
 
 class ObserverAuthError(Exception):
     """Raised when the observer encounters an authentication/authorization failure.
@@ -44,6 +46,47 @@ def _is_auth_error(exc: Exception) -> bool:
     # HTTP status code check for generic cases
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
     return isinstance(status, int) and status in (401, 403)
+
+
+def _extract_claude_result_payload(output: str) -> dict[str, Any] | None:
+    if not output:
+        return None
+    for line in reversed(output.splitlines()):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "result":
+            return payload
+    return None
+
+
+def _is_claude_sidecar_model_error(message: str) -> bool:
+    lowered = message.lower()
+    return (
+        "issue with the selected model" in lowered
+        or "run --model to pick a different model" in lowered
+        or "model" in lowered
+        and "may not exist" in lowered
+    )
+
+
+def _is_claude_sidecar_auth_error(message: str) -> bool:
+    lowered = message.lower()
+    checks = (
+        "not logged in",
+        "login",
+        "authentication",
+        "unauthorized",
+        "permission denied",
+        "api key",
+        "anthropic_api_key",
+        "setup-token",
+    )
+    return any(token in lowered for token in checks)
 
 
 _REDACT_PATTERNS = _observer_codex._REDACT_PATTERNS
@@ -112,6 +155,7 @@ class ObserverClient:
         cfg = load_config()
         provider = (cfg.observer_provider or "").lower()
         model = cfg.observer_model or ""
+        self._configured_model = model.strip() or None
         custom_providers = _list_custom_providers()
 
         if provider and provider not in {"openai", "anthropic"} | custom_providers:
@@ -130,11 +174,11 @@ class ObserverClient:
         self.provider = resolved_provider
         self._configured_provider = provider or None
         self.use_opencode_run = cfg.use_opencode_run
-        runtime = (cfg.observer_runtime or "api_http").strip().lower()
-        if runtime == "claude_sidecar":
-            logger.warning("observer runtime claude_sidecar is not implemented yet; using api_http")
+        runtime_raw = cfg.observer_runtime
+        runtime = runtime_raw.strip().lower() if isinstance(runtime_raw, str) else "api_http"
+        if runtime not in {"api_http", "claude_sidecar"}:
             runtime = "api_http"
-        self.runtime = runtime if runtime in {"api_http"} else "api_http"
+        self.runtime = runtime
         self.opencode_model = cfg.opencode_model
         self.opencode_agent = cfg.opencode_agent
         self.observer_headers = dict(cfg.observer_headers or {})
@@ -161,7 +205,8 @@ class ObserverClient:
         self.codex_access: str | None = None
         self.codex_account_id: str | None = None
 
-        self._init_provider_client(force_refresh=False)
+        if self.runtime == "api_http":
+            self._init_provider_client(force_refresh=False)
 
     def _init_provider_client(self, *, force_refresh: bool) -> None:
         self.client = None
@@ -272,6 +317,8 @@ class ObserverClient:
     def _call(self, prompt: str) -> str | None:
         if self.use_opencode_run:
             return self._call_opencode_run(prompt)
+        if self.runtime == "claude_sidecar":
+            return self._call_claude_sidecar(prompt)
         try:
             return self._call_once(prompt)
         except ObserverAuthError as exc:
@@ -284,6 +331,84 @@ class ObserverClient:
             if not self._refresh_provider_client():
                 raise
             return self._call_once(prompt)
+
+    def _claude_sidecar_cmd(self, prompt: str, *, use_model: bool) -> list[str]:
+        cmd = [
+            "claude",
+            "-p",
+            "--output-format",
+            "json",
+            "--permission-mode",
+            "bypassPermissions",
+        ]
+        if use_model and self._configured_model:
+            cmd.extend(["--model", self._configured_model])
+        cmd.append(prompt)
+        return cmd
+
+    def _invoke_claude_sidecar(
+        self, prompt: str, *, use_model: bool
+    ) -> tuple[str | None, str | None]:
+        cmd = self._claude_sidecar_cmd(prompt, use_model=use_model)
+        env = dict(os.environ)
+        env.update(
+            {
+                "CODEMEM_PLUGIN_IGNORE": "1",
+                "CODEMEM_VIEWER": "0",
+                "CODEMEM_VIEWER_AUTO": "0",
+                "CODEMEM_VIEWER_AUTO_STOP": "0",
+            }
+        )
+        try:
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_CLAUDE_SIDECAR_TIMEOUT_S,
+                env=env,
+            )
+        except FileNotFoundError:
+            logger.warning("observer claude_sidecar unavailable: claude command not found")
+            return None, "claude command not found"
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "observer claude_sidecar timed out", extra={"timeout_s": _CLAUDE_SIDECAR_TIMEOUT_S}
+            )
+            return None, "claude sidecar call timed out"
+        except Exception as exc:  # pragma: no cover
+            logger.exception("observer claude_sidecar call failed", exc_info=exc)
+            return None, str(exc)
+
+        payload = _extract_claude_result_payload(result.stdout)
+        if payload is not None:
+            message = str(payload.get("result") or "").strip()
+            is_error = bool(payload.get("is_error"))
+            if is_error:
+                return None, message or "claude sidecar returned an error"
+            return (message or None), None
+
+        if result.returncode != 0:
+            message = (result.stderr or "").strip() or (result.stdout or "").strip()
+            return None, message or f"claude sidecar exited with code {result.returncode}"
+
+        text = (result.stdout or "").strip()
+        return (text or None), None
+
+    def _call_claude_sidecar(self, prompt: str) -> str | None:
+        output, error = self._invoke_claude_sidecar(prompt, use_model=True)
+        if error and self._configured_model and _is_claude_sidecar_model_error(error):
+            logger.warning(
+                "observer claude_sidecar model unsupported; retrying with default model",
+                extra={"model": self._configured_model},
+            )
+            output, error = self._invoke_claude_sidecar(prompt, use_model=False)
+        if error:
+            if _is_claude_sidecar_auth_error(error):
+                raise ObserverAuthError(error)
+            logger.warning("observer claude_sidecar call failed: %s", error)
+            return None
+        return output
 
     def _call_once(self, prompt: str) -> str | None:
         if self.codex_access:

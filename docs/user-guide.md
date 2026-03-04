@@ -21,12 +21,15 @@
 ## Observer auth configuration
 
 - Runtime choices are `api_http` and `claude_sidecar`.
-- `claude_sidecar` is currently reserved/not implemented; codemem logs a warning and uses `api_http`.
+- `claude_sidecar` runs observer calls through the local Claude runtime (subscription/session auth) and does not require `ANTHROPIC_API_KEY`.
+- If a configured `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` is argv and must be a JSON string array, not a space-separated string.
   - Config file form: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
   - Env var form (`CODEMEM_OBSERVER_AUTH_COMMAND`): `'["iap-auth","--audience","example"]'`
 - Header templates can use `${auth.token}`, `${auth.type}`, and `${auth.source}`.
+- Settings are grouped into `Observer`, `Queue`, and `Sync` sections to reduce modal clutter.
+- Queue settings include `raw_events_sweeper_interval_s` (seconds), which controls background pending-event drain cadence.
 
 Example command-token gateway config:
 

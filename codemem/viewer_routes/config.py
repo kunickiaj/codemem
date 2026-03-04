@@ -129,6 +129,7 @@ def handle_post(
         "sync_port",
         "sync_interval_s",
         "sync_mdns",
+        "raw_events_sweeper_interval_s",
     }
     allowed_providers = set(load_provider_options())
 
@@ -284,6 +285,15 @@ def handle_post(
             parsed = _as_positive_int(value, key=key)
             if parsed is None:
                 handler._send_json({"error": f"{key} must be int"}, status=400)
+                return True
+            config_data[key] = parsed
+            continue
+        if key == "raw_events_sweeper_interval_s":
+            parsed = _as_positive_int(value, key=key)
+            if parsed is None:
+                handler._send_json(
+                    {"error": "raw_events_sweeper_interval_s must be int"}, status=400
+                )
                 return True
             config_data[key] = parsed
             continue
