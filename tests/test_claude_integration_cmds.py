@@ -359,7 +359,11 @@ def test_queue_adapter_event_strips_private_tags_from_payload() -> None:
         "hook_event_name": "UserPromptSubmit",
         "session_id": "sess-redact",
         "prompt": "before <private>secret</private> after",
-        "tool_input": {"note": "x<private>hidden</private>y"},
+        "tool_input": {
+            "note": "x<private>hidden</private>y",
+            "token": "abc123",
+            "api_key": "key-1",
+        },
         "cwd": "/tmp/worktree-a",
     }
 
@@ -382,6 +386,9 @@ def test_queue_adapter_event_strips_private_tags_from_payload() -> None:
     assert "<private>" not in stored_payload
     assert "secret" not in stored_payload
     assert "hidden" not in stored_payload
+    assert "abc123" not in stored_payload
+    assert "key-1" not in stored_payload
+    assert "[REDACTED]" in stored_payload
 
 
 def test_queue_adapter_event_logs_when_payload_unmappable(caplog) -> None:
