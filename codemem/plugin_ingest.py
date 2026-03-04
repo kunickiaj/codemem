@@ -141,29 +141,40 @@ def _extract_assistant_messages(events: Iterable[dict[str, Any]]) -> list[str]:
 
 
 def _extract_assistant_usage(events: Iterable[dict[str, Any]]) -> list[dict[str, int]]:
-    usage_events: list[dict[str, int]] = []
-    for event in events:
-        if event.get("type") != "assistant_usage":
-            continue
-        usage = event.get("usage") or {}
+    def _normalize_usage(usage: Any) -> dict[str, int] | None:
         if not isinstance(usage, dict):
-            continue
+            return None
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
         cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
         cache_read = int(usage.get("cache_read_input_tokens") or 0)
         total = input_tokens + output_tokens + cache_creation
         if total <= 0:
+            return None
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": cache_read,
+            "total_tokens": total,
+        }
+
+    usage_events: list[dict[str, int]] = []
+    for event in events:
+        adapter = _extract_adapter_event(event)
+        if adapter and adapter.get("event_type") == "assistant":
+            payload = adapter.get("payload")
+            if isinstance(payload, dict):
+                normalized = _normalize_usage(payload.get("usage"))
+                if normalized is not None:
+                    usage_events.append(normalized)
+                    continue
+
+        if event.get("type") != "assistant_usage":
             continue
-        usage_events.append(
-            {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cache_creation_input_tokens": cache_creation,
-                "cache_read_input_tokens": cache_read,
-                "total_tokens": total,
-            }
-        )
+        normalized = _normalize_usage(event.get("usage") or {})
+        if normalized is not None:
+            usage_events.append(normalized)
     return usage_events
 
 

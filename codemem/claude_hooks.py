@@ -130,6 +130,107 @@ def _iso_to_wall_ms(value: str) -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def _normalize_usage(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def _to_int(key: str) -> int:
+        try:
+            return int(value.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    normalized = {
+        "input_tokens": _to_int("input_tokens"),
+        "output_tokens": _to_int("output_tokens"),
+        "cache_creation_input_tokens": _to_int("cache_creation_input_tokens"),
+        "cache_read_input_tokens": _to_int("cache_read_input_tokens"),
+    }
+    if sum(normalized.values()) <= 0:
+        return None
+    return normalized
+
+
+def _text_from_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            text = _text_from_content(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        return _text_from_content(value.get("content"))
+    return ""
+
+
+def _extract_from_transcript(transcript_path: Any) -> tuple[str | None, dict[str, int] | None]:
+    if not isinstance(transcript_path, str):
+        return None, None
+    path = Path(transcript_path).expanduser()
+    if not path.exists() or not path.is_file():
+        return None, None
+
+    assistant_text: str | None = None
+    assistant_usage: dict[str, int] | None = None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+
+                candidates: list[dict[str, Any]] = [record]
+                message = record.get("message")
+                if isinstance(message, dict):
+                    candidates.append(message)
+
+                role = ""
+                content_value: Any = None
+                usage_value: Any = None
+                for candidate in candidates:
+                    if not role:
+                        role_raw = candidate.get("role")
+                        if isinstance(role_raw, str):
+                            role = role_raw.strip().lower()
+                        elif candidate.get("type") == "assistant":
+                            role = "assistant"
+                    if content_value is None:
+                        for field in ("content", "text"):
+                            if field in candidate:
+                                content_value = candidate.get(field)
+                                break
+                    if usage_value is None:
+                        for field in ("usage", "token_usage", "tokenUsage"):
+                            if field in candidate:
+                                usage_value = candidate.get(field)
+                                break
+
+                if role != "assistant":
+                    continue
+                text = _text_from_content(content_value)
+                if text:
+                    assistant_text = text
+                usage = _normalize_usage(usage_value)
+                if usage is not None:
+                    assistant_usage = usage
+    except OSError:
+        return None, None
+
+    return assistant_text, assistant_usage
+
+
 def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     hook_event = str(payload.get("hook_event_name") or "").strip()
     if hook_event not in MAPPABLE_CLAUDE_HOOK_EVENTS:
@@ -216,11 +317,22 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         consumed.update({"tool_name", "tool_input", "error", "is_interrupt"})
     elif hook_event == "Stop":
         assistant_text = str(payload.get("last_assistant_message") or "").strip()
+        usage = _normalize_usage(payload.get("usage"))
+        if not assistant_text or usage is None:
+            transcript_text, transcript_usage = _extract_from_transcript(
+                payload.get("transcript_path")
+            )
+            if not assistant_text and transcript_text:
+                assistant_text = transcript_text
+            if usage is None and transcript_usage is not None:
+                usage = transcript_usage
         if not assistant_text:
             return None
         event_type = "assistant"
         event_payload = {"text": assistant_text}
-        consumed.update({"stop_hook_active", "last_assistant_message"})
+        if usage is not None:
+            event_payload["usage"] = usage
+        consumed.update({"stop_hook_active", "last_assistant_message", "usage"})
     else:
         event_type = "session_end"
         event_payload = {"reason": payload.get("reason")}
