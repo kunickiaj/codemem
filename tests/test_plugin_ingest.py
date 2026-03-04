@@ -11,6 +11,7 @@ from codemem.plugin_ingest import (
     _budget_tool_events,
     _build_transcript,
     _event_to_tool_event,
+    _extract_assistant_usage,
     _extract_prompts,
     _extract_tool_events,
     _normalize_project_label,
@@ -468,6 +469,115 @@ def test_extract_tool_events_uses_adapter_projection_before_legacy() -> None:
     assert tool_events[0].tool_name == "bash"
     assert tool_events[0].tool_input == {"command": "echo adapter"}
     assert tool_events[0].tool_output == "adapter output"
+
+
+def test_extract_assistant_usage_reads_adapter_assistant_usage() -> None:
+    events = [
+        {
+            "type": "claude.hook",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "claude",
+                "session_id": "sess-1",
+                "event_id": "sess-1:assistant:1",
+                "event_type": "assistant",
+                "ts": "2026-03-04T01:00:00Z",
+                "payload": {
+                    "text": "done",
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 25,
+                        "cache_creation_input_tokens": 10,
+                        "cache_read_input_tokens": 5,
+                    },
+                },
+            },
+        }
+    ]
+
+    usage = _extract_assistant_usage(events)
+
+    assert usage == [
+        {
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "cache_creation_input_tokens": 10,
+            "cache_read_input_tokens": 5,
+            "total_tokens": 135,
+        }
+    ]
+
+
+def test_adapter_parity_prompt_transcript_and_usage_between_opencode_and_claude() -> None:
+    opencode_events = [
+        {
+            "type": "user_prompt",
+            "prompt_text": "ship parity",
+            "prompt_number": 1,
+            "timestamp": "2026-03-04T01:00:00Z",
+        },
+        {
+            "type": "assistant_message",
+            "assistant_text": "done",
+            "timestamp": "2026-03-04T01:00:01Z",
+        },
+        {
+            "type": "assistant_usage",
+            "usage": {
+                "input_tokens": 50,
+                "output_tokens": 20,
+                "cache_creation_input_tokens": 5,
+                "cache_read_input_tokens": 1,
+            },
+        },
+    ]
+
+    claude_events = [
+        {
+            "type": "claude.hook",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "claude",
+                "session_id": "sess-parity",
+                "event_id": "sess-parity:prompt:1",
+                "event_type": "prompt",
+                "ts": "2026-03-04T01:00:00Z",
+                "payload": {"text": "ship parity", "prompt_number": 1},
+            },
+        },
+        {
+            "type": "claude.hook",
+            "_adapter": {
+                "schema_version": "1.0",
+                "source": "claude",
+                "session_id": "sess-parity",
+                "event_id": "sess-parity:assistant:1",
+                "event_type": "assistant",
+                "ts": "2026-03-04T01:00:01Z",
+                "payload": {
+                    "text": "done",
+                    "usage": {
+                        "input_tokens": 50,
+                        "output_tokens": 20,
+                        "cache_creation_input_tokens": 5,
+                        "cache_read_input_tokens": 1,
+                    },
+                },
+            },
+        },
+    ]
+
+    open_transcript = _build_transcript(opencode_events)
+    claude_transcript = _build_transcript(claude_events)
+    open_prompts = _extract_prompts(opencode_events)
+    claude_prompts = _extract_prompts(claude_events)
+    open_usage = _extract_assistant_usage(opencode_events)
+    claude_usage = _extract_assistant_usage(claude_events)
+
+    assert open_prompts[0]["prompt_text"] == claude_prompts[0]["prompt_text"]
+    assert "Assistant: done" in open_transcript
+    assert "Assistant: done" in claude_transcript
+    assert open_usage[0]["total_tokens"] == claude_usage[0]["total_tokens"]
 
 
 def test_resolve_ingest_project_prefers_env_override() -> None:

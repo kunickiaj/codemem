@@ -282,3 +282,44 @@ def test_build_raw_event_envelope_invalid_cwd_falls_back_to_payload_project(monk
 
     assert envelope is not None
     assert envelope["project"] == "payload-project"
+
+
+def test_map_stop_hook_uses_transcript_fallback_for_assistant_text(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"assistant from transcript"}}\n',
+        encoding="utf-8",
+    )
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop",
+        "last_assistant_message": "",
+        "transcript_path": str(transcript_path),
+    }
+
+    event = map_claude_hook_payload(payload)
+
+    assert event is not None
+    assert event["event_type"] == "assistant"
+    assert event["payload"]["text"] == "assistant from transcript"
+
+
+def test_map_stop_hook_includes_usage_from_hook_payload() -> None:
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop-usage",
+        "last_assistant_message": "done",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 2,
+            "cache_read_input_tokens": 1,
+        },
+    }
+
+    event = map_claude_hook_payload(payload)
+
+    assert event is not None
+    assert event["event_type"] == "assistant"
+    assert event["payload"]["usage"]["input_tokens"] == 10
+    assert event["payload"]["usage"]["output_tokens"] == 4
