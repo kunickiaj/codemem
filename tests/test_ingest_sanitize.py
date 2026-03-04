@@ -1,9 +1,11 @@
 from codemem.capture import TRUNCATION_NOTICE
 from codemem.ingest_sanitize import (
+    REDACTED_VALUE,
     _is_low_signal_output,
     _sanitize_payload,
     _sanitize_tool_output,
     _strip_private,
+    _strip_private_obj,
     _truncate_text,
 )
 
@@ -29,6 +31,28 @@ def test_sanitize_payload_strips_private() -> None:
     text = "Hello <private>secret</private> world"
     sanitized = _sanitize_payload(text, max_chars=200)
     assert "secret" not in sanitized
+
+
+def test_strip_private_handles_unclosed_private_tag() -> None:
+    text = "prefix <private>secret"
+    stripped = _strip_private(text)
+    assert stripped == "prefix "
+
+
+def test_strip_private_obj_redacts_sensitive_field_names() -> None:
+    payload = {
+        "token": "abc123",
+        "api_key": "key-1",
+        "nested": {"authorization": "Bearer secret"},
+        "safe": "ok",
+    }
+
+    sanitized = _strip_private_obj(payload)
+
+    assert sanitized["token"] == REDACTED_VALUE
+    assert sanitized["api_key"] == REDACTED_VALUE
+    assert sanitized["nested"]["authorization"] == REDACTED_VALUE
+    assert sanitized["safe"] == "ok"
 
 
 def test_sanitize_payload_truncates_large_objects() -> None:

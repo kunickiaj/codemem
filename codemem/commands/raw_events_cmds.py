@@ -7,7 +7,7 @@ from typing import Any
 import typer
 from rich import print
 
-from codemem.ingest_sanitize import _strip_private
+from codemem.ingest_sanitize import _strip_private_obj
 from codemem.store import MemoryStore
 
 
@@ -53,16 +53,6 @@ def _coerce_optional_float(payload: dict[str, Any], key: str) -> float | None:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{key} must be number") from exc
-
-
-def _strip_private_obj(value: Any) -> Any:
-    if isinstance(value, str):
-        return _strip_private(value)
-    if isinstance(value, list):
-        return [_strip_private_obj(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _strip_private_obj(item) for key, item in value.items()}
-    return value
 
 
 def enqueue_raw_event_cmd(store: MemoryStore) -> None:

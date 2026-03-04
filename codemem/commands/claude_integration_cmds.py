@@ -8,7 +8,7 @@ from typing import Any
 
 from codemem.claude_hooks import MAPPABLE_CLAUDE_HOOK_EVENTS, build_raw_event_envelope_from_hook
 from codemem.db import DEFAULT_DB_PATH
-from codemem.ingest_sanitize import _strip_private
+from codemem.ingest_sanitize import _strip_private_obj
 from codemem.raw_event_flush import flush_raw_events
 from codemem.store import MemoryStore
 
@@ -41,16 +41,6 @@ def _hook_stream_id(hook_payload: dict[str, Any]) -> str | None:
     return _adapter_stream_id(
         session_id=session_id,
     )
-
-
-def _strip_private_obj(value: Any) -> Any:
-    if isinstance(value, str):
-        return _strip_private(value)
-    if isinstance(value, list):
-        return [_strip_private_obj(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _strip_private_obj(item) for key, item in value.items()}
-    return value
 
 
 def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[str, bool] | None:
