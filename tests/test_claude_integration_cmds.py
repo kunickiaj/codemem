@@ -209,8 +209,9 @@ def test_claude_plugin_manifest_version_matches_package_version() -> None:
     assert plugin_manifest["description"].startswith("Persistent memory for Claude Code")
     assert "hooks" not in plugin_manifest
     mcp_servers = plugin_manifest["mcpServers"]
-    assert mcp_servers["codemem"]["command"] == "codemem"
-    assert mcp_servers["codemem"]["args"] == ["mcp"]
+    codemem_mcp = mcp_servers["codemem"]
+    assert codemem_mcp["command"] == "uvx"
+    assert codemem_mcp["args"] == ["codemem", "mcp"]
 
 
 def test_marketplace_manifest_points_to_codemem_plugin() -> None:

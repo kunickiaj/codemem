@@ -24,6 +24,28 @@ In Claude Code, add the marketplace and install the plugin:
 /plugin install codemem
 ```
 
+Prerequisite: `uvx` must be available (provided by `uv`). If needed:
+
+```bash
+# Homebrew
+brew install uv
+
+# mise
+mise use -g uv@latest
+```
+
+The plugin starts MCP with:
+
+- `uvx codemem mcp`
+
+We still recommend installing the CLI explicitly for local hook ingestion and manual `codemem` usage:
+
+```bash
+uv tool install --upgrade codemem
+```
+
+Claude MCP launch uses `uvx`; startup can be slower on first run because it may install dependencies on demand.
+
 You can update an existing marketplace install with:
 
 ```text
