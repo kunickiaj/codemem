@@ -128,7 +128,8 @@ The viewer includes a grouped Settings modal (`Observer`, `Queue`, `Sync`) for o
 Observer runtime/auth in `0.16`:
 
 - Runtime options: `api_http` and `claude_sidecar`.
-- `claude_sidecar` runs observer calls through local Claude runtime auth; if an explicit `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
+- `api_http` defaults to `gpt-5.1-codex-mini` (OpenAI path) unless you set `observer_model`.
+- `claude_sidecar` defaults to `claude-4.5-haiku`; if the selected `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's CLI default model.
 - Auth sources: `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` must be a JSON string array (argv), not a space-separated string.
   - Config file example: `"observer_auth_command": ["iap-auth", "--audience", "example"]`

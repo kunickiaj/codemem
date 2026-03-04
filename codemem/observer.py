@@ -156,6 +156,7 @@ class ObserverClient:
         provider = (cfg.observer_provider or "").lower()
         model = cfg.observer_model or ""
         self._configured_model = model.strip() or None
+        self._sidecar_model = self._configured_model or DEFAULT_ANTHROPIC_MODEL
         custom_providers = _list_custom_providers()
 
         if provider and provider not in {"openai", "anthropic"} | custom_providers:
@@ -198,6 +199,8 @@ class ObserverClient:
             self.model = DEFAULT_OPENAI_MODEL
         else:
             self.model = _resolve_custom_provider_default_model(resolved_provider) or ""
+        if self.runtime == "claude_sidecar":
+            self.model = self._sidecar_model
         self.api_key = cfg.observer_api_key or os.getenv("CODEMEM_OBSERVER_API_KEY")
         self.max_chars = cfg.observer_max_chars
         self.max_tokens = cfg.observer_max_tokens
@@ -341,8 +344,8 @@ class ObserverClient:
             "--permission-mode",
             "bypassPermissions",
         ]
-        if use_model and self._configured_model:
-            cmd.extend(["--model", self._configured_model])
+        if use_model and self._sidecar_model:
+            cmd.extend(["--model", self._sidecar_model])
         cmd.append(prompt)
         return cmd
 
@@ -397,10 +400,10 @@ class ObserverClient:
 
     def _call_claude_sidecar(self, prompt: str) -> str | None:
         output, error = self._invoke_claude_sidecar(prompt, use_model=True)
-        if error and self._configured_model and _is_claude_sidecar_model_error(error):
+        if error and self._sidecar_model and _is_claude_sidecar_model_error(error):
             logger.warning(
                 "observer claude_sidecar model unsupported; retrying with default model",
-                extra={"model": self._configured_model},
+                extra={"model": self._sidecar_model},
             )
             output, error = self._invoke_claude_sidecar(prompt, use_model=False)
         if error:

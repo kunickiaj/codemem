@@ -236,11 +236,12 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
     const authCommand = parseCommandArgv(authCommandInput);
     const headers = parseObserverHeaders(observerHeadersInput);
     const authCacheTtl = authCacheTtlInput === '' ? '' : Number(authCacheTtlInput);
-    const sweeperInterval = sweeperIntervalInput === '' ? '' : Number(sweeperIntervalInput);
+    const sweeperIntervalNum = Number(sweeperIntervalInput);
+    const sweeperInterval = sweeperIntervalInput === '' ? '' : sweeperIntervalNum;
     if (authCacheTtlInput !== '' && !Number.isFinite(authCacheTtl)) {
       throw new Error('observer auth cache ttl must be a number');
     }
-    if (sweeperIntervalInput !== '' && (!Number.isFinite(sweeperInterval) || sweeperInterval <= 0)) {
+    if (sweeperIntervalInput !== '' && (!Number.isFinite(sweeperIntervalNum) || sweeperIntervalNum <= 0)) {
       throw new Error('raw-event sweeper interval must be a positive number');
     }
 

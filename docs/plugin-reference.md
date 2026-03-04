@@ -89,6 +89,9 @@ Observer execution in `0.16` supports both API and Claude runtime paths.
 
 - Runtime values: `api_http`, `claude_sidecar`.
 - `claude_sidecar` runs observer calls via local Claude runtime auth (no `ANTHROPIC_API_KEY` required).
+- Default models:
+  - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
+  - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
 - If `observer_model` is unsupported in Claude CLI, codemem retries once without `--model`.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - Supported: API keys and gateway tokens codemem can read directly.

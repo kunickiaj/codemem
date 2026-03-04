@@ -22,6 +22,9 @@
 
 - Runtime choices are `api_http` and `claude_sidecar`.
 - `claude_sidecar` runs observer calls through the local Claude runtime (subscription/session auth) and does not require `ANTHROPIC_API_KEY`.
+- Default model selection:
+  - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
+  - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
 - If a configured `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` is argv and must be a JSON string array, not a space-separated string.

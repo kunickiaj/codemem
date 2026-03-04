@@ -9,6 +9,7 @@ import pytest
 
 from codemem.config import OpencodeMemConfig
 from codemem.observer import (
+    DEFAULT_ANTHROPIC_MODEL,
     ObserverAuthError,
     _build_codex_headers,
     _extract_oauth_account_id,
@@ -387,6 +388,8 @@ def test_observer_runtime_claude_sidecar_uses_sidecar_call() -> None:
     assert run_mock.call_count == 1
     called_cmd = run_mock.call_args.args[0]
     assert called_cmd[:4] == ["claude", "-p", "--output-format", "json"]
+    assert "--model" in called_cmd
+    assert DEFAULT_ANTHROPIC_MODEL in called_cmd
 
 
 def test_observer_runtime_claude_sidecar_retries_without_model_on_model_error() -> None:
