@@ -130,6 +130,106 @@ def _iso_to_wall_ms(value: str) -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def _normalize_usage(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def _to_int(key: str) -> int:
+        try:
+            return int(value.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    normalized = {
+        "input_tokens": _to_int("input_tokens"),
+        "output_tokens": _to_int("output_tokens"),
+        "cache_creation_input_tokens": _to_int("cache_creation_input_tokens"),
+        "cache_read_input_tokens": _to_int("cache_read_input_tokens"),
+    }
+    if sum(normalized.values()) <= 0:
+        return None
+    return normalized
+
+
+def _text_from_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            text = _text_from_content(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        return _text_from_content(value.get("content"))
+    return ""
+
+
+def _extract_from_transcript(transcript_path: Any) -> tuple[str | None, dict[str, int] | None]:
+    if not isinstance(transcript_path, str):
+        return None, None
+    path = Path(transcript_path).expanduser()
+    if not path.exists() or not path.is_file():
+        return None, None
+
+    assistant_text: str | None = None
+    assistant_usage: dict[str, int] | None = None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+
+                candidates: list[dict[str, Any]] = [record]
+                message = record.get("message")
+                if isinstance(message, dict):
+                    candidates.append(message)
+
+                role = ""
+                content_value: Any = None
+                usage_value: Any = None
+                for candidate in candidates:
+                    if not role:
+                        role_raw = candidate.get("role")
+                        if isinstance(role_raw, str):
+                            role = role_raw.strip().lower()
+                        elif candidate.get("type") == "assistant":
+                            role = "assistant"
+                    if content_value is None:
+                        for field in ("content", "text"):
+                            if field in candidate:
+                                content_value = candidate.get(field)
+                                break
+                    if usage_value is None:
+                        for field in ("usage", "token_usage", "tokenUsage"):
+                            if field in candidate:
+                                usage_value = candidate.get(field)
+                                break
+
+                if role != "assistant":
+                    continue
+                text = _text_from_content(content_value)
+                if not text:
+                    continue
+                assistant_text = text
+                assistant_usage = _normalize_usage(usage_value)
+    except OSError:
+        return None, None
+
+    return assistant_text, assistant_usage
+
+
 def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     hook_event = str(payload.get("hook_event_name") or "").strip()
     if hook_event not in MAPPABLE_CLAUDE_HOOK_EVENTS:
@@ -145,6 +245,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     tool_use_id = str(payload.get("tool_use_id") or "").strip()
     event_type: str
     event_payload: dict[str, Any]
+    event_id_payload: dict[str, Any]
     consumed: set[str] = {
         "hook_event_name",
         "session_id",
@@ -159,6 +260,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     if hook_event == "SessionStart":
         event_type = "session_start"
         event_payload = {"source": payload.get("source")}
+        event_id_payload = dict(event_payload)
         consumed.add("source")
     elif hook_event == "UserPromptSubmit":
         text = str(payload.get("prompt") or "").strip()
@@ -166,6 +268,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             return None
         event_type = "prompt"
         event_payload = {"text": text}
+        event_id_payload = dict(event_payload)
         consumed.add("prompt")
     elif hook_event == "PreToolUse":
         tool_name = str(payload.get("tool_name") or "").strip()
@@ -179,6 +282,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             "tool_name": tool_name,
             "tool_input": tool_input,
         }
+        event_id_payload = dict(event_payload)
         consumed.update({"tool_name", "tool_input"})
     elif hook_event == "PostToolUse":
         tool_name = str(payload.get("tool_name") or "").strip()
@@ -196,6 +300,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             "tool_output": tool_response,
             "tool_error": None,
         }
+        event_id_payload = dict(event_payload)
         consumed.update({"tool_name", "tool_input", "tool_response"})
     elif hook_event == "PostToolUseFailure":
         tool_name = str(payload.get("tool_name") or "").strip()
@@ -213,17 +318,39 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             "tool_output": None,
             "error": error,
         }
+        event_id_payload = dict(event_payload)
         consumed.update({"tool_name", "tool_input", "error", "is_interrupt"})
     elif hook_event == "Stop":
-        assistant_text = str(payload.get("last_assistant_message") or "").strip()
+        raw_assistant_text = str(payload.get("last_assistant_message") or "").strip()
+        raw_usage = _normalize_usage(payload.get("usage"))
+        assistant_text = raw_assistant_text
+        usage = raw_usage
+        if not assistant_text or usage is None:
+            transcript_text, transcript_usage = _extract_from_transcript(
+                payload.get("transcript_path")
+            )
+            if not assistant_text and transcript_text:
+                assistant_text = transcript_text
+            if usage is None and transcript_usage is not None:
+                usage = transcript_usage
         if not assistant_text:
             return None
         event_type = "assistant"
         event_payload = {"text": assistant_text}
-        consumed.update({"stop_hook_active", "last_assistant_message"})
+        if usage is not None:
+            event_payload["usage"] = usage
+        event_id_payload = {"text": raw_assistant_text}
+        if raw_usage is not None:
+            event_id_payload["usage"] = raw_usage
+        if not raw_assistant_text and raw_usage is None:
+            transcript_path = payload.get("transcript_path")
+            if isinstance(transcript_path, str) and transcript_path.strip():
+                event_id_payload["transcript_path"] = transcript_path.strip()
+        consumed.update({"stop_hook_active", "last_assistant_message", "usage"})
     else:
         event_type = "session_end"
         event_payload = {"reason": payload.get("reason")}
+        event_id_payload = dict(event_payload)
         consumed.add("reason")
 
     meta: dict[str, Any] = {
@@ -247,7 +374,7 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         event_id_ts_seed,
         tool_use_id,
         hashlib.sha256(
-            json.dumps(event_payload, sort_keys=True, default=str).encode("utf-8")
+            json.dumps(event_id_payload, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest(),
     )
 

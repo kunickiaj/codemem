@@ -282,3 +282,100 @@ def test_build_raw_event_envelope_invalid_cwd_falls_back_to_payload_project(monk
 
     assert envelope is not None
     assert envelope["project"] == "payload-project"
+
+
+def test_map_stop_hook_uses_transcript_fallback_for_assistant_text(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"assistant from transcript"}}\n',
+        encoding="utf-8",
+    )
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop",
+        "last_assistant_message": "",
+        "transcript_path": str(transcript_path),
+    }
+
+    event = map_claude_hook_payload(payload)
+
+    assert event is not None
+    assert event["event_type"] == "assistant"
+    assert event["payload"]["text"] == "assistant from transcript"
+
+
+def test_map_stop_hook_includes_usage_from_hook_payload() -> None:
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop-usage",
+        "last_assistant_message": "done",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 2,
+            "cache_read_input_tokens": 1,
+        },
+    }
+
+    event = map_claude_hook_payload(payload)
+
+    assert event is not None
+    assert event["event_type"] == "assistant"
+    assert event["payload"]["usage"]["input_tokens"] == 10
+    assert event["payload"]["usage"]["output_tokens"] == 4
+
+
+def test_map_stop_hook_transcript_usage_is_tied_to_latest_assistant_text(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            [
+                '{"message":{"role":"assistant","content":"first reply"},"usage":{"input_tokens":30,"output_tokens":8,"cache_creation_input_tokens":2,"cache_read_input_tokens":1}}',
+                '{"message":{"role":"assistant","content":"latest reply"}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    event = map_claude_hook_payload(
+        {
+            "hook_event_name": "Stop",
+            "session_id": "sess-stop-transcript",
+            "last_assistant_message": "",
+            "transcript_path": str(transcript_path),
+            "ts": "2026-03-04T01:00:00Z",
+        }
+    )
+
+    assert event is not None
+    assert event["payload"]["text"] == "latest reply"
+    assert "usage" not in event["payload"]
+
+
+def test_map_stop_hook_event_id_stable_across_transcript_content_changes(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"first reply"}}\n',
+        encoding="utf-8",
+    )
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop-stable",
+        "last_assistant_message": "",
+        "transcript_path": str(transcript_path),
+        "ts": "2026-03-04T01:00:00Z",
+    }
+
+    first = map_claude_hook_payload(payload)
+
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"second reply"},"usage":{"input_tokens":7,"output_tokens":3,"cache_creation_input_tokens":1,"cache_read_input_tokens":0}}\n',
+        encoding="utf-8",
+    )
+    second = map_claude_hook_payload(payload)
+
+    assert first is not None
+    assert second is not None
+    assert first["payload"]["text"] != second["payload"]["text"]
+    assert first["event_id"] == second["event_id"]

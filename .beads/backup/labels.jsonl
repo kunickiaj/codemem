@@ -61,7 +61,10 @@
 {"issue_id":"codemem-afm.12","label":"adapters"}
 {"issue_id":"codemem-afm.12","label":"auth"}
 {"issue_id":"codemem-afm.12","label":"config"}
+{"issue_id":"codemem-afm.12","label":"integration"}
+{"issue_id":"codemem-afm.12","label":"multi-agent"}
 {"issue_id":"codemem-afm.12","label":"observer"}
+{"issue_id":"codemem-afm.12","label":"planning"}
 {"issue_id":"codemem-afm.12","label":"release"}
 {"issue_id":"codemem-afm.12","label":"settings-ui"}
 {"issue_id":"codemem-afm.13","label":"adapters"}

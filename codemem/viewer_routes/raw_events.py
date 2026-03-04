@@ -145,6 +145,13 @@ def _handle_post_claude_hooks(
 
     envelope = build_raw_event_envelope_from_hook(payload)
     if envelope is None:
+        logger.info(
+            "claude hook payload skipped at /api/claude-hooks",
+            extra={
+                "hook_event_name": str(payload.get("hook_event_name") or ""),
+                "session_id": str(payload.get("session_id") or ""),
+            },
+        )
         handler._send_json({"inserted": 0, "skipped": 1})
         return True
 

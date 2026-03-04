@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -381,3 +382,34 @@ def test_queue_adapter_event_strips_private_tags_from_payload() -> None:
     assert "<private>" not in stored_payload
     assert "secret" not in stored_payload
     assert "hidden" not in stored_payload
+
+
+def test_queue_adapter_event_logs_when_payload_unmappable(caplog) -> None:
+    payload = {
+        "hook_event_name": "NotMapped",
+        "session_id": "sess-skip",
+    }
+
+    class _FakeStore:
+        pass
+
+    with caplog.at_level(logging.INFO, logger="codemem.commands.claude_integration_cmds"):
+        queued = _queue_adapter_event(payload, store=_FakeStore())
+
+    assert queued is None
+    assert "claude hook payload skipped before enqueue" in caplog.text
+
+
+def test_ingest_claude_hook_cmd_logs_unsupported_event(caplog) -> None:
+    payload = {
+        "hook_event_name": "UnsupportedEvent",
+        "session_id": "sess-unsupported",
+    }
+
+    with (
+        patch("sys.stdin", io.StringIO(json.dumps(payload))),
+        caplog.at_level(logging.INFO, logger="codemem.commands.claude_integration_cmds"),
+    ):
+        ingest_claude_hook_cmd()
+
+    assert "claude hook payload ignored: unsupported event" in caplog.text
