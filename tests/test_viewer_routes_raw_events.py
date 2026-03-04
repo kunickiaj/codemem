@@ -33,6 +33,7 @@ class DummyStore:
         self.conn: Any = None
         self.closed = False
         self.recorded_batches: list[tuple[str, list[dict[str, Any]]]] = []
+        self.recorded_events: list[dict[str, Any]] = []
         self.meta_updates: list[dict[str, Any]] = []
 
     def raw_event_backlog_totals(self) -> dict[str, int]:
@@ -48,10 +49,35 @@ class DummyStore:
         self.recorded_batches.append((opencode_session_id, events))
         return {"inserted": len(events)}
 
+    def record_raw_event(
+        self,
+        *,
+        opencode_session_id: str,
+        source: str,
+        event_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        ts_wall_ms: int | None = None,
+        ts_mono_ms: float | None = None,
+    ) -> bool:
+        self.recorded_events.append(
+            {
+                "opencode_session_id": opencode_session_id,
+                "source": source,
+                "event_id": event_id,
+                "event_type": event_type,
+                "payload": payload,
+                "ts_wall_ms": ts_wall_ms,
+                "ts_mono_ms": ts_mono_ms,
+            }
+        )
+        return True
+
     def update_raw_event_session_meta(
         self,
         *,
         opencode_session_id: str,
+        source: str = "opencode",
         cwd: str | None,
         project: str | None,
         started_at: str | None,
@@ -60,6 +86,7 @@ class DummyStore:
         self.meta_updates.append(
             {
                 "opencode_session_id": opencode_session_id,
+                "source": source,
                 "cwd": cwd,
                 "project": project,
                 "started_at": started_at,
@@ -277,6 +304,65 @@ def test_handle_post_flusher_failure_does_not_fail_ingest() -> None:
     assert handled is True
     assert handler.status == 200
     assert handler.response == {"inserted": 1, "received": 1}
+
+
+def test_handle_post_claude_hooks_enqueues_mapped_event() -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-cld-1",
+        "prompt": "run tests",
+        "cwd": "/tmp/repo",
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    flusher = DummyFlusher()
+    store = DummyStore()
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/claude-hooks",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert handler.response == {"inserted": 1, "skipped": 0}
+    assert len(store.recorded_events) == 1
+    event = store.recorded_events[0]
+    assert event["source"] == "claude"
+    assert event["event_type"] == "claude.hook"
+    assert event["payload"]["_adapter"]["event_type"] == "prompt"
+    assert store.meta_updates[0]["source"] == "claude"
+    assert flusher.noted == ["sess-cld-1"]
+
+
+def test_handle_post_claude_hooks_skips_unmappable_payload() -> None:
+    payload = {
+        "hook_event_name": "NotMapped",
+        "session_id": "sess-cld-2",
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    flusher = DummyFlusher()
+    store = DummyStore()
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/claude-hooks",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert handler.response == {"inserted": 0, "skipped": 1}
+    assert store.recorded_events == []
+    assert flusher.noted == []
 
 
 def test_handle_get_raw_events_status_returns_items_and_totals() -> None:
