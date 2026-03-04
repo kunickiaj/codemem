@@ -13,6 +13,8 @@ import {
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
+const PINNED_BACKEND_VERSION = "0.16.0";
+const DEFAULT_UVX_SOURCE = `codemem==${PINNED_BACKEND_VERSION}`;
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
 const envHasValue = (value, truthyValues) =>
@@ -401,6 +403,19 @@ const detectRunner = ({ cwd, envRunner }) => {
   return "uvx";
 };
 
+const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
+  if (runner === "uvx") {
+    if (runnerFromExplicit) {
+      return ["--from", runnerFrom, "codemem"];
+    }
+    return [runnerFrom || "codemem"];
+  }
+  if (runner === "uv") {
+    return ["run", "--directory", runnerFrom, "codemem"];
+  }
+  return [];
+};
+
 export const OpencodeMemPlugin = async ({
   project,
   client,
@@ -443,26 +458,15 @@ export const OpencodeMemPlugin = async ({
   // Determine runner mode:
   // - If CODEMEM_RUNNER is set, use that
   // - If we're in a directory with pyproject.toml containing codemem, use "uv" (dev mode)
-  // - Otherwise, use "uvx" with SSH git URL (installed mode)
+  // - Otherwise, use "uvx" with a package source pinned to plugin version
   const runner = detectRunner({
     cwd,
     envRunner: process.env.CODEMEM_RUNNER,
   });
-  const defaultRunnerFrom = runner === "uvx"
-    ? "git+https://github.com/kunickiaj/codemem.git"
-    : cwd;
+  const runnerFromExplicit = Boolean(String(process.env.CODEMEM_RUNNER_FROM || "").trim());
+  const defaultRunnerFrom = runner === "uvx" ? DEFAULT_UVX_SOURCE : cwd;
   const runnerFrom = process.env.CODEMEM_RUNNER_FROM || defaultRunnerFrom;
-  const buildRunnerArgs = () => {
-    if (runner === "uvx") {
-      return ["--from", runnerFrom, "codemem"];
-    }
-    if (runner === "uv") {
-      return ["run", "--directory", runnerFrom, "codemem"];
-    }
-    // For other runners (e.g., direct 'codemem' binary), no extra args
-    return [];
-  };
-  const runnerArgs = buildRunnerArgs();
+  const runnerArgs = buildRunnerArgs({ runner, runnerFrom, runnerFromExplicit });
   const viewerEnabled = envNotDisabled(process.env.CODEMEM_VIEWER || "1");
   const viewerAutoStart = envNotDisabled(
     process.env.CODEMEM_VIEWER_AUTO || "1"
@@ -1805,6 +1809,9 @@ export const OpencodeMemPlugin = async ({
 
 export default OpencodeMemPlugin;
 export const __testUtils = {
+  PINNED_BACKEND_VERSION,
+  DEFAULT_UVX_SOURCE,
+  buildRunnerArgs,
   appendWorkingSetFileArgs,
   extractApplyPatchPaths,
   mapOpencodeEventTypeToAdapterType,

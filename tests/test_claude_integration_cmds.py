@@ -211,7 +211,7 @@ def test_claude_plugin_manifest_version_matches_package_version() -> None:
     mcp_servers = plugin_manifest["mcpServers"]
     codemem_mcp = mcp_servers["codemem"]
     assert codemem_mcp["command"] == "uvx"
-    assert codemem_mcp["args"] == ["codemem", "mcp"]
+    assert codemem_mcp["args"] == [f"codemem=={__version__}", "mcp"]
 
 
 def test_marketplace_manifest_points_to_codemem_plugin() -> None:
@@ -231,6 +231,17 @@ def test_marketplace_manifest_points_to_codemem_plugin() -> None:
 
     resolved_plugin_path = repo_root / codemem_plugin["source"]
     assert resolved_plugin_path.exists()
+
+
+def test_claude_hook_script_has_version_pinned_uvx_fallback() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    hook_script_path = repo_root / "plugins" / "claude" / "scripts" / "ingest-hook.sh"
+    hook_script = hook_script_path.read_text()
+
+    assert 'UVX_PACKAGE_SPEC="codemem"' in hook_script
+    assert 'UVX_PACKAGE_SPEC="codemem==${PLUGIN_VERSION}"' in hook_script
+    assert 'uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook' in hook_script
+    assert "CODEMEM_HOOK_ALLOW_UVX" not in hook_script
 
 
 def test_adapter_stream_id_uses_source_and_session_only() -> None:

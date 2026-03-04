@@ -36,7 +36,7 @@ mise use -g uv@latest
 
 The plugin starts MCP with:
 
-- `uvx codemem mcp`
+- `uvx codemem==<plugin-version> mcp`
 
 We still recommend installing the CLI explicitly for local hook ingestion and manual `codemem` usage:
 
@@ -45,6 +45,10 @@ uv tool install --upgrade codemem
 ```
 
 Claude MCP launch uses `uvx`; startup can be slower on first run because it may install dependencies on demand.
+
+Claude hook ingestion uses the same version-pinned fallback when local `codemem` is not available:
+
+- `uvx codemem==<plugin-version> ingest-claude-hook`
 
 You can update an existing marketplace install with:
 
@@ -226,7 +230,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | Env var | Description |
 | --- | --- |
 | `CODEMEM_RUNNER` | Override auto-detected runner: `uv` (dev mode), `uvx` (installed mode), or direct binary path. |
-| `CODEMEM_RUNNER_FROM` | Override source location: directory path for `uv run --directory`, or git URL/path for `uvx --from`. |
+| `CODEMEM_RUNNER_FROM` | Override source location: directory path for `uv run --directory`, or package/git/path source for `uvx --from` (default OpenCode source is pinned to plugin version). |
 | `CODEMEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
 | `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
@@ -271,13 +275,13 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate hook flush attempts (default on). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP` | Set to `1` to flush on Claude `Stop` hooks in addition to `SessionEnd` (default off). |
-| `CODEMEM_HOOK_ALLOW_UVX` | Set to `1` to allow Claude hook script fallback to `uvx --from codemem` when `codemem` binary is not found (default off). |
 
 ## Compatibility guidance behavior
 
 When the plugin detects CLI/runtime version mismatch, it shows guidance based on runner mode:
 
 - `CODEMEM_RUNNER=uv`: pull latest in your repo, run `uv sync`, restart OpenCode
+- `CODEMEM_RUNNER=uvx` with package source: update `CODEMEM_RUNNER_FROM` (or update plugin package version), restart OpenCode
 - `CODEMEM_RUNNER=uvx` with git source: update `CODEMEM_RUNNER_FROM` to newer ref/source, restart OpenCode
 - `CODEMEM_RUNNER=uvx` with custom source: update `CODEMEM_RUNNER_FROM`, restart OpenCode
 - other/unknown runner: run `uv tool install --upgrade codemem`, restart OpenCode
