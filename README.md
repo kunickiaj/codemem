@@ -123,7 +123,19 @@ Common overrides:
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 
-The viewer includes a Settings modal for observer provider, model, and max chars.
+The viewer includes a grouped Settings modal (`Observer`, `Queue`, `Sync`) for observer controls, queue cadence, and sync defaults.
+
+Observer runtime/auth in `0.16`:
+
+- Runtime options: `api_http` and `claude_sidecar`.
+- `api_http` defaults to `gpt-5.1-codex-mini` (OpenAI path) unless you set `observer_model`.
+- `claude_sidecar` defaults to `claude-4.5-haiku`; if the selected `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's CLI default model.
+- Auth sources: `auto`, `env`, `file`, `command`, `none`.
+- `observer_auth_command` must be a JSON string array (argv), not a space-separated string.
+  - Config file example: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
+  - Env var example: `CODEMEM_OBSERVER_AUTH_COMMAND='["iap-auth","--audience","example"]'`
+- Header templates support `${auth.token}`, `${auth.type}`, and `${auth.source}` (for example `Authorization: Bearer ${auth.token}`).
+- Queue cadence is configurable with `raw_events_sweeper_interval_s` (seconds) in Settings/config.
 
 ## Export and import
 

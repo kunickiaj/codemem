@@ -907,8 +907,45 @@
       .modal-body { display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
 
+      .settings-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+      .settings-tab {
+        border: 1px solid var(--border);
+        background: var(--surface-0);
+        color: var(--text-secondary);
+        border-radius: var(--radius-sm);
+        padding: 7px 10px;
+        font-family: var(--font-sans);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .settings-tab:hover { border-color: var(--border-hover); }
+      .settings-tab.active {
+        border-color: var(--accent-border);
+        color: var(--accent-strong);
+        background: var(--accent-subtle);
+      }
+      .settings-panel { display: none; flex-direction: column; gap: var(--sp-3); }
+      .settings-panel.active { display: flex; }
+      .settings-group {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-0);
+      }
+      .settings-group-title {
+        margin: 0;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
+
       .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-      .field input, .field select { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .field input, .field select, .field textarea { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .field textarea { resize: vertical; min-height: 84px; }
       .settings-save {
         border: 1px solid var(--control-border);
         background: var(--control-bg);
@@ -1021,37 +1058,118 @@
         </div>
         <div class="modal-body">
           <div class="small" id="settingsDescription">Update observer and sync defaults for this viewer.</div>
-          <div class="field">
-            <label for="observerProvider">Observer provider</label>
-            <select id="observerProvider"><option value="">auto (default)</option></select>
-            <div class="small">Leave blank to use defaults.</div>
+          <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+            <button class="settings-tab active" id="settingsTabObserver" data-settings-tab="observer" role="tab" aria-selected="true">Observer</button>
+            <button class="settings-tab" id="settingsTabQueue" data-settings-tab="queue" role="tab" aria-selected="false">Queue</button>
+            <button class="settings-tab" id="settingsTabSync" data-settings-tab="sync" role="tab" aria-selected="false">Sync</button>
           </div>
-          <div class="field">
-            <label for="observerModel">Observer model</label>
-            <input id="observerModel" placeholder="leave empty for default" />
-            <div class="small">Override the observer model.</div>
+
+          <div class="settings-panel active" id="settingsPanelObserver" data-settings-panel="observer">
+            <div class="settings-group">
+              <h3 class="settings-group-title">Model Runtime</h3>
+              <div class="field">
+                <label for="observerProvider">Observer provider</label>
+                <select id="observerProvider"><option value="">auto (default)</option></select>
+                <div class="small">`auto` uses provider defaults for the selected runtime.</div>
+              </div>
+              <div class="field">
+                <label for="observerModel">Observer model</label>
+                <input id="observerModel" placeholder="leave empty for default" />
+                <div class="small">Default: `gpt-5.1-codex-mini` for `api_http`; `claude-4.5-haiku` for `claude_sidecar`.</div>
+                <div class="small" id="observerModelHint"></div>
+              </div>
+              <div class="field">
+                <label for="observerRuntime">Observer runtime</label>
+                <select id="observerRuntime">
+                  <option value="api_http">api_http (default)</option>
+                  <option value="claude_sidecar">claude_sidecar</option>
+                </select>
+                <div class="small">Run observer calls through local Claude runtime auth.</div>
+              </div>
+              <div class="field">
+                <label for="observerMaxChars">Observer max chars</label>
+                <input id="observerMaxChars" type="number" min="1" />
+                <div class="small" id="observerMaxCharsHint"></div>
+              </div>
+            </div>
+
+            <div class="settings-group">
+              <h3 class="settings-group-title">Auth Adapter</h3>
+              <div class="field">
+                <label for="observerAuthSource">Observer auth source</label>
+                <select id="observerAuthSource">
+                  <option value="auto">auto (default)</option>
+                  <option value="env">env</option>
+                  <option value="file">file</option>
+                  <option value="command">command</option>
+                  <option value="none">none</option>
+                </select>
+                <div class="small">Choose how observer credentials are resolved.</div>
+              </div>
+              <div class="field" id="observerAuthFileField" hidden>
+                <label for="observerAuthFile">Observer auth file</label>
+                <input id="observerAuthFile" placeholder="~/.codemem/work-token.txt" />
+                <div class="small">Read token from this file when auth source is `file`.</div>
+              </div>
+              <div class="field" id="observerAuthCommandField" hidden>
+                <label for="observerAuthCommand">Observer auth command</label>
+                <textarea id="observerAuthCommand" rows="3" placeholder='["iap-auth", "--audience", "gateway"]'></textarea>
+                <div class="small">Command stdout is used as the token when source is `command` (argv only; no shell).</div>
+              </div>
+              <div class="small" id="observerAuthCommandNote" hidden>
+                Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
+              </div>
+              <div class="field">
+                <label for="observerAuthTimeoutMs">Observer auth timeout (ms)</label>
+                <input id="observerAuthTimeoutMs" type="number" min="1" />
+              </div>
+              <div class="field">
+                <label for="observerAuthCacheTtlS">Observer auth cache TTL (s)</label>
+                <input id="observerAuthCacheTtlS" type="number" min="0" />
+              </div>
+              <div class="field">
+                <label for="observerHeaders">Observer headers (JSON object)</label>
+                <textarea id="observerHeaders" rows="4" placeholder='{"Authorization":"Bearer ${auth.token}"}'></textarea>
+                <div class="small">Template variables: `${auth.token}`, `${auth.type}`, `${auth.source}`.</div>
+              </div>
+            </div>
           </div>
-          <div class="field">
-            <label for="observerMaxChars">Observer max chars</label>
-            <input id="observerMaxChars" type="number" min="1" />
-            <div class="small" id="observerMaxCharsHint"></div>
+
+          <div class="settings-panel" id="settingsPanelQueue" data-settings-panel="queue">
+            <div class="settings-group">
+              <h3 class="settings-group-title">Processing Cadence</h3>
+              <div class="field">
+                <label for="rawEventsSweeperIntervalS">Raw-event sweeper interval (seconds)</label>
+                <input id="rawEventsSweeperIntervalS" type="number" min="1" />
+                <div class="small">How often background flush checks pending raw events.</div>
+              </div>
+            </div>
+            <div class="settings-group">
+              <h3 class="settings-group-title">Pack Defaults</h3>
+              <div class="field">
+                <label for="packObservationLimit">Pack observation limit</label>
+                <input id="packObservationLimit" type="number" min="1" />
+                <div class="small">Default number of observations to include in a pack.</div>
+              </div>
+              <div class="field">
+                <label for="packSessionLimit">Pack session limit</label>
+                <input id="packSessionLimit" type="number" min="1" />
+                <div class="small">Default number of session summaries to include in a pack.</div>
+              </div>
+            </div>
           </div>
-          <div class="field">
-            <label for="packObservationLimit">Pack observation limit</label>
-            <input id="packObservationLimit" type="number" min="1" />
-            <div class="small">Default number of observations to include in a pack.</div>
+
+          <div class="settings-panel" id="settingsPanelSync" data-settings-panel="sync">
+            <div class="settings-group">
+              <h3 class="settings-group-title">Peer Sync</h3>
+              <div class="field"><label for="syncEnabled">Sync enabled</label><input id="syncEnabled" type="checkbox" /></div>
+              <div class="field"><label for="syncHost">Sync host</label><input id="syncHost" placeholder="127.0.0.1" /></div>
+              <div class="field"><label for="syncPort">Sync port</label><input id="syncPort" type="number" min="1" /></div>
+              <div class="field"><label for="syncInterval">Sync interval (seconds)</label><input id="syncInterval" type="number" min="10" /></div>
+              <div class="field"><label for="syncMdns">mDNS discovery</label><input id="syncMdns" type="checkbox" /></div>
+            </div>
           </div>
-          <div class="field">
-            <label for="packSessionLimit">Pack session limit</label>
-            <input id="packSessionLimit" type="number" min="1" />
-            <div class="small">Default number of session summaries to include in a pack.</div>
-          </div>
-          <div class="field"><label>Sync settings</label><div class="small">Configure peer sync.</div></div>
-          <div class="field"><label for="syncEnabled">Sync enabled</label><input id="syncEnabled" type="checkbox" /></div>
-          <div class="field"><label for="syncHost">Sync host</label><input id="syncHost" placeholder="127.0.0.1" /></div>
-          <div class="field"><label for="syncPort">Sync port</label><input id="syncPort" type="number" min="1" /></div>
-          <div class="field"><label for="syncInterval">Sync interval (seconds)</label><input id="syncInterval" type="number" min="10" /></div>
-          <div class="field"><label for="syncMdns">mDNS discovery</label><input id="syncMdns" type="checkbox" /></div>
+
           <div class="small mono" id="settingsPath"></div>
           <div class="small" id="settingsEffective"></div>
           <div class="settings-note" id="settingsOverrides">Environment variables override file settings.</div>

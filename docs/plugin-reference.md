@@ -36,7 +36,7 @@ Ingest one Claude hook payload from stdin (this is what the installed hook scrip
 printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem ingest-claude-hook
 ```
 
-By default, `Stop` and `SessionEnd` trigger an immediate queue flush attempt. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to disable that behavior.
+By default, `SessionEnd` triggers an immediate queue flush attempt. Set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to also flush on `Stop`, or `CODEMEM_CLAUDE_HOOK_FLUSH=0` to disable hook-triggered flushes entirely.
 
 The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
@@ -82,6 +82,52 @@ slash commands in the OpenCode chat input.
 
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
 `CODEMEM_OBSERVER_MODEL`. Custom providers are loaded from OpenCode config.
+
+### Observer auth modes (0.16)
+
+Observer execution in `0.16` supports both API and Claude runtime paths.
+
+- Runtime values: `api_http`, `claude_sidecar`.
+- `claude_sidecar` runs observer calls via local Claude runtime auth (no `ANTHROPIC_API_KEY` required).
+- Default models:
+  - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
+  - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- If `observer_model` is unsupported in Claude CLI, codemem retries once without `--model`.
+- Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
+- Supported: API keys and gateway tokens codemem can read directly.
+- Custom provider path does not implicitly fall back to OpenCode/IAP env tokens; use provider key, `CODEMEM_OBSERVER_API_KEY`, `file`, or `command`.
+
+For command-refreshed gateway auth, configure a command token source plus templated headers:
+
+```json
+{
+  "observer_provider": "your-gateway-provider",
+  "observer_runtime": "api_http",
+  "observer_auth_source": "command",
+  "observer_auth_command": ["iap-auth", "--audience", "example"],
+  "observer_auth_timeout_ms": 1500,
+  "observer_auth_cache_ttl_s": 300,
+  "observer_headers": {
+    "Authorization": "Bearer ${auth.token}"
+  }
+}
+```
+
+`observer_auth_command` is direct argv execution (no shell interpolation).
+
+- Config key type: JSON string array (`["cmd", "arg1", "arg2"]`).
+- Env var `CODEMEM_OBSERVER_AUTH_COMMAND` must also be a JSON string array (for example `'["iap-auth","--audience","example"]'`), not a space-separated command string.
+
+Header template variables:
+
+- `${auth.token}`
+- `${auth.type}`
+- `${auth.source}`
+
+Command/file token cache behavior:
+
+- Successful token resolutions are cached for `observer_auth_cache_ttl_s`.
+- Failed token resolutions are not cached.
 
 ## Stream-only mode (advanced)
 
@@ -179,19 +225,28 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_OBSERVER_PROVIDER` | Force `openai`, `anthropic`, or a custom provider key (optional). |
 | `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
+| `CODEMEM_OBSERVER_RUNTIME` | Observer runtime mode (`api_http` or `claude_sidecar`). |
+| `CODEMEM_OBSERVER_AUTH_SOURCE` | Observer auth source (`auto`, `env`, `file`, `command`, `none`). |
+| `CODEMEM_OBSERVER_AUTH_FILE` | Path to token file used when auth source is `file`. |
+| `CODEMEM_OBSERVER_AUTH_COMMAND` | Command argv as a JSON string array used when auth source is `command`. |
+| `CODEMEM_OBSERVER_AUTH_TIMEOUT_MS` | Command auth timeout in milliseconds (default `1500`). |
+| `CODEMEM_OBSERVER_AUTH_CACHE_TTL_S` | Cache TTL for command/file auth resolution in seconds (default `300`). |
+| `CODEMEM_OBSERVER_HEADERS` | JSON object of templated observer headers, e.g. `{"Authorization":"Bearer ${auth.token}"}`. |
 | `CODEMEM_OBSERVER_MAX_CHARS` | Max observer prompt characters (default `12000`). |
 | `CODEMEM_RAW_EVENTS_BACKOFF_MS` | Backoff window after stream failure before retrying stream POSTs (default `10000`). |
 | `CODEMEM_RAW_EVENTS_STATUS_CHECK_MS` | Minimum interval between stream availability preflight checks (default `30000`). |
 | `CODEMEM_RAW_EVENTS_HARD_MAX` | Hard upper bound for in-memory plugin queue under sustained failure pressure (default `2000`). |
 | `CODEMEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flush of streamed raw events (default off). |
 | `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default off). |
+| `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default on). |
 | `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` | Sweeper tick interval (default `30000`). |
+| `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S` | Config/env interval in seconds used by Settings UI (default `30`; overridden by `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` when set). |
 | `CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS` | Consider session idle if no events since this many ms (default `120000`). |
 | `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
 | `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
-| `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate flush attempts on Claude `Stop`/`SessionEnd` hooks (default on). |
+| `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate hook flush attempts (default on). |
+| `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP` | Set to `1` to flush on Claude `Stop` hooks in addition to `SessionEnd` (default off). |
 | `CODEMEM_HOOK_ALLOW_UVX` | Set to `1` to allow Claude hook script fallback to `uvx --from codemem` when `codemem` binary is not found (default off). |
 
 ## Compatibility guidance behavior

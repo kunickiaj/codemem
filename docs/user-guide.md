@@ -13,10 +13,54 @@
 
 ## Settings modal
 - Open via the Settings button in the header.
-- Writes `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
+- Writes observer runtime/auth settings (`observer_runtime`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, `observer_headers`) plus `observer_provider`, `observer_model`, `observer_max_chars`, `pack_observation_limit`, and `pack_session_limit`.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 - Config file supports JSON and JSONC (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`).
+
+## Observer auth configuration
+
+- Runtime choices are `api_http` and `claude_sidecar`.
+- `claude_sidecar` runs observer calls through the local Claude runtime (subscription/session auth) and does not require `ANTHROPIC_API_KEY`.
+- Default model selection:
+  - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
+  - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- If a configured `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
+- Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
+- `observer_auth_command` is argv and must be a JSON string array, not a space-separated string.
+  - Config file form: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
+  - Env var form (`CODEMEM_OBSERVER_AUTH_COMMAND`): `'["iap-auth","--audience","example"]'`
+- Header templates can use `${auth.token}`, `${auth.type}`, and `${auth.source}`.
+- Settings are grouped into `Observer`, `Queue`, and `Sync` sections to reduce modal clutter.
+- Queue settings include `raw_events_sweeper_interval_s` (seconds), which controls background pending-event drain cadence.
+
+Example command-token gateway config:
+
+```json
+{
+  "observer_provider": "your-gateway-provider",
+  "observer_runtime": "api_http",
+  "observer_auth_source": "command",
+  "observer_auth_command": ["iap-auth", "--audience", "example"],
+  "observer_auth_timeout_ms": 1500,
+  "observer_auth_cache_ttl_s": 300,
+  "observer_headers": {
+    "Authorization": "Bearer ${auth.token}",
+    "X-Auth-Source": "${auth.source}"
+  }
+}
+```
+
+Header template variables:
+
+- `${auth.token}`
+- `${auth.type}`
+- `${auth.source}`
+
+Command/file token caching notes:
+
+- Successful `file`/`command` token resolutions are cached for `observer_auth_cache_ttl_s`.
+- Failed `file`/`command` resolutions are not cached (codemem clears stale cache and retries on the next call).
 
 ## Memory persistence
 - A session is created per ingest payload.
