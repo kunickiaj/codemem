@@ -323,3 +323,59 @@ def test_map_stop_hook_includes_usage_from_hook_payload() -> None:
     assert event["event_type"] == "assistant"
     assert event["payload"]["usage"]["input_tokens"] == 10
     assert event["payload"]["usage"]["output_tokens"] == 4
+
+
+def test_map_stop_hook_transcript_usage_is_tied_to_latest_assistant_text(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            [
+                '{"message":{"role":"assistant","content":"first reply"},"usage":{"input_tokens":30,"output_tokens":8,"cache_creation_input_tokens":2,"cache_read_input_tokens":1}}',
+                '{"message":{"role":"assistant","content":"latest reply"}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    event = map_claude_hook_payload(
+        {
+            "hook_event_name": "Stop",
+            "session_id": "sess-stop-transcript",
+            "last_assistant_message": "",
+            "transcript_path": str(transcript_path),
+            "ts": "2026-03-04T01:00:00Z",
+        }
+    )
+
+    assert event is not None
+    assert event["payload"]["text"] == "latest reply"
+    assert "usage" not in event["payload"]
+
+
+def test_map_stop_hook_event_id_stable_across_transcript_content_changes(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"first reply"}}\n',
+        encoding="utf-8",
+    )
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop-stable",
+        "last_assistant_message": "",
+        "transcript_path": str(transcript_path),
+        "ts": "2026-03-04T01:00:00Z",
+    }
+
+    first = map_claude_hook_payload(payload)
+
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"second reply"},"usage":{"input_tokens":7,"output_tokens":3,"cache_creation_input_tokens":1,"cache_read_input_tokens":0}}\n',
+        encoding="utf-8",
+    )
+    second = map_claude_hook_payload(payload)
+
+    assert first is not None
+    assert second is not None
+    assert first["payload"]["text"] != second["payload"]["text"]
+    assert first["event_id"] == second["event_id"]

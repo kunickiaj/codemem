@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from typing import Any
 
 from codemem.viewer_routes import raw_events
@@ -339,7 +340,7 @@ def test_handle_post_claude_hooks_enqueues_mapped_event() -> None:
     assert flusher.noted == ["sess-cld-1"]
 
 
-def test_handle_post_claude_hooks_skips_unmappable_payload() -> None:
+def test_handle_post_claude_hooks_skips_unmappable_payload(caplog) -> None:
     payload = {
         "hook_event_name": "NotMapped",
         "session_id": "sess-cld-2",
@@ -349,20 +350,22 @@ def test_handle_post_claude_hooks_skips_unmappable_payload() -> None:
     flusher = DummyFlusher()
     store = DummyStore()
 
-    handled = raw_events.handle_post(
-        handler,
-        path="/api/claude-hooks",
-        store_factory=lambda _db_path: store,
-        default_db_path="/tmp/mem.sqlite",
-        flusher=flusher,
-        strip_private_obj=lambda value: value,
-    )
+    with caplog.at_level(logging.INFO, logger="codemem.viewer_routes.raw_events"):
+        handled = raw_events.handle_post(
+            handler,
+            path="/api/claude-hooks",
+            store_factory=lambda _db_path: store,
+            default_db_path="/tmp/mem.sqlite",
+            flusher=flusher,
+            strip_private_obj=lambda value: value,
+        )
 
     assert handled is True
     assert handler.status == 200
     assert handler.response == {"inserted": 0, "skipped": 1}
     assert store.recorded_events == []
     assert flusher.noted == []
+    assert "claude hook payload skipped at /api/claude-hooks" in caplog.text
 
 
 def test_handle_post_claude_hooks_store_error_returns_500() -> None:

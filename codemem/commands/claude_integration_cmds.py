@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from typing import Any
@@ -14,6 +15,7 @@ from codemem.store import MemoryStore
 ALLOWED_HOOK_EVENTS = frozenset(
     hook_event for hook_event in MAPPABLE_CLAUDE_HOOK_EVENTS if hook_event != "PreToolUse"
 )
+logger = logging.getLogger(__name__)
 
 
 def _env_truthy(name: str, default: bool) -> bool:
@@ -54,6 +56,13 @@ def _strip_private_obj(value: Any) -> Any:
 def _queue_adapter_event(hook_payload: dict[str, Any], *, store: Any) -> tuple[str, bool] | None:
     envelope = build_raw_event_envelope_from_hook(hook_payload)
     if envelope is None:
+        logger.info(
+            "claude hook payload skipped before enqueue",
+            extra={
+                "hook_event_name": str(hook_payload.get("hook_event_name") or ""),
+                "session_id": str(hook_payload.get("session_id") or ""),
+            },
+        )
         return None
 
     stream_id = _adapter_stream_id(session_id=str(envelope["opencode_session_id"]))
@@ -95,6 +104,10 @@ def ingest_claude_hook_payload(
 ) -> None:
     hook_event_name = str(hook_payload.get("hook_event_name") or "").strip()
     if hook_event_name not in ALLOWED_HOOK_EVENTS:
+        logger.info(
+            "claude hook payload ignored: unsupported event",
+            extra={"hook_event_name": hook_event_name},
+        )
         return
     should_flush = _should_flush(hook_event_name, default_flush=flush_default)
     db_path = os.environ.get("CODEMEM_DB") or DEFAULT_DB_PATH
