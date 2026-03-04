@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 MAPPABLE_CLAUDE_HOOK_EVENTS = {
@@ -52,6 +54,73 @@ def _coerce_session_id(payload: dict[str, Any]) -> str | None:
         return None
     value = raw.strip()
     return value or None
+
+
+def _normalize_project_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if "/" in cleaned or "\\" in cleaned:
+        looks_windows = "\\" in cleaned or (
+            len(cleaned) >= 2 and cleaned[1] == ":" and cleaned[0].isalpha()
+        )
+        if looks_windows:
+            return PureWindowsPath(cleaned).name or None
+        return Path(cleaned).name or None
+    return cleaned
+
+
+def _infer_project_from_cwd(cwd: str | None) -> str | None:
+    if not isinstance(cwd, str):
+        return None
+    text = cwd.strip()
+    if not text:
+        return None
+    try:
+        path = Path(text).expanduser()
+    except Exception:
+        return None
+    try:
+        if not path.is_dir():
+            return None
+    except OSError:
+        return None
+
+    current = path
+    while True:
+        git_marker = current / ".git"
+        try:
+            if git_marker.exists():
+                return _normalize_project_label(current.name)
+        except OSError:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    return _normalize_project_label(path.name)
+
+
+def _resolve_hook_project(*, cwd: str | None, payload_project: Any) -> str | None:
+    env_project = _normalize_project_label(os.environ.get("CODEMEM_PROJECT"))
+    if env_project:
+        return env_project
+
+    payload_label = _normalize_project_label(payload_project)
+    cwd_label = _infer_project_from_cwd(cwd)
+
+    if cwd_label:
+        if payload_label and payload_label == cwd_label:
+            return payload_label
+        return cwd_label
+
+    if payload_label:
+        return payload_label
+
+    return None
 
 
 def _iso_to_wall_ms(value: str) -> int:
@@ -235,7 +304,7 @@ def build_raw_event_envelope_from_hook(hook_payload: dict[str, Any]) -> dict[str
     source = str(adapter_event.get("source") or "claude")
     hook_event_name = str(hook_payload.get("hook_event_name") or "")
     cwd = hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None
-    project = hook_payload.get("project") if isinstance(hook_payload.get("project"), str) else None
+    project = _resolve_hook_project(cwd=cwd, payload_project=hook_payload.get("project"))
 
     return {
         "opencode_session_id": session_id,
