@@ -490,7 +490,14 @@ def test_handle_get_raw_events_status_returns_items_and_totals() -> None:
     assert handled is True
     assert handler.status == 200
     assert handler.response == {
-        "items": [{"opencode_session_id": "sess", "pending": 7}],
+        "items": [
+            {
+                "opencode_session_id": "sess",
+                "session_stream_id": "sess",
+                "session_id": "sess",
+                "pending": 7,
+            }
+        ],
         "totals": {"sessions": 1, "pending": 7},
         "ingest": {
             "available": True,

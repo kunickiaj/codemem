@@ -138,6 +138,8 @@ describe("opencode adapter event mapping", () => {
     });
 
     expect(envelope.event_id).toBe("generated-id");
+    expect(envelope.session_stream_id).toBe("sess-5");
+    expect(envelope.session_id).toBe("sess-5");
     expect(envelope.opencode_session_id).toBe("sess-5");
     expect(envelope.event_type).toBe("assistant_message");
   });

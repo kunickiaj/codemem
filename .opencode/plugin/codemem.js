@@ -265,6 +265,8 @@ const buildRawEventEnvelope = ({
   nowMono,
   nextEventId,
 }) => ({
+  session_stream_id: sessionID,
+  session_id: sessionID,
   opencode_session_id: sessionID,
   event_id: selectRawEventId({ payload, nextEventId }),
   event_type: type,
