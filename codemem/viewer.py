@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import viewer_assets, viewer_raw_events
-from .config import load_config  # noqa: F401
+from .config import load_config
 from .db import DEFAULT_DB_PATH
 from .ingest_sanitize import _strip_private_obj
 from .observer import _load_opencode_config
@@ -43,6 +43,9 @@ def _load_provider_options() -> list[str]:
     providers: list[str] = []
     if isinstance(provider_config, dict):
         providers = [key for key in provider_config if isinstance(key, str) and key]
+    codemem_provider = (load_config().observer_provider or "").strip().lower()
+    if codemem_provider:
+        providers.append(codemem_provider)
     if not providers:
         return list(DEFAULT_PROVIDER_OPTIONS)
     combined = sorted(set(providers) | set(DEFAULT_PROVIDER_OPTIONS))

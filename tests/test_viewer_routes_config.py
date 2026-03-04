@@ -200,6 +200,53 @@ def test_config_route_rejects_invalid_observer_headers(
     assert handler.response == {"error": "observer_headers must be object of string values"}
 
 
+def test_config_route_accepts_custom_provider_with_observer_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler(
+        {
+            "observer_provider": "gateway",
+            "observer_base_url": "https://gateway.example/v1",
+        }
+    )
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    saved = read_config_file(config_path)
+    assert saved["observer_provider"] == "gateway"
+    assert saved["observer_base_url"] == "https://gateway.example/v1"
+
+
+def test_config_route_rejects_unknown_provider_without_observer_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler({"observer_provider": "gateway"})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "observer_provider must match a configured provider"}
+
+
 def test_config_route_rejects_invalid_raw_events_sweeper_interval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

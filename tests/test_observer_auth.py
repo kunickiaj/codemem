@@ -367,6 +367,32 @@ def test_custom_provider_none_auth_source_does_not_use_api_key() -> None:
     assert client.auth.source == "none"
 
 
+def test_custom_provider_uses_codemem_base_url_without_opencode_provider_config() -> None:
+    cfg = OpencodeMemConfig(
+        observer_provider="gateway",
+        observer_model="gateway/gateway-model",
+        observer_base_url="https://gateway.example/v1",
+        observer_api_key="cfg-key",
+    )
+    openai_module = SimpleNamespace(OpenAI=OpenAIStub)
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer._list_custom_providers", return_value=set()),
+        patch("codemem.observer._get_opencode_provider_config", return_value={}),
+        patch("codemem.observer._get_provider_api_key", return_value=None),
+        patch.dict(sys.modules, {"openai": openai_module}),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+
+    assert isinstance(client.client, OpenAIStub)
+    assert client.client.kwargs["base_url"] == "https://gateway.example/v1"
+    assert client.model == "gateway-model"
+    assert client.auth.token == "cfg-key"
+
+
 def test_observer_retries_auth_resolution_when_client_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

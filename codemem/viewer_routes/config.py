@@ -129,6 +129,7 @@ def handle_post(
         "claude_command",
         "observer_provider",
         "observer_model",
+        "observer_base_url",
         "observer_runtime",
         "observer_auth_source",
         "observer_auth_file",
@@ -167,13 +168,29 @@ def handle_post(
                 handler._send_json({"error": "observer_provider must be string"}, status=400)
                 return True
             provider = value.strip().lower()
-            if provider not in allowed_providers:
+            base_url_override = updates.get("observer_base_url")
+            provided_base_url = isinstance(base_url_override, str) and bool(
+                base_url_override.strip()
+            )
+            saved_base_url = config_data.get("observer_base_url")
+            has_saved_base_url = isinstance(saved_base_url, str) and bool(saved_base_url.strip())
+            if provider not in allowed_providers and not (provided_base_url or has_saved_base_url):
                 handler._send_json(
                     {"error": "observer_provider must match a configured provider"},
                     status=400,
                 )
                 return True
             config_data[key] = provider
+            continue
+        if key == "observer_base_url":
+            if not isinstance(value, str):
+                handler._send_json({"error": "observer_base_url must be string"}, status=400)
+                return True
+            base_url = value.strip()
+            if not base_url:
+                config_data.pop(key, None)
+                continue
+            config_data[key] = base_url
             continue
         if key == "claude_command":
             argv = _as_executable_argv(value)
