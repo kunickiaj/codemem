@@ -124,6 +124,7 @@ Common overrides:
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 
 The viewer includes a grouped Settings modal (`Observer`, `Queue`, `Sync`) for observer controls, queue cadence, and sync defaults.
+- Settings show effective values (configured or default) and only persist changed fields on save.
 
 Observer runtime/auth in `0.16`:
 
