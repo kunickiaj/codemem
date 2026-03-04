@@ -19,6 +19,16 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 
 **Prerequisites:** Python 3.11+ and [uv](https://docs.astral.sh/uv/)
 
+If `uv` is not installed yet:
+
+```bash
+# Homebrew
+brew install uv
+
+# mise
+mise use -g uv@latest
+```
+
 1. Install the CLI and plugin:
 
 ```bash
@@ -51,6 +61,18 @@ In [Claude Code](https://claude.ai/code), add the codemem marketplace source and
 /plugin marketplace add kunickiaj/codemem
 /plugin install codemem
 ```
+
+The Claude plugin starts MCP with:
+
+- `uvx codemem mcp`
+
+We still recommend installing/upgrading the CLI for local hook ingestion and manual `codemem` commands:
+
+```bash
+uv tool install --upgrade codemem
+```
+
+Claude MCP launch uses `uvx`; first startup may be slower because `uvx` can fetch/install tooling on demand.
 
 Claude hook events are ingested through `codemem ingest-claude-hook` and share the same raw-event queue pipeline used by OpenCode.
 

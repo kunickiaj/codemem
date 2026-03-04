@@ -9,8 +9,9 @@
   "license": "MIT",
   "mcpServers": {
     "codemem": {
-      "command": "codemem",
+      "command": "uvx",
       "args": [
+        "codemem",
         "mcp"
       ]
     }
