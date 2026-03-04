@@ -48,7 +48,7 @@ Claude MCP launch uses `uvx`; startup can be slower on first run because it may 
 
 Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks` to the local codemem server) with a version-pinned CLI fallback when the server path is unavailable:
 
-- `uvx codemem==<plugin-version> ingest-claude-hook`
+- `uvx codemem==<plugin-version> claude-hook-ingest`
 
 You can update an existing marketplace install with:
 
@@ -59,10 +59,16 @@ You can update an existing marketplace install with:
 Ingest one Claude hook payload from stdin (this is what the installed hook script calls):
 
 ```bash
-printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem ingest-claude-hook
+printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem claude-hook-ingest
 ```
 
-By default, Claude hooks are enqueue-only on the HTTP path. In CLI fallback mode (`codemem ingest-claude-hook` / `uvx`), `SessionEnd` flush is enabled by default to preserve progress when no viewer sweeper is available. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only in fallback mode as well, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop`.
+`inject-context-hook.sh` is also a thin wrapper and delegates prompt-time context output to:
+
+- `codemem claude-hook-inject`
+
+To avoid prompt-time latency spikes, `inject-context-hook.sh` does not use `uvx` by default. You can opt in with `CODEMEM_INJECT_ALLOW_UVX=1`.
+
+By default, Claude hooks are enqueue-only on the HTTP path. In CLI fallback mode (`codemem claude-hook-ingest` / `uvx`), `SessionEnd` flush is enabled by default to preserve progress when no viewer sweeper is available. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only in fallback mode as well, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop`.
 
 The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
@@ -71,6 +77,16 @@ The packaged template currently registers these hook events in `plugins/claude/h
 - `PostToolUseFailure`
 - `Stop`
 - `SessionEnd`
+
+`UserPromptSubmit` runs `scripts/user-prompt-hook.sh`, which:
+- sends the hook payload into capture ingest (`ingest-hook.sh`) in the background, and
+- returns `hookSpecificOutput.additionalContext` from `/api/pack` for prompt-time memory injection.
+
+For Claude hooks, project resolution precedence is:
+
+1. `CODEMEM_PROJECT` (if set)
+2. repo/cwd-derived project name (`resolve_project(cwd)`)
+3. payload `project` fallback (only when cwd is unavailable)
 
 `PreToolUse` is intentionally deferred in the default template. Current memory extraction uses `PostToolUse` / `PostToolUseFailure` (`tool_result`) as the shipped Claude tool signal.
 
@@ -243,6 +259,10 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CLAUDE_HOOK_LOCK_TTL_S` | Reclaim stale Claude hook fallback lock after this many seconds (default `300`). |
 | `CODEMEM_CLAUDE_HOOK_LOCK_GRACE_S` | Grace period before treating lock metadata gaps as stale (default `2`). |
 | `CODEMEM_CLAUDE_HOOK_SPOOL_DIR` | Claude hook durable spool directory for all-fail fallback payloads (default `~/.codemem/claude-hook-spool`). |
+| `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
+| `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
+| `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude `additionalContext` (default `16000`). |
+| `CODEMEM_INJECT_ALLOW_UVX` | Set to `1` to allow `uvx` fallback for `claude-hook-inject` (default `0`, disabled for prompt latency). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Backend update behavior on compatibility mismatch: `notify` (default), `auto`, or `off`. |
