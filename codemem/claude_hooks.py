@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from typing import Any
+
+from .utils import resolve_project
 
 MAPPABLE_CLAUDE_HOOK_EVENTS = {
     "SessionStart",
@@ -52,6 +55,35 @@ def _coerce_session_id(payload: dict[str, Any]) -> str | None:
         return None
     value = raw.strip()
     return value or None
+
+
+def _normalize_project_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _resolve_hook_project(*, cwd: str | None, payload_project: Any) -> str | None:
+    env_project = _normalize_project_label(os.environ.get("CODEMEM_PROJECT"))
+    if env_project:
+        return env_project
+
+    payload_label = _normalize_project_label(payload_project)
+    cwd_label: str | None = None
+
+    if isinstance(cwd, str) and cwd.strip():
+        cwd_label = _normalize_project_label(resolve_project(cwd))
+
+    if cwd_label:
+        if payload_label and payload_label == cwd_label:
+            return payload_label
+        return cwd_label
+
+    if payload_label:
+        return payload_label
+
+    return None
 
 
 def _iso_to_wall_ms(value: str) -> int:
@@ -235,7 +267,7 @@ def build_raw_event_envelope_from_hook(hook_payload: dict[str, Any]) -> dict[str
     source = str(adapter_event.get("source") or "claude")
     hook_event_name = str(hook_payload.get("hook_event_name") or "")
     cwd = hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None
-    project = hook_payload.get("project") if isinstance(hook_payload.get("project"), str) else None
+    project = _resolve_hook_project(cwd=cwd, payload_project=hook_payload.get("project"))
 
     return {
         "opencode_session_id": session_id,
