@@ -4,9 +4,8 @@ import hashlib
 import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path, PureWindowsPath
 from typing import Any
-
-from .utils import resolve_project
 
 MAPPABLE_CLAUDE_HOOK_EVENTS = {
     "SessionStart",
@@ -61,7 +60,48 @@ def _normalize_project_label(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     cleaned = value.strip()
-    return cleaned or None
+    if not cleaned:
+        return None
+    if "/" in cleaned or "\\" in cleaned:
+        looks_windows = "\\" in cleaned or (
+            len(cleaned) >= 2 and cleaned[1] == ":" and cleaned[0].isalpha()
+        )
+        if looks_windows:
+            return PureWindowsPath(cleaned).name or None
+        return Path(cleaned).name or None
+    return cleaned
+
+
+def _infer_project_from_cwd(cwd: str | None) -> str | None:
+    if not isinstance(cwd, str):
+        return None
+    text = cwd.strip()
+    if not text:
+        return None
+    try:
+        path = Path(text).expanduser()
+    except Exception:
+        return None
+    try:
+        if not path.is_dir():
+            return None
+    except OSError:
+        return None
+
+    current = path
+    while True:
+        git_marker = current / ".git"
+        try:
+            if git_marker.exists():
+                return _normalize_project_label(current.name)
+        except OSError:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    return _normalize_project_label(path.name)
 
 
 def _resolve_hook_project(*, cwd: str | None, payload_project: Any) -> str | None:
@@ -70,10 +110,7 @@ def _resolve_hook_project(*, cwd: str | None, payload_project: Any) -> str | Non
         return env_project
 
     payload_label = _normalize_project_label(payload_project)
-    cwd_label: str | None = None
-
-    if isinstance(cwd, str) and cwd.strip():
-        cwd_label = _normalize_project_label(resolve_project(cwd))
+    cwd_label = _infer_project_from_cwd(cwd)
 
     if cwd_label:
         if payload_label and payload_label == cwd_label:
