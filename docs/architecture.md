@@ -63,7 +63,7 @@ Rollout sequencing:
 1. Stabilize adapter schema + queue/flush reliability.
 2. Reach OpenCode parity on ingest + retrieval quality.
 3. Ship Claude MVP, then close parity gaps (injection/capture/lifecycle).
-4. Promote Claude to Supported once reliability and review gates are stable.
+4. Keep Claude in Supported tier by enforcing reliability and review gates.
 5. Add additional adapters (Codex/Windsurf/Cursor) behind the same contract.
 
 Explicit non-goals:
