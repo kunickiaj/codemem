@@ -247,6 +247,39 @@ def test_config_route_rejects_unknown_provider_without_observer_base_url(
     assert handler.response == {"error": "observer_provider must match a configured provider"}
 
 
+def test_config_route_rejects_unknown_provider_when_base_url_cleared_in_same_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "observer_provider": "gateway",
+                "observer_base_url": "https://gateway.example/v1",
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler(
+        {
+            "observer_provider": "another-gateway",
+            "observer_base_url": "",
+        }
+    )
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "observer_provider must match a configured provider"}
+
+
 def test_config_route_rejects_invalid_raw_events_sweeper_interval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
