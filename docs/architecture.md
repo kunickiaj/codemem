@@ -242,7 +242,7 @@ The OpenCode adapter streams each captured event to the viewer API (`captureEven
 
 When stream delivery is unavailable, the adapter can enqueue raw events through the CLI fallback path (`enqueue-raw-event`) so events still enter durable queue processing.
 
-Claude hook ingestion writes directly to raw-event queue storage and flushes on configured lifecycle boundaries.
+Claude hook ingestion is enqueue-first (`POST /api/claude-hooks`) with CLI fallback and does not flush by default.
 
 ### OpenCode session finalization triggers
 - `session.idle` — finalizes current local buffer
@@ -260,8 +260,8 @@ Claude hook ingestion writes directly to raw-event queue storage and flushes on 
 - Once events are accepted by the viewer/store queue, flush workers handle retries
 
 ### Claude hook flush boundaries
-- `Stop` and `SessionEnd` trigger immediate flush attempts by default
-- `CODEMEM_CLAUDE_HOOK_FLUSH=0` disables immediate boundary flush attempts
+- `CODEMEM_CLAUDE_HOOK_FLUSH=1` enables immediate `SessionEnd` boundary flush attempts
+- `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` extends immediate flush to `Stop` when boundary flush is enabled
 
 ## Design tradeoffs
 

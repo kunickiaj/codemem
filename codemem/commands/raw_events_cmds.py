@@ -177,6 +177,83 @@ def raw_events_status_cmd(store: MemoryStore, *, limit: int) -> None:
         )
 
 
+def claude_integration_status_cmd(
+    store: MemoryStore,
+    *,
+    limit: int,
+    observer_runtime: str,
+    claude_command: list[str],
+    sweeper_interval_s: int,
+) -> None:
+    claude_items = store.raw_event_backlog(limit=limit, source="claude")
+
+    pending_events = 0
+    running_streams = 0
+    errored_streams = 0
+    queue_claimed = 0
+    queue_failed = 0
+    stream_summaries: list[dict[str, Any]] = []
+
+    for item in claude_items:
+        stream_id = str(item.get("stream_id") or item.get("opencode_session_id") or "")
+        if not stream_id:
+            continue
+        pending = int(item.get("pending") or 0)
+        pending_events += pending
+        legacy_counts = store.raw_event_batch_status_counts(stream_id, source="claude")
+        queue_counts = store.raw_event_queue_status_counts(stream_id, source="claude")
+        is_running = (
+            int(legacy_counts.get("running", 0) or 0) > 0
+            or int(queue_counts.get("claimed", 0) or 0) > 0
+        )
+        is_error = (
+            int(legacy_counts.get("error", 0) or 0) > 0
+            or int(queue_counts.get("failed", 0) or 0) > 0
+        )
+        if is_running:
+            running_streams += 1
+        if is_error:
+            errored_streams += 1
+        queue_claimed += int(queue_counts.get("claimed", 0) or 0)
+        queue_failed += int(queue_counts.get("failed", 0) or 0)
+        stream_summaries.append(
+            {
+                "stream_id": stream_id,
+                "pending": pending,
+                "batch_running": int(legacy_counts.get("running", 0) or 0),
+                "batch_error": int(legacy_counts.get("error", 0) or 0),
+                "queue_claimed": int(queue_counts.get("claimed", 0) or 0),
+                "queue_failed": int(queue_counts.get("failed", 0) or 0),
+                "project": item.get("project") or "",
+            }
+        )
+
+    top_streams = sorted(stream_summaries, key=lambda entry: int(entry["pending"]), reverse=True)[
+        :5
+    ]
+
+    health = "green"
+    if errored_streams > 0 or queue_failed > 0:
+        health = "red"
+    elif pending_events > 0 or running_streams > 0:
+        health = "yellow"
+
+    payload = {
+        "health": health,
+        "observer_runtime": observer_runtime,
+        "claude_command": claude_command,
+        "raw_events_sweeper_interval_s": sweeper_interval_s,
+        "claude_streams": len(claude_items),
+        "pending_events": pending_events,
+        "running_streams": running_streams,
+        "errored_streams": errored_streams,
+        "queue_claimed": queue_claimed,
+        "queue_failed": queue_failed,
+        "top_streams": top_streams,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 def raw_events_retry_cmd(
     store: MemoryStore,
     *,

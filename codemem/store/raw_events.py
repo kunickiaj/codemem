@@ -878,9 +878,13 @@ def purge_raw_events(conn: sqlite3.Connection, max_age_ms: int) -> int:
     return purge_raw_events_before(conn, cutoff)
 
 
-def raw_event_backlog(conn: sqlite3.Connection, *, limit: int = 25) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """
+def raw_event_backlog(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 25,
+    source: str | None = None,
+) -> list[dict[str, Any]]:
+    base_query = """
         WITH max_events AS (
             SELECT source, stream_id, MAX(event_seq) AS max_seq
             FROM raw_events
@@ -902,9 +906,17 @@ def raw_event_backlog(conn: sqlite3.Connection, *, limit: int = 25) -> list[dict
         WHERE e.max_seq > s.last_flushed_event_seq
         ORDER BY s.last_seen_ts_wall_ms DESC
         LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
+    """
+    if source is None:
+        rows = conn.execute(base_query, (limit,)).fetchall()
+    else:
+        rows = conn.execute(
+            base_query.replace(
+                "WHERE e.max_seq > s.last_flushed_event_seq",
+                "WHERE e.max_seq > s.last_flushed_event_seq AND s.source = ?",
+            ),
+            (source, limit),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 

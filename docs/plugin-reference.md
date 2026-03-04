@@ -62,7 +62,7 @@ Ingest one Claude hook payload from stdin (this is what the installed hook scrip
 printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem ingest-claude-hook
 ```
 
-By default, Claude hooks are enqueue-only. Set `CODEMEM_CLAUDE_HOOK_FLUSH=1` to enable immediate flush on `SessionEnd`, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to also flush on `Stop`.
+By default, Claude hooks are enqueue-only on the HTTP path. In CLI fallback mode (`codemem ingest-claude-hook` / `uvx`), `SessionEnd` flush is enabled by default to preserve progress when no viewer sweeper is available. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only in fallback mode as well, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop`.
 
 The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
@@ -82,7 +82,7 @@ After restarting OpenCode or the viewer, run this quick check when behavior look
 2. Check backend stats and recent writes (`codemem stats`, `codemem recent`).
 3. Verify runner mode and source (`CODEMEM_RUNNER`, `CODEMEM_RUNNER_FROM`) match your install strategy.
 4. Confirm injection controls are what you expect (`CODEMEM_INJECT_CONTEXT`, `CODEMEM_INJECT_LIMIT`, `CODEMEM_INJECT_TOKEN_BUDGET`).
-5. If stream mode is enabled, check backlog health (`codemem raw-events-status`).
+5. If stream mode is enabled, check backlog health (`codemem raw-events-status`) and Claude-specific health (`codemem claude-integration-status`).
 
 If needed, restart viewer + plugin flow:
 
@@ -235,10 +235,14 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
 | `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
 | `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
-| `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` to enable; defaults to off). |
+| `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` for `~/.codemem/plugin.log`; Claude hook failures are logged to this path by default). |
 | `CODEMEM_PLUGIN_LOG_PATH` | Explicit log file path for Claude hook script logging (overrides `CODEMEM_PLUGIN_LOG` for that script). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_CONNECT_TIMEOUT_S` | Claude hook HTTP enqueue connect timeout in seconds (default `1`). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_MAX_TIME_S` | Claude hook HTTP enqueue total timeout in seconds (default `2`). |
+| `CODEMEM_CLAUDE_HOOK_LOCK_DIR` | Claude hook fallback lock directory path (default `~/.codemem/claude-hook-ingest.lock`). |
+| `CODEMEM_CLAUDE_HOOK_LOCK_TTL_S` | Reclaim stale Claude hook fallback lock after this many seconds (default `300`). |
+| `CODEMEM_CLAUDE_HOOK_LOCK_GRACE_S` | Grace period before treating lock metadata gaps as stale (default `2`). |
+| `CODEMEM_CLAUDE_HOOK_SPOOL_DIR` | Claude hook durable spool directory for all-fail fallback payloads (default `~/.codemem/claude-hook-spool`). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Backend update behavior on compatibility mismatch: `notify` (default), `auto`, or `off`. |
