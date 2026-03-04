@@ -13,6 +13,24 @@ CodeMem uses one shared semantic version stream across npm and PyPI artifacts.
 - npm and PyPI artifacts should publish the same `X.Y.Z`.
 - Changelog/release notes are shared per version.
 
+## Release helper
+
+Use the helper script to keep versioned files aligned:
+
+```bash
+uv run python scripts/release_version.py set X.Y.Z
+uv run python scripts/release_version.py check
+```
+
+The script updates/checks:
+
+- `pyproject.toml` (`[project].version`)
+- `codemem/__init__.py` (`__version__`)
+- `package.json` (`version`)
+- `.opencode/plugin/codemem.js` (`PINNED_BACKEND_VERSION`)
+- `plugins/claude/.claude-plugin/plugin.json` (`version` and `codemem==X.Y.Z` MCP arg)
+- `.claude-plugin/marketplace.json` (`metadata.version` and `plugins[*].version` for `codemem`)
+
 ## Compatibility check
 
 The OpenCode plugin performs a runtime CLI version check and warns if the local CLI is below

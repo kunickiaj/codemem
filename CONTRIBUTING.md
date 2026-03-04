@@ -45,8 +45,7 @@ Before tagging:
 
 1. Ensure CI is green on `main`
 2. Bump version fields:
-   - `pyproject.toml`
-   - `codemem/__init__.py`
+   - Run `uv run python scripts/release_version.py set X.Y.Z`
 3. Regenerate and commit artifacts:
    - `uv sync` (commit `uv.lock`)
    - `viewer_ui/`: `bun install` then `bun run build` (commit updated `codemem/viewer_static/app.js`)
@@ -55,6 +54,12 @@ Before tagging:
 ```bash
 git tag vX.Y.Z
 git push origin vX.Y.Z
+```
+
+Verify release version alignment before tagging:
+
+```bash
+uv run python scripts/release_version.py check
 ```
 
 ## Docs expectations

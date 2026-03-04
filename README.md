@@ -149,7 +149,7 @@ Common overrides:
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 
-The viewer includes a grouped Settings modal (`Observer`, `Queue`, `Sync`) for observer controls, queue cadence, and sync defaults.
+The viewer includes a grouped Settings modal (`Connection`, `Processing`, `Device Sync`) with shell-agnostic labels and an advanced-controls toggle for technical fields.
 - Settings show effective values (configured or default) and only persist changed fields on save.
 
 Observer runtime/auth in `0.16`:
