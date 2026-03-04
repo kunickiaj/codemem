@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -16,6 +17,9 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 
 from codemem.commands.claude_integration_cmds import ingest_claude_hook_payload
+from codemem.config import load_config
+from codemem.db import DEFAULT_DB_PATH
+from codemem.store import MemoryStore
 from codemem.utils import resolve_project
 
 
@@ -39,6 +43,17 @@ def _env_int(name: str, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _env_optional_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed
 
 
 def _env_float(name: str, default: float) -> float:
@@ -87,6 +102,219 @@ def _normalize_project_label(value: Any) -> str | None:
         return None
     text = value.strip()
     return text or None
+
+
+def _normalize_prompt_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().replace("\n", " ")
+
+
+def _path_basename(value: str) -> str:
+    normalized = value.replace("\\", "/").rstrip("/")
+    if not normalized:
+        return ""
+    return normalized.split("/")[-1]
+
+
+def _extract_session_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("session_id")
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _context_dir() -> Path:
+    return Path(
+        os.getenv("CODEMEM_CLAUDE_HOOK_CONTEXT_DIR", "~/.codemem/claude-hook-context")
+    ).expanduser()
+
+
+def _state_path_for_session(session_id: str) -> Path:
+    digest = hashlib.sha1(session_id.encode("utf-8")).hexdigest()[:16]
+    return _context_dir() / f"{digest}.json"
+
+
+def _default_session_state() -> dict[str, Any]:
+    return {
+        "first_prompt": "",
+        "last_prompt": "",
+        "files_modified": [],
+        "updated_at": "",
+    }
+
+
+def _load_session_state(session_id: str) -> dict[str, Any]:
+    path = _state_path_for_session(session_id)
+    if not path.exists():
+        return _default_session_state()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _default_session_state()
+    if not isinstance(payload, dict):
+        return _default_session_state()
+    state = _default_session_state()
+    first_prompt = payload.get("first_prompt")
+    if isinstance(first_prompt, str):
+        state["first_prompt"] = first_prompt.strip()
+    last_prompt = payload.get("last_prompt")
+    if isinstance(last_prompt, str):
+        state["last_prompt"] = last_prompt.strip()
+    updated_at = payload.get("updated_at")
+    if isinstance(updated_at, str):
+        state["updated_at"] = updated_at.strip()
+    files_modified = payload.get("files_modified")
+    if isinstance(files_modified, list):
+        state["files_modified"] = [
+            item.strip() for item in files_modified if isinstance(item, str) and item.strip()
+        ][:64]
+    return state
+
+
+def _save_session_state(session_id: str, state: dict[str, Any]) -> None:
+    directory = _context_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = _state_path_for_session(session_id)
+    payload = {
+        "first_prompt": str(state.get("first_prompt") or ""),
+        "last_prompt": str(state.get("last_prompt") or ""),
+        "files_modified": [
+            str(item).strip()
+            for item in (state.get("files_modified") or [])
+            if isinstance(item, str) and item.strip()
+        ][:64],
+        "updated_at": str(state.get("updated_at") or ""),
+    }
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _clear_session_state(session_id: str) -> None:
+    with suppress(OSError):
+        _state_path_for_session(session_id).unlink()
+
+
+def _extract_apply_patch_paths(patch_text: str) -> list[str]:
+    paths: list[str] = []
+    for line in patch_text.splitlines():
+        for prefix in ("*** Add File: ", "*** Update File: ", "*** Delete File: "):
+            if line.startswith(prefix):
+                path = line[len(prefix) :].strip()
+                if path:
+                    paths.append(path)
+    return paths
+
+
+def _extract_modified_paths_from_hook(payload: dict[str, Any]) -> list[str]:
+    tool_name = str(payload.get("tool_name") or "").strip().lower()
+    mutating_tools = {
+        "edit",
+        "write",
+        "multiedit",
+        "notebookedit",
+        "apply_patch",
+    }
+    if tool_name not in mutating_tools:
+        return []
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return []
+    paths: list[str] = []
+    for key in ("filePath", "file_path", "path"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            paths.append(value.strip())
+    if tool_name == "apply_patch":
+        patch_text = tool_input.get("patchText") or tool_input.get("patch")
+        if isinstance(patch_text, str) and patch_text.strip():
+            paths.extend(_extract_apply_patch_paths(patch_text))
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        ordered.append(path)
+    return ordered
+
+
+def _track_hook_session_state(payload: dict[str, Any]) -> dict[str, Any] | None:
+    session_id = _extract_session_id(payload)
+    if not session_id:
+        return None
+
+    hook_event_name = str(payload.get("hook_event_name") or "").strip()
+    if hook_event_name == "SessionEnd":
+        _clear_session_state(session_id)
+        return None
+
+    state = _load_session_state(session_id)
+    changed = False
+
+    if hook_event_name == "UserPromptSubmit":
+        prompt = _normalize_prompt_text(payload.get("prompt"))
+        if prompt:
+            if not state.get("first_prompt"):
+                state["first_prompt"] = prompt
+                changed = True
+            if state.get("last_prompt") != prompt:
+                state["last_prompt"] = prompt
+                changed = True
+    elif hook_event_name in {"PostToolUse", "PostToolUseFailure"}:
+        existing = [
+            item
+            for item in (state.get("files_modified") or [])
+            if isinstance(item, str) and item.strip()
+        ]
+        existing_set = set(existing)
+        for path in _extract_modified_paths_from_hook(payload):
+            if path in existing_set:
+                continue
+            existing.append(path)
+            existing_set.add(path)
+            changed = True
+        state["files_modified"] = existing[-64:]
+
+    if changed:
+        state["updated_at"] = _now_iso()
+        try:
+            _save_session_state(session_id, state)
+        except OSError as exc:  # pragma: no cover
+            _log_line(f"codemem claude-hook-context save failed: {exc}")
+    return state
+
+
+def _build_inject_query(*, prompt: str, project: str | None, state: dict[str, Any] | None) -> str:
+    parts: list[str] = []
+    first_prompt = ""
+    files_modified: list[str] = []
+    if isinstance(state, dict):
+        first_prompt = _normalize_prompt_text(state.get("first_prompt"))
+        files_modified = [
+            item.strip()
+            for item in (state.get("files_modified") or [])
+            if isinstance(item, str) and item.strip()
+        ]
+
+    if first_prompt:
+        parts.append(first_prompt)
+    if prompt and prompt != first_prompt and len(prompt) > 5:
+        parts.append(prompt)
+    if project:
+        parts.append(project)
+    if files_modified:
+        names = [_path_basename(path) for path in files_modified[-5:]]
+        compact = " ".join([name for name in names if name])
+        if compact:
+            parts.append(compact)
+
+    if not parts:
+        return "recent work"
+    query = " ".join(parts)
+    return query[:500] if len(query) > 500 else query
 
 
 def _resolve_project_for_injection(payload: dict[str, Any]) -> str | None:
@@ -172,10 +400,10 @@ def _should_force_boundary_flush(payload: dict[str, Any]) -> bool:
     hook_event_name = str(payload.get("hook_event_name") or "").strip()
     if hook_event_name not in {"Stop", "SessionEnd"}:
         return False
+    if hook_event_name == "SessionEnd":
+        return _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH", True)
     if not _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH", False):
         return False
-    if hook_event_name == "SessionEnd":
-        return True
     return _env_truthy("CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP", False)
 
 
@@ -405,10 +633,12 @@ def claude_hook_ingest_cmd() -> None:
     if _env_truthy("CODEMEM_PLUGIN_IGNORE", False):
         return
 
+    _track_hook_session_state(payload)
+
     _normalize_payload_ts(payload)
     if _http_enqueue(payload):
         if _should_force_boundary_flush(payload):
-            _run_cli_ingest_payload(payload, flush_default=False)
+            _run_cli_ingest_payload(payload, flush_default=True)
         return
 
     try:
@@ -417,7 +647,7 @@ def claude_hook_ingest_cmd() -> None:
             _drain_spool()
             if _http_enqueue(payload):
                 if _should_force_boundary_flush(payload):
-                    _run_cli_ingest_payload(payload, flush_default=False)
+                    _run_cli_ingest_payload(payload, flush_default=True)
                 return
             if _run_cli_ingest_payload(payload, flush_default=True):
                 return
@@ -435,19 +665,63 @@ def claude_hook_ingest_cmd() -> None:
         raise SystemExit(1) from None
 
 
-def _pack_query(prompt: str, project: str | None, limit: int, token_budget: int) -> str:
+def _pack_query(
+    prompt: str,
+    project: str | None,
+    limit: int,
+    token_budget: int | None,
+) -> str:
     params: dict[str, str] = {
         "context": prompt,
         "limit": str(limit),
-        "token_budget": str(token_budget),
     }
+    if isinstance(token_budget, int) and token_budget > 0:
+        params["token_budget"] = str(token_budget)
     if project:
         params["project"] = project
     return urllib.parse.urlencode(params)
 
 
-def _fetch_pack_text(
-    *, prompt: str, project: str | None, limit: int, token_budget: int
+def _build_local_pack_text(
+    *,
+    prompt: str,
+    project: str | None,
+    limit: int | None,
+    token_budget: int | None,
+    working_set_files: list[str] | None,
+) -> str | None:
+    config = load_config()
+    db_path = os.environ.get("CODEMEM_DB") or DEFAULT_DB_PATH
+    store = MemoryStore(db_path)
+    try:
+        filters: dict[str, object] = {"project": project} if project else {}
+        paths = [
+            item.strip()
+            for item in (working_set_files or [])
+            if isinstance(item, str) and item.strip()
+        ]
+        if paths:
+            filters["working_set_paths"] = paths[-8:]
+        pack = store.build_memory_pack(
+            context=prompt,
+            limit=limit if isinstance(limit, int) and limit > 0 else config.pack_observation_limit,
+            token_budget=token_budget
+            if isinstance(token_budget, int) and token_budget > 0
+            else None,
+            filters=filters or None,
+        )
+    finally:
+        store.close()
+    text = str(pack.get("pack_text") or "").strip()
+    return text or None
+
+
+def _fetch_pack_text_http(
+    *,
+    prompt: str,
+    project: str | None,
+    limit: int,
+    token_budget: int | None,
 ) -> str | None:
     viewer_host = os.getenv("CODEMEM_VIEWER_HOST", "127.0.0.1")
     viewer_port = os.getenv("CODEMEM_VIEWER_PORT", "38888")
@@ -476,6 +750,37 @@ def _fetch_pack_text(
     return text or None
 
 
+def _fetch_pack_text(
+    *,
+    prompt: str,
+    project: str | None,
+    limit: int | None,
+    token_budget: int | None,
+    working_set_files: list[str] | None,
+) -> str | None:
+    try:
+        return _build_local_pack_text(
+            prompt=prompt,
+            project=project,
+            limit=limit,
+            token_budget=token_budget,
+            working_set_files=working_set_files,
+        )
+    except Exception as exc:  # pragma: no cover
+        _log_line(f"codemem claude-hook-inject local pack failed: {exc}")
+
+    if not _env_truthy("CODEMEM_INJECT_HTTP_FALLBACK", True):
+        return None
+
+    config = load_config()
+    return _fetch_pack_text_http(
+        prompt=prompt,
+        project=project,
+        limit=limit if isinstance(limit, int) and limit > 0 else config.pack_observation_limit,
+        token_budget=token_budget if isinstance(token_budget, int) and token_budget > 0 else None,
+    )
+
+
 def _truncate_pack_text(text: str, max_chars: int) -> str:
     if max_chars > 0 and len(text) > max_chars:
         return text[:max_chars].rstrip() + "\n\n[pack truncated]"
@@ -494,20 +799,29 @@ def claude_hook_inject_cmd() -> None:
         _print_continue()
         return
 
-    prompt_raw = payload.get("prompt")
-    prompt = prompt_raw.strip().replace("\n", " ") if isinstance(prompt_raw, str) else ""
+    state = _track_hook_session_state(payload)
+
+    prompt = _normalize_prompt_text(payload.get("prompt"))
     if not prompt:
         _print_continue()
         return
 
     project = _resolve_project_for_injection(payload)
-    limit = max(1, _env_int("CODEMEM_INJECT_LIMIT", 8))
-    token_budget = max(1, _env_int("CODEMEM_INJECT_TOKEN_BUDGET", 800))
+    query = _build_inject_query(prompt=prompt, project=project, state=state)
+    raw_files: list[str] = []
+    if isinstance(state, dict):
+        candidate_files = state.get("files_modified")
+        if isinstance(candidate_files, list):
+            raw_files = [item for item in candidate_files if isinstance(item, str)]
+    files_modified = [item.strip() for item in raw_files if item.strip()]
+    limit = _env_optional_int("CODEMEM_INJECT_LIMIT")
+    token_budget = _env_optional_int("CODEMEM_INJECT_TOKEN_BUDGET")
     pack_text = _fetch_pack_text(
-        prompt=prompt,
+        prompt=query,
         project=project,
         limit=limit,
         token_budget=token_budget,
+        working_set_files=files_modified,
     )
     if not pack_text:
         _print_continue()

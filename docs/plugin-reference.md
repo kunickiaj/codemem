@@ -68,7 +68,7 @@ printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/t
 
 To avoid prompt-time latency spikes, `inject-context-hook.sh` does not use `uvx` by default. You can opt in with `CODEMEM_INJECT_ALLOW_UVX=1`.
 
-By default, Claude hooks are enqueue-only on the HTTP path. In CLI fallback mode (`codemem claude-hook-ingest` / `uvx`), `SessionEnd` flush is enabled by default to preserve progress when no viewer sweeper is available. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only in fallback mode as well, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop`.
+By default, `SessionEnd` triggers a boundary flush after enqueue to preserve progress without waiting for sweeper timing. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only behavior, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop` boundary flush.
 
 The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
@@ -80,7 +80,9 @@ The packaged template currently registers these hook events in `plugins/claude/h
 
 `UserPromptSubmit` runs `scripts/user-prompt-hook.sh`, which:
 - sends the hook payload into capture ingest (`ingest-hook.sh`) in the background, and
-- returns `hookSpecificOutput.additionalContext` from `/api/pack` for prompt-time memory injection.
+- returns `hookSpecificOutput.additionalContext` from local CLI/store pack generation for prompt-time memory injection.
+
+`claude-hook-inject` uses local pack generation first and falls back to `/api/pack` only when local pack generation fails and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled.
 
 For Claude hooks, project resolution precedence is:
 
@@ -261,6 +263,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CLAUDE_HOOK_SPOOL_DIR` | Claude hook durable spool directory for all-fail fallback payloads (default `~/.codemem/claude-hook-spool`). |
 | `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
 | `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
+| `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for `claude-hook-inject` (default `1`). |
 | `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude `additionalContext` (default `16000`). |
 | `CODEMEM_INJECT_ALLOW_UVX` | Set to `1` to allow `uvx` fallback for `claude-hook-inject` (default `0`, disabled for prompt latency). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
@@ -299,7 +302,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
 | `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
-| `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `1` to enable immediate hook flush attempts for `SessionEnd` (default off; enqueue-only). |
+| `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate `SessionEnd` boundary flush (default on for `SessionEnd`; `Stop` still requires `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1`). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP` | Set to `1` to flush on Claude `Stop` hooks in addition to `SessionEnd` (default off). |
 
 ## Compatibility guidance behavior

@@ -12,7 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from codemem.commands.claude_hook_runtime_cmds import claude_hook_ingest_cmd, claude_hook_inject_cmd
+from codemem.commands.claude_hook_runtime_cmds import (
+    _build_inject_query,
+    _track_hook_session_state,
+    claude_hook_ingest_cmd,
+    claude_hook_inject_cmd,
+)
 
 
 def test_claude_hook_inject_cmd_returns_continue_when_pack_missing(
@@ -25,6 +30,10 @@ def test_claude_hook_inject_cmd_returns_continue_when_pack_missing(
         "cwd": "/tmp/worktrees/codemem",
     }
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._track_hook_session_state",
+        lambda _payload: {},
+    )
     monkeypatch.setattr(
         "codemem.commands.claude_hook_runtime_cmds._fetch_pack_text",
         lambda **_: None,
@@ -49,15 +58,25 @@ def test_claude_hook_inject_cmd_prefers_cwd_project_and_emits_context(
     captured: dict[str, object] = {}
 
     def _fake_fetch_pack_text(
-        *, prompt: str, project: str | None, limit: int, token_budget: int
+        *,
+        prompt: str,
+        project: str | None,
+        limit: int | None,
+        token_budget: int | None,
+        working_set_files: list[str] | None,
     ) -> str:
         captured["prompt"] = prompt
         captured["project"] = project
         captured["limit"] = limit
         captured["token_budget"] = token_budget
+        captured["working_set_files"] = working_set_files
         return "Remember to run targeted tests."
 
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._track_hook_session_state",
+        lambda _payload: {},
+    )
     monkeypatch.setattr(
         "codemem.commands.claude_hook_runtime_cmds.resolve_project", lambda _: "codemem"
     )
@@ -73,6 +92,193 @@ def test_claude_hook_inject_cmd_prefers_cwd_project_and_emits_context(
     assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     assert "Remember to run targeted tests." in output["hookSpecificOutput"]["additionalContext"]
     assert captured["project"] == "codemem"
+
+
+def test_claude_hook_inject_cmd_prefers_local_pack_before_http_fallback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-local-first",
+        "prompt": "run tests",
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._track_hook_session_state",
+        lambda _payload: {},
+    )
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._build_local_pack_text",
+        lambda **_: "local pack text",
+    )
+
+    def _unexpected_http(**_: object) -> str | None:
+        pytest.fail("HTTP fallback should not run when local pack succeeds")
+
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._fetch_pack_text_http",
+        _unexpected_http,
+    )
+
+    claude_hook_inject_cmd()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["continue"] is True
+    assert "local pack text" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_claude_hook_inject_cmd_uses_http_fallback_when_local_pack_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-http-fallback",
+        "prompt": "run tests",
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._track_hook_session_state",
+        lambda _payload: {},
+    )
+
+    def _raise_local(**_: object) -> str | None:
+        raise RuntimeError("local unavailable")
+
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._build_local_pack_text",
+        _raise_local,
+    )
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._fetch_pack_text_http",
+        lambda **_: "http fallback text",
+    )
+
+    claude_hook_inject_cmd()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["continue"] is True
+    assert "http fallback text" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_claude_hook_inject_cmd_returns_continue_when_local_pack_empty_without_http(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-no-pack",
+        "prompt": "run tests",
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._track_hook_session_state",
+        lambda _payload: {},
+    )
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._build_local_pack_text",
+        lambda **_: None,
+    )
+
+    def _unexpected_http(**_: object) -> str | None:
+        pytest.fail("HTTP fallback should not run when local pack returns empty")
+
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._fetch_pack_text_http",
+        _unexpected_http,
+    )
+
+    claude_hook_inject_cmd()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"continue": True}
+
+
+def test_build_inject_query_matches_opencode_signal_order() -> None:
+    state = {
+        "first_prompt": "build release automation",
+        "files_modified": [
+            "/repo/src/first.py",
+            "/repo/src/second.py",
+        ],
+    }
+
+    query = _build_inject_query(prompt="fix edge case", project="codemem", state=state)
+
+    assert query.startswith("build release automation fix edge case codemem")
+    assert "first.py second.py" in query
+
+
+def test_track_hook_session_state_captures_prompt_and_modified_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEMEM_CLAUDE_HOOK_CONTEXT_DIR", str(tmp_path))
+
+    _track_hook_session_state(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "sess-ctx",
+            "prompt": "ship parity",
+        }
+    )
+    state = _track_hook_session_state(
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": "sess-ctx",
+            "tool_name": "Edit",
+            "tool_input": {"filePath": "/repo/src/feature.py"},
+        }
+    )
+
+    assert state is not None
+    assert state["first_prompt"] == "ship parity"
+    assert state["last_prompt"] == "ship parity"
+    assert "/repo/src/feature.py" in state["files_modified"]
+
+
+def test_track_hook_session_state_ignores_read_only_tool_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEMEM_CLAUDE_HOOK_CONTEXT_DIR", str(tmp_path))
+
+    _track_hook_session_state(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "sess-read",
+            "prompt": "inspect code",
+        }
+    )
+    state = _track_hook_session_state(
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": "sess-read",
+            "tool_name": "Read",
+            "tool_input": {"filePath": "/repo/src/just-read.py"},
+        }
+    )
+
+    assert state is not None
+    assert state["files_modified"] == []
+
+
+def test_track_hook_session_state_clears_on_session_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEMEM_CLAUDE_HOOK_CONTEXT_DIR", str(tmp_path))
+    _track_hook_session_state(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "sess-end",
+            "prompt": "ship parity",
+        }
+    )
+
+    _track_hook_session_state(
+        {
+            "hook_event_name": "SessionEnd",
+            "session_id": "sess-end",
+        }
+    )
+
+    assert list(tmp_path.glob("*.json")) == []
 
 
 def test_claude_hook_ingest_cmd_fallback_uses_flush_default_true(
@@ -122,11 +328,33 @@ def test_claude_hook_ingest_cmd_force_boundary_flush_after_http_success(
         "codemem.commands.claude_hook_runtime_cmds._run_cli_ingest_payload",
         lambda _payload, *, flush_default: calls.append(flush_default) or True,
     )
-    monkeypatch.setenv("CODEMEM_CLAUDE_HOOK_FLUSH", "1")
 
     claude_hook_ingest_cmd()
 
-    assert calls == [False]
+    assert calls == [True]
+
+
+def test_claude_hook_ingest_cmd_allows_disabling_session_end_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "hook_event_name": "SessionEnd",
+        "session_id": "sess-http-no-flush",
+        "cwd": "/tmp/worktrees/codemem",
+    }
+    calls: list[bool] = []
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr("codemem.commands.claude_hook_runtime_cmds._http_enqueue", lambda _: True)
+    monkeypatch.setattr(
+        "codemem.commands.claude_hook_runtime_cmds._run_cli_ingest_payload",
+        lambda _payload, *, flush_default: calls.append(flush_default) or True,
+    )
+    monkeypatch.setenv("CODEMEM_CLAUDE_HOOK_FLUSH", "0")
+
+    claude_hook_ingest_cmd()
+
+    assert calls == []
 
 
 def test_user_prompt_hook_script_does_not_wait_for_ingest(tmp_path: Path) -> None:
