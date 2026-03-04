@@ -174,6 +174,59 @@ def test_handle_post_accepts_payload_within_size_limit(monkeypatch) -> None:
     assert flusher.noted == ["sess-1"]
 
 
+def test_handle_post_accepts_session_stream_id_alias() -> None:
+    payload = {
+        "session_stream_id": "sess-alias",
+        "event_type": "tool.execute.after",
+        "payload": {"tool": "read"},
+        "ts_wall_ms": 123,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    flusher = DummyFlusher()
+    store = DummyStore()
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/raw-events",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert handler.response == {"inserted": 1, "received": 1}
+    assert store.recorded_batches[0][0] == "sess-alias"
+
+
+def test_handle_post_rejects_conflicting_session_id_fields() -> None:
+    payload = {
+        "session_stream_id": "sess-a",
+        "opencode_session_id": "sess-b",
+        "event_type": "tool.execute.after",
+        "payload": {"tool": "read"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    flusher = DummyFlusher()
+    store = DummyStore()
+
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/raw-events",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "conflicting session id fields"}
+
+
 def test_handle_post_accepts_session_lifecycle_event_types() -> None:
     events = [
         {

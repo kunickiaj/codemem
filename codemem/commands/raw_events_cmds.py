@@ -10,6 +10,13 @@ from rich import print
 from codemem.ingest_sanitize import _strip_private_obj
 from codemem.store import MemoryStore
 
+SESSION_ID_KEYS = (
+    "session_stream_id",
+    "session_id",
+    "stream_id",
+    "opencode_session_id",
+)
+
 
 def _coerce_optional_str(payload: dict[str, Any], key: str) -> str | None:
     value = payload.get(key)
@@ -55,6 +62,33 @@ def _coerce_optional_float(payload: dict[str, Any], key: str) -> float | None:
         raise ValueError(f"{key} must be number") from exc
 
 
+def _resolve_session_stream_id(payload: dict[str, Any], *, required: bool) -> str | None:
+    values: dict[str, str] = {}
+    for key in SESSION_ID_KEYS:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be string")
+        text = value.strip()
+        if text:
+            values[key] = text
+
+    if values:
+        unique = set(values.values())
+        if len(unique) > 1:
+            raise ValueError("conflicting session id fields")
+        for key in SESSION_ID_KEYS:
+            if key in values:
+                return values[key]
+
+    if required:
+        raise ValueError("session id required")
+    return None
+
+
 def enqueue_raw_event_cmd(store: MemoryStore) -> None:
     """Read one raw event from stdin and enqueue it."""
 
@@ -70,7 +104,8 @@ def enqueue_raw_event_cmd(store: MemoryStore) -> None:
         raise typer.BadParameter("payload must be an object")
 
     try:
-        opencode_session_id = _require_non_empty_str(payload, "opencode_session_id")
+        opencode_session_id = _resolve_session_stream_id(payload, required=True)
+        assert opencode_session_id is not None
         source = _coerce_optional_str(payload, "source") or "opencode"
         event_type = _require_non_empty_str(payload, "event_type")
         event_payload = payload.get("payload")
@@ -147,7 +182,7 @@ def flush_raw_events_cmd(
 
 
 def raw_events_status_cmd(store: MemoryStore, *, limit: int) -> None:
-    """Show pending raw-event backlog by OpenCode session."""
+    """Show pending raw-event backlog by source stream."""
 
     items = store.raw_event_backlog(limit=limit)
     if not items:

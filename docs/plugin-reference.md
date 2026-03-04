@@ -202,10 +202,10 @@ To monitor backlog:
 codemem raw-events-status
 ```
 
-If `raw-events-status` shows `batches=error:N` (legacy label) or `queue=... failed:N` for a session, retry:
+If `raw-events-status` shows `batches=error:N` (legacy label) or `queue=... failed:N` for a stream, retry:
 
 ```bash
-codemem raw-events-retry <opencode_session_id>
+codemem raw-events-retry <session_stream_id>
 ```
 
 ## Hook lifecycle and flush boundaries

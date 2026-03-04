@@ -575,7 +575,7 @@ def raw_events_status(
     db_path: str = typer.Option(None, help="Path to SQLite database"),
     limit: int = typer.Option(25, help="Max sessions to show"),
 ) -> None:
-    """Show pending raw-event backlog by OpenCode session."""
+    """Show pending raw-event backlog by source stream."""
 
     store = _store(db_path)
     try:
@@ -612,7 +612,7 @@ def raw_events_retry(
     source: str = typer.Option("opencode", help="Adapter source for the stream"),
     limit: int = typer.Option(5, help="Max error batches to retry"),
 ) -> None:
-    """Retry error raw-event flush batches for a session."""
+    """Retry error raw-event flush batches for a source stream."""
 
     store = _store(db_path)
     try:
