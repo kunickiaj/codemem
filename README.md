@@ -76,9 +76,9 @@ uv tool install --upgrade codemem
 
 Claude MCP launch uses `uvx`; first startup may be slower because `uvx` can fetch/install tooling on demand.
 
-Claude hook ingestion also auto-falls back to `uvx codemem==<plugin-version> ingest-claude-hook` when a local `codemem` binary is unavailable.
+Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and auto-falls back to `codemem ingest-claude-hook` / `uvx codemem==<plugin-version> ingest-claude-hook` when the local server path is unavailable.
 
-Claude hook events are ingested through `codemem ingest-claude-hook` and share the same raw-event queue pipeline used by OpenCode.
+Claude hook events share the same raw-event queue pipeline used by OpenCode.
 
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 

@@ -704,8 +704,13 @@ class MemoryStore:
     def purge_raw_events(self, max_age_ms: int) -> int:
         return store_raw_events.purge_raw_events(self.conn, max_age_ms)
 
-    def raw_event_backlog(self, *, limit: int = 25) -> list[dict[str, Any]]:
-        return store_raw_events.raw_event_backlog(self.conn, limit=limit)
+    def raw_event_backlog(
+        self,
+        *,
+        limit: int = 25,
+        source: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return store_raw_events.raw_event_backlog(self.conn, limit=limit, source=source)
 
     def raw_event_backlog_totals(self) -> dict[str, int]:
         return store_raw_events.raw_event_backlog_totals(self.conn)

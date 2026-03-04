@@ -186,6 +186,12 @@ def _handle_post_claude_hooks(
             logger.debug("raw event flusher error", exc_info=exc)
         handler._send_json({"inserted": int(inserted), "skipped": 0})
         return True
+    except Exception as exc:  # pragma: no cover
+        response: dict[str, Any] = {"error": "internal server error"}
+        if os.environ.get("CODEMEM_VIEWER_DEBUG") == "1":
+            response["detail"] = str(exc)
+        handler._send_json(response, status=500)
+        return True
     finally:
         store.close()
 

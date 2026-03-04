@@ -365,6 +365,54 @@ def test_handle_post_claude_hooks_skips_unmappable_payload() -> None:
     assert flusher.noted == []
 
 
+def test_handle_post_claude_hooks_store_error_returns_500() -> None:
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-cld-3",
+        "prompt": "run tests",
+    }
+    body = json.dumps(payload).encode("utf-8")
+    handler = DummyHandler(body=body, content_length=len(body))
+    flusher = DummyFlusher()
+
+    class FailingStore(DummyStore):
+        def record_raw_event(
+            self,
+            *,
+            opencode_session_id: str,
+            source: str,
+            event_id: str,
+            event_type: str,
+            payload: dict[str, Any],
+            ts_wall_ms: int | None = None,
+            ts_mono_ms: float | None = None,
+        ) -> bool:
+            _ = (
+                opencode_session_id,
+                source,
+                event_id,
+                event_type,
+                payload,
+                ts_wall_ms,
+                ts_mono_ms,
+            )
+            raise RuntimeError("db write failed")
+
+    store = FailingStore()
+    handled = raw_events.handle_post(
+        handler,
+        path="/api/claude-hooks",
+        store_factory=lambda _db_path: store,
+        default_db_path="/tmp/mem.sqlite",
+        flusher=flusher,
+        strip_private_obj=lambda value: value,
+    )
+
+    assert handled is True
+    assert handler.status == 500
+    assert handler.response == {"error": "internal server error"}
+
+
 def test_handle_get_raw_events_status_returns_items_and_totals() -> None:
     class StatusStore(DummyStore):
         def raw_event_backlog(self, *, limit: int = 25) -> list[dict[str, Any]]:

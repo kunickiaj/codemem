@@ -52,6 +52,7 @@ from .commands.memory_cmds import (
 )
 from .commands.opencode_integration_cmds import install_mcp_cmd, install_plugin_cmd
 from .commands.raw_events_cmds import (
+    claude_integration_status_cmd,
     enqueue_raw_event_cmd,
     flush_raw_events_cmd,
     raw_events_gate_cmd,
@@ -578,6 +579,27 @@ def raw_events_status(
     store = _store(db_path)
     try:
         raw_events_status_cmd(store, limit=limit)
+    finally:
+        store.close()
+
+
+@app.command("claude-integration-status")
+def claude_integration_status(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    limit: int = typer.Option(100, help="Max pending streams to inspect"),
+) -> None:
+    """Show Claude hook queue/flush health signals in one report."""
+
+    cfg = load_config()
+    store = _store(db_path)
+    try:
+        claude_integration_status_cmd(
+            store,
+            limit=limit,
+            observer_runtime=cfg.observer_runtime,
+            claude_command=cfg.claude_command,
+            sweeper_interval_s=cfg.raw_events_sweeper_interval_s,
+        )
     finally:
         store.close()
 
