@@ -11,6 +11,7 @@ DEFAULT_CONFIG_PATH = Path("~/.config/codemem/config.json").expanduser()
 DEFAULT_CONFIG_PATH_JSONC = Path("~/.config/codemem/config.jsonc").expanduser()
 
 CONFIG_ENV_OVERRIDES = {
+    "claude_command": "CODEMEM_CLAUDE_COMMAND",
     "observer_provider": "CODEMEM_OBSERVER_PROVIDER",
     "observer_model": "CODEMEM_OBSERVER_MODEL",
     "observer_runtime": "CODEMEM_OBSERVER_RUNTIME",
@@ -185,6 +186,7 @@ class OpencodeMemConfig:
     use_opencode_run: bool = False
     opencode_model: str = "openai/gpt-5.1-codex-mini"
     opencode_agent: str | None = None
+    claude_command: list[str] = field(default_factory=lambda: ["claude"])
     observer_provider: str | None = None
     observer_model: str | None = None
     observer_api_key: str | None = None
@@ -336,6 +338,21 @@ def _coerce_command(value: object, *, key: str) -> list[str] | None:
     return None
 
 
+def _coerce_claude_command(value: object) -> list[str] | None:
+    parsed = _coerce_command(value, key="claude_command")
+    if parsed is None:
+        return None
+    normalized = [item.strip() for item in parsed]
+    if any(not item for item in normalized):
+        warnings.warn(
+            f"Invalid command list for claude_command: {value!r}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    return normalized
+
+
 def _coerce_str_map(value: object, *, key: str) -> dict[str, str] | None:
     if value is None:
         return None
@@ -428,6 +445,11 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
             if parsed is not None:
                 setattr(cfg, key, parsed)
             continue
+        if key == "claude_command":
+            parsed = _coerce_claude_command(value)
+            if parsed is not None:
+                setattr(cfg, key, parsed)
+            continue
         if key == "observer_headers":
             parsed = _coerce_str_map(value, key=key)
             if parsed is not None:
@@ -448,6 +470,9 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.use_opencode_run = _parse_bool(os.getenv("CODEMEM_USE_OPENCODE_RUN"), cfg.use_opencode_run)
     cfg.opencode_model = os.getenv("CODEMEM_OPENCODE_MODEL", cfg.opencode_model)
     cfg.opencode_agent = os.getenv("CODEMEM_OPENCODE_AGENT", cfg.opencode_agent)
+    parsed_claude_command = _coerce_claude_command(os.getenv("CODEMEM_CLAUDE_COMMAND"))
+    if parsed_claude_command is not None:
+        cfg.claude_command = parsed_claude_command
     cfg.observer_provider = os.getenv("CODEMEM_OBSERVER_PROVIDER", cfg.observer_provider)
     cfg.observer_model = os.getenv("CODEMEM_OBSERVER_MODEL", cfg.observer_model)
     cfg.observer_api_key = os.getenv("CODEMEM_OBSERVER_API_KEY", cfg.observer_api_key)

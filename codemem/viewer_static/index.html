@@ -1204,6 +1204,11 @@
                 <div class="small">Switch between provider API credentials and local Claude session auth.</div>
               </div>
               <div class="field settings-advanced" hidden>
+                <label for="claudeCommand">Claude command (JSON argv)</label>
+                <textarea id="claudeCommand" rows="2" placeholder='["claude"]'></textarea>
+                <div class="small">Used by `claude_sidecar` runtime. Example wrapper: `["wrapper", "claude", "--"]`.</div>
+              </div>
+              <div class="field settings-advanced" hidden>
                 <label for="observerMaxChars">Request size limit (chars)</label>
                 <input id="observerMaxChars" type="number" min="1" />
                 <div class="small" id="observerMaxCharsHint"></div>

@@ -451,6 +451,70 @@ def test_observer_runtime_claude_sidecar_uses_sidecar_call() -> None:
     assert DEFAULT_ANTHROPIC_MODEL in called_cmd
 
 
+def test_observer_runtime_claude_sidecar_uses_custom_claude_command() -> None:
+    cfg = OpencodeMemConfig(
+        observer_runtime="claude_sidecar",
+        claude_command=["wrapper", "claude", "--"],
+    )
+    run_mock = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=["wrapper", "claude", "--"],
+            returncode=0,
+            stdout=_claude_sidecar_payload(result="hello from wrapped sidecar"),
+            stderr="",
+        )
+    )
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer.subprocess.run", run_mock),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+        output = client._call("hello")
+
+    assert output == "hello from wrapped sidecar"
+    called_cmd = run_mock.call_args.args[0]
+    assert called_cmd[:7] == [
+        "wrapper",
+        "claude",
+        "--",
+        "-p",
+        "--output-format",
+        "json",
+        "--permission-mode",
+    ]
+
+
+def test_observer_runtime_claude_sidecar_empty_claude_command_falls_back_to_default() -> None:
+    cfg = OpencodeMemConfig(
+        observer_runtime="claude_sidecar",
+        claude_command=[],
+    )
+    run_mock = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_claude_sidecar_payload(result="hello from fallback command"),
+            stderr="",
+        )
+    )
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._load_opencode_oauth_cache", return_value={}),
+        patch("codemem.observer.subprocess.run", run_mock),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+        output = client._call("hello")
+
+    assert output == "hello from fallback command"
+    called_cmd = run_mock.call_args.args[0]
+    assert called_cmd[0] == "claude"
+
+
 def test_observer_runtime_claude_sidecar_retries_without_model_on_model_error() -> None:
     cfg = OpencodeMemConfig(
         observer_runtime="claude_sidecar",
