@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { __testUtils } from "../plugin/codemem.js";
 
@@ -216,5 +218,36 @@ describe("opencode adapter event mapping", () => {
 
     expect(events.length).toBe(2);
     expect(dropped).toBe("a");
+  });
+
+  test("buildRunnerArgs defaults uvx to pinned backend source", () => {
+    const args = __testUtils.buildRunnerArgs({
+      runner: "uvx",
+      runnerFrom: __testUtils.DEFAULT_UVX_SOURCE,
+      runnerFromExplicit: false,
+    });
+
+    expect(args).toEqual([`codemem==${__testUtils.PINNED_BACKEND_VERSION}`]);
+  });
+
+  test("buildRunnerArgs keeps explicit uvx source behavior", () => {
+    const args = __testUtils.buildRunnerArgs({
+      runner: "uvx",
+      runnerFrom: "git+https://github.com/kunickiaj/codemem.git",
+      runnerFromExplicit: true,
+    });
+
+    expect(args).toEqual([
+      "--from",
+      "git+https://github.com/kunickiaj/codemem.git",
+      "codemem",
+    ]);
+  });
+
+  test("pinned backend version matches package version", () => {
+    const packageJsonPath = resolve(import.meta.dir, "..", "..", "package.json");
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+
+    expect(__testUtils.PINNED_BACKEND_VERSION).toBe(packageJson.version);
   });
 });

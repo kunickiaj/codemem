@@ -44,6 +44,8 @@ uv tool install --upgrade codemem
 }
 ```
 
+By default, the OpenCode plugin resolves backend CLI calls from a `uvx` source pinned to the plugin version, so plugin and backend stay aligned unless you override `CODEMEM_RUNNER` / `CODEMEM_RUNNER_FROM`.
+
 3. Restart OpenCode, then verify:
 
 ```bash
@@ -64,7 +66,7 @@ In [Claude Code](https://claude.ai/code), add the codemem marketplace source and
 
 The Claude plugin starts MCP with:
 
-- `uvx codemem mcp`
+- `uvx codemem==<plugin-version> mcp`
 
 We still recommend installing/upgrading the CLI for local hook ingestion and manual `codemem` commands:
 
@@ -73,6 +75,8 @@ uv tool install --upgrade codemem
 ```
 
 Claude MCP launch uses `uvx`; first startup may be slower because `uvx` can fetch/install tooling on demand.
+
+Claude hook ingestion also auto-falls back to `uvx codemem==<plugin-version> ingest-claude-hook` when a local `codemem` binary is unavailable.
 
 Claude hook events are ingested through `codemem ingest-claude-hook` and share the same raw-event queue pipeline used by OpenCode.
 
