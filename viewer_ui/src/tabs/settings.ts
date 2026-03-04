@@ -59,6 +59,17 @@ function inferObserverModel(runtime: string, provider: string, configuredModel: 
 
 function configuredValueForKey(config: any, key: string): unknown {
   switch (key) {
+    case 'claude_command': {
+      const value = config?.claude_command;
+      if (!Array.isArray(value)) return [];
+      const normalized: string[] = [];
+      value.forEach((item) => {
+        if (typeof item !== 'string') return;
+        const token = item.trim();
+        if (token) normalized.push(token);
+      });
+      return normalized;
+    }
     case 'observer_provider':
     case 'observer_model':
     case 'observer_auth_file':
@@ -220,6 +231,7 @@ export function renderConfigModal(payload: any) {
   state.configPath = payload.path || '';
 
   const observerProvider = $select('observerProvider');
+  const claudeCommand = document.getElementById('claudeCommand') as HTMLTextAreaElement | null;
   const observerModel = $input('observerModel');
   const observerRuntime = $select('observerRuntime');
   const observerAuthSource = $select('observerAuthSource');
@@ -244,6 +256,11 @@ export function renderConfigModal(payload: any) {
 
   const observerProviderValue = asInputString(effectiveOrConfigured(config, effective, 'observer_provider'));
   setProviderOptions(observerProvider, providers, observerProviderValue);
+  if (claudeCommand) {
+    const value = effectiveOrConfigured(config, effective, 'claude_command');
+    const argv = Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+    claudeCommand.value = argv.length ? JSON.stringify(argv, null, 2) : '';
+  }
 
   const observerModelValue = asInputString(effectiveOrConfigured(config, effective, 'observer_model'));
   if (observerModel) observerModel.value = observerModelValue;
@@ -315,14 +332,21 @@ export function renderConfigModal(payload: any) {
   if (settingsStatus) settingsStatus.textContent = 'Ready';
 }
 
-function parseCommandArgv(raw: string): string[] {
+function parseCommandArgv(raw: string, options: { label: string; normalize?: boolean; requireNonEmpty?: boolean }): string[] {
   const text = raw.trim();
   if (!text) return [];
   const parsed = JSON.parse(text);
   if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
-    throw new Error('observer auth command must be a JSON string array');
+    throw new Error(`${options.label} must be a JSON string array`);
   }
-  return parsed;
+  if (!options.normalize && !options.requireNonEmpty) {
+    return parsed;
+  }
+  const values = options.normalize ? parsed.map((item) => item.trim()) : parsed;
+  if (options.requireNonEmpty && values.some((item) => item.trim() === '')) {
+    throw new Error(`${options.label} cannot contain empty command tokens`);
+  }
+  return values;
 }
 
 function parseObserverHeaders(raw: string): Record<string, string> {
@@ -343,11 +367,17 @@ function parseObserverHeaders(raw: string): Record<string, string> {
 }
 
 function collectSettingsPayload(): Record<string, unknown> {
+  const claudeCommandInput = (document.getElementById('claudeCommand') as HTMLTextAreaElement | null)?.value || '';
   const authCommandInput = (document.getElementById('observerAuthCommand') as HTMLTextAreaElement | null)?.value || '';
   const observerHeadersInput = (document.getElementById('observerHeaders') as HTMLTextAreaElement | null)?.value || '';
   const authCacheTtlInput = ($input('observerAuthCacheTtlS')?.value || '').trim();
   const sweeperIntervalInput = ($input('rawEventsSweeperIntervalS')?.value || '').trim();
-  const authCommand = parseCommandArgv(authCommandInput);
+  const claudeCommand = parseCommandArgv(claudeCommandInput, {
+    label: 'claude command',
+    normalize: true,
+    requireNonEmpty: true,
+  });
+  const authCommand = parseCommandArgv(authCommandInput, { label: 'observer auth command' });
   const headers = parseObserverHeaders(observerHeadersInput);
   const authCacheTtl = authCacheTtlInput === '' ? '' : Number(authCacheTtlInput);
   const sweeperIntervalNum = Number(sweeperIntervalInput);
@@ -361,6 +391,7 @@ function collectSettingsPayload(): Record<string, unknown> {
   }
 
   return {
+    claude_command: claudeCommand,
     observer_provider: normalizeTextValue($select('observerProvider')?.value || ''),
     observer_model: normalizeTextValue($input('observerModel')?.value || ''),
     observer_runtime: normalizeTextValue($select('observerRuntime')?.value || 'api_http') || 'api_http',
@@ -505,6 +536,7 @@ export function initSettings(stopPolling: () => void, startPolling: () => void, 
 
   // Mark dirty on any input change
   const inputs = [
+    'claudeCommand',
     'observerProvider',
     'observerModel',
     'observerRuntime',

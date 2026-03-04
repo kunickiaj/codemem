@@ -143,9 +143,11 @@ def test_load_config_warns_and_uses_defaults_on_invalid_json(tmp_path: Path) -> 
 def test_get_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODEMEM_OBSERVER_PROVIDER", "anthropic")
     monkeypatch.setenv("CODEMEM_OBSERVER_MODEL", "claude-4.5-haiku")
+    monkeypatch.setenv("CODEMEM_CLAUDE_COMMAND", '["wrapper", "claude", "--"]')
     overrides = get_env_overrides()
     assert overrides["observer_provider"] == "anthropic"
     assert overrides["observer_model"] == "claude-4.5-haiku"
+    assert overrides["claude_command"] == '["wrapper", "claude", "--"]'
 
 
 def test_load_config_invalid_int_env_does_not_crash_and_warns(
@@ -382,3 +384,49 @@ def test_load_config_reads_raw_events_sweeper_interval_from_env(
     cfg = load_config(config_path)
 
     assert cfg.raw_events_sweeper_interval_s == 75
+
+
+def test_load_config_parses_claude_command_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_CLAUDE_COMMAND", '["wrapper", "claude", "--"]')
+
+    cfg = load_config(config_path)
+
+    assert cfg.claude_command == ["wrapper", "claude", "--"]
+
+
+def test_load_config_reads_claude_command_from_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"claude_command": ["wrapper", "claude", "--"]}\n')
+
+    cfg = load_config(config_path)
+
+    assert cfg.claude_command == ["wrapper", "claude", "--"]
+
+
+def test_load_config_rejects_invalid_claude_command_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_CLAUDE_COMMAND", "wrapper claude --")
+
+    with pytest.warns(RuntimeWarning, match="claude_command"):
+        cfg = load_config(config_path)
+
+    assert cfg.claude_command == ["claude"]
+
+
+def test_load_config_rejects_claude_command_with_empty_tokens(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"claude_command": ["wrapper", " ", "--"]}\n')
+
+    with pytest.warns(RuntimeWarning, match="claude_command"):
+        cfg = load_config(config_path)
+
+    assert cfg.claude_command == ["claude"]

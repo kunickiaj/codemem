@@ -131,6 +131,9 @@ Observer runtime/auth in `0.16`:
 - Runtime options: `api_http` and `claude_sidecar`.
 - `api_http` defaults to `gpt-5.1-codex-mini` (OpenAI path) unless you set `observer_model`.
 - `claude_sidecar` defaults to `claude-4.5-haiku`; if the selected `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's CLI default model.
+- `claude_sidecar` command is configurable with `claude_command` (`CODEMEM_CLAUDE_COMMAND`) as a JSON argv array.
+  - Config file example: `"claude_command": ["wrapper", "claude", "--"]`
+  - Env var example: `CODEMEM_CLAUDE_COMMAND='["wrapper","claude","--"]'`
 - Auth sources: `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` must be a JSON string array (argv), not a space-separated string.
   - Config file example: `"observer_auth_command": ["iap-auth", "--audience", "example"]`

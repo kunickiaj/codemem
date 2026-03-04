@@ -89,6 +89,7 @@ Observer execution in `0.16` supports both API and Claude runtime paths.
 
 - Runtime values: `api_http`, `claude_sidecar`.
 - `claude_sidecar` runs observer calls via local Claude runtime auth (no `ANTHROPIC_API_KEY` required).
+- `claude_sidecar` uses `claude_command` (or `CODEMEM_CLAUDE_COMMAND`) as argv prefix for launching Claude CLI. Default: `["claude"]`.
 - Default models:
   - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
   - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
@@ -225,6 +226,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_OBSERVER_PROVIDER` | Force `openai`, `anthropic`, or a custom provider key (optional). |
 | `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
+| `CODEMEM_CLAUDE_COMMAND` | JSON argv array for Claude CLI invocation used by `claude_sidecar` (default `["claude"]`). |
 | `CODEMEM_OBSERVER_RUNTIME` | Observer runtime mode (`api_http` or `claude_sidecar`). |
 | `CODEMEM_OBSERVER_AUTH_SOURCE` | Observer auth source (`auto`, `env`, `file`, `command`, `none`). |
 | `CODEMEM_OBSERVER_AUTH_FILE` | Path to token file used when auth source is `file`. |
