@@ -360,3 +360,70 @@ def test_flush_raw_events_chunking_does_not_skip_out_of_order_timestamps(tmp_pat
         assert captured == [[0], [1], [2]]
     finally:
         store.close()
+
+
+def test_flush_raw_events_scopes_state_by_source_for_shared_stream_id(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.record_raw_event(
+            opencode_session_id="shared-stream",
+            source="opencode",
+            event_id="evt-openai-1",
+            event_type="user_prompt",
+            payload={"type": "user_prompt", "prompt_text": "OpenCode prompt"},
+            ts_wall_ms=100,
+            ts_mono_ms=1.0,
+        )
+        store.record_raw_event(
+            opencode_session_id="shared-stream",
+            source="claude",
+            event_id="evt-claude-1",
+            event_type="claude.hook",
+            payload={
+                "type": "claude.hook",
+                "_adapter": {
+                    "event_type": "prompt",
+                    "payload": {"text": "Claude prompt"},
+                    "ts": "2026-01-01T00:00:01Z",
+                },
+            },
+            ts_wall_ms=200,
+            ts_mono_ms=2.0,
+        )
+
+        captured_sources: list[str] = []
+
+        def fake_ingest(payload: dict[str, object]) -> None:
+            session_context = payload.get("session_context")
+            assert isinstance(session_context, dict)
+            source = session_context.get("source")
+            assert isinstance(source, str)
+            captured_sources.append(source)
+
+        with patch("codemem.raw_event_flush.ingest", fake_ingest):
+            first = flush_raw_events(
+                store,
+                opencode_session_id="shared-stream",
+                source="claude",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=None,
+            )
+            second = flush_raw_events(
+                store,
+                opencode_session_id="shared-stream",
+                source="opencode",
+                cwd=str(tmp_path),
+                project="test",
+                started_at="2026-01-01T00:00:00Z",
+                max_events=None,
+            )
+
+        assert first == {"flushed": 1, "updated_state": 1}
+        assert second == {"flushed": 1, "updated_state": 1}
+        assert store.raw_event_flush_state("shared-stream", source="claude") == 0
+        assert store.raw_event_flush_state("shared-stream", source="opencode") == 0
+        assert captured_sources == ["claude", "opencode"]
+    finally:
+        store.close()
