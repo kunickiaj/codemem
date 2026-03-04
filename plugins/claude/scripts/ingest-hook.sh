@@ -32,21 +32,47 @@ if [ -z "${payload}" ]; then
   exit 0
 fi
 
-if command -v codemem >/dev/null 2>&1; then
-  (
-    if ! printf '%s' "${payload}" | codemem ingest-claude-hook >/dev/null 2>&1; then
-      log_line "codemem ingest-claude-hook failed via codemem binary"
+case "${CODEMEM_PLUGIN_IGNORE:-}" in
+  "1"|"true"|"yes"|"on")
+    exit 0
+    ;;
+esac
+
+LOCK_DIR="${CODEMEM_CLAUDE_HOOK_LOCK_DIR:-$HOME/.codemem/claude-hook-ingest.lock}"
+acquire_lock() {
+  mkdir -p "$(dirname "${LOCK_DIR}")" >/dev/null 2>&1 || true
+  attempts=100
+  while [ "${attempts}" -gt 0 ]; do
+    if mkdir "${LOCK_DIR}" >/dev/null 2>&1; then
+      return 0
     fi
-  ) &
+    attempts=$((attempts - 1))
+    sleep 0.05
+  done
+  return 1
+}
+
+release_lock() {
+  rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true
+}
+
+if ! acquire_lock; then
+  log_line "codemem ingest-claude-hook skipped: lock busy"
+  exit 0
+fi
+trap 'release_lock' EXIT
+
+if command -v codemem >/dev/null 2>&1; then
+  if ! printf '%s' "${payload}" | CODEMEM_PLUGIN_IGNORE=1 codemem ingest-claude-hook >/dev/null 2>&1; then
+    log_line "codemem ingest-claude-hook failed via codemem binary"
+  fi
   exit 0
 fi
 
 if command -v uvx >/dev/null 2>&1; then
-  (
-    if ! printf '%s' "${payload}" | uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook >/dev/null 2>&1; then
-      log_line "codemem ingest-claude-hook failed via uvx"
-    fi
-  ) &
+  if ! printf '%s' "${payload}" | CODEMEM_PLUGIN_IGNORE=1 uvx "${UVX_PACKAGE_SPEC}" ingest-claude-hook >/dev/null 2>&1; then
+    log_line "codemem ingest-claude-hook failed via uvx"
+  fi
   exit 0
 fi
 
