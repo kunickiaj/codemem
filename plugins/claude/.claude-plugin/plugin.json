@@ -1,7 +1,7 @@
 {
   "name": "codemem",
   "description": "Persistent memory for Claude Code. Capture work across sessions and recall relevant context.",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "author": {
     "name": "Adam Kunicki"
   },
@@ -11,7 +11,7 @@
     "codemem": {
       "command": "uvx",
       "args": [
-        "codemem==0.16.1",
+        "codemem==0.16.2",
         "mcp"
       ]
     }
