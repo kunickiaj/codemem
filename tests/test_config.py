@@ -143,10 +143,12 @@ def test_load_config_warns_and_uses_defaults_on_invalid_json(tmp_path: Path) -> 
 def test_get_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODEMEM_OBSERVER_PROVIDER", "anthropic")
     monkeypatch.setenv("CODEMEM_OBSERVER_MODEL", "claude-4.5-haiku")
+    monkeypatch.setenv("CODEMEM_OBSERVER_BASE_URL", "https://gateway.example/v1")
     monkeypatch.setenv("CODEMEM_CLAUDE_COMMAND", '["wrapper", "claude", "--"]')
     overrides = get_env_overrides()
     assert overrides["observer_provider"] == "anthropic"
     assert overrides["observer_model"] == "claude-4.5-haiku"
+    assert overrides["observer_base_url"] == "https://gateway.example/v1"
     assert overrides["claude_command"] == '["wrapper", "claude", "--"]'
 
 
@@ -303,6 +305,19 @@ def test_load_config_reads_observer_auth_fields(tmp_path: Path) -> None:
     assert cfg.observer_auth_timeout_ms == 2500
     assert cfg.observer_auth_cache_ttl_s == 120
     assert cfg.observer_headers["Authorization"] == "Bearer ${auth.token}"
+
+
+def test_load_config_reads_observer_base_url_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_OBSERVER_BASE_URL", "https://gateway.example/v1")
+
+    cfg = load_config(config_path)
+
+    assert cfg.observer_base_url == "https://gateway.example/v1"
 
 
 def test_load_config_parses_observer_auth_command_from_env(

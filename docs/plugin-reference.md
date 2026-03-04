@@ -141,12 +141,14 @@ Observer execution in `0.16` supports both API and Claude runtime paths.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - Supported: API keys and gateway tokens codemem can read directly.
 - Custom provider path does not implicitly fall back to OpenCode/IAP env tokens; use provider key, `CODEMEM_OBSERVER_API_KEY`, `file`, or `command`.
+- For codemem-native custom providers, set `observer_base_url` (or `CODEMEM_OBSERVER_BASE_URL`) to avoid relying on OpenCode provider config.
 
 For command-refreshed gateway auth, configure a command token source plus templated headers:
 
 ```json
 {
   "observer_provider": "your-gateway-provider",
+  "observer_base_url": "https://gateway.example/v1",
   "observer_runtime": "api_http",
   "observer_auth_source": "command",
   "observer_auth_command": ["iap-auth", "--audience", "example"],

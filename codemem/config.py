@@ -14,6 +14,7 @@ CONFIG_ENV_OVERRIDES = {
     "claude_command": "CODEMEM_CLAUDE_COMMAND",
     "observer_provider": "CODEMEM_OBSERVER_PROVIDER",
     "observer_model": "CODEMEM_OBSERVER_MODEL",
+    "observer_base_url": "CODEMEM_OBSERVER_BASE_URL",
     "observer_runtime": "CODEMEM_OBSERVER_RUNTIME",
     "observer_auth_source": "CODEMEM_OBSERVER_AUTH_SOURCE",
     "observer_auth_file": "CODEMEM_OBSERVER_AUTH_FILE",
@@ -189,6 +190,7 @@ class OpencodeMemConfig:
     claude_command: list[str] = field(default_factory=lambda: ["claude"])
     observer_provider: str | None = None
     observer_model: str | None = None
+    observer_base_url: str | None = None
     observer_api_key: str | None = None
     observer_runtime: str = "api_http"
     observer_auth_source: str = "auto"
@@ -475,6 +477,7 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
         cfg.claude_command = parsed_claude_command
     cfg.observer_provider = os.getenv("CODEMEM_OBSERVER_PROVIDER", cfg.observer_provider)
     cfg.observer_model = os.getenv("CODEMEM_OBSERVER_MODEL", cfg.observer_model)
+    cfg.observer_base_url = os.getenv("CODEMEM_OBSERVER_BASE_URL", cfg.observer_base_url)
     cfg.observer_api_key = os.getenv("CODEMEM_OBSERVER_API_KEY", cfg.observer_api_key)
     cfg.observer_runtime = os.getenv("CODEMEM_OBSERVER_RUNTIME", cfg.observer_runtime)
     cfg.observer_auth_source = os.getenv("CODEMEM_OBSERVER_AUTH_SOURCE", cfg.observer_auth_source)
