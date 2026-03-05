@@ -125,8 +125,9 @@ def handle_post(
         handler._send_json({"error": "config must be an object"}, status=400)
         return True
 
-    allowed_keys = {
+    allowed_keys = (
         "claude_command",
+        "observer_base_url",
         "observer_provider",
         "observer_model",
         "observer_runtime",
@@ -145,7 +146,7 @@ def handle_post(
         "sync_interval_s",
         "sync_mdns",
         "raw_events_sweeper_interval_s",
-    }
+    )
     allowed_providers = set(load_provider_options())
 
     config_path = get_config_path()
@@ -167,13 +168,35 @@ def handle_post(
                 handler._send_json({"error": "observer_provider must be string"}, status=400)
                 return True
             provider = value.strip().lower()
-            if provider not in allowed_providers:
+            provided_base_url = False
+            if "observer_base_url" in updates:
+                base_url_override = updates.get("observer_base_url")
+                if base_url_override in (None, ""):
+                    provided_base_url = False
+                elif isinstance(base_url_override, str):
+                    provided_base_url = bool(base_url_override.strip())
+                else:
+                    handler._send_json({"error": "observer_base_url must be string"}, status=400)
+                    return True
+            saved_base_url = config_data.get("observer_base_url")
+            has_saved_base_url = isinstance(saved_base_url, str) and bool(saved_base_url.strip())
+            if provider not in allowed_providers and not (provided_base_url or has_saved_base_url):
                 handler._send_json(
                     {"error": "observer_provider must match a configured provider"},
                     status=400,
                 )
                 return True
             config_data[key] = provider
+            continue
+        if key == "observer_base_url":
+            if not isinstance(value, str):
+                handler._send_json({"error": "observer_base_url must be string"}, status=400)
+                return True
+            base_url = value.strip()
+            if not base_url:
+                config_data.pop(key, None)
+                continue
+            config_data[key] = base_url
             continue
         if key == "claude_command":
             argv = _as_executable_argv(value)

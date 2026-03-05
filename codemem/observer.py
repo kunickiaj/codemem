@@ -164,10 +164,9 @@ class ObserverClient:
                 self._claude_command.append(token)
         if not self._claude_command:
             self._claude_command = ["claude"]
-        custom_providers = _list_custom_providers()
-
-        if provider and provider not in {"openai", "anthropic"} | custom_providers:
-            provider = ""
+        custom_providers = set(_list_custom_providers())
+        if provider and provider not in {"openai", "anthropic"}:
+            custom_providers.add(provider)
 
         resolved_provider = provider
         if not resolved_provider:
@@ -209,6 +208,10 @@ class ObserverClient:
         if self.runtime == "claude_sidecar":
             self.model = self._sidecar_model
         self.api_key = cfg.observer_api_key or os.getenv("CODEMEM_OBSERVER_API_KEY")
+        base_url = cfg.observer_base_url
+        self._custom_base_url = (
+            base_url.strip() if isinstance(base_url, str) and base_url.strip() else None
+        )
         self.max_chars = cfg.observer_max_chars
         self.max_tokens = cfg.observer_max_tokens
         self.client: object | None = None
@@ -243,6 +246,8 @@ class ObserverClient:
                 self.provider,
                 self.model,
             )
+            if not base_url and self._custom_base_url:
+                base_url = self._custom_base_url
             if not base_url or not model_id:
                 logger.warning("observer auth: missing custom provider config")
                 return
