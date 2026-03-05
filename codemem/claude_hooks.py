@@ -123,6 +123,43 @@ def _resolve_hook_project(*, cwd: str | None, payload_project: Any) -> str | Non
     return None
 
 
+def _infer_project_from_path_hint(path_hint: Any) -> str | None:
+    if not isinstance(path_hint, str):
+        return None
+    text = path_hint.strip()
+    if not text:
+        return None
+    try:
+        candidate = Path(text).expanduser()
+    except Exception:
+        return None
+
+    current = candidate if candidate.is_dir() else candidate.parent
+    if not current:
+        return None
+
+    while not current.exists() and current.parent != current:
+        current = current.parent
+
+    if not current.exists():
+        return None
+    return _infer_project_from_cwd(str(current))
+
+
+def _resolve_hook_project_from_payload_paths(hook_payload: dict[str, Any]) -> str | None:
+    tool_input = hook_payload.get("tool_input")
+    if isinstance(tool_input, dict):
+        for key in ("filePath", "file_path", "path"):
+            project = _infer_project_from_path_hint(tool_input.get(key))
+            if project:
+                return project
+
+    project = _infer_project_from_path_hint(hook_payload.get("transcript_path"))
+    if project:
+        return project
+    return None
+
+
 def _iso_to_wall_ms(value: str) -> int:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -434,6 +471,8 @@ def build_raw_event_envelope_from_hook(hook_payload: dict[str, Any]) -> dict[str
     hook_event_name = str(hook_payload.get("hook_event_name") or "")
     cwd = hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None
     project = _resolve_hook_project(cwd=cwd, payload_project=hook_payload.get("project"))
+    if project is None:
+        project = _resolve_hook_project_from_payload_paths(hook_payload)
 
     return {
         "session_stream_id": session_id,

@@ -288,6 +288,32 @@ def test_build_raw_event_envelope_invalid_cwd_falls_back_to_payload_project(monk
     assert envelope["project"] == "payload-project"
 
 
+def test_build_raw_event_envelope_infers_project_from_tool_input_path(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = tmp_path / "greenroom"
+    repo_root.mkdir()
+    (repo_root / ".git").mkdir()
+    target_file = repo_root / "src" / "feature.py"
+    target_file.parent.mkdir()
+    target_file.write_text("print('ok')\n", encoding="utf-8")
+
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-tool-path-project",
+        "tool_name": "Edit",
+        "tool_input": {"filePath": str(target_file)},
+        "tool_response": {"ok": True},
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "greenroom"
+
+
 def test_map_stop_hook_uses_transcript_fallback_for_assistant_text(tmp_path) -> None:
     transcript_path = tmp_path / "transcript.jsonl"
     transcript_path.write_text(
