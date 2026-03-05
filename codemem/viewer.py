@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -11,6 +10,7 @@ from urllib.parse import urlparse
 from . import viewer_assets, viewer_raw_events
 from .config import load_config  # noqa: F401
 from .db import DEFAULT_DB_PATH
+from .ingest_sanitize import _strip_private_obj
 from .observer import _load_opencode_config
 from .raw_event_flush import flush_raw_events  # noqa: F401
 from .store import MemoryStore
@@ -30,23 +30,6 @@ from .viewer_routes import sync as viewer_routes_sync
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 38888
 DEFAULT_PROVIDER_OPTIONS = ("openai", "anthropic")
-
-
-def _strip_private(text: str) -> str:
-    if not text:
-        return ""
-    return re.sub(r"<private>.*?</private>", "", text, flags=re.DOTALL | re.IGNORECASE)
-
-
-def _strip_private_obj(value: Any) -> Any:
-    if isinstance(value, str):
-        return _strip_private(value)
-    if isinstance(value, list):
-        return [_strip_private_obj(item) for item in value]
-    if isinstance(value, dict):
-        return {k: _strip_private_obj(v) for k, v in value.items()}
-    return value
-
 
 RawEventAutoFlusher = viewer_raw_events.RawEventAutoFlusher
 RawEventSweeper = viewer_raw_events.RawEventSweeper

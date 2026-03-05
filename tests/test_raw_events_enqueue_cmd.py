@@ -160,7 +160,9 @@ def test_enqueue_raw_event_cmd_strips_private_tags_from_payload(tmp_path: Path) 
             "assistant_text": "before <private>secret-token</private> after",
             "nested": {
                 "note": "x<private>hidden</private>y",
+                "authorization": "Bearer abc123",
             },
+            "api_key": "key-1",
         },
     }
 
@@ -179,6 +181,9 @@ def test_enqueue_raw_event_cmd_strips_private_tags_from_payload(tmp_path: Path) 
         assert "<private>" not in stored_event
         assert "secret-token" not in stored_event
         assert "hidden" not in stored_event
+        assert "abc123" not in stored_event
+        assert "key-1" not in stored_event
+        assert "[REDACTED]" in stored_event
     finally:
         store.close()
 
