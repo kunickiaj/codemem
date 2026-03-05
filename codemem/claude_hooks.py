@@ -410,6 +410,8 @@ def build_ingest_payload_from_hook(hook_payload: dict[str, Any]) -> dict[str, An
         "session_context": {
             "source": "claude",
             "stream_id": session_id,
+            "session_stream_id": session_id,
+            "session_id": session_id,
             "opencode_session_id": session_id,
         },
     }
@@ -434,6 +436,8 @@ def build_raw_event_envelope_from_hook(hook_payload: dict[str, Any]) -> dict[str
     project = _resolve_hook_project(cwd=cwd, payload_project=hook_payload.get("project"))
 
     return {
+        "session_stream_id": session_id,
+        "session_id": session_id,
         "opencode_session_id": session_id,
         "source": source,
         "event_id": str(adapter_event.get("event_id") or ""),
