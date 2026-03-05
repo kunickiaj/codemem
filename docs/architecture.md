@@ -42,6 +42,36 @@ flowchart LR
 8. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
 9. The viewer, MCP server, and CLI all read from the same SQLite database.
 
+## Adapter support matrix and rollout
+
+Support tiers describe operational expectations for each adapter path:
+
+- Supported: shipped in normal workflows, covered by integration tests, and maintained for reliability regressions.
+- Partial: usable for targeted workflows, but with known gaps and narrower guarantees.
+- Experimental: architecture path or branch exists, but not ready for general use.
+
+| Adapter | Tier | Notes |
+|---|---|---|
+| OpenCode plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
+| Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
+| Codex shell integration | Experimental | Planned as adapter-native ingestion path; no user-facing support contract yet. |
+| Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
+| Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
+
+Rollout sequencing:
+
+1. Stabilize adapter schema + queue/flush reliability.
+2. Reach OpenCode parity on ingest + retrieval quality.
+3. Ship Claude MVP, then close parity gaps (injection/capture/lifecycle).
+4. Keep Claude in Supported tier by enforcing reliability and review gates.
+5. Add additional adapters (Codex/Windsurf/Cursor) behind the same contract.
+
+Explicit non-goals:
+
+- No generic bash/zsh/fish shell-hook wrapper strategy.
+- No "one script fits all shells" ingestion shim.
+- No adapter-specific storage schema forks; adapters share one normalized raw-event/store path.
+
 ## Retrieval
 
 Retrieval has two search backends and a merge/re-rank layer that combines them for pack construction.
