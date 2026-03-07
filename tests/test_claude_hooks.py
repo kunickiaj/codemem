@@ -288,6 +288,56 @@ def test_build_raw_event_envelope_invalid_cwd_falls_back_to_payload_project(monk
     assert envelope["project"] == "payload-project"
 
 
+def test_build_raw_event_envelope_relative_cwd_falls_back_to_payload_project(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = tmp_path / "codemem"
+    repo_root.mkdir()
+    (repo_root / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-relative-cwd",
+        "prompt": "ship it",
+        "cwd": "codemem",
+        "project": "payload-project",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "payload-project"
+
+
+def test_build_raw_event_envelope_relative_cwd_and_relative_tool_path_fall_back_to_payload_project(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = tmp_path / "codemem"
+    repo_root.mkdir()
+    (repo_root / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-relative-cwd-relative-tool-path",
+        "tool_name": "Edit",
+        "tool_input": {"filePath": "src/feature.py"},
+        "tool_response": {"ok": True},
+        "cwd": "codemem",
+        "project": "payload-project",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "payload-project"
+
+
 def test_build_raw_event_envelope_infers_project_from_tool_input_path(
     tmp_path, monkeypatch
 ) -> None:
@@ -314,6 +364,80 @@ def test_build_raw_event_envelope_infers_project_from_tool_input_path(
     assert envelope["project"] == "greenroom"
 
 
+def test_build_raw_event_envelope_infers_project_from_relative_tool_input_path_with_cwd(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = tmp_path / "greenroom"
+    repo_root.mkdir()
+    (repo_root / ".git").mkdir()
+    target_file = repo_root / "src" / "feature.py"
+    target_file.parent.mkdir()
+    target_file.write_text("print('ok')\n", encoding="utf-8")
+
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-relative-tool-path-project",
+        "tool_name": "Edit",
+        "tool_input": {"filePath": "src/feature.py"},
+        "tool_response": {"ok": True},
+        "cwd": str(repo_root),
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] == "greenroom"
+
+
+def test_build_raw_event_envelope_does_not_infer_project_from_relative_tool_input_path_without_cwd(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = tmp_path / "greenroom"
+    repo_root.mkdir()
+    (repo_root / ".git").mkdir()
+    target_file = repo_root / "src" / "feature.py"
+    target_file.parent.mkdir()
+    target_file.write_text("print('ok')\n", encoding="utf-8")
+
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-relative-tool-path-no-cwd",
+        "tool_name": "Edit",
+        "tool_input": {"filePath": "src/feature.py"},
+        "tool_response": {"ok": True},
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+    monkeypatch.chdir(repo_root)
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] is None
+
+
+def test_build_raw_event_envelope_does_not_infer_project_from_relative_tool_input_path_with_invalid_absolute_cwd(
+    monkeypatch,
+) -> None:
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-relative-tool-path-invalid-cwd",
+        "tool_name": "Edit",
+        "tool_input": {"filePath": "src/feature.py"},
+        "tool_response": {"ok": True},
+        "cwd": "/tmp/does-not-exist/codemem",
+        "ts": "2026-03-04T01:00:00Z",
+    }
+    monkeypatch.delenv("CODEMEM_PROJECT", raising=False)
+
+    envelope = build_raw_event_envelope_from_hook(payload)
+
+    assert envelope is not None
+    assert envelope["project"] is None
+
+
 def test_map_stop_hook_uses_transcript_fallback_for_assistant_text(tmp_path) -> None:
     transcript_path = tmp_path / "transcript.jsonl"
     transcript_path.write_text(
@@ -332,6 +456,67 @@ def test_map_stop_hook_uses_transcript_fallback_for_assistant_text(tmp_path) -> 
     assert event is not None
     assert event["event_type"] == "assistant"
     assert event["payload"]["text"] == "assistant from transcript"
+
+
+def test_map_stop_hook_uses_relative_transcript_path_with_cwd(tmp_path) -> None:
+    repo_root = tmp_path / "greenroom"
+    repo_root.mkdir()
+    transcript_path = repo_root / "transcript.jsonl"
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"assistant from transcript"}}\n',
+        encoding="utf-8",
+    )
+
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop-relative-transcript",
+        "last_assistant_message": "",
+        "transcript_path": "transcript.jsonl",
+        "cwd": str(repo_root),
+    }
+
+    event = map_claude_hook_payload(payload)
+
+    assert event is not None
+    assert event["payload"]["text"] == "assistant from transcript"
+
+
+def test_map_stop_hook_does_not_use_relative_transcript_path_without_cwd(
+    tmp_path, monkeypatch
+) -> None:
+    repo_root = tmp_path / "greenroom"
+    repo_root.mkdir()
+    transcript_path = repo_root / "transcript.jsonl"
+    transcript_path.write_text(
+        '{"message":{"role":"assistant","content":"assistant from transcript"}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo_root)
+
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop-relative-transcript-no-cwd",
+        "last_assistant_message": "",
+        "transcript_path": "transcript.jsonl",
+    }
+
+    event = map_claude_hook_payload(payload)
+
+    assert event is None
+
+
+def test_map_stop_hook_does_not_use_relative_transcript_path_with_invalid_absolute_cwd() -> None:
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-stop-relative-transcript-invalid-cwd",
+        "last_assistant_message": "",
+        "transcript_path": "transcript.jsonl",
+        "cwd": "/tmp/does-not-exist/codemem",
+    }
+
+    event = map_claude_hook_payload(payload)
+
+    assert event is None
 
 
 def test_map_stop_hook_includes_usage_from_hook_payload() -> None:
