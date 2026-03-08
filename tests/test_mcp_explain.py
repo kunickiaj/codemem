@@ -193,3 +193,34 @@ def test_memory_explain_uses_default_project_scope_when_project_omitted(
     assert {error["code"] for error in payload["errors"]} == {"PROJECT_MISMATCH"}
     mismatch = next(error for error in payload["errors"] if error["code"] == "PROJECT_MISMATCH")
     assert mismatch["ids"] == [memory_b]
+
+
+def test_memory_explain_respects_personal_first_flag(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    store = MemoryStore(db_path)
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    memory_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha body")
+    store.end_session(session)
+    store.close()
+
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    server = build_server()
+    payload = _call_tool(
+        server,
+        "memory_explain",
+        {
+            "ids": [memory_id],
+            "project": "/tmp/project-a",
+            "personal_first": False,
+        },
+    )
+
+    item = payload["items"][0]
+    assert item["score"]["components"]["personal_bias"] == 0

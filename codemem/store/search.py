@@ -355,6 +355,7 @@ def explain(
             source=source,
             rank=rank,
             query_tokens=query_tokens,
+            filters=filters,
             project_filter=filters.get("project"),
             project_value=session_projects.get(item.session_id),
             include_pack_context=include_pack_context,
@@ -590,6 +591,7 @@ def _explain_item(
     source: str,
     rank: int | None,
     query_tokens: list[str],
+    filters: dict[str, Any],
     project_filter: str | None,
     project_value: str | None,
     include_pack_context: bool,
@@ -601,7 +603,7 @@ def _explain_item(
     recency_component = _recency_score(item.created_at, now=reference_now)
     kind_component = _kind_bonus(item.kind)
     total_score: float | None = None
-    personal_bias = _personal_bias(store, item, {"personal_first": True})
+    personal_bias = _personal_bias(store, item, filters)
     if base_score is not None:
         total_score = (base_score * 1.5) + recency_component + kind_component + personal_bias
 
