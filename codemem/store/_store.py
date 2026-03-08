@@ -366,6 +366,9 @@ class MemoryStore:
                 workspace_kind = 'personal',
                 trust_state = 'trusted'
             WHERE origin_device_id = ?
+              AND origin_device_id NOT IN (
+                    SELECT peer_device_id FROM sync_peers WHERE peer_device_id IS NOT NULL
+              )
               AND (
                     actor_id LIKE 'legacy-sync:%'
                  OR actor_display_name = 'Legacy synced peer'

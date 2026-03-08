@@ -509,6 +509,79 @@ def test_sync_legacy_device_claim_endpoint_reconciles_memories(tmp_path: Path, m
         store.close()
 
 
+def test_sync_legacy_device_claim_endpoint_rejects_current_peer_ids(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id,
+            kind="note",
+            title="Current peer memory",
+            body_text="Should stay shared",
+            metadata={
+                "actor_id": "legacy-sync:peer-1",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-1",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/legacy-devices/claim",
+            body=json.dumps({"origin_device_id": "peer-1"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 404
+        assert payload["error"] == "legacy device not found"
+    finally:
+        server.shutdown()
+
+    store = MemoryStore(db_path)
+    try:
+        row = store.conn.execute(
+            "SELECT actor_id, visibility, workspace_id, workspace_kind, trust_state FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == "legacy-sync:peer-1"
+        assert row["visibility"] == "shared"
+        assert row["workspace_id"] == "shared:legacy"
+        assert row["workspace_kind"] == "shared"
+        assert row["trust_state"] == "legacy_unknown"
+    finally:
+        store.close()
+
+
 def test_sync_status_endpoint_includes_diagnostics_when_requested(
     tmp_path: Path, monkeypatch
 ) -> None:
