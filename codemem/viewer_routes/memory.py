@@ -62,6 +62,20 @@ def _attach_session_fields(store: MemoryStore, items: list[dict[str, Any]]) -> N
         item.setdefault("cwd", fields.get("cwd") or "")
 
 
+def _apply_scope_filter(
+    store: MemoryStore, filters: dict[str, Any] | None, scope: str | None
+) -> tuple[dict[str, Any], bool]:
+    normalized = str(scope or "all").strip().lower()
+    if normalized not in {"all", "mine", "shared"}:
+        return {}, False
+    scoped = dict(filters or {})
+    if normalized == "mine":
+        scoped["include_actor_ids"] = [store.actor_id]
+    elif normalized == "shared":
+        scoped["include_visibility"] = ["shared"]
+    return scoped, True
+
+
 def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: str) -> bool:
     # Compatibility endpoints used by the bundled web UI.
     if path == "/api/memories":
@@ -101,6 +115,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             handler._send_json({"error": "limit and offset must be int"}, status=400)
             return True
         project = params.get("project", [None])[0]
+        scope = params.get("scope", ["all"])[0]
         kinds = [
             "bugfix",
             "change",
@@ -110,7 +125,12 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             "feature",
             "refactor",
         ]
-        obs_filters = {"project": project} if project else None
+        obs_filters, valid_scope = _apply_scope_filter(
+            store, {"project": project} if project else None, scope
+        )
+        if not valid_scope:
+            handler._send_json({"error": "invalid_scope"}, status=400)
+            return True
         items = store.recent_by_kinds(
             limit=limit + 1, kinds=kinds, filters=obs_filters, offset=offset
         )
@@ -140,10 +160,15 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             handler._send_json({"error": "limit and offset must be int"}, status=400)
             return True
         project = params.get("project", [None])[0]
+        scope = params.get("scope", ["all"])[0]
         filters: dict[str, Any] = {"kind": "session_summary"}
         if project:
             filters["project"] = project
-        items = store.recent(limit=limit + 1, filters=filters, offset=offset)
+        scoped_filters, valid_scope = _apply_scope_filter(store, filters, scope)
+        if not valid_scope:
+            handler._send_json({"error": "invalid_scope"}, status=400)
+            return True
+        items = store.recent(limit=limit + 1, filters=scoped_filters, offset=offset)
         has_more = len(items) > limit
         if has_more:
             items = items[:limit]
@@ -232,7 +257,13 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 handler._send_json({"error": "token_budget must be int"}, status=400)
                 return True
         project = params.get("project", [None])[0]
-        pack_filters = {"project": project} if project else None
+        scope = params.get("scope", ["all"])[0]
+        pack_filters, valid_scope = _apply_scope_filter(
+            store, {"project": project} if project else None, scope
+        )
+        if not valid_scope:
+            handler._send_json({"error": "invalid_scope"}, status=400)
+            return True
         pack = store.build_memory_pack(
             context=context,
             limit=limit,
@@ -247,12 +278,19 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         limit = int(params.get("limit", ["20"])[0])
         kind = params.get("kind", [None])[0]
         project = params.get("project", [None])[0]
+        scope = params.get("scope", ["all"])[0]
         filters: dict[str, Any] = {}
         if kind:
             filters["kind"] = kind
         if project:
             filters["project"] = project
-        items = store.recent(limit=limit, filters=filters if filters else None)
+        scoped_filters, valid_scope = _apply_scope_filter(
+            store, filters if filters else None, scope
+        )
+        if not valid_scope:
+            handler._send_json({"error": "invalid_scope"}, status=400)
+            return True
+        items = store.recent(limit=limit, filters=scoped_filters)
         _attach_session_fields(store, items)
         handler._send_json({"items": items})
         return True

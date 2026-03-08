@@ -10,7 +10,7 @@ import {
   parseJsonArray,
   toTitleLabel,
 } from '../lib/format';
-import { state, setFeedTypeFilter, FEED_FILTERS, type FeedFilter } from '../lib/state';
+import { state, setFeedScopeFilter, setFeedTypeFilter } from '../lib/state';
 import * as api from '../lib/api';
 
 /* ── Helpers ─────────────────────────────────────────────── */
@@ -82,6 +82,12 @@ let summaryHasMore = true;
 let loadMoreInFlight = false;
 let feedScrollHandlerBound = false;
 let feedProjectGeneration = 0;
+
+function feedScopeLabel(scope: string): string {
+  if (scope === 'mine') return ' · mine';
+  if (scope === 'shared') return ' · shared';
+  return '';
+}
 
 function resetPagination(project: string) {
   lastFeedProject = project;
@@ -439,9 +445,13 @@ function renderFeedItem(item: any): HTMLElement {
   const tags = parseJsonArray(item.tags || []);
   const files = parseJsonArray(item.files || []);
   const project = item.project || '';
+  const actor = String(item.actor_display_name || item.actor_id || '').trim();
+  const visibility = String(item.visibility || metadata?.visibility || 'private').trim();
+  const authorLabel = actor ? ` · Author: ${actor}` : '';
+  const visibilityLabel = visibility ? ` · Visibility: ${visibility}` : '';
   const tagContent = tags.length ? ` · ${tags.map((t: any) => formatTagLabel(t)).join(', ')}` : '';
   const fileContent = files.length ? ` · ${formatFileList(files)}` : '';
-  meta.textContent = `${project ? `Project: ${project}` : 'Project: n/a'}${tagContent}${fileContent}`;
+  meta.textContent = `${project ? `Project: ${project}` : 'Project: n/a'}${authorLabel}${visibilityLabel}${tagContent}${fileContent}`;
 
   // Footer
   const footer = el('div', 'feed-footer');
@@ -477,7 +487,7 @@ function filterByQuery(items: any[]): any[] {
 
 function computeSignature(items: any[]): string {
   const parts = items.map((i) => `${itemSignature(i)}:${i.kind || ''}:${i.created_at_utc || i.created_at || ''}`);
-  return `${state.feedTypeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join('|')}`;
+  return `${state.feedTypeFilter}|${state.feedScopeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join('|')}`;
 }
 
 function countNewItems(nextItems: any[], currentItems: any[]): number {
@@ -498,12 +508,14 @@ async function loadMoreFeedPage() {
         ? api.loadMemoriesPage(requestProject, {
             limit: OBSERVATION_PAGE_SIZE,
             offset: startObservationOffset,
+            scope: state.feedScopeFilter,
           })
         : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: startObservationOffset } }),
       summaryHasMore
         ? api.loadSummariesPage(requestProject, {
             limit: SUMMARY_PAGE_SIZE,
             offset: startSummaryOffset,
+            scope: state.feedScopeFilter,
           })
         : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: startSummaryOffset } }),
     ]);
@@ -562,9 +574,11 @@ function renderProjectSwitchLoadingState() {
 
 export function initFeedTab() {
   const feedTypeToggle = document.getElementById('feedTypeToggle');
+  const feedScopeToggle = document.getElementById('feedScopeToggle');
   const feedSearch = document.getElementById('feedSearch') as HTMLInputElement | null;
 
   updateFeedTypeToggle();
+  updateFeedScopeToggle();
 
   feedTypeToggle?.addEventListener('click', (e) => {
     const target = (e as any).target?.closest?.('button');
@@ -572,6 +586,14 @@ export function initFeedTab() {
     setFeedTypeFilter(target.dataset.filter || 'all');
     updateFeedTypeToggle();
     updateFeedView();
+  });
+
+  feedScopeToggle?.addEventListener('click', (e) => {
+    const target = (e as any).target?.closest?.('button');
+    if (!target) return;
+    setFeedScopeFilter(target.dataset.filter || 'all');
+    updateFeedScopeToggle();
+    void loadFeedData();
   });
 
   feedSearch?.addEventListener('input', () => {
@@ -596,6 +618,15 @@ export function updateFeedTypeToggle() {
   });
 }
 
+export function updateFeedScopeToggle() {
+  const toggle = document.getElementById('feedScopeToggle');
+  if (!toggle) return;
+  toggle.querySelectorAll('.toggle-button').forEach((btn) => {
+    const value = (btn as HTMLButtonElement).dataset?.filter || 'all';
+    btn.classList.toggle('active', value === state.feedScopeFilter);
+  });
+}
+
 export function updateFeedView() {
   const feedList = document.getElementById('feedList');
   const feedMeta = document.getElementById('feedMeta');
@@ -605,6 +636,7 @@ export function updateFeedView() {
   const byType = filterByType(state.lastFeedItems);
   const visible = filterByQuery(byType);
   const filterLabel = state.feedTypeFilter === 'observations' ? ' · observations' : state.feedTypeFilter === 'summaries' ? ' · session summaries' : '';
+  const scopeLabel = feedScopeLabel(state.feedScopeFilter);
 
   const sig = computeSignature(visible);
   const changed = sig !== state.lastFeedSignature;
@@ -614,7 +646,7 @@ export function updateFeedView() {
     const filteredLabel = !state.feedQuery.trim() && state.lastFeedFilteredCount ? ` · ${state.lastFeedFilteredCount} observations filtered` : '';
     const queryLabel = state.feedQuery.trim() ? ` · matching "${state.feedQuery.trim()}"` : '';
     const moreLabel = hasMorePages() ? ' · scroll for more' : '';
-    feedMeta.textContent = `${visible.length} items${filterLabel}${queryLabel}${filteredLabel}${moreLabel}`;
+    feedMeta.textContent = `${visible.length} items${filterLabel}${scopeLabel}${queryLabel}${filteredLabel}${moreLabel}`;
   }
 
   if (changed) {
@@ -643,8 +675,8 @@ export async function loadFeedData() {
   const summariesLimit = SUMMARY_PAGE_SIZE;
 
   const [observations, summaries] = await Promise.all([
-    api.loadMemoriesPage(project, { limit: observationsLimit, offset: 0 }),
-    api.loadSummariesPage(project, { limit: summariesLimit, offset: 0 }),
+    api.loadMemoriesPage(project, { limit: observationsLimit, offset: 0, scope: state.feedScopeFilter }),
+    api.loadSummariesPage(project, { limit: summariesLimit, offset: 0, scope: state.feedScopeFilter }),
   ]);
 
   if (requestGeneration !== feedProjectGeneration || project !== (state.currentProject || '')) {

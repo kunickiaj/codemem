@@ -152,3 +152,8 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - If sessions are missing, confirm the viewer and plugin share the same DB path.
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
+
+## Retrieval scope
+- New memories default to private visibility and stay local unless written as shared.
+- The feed supports `All visible`, `Mine`, and `Shared` scopes without splitting memories into separate databases.
+- Shared memories are the only ones eligible for peer-to-peer sync; project and per-peer sync filters still narrow where shared memories flow.
