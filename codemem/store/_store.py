@@ -98,6 +98,8 @@ class MemoryStore:
             self.device_id = str(row["device_id"]) if row else "local"
 
         cfg = load_config()
+        self.actor_id = self._resolve_actor_id(cfg.actor_id)
+        self.actor_display_name = self._resolve_actor_display_name(cfg.actor_display_name)
         self._pack_exact_dedupe_enabled = bool(cfg.pack_exact_dedupe_enabled)
         self._hybrid_retrieval_enabled = bool(cfg.hybrid_retrieval_enabled)
         self._hybrid_retrieval_shadow_log = bool(cfg.hybrid_retrieval_shadow_log)
@@ -108,6 +110,140 @@ class MemoryStore:
         self._sync_projects_exclude = [
             p.strip() for p in cfg.sync_projects_exclude if p and p.strip()
         ]
+        self._backfill_identity_provenance()
+
+    def _resolve_actor_id(self, configured_actor_id: str | None) -> str:
+        value = str(configured_actor_id or "").strip()
+        if value:
+            return value
+        device_id = str(self.device_id or "").strip() or "local"
+        return f"local:{device_id}"
+
+    def _resolve_actor_display_name(self, configured_display_name: str | None) -> str:
+        value = str(configured_display_name or "").strip()
+        if value:
+            return value
+        user = str(os.getenv("USER") or os.getenv("USERNAME") or "").strip()
+        return user or self.actor_id
+
+    @staticmethod
+    def _clean_optional_str(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    def _default_workspace_id(self, *, actor_id: str, workspace_kind: str) -> str:
+        if workspace_kind == "shared":
+            return "shared:default"
+        return f"personal:{actor_id}"
+
+    def _resolve_memory_provenance(
+        self, metadata: dict[str, Any] | None = None
+    ) -> dict[str, str | None]:
+        metadata = dict(metadata or {})
+        actor_id = self._clean_optional_str(metadata.get("actor_id")) or self.actor_id
+        actor_display_name = (
+            self._clean_optional_str(metadata.get("actor_display_name")) or self.actor_display_name
+        )
+        workspace_kind = self._clean_optional_str(metadata.get("workspace_kind")) or "personal"
+        if workspace_kind not in {"personal", "shared"}:
+            workspace_kind = "personal"
+        workspace_id = self._clean_optional_str(
+            metadata.get("workspace_id")
+        ) or self._default_workspace_id(
+            actor_id=actor_id,
+            workspace_kind=workspace_kind,
+        )
+        origin_device_id = (
+            self._clean_optional_str(metadata.get("origin_device_id")) or self.device_id
+        )
+        origin_source = self._clean_optional_str(
+            metadata.get("origin_source")
+        ) or self._clean_optional_str(metadata.get("source"))
+        trust_state = self._clean_optional_str(metadata.get("trust_state")) or "trusted"
+        return {
+            "actor_id": actor_id,
+            "actor_display_name": actor_display_name,
+            "workspace_id": workspace_id,
+            "workspace_kind": workspace_kind,
+            "origin_device_id": origin_device_id,
+            "origin_source": origin_source,
+            "trust_state": trust_state,
+        }
+
+    def _derive_legacy_row_provenance(self, row: dict[str, Any]) -> dict[str, str | None]:
+        metadata = self._normalize_metadata(row.get("metadata_json"))
+        source = self._clean_optional_str(metadata.get("source"))
+        clock_device_id = self._clean_optional_str(metadata.get("clock_device_id"))
+        is_sync = source == "sync"
+        is_local = not is_sync and clock_device_id in {None, "local", self.device_id}
+        if is_local:
+            return self._resolve_memory_provenance(metadata)
+        origin_device_id = clock_device_id or "unknown"
+        actor_id = (
+            self._clean_optional_str(metadata.get("actor_id")) or f"legacy-sync:{origin_device_id}"
+        )
+        actor_display_name = (
+            self._clean_optional_str(metadata.get("actor_display_name")) or "Legacy synced peer"
+        )
+        return {
+            "actor_id": actor_id,
+            "actor_display_name": actor_display_name,
+            "workspace_id": self._clean_optional_str(metadata.get("workspace_id"))
+            or "shared:legacy",
+            "workspace_kind": self._clean_optional_str(metadata.get("workspace_kind")) or "shared",
+            "origin_device_id": origin_device_id,
+            "origin_source": self._clean_optional_str(metadata.get("origin_source"))
+            or source
+            or "sync",
+            "trust_state": self._clean_optional_str(metadata.get("trust_state"))
+            or "legacy_unknown",
+        }
+
+    def _backfill_identity_provenance(self) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT id, metadata_json, actor_id, actor_display_name, workspace_id, workspace_kind,
+                   origin_device_id, origin_source, trust_state
+            FROM memory_items
+            WHERE actor_id IS NULL
+               OR actor_display_name IS NULL
+               OR workspace_id IS NULL
+               OR workspace_kind IS NULL
+               OR origin_device_id IS NULL
+               OR trust_state IS NULL
+            """
+        ).fetchall()
+        if not rows:
+            return
+        for row in rows:
+            row_data = dict(row)
+            provenance = self._derive_legacy_row_provenance(row_data)
+            self.conn.execute(
+                """
+                UPDATE memory_items
+                SET actor_id = COALESCE(actor_id, ?),
+                    actor_display_name = COALESCE(actor_display_name, ?),
+                    workspace_id = COALESCE(workspace_id, ?),
+                    workspace_kind = COALESCE(workspace_kind, ?),
+                    origin_device_id = COALESCE(origin_device_id, ?),
+                    origin_source = COALESCE(origin_source, ?),
+                    trust_state = COALESCE(trust_state, ?)
+                WHERE id = ?
+                """,
+                (
+                    provenance["actor_id"],
+                    provenance["actor_display_name"],
+                    provenance["workspace_id"],
+                    provenance["workspace_kind"],
+                    provenance["origin_device_id"],
+                    provenance["origin_source"],
+                    provenance["trust_state"],
+                    int(row_data["id"]),
+                ),
+            )
+        self.conn.commit()
 
     def _effective_sync_project_filters(
         self, *, peer_device_id: str | None = None
@@ -855,6 +991,7 @@ class MemoryStore:
         tags_text = " ".join(sorted(set(tags or [])))
         metadata_payload = dict(metadata or {})
         metadata_payload.setdefault("clock_device_id", self.device_id)
+        provenance = self._resolve_memory_provenance(metadata_payload)
         import_key = metadata_payload.get("import_key") or None
         if not import_key:
             import_key = str(uuid4())
@@ -883,12 +1020,19 @@ class MemoryStore:
                 created_at,
                 updated_at,
                 metadata_json,
+                actor_id,
+                actor_display_name,
+                workspace_id,
+                workspace_kind,
+                origin_device_id,
+                origin_source,
+                trust_state,
                 user_prompt_id,
                 deleted_at,
                 rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -900,6 +1044,13 @@ class MemoryStore:
                 created_at,
                 created_at,
                 db.to_json(metadata_payload),
+                provenance["actor_id"],
+                provenance["actor_display_name"],
+                provenance["workspace_id"],
+                provenance["workspace_kind"],
+                provenance["origin_device_id"],
+                provenance["origin_source"],
+                provenance["trust_state"],
                 user_prompt_id,
                 None,
                 1,
@@ -945,6 +1096,7 @@ class MemoryStore:
         )
         metadata_payload = dict(metadata or {})
         metadata_payload.setdefault("clock_device_id", self.device_id)
+        provenance = self._resolve_memory_provenance(metadata_payload)
         if metadata_payload.get("flush_batch"):
             meta_text = db.to_json(metadata_payload)
             row = self.conn.execute(
@@ -989,6 +1141,13 @@ class MemoryStore:
                 created_at,
                 updated_at,
                 metadata_json,
+                actor_id,
+                actor_display_name,
+                workspace_id,
+                workspace_kind,
+                origin_device_id,
+                origin_source,
+                trust_state,
                 subtitle,
                 facts,
                 narrative,
@@ -1001,7 +1160,7 @@ class MemoryStore:
                 rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -1013,6 +1172,13 @@ class MemoryStore:
                 created_at,
                 created_at,
                 db.to_json(metadata_payload),
+                provenance["actor_id"],
+                provenance["actor_display_name"],
+                provenance["workspace_id"],
+                provenance["workspace_kind"],
+                provenance["origin_device_id"],
+                provenance["origin_source"],
+                provenance["trust_state"],
                 subtitle,
                 db.to_json(facts or []),
                 narrative,

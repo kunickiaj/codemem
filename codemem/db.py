@@ -148,6 +148,13 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             metadata_json TEXT,
+            actor_id TEXT,
+            actor_display_name TEXT,
+            workspace_id TEXT,
+            workspace_kind TEXT,
+            origin_device_id TEXT,
+            origin_source TEXT,
+            trust_state TEXT,
             user_prompt_id INTEGER,
             deleted_at TEXT,
             rev INTEGER DEFAULT 0,
@@ -370,6 +377,13 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memory_items", "import_key", "TEXT")
     _ensure_column(conn, "memory_items", "deleted_at", "TEXT")
     _ensure_column(conn, "memory_items", "rev", "INTEGER")
+    _ensure_column(conn, "memory_items", "actor_id", "TEXT")
+    _ensure_column(conn, "memory_items", "actor_display_name", "TEXT")
+    _ensure_column(conn, "memory_items", "workspace_id", "TEXT")
+    _ensure_column(conn, "memory_items", "workspace_kind", "TEXT")
+    _ensure_column(conn, "memory_items", "origin_device_id", "TEXT")
+    _ensure_column(conn, "memory_items", "origin_source", "TEXT")
+    _ensure_column(conn, "memory_items", "trust_state", "TEXT")
     _ensure_column(conn, "user_prompts", "import_key", "TEXT")
     _ensure_column(conn, "session_summaries", "import_key", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "cwd", "TEXT")
@@ -387,6 +401,10 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_items_user_prompt_id ON memory_items(user_prompt_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_actor_id ON memory_items(actor_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_id ON memory_items(workspace_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_session_summaries_import_key ON session_summaries(import_key)"
