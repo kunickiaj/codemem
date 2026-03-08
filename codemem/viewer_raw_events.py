@@ -97,6 +97,7 @@ class RawEventSweeper:
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._auth_backoff_until: float = 0.0  # epoch ms; skip flushes until this time
         self._auth_error_logged: bool = False
 
@@ -277,9 +278,23 @@ class RawEventSweeper:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def notify_config_changed(self) -> None:
+        self._wake.set()
+
+    def reset_auth_backoff(self) -> None:
+        self._auth_backoff_until = 0.0
+        self._auth_error_logged = False
+        self._wake.set()
+
     def _run(self) -> None:
-        interval_ms = max(1000, self.interval_ms())
-        while not self._stop.wait(interval_ms / 1000.0):
+        while not self._stop.is_set():
+            interval_ms = max(1000, self.interval_ms())
+            woke = self._wake.wait(interval_ms / 1000.0)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            if woke:
+                continue
             self.tick()
 
 

@@ -64,10 +64,18 @@ export async function saveConfig(payload: any): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!resp.ok) {
-    const msg = await resp.text();
-    throw new Error(msg);
+  const text = await resp.text();
+  let parsed: any = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {}
   }
+  if (!resp.ok) {
+    const message = parsed && typeof parsed.error === 'string' ? parsed.error : text || 'request failed';
+    throw new Error(message);
+  }
+  return parsed;
 }
 
 export async function loadSyncStatus(includeDiagnostics: boolean): Promise<any> {

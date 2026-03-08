@@ -5,7 +5,9 @@ from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any, Protocol
 
+from ..commands.sync_service_cmds import run_service_action_quiet
 from ..config import (
+    CONFIG_ENV_OVERRIDES,
     OpencodeMemConfig,
     get_config_path,
     get_env_overrides,
@@ -13,6 +15,9 @@ from ..config import (
     read_config_file,
     write_config_file,
 )
+from ..plugin_ingest import invalidate_runtime_state
+from ..sync_runtime import effective_status, spawn_daemon, stop_pidfile_with_reason
+from ..viewer_raw_events import RAW_EVENT_SWEEPER
 
 
 class _ViewerHandler(Protocol):
@@ -24,6 +29,215 @@ class _ViewerHandler(Protocol):
 
 _RUNTIMES = {"api_http", "claude_sidecar"}
 _AUTH_SOURCES = {"auto", "env", "file", "command", "none"}
+_HOT_RELOAD_KEYS = {
+    "claude_command",
+    "observer_base_url",
+    "observer_provider",
+    "observer_model",
+    "observer_runtime",
+    "observer_auth_source",
+    "observer_auth_file",
+    "observer_auth_command",
+    "observer_auth_timeout_ms",
+    "observer_auth_cache_ttl_s",
+    "observer_headers",
+    "observer_max_chars",
+    "raw_events_sweeper_interval_s",
+}
+_LIVE_APPLY_KEYS = {"pack_observation_limit", "pack_session_limit"}
+_SYNC_ACTION_KEYS = {"sync_enabled", "sync_host", "sync_port", "sync_interval_s", "sync_mdns"}
+
+
+def _config_value_changed(before: dict[str, Any], after: dict[str, Any], key: str) -> bool:
+    return before.get(key) != after.get(key)
+
+
+def _effective_value_changed(before: dict[str, Any], after: dict[str, Any], key: str) -> bool:
+    return before.get(key) != after.get(key)
+
+
+def _manual_action(kind: str, command: str, *, label: str, reason: str) -> dict[str, str]:
+    return {
+        "kind": kind,
+        "command": command,
+        "label": label,
+        "reason": reason,
+    }
+
+
+def _build_warning(key: str) -> str:
+    env_var = CONFIG_ENV_OVERRIDES.get(key, "environment")
+    return f"{key} is currently controlled by {env_var}; saved config will not take effect until that override is removed."
+
+
+def _determine_sync_action(
+    *,
+    changed_keys: set[str],
+    before_effective: dict[str, Any],
+    after_effective: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    sync_keys = changed_keys & _SYNC_ACTION_KEYS
+    if not sync_keys:
+        return None, None
+    before_enabled = bool(before_effective.get("sync_enabled"))
+    after_enabled = bool(after_effective.get("sync_enabled"))
+    if "sync_enabled" in sync_keys and not after_enabled:
+        return "stop", "sync was disabled"
+    if "sync_enabled" in sync_keys and after_enabled and not before_enabled:
+        return "start", "sync was enabled"
+    if after_enabled and sync_keys - {"sync_enabled"}:
+        return "restart", "sync runtime settings changed"
+    if not after_enabled and sync_keys - {"sync_enabled"}:
+        return None, "sync settings saved and will apply next time sync starts"
+    return None, None
+
+
+def _sync_start(*, host: str, port: int, interval_s: int) -> tuple[bool, str | None]:
+    if run_service_action_quiet("start", user=True, system=False):
+        status = effective_status(host, port)
+        if status.running:
+            return True, f"sync daemon started ({status.mechanism})"
+    status = effective_status(host, port)
+    if status.running:
+        return True, f"sync daemon already running ({status.mechanism})"
+    try:
+        spawn_daemon(host=host, port=port, interval_s=interval_s, db_path=None)
+    except OSError as exc:
+        return False, f"failed to start sync daemon: {exc}"
+    status = effective_status(host, port)
+    if status.running:
+        return True, f"sync daemon started ({status.mechanism})"
+    return False, "sync daemon start did not result in a running process"
+
+
+def _sync_stop(*, host: str, port: int) -> tuple[bool, str | None]:
+    if run_service_action_quiet("stop", user=True, system=False):
+        status = effective_status(host, port)
+        if not status.running:
+            return True, "sync daemon stopped"
+    result = stop_pidfile_with_reason()
+    if result.stopped:
+        return True, "sync daemon stopped"
+    status = effective_status(host, port)
+    if not status.running:
+        return True, "sync daemon already stopped"
+    return False, f"failed to stop sync daemon ({result.reason})"
+
+
+def _sync_restart(*, host: str, port: int, interval_s: int) -> tuple[bool, str | None]:
+    if run_service_action_quiet("restart", user=True, system=False):
+        status = effective_status(host, port)
+        if status.running:
+            return True, f"sync daemon restarted ({status.mechanism})"
+    stopped, stop_message = _sync_stop(host=host, port=port)
+    if not stopped:
+        return False, stop_message
+    started, start_message = _sync_start(host=host, port=port, interval_s=interval_s)
+    if not started:
+        return False, start_message
+    return True, start_message or "sync daemon restarted"
+
+
+def _apply_sync_runtime_action(action: str, *, effective_config: dict[str, Any]) -> dict[str, Any]:
+    host = str(effective_config.get("sync_host") or OpencodeMemConfig().sync_host)
+    port = int(effective_config.get("sync_port") or OpencodeMemConfig().sync_port)
+    interval_s = int(effective_config.get("sync_interval_s") or OpencodeMemConfig().sync_interval_s)
+    if action == "start":
+        ok, message = _sync_start(host=host, port=port, interval_s=interval_s)
+    elif action == "stop":
+        ok, message = _sync_stop(host=host, port=port)
+    elif action == "restart":
+        ok, message = _sync_restart(host=host, port=port, interval_s=interval_s)
+    else:
+        return {"attempted": False, "ok": None, "message": None, "manual_action": None}
+    manual_action = None
+    if not ok:
+        manual_action = _manual_action(
+            "sync",
+            f"uv run codemem sync {action}",
+            label=f"Run `codemem sync {action}`",
+            reason=message or f"sync {action} failed",
+        )
+    return {
+        "attempted": True,
+        "ok": ok,
+        "message": message,
+        "manual_action": manual_action,
+    }
+
+
+def _apply_runtime_updates(changed_keys: set[str]) -> list[str]:
+    applied: list[str] = []
+    hot_reload_keys = changed_keys & _HOT_RELOAD_KEYS
+    if hot_reload_keys:
+        invalidate_runtime_state()
+        RAW_EVENT_SWEEPER.reset_auth_backoff()
+        applied.extend(sorted(hot_reload_keys - {"raw_events_sweeper_interval_s"}))
+    if "raw_events_sweeper_interval_s" in hot_reload_keys:
+        RAW_EVENT_SWEEPER.notify_config_changed()
+        applied.append("raw_events_sweeper_interval_s")
+    return applied
+
+
+def _build_effects(
+    *,
+    saved_changed_keys: set[str],
+    effective_changed_keys: set[str],
+    before_effective: dict[str, Any],
+    after_effective: dict[str, Any],
+    env_overrides: dict[str, str],
+) -> dict[str, Any]:
+    ignored_by_env = sorted(
+        key
+        for key in saved_changed_keys
+        if key not in effective_changed_keys and key in env_overrides
+    )
+    warnings = [_build_warning(key) for key in ignored_by_env]
+    hot_reloaded_keys = sorted(effective_changed_keys & _HOT_RELOAD_KEYS)
+    live_applied_keys = sorted(effective_changed_keys & _LIVE_APPLY_KEYS)
+    restart_required_keys: list[str] = []
+    sync_action, sync_reason = _determine_sync_action(
+        changed_keys=effective_changed_keys,
+        before_effective=before_effective,
+        after_effective=after_effective,
+    )
+    sync_effect: dict[str, Any] = {
+        "affected_keys": sorted(effective_changed_keys & _SYNC_ACTION_KEYS),
+        "action": sync_action,
+        "reason": sync_reason,
+        "attempted": False,
+        "ok": None,
+        "message": sync_reason,
+        "manual_action": None,
+    }
+    if sync_action is not None:
+        sync_effect.update(
+            _apply_sync_runtime_action(sync_action, effective_config=after_effective)
+        )
+    manual_actions: list[dict[str, str]] = []
+    manual_action = sync_effect.get("manual_action")
+    if isinstance(manual_action, dict):
+        manual_actions.append(manual_action)
+    if restart_required_keys:
+        manual_actions.append(
+            _manual_action(
+                "viewer_restart",
+                "uv run codemem serve --restart",
+                label="Restart codemem viewer",
+                reason="some settings still require a viewer restart",
+            )
+        )
+    return {
+        "saved_keys": sorted(saved_changed_keys),
+        "effective_keys": sorted(effective_changed_keys),
+        "hot_reloaded_keys": hot_reloaded_keys,
+        "live_applied_keys": live_applied_keys,
+        "restart_required_keys": restart_required_keys,
+        "ignored_by_env_keys": ignored_by_env,
+        "warnings": warnings,
+        "sync": sync_effect,
+        "manual_actions": manual_actions,
+    }
 
 
 def _as_positive_int(value: Any, *, key: str, allow_zero: bool = False) -> int | None:
@@ -155,6 +369,8 @@ def handle_post(
     except ValueError:
         handler._send_json({"error": "config file could not be read"}, status=500)
         return True
+    original_config_data = dict(config_data)
+    before_effective = asdict(load_config(config_path))
 
     for key in allowed_keys:
         if key not in updates:
@@ -351,5 +567,29 @@ def handle_post(
     except OSError:
         handler._send_json({"error": "failed to write config"}, status=500)
         return True
-    handler._send_json({"path": str(config_path), "config": config_data})
+    after_effective = asdict(load_config(config_path))
+    saved_changed_keys = {
+        key for key in allowed_keys if _config_value_changed(original_config_data, config_data, key)
+    }
+    effective_changed_keys = {
+        key
+        for key in allowed_keys
+        if _effective_value_changed(before_effective, after_effective, key)
+    }
+    _apply_runtime_updates(effective_changed_keys)
+    effects = _build_effects(
+        saved_changed_keys=saved_changed_keys,
+        effective_changed_keys=effective_changed_keys,
+        before_effective=before_effective,
+        after_effective=after_effective,
+        env_overrides=get_env_overrides(),
+    )
+    handler._send_json(
+        {
+            "path": str(config_path),
+            "config": config_data,
+            "effective": after_effective,
+            "effects": effects,
+        }
+    )
     return True

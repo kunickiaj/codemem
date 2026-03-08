@@ -906,6 +906,25 @@
       .modal-close { border: none; background: transparent; color: var(--text-tertiary); cursor: pointer; font-size: 12px; font-family: var(--font-sans); }
       .modal-body { display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+      .app-notice {
+        margin: var(--sp-3) var(--sp-5) 0;
+        padding: var(--sp-3) var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        box-shadow: var(--shadow-sm);
+      }
+      .app-notice.success {
+        border-color: rgba(26, 107, 86, 0.24);
+        background: rgba(26, 107, 86, 0.08);
+        color: var(--accent);
+      }
+      .app-notice.warning {
+        border-color: rgba(212, 100, 46, 0.28);
+        background: rgba(212, 100, 46, 0.1);
+        color: var(--accent-warm);
+      }
 
       .settings-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
       .settings-tab {
@@ -1150,6 +1169,7 @@
       <button class="tab-btn" id="tabBtn-health">Health</button>
       <button class="tab-btn" id="tabBtn-sync">Sync</button>
     </nav>
+    <div class="app-notice" id="globalNotice" hidden aria-live="polite"></div>
 
     <!-- ── Settings modal ──────────────────────────────────── -->
     <div class="modal-backdrop" id="settingsBackdrop" hidden></div>
