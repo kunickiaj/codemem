@@ -150,6 +150,13 @@ def test_observations_endpoint_supports_scope_filter(tmp_path: Path) -> None:
         assert shared_handler.status == 200
         assert shared_handler.response is not None
         assert [item["id"] for item in shared_handler.response["items"]] == [shared_id]
+
+        theirs_handler = DummyHandler()
+        handled = memory.handle_get(theirs_handler, store, "/api/observations", "scope=theirs")
+        assert handled is True
+        assert theirs_handler.status == 200
+        assert theirs_handler.response is not None
+        assert [item["id"] for item in theirs_handler.response["items"]] == [shared_id]
     finally:
         store.close()
 
