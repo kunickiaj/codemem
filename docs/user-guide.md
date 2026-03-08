@@ -105,7 +105,8 @@ Judged query JSONL format:
 ```
 
 - `relevant_ids` are memory item IDs expected in top-k.
-- `filters` is optional and uses the same project/kind filter shape as normal search commands.
+- `filters` is optional and uses the same retrieval filter shape as normal search commands.
+- Supported retrieval filters include `project`, `kind`, `include_actor_ids`, `exclude_actor_ids`, `include_workspace_ids`, `exclude_workspace_ids`, `include_workspace_kinds`, `exclude_workspace_kinds`, and `personal_first`.
 
 ## Sync (Phase 2)
 

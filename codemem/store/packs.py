@@ -12,14 +12,29 @@ if TYPE_CHECKING:
 
 
 def _get_metadata(item: MemoryResult | dict[str, Any]) -> dict[str, Any]:
+    provenance_keys = (
+        "actor_id",
+        "actor_display_name",
+        "workspace_id",
+        "workspace_kind",
+        "origin_device_id",
+        "origin_source",
+        "trust_state",
+    )
     if not isinstance(item, dict):
-        return item.metadata or {}
-    metadata = item.get("metadata_json")
-    if isinstance(metadata, str):
-        return db.from_json(metadata)
-    if isinstance(metadata, dict):
-        return metadata
-    return {}
+        metadata = dict(item.metadata or {})
+    else:
+        metadata = item.get("metadata_json")
+        if isinstance(metadata, str):
+            metadata = db.from_json(metadata)
+        elif not isinstance(metadata, dict):
+            metadata = {}
+    metadata = dict(metadata)
+    for key in provenance_keys:
+        value = _item_value(item, key, None)
+        if value is not None:
+            metadata[key] = value
+    return metadata
 
 
 def _estimate_work_tokens(store: MemoryStore, item: MemoryResult | dict[str, Any]) -> int:
@@ -578,6 +593,7 @@ def build_memory_pack(
             "body": _item_body(m),
             "confidence": _item_confidence(m),
             "tags": _item_tags(m),
+            "metadata": _get_metadata(m),
             "support_count": 1 + len(duplicate_ids.get(_item_id(m) or -1, set())),
             "duplicate_ids": sorted(duplicate_ids.get(_item_id(m) or -1, set())),
         }

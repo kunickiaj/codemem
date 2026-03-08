@@ -63,12 +63,17 @@ def test_pack_benchmark_respects_project_filter(monkeypatch, tmp_path: Path) -> 
             for text in texts:
                 lowered = text.lower()
                 if "alpha" in lowered:
-                    vectors.append([1.0, 0.0])
+                    vector = [0.0] * 384
+                    vector[0] = 1.0
                 else:
-                    vectors.append([0.0, 1.0])
+                    vector = [0.0] * 384
+                    vector[1] = 1.0
+                vectors.append(vector)
             return vectors
 
     monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.semantic.get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.store.vectors.get_embedding_client", lambda: FakeEmbeddingClient())
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     a = store.start_session(
