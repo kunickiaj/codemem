@@ -1358,14 +1358,56 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   function parseScopeList(value) {
     return value.split(",").map((item) => item.trim()).filter(Boolean);
   }
-  function renderScopeChips(values, emptyLabel) {
-    const wrap = el("div", "peer-scope-chips");
-    if (!values.length) {
-      wrap.appendChild(el("span", "peer-scope-chip empty", emptyLabel));
-      return wrap;
-    }
-    values.forEach((value) => wrap.appendChild(el("span", "peer-scope-chip", value)));
-    return wrap;
+  function createChipEditor(initialValues, placeholder) {
+    let values = [...initialValues];
+    const container = el("div", "peer-scope-editor");
+    const chips = el("div", "peer-scope-chips");
+    const input = el("input", "peer-scope-input");
+    input.placeholder = placeholder;
+    const syncChips = () => {
+      chips.textContent = "";
+      if (!values.length) {
+        chips.appendChild(el("span", "peer-scope-chip empty", "None"));
+        return;
+      }
+      values.forEach((value, index) => {
+        const chip = el("span", "peer-scope-chip");
+        const label = el("span", null, value);
+        const remove = el("button", "peer-scope-chip-remove", "x");
+        remove.type = "button";
+        remove.addEventListener("click", () => {
+          values = values.filter((_, currentIndex) => currentIndex !== index);
+          syncChips();
+        });
+        chip.append(label, remove);
+        chips.appendChild(chip);
+      });
+    };
+    const commitInput = () => {
+      const incoming = parseScopeList(input.value);
+      if (incoming.length) {
+        values = Array.from(/* @__PURE__ */ new Set([...values, ...incoming]));
+        input.value = "";
+        syncChips();
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === ",") {
+        event.preventDefault();
+        commitInput();
+      }
+      if (event.key === "Backspace" && !input.value && values.length) {
+        values = values.slice(0, -1);
+        syncChips();
+      }
+    });
+    input.addEventListener("blur", commitInput);
+    syncChips();
+    container.append(chips, input);
+    return {
+      element: container,
+      values: () => [...values]
+    };
   }
   function renderActionList(container, actions) {
     if (!container) return;
@@ -1553,19 +1595,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         "peer-scope-effective",
         `Effective scope · include: ${effectiveInclude.join(", ") || "all"} · exclude: ${effectiveExclude.join(", ") || "none"}`
       );
-      const chipRow = el("div", "peer-scope-row");
-      chipRow.append(
-        renderScopeChips(includeList, "All projects"),
-        renderScopeChips(excludeList, "No exclusions")
-      );
-      const includeInput = el("input", "peer-scope-input");
-      includeInput.placeholder = "project-a, project-b";
-      includeInput.value = includeList.join(", ");
-      const excludeInput = el("input", "peer-scope-input");
-      excludeInput.placeholder = "private-repo";
-      excludeInput.value = excludeList.join(", ");
+      const includeEditor = createChipEditor(includeList, "Add included project");
+      const excludeEditor = createChipEditor(excludeList, "Add excluded project");
       const inputRow = el("div", "peer-scope-row");
-      inputRow.append(includeInput, excludeInput);
+      inputRow.append(includeEditor.element, excludeEditor.element);
       const scopeActions = el("div", "peer-scope-actions");
       const saveScopeBtn = el("button", "settings-button", "Save scope");
       const inheritBtn = el("button", "settings-button", "Use global");
@@ -1573,7 +1606,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         saveScopeBtn.disabled = true;
         saveScopeBtn.textContent = "Saving...";
         try {
-          await updatePeerScope(peerId, parseScopeList(includeInput.value), parseScopeList(excludeInput.value));
+          await updatePeerScope(peerId, includeEditor.values(), excludeEditor.values());
           await loadSyncData();
         } catch {
           saveScopeBtn.textContent = "Retry save";
@@ -1596,7 +1629,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         }
       });
       scopeActions.append(saveScopeBtn, inheritBtn);
-      scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, chipRow, inputRow, scopeActions);
+      scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, inputRow, scopeActions);
       titleRow.append(name, actions);
       card.append(titleRow, addressLabel, meta, scopePanel);
       syncPeers.appendChild(card);
