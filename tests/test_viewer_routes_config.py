@@ -538,3 +538,24 @@ def test_config_route_reports_manual_sync_action_when_auto_apply_fails(
             "reason": "sync restart failed",
         }
     ]
+
+
+def test_sync_stop_does_not_report_success_when_pidfile_missing_but_daemon_still_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(viewer_config, "run_service_action_quiet", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        viewer_config,
+        "stop_pidfile_with_reason",
+        lambda: type("Result", (), {"stopped": False, "reason": "pidfile_missing"})(),
+    )
+    monkeypatch.setattr(
+        viewer_config,
+        "effective_status",
+        lambda host, port: type("Status", (), {"running": True, "mechanism": "port"})(),
+    )
+
+    ok, message = viewer_config._sync_stop(host="127.0.0.1", port=7337)
+
+    assert ok is False
+    assert message == "failed to stop sync daemon (pidfile_missing)"

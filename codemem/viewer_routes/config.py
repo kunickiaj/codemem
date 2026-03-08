@@ -116,7 +116,7 @@ def _sync_stop(*, host: str, port: int) -> tuple[bool, str | None]:
         if not status.running:
             return True, "sync daemon stopped"
     result = stop_pidfile_with_reason()
-    if result.stopped or result.reason in {"pidfile_missing", "pid_not_running"}:
+    if result.stopped:
         return True, "sync daemon stopped"
     status = effective_status(host, port)
     if not status.running:
