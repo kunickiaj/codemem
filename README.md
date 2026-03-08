@@ -29,13 +29,7 @@ brew install uv
 mise use -g uv@latest
 ```
 
-1. Install the CLI and plugin:
-
-```bash
-uv tool install --upgrade codemem
-```
-
-2. Add the plugin to your OpenCode config (`~/.config/opencode/opencode.jsonc`):
+1. Add the plugin to your OpenCode config (`~/.config/opencode/opencode.jsonc`):
 
 ```json
 {
@@ -44,16 +38,26 @@ uv tool install --upgrade codemem
 }
 ```
 
-By default, the OpenCode plugin resolves backend CLI calls from a `uvx` source pinned to the plugin version, so plugin and backend stay aligned unless you override `CODEMEM_RUNNER` / `CODEMEM_RUNNER_FROM`.
+2. Restart OpenCode.
 
-3. Restart OpenCode, then verify:
+By default, the OpenCode plugin resolves backend CLI calls from a `uvx` source pinned to the plugin version, so plugin and backend stay aligned unless you override `CODEMEM_RUNNER` / `CODEMEM_RUNNER_FROM`. That means the backend is fetched on first use; no separate `codemem` install is required for the basic OpenCode path.
+
+3. Verify:
 
 ```bash
-codemem stats
-codemem raw-events-status
+uvx codemem stats
+uvx codemem raw-events-status
 ```
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
+
+If you want `codemem` available directly on your `PATH` for repeated manual commands, install the CLI separately:
+
+```bash
+uv tool install --upgrade codemem
+```
+
+First startup may be slower because `uvx` can fetch/install the backend on demand.
 
 ### Claude Code (marketplace install)
 
