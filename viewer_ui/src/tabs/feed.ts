@@ -82,11 +82,11 @@ let summaryHasMore = true;
 let loadMoreInFlight = false;
 let feedScrollHandlerBound = false;
 let feedProjectGeneration = 0;
+let lastFeedScope = 'all';
 
 function feedScopeLabel(scope: string): string {
   if (scope === 'mine') return ' · mine';
   if (scope === 'theirs') return ' · theirs';
-  if (scope === 'shared') return ' · shared';
   return '';
 }
 
@@ -95,6 +95,7 @@ function provenanceChip(label: string, variant = ''): HTMLElement {
 }
 
 function authorLabel(item: any): string {
+  if (item?.owned_by_self === true) return 'You';
   const actorId = String(item.actor_id || '').trim();
   const actorName = String(item.actor_display_name || '').trim();
   if (actorId && actorId === state.lastStatsPayload?.identity?.actor_id) return 'You';
@@ -103,6 +104,7 @@ function authorLabel(item: any): string {
 
 function resetPagination(project: string) {
   lastFeedProject = project;
+  lastFeedScope = state.feedScopeFilter;
   feedProjectGeneration += 1;
   observationOffset = 0;
   summaryOffset = 0;
@@ -695,7 +697,8 @@ export function updateFeedView(force = false) {
 
 export async function loadFeedData() {
   const project = state.currentProject || '';
-  if (project !== lastFeedProject) {
+  const scopeChanged = state.feedScopeFilter !== lastFeedScope;
+  if (project !== lastFeedProject || scopeChanged) {
     resetPagination(project);
     renderProjectSwitchLoadingState();
   }
@@ -737,5 +740,6 @@ export async function loadFeedData() {
   observationHasMore = pageHasMore(observations, observationItems.length, observationsLimit);
   summaryOffset = Math.max(summaryOffset, pageNextOffset(summaries, summaryItems.length));
   observationOffset = Math.max(observationOffset, pageNextOffset(observations, observationItems.length));
+  lastFeedScope = state.feedScopeFilter;
   updateFeedView();
 }

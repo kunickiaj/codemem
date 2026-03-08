@@ -9,7 +9,12 @@ from urllib.parse import parse_qs
 
 from ..net import pick_advertise_host, pick_advertise_hosts
 from ..store import MemoryStore
-from ..sync.discovery import load_peer_addresses, normalize_address, set_peer_project_filter
+from ..sync.discovery import (
+    load_peer_addresses,
+    normalize_address,
+    set_peer_local_actor_claim,
+    set_peer_project_filter,
+)
 from ..sync.sync_pass import sync_once
 from ..sync_identity import ensure_device_identity, load_public_key
 from ..sync_runtime import SyncRuntimeStatus, effective_status
@@ -185,7 +190,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             """
             SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
                    last_seen_at, last_sync_at, last_error,
-                   projects_include_json, projects_exclude_json
+                   projects_include_json, projects_exclude_json, claimed_local_actor
             FROM sync_peers
             ORDER BY name, peer_device_id
             """
@@ -215,6 +220,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 "last_sync_at": row["last_sync_at"],
                 "last_error": row["last_error"] if include_diagnostics else None,
                 "has_error": bool(row["last_error"]),
+                "claimed_local_actor": bool(row["claimed_local_actor"]),
                 "project_scope": {
                     "include": override_include,
                     "exclude": override_exclude,
@@ -298,7 +304,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             """
             SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
                    last_seen_at, last_sync_at, last_error,
-                   projects_include_json, projects_exclude_json
+                   projects_include_json, projects_exclude_json, claimed_local_actor
             FROM sync_peers
             ORDER BY name, peer_device_id
             """
@@ -328,6 +334,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                     "last_sync_at": row["last_sync_at"],
                     "last_error": row["last_error"] if include_diagnostics else None,
                     "has_error": bool(row["last_error"]),
+                    "claimed_local_actor": bool(row["claimed_local_actor"]),
                     "project_scope": {
                         "include": override_include,
                         "exclude": override_exclude,
@@ -517,6 +524,30 @@ def handle_post(
                 },
             }
         )
+        return True
+
+    if path == "/api/sync/peers/identity":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        peer_device_id = payload.get("peer_device_id")
+        if not isinstance(peer_device_id, str) or not peer_device_id.strip():
+            handler._send_json({"error": "peer_device_id required"}, status=400)
+            return True
+        row = store.conn.execute(
+            "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
+            (peer_device_id.strip(),),
+        ).fetchone()
+        if row is None:
+            handler._send_json({"error": "peer not found"}, status=404)
+            return True
+        claimed_local_actor = bool(payload.get("claimed_local_actor"))
+        set_peer_local_actor_claim(
+            store.conn,
+            peer_device_id.strip(),
+            claimed_local_actor=claimed_local_actor,
+        )
+        handler._send_json({"ok": True, "claimed_local_actor": claimed_local_actor})
         return True
 
     if path == "/api/sync/actions/sync-now":

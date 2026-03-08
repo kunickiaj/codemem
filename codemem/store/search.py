@@ -106,15 +106,34 @@ def _actor_id_for(item: MemoryResult | dict[str, Any]) -> str | None:
     return str(actor_id) if actor_id else None
 
 
+def _ownership_scope_clause(store: MemoryStore, scope: str | None) -> tuple[str | None, list[Any]]:
+    normalized = str(scope or "").strip().lower()
+    if normalized not in {"mine", "theirs"}:
+        return None, []
+    claimed_peer_ids = store.same_actor_peer_ids()
+    legacy_actor_ids = store.claimed_same_actor_legacy_actor_ids()
+    owned_parts = ["memory_items.actor_id = ?"]
+    params: list[Any] = [store.actor_id]
+    if claimed_peer_ids:
+        placeholders = ", ".join("?" for _ in claimed_peer_ids)
+        owned_parts.append(f"memory_items.origin_device_id IN ({placeholders})")
+        params.extend(claimed_peer_ids)
+    if legacy_actor_ids:
+        placeholders = ", ".join("?" for _ in legacy_actor_ids)
+        owned_parts.append(f"memory_items.actor_id IN ({placeholders})")
+        params.extend(legacy_actor_ids)
+    owned_clause = "(" + " OR ".join(owned_parts) + ")"
+    if normalized == "mine":
+        return owned_clause, params
+    return f"NOT {owned_clause}", params
+
+
 def _personal_bias(
     store: MemoryStore | None, item: MemoryResult | dict[str, Any], filters: dict[str, Any] | None
 ) -> float:
     if store is None or not _personal_first_enabled(filters):
         return 0.0
-    actor_id = _actor_id_for(item)
-    if not actor_id or actor_id != store.actor_id:
-        return 0.0
-    return PERSONAL_FIRST_BONUS
+    return PERSONAL_FIRST_BONUS if store.memory_owned_by_self(item) else 0.0
 
 
 def _add_multi_value_filter(
@@ -153,6 +172,12 @@ def _extend_memory_filter_clauses(
     if filters.get("since"):
         where_clauses.append("memory_items.created_at >= ?")
         params.append(filters["since"])
+    ownership_clause, ownership_params = _ownership_scope_clause(
+        store, filters.get("ownership_scope")
+    )
+    if ownership_clause:
+        where_clauses.append(ownership_clause)
+        params.extend(ownership_params)
 
     _add_multi_value_filter(
         where_clauses,

@@ -184,6 +184,77 @@ def test_sync_peer_scope_update_endpoint_updates_override(tmp_path: Path, monkey
     finally:
         conn.close()
 
+
+def test_sync_peers_endpoint_exposes_local_actor_claim(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "[]", 1, "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/peers")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["items"][0]["claimed_local_actor"] is True
+    finally:
+        server.shutdown()
+
+
+def test_sync_peer_identity_endpoint_updates_claim(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/peers/identity",
+            body=json.dumps({"peer_device_id": "peer-1", "claimed_local_actor": True}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["claimed_local_actor"] is True
+    finally:
+        server.shutdown()
+
+    conn = db.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        assert int(row["claimed_local_actor"]) == 1
+    finally:
+        conn.close()
+
     server, port = _start_server(db_path)
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
