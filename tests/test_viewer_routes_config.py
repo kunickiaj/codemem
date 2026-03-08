@@ -53,6 +53,10 @@ def test_config_route_accepts_observer_auth_fields(
 
     assert handled is True
     assert handler.status == 200
+    assert handler.response is not None
+    effects = handler.response["effects"]
+    assert "observer_auth_source" in effects["hot_reloaded_keys"]
+    assert effects["sync"]["action"] is None
     saved = read_config_file(config_path)
     assert saved["claude_command"] == ["wrapper", "claude", "--"]
     assert saved["observer_auth_source"] == "command"
@@ -298,3 +302,239 @@ def test_config_route_rejects_invalid_raw_events_sweeper_interval(
     assert handled is True
     assert handler.status == 400
     assert handler.response == {"error": "raw_events_sweeper_interval_s must be int"}
+
+
+def test_config_route_hot_reloads_runtime_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    invalidated: list[str] = []
+    notified: list[str] = []
+    reset_calls: list[str] = []
+    monkeypatch.setattr(
+        viewer_config, "invalidate_runtime_state", lambda: invalidated.append("runtime")
+    )
+    monkeypatch.setattr(
+        viewer_config.RAW_EVENT_SWEEPER,
+        "notify_config_changed",
+        lambda: notified.append("sweeper"),
+    )
+    monkeypatch.setattr(
+        viewer_config.RAW_EVENT_SWEEPER,
+        "reset_auth_backoff",
+        lambda: reset_calls.append("reset"),
+    )
+
+    handler = DummyHandler(
+        {
+            "observer_runtime": "claude_sidecar",
+            "raw_events_sweeper_interval_s": 15,
+            "pack_observation_limit": 25,
+        }
+    )
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert invalidated == ["runtime"]
+    assert notified == ["sweeper"]
+    assert reset_calls == ["reset"]
+    assert handler.response is not None
+    effects = handler.response["effects"]
+    assert sorted(effects["hot_reloaded_keys"]) == [
+        "observer_runtime",
+        "raw_events_sweeper_interval_s",
+    ]
+    assert effects["live_applied_keys"] == ["pack_observation_limit"]
+
+
+def test_config_route_warns_when_env_override_blocks_effective_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_OBSERVER_RUNTIME", "api_http")
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        viewer_config, "invalidate_runtime_state", lambda: invalidated.append("runtime")
+    )
+
+    handler = DummyHandler({"observer_runtime": "claude_sidecar"})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert invalidated == []
+    assert handler.response is not None
+    effects = handler.response["effects"]
+    assert effects["hot_reloaded_keys"] == []
+    assert effects["ignored_by_env_keys"] == ["observer_runtime"]
+    assert effects["warnings"]
+
+
+def test_config_route_auto_starts_sync_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"sync_enabled": false, "sync_interval_s": 60}\n')
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    applied: list[str] = []
+
+    def _apply(action: str, *, effective_config: dict[str, Any]) -> dict[str, Any]:
+        applied.append(action)
+        return {
+            "attempted": True,
+            "ok": True,
+            "message": f"sync {action} ok",
+            "manual_action": None,
+        }
+
+    monkeypatch.setattr(viewer_config, "_apply_sync_runtime_action", _apply)
+
+    handler = DummyHandler({"sync_enabled": True})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert applied == ["start"]
+    assert handler.response is not None
+    sync_effect = handler.response["effects"]["sync"]
+    assert sync_effect["action"] == "start"
+    assert sync_effect["ok"] is True
+
+
+def test_config_route_auto_stops_sync_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"sync_enabled": true, "sync_interval_s": 60}\n')
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    applied: list[str] = []
+
+    def _apply(action: str, *, effective_config: dict[str, Any]) -> dict[str, Any]:
+        applied.append(action)
+        return {
+            "attempted": True,
+            "ok": True,
+            "message": f"sync {action} ok",
+            "manual_action": None,
+        }
+
+    monkeypatch.setattr(viewer_config, "_apply_sync_runtime_action", _apply)
+
+    handler = DummyHandler({"sync_enabled": False})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert applied == ["stop"]
+    assert handler.response is not None
+    sync_effect = handler.response["effects"]["sync"]
+    assert sync_effect["action"] == "stop"
+    assert sync_effect["ok"] is True
+
+
+def test_config_route_auto_restarts_sync_when_runtime_settings_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"sync_enabled": true, "sync_interval_s": 60}\n')
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    applied: list[str] = []
+
+    def _apply(action: str, *, effective_config: dict[str, Any]) -> dict[str, Any]:
+        applied.append(action)
+        return {
+            "attempted": True,
+            "ok": True,
+            "message": f"sync {action} ok",
+            "manual_action": None,
+        }
+
+    monkeypatch.setattr(viewer_config, "_apply_sync_runtime_action", _apply)
+
+    handler = DummyHandler({"sync_interval_s": 90})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert applied == ["restart"]
+    assert handler.response is not None
+    sync_effect = handler.response["effects"]["sync"]
+    assert sync_effect["action"] == "restart"
+    assert sync_effect["ok"] is True
+
+
+def test_config_route_reports_manual_sync_action_when_auto_apply_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"sync_enabled": true, "sync_interval_s": 60}\n')
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    monkeypatch.setattr(
+        viewer_config,
+        "_apply_sync_runtime_action",
+        lambda action, *, effective_config: {
+            "attempted": True,
+            "ok": False,
+            "message": "sync restart failed",
+            "manual_action": {
+                "kind": "sync",
+                "command": "uv run codemem sync restart",
+                "label": "Run `codemem sync restart`",
+                "reason": "sync restart failed",
+            },
+        },
+    )
+
+    handler = DummyHandler({"sync_interval_s": 90})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    assert handler.response is not None
+    sync_effect = handler.response["effects"]["sync"]
+    assert sync_effect["action"] == "restart"
+    assert sync_effect["ok"] is False
+    assert handler.response["effects"]["manual_actions"] == [
+        {
+            "kind": "sync",
+            "command": "uv run codemem sync restart",
+            "label": "Run `codemem sync restart`",
+            "reason": "sync restart failed",
+        }
+    ]

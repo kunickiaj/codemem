@@ -134,6 +134,7 @@
     configDefaults: {},
     configPath: "",
     settingsDirty: false,
+    noticeTimer: null,
     /* Sync UI toggles */
     syncDiagnosticsOpen: false,
     syncPairingOpen: false
@@ -225,10 +226,19 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    if (!resp.ok) {
-      const msg = await resp.text();
-      throw new Error(msg);
+    const text = await resp.text();
+    let parsed = null;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+      }
     }
+    if (!resp.ok) {
+      const message = parsed && typeof parsed.error === "string" ? parsed.error : text || "request failed";
+      throw new Error(message);
+    }
+    return parsed;
   }
   async function loadSyncStatus(includeDiagnostics) {
     const param = "?includeDiagnostics=1";
@@ -1815,6 +1825,78 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   function isSettingsOpen() {
     return settingsOpen;
   }
+  function hideGlobalNotice() {
+    const notice = $("globalNotice");
+    if (!notice) return;
+    hide(notice);
+    notice.textContent = "";
+    notice.classList.remove("success", "warning");
+    if (state.noticeTimer) {
+      clearTimeout(state.noticeTimer);
+      state.noticeTimer = null;
+    }
+  }
+  function showGlobalNotice(message, type = "success") {
+    const notice = $("globalNotice");
+    if (!notice || !message) return;
+    notice.textContent = message;
+    notice.classList.remove("success", "warning");
+    notice.classList.add(type === "warning" ? "warning" : "success");
+    show(notice);
+    if (state.noticeTimer) clearTimeout(state.noticeTimer);
+    state.noticeTimer = setTimeout(() => {
+      hideGlobalNotice();
+    }, 12e3);
+  }
+  function formatSettingsKey(key) {
+    return String(key || "").replace(/_/g, " ");
+  }
+  function joinPhrases(values) {
+    const items = values.filter((value) => typeof value === "string" && value.trim());
+    if (items.length === 0) return "";
+    if (items.length === 1) return items[0];
+    if (items.length === 2) return `${items[0]} and ${items[1]}`;
+    return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+  }
+  function buildSettingsNotice(payload) {
+    const effects = payload?.effects && typeof payload.effects === "object" ? payload.effects : {};
+    const hotReloaded = Array.isArray(effects.hot_reloaded_keys) ? effects.hot_reloaded_keys.map(formatSettingsKey) : [];
+    const liveApplied = Array.isArray(effects.live_applied_keys) ? effects.live_applied_keys.map(formatSettingsKey) : [];
+    const restartRequired = Array.isArray(effects.restart_required_keys) ? effects.restart_required_keys.map(formatSettingsKey) : [];
+    const warnings = Array.isArray(effects.warnings) ? effects.warnings.filter(
+      (value) => typeof value === "string" && value.trim().length > 0
+    ) : [];
+    const manualActions = Array.isArray(effects.manual_actions) ? effects.manual_actions : [];
+    const sync = effects.sync && typeof effects.sync === "object" ? effects.sync : {};
+    const lines = [];
+    if (hotReloaded.length) {
+      lines.push(`Applied now: ${joinPhrases(hotReloaded)}.`);
+    }
+    if (liveApplied.length) {
+      lines.push(`Live settings updated: ${joinPhrases(liveApplied)}.`);
+    }
+    if (sync.attempted && typeof sync.message === "string" && sync.message) {
+      lines.push(`Sync: ${sync.message}.`);
+    } else if (Array.isArray(sync.affected_keys) && sync.affected_keys.length && typeof sync.reason === "string" && sync.reason) {
+      lines.push(`Sync: ${sync.reason}.`);
+    }
+    if (restartRequired.length) {
+      lines.push(`Manual restart required: ${joinPhrases(restartRequired)}.`);
+    }
+    warnings.forEach((warning) => {
+      lines.push(warning);
+    });
+    manualActions.forEach((action) => {
+      if (action && typeof action.command === "string" && action.command.trim()) {
+        lines.push(`If needed: ${action.command}.`);
+      }
+    });
+    if (!lines.length) {
+      lines.push("Saved.");
+    }
+    const hasWarning = restartRequired.length > 0 || warnings.length > 0 || sync.ok === false;
+    return { message: lines.join(" "), type: hasWarning ? "warning" : "success" };
+  }
   function renderConfigModal(payload) {
     if (!payload || typeof payload !== "object") return;
     const defaults = payload.defaults || {};
@@ -2109,10 +2191,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         closeSettings(startPolling2, refreshCallback);
         return;
       }
-      await saveConfig(changed);
+      const result = await saveConfig(changed);
+      const notice = buildSettingsNotice(result);
       status.textContent = "Saved";
       setDirty(false);
       closeSettings(startPolling2, refreshCallback);
+      showGlobalNotice(notice.message, notice.type);
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
       status.textContent = `Save failed: ${message}`;

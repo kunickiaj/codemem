@@ -118,6 +118,12 @@ def _get_config() -> Any:
     return CONFIG
 
 
+def invalidate_runtime_state() -> None:
+    global CONFIG, OBSERVER
+    CONFIG = None
+    OBSERVER = None
+
+
 def _normalize_tool_name(event: dict[str, Any]) -> str:
     return _normalize_tool_name_impl(event)
 
