@@ -13,7 +13,7 @@ const SYNC_REDACT_KEY = 'codemem-sync-redact';
 
 export const FEED_FILTERS = ['all', 'observations', 'summaries'] as const;
 export type FeedFilter = (typeof FEED_FILTERS)[number];
-export const FEED_SCOPES = ['all', 'mine', 'theirs', 'shared'] as const;
+export const FEED_SCOPES = ['all', 'mine', 'theirs'] as const;
 export type FeedScope = (typeof FEED_SCOPES)[number];
 
 /* ── Mutable application state ─────────────────────────────── */

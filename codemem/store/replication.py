@@ -92,6 +92,16 @@ def _sync_visibility_allowed(payload: dict[str, Any] | None) -> bool:
     return visibility == "shared"
 
 
+def _peer_claimed_local_actor(store: MemoryStore, peer_device_id: str | None) -> bool:
+    if not peer_device_id:
+        return False
+    row = store.conn.execute(
+        "SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+        (peer_device_id,),
+    ).fetchone()
+    return bool(row and row["claimed_local_actor"])
+
+
 def count_replication_ops_missing_project(store: MemoryStore) -> int:
     """Count memory_item replication ops whose payload lacks a usable project.
 
@@ -170,7 +180,9 @@ def filter_replication_ops_for_sync_with_status(
             project = None
             payload = op.get("payload")
             if isinstance(payload, dict):
-                if not _sync_visibility_allowed(payload):
+                if not _sync_visibility_allowed(payload) and not _peer_claimed_local_actor(
+                    store, peer_device_id
+                ):
                     skipped_count += 1
                     if first_skipped is None:
                         first_skipped = {

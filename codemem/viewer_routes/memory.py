@@ -62,6 +62,11 @@ def _attach_session_fields(store: MemoryStore, items: list[dict[str, Any]]) -> N
         item.setdefault("cwd", fields.get("cwd") or "")
 
 
+def _attach_ownership_fields(store: MemoryStore, items: list[dict[str, Any]]) -> None:
+    for item in items:
+        item["owned_by_self"] = store.memory_owned_by_self(item)
+
+
 def _apply_scope_filter(
     store: MemoryStore, filters: dict[str, Any] | None, scope: str | None
 ) -> tuple[dict[str, Any], bool]:
@@ -70,9 +75,9 @@ def _apply_scope_filter(
         return {}, False
     scoped = dict(filters or {})
     if normalized == "mine":
-        scoped["include_actor_ids"] = [store.actor_id]
+        scoped["ownership_scope"] = "mine"
     elif normalized == "theirs":
-        scoped["exclude_actor_ids"] = [store.actor_id]
+        scoped["ownership_scope"] = "theirs"
     elif normalized == "shared":
         scoped["include_visibility"] = ["shared"]
     return scoped, True
@@ -140,6 +145,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         if has_more:
             items = items[:limit]
         _attach_session_fields(store, items)
+        _attach_ownership_fields(store, items)
         handler._send_json(
             {
                 "items": items,
@@ -175,6 +181,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         if has_more:
             items = items[:limit]
         _attach_session_fields(store, items)
+        _attach_ownership_fields(store, items)
         handler._send_json(
             {
                 "items": items,
@@ -294,6 +301,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             return True
         items = store.recent(limit=limit, filters=scoped_filters)
         _attach_session_fields(store, items)
+        _attach_ownership_fields(store, items)
         handler._send_json({"items": items})
         return True
 

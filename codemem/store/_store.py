@@ -264,6 +264,30 @@ class MemoryStore:
             )
         self.conn.commit()
 
+    def same_actor_peer_ids(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT peer_device_id FROM sync_peers WHERE claimed_local_actor = 1 ORDER BY peer_device_id"
+        ).fetchall()
+        return [str(row["peer_device_id"]) for row in rows if row["peer_device_id"]]
+
+    def claimed_same_actor_legacy_actor_ids(self) -> list[str]:
+        return [f"legacy-sync:{peer_id}" for peer_id in self.same_actor_peer_ids()]
+
+    def memory_owned_by_self(self, item: dict[str, Any] | MemoryResult) -> bool:
+        claimed_peers = set(self.same_actor_peer_ids())
+        legacy_actor_ids = set(self.claimed_same_actor_legacy_actor_ids())
+        if isinstance(item, MemoryResult):
+            actor_id = self._clean_optional_str(item.metadata.get("actor_id"))
+            origin_device_id = self._clean_optional_str(item.metadata.get("origin_device_id"))
+        else:
+            actor_id = self._clean_optional_str(item.get("actor_id"))
+            origin_device_id = self._clean_optional_str(item.get("origin_device_id"))
+        if actor_id == self.actor_id:
+            return True
+        if origin_device_id and origin_device_id in claimed_peers:
+            return True
+        return bool(actor_id and actor_id in legacy_actor_ids)
+
     def _effective_sync_project_filters(
         self, *, peer_device_id: str | None = None
     ) -> tuple[list[str], list[str]]:

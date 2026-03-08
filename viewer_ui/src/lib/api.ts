@@ -109,6 +109,21 @@ export async function updatePeerScope(
   return payload;
 }
 
+export async function updatePeerIdentity(peerDeviceId: string, claimedLocalActor: boolean): Promise<any> {
+  const resp = await fetch('/api/sync/peers/identity', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      peer_device_id: peerDeviceId,
+      claimed_local_actor: claimedLocalActor,
+    }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
 export async function loadProjects(): Promise<string[]> {
   const payload = await fetchJson('/api/projects');
   return payload.projects || [];

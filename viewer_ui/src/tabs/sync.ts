@@ -44,6 +44,16 @@ function parseScopeList(value: string): string[] {
     .filter(Boolean);
 }
 
+function renderScopeChips(values: string[], emptyLabel: string): HTMLElement {
+  const wrap = el('div', 'peer-scope-chips');
+  if (!values.length) {
+    wrap.appendChild(el('span', 'peer-scope-chip empty', emptyLabel));
+    return wrap;
+  }
+  values.forEach((value) => wrap.appendChild(el('span', 'peer-scope-chip', value)));
+  return wrap;
+}
+
 function renderActionList(container: HTMLElement | null, actions: Array<{ label: string; command: string }>) {
   if (!container) return;
   container.textContent = '';
@@ -216,6 +226,11 @@ export function renderSyncPeers() {
       lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : 'Sync: never',
       lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : 'Ping: never',
     ].join(' · '));
+    const identityMeta = el(
+      'div',
+      'peer-meta',
+      peer.claimed_local_actor ? 'Belongs to your identity' : 'Different or unknown identity',
+    );
 
     const scope = peer.project_scope || {};
     const includeList = Array.isArray(scope.include) ? scope.include : [];
@@ -224,6 +239,24 @@ export function renderSyncPeers() {
     const effectiveExclude = Array.isArray(scope.effective_exclude) ? scope.effective_exclude : [];
     const inheritsGlobal = Boolean(scope.inherits_global);
     const scopePanel = el('div', 'peer-scope');
+    const identityRow = el('div', 'peer-scope-summary');
+    const identityCheckbox = el('input', 'cm-checkbox') as HTMLInputElement;
+    identityCheckbox.type = 'checkbox';
+    identityCheckbox.checked = Boolean(peer.claimed_local_actor);
+    const identityLabel = document.createElement('label');
+    identityLabel.append(identityCheckbox, document.createTextNode(' Belongs to my identity'));
+    identityRow.appendChild(identityLabel);
+    identityCheckbox.addEventListener('change', async () => {
+      identityCheckbox.disabled = true;
+      try {
+        await api.updatePeerIdentity(peerId, identityCheckbox.checked);
+        await loadSyncData();
+      } catch {
+        identityCheckbox.checked = !identityCheckbox.checked;
+      } finally {
+        identityCheckbox.disabled = false;
+      }
+    });
     const scopeSummary = el(
       'div',
       'peer-scope-summary',
@@ -235,6 +268,11 @@ export function renderSyncPeers() {
       'div',
       'peer-scope-effective',
       `Effective scope · include: ${effectiveInclude.join(', ') || 'all'} · exclude: ${effectiveExclude.join(', ') || 'none'}`,
+    );
+    const chipRow = el('div', 'peer-scope-row');
+    chipRow.append(
+      renderScopeChips(includeList, 'All projects'),
+      renderScopeChips(excludeList, 'No exclusions'),
     );
     const includeInput = el('input', 'peer-scope-input') as HTMLInputElement;
     includeInput.placeholder = 'project-a, project-b';
@@ -274,7 +312,7 @@ export function renderSyncPeers() {
       }
     });
     scopeActions.append(saveScopeBtn, inheritBtn);
-    scopePanel.append(scopeSummary, effectiveSummary, inputRow, scopeActions);
+    scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, chipRow, inputRow, scopeActions);
 
     titleRow.append(name, actions);
     card.append(titleRow, addressLabel, meta, scopePanel);

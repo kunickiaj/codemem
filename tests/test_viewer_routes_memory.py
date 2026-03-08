@@ -173,3 +173,71 @@ def test_observations_endpoint_rejects_invalid_scope(tmp_path: Path) -> None:
         assert handler.response == {"error": "invalid_scope"}
     finally:
         store.close()
+
+
+def test_observations_claimed_peer_counts_as_mine(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-self", "[]", 1, "2026-01-24T00:00:00Z"),
+        )
+        session = store.start_session(
+            cwd="/tmp/work",
+            git_remote=None,
+            git_branch="main",
+            user="tester",
+            tool_version="test",
+            project="proj",
+        )
+        claimed_id = store.remember(
+            session,
+            kind="bugfix",
+            title="Claimed peer memory",
+            body_text="From my other computer",
+            metadata={
+                "actor_id": "legacy-sync:peer-self",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-self",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+        other_id = store.remember(
+            session,
+            kind="bugfix",
+            title="Other memory",
+            body_text="From teammate",
+            metadata={
+                "actor_id": "legacy-sync:peer-other",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-other",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+        store.end_session(session)
+
+        mine_handler = DummyHandler()
+        handled = memory.handle_get(mine_handler, store, "/api/observations", "scope=mine")
+        assert handled is True
+        assert mine_handler.status == 200
+        assert mine_handler.response is not None
+        assert [item["id"] for item in mine_handler.response["items"]] == [claimed_id]
+        assert mine_handler.response["items"][0]["owned_by_self"] is True
+
+        theirs_handler = DummyHandler()
+        handled = memory.handle_get(theirs_handler, store, "/api/observations", "scope=theirs")
+        assert handled is True
+        assert theirs_handler.status == 200
+        assert theirs_handler.response is not None
+        assert [item["id"] for item in theirs_handler.response["items"]] == [other_id]
+        assert theirs_handler.response["items"][0]["owned_by_self"] is False
+    finally:
+        store.close()

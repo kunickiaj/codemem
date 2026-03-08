@@ -15,7 +15,7 @@ LEGACY_DEFAULT_DB_PATHS = (
     Path.home() / ".codemem.sqlite",
     Path.home() / ".opencode-mem.sqlite",
 )
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _sidecar_paths(path: Path) -> list[Path]:
@@ -325,6 +325,7 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             pinned_fingerprint TEXT,
             public_key TEXT,
             addresses_json TEXT,
+            claimed_local_actor INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             last_seen_at TEXT,
             last_sync_at TEXT,
@@ -392,6 +393,7 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "sync_peers", "public_key", "TEXT")
     _ensure_column(conn, "sync_peers", "projects_include_json", "TEXT")
     _ensure_column(conn, "sync_peers", "projects_exclude_json", "TEXT")
+    _ensure_column(conn, "sync_peers", "claimed_local_actor", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "raw_event_sessions", "project", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "started_at", "TEXT")
     _ensure_column(conn, "raw_event_sessions", "last_seen_ts_wall_ms", "INTEGER")
@@ -1040,6 +1042,15 @@ def _ensure_memory_identity_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_sync_peer_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "sync_peers"):
+        return
+    _ensure_column(conn, "sync_peers", "public_key", "TEXT")
+    _ensure_column(conn, "sync_peers", "projects_include_json", "TEXT")
+    _ensure_column(conn, "sync_peers", "projects_exclude_json", "TEXT")
+    _ensure_column(conn, "sync_peers", "claimed_local_actor", "INTEGER NOT NULL DEFAULT 0")
+
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
     current_version = _schema_user_version(conn)
     raw_event_identity_migrate = _raw_event_identity_needs_data_migration(conn)
@@ -1047,6 +1058,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         _initialize_schema_v1(conn)
         current_version = 1
     _ensure_memory_identity_schema(conn)
+    _ensure_sync_peer_schema(conn)
     _ensure_raw_event_identity_schema(conn, migrate_data=raw_event_identity_migrate)
     if current_version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

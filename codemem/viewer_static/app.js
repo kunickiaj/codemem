@@ -101,7 +101,7 @@
   const SYNC_PAIRING_KEY = "codemem-sync-pairing";
   const SYNC_REDACT_KEY = "codemem-sync-redact";
   const FEED_FILTERS = ["all", "observations", "summaries"];
-  const FEED_SCOPES = ["all", "mine", "theirs", "shared"];
+  const FEED_SCOPES = ["all", "mine", "theirs"];
   const state = {
     /* Tab */
     activeTab: "feed",
@@ -266,6 +266,20 @@
     if (!resp.ok) {
       throw new Error(payload?.error || text || "request failed");
     }
+    return payload;
+  }
+  async function updatePeerIdentity(peerDeviceId, claimedLocalActor) {
+    const resp = await fetch("/api/sync/peers/identity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        peer_device_id: peerDeviceId,
+        claimed_local_actor: claimedLocalActor
+      })
+    });
+    const text = await resp.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(payload?.error || text || "request failed");
     return payload;
   }
   async function loadProjects$1() {
@@ -448,16 +462,17 @@
   let loadMoreInFlight = false;
   let feedScrollHandlerBound = false;
   let feedProjectGeneration = 0;
+  let lastFeedScope = "all";
   function feedScopeLabel(scope) {
     if (scope === "mine") return " · mine";
     if (scope === "theirs") return " · theirs";
-    if (scope === "shared") return " · shared";
     return "";
   }
   function provenanceChip(label, variant = "") {
     return el("span", `provenance-chip ${variant}`.trim(), label);
   }
   function authorLabel(item) {
+    if (item?.owned_by_self === true) return "You";
     const actorId = String(item.actor_id || "").trim();
     const actorName = String(item.actor_display_name || "").trim();
     if (actorId && actorId === state.lastStatsPayload?.identity?.actor_id) return "You";
@@ -465,6 +480,7 @@
   }
   function resetPagination(project) {
     lastFeedProject = project;
+    lastFeedScope = state.feedScopeFilter;
     feedProjectGeneration += 1;
     observationOffset = 0;
     summaryOffset = 0;
@@ -503,11 +519,6 @@
     return Array.from(byKey.values()).sort((a, b) => {
       return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });
-  }
-  function mergeRefreshFeedItems(currentItems, firstPageItems) {
-    const firstPageKeys = new Set(firstPageItems.map(itemKey));
-    const olderItems = currentItems.filter((item) => !firstPageKeys.has(itemKey(item)));
-    return mergeFeedItems(olderItems, firstPageItems);
   }
   function getSummaryObject(item) {
     const preferredKeys = ["request", "outcome", "plan", "completed", "learned", "investigated", "next", "next_steps", "notes"];
@@ -958,7 +969,8 @@
   }
   async function loadFeedData() {
     const project = state.currentProject || "";
-    if (project !== lastFeedProject) {
+    const scopeChanged = state.feedScopeFilter !== lastFeedScope;
+    if (project !== lastFeedProject || scopeChanged) {
       resetPagination(project);
       renderProjectSwitchLoadingState();
     }
@@ -979,7 +991,7 @@
     const firstPageFeedItems = [...summaryItems, ...filtered].sort((a, b) => {
       return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });
-    const feedItems = mergeRefreshFeedItems(state.lastFeedItems, firstPageFeedItems);
+    const feedItems = firstPageFeedItems;
     const newCount = countNewItems(feedItems, state.lastFeedItems);
     if (newCount) {
       const seen = new Set(state.lastFeedItems.map(itemKey));
@@ -989,11 +1001,12 @@
     }
     state.pendingFeedItems = null;
     state.lastFeedItems = feedItems;
-    state.lastFeedFilteredCount = Math.max(state.lastFeedFilteredCount, filteredCount);
+    state.lastFeedFilteredCount = filteredCount;
     summaryHasMore = pageHasMore(summaries, summaryItems.length, summariesLimit);
     observationHasMore = pageHasMore(observations, observationItems.length, observationsLimit);
-    summaryOffset = Math.max(summaryOffset, pageNextOffset(summaries, summaryItems.length));
-    observationOffset = Math.max(observationOffset, pageNextOffset(observations, observationItems.length));
+    summaryOffset = pageNextOffset(summaries, summaryItems.length);
+    observationOffset = pageNextOffset(observations, observationItems.length);
+    lastFeedScope = state.feedScopeFilter;
     updateFeedView();
   }
   function buildHealthCard({ label, value, detail, icon, className, title }) {
@@ -1330,6 +1343,15 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   function parseScopeList(value) {
     return value.split(",").map((item) => item.trim()).filter(Boolean);
   }
+  function renderScopeChips(values, emptyLabel) {
+    const wrap = el("div", "peer-scope-chips");
+    if (!values.length) {
+      wrap.appendChild(el("span", "peer-scope-chip empty", emptyLabel));
+      return wrap;
+    }
+    values.forEach((value) => wrap.appendChild(el("span", "peer-scope-chip", value)));
+    return wrap;
+  }
   function renderActionList(container, actions) {
     if (!container) return;
     container.textContent = "";
@@ -1476,6 +1498,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
         lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never"
       ].join(" · "));
+      const identityMeta = el(
+        "div",
+        "peer-meta",
+        peer.claimed_local_actor ? "Belongs to your identity" : "Different or unknown identity"
+      );
       const scope = peer.project_scope || {};
       const includeList = Array.isArray(scope.include) ? scope.include : [];
       const excludeList = Array.isArray(scope.exclude) ? scope.exclude : [];
@@ -1483,6 +1510,24 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       const effectiveExclude = Array.isArray(scope.effective_exclude) ? scope.effective_exclude : [];
       const inheritsGlobal = Boolean(scope.inherits_global);
       const scopePanel = el("div", "peer-scope");
+      const identityRow = el("div", "peer-scope-summary");
+      const identityCheckbox = el("input", "cm-checkbox");
+      identityCheckbox.type = "checkbox";
+      identityCheckbox.checked = Boolean(peer.claimed_local_actor);
+      const identityLabel = document.createElement("label");
+      identityLabel.append(identityCheckbox, document.createTextNode(" Belongs to my identity"));
+      identityRow.appendChild(identityLabel);
+      identityCheckbox.addEventListener("change", async () => {
+        identityCheckbox.disabled = true;
+        try {
+          await updatePeerIdentity(peerId, identityCheckbox.checked);
+          await loadSyncData();
+        } catch {
+          identityCheckbox.checked = !identityCheckbox.checked;
+        } finally {
+          identityCheckbox.disabled = false;
+        }
+      });
       const scopeSummary = el(
         "div",
         "peer-scope-summary",
@@ -1492,6 +1537,11 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         "div",
         "peer-scope-effective",
         `Effective scope · include: ${effectiveInclude.join(", ") || "all"} · exclude: ${effectiveExclude.join(", ") || "none"}`
+      );
+      const chipRow = el("div", "peer-scope-row");
+      chipRow.append(
+        renderScopeChips(includeList, "All projects"),
+        renderScopeChips(excludeList, "No exclusions")
       );
       const includeInput = el("input", "peer-scope-input");
       includeInput.placeholder = "project-a, project-b";
@@ -1531,7 +1581,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         }
       });
       scopeActions.append(saveScopeBtn, inheritBtn);
-      scopePanel.append(scopeSummary, effectiveSummary, inputRow, scopeActions);
+      scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, chipRow, inputRow, scopeActions);
       titleRow.append(name, actions);
       card.append(titleRow, addressLabel, meta, scopePanel);
       syncPeers.appendChild(card);

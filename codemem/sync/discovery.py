@@ -152,6 +152,23 @@ def set_peer_project_filter(
     conn.commit()
 
 
+def set_peer_local_actor_claim(
+    conn: sqlite3.Connection,
+    peer_device_id: str,
+    *,
+    claimed_local_actor: bool,
+) -> None:
+    conn.execute(
+        """
+        UPDATE sync_peers
+        SET claimed_local_actor = ?
+        WHERE peer_device_id = ?
+        """,
+        (1 if claimed_local_actor else 0, peer_device_id),
+    )
+    conn.commit()
+
+
 def record_sync_attempt(
     conn: sqlite3.Connection,
     peer_device_id: str,
