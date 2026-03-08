@@ -82,6 +82,8 @@ def _infer_project_from_cwd(cwd: str | None) -> str | None:
         path = Path(text).expanduser()
     except Exception:
         return None
+    if not path.is_absolute():
+        return None
     try:
         if not path.is_dir():
             return None
@@ -120,6 +122,60 @@ def _resolve_hook_project(*, cwd: str | None, payload_project: Any) -> str | Non
     if payload_label:
         return payload_label
 
+    return None
+
+
+def _infer_project_from_path_hint(path_hint: Any, *, cwd_hint: str | None = None) -> str | None:
+    if not isinstance(path_hint, str):
+        return None
+    text = path_hint.strip()
+    if not text:
+        return None
+    try:
+        candidate = Path(text).expanduser()
+    except Exception:
+        return None
+
+    if not candidate.is_absolute():
+        if not isinstance(cwd_hint, str) or not cwd_hint.strip():
+            return None
+        try:
+            base = Path(cwd_hint).expanduser()
+        except Exception:
+            return None
+        if not base.is_absolute():
+            return None
+        try:
+            if not base.is_dir():
+                return None
+        except OSError:
+            return None
+        candidate = base / candidate
+
+    current = candidate if candidate.is_dir() else candidate.parent
+    if not current:
+        return None
+
+    while not current.exists() and current.parent != current:
+        current = current.parent
+
+    if not current.exists():
+        return None
+    return _infer_project_from_cwd(str(current))
+
+
+def _resolve_hook_project_from_payload_paths(hook_payload: dict[str, Any]) -> str | None:
+    cwd_hint = hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None
+    tool_input = hook_payload.get("tool_input")
+    if isinstance(tool_input, dict):
+        for key in ("filePath", "file_path", "path"):
+            project = _infer_project_from_path_hint(tool_input.get(key), cwd_hint=cwd_hint)
+            if project:
+                return project
+
+    project = _infer_project_from_path_hint(hook_payload.get("transcript_path"), cwd_hint=cwd_hint)
+    if project:
+        return project
     return None
 
 
@@ -169,10 +225,24 @@ def _text_from_content(value: Any) -> str:
     return ""
 
 
-def _extract_from_transcript(transcript_path: Any) -> tuple[str | None, dict[str, int] | None]:
+def _extract_from_transcript(
+    transcript_path: Any, *, cwd_hint: str | None = None
+) -> tuple[str | None, dict[str, int] | None]:
     if not isinstance(transcript_path, str):
         return None, None
     path = Path(transcript_path).expanduser()
+    if not path.is_absolute():
+        if not isinstance(cwd_hint, str) or not cwd_hint.strip():
+            return None, None
+        base = Path(cwd_hint).expanduser()
+        if not base.is_absolute():
+            return None, None
+        try:
+            if not base.is_dir():
+                return None, None
+        except OSError:
+            return None, None
+        path = base / path
     if not path.exists() or not path.is_file():
         return None, None
 
@@ -327,7 +397,8 @@ def map_claude_hook_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         usage = raw_usage
         if not assistant_text or usage is None:
             transcript_text, transcript_usage = _extract_from_transcript(
-                payload.get("transcript_path")
+                payload.get("transcript_path"),
+                cwd_hint=payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
             )
             if not assistant_text and transcript_text:
                 assistant_text = transcript_text
@@ -434,6 +505,8 @@ def build_raw_event_envelope_from_hook(hook_payload: dict[str, Any]) -> dict[str
     hook_event_name = str(hook_payload.get("hook_event_name") or "")
     cwd = hook_payload.get("cwd") if isinstance(hook_payload.get("cwd"), str) else None
     project = _resolve_hook_project(cwd=cwd, payload_project=hook_payload.get("project"))
+    if project is None:
+        project = _resolve_hook_project_from_payload_paths(hook_payload)
 
     return {
         "session_stream_id": session_id,
