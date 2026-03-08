@@ -15,7 +15,7 @@ LEGACY_DEFAULT_DB_PATHS = (
     Path.home() / ".codemem.sqlite",
     Path.home() / ".opencode-mem.sqlite",
 )
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _sidecar_paths(path: Path) -> list[Path]:
@@ -468,6 +468,22 @@ def _raw_event_identity_needs_rebuild(conn: sqlite3.Connection) -> bool:
         "unique(source, stream_id, start_event_seq, end_event_seq, extractor_version)"
         not in batches_sql
     )
+
+
+def _raw_event_identity_needs_data_migration(conn: sqlite3.Connection) -> bool:
+    required_columns = {
+        "raw_events": {"source", "stream_id"},
+        "raw_event_sessions": {"source", "stream_id"},
+        "raw_event_flush_batches": {"source", "stream_id"},
+        "opencode_sessions": {"source", "stream_id"},
+    }
+    for table, columns in required_columns.items():
+        if not _table_exists(conn, table):
+            continue
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not columns.issubset(existing):
+            return True
+    return _raw_event_identity_needs_rebuild(conn)
 
 
 def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
@@ -984,12 +1000,54 @@ def _ensure_raw_event_reliability_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "raw_event_flush_batches", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
 
 
+def _ensure_memory_identity_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "memory_items"):
+        return
+    _ensure_column(conn, "memory_items", "subtitle", "TEXT")
+    _ensure_column(conn, "memory_items", "facts", "TEXT")
+    _ensure_column(conn, "memory_items", "narrative", "TEXT")
+    _ensure_column(conn, "memory_items", "concepts", "TEXT")
+    _ensure_column(conn, "memory_items", "files_read", "TEXT")
+    _ensure_column(conn, "memory_items", "files_modified", "TEXT")
+    _ensure_column(conn, "memory_items", "prompt_number", "INTEGER")
+    _ensure_column(conn, "memory_items", "user_prompt_id", "INTEGER")
+    _ensure_column(conn, "memory_items", "import_key", "TEXT")
+    _ensure_column(conn, "memory_items", "deleted_at", "TEXT")
+    _ensure_column(conn, "memory_items", "rev", "INTEGER")
+    _ensure_column(conn, "memory_items", "actor_id", "TEXT")
+    _ensure_column(conn, "memory_items", "actor_display_name", "TEXT")
+    _ensure_column(conn, "memory_items", "visibility", "TEXT")
+    _ensure_column(conn, "memory_items", "workspace_id", "TEXT")
+    _ensure_column(conn, "memory_items", "workspace_kind", "TEXT")
+    _ensure_column(conn, "memory_items", "origin_device_id", "TEXT")
+    _ensure_column(conn, "memory_items", "origin_source", "TEXT")
+    _ensure_column(conn, "memory_items", "trust_state", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_import_key ON memory_items(import_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user_prompt_id ON memory_items(user_prompt_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_actor_id ON memory_items(actor_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_visibility ON memory_items(visibility)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_id ON memory_items(workspace_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_kind ON memory_items(workspace_kind)"
+    )
+
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
     current_version = _schema_user_version(conn)
+    raw_event_identity_migrate = _raw_event_identity_needs_data_migration(conn)
     if current_version < 1:
         _initialize_schema_v1(conn)
         current_version = 1
-    _ensure_raw_event_identity_schema(conn, migrate_data=current_version < SCHEMA_VERSION)
+    _ensure_memory_identity_schema(conn)
+    _ensure_raw_event_identity_schema(conn, migrate_data=raw_event_identity_migrate)
     if current_version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     _ensure_vector_schema(conn)
