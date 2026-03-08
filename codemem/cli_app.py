@@ -108,9 +108,11 @@ from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT
 app = typer.Typer(help="codemem: persistent memory for OpenCode CLI")
 sync_app = typer.Typer(help="Sync codemem between devices")
 sync_peers_app = typer.Typer(help="Manage sync peers")
+serve_app = typer.Typer(help="Run or manage the viewer", invoke_without_command=True)
 db_app = typer.Typer(help="Database maintenance")
 app.add_typer(sync_app, name="sync")
 sync_app.add_typer(sync_peers_app, name="peers")
+app.add_typer(serve_app, name="serve")
 app.add_typer(db_app, name="db")
 
 
@@ -783,8 +785,9 @@ def import_from_claude_mem(
         store.close()
 
 
-@app.command()
+@serve_app.callback(invoke_without_command=True)
 def serve(
+    ctx: typer.Context,
     db_path: str = typer.Option(None, help="Path to SQLite database"),
     host: str = typer.Option(DEFAULT_VIEWER_HOST, help="Host to bind viewer"),
     port: int = typer.Option(DEFAULT_VIEWER_PORT, help="Port to bind viewer"),
@@ -792,6 +795,8 @@ def serve(
     stop: bool = typer.Option(False, help="Stop background viewer"),
     restart: bool = typer.Option(False, help="Restart background viewer"),
 ) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
     _serve(
         db_path=db_path,
         host=host,
@@ -799,6 +804,63 @@ def serve(
         background=background,
         stop=stop,
         restart=restart,
+    )
+
+
+@serve_app.command("start")
+def serve_start(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    host: str = typer.Option(DEFAULT_VIEWER_HOST, help="Host to bind viewer"),
+    port: int = typer.Option(DEFAULT_VIEWER_PORT, help="Port to bind viewer"),
+    background: bool = typer.Option(
+        True, "--background/--foreground", help="Run viewer in background"
+    ),
+) -> None:
+    """Start the viewer."""
+
+    _serve(
+        db_path=db_path,
+        host=host,
+        port=port,
+        background=background,
+        stop=False,
+        restart=False,
+    )
+
+
+@serve_app.command("stop")
+def serve_stop(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    host: str = typer.Option(DEFAULT_VIEWER_HOST, help="Host to bind viewer"),
+    port: int = typer.Option(DEFAULT_VIEWER_PORT, help="Port to bind viewer"),
+) -> None:
+    """Stop the background viewer."""
+
+    _serve(
+        db_path=db_path,
+        host=host,
+        port=port,
+        background=False,
+        stop=True,
+        restart=False,
+    )
+
+
+@serve_app.command("restart")
+def serve_restart(
+    db_path: str = typer.Option(None, help="Path to SQLite database"),
+    host: str = typer.Option(DEFAULT_VIEWER_HOST, help="Host to bind viewer"),
+    port: int = typer.Option(DEFAULT_VIEWER_PORT, help="Port to bind viewer"),
+) -> None:
+    """Restart the background viewer."""
+
+    _serve(
+        db_path=db_path,
+        host=host,
+        port=port,
+        background=False,
+        stop=False,
+        restart=True,
     )
 
 

@@ -194,6 +194,50 @@ def test_sync_disable_reports_no_pidfile_without_stop_instructions(
     assert "Stop the daemon to apply disable" not in result.stdout
 
 
+def test_serve_restart_subcommand_matches_legacy_flag(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_serve(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("codemem.cli_app._serve", fake_serve)
+
+    result = runner.invoke(app, ["serve", "restart"])
+    assert result.exit_code == 0
+    assert calls == [
+        {
+            "db_path": None,
+            "host": "127.0.0.1",
+            "port": 38888,
+            "background": False,
+            "stop": False,
+            "restart": True,
+        }
+    ]
+
+
+def test_serve_start_defaults_to_background(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_serve(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("codemem.cli_app._serve", fake_serve)
+
+    result = runner.invoke(app, ["serve", "start"])
+    assert result.exit_code == 0
+    assert calls == [
+        {
+            "db_path": None,
+            "host": "127.0.0.1",
+            "port": 38888,
+            "background": True,
+            "stop": False,
+            "restart": False,
+        }
+    ]
+
+
 def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     db_path = tmp_path / "mem.sqlite"
