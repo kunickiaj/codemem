@@ -691,6 +691,34 @@
         font-size: 12px;
       }
 
+      .feed-provenance {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .provenance-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text-tertiary);
+        font-size: 11px;
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+      .provenance-chip.mine { background: var(--accent-subtle); color: var(--accent); border-color: rgba(43, 122, 176, 0.18); }
+      .provenance-chip.author { color: var(--text-secondary); }
+      .provenance-chip.private { background: rgba(140, 140, 140, 0.12); color: var(--text-secondary); }
+      .provenance-chip.shared { background: rgba(64, 125, 88, 0.12); color: #407d58; }
+      .provenance-chip.workspace { background: rgba(143, 173, 189, 0.12); color: #6b8fa3; }
+      .provenance-chip.source { background: rgba(94, 129, 172, 0.12); color: #5e81ac; }
+      .provenance-chip.device { background: rgba(128, 110, 74, 0.12); color: #806e4a; }
+      .provenance-chip.trust { background: rgba(202, 138, 4, 0.12); color: #a16207; }
+
       .feed-body {
         font-size: 13px;
         line-height: 1.55;
@@ -1329,6 +1357,7 @@
           <div class="feed-toggle" id="feedScopeToggle">
             <button class="toggle-button" data-filter="all">All visible</button>
             <button class="toggle-button" data-filter="mine">Mine</button>
+            <button class="toggle-button" data-filter="theirs">Theirs</button>
             <button class="toggle-button" data-filter="shared">Shared</button>
           </div>
           <div class="feed-toggle" id="feedTypeToggle">
