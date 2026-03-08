@@ -99,6 +99,131 @@ def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
         server.shutdown()
 
 
+def test_sync_peers_endpoint_exposes_project_scope(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": ["project-a"],
+                "sync_projects_exclude": ["private"],
+            },
+        )(),
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO sync_peers(peer_device_id, addresses_json, created_at, projects_include_json, projects_exclude_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "peer-1",
+                "[]",
+                "2026-01-24T00:00:00Z",
+                json.dumps(["project-b"]),
+                json.dumps(["secret"]),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/peers?includeDiagnostics=1")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        peer = payload["items"][0]
+        scope = peer["project_scope"]
+        assert scope["include"] == ["project-b"]
+        assert scope["exclude"] == ["secret"]
+        assert scope["effective_include"] == ["project-b"]
+        assert scope["effective_exclude"] == ["secret"]
+        assert scope["inherits_global"] is False
+    finally:
+        server.shutdown()
+
+
+def test_sync_peer_scope_update_endpoint_updates_override(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": ["project-a"],
+                "sync_projects_exclude": [],
+            },
+        )(),
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/peers/scope",
+            body=json.dumps(
+                {
+                    "peer_device_id": "peer-1",
+                    "include": ["project-b"],
+                    "exclude": ["secret"],
+                    "inherit_global": False,
+                }
+            ),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["project_scope"]["effective_include"] == ["project-b"]
+        assert payload["project_scope"]["inherits_global"] is False
+    finally:
+        server.shutdown()
+
+    conn = db.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT projects_include_json, projects_exclude_json FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        assert json.loads(row["projects_include_json"]) == ["project-b"]
+        assert json.loads(row["projects_exclude_json"]) == ["secret"]
+    finally:
+        conn.close()
+
+
 def test_sync_status_endpoint_includes_diagnostics_when_requested(
     tmp_path: Path, monkeypatch
 ) -> None:
