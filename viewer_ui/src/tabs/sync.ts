@@ -357,6 +357,41 @@ export function renderSyncPeers() {
   });
 }
 
+export function renderLegacyDeviceClaims() {
+  const panel = document.getElementById('syncLegacyClaims');
+  const select = document.getElementById('syncLegacyDeviceSelect') as HTMLSelectElement | null;
+  const button = document.getElementById('syncLegacyClaimButton') as HTMLButtonElement | null;
+  const meta = document.getElementById('syncLegacyClaimsMeta');
+  if (!panel || !select || !button || !meta) return;
+
+  const devices = Array.isArray(state.lastSyncLegacyDevices) ? state.lastSyncLegacyDevices : [];
+  select.textContent = '';
+  meta.textContent = '';
+  if (!devices.length) {
+    (panel as any).hidden = true;
+    return;
+  }
+
+  (panel as any).hidden = false;
+  devices.forEach((device, index) => {
+    const option = document.createElement('option');
+    const deviceId = String(device.origin_device_id || '').trim();
+    if (!deviceId) return;
+    const count = Number(device.memory_count || 0);
+    const lastSeen = String(device.last_seen_at || '').trim();
+    option.value = deviceId;
+    option.textContent = count > 0 ? `${deviceId} (${count} memories)` : deviceId;
+    if (index === 0) option.selected = true;
+    select.appendChild(option);
+    if (!meta.textContent && lastSeen) {
+      meta.textContent = `Detected from older synced memories. Latest memory: ${formatTimestamp(lastSeen)}`;
+    }
+  });
+  if (!meta.textContent) {
+    meta.textContent = 'Detected from older synced memories that are not attached to a current peer.';
+  }
+}
+
 /* ── Attempts renderer ───────────────────────────────────── */
 
 export function renderSyncAttempts() {
@@ -366,7 +401,7 @@ export function renderSyncAttempts() {
   const attempts = state.lastSyncAttempts;
   if (!Array.isArray(attempts) || !attempts.length) return;
 
-  attempts.forEach((attempt) => {
+  attempts.slice(0, 5).forEach((attempt) => {
     const line = el('div', 'diag-line');
     const left = el('div', 'left');
     left.append(
@@ -422,8 +457,10 @@ export async function loadSyncData() {
     if (statusPayload) state.lastSyncStatus = statusPayload;
     state.lastSyncPeers = payload.peers || [];
     state.lastSyncAttempts = payload.attempts || [];
+    state.lastSyncLegacyDevices = payload.legacy_devices || [];
     renderSyncStatus();
     renderSyncPeers();
+    renderLegacyDeviceClaims();
     renderSyncAttempts();
     // Re-render health indicators since they consume sync state (health dot, etc.)
     renderHealthOverview();
@@ -449,6 +486,8 @@ export function initSyncTab(refreshCallback: () => void) {
   const syncPairingToggle = document.getElementById('syncPairingToggle') as HTMLButtonElement | null;
   const syncNowButton = document.getElementById('syncNowButton') as HTMLButtonElement | null;
   const syncRedact = document.getElementById('syncRedact') as HTMLInputElement | null;
+  const syncLegacyClaimButton = document.getElementById('syncLegacyClaimButton') as HTMLButtonElement | null;
+  const syncLegacyDeviceSelect = document.getElementById('syncLegacyDeviceSelect') as HTMLSelectElement | null;
   const pairingCopy = document.getElementById('pairingCopy') as HTMLButtonElement | null;
   const syncPairing = document.getElementById('syncPairing');
 
@@ -477,6 +516,24 @@ export function initSyncTab(refreshCallback: () => void) {
     renderSyncPeers();
     renderSyncAttempts();
     renderPairing();
+  });
+
+  syncLegacyClaimButton?.addEventListener('click', async () => {
+    const originDeviceId = String(syncLegacyDeviceSelect?.value || '').trim();
+    if (!originDeviceId || !syncLegacyClaimButton) return;
+    syncLegacyClaimButton.disabled = true;
+    const originalText = syncLegacyClaimButton.textContent || 'Claim as mine';
+    syncLegacyClaimButton.textContent = 'Claiming...';
+    try {
+      await api.claimLegacyDeviceIdentity(originDeviceId);
+      await loadSyncData();
+    } catch {
+      syncLegacyClaimButton.textContent = 'Retry claim';
+      syncLegacyClaimButton.disabled = false;
+      return;
+    }
+    syncLegacyClaimButton.textContent = originalText;
+    syncLegacyClaimButton.disabled = false;
   });
 
   syncNowButton?.addEventListener('click', async () => {

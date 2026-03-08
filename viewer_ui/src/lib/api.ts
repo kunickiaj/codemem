@@ -132,6 +132,18 @@ export async function updatePeerIdentity(peerDeviceId: string, claimedLocalActor
   return payload;
 }
 
+export async function claimLegacyDeviceIdentity(originDeviceId: string): Promise<any> {
+  const resp = await fetch('/api/sync/legacy-devices/claim', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ origin_device_id: originDeviceId }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
 export async function loadProjects(): Promise<string[]> {
   const payload = await fetchJson('/api/projects');
   return payload.projects || [];

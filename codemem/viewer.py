@@ -131,6 +131,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             "/api/sync/peers/rename",
             "/api/sync/peers/identity",
             "/api/sync/peers/scope",
+            "/api/sync/legacy-devices/claim",
             "/api/sync/actions/sync-now",
             "/api/sync/run",
         }

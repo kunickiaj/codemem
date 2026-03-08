@@ -108,7 +108,7 @@ Judged query JSONL format:
 - `filters` is optional and uses the same retrieval filter shape as normal search commands.
 - Supported retrieval filters include `project`, `kind`, `include_actor_ids`, `exclude_actor_ids`, `include_workspace_ids`, `exclude_workspace_ids`, `include_workspace_kinds`, `exclude_workspace_kinds`, and `personal_first`.
 
-## Sync (Phase 2)
+## Sync
 
 ### Enable + run
 
@@ -126,6 +126,11 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 - `codemem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
 - `codemem sync pair --accept '<payload>' --exclude private-repo`
+
+### Claim your own devices
+
+- In the Sync panel, use `Belongs to me` for currently paired machines that should count as your identity.
+- If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to you.
 
 ### One-off sync
 
@@ -155,6 +160,9 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 ## Retrieval scope
 - New memories default to private visibility and stay local unless written as shared.
-- The feed supports `All visible`, `Mine`, and `Shared` scopes without splitting memories into separate databases.
+- The feed supports `All`, `Mine`, and `Theirs` scopes without splitting memories into separate databases.
 - Shared memories are the only ones eligible for peer-to-peer sync; project and per-peer sync filters still narrow where shared memories flow.
-- Trust labels are informational in MVP: `trusted` is the normal case, while `legacy_unknown` marks older synced memories whose provenance had to be backfilled conservatively.
+
+## Viewer sync panel
+- `Redact sensitive details` lives above Recent sync attempts so it is easier to find before you inspect peer addresses and attempt history.
+- Recent sync attempts intentionally show only the latest few rows in the viewer; use CLI diagnostics for deeper history if needed.
