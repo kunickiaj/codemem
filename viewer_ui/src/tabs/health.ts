@@ -13,6 +13,7 @@ import {
 } from '../lib/format';
 import { state, isDetailsOpen, setDetailsOpen } from '../lib/state';
 import * as api from '../lib/api';
+import { updateFeedView } from './feed';
 
 type HealthAction = {
   label: string;
@@ -310,6 +311,7 @@ export function renderSessionSummary() {
 /* ── Data loading ────────────────────────────────────────── */
 
 export async function loadHealthData() {
+  const previousActorId = state.lastStatsPayload?.identity?.actor_id || null;
   const [statsPayload, usagePayload, sessionsPayload, rawEventsPayload] = await Promise.all([
     api.loadStats(),
     api.loadUsage(state.currentProject),
@@ -320,10 +322,14 @@ export async function loadHealthData() {
   state.lastStatsPayload = statsPayload || {};
   state.lastUsagePayload = usagePayload || {};
   state.lastRawEventsPayload = rawEventsPayload || {};
+  const nextActorId = state.lastStatsPayload?.identity?.actor_id || null;
 
   renderStats();
   renderSessionSummary();
   renderHealthOverview();
+  if (state.activeTab === 'feed' && previousActorId !== nextActorId) {
+    updateFeedView(true);
+  }
 }
 
 /* ── Init ────────────────────────────────────────────────── */

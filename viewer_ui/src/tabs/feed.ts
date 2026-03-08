@@ -657,7 +657,7 @@ export function updateFeedScopeToggle() {
   });
 }
 
-export function updateFeedView() {
+export function updateFeedView(force = false) {
   const feedList = document.getElementById('feedList');
   const feedMeta = document.getElementById('feedMeta');
   if (!feedList) return;
@@ -669,7 +669,7 @@ export function updateFeedView() {
   const scopeLabel = feedScopeLabel(state.feedScopeFilter);
 
   const sig = computeSignature(visible);
-  const changed = sig !== state.lastFeedSignature;
+  const changed = force || sig !== state.lastFeedSignature;
   state.lastFeedSignature = sig;
 
   if (feedMeta) {
