@@ -926,7 +926,7 @@
       btn.classList.toggle("active", value === state.feedScopeFilter);
     });
   }
-  function updateFeedView() {
+  function updateFeedView(force = false) {
     const feedList = document.getElementById("feedList");
     const feedMeta = document.getElementById("feedMeta");
     if (!feedList) return;
@@ -936,7 +936,7 @@
     const filterLabel = state.feedTypeFilter === "observations" ? " · observations" : state.feedTypeFilter === "summaries" ? " · session summaries" : "";
     const scopeLabel = feedScopeLabel(state.feedScopeFilter);
     const sig = computeSignature(visible);
-    const changed = sig !== state.lastFeedSignature;
+    const changed = force || sig !== state.lastFeedSignature;
     state.lastFeedSignature = sig;
     if (feedMeta) {
       const filteredLabel = !state.feedQuery.trim() && state.lastFeedFilteredCount ? ` · ${state.lastFeedFilteredCount} observations filtered` : "";
@@ -1296,6 +1296,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (typeof globalThis.lucide !== "undefined") globalThis.lucide.createIcons();
   }
   async function loadHealthData() {
+    const previousActorId = state.lastStatsPayload?.identity?.actor_id || null;
     const [statsPayload, usagePayload, sessionsPayload, rawEventsPayload] = await Promise.all([
       loadStats(),
       loadUsage(state.currentProject),
@@ -1305,9 +1306,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     state.lastStatsPayload = statsPayload || {};
     state.lastUsagePayload = usagePayload || {};
     state.lastRawEventsPayload = rawEventsPayload || {};
+    const nextActorId = state.lastStatsPayload?.identity?.actor_id || null;
     renderStats();
     renderSessionSummary();
     renderHealthOverview();
+    if (state.activeTab === "feed" && previousActorId !== nextActorId) {
+      updateFeedView(true);
+    }
   }
   function redactIpOctets(text) {
     return text.replace(/\b(\d{1,3}\.\d{1,3})\.\d{1,3}\.\d{1,3}\b/g, "$1.#.#");
