@@ -21,6 +21,14 @@ def test_root_help_shows_db_namespace() -> None:
     assert "hybrid-eval" in result.stdout
 
 
+def test_serve_help_shows_management_subcommands() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0
+    assert "start" in result.stdout
+    assert "stop" in result.stdout
+    assert "restart" in result.stdout
+
+
 def test_db_help_shows_prune_commands() -> None:
     result = runner.invoke(app, ["db", "--help"])
     assert result.exit_code == 0
