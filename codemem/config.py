@@ -11,6 +11,8 @@ DEFAULT_CONFIG_PATH = Path("~/.config/codemem/config.json").expanduser()
 DEFAULT_CONFIG_PATH_JSONC = Path("~/.config/codemem/config.jsonc").expanduser()
 
 CONFIG_ENV_OVERRIDES = {
+    "actor_id": "CODEMEM_ACTOR_ID",
+    "actor_display_name": "CODEMEM_ACTOR_DISPLAY_NAME",
     "claude_command": "CODEMEM_CLAUDE_COMMAND",
     "observer_provider": "CODEMEM_OBSERVER_PROVIDER",
     "observer_model": "CODEMEM_OBSERVER_MODEL",
@@ -187,6 +189,8 @@ class OpencodeMemConfig:
     use_opencode_run: bool = False
     opencode_model: str = "openai/gpt-5.1-codex-mini"
     opencode_agent: str | None = None
+    actor_id: str | None = None
+    actor_display_name: str | None = None
     claude_command: list[str] = field(default_factory=lambda: ["claude"])
     observer_provider: str | None = None
     observer_model: str | None = None
@@ -472,6 +476,8 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.use_opencode_run = _parse_bool(os.getenv("CODEMEM_USE_OPENCODE_RUN"), cfg.use_opencode_run)
     cfg.opencode_model = os.getenv("CODEMEM_OPENCODE_MODEL", cfg.opencode_model)
     cfg.opencode_agent = os.getenv("CODEMEM_OPENCODE_AGENT", cfg.opencode_agent)
+    cfg.actor_id = os.getenv("CODEMEM_ACTOR_ID", cfg.actor_id)
+    cfg.actor_display_name = os.getenv("CODEMEM_ACTOR_DISPLAY_NAME", cfg.actor_display_name)
     parsed_claude_command = _coerce_claude_command(os.getenv("CODEMEM_CLAUDE_COMMAND"))
     if parsed_claude_command is not None:
         cfg.claude_command = parsed_claude_command

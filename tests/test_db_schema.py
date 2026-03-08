@@ -23,6 +23,12 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
         attempt_column = conn.execute(
             "SELECT name FROM pragma_table_info('raw_event_flush_batches') WHERE name = 'attempt_count'"
         ).fetchone()
+        actor_column = conn.execute(
+            "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'actor_id'"
+        ).fetchone()
+        workspace_column = conn.execute(
+            "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'workspace_id'"
+        ).fetchone()
     finally:
         conn.close()
 
@@ -32,6 +38,8 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
     assert ingest_samples_table is not None
     assert ingest_reason_column is not None
     assert attempt_column is not None
+    assert actor_column is not None
+    assert workspace_column is not None
 
 
 def test_initialize_schema_skips_reinit_but_keeps_kind_normalization(

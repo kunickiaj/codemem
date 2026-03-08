@@ -317,6 +317,141 @@ def test_replication_ops_idempotent(tmp_path: Path) -> None:
         store_b.close()
 
 
+def test_remember_persists_default_actor_and_personal_workspace(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(session_id, kind="note", title="Alpha", body_text="Body")
+
+        row = store.conn.execute(
+            """
+            SELECT actor_id, actor_display_name, workspace_id, workspace_kind,
+                   origin_device_id, trust_state
+            FROM memory_items
+            WHERE id = ?
+            """,
+            (memory_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == store.actor_id
+        assert row["actor_display_name"] == store.actor_display_name
+        assert row["workspace_id"] == f"personal:{store.actor_id}"
+        assert row["workspace_kind"] == "personal"
+        assert row["origin_device_id"] == store.device_id
+        assert row["trust_state"] == "trusted"
+    finally:
+        store.close()
+
+
+def test_store_backfills_legacy_local_memories_to_personal_workspace(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    store = MemoryStore(db_path)
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id, kind, title, body_text, created_at, updated_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                "note",
+                "Legacy",
+                "Legacy body",
+                "2026-03-08T00:00:00Z",
+                "2026-03-08T00:00:00Z",
+                db.to_json({"clock_device_id": store.device_id}),
+            ),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+
+    reopened = MemoryStore(db_path)
+    try:
+        row = reopened.conn.execute(
+            "SELECT actor_id, workspace_id, workspace_kind, trust_state FROM memory_items WHERE title = ?",
+            ("Legacy",),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == reopened.actor_id
+        assert row["workspace_id"] == f"personal:{reopened.actor_id}"
+        assert row["workspace_kind"] == "personal"
+        assert row["trust_state"] == "trusted"
+    finally:
+        reopened.close()
+
+
+def test_store_backfills_legacy_synced_memories_to_shared_workspace(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    store = MemoryStore(db_path)
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.conn.execute(
+            """
+            INSERT INTO memory_items(
+                session_id, kind, title, body_text, created_at, updated_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                "note",
+                "Synced",
+                "From remote",
+                "2026-03-08T00:00:00Z",
+                "2026-03-08T00:00:00Z",
+                db.to_json({"clock_device_id": "peer-123", "source": "sync"}),
+            ),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+
+    reopened = MemoryStore(db_path)
+    try:
+        row = reopened.conn.execute(
+            """
+            SELECT actor_id, actor_display_name, workspace_id, workspace_kind,
+                   origin_device_id, origin_source, trust_state
+            FROM memory_items
+            WHERE title = ?
+            """,
+            ("Synced",),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == "legacy-sync:peer-123"
+        assert row["actor_display_name"] == "Legacy synced peer"
+        assert row["workspace_id"] == "shared:legacy"
+        assert row["workspace_kind"] == "shared"
+        assert row["origin_device_id"] == "peer-123"
+        assert row["origin_source"] == "sync"
+        assert row["trust_state"] == "legacy_unknown"
+    finally:
+        reopened.close()
+
+
 def test_replication_delete_wins_over_older_upsert(tmp_path: Path) -> None:
     store_a = MemoryStore(tmp_path / "a.sqlite")
     store_b = MemoryStore(tmp_path / "b.sqlite")
