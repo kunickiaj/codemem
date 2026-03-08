@@ -111,6 +111,7 @@ class MemoryStore:
             p.strip() for p in cfg.sync_projects_exclude if p and p.strip()
         ]
         self._backfill_identity_provenance()
+        self._reconcile_claimed_same_actor_legacy_memories()
 
     def _resolve_actor_id(self, configured_actor_id: str | None) -> str:
         value = str(configured_actor_id or "").strip()
@@ -263,6 +264,55 @@ class MemoryStore:
                 ),
             )
         self.conn.commit()
+
+    def _reconcile_claimed_same_actor_legacy_memories(self) -> None:
+        claimed_peers = self.same_actor_peer_ids()
+        if not claimed_peers:
+            return
+        personal_workspace_id = self._default_workspace_id(
+            actor_id=self.actor_id,
+            workspace_kind="personal",
+        )
+        placeholders = ",".join("?" for _ in claimed_peers)
+        self.conn.execute(
+            f"""
+            UPDATE memory_items
+            SET actor_id = ?,
+                actor_display_name = ?,
+                visibility = 'private',
+                workspace_id = ?,
+                workspace_kind = 'personal',
+                trust_state = 'trusted'
+            WHERE origin_device_id IN ({placeholders})
+              AND (
+                    actor_id LIKE 'legacy-sync:%'
+                 OR actor_display_name = 'Legacy synced peer'
+                 OR workspace_id = 'shared:legacy'
+                 OR workspace_kind = 'shared'
+                 OR trust_state = 'legacy_unknown'
+              )
+            """,
+            [
+                self.actor_id,
+                self.actor_display_name,
+                personal_workspace_id,
+                *claimed_peers,
+            ],
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+
+    def reconcile_claimed_same_actor_legacy_memories(self, peer_device_id: str) -> None:
+        peer_id = self._clean_optional_str(peer_device_id)
+        if not peer_id:
+            return
+        row = self.conn.execute(
+            "SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+            (peer_id,),
+        ).fetchone()
+        if not row or not row["claimed_local_actor"]:
+            return
+        self._reconcile_claimed_same_actor_legacy_memories()
 
     def same_actor_peer_ids(self) -> list[str]:
         rows = self.conn.execute(

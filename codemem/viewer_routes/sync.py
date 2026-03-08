@@ -547,6 +547,8 @@ def handle_post(
             peer_device_id.strip(),
             claimed_local_actor=claimed_local_actor,
         )
+        if claimed_local_actor:
+            store.reconcile_claimed_same_actor_legacy_memories(peer_device_id.strip())
         handler._send_json({"ok": True, "claimed_local_actor": claimed_local_actor})
         return True
 

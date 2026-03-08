@@ -636,6 +636,55 @@ def test_private_memories_replicate_to_claimed_same_actor_peer(tmp_path: Path) -
         store.close()
 
 
+def test_claimed_peer_legacy_memories_are_reconciled_to_local_actor(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-self", "[]", 1, "2026-01-24T00:00:00Z"),
+        )
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id,
+            kind="note",
+            title="Legacy",
+            body_text="From my old machine",
+            metadata={
+                "actor_id": "legacy-sync:peer-self",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-self",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+
+        store.reconcile_claimed_same_actor_legacy_memories("peer-self")
+
+        row = store.conn.execute(
+            "SELECT actor_id, actor_display_name, visibility, workspace_id, workspace_kind, trust_state FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == store.actor_id
+        assert row["actor_display_name"] == store.actor_display_name
+        assert row["visibility"] == "private"
+        assert row["workspace_id"] == f"personal:{store.actor_id}"
+        assert row["workspace_kind"] == "personal"
+        assert row["trust_state"] == "trusted"
+    finally:
+        store.close()
+
+
 def test_replication_delete_wins_over_older_upsert(tmp_path: Path) -> None:
     store_a = MemoryStore(tmp_path / "a.sqlite")
     store_b = MemoryStore(tmp_path / "b.sqlite")

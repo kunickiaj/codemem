@@ -275,7 +275,7 @@ export function renderSyncPeers() {
     const identityMeta = el(
       'div',
       'peer-meta',
-      peer.claimed_local_actor ? 'Belongs to your identity' : 'Different or unknown identity',
+      peer.claimed_local_actor ? 'Mine' : 'Different or unknown',
     );
 
     const scope = peer.project_scope || {};
@@ -290,7 +290,7 @@ export function renderSyncPeers() {
     identityCheckbox.type = 'checkbox';
     identityCheckbox.checked = Boolean(peer.claimed_local_actor);
     const identityLabel = document.createElement('label');
-    identityLabel.append(identityCheckbox, document.createTextNode(' Belongs to my identity'));
+    identityLabel.append(identityCheckbox, document.createTextNode(' Belongs to me'));
     identityRow.appendChild(identityLabel);
     identityCheckbox.addEventListener('change', async () => {
       identityCheckbox.disabled = true;
