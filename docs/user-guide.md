@@ -157,3 +157,4 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - New memories default to private visibility and stay local unless written as shared.
 - The feed supports `All visible`, `Mine`, and `Shared` scopes without splitting memories into separate databases.
 - Shared memories are the only ones eligible for peer-to-peer sync; project and per-peer sync filters still narrow where shared memories flow.
+- Trust labels are informational in MVP: `trusted` is the normal case, while `legacy_unknown` marks older synced memories whose provenance had to be backfilled conservatively.
