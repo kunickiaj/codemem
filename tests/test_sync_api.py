@@ -88,7 +88,13 @@ def test_sync_ops_roundtrip(tmp_path: Path) -> None:
             tool_version="test",
             project="/tmp/project-a",
         )
-        store.remember(session_id, kind="note", title="Delta", body_text="Delta body")
+        store.remember(
+            session_id,
+            kind="note",
+            title="Delta",
+            body_text="Delta body",
+            metadata={"visibility": "shared"},
+        )
         ops, _ = store.load_replication_ops_since(None, limit=10)
     finally:
         store.close()

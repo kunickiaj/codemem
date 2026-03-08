@@ -49,7 +49,13 @@ def test_sync_once_records_attempt_and_cursor(tmp_path: Path) -> None:
             tool_version="test",
             project="/tmp/project-a",
         )
-        store_a.remember(session_id, kind="note", title="Omega", body_text="Omega body")
+        store_a.remember(
+            session_id,
+            kind="note",
+            title="Omega",
+            body_text="Omega body",
+            metadata={"visibility": "shared"},
+        )
         # Placeholder peer id; will be renamed to the real server device id once known.
         update_peer_addresses(store_a.conn, "peer-1", ["http://127.0.0.1:0"])
     finally:
@@ -274,6 +280,7 @@ def test_sync_once_splits_push_batches_on_peer_payload_too_large(
                     kind="note",
                     title=f"Small-{i}",
                     body_text="x" * 800,
+                    metadata={"visibility": "shared"},
                 )
 
             result = sync_pass.sync_once(

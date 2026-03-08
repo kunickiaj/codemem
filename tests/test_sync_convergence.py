@@ -23,8 +23,20 @@ def test_sync_converges_between_two_peers(tmp_path: Path) -> None:
             tool_version="test",
             project="/tmp/project-b",
         )
-        store_a.remember(session_a, kind="note", title="One", body_text="First")
-        store_b.remember(session_b, kind="note", title="Two", body_text="Second")
+        store_a.remember(
+            session_a,
+            kind="note",
+            title="One",
+            body_text="First",
+            metadata={"visibility": "shared"},
+        )
+        store_b.remember(
+            session_b,
+            kind="note",
+            title="Two",
+            body_text="Second",
+            metadata={"visibility": "shared"},
+        )
 
         # Simulate late pairing: clear replication_ops then backfill.
         store_a.conn.execute("DELETE FROM replication_ops")
