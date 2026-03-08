@@ -317,6 +317,85 @@ def test_replication_ops_idempotent(tmp_path: Path) -> None:
         store_b.close()
 
 
+def test_replication_payload_includes_actor_and_workspace_provenance(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.remember(
+            session_id,
+            kind="note",
+            title="Alpha",
+            body_text="Body",
+            metadata={"workspace_kind": "shared", "workspace_id": "shared:team-alpha"},
+        )
+        ops, _ = store.load_replication_ops_since(None, limit=10)
+        payload = ops[0]["payload"]
+        assert payload["actor_id"] == store.actor_id
+        assert payload["workspace_kind"] == "shared"
+        assert payload["workspace_id"] == "shared:team-alpha"
+        assert payload["origin_device_id"] == store.device_id
+    finally:
+        store.close()
+
+
+def test_apply_replication_ops_preserves_actor_and_workspace_provenance(tmp_path: Path) -> None:
+    store_a = MemoryStore(tmp_path / "a.sqlite")
+    store_b = MemoryStore(tmp_path / "b.sqlite")
+    try:
+        session_id = store_a.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store_a.remember(
+            session_id,
+            kind="note",
+            title="Alpha",
+            body_text="Body",
+            metadata={
+                "actor_id": "actor:alice",
+                "actor_display_name": "Alice",
+                "workspace_id": "shared:team-alpha",
+                "workspace_kind": "shared",
+                "origin_source": "observer",
+                "trust_state": "trusted",
+            },
+        )
+        ops, _ = store_a.load_replication_ops_since(None, limit=10)
+
+        result = store_b.apply_replication_ops(ops)
+        assert result["inserted"] == 1
+        row = store_b.conn.execute(
+            """
+            SELECT actor_id, actor_display_name, workspace_id, workspace_kind,
+                   origin_source, trust_state
+            FROM memory_items
+            WHERE import_key = ?
+            """,
+            (ops[0]["entity_id"],),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == "actor:alice"
+        assert row["actor_display_name"] == "Alice"
+        assert row["workspace_id"] == "shared:team-alpha"
+        assert row["workspace_kind"] == "shared"
+        assert row["origin_source"] == "observer"
+        assert row["trust_state"] == "trusted"
+    finally:
+        store_a.close()
+        store_b.close()
+
+
 def test_remember_persists_default_actor_and_personal_workspace(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:

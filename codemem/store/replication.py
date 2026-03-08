@@ -529,6 +529,7 @@ def _memory_item_clock(store: MemoryStore, row: dict[str, Any]) -> tuple[int, st
 
 def _memory_item_payload(store: MemoryStore, row: dict[str, Any]) -> dict[str, Any]:
     metadata = store._normalize_metadata(row.get("metadata_json"))
+    legacy_provenance = store._derive_legacy_row_provenance(row)
     session_id = row.get("session_id")
     project = None
     session_import_key = None
@@ -575,6 +576,14 @@ def _memory_item_payload(store: MemoryStore, row: dict[str, Any]) -> dict[str, A
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "metadata_json": metadata,
+        "actor_id": row.get("actor_id") or legacy_provenance["actor_id"],
+        "actor_display_name": row.get("actor_display_name")
+        or legacy_provenance["actor_display_name"],
+        "workspace_id": row.get("workspace_id") or legacy_provenance["workspace_id"],
+        "workspace_kind": row.get("workspace_kind") or legacy_provenance["workspace_kind"],
+        "origin_device_id": row.get("origin_device_id") or legacy_provenance["origin_device_id"],
+        "origin_source": row.get("origin_source") or legacy_provenance["origin_source"],
+        "trust_state": row.get("trust_state") or legacy_provenance["trust_state"],
         "subtitle": row.get("subtitle"),
         "facts": row.get("facts"),
         "narrative": row.get("narrative"),
@@ -1182,6 +1191,31 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
     metadata_json = db.to_json(metadata)
     created_at = str(payload.get("created_at") or clock.get("updated_at") or "")
     updated_at = str(payload.get("updated_at") or clock.get("updated_at") or "")
+    fallback_provenance = store._derive_legacy_row_provenance({"metadata_json": metadata})
+    actor_id = store._clean_optional_str(payload.get("actor_id")) or fallback_provenance["actor_id"]
+    actor_display_name = (
+        store._clean_optional_str(payload.get("actor_display_name"))
+        or fallback_provenance["actor_display_name"]
+    )
+    workspace_id = (
+        store._clean_optional_str(payload.get("workspace_id"))
+        or fallback_provenance["workspace_id"]
+    )
+    workspace_kind = (
+        store._clean_optional_str(payload.get("workspace_kind"))
+        or fallback_provenance["workspace_kind"]
+    )
+    origin_device_id = (
+        store._clean_optional_str(payload.get("origin_device_id"))
+        or fallback_provenance["origin_device_id"]
+    )
+    origin_source = (
+        store._clean_optional_str(payload.get("origin_source"))
+        or fallback_provenance["origin_source"]
+    )
+    trust_state = (
+        store._clean_optional_str(payload.get("trust_state")) or fallback_provenance["trust_state"]
+    )
     project_value = payload.get("project")
     project = project_value if isinstance(project_value, str) and project_value.strip() else None
     session_id_value: int | None
@@ -1221,6 +1255,13 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
         created_at,
         updated_at,
         metadata_json,
+        actor_id,
+        actor_display_name,
+        workspace_id,
+        workspace_kind,
+        origin_device_id,
+        origin_source,
+        trust_state,
         payload.get("subtitle"),
         _json_text(payload.get("facts")),
         payload.get("narrative"),
@@ -1247,6 +1288,13 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
                 created_at,
                 updated_at,
                 metadata_json,
+                actor_id,
+                actor_display_name,
+                workspace_id,
+                workspace_kind,
+                origin_device_id,
+                origin_source,
+                trust_state,
                 subtitle,
                 facts,
                 narrative,
@@ -1259,7 +1307,7 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
                 deleted_at,
                 rev
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1277,6 +1325,13 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
             created_at = ?,
             updated_at = ?,
             metadata_json = ?,
+            actor_id = ?,
+            actor_display_name = ?,
+            workspace_id = ?,
+            workspace_kind = ?,
+            origin_device_id = ?,
+            origin_source = ?,
+            trust_state = ?,
             subtitle = ?,
             facts = ?,
             narrative = ?,
