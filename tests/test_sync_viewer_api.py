@@ -198,7 +198,10 @@ def test_sync_peer_scope_update_endpoint_updates_override(tmp_path: Path, monkey
                     "inherit_global": False,
                 }
             ),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
         )
         resp = conn.getresponse()
         payload = json.loads(resp.read().decode("utf-8"))
