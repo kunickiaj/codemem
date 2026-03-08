@@ -93,8 +93,11 @@ This is the baseline search path used by `codemem search`, MCP `memory_search`, 
 Contributor-aware retrieval layers on top of this baseline without changing the storage model:
 
 - actor filters: `include_actor_ids` / `exclude_actor_ids`
+- visibility filters: `include_visibility` / `exclude_visibility` with `private|shared`
 - workspace filters: `include_workspace_ids`, `exclude_workspace_ids`, `include_workspace_kinds`, `exclude_workspace_kinds`
 - `personal_first`: enabled by default, adding a ranking bonus for memories authored by the local actor
+
+New memories default to `visibility=private`. Shared memories (`visibility=shared`) remain part of the same retrieval corpus but are the only memories eligible for peer-to-peer replication.
 
 ### Semantic search (sqlite-vec)
 
@@ -146,6 +149,12 @@ flowchart TD
 ## Context injection
 
 The plugin injects a memory pack into the system prompt on every turn. This is the primary way codemem delivers value — it happens automatically, no manual steps required.
+
+Feed and retrieval surfaces can scope the corpus without splitting storage into separate pools:
+
+- `all` - all memories visible to the local actor
+- `mine` - only memories authored by the current `actor_id`
+- `shared` - only memories marked `visibility=shared`
 
 ### How the query is built
 

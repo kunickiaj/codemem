@@ -96,10 +96,12 @@
   }
   const TAB_KEY = "codemem-tab";
   const FEED_FILTER_KEY = "codemem-feed-filter";
+  const FEED_SCOPE_KEY = "codemem-feed-scope";
   const SYNC_DIAGNOSTICS_KEY = "codemem-sync-diagnostics";
   const SYNC_PAIRING_KEY = "codemem-sync-pairing";
   const SYNC_REDACT_KEY = "codemem-sync-redact";
   const FEED_FILTERS = ["all", "observations", "summaries"];
+  const FEED_SCOPES = ["all", "mine", "shared"];
   const state = {
     /* Tab */
     activeTab: "feed",
@@ -112,6 +114,7 @@
     refreshTimer: null,
     /* Feed */
     feedTypeFilter: "all",
+    feedScopeFilter: "all",
     feedQuery: "",
     lastFeedItems: [],
     lastFeedFilteredCount: 0,
@@ -154,9 +157,17 @@
     const saved = localStorage.getItem(FEED_FILTER_KEY) || "all";
     return FEED_FILTERS.includes(saved) ? saved : "all";
   }
+  function getFeedScopeFilter() {
+    const saved = localStorage.getItem(FEED_SCOPE_KEY) || "all";
+    return FEED_SCOPES.includes(saved) ? saved : "all";
+  }
   function setFeedTypeFilter(value) {
     state.feedTypeFilter = FEED_FILTERS.includes(value) ? value : "all";
     localStorage.setItem(FEED_FILTER_KEY, state.feedTypeFilter);
+  }
+  function setFeedScopeFilter(value) {
+    state.feedScopeFilter = FEED_SCOPES.includes(value) ? value : "all";
+    localStorage.setItem(FEED_SCOPE_KEY, state.feedScopeFilter);
   }
   function isSyncDiagnosticsOpen() {
     return localStorage.getItem(SYNC_DIAGNOSTICS_KEY) === "1";
@@ -177,6 +188,7 @@
   function initState() {
     state.activeTab = getActiveTab();
     state.feedTypeFilter = getFeedTypeFilter();
+    state.feedScopeFilter = getFeedScopeFilter();
     state.syncDiagnosticsOpen = isSyncDiagnosticsOpen();
     try {
       state.syncPairingOpen = localStorage.getItem(SYNC_PAIRING_KEY) === "1";
@@ -201,19 +213,20 @@
   async function loadRawEvents(project) {
     return fetchJson(`/api/raw-events?project=${encodeURIComponent(project)}`);
   }
-  function buildProjectParams(project, limit, offset) {
+  function buildProjectParams(project, limit, offset, scope) {
     const params = new URLSearchParams();
     params.set("project", project || "");
     if (typeof limit === "number") params.set("limit", String(limit));
     if (typeof offset === "number") params.set("offset", String(offset));
+    if (scope) params.set("scope", scope);
     return params.toString();
   }
   async function loadMemoriesPage(project, options) {
-    const query = buildProjectParams(project, options?.limit, options?.offset);
+    const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
     return fetchJson(`/api/memories?${query}`);
   }
   async function loadSummariesPage(project, options) {
-    const query = buildProjectParams(project, options?.limit, options?.offset);
+    const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
     return fetchJson(`/api/summaries?${query}`);
   }
   async function loadConfig() {
@@ -435,6 +448,11 @@
   let loadMoreInFlight = false;
   let feedScrollHandlerBound = false;
   let feedProjectGeneration = 0;
+  function feedScopeLabel(scope) {
+    if (scope === "mine") return " · mine";
+    if (scope === "shared") return " · shared";
+    return "";
+  }
   function resetPagination(project) {
     lastFeedProject = project;
     feedProjectGeneration += 1;
@@ -728,9 +746,13 @@
     const tags = parseJsonArray(item.tags || []);
     const files = parseJsonArray(item.files || []);
     const project = item.project || "";
+    const actor = String(item.actor_display_name || item.actor_id || "").trim();
+    const visibility = String(item.visibility || metadata?.visibility || "private").trim();
+    const authorLabel = actor ? ` · Author: ${actor}` : "";
+    const visibilityLabel = visibility ? ` · Visibility: ${visibility}` : "";
     const tagContent = tags.length ? ` · ${tags.map((t) => formatTagLabel(t)).join(", ")}` : "";
     const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
-    meta.textContent = `${project ? `Project: ${project}` : "Project: n/a"}${tagContent}${fileContent}`;
+    meta.textContent = `${project ? `Project: ${project}` : "Project: n/a"}${authorLabel}${visibilityLabel}${tagContent}${fileContent}`;
     const footer = el("div", "feed-footer");
     const footerLeft = el("div", "feed-footer-left");
     const filesWrap = el("div", "feed-files");
@@ -761,7 +783,7 @@
   }
   function computeSignature(items) {
     const parts = items.map((i) => `${itemSignature(i)}:${i.kind || ""}:${i.created_at_utc || i.created_at || ""}`);
-    return `${state.feedTypeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join("|")}`;
+    return `${state.feedTypeFilter}|${state.feedScopeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join("|")}`;
   }
   function countNewItems(nextItems, currentItems) {
     const seen = new Set(currentItems.map(itemKey));
@@ -778,11 +800,13 @@
       const [observations, summaries] = await Promise.all([
         observationHasMore ? loadMemoriesPage(requestProject, {
           limit: OBSERVATION_PAGE_SIZE,
-          offset: startObservationOffset
+          offset: startObservationOffset,
+          scope: state.feedScopeFilter
         }) : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: startObservationOffset } }),
         summaryHasMore ? loadSummariesPage(requestProject, {
           limit: SUMMARY_PAGE_SIZE,
-          offset: startSummaryOffset
+          offset: startSummaryOffset,
+          scope: state.feedScopeFilter
         }) : Promise.resolve({ items: [], pagination: { has_more: false, next_offset: startSummaryOffset } })
       ]);
       if (requestGeneration !== feedProjectGeneration || requestProject !== (state.currentProject || "")) {
@@ -830,14 +854,23 @@
   }
   function initFeedTab() {
     const feedTypeToggle = document.getElementById("feedTypeToggle");
+    const feedScopeToggle = document.getElementById("feedScopeToggle");
     const feedSearch = document.getElementById("feedSearch");
     updateFeedTypeToggle();
+    updateFeedScopeToggle();
     feedTypeToggle?.addEventListener("click", (e) => {
       const target = e.target?.closest?.("button");
       if (!target) return;
       setFeedTypeFilter(target.dataset.filter || "all");
       updateFeedTypeToggle();
       updateFeedView();
+    });
+    feedScopeToggle?.addEventListener("click", (e) => {
+      const target = e.target?.closest?.("button");
+      if (!target) return;
+      setFeedScopeFilter(target.dataset.filter || "all");
+      updateFeedScopeToggle();
+      void loadFeedData();
     });
     feedSearch?.addEventListener("input", () => {
       state.feedQuery = feedSearch.value || "";
@@ -858,6 +891,14 @@
       btn.classList.toggle("active", value === state.feedTypeFilter);
     });
   }
+  function updateFeedScopeToggle() {
+    const toggle = document.getElementById("feedScopeToggle");
+    if (!toggle) return;
+    toggle.querySelectorAll(".toggle-button").forEach((btn) => {
+      const value = btn.dataset?.filter || "all";
+      btn.classList.toggle("active", value === state.feedScopeFilter);
+    });
+  }
   function updateFeedView() {
     const feedList = document.getElementById("feedList");
     const feedMeta = document.getElementById("feedMeta");
@@ -866,6 +907,7 @@
     const byType = filterByType(state.lastFeedItems);
     const visible = filterByQuery(byType);
     const filterLabel = state.feedTypeFilter === "observations" ? " · observations" : state.feedTypeFilter === "summaries" ? " · session summaries" : "";
+    const scopeLabel = feedScopeLabel(state.feedScopeFilter);
     const sig = computeSignature(visible);
     const changed = sig !== state.lastFeedSignature;
     state.lastFeedSignature = sig;
@@ -873,7 +915,7 @@
       const filteredLabel = !state.feedQuery.trim() && state.lastFeedFilteredCount ? ` · ${state.lastFeedFilteredCount} observations filtered` : "";
       const queryLabel = state.feedQuery.trim() ? ` · matching "${state.feedQuery.trim()}"` : "";
       const moreLabel = hasMorePages() ? " · scroll for more" : "";
-      feedMeta.textContent = `${visible.length} items${filterLabel}${queryLabel}${filteredLabel}${moreLabel}`;
+      feedMeta.textContent = `${visible.length} items${filterLabel}${scopeLabel}${queryLabel}${filteredLabel}${moreLabel}`;
     }
     if (changed) {
       feedList.textContent = "";
@@ -897,8 +939,8 @@
     const observationsLimit = OBSERVATION_PAGE_SIZE;
     const summariesLimit = SUMMARY_PAGE_SIZE;
     const [observations, summaries] = await Promise.all([
-      loadMemoriesPage(project, { limit: observationsLimit, offset: 0 }),
-      loadSummariesPage(project, { limit: summariesLimit, offset: 0 })
+      loadMemoriesPage(project, { limit: observationsLimit, offset: 0, scope: state.feedScopeFilter }),
+      loadSummariesPage(project, { limit: summariesLimit, offset: 0, scope: state.feedScopeFilter })
     ]);
     if (requestGeneration !== feedProjectGeneration || project !== (state.currentProject || "")) {
       return;
