@@ -415,3 +415,102 @@ def test_initialize_schema_fails_fast_on_identity_collisions(monkeypatch, tmp_pa
             assert "collision" in str(exc).lower()
     finally:
         conn.close()
+
+
+def test_initialize_schema_skips_raw_event_backfill_for_already_migrated_v4(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEMEM_EMBEDDING_DISABLED", "1")
+    conn = db.connect(tmp_path / "v4.sqlite")
+    try:
+        conn.execute("PRAGMA user_version = 4")
+        conn.executescript(
+            """
+            CREATE TABLE raw_events (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL DEFAULT '',
+                opencode_session_id TEXT NOT NULL,
+                event_id TEXT,
+                event_seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                ts_wall_ms INTEGER,
+                ts_mono_ms REAL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(source, stream_id, event_seq),
+                UNIQUE(source, stream_id, event_id)
+            );
+
+            CREATE TABLE raw_event_sessions (
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL,
+                opencode_session_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (source, stream_id)
+            );
+
+            CREATE TABLE raw_event_flush_batches (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL,
+                opencode_session_id TEXT NOT NULL,
+                start_event_seq INTEGER NOT NULL,
+                end_event_seq INTEGER NOT NULL,
+                extractor_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)
+            );
+
+            CREATE TABLE opencode_sessions (
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL,
+                opencode_session_id TEXT NOT NULL,
+                session_id INTEGER,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (source, stream_id)
+            );
+
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                user TEXT,
+                tool_version TEXT
+            );
+
+            CREATE TABLE memory_items (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body_text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                user_prompt_id INTEGER
+            );
+
+            CREATE TABLE user_prompts (
+                id INTEGER PRIMARY KEY
+            );
+            """
+        )
+        conn.commit()
+
+        monkeypatch.setattr(
+            db,
+            "_backfill_raw_event_identity_columns",
+            lambda _conn: (_ for _ in ()).throw(
+                AssertionError("raw-event backfill should not rerun")
+            ),
+        )
+
+        db.initialize_schema(conn)
+
+        row = conn.execute("PRAGMA user_version").fetchone()
+        assert row is not None
+        assert int(row[0]) == db.SCHEMA_VERSION
+    finally:
+        conn.close()

@@ -470,6 +470,22 @@ def _raw_event_identity_needs_rebuild(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _raw_event_identity_needs_data_migration(conn: sqlite3.Connection) -> bool:
+    required_columns = {
+        "raw_events": {"source", "stream_id"},
+        "raw_event_sessions": {"source", "stream_id"},
+        "raw_event_flush_batches": {"source", "stream_id"},
+        "opencode_sessions": {"source", "stream_id"},
+    }
+    for table, columns in required_columns.items():
+        if not _table_exists(conn, table):
+            continue
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not columns.issubset(existing):
+            return True
+    return _raw_event_identity_needs_rebuild(conn)
+
+
 def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
     checks = [
         (
@@ -1026,11 +1042,12 @@ def _ensure_memory_identity_schema(conn: sqlite3.Connection) -> None:
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
     current_version = _schema_user_version(conn)
+    raw_event_identity_migrate = _raw_event_identity_needs_data_migration(conn)
     if current_version < 1:
         _initialize_schema_v1(conn)
         current_version = 1
     _ensure_memory_identity_schema(conn)
-    _ensure_raw_event_identity_schema(conn, migrate_data=current_version < SCHEMA_VERSION)
+    _ensure_raw_event_identity_schema(conn, migrate_data=raw_event_identity_migrate)
     if current_version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     _ensure_vector_schema(conn)
