@@ -9,7 +9,7 @@ from urllib.parse import parse_qs
 
 from ..net import pick_advertise_host, pick_advertise_hosts
 from ..store import MemoryStore
-from ..sync.discovery import load_peer_addresses, normalize_address
+from ..sync.discovery import load_peer_addresses, normalize_address, set_peer_project_filter
 from ..sync.sync_pass import sync_once
 from ..sync_identity import ensure_device_identity, load_public_key
 from ..sync_runtime import SyncRuntimeStatus, effective_status
@@ -184,13 +184,22 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         peers_rows = store.conn.execute(
             """
             SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
-                   last_seen_at, last_sync_at, last_error
+                   last_seen_at, last_sync_at, last_error,
+                   projects_include_json, projects_exclude_json
             FROM sync_peers
             ORDER BY name, peer_device_id
             """
         ).fetchall()
         peers_items: list[dict[str, Any]] = []
         for row in peers_rows:
+            override_include_raw = row["projects_include_json"]
+            override_exclude_raw = row["projects_exclude_json"]
+            override_include = store._safe_json_list(override_include_raw)
+            override_exclude = store._safe_json_list(override_exclude_raw)
+            inherits_global = override_include_raw is None and override_exclude_raw is None
+            effective_include, effective_exclude = store._effective_sync_project_filters(
+                peer_device_id=str(row["peer_device_id"])
+            )
             addresses = (
                 load_peer_addresses(store.conn, row["peer_device_id"])
                 if include_diagnostics
@@ -206,6 +215,13 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 "last_sync_at": row["last_sync_at"],
                 "last_error": row["last_error"] if include_diagnostics else None,
                 "has_error": bool(row["last_error"]),
+                "project_scope": {
+                    "include": override_include,
+                    "exclude": override_exclude,
+                    "effective_include": effective_include,
+                    "effective_exclude": effective_exclude,
+                    "inherits_global": inherits_global,
+                },
             }
             peer_item["status"] = _peer_status(peer_item)
             peers_items.append(peer_item)
@@ -281,13 +297,21 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         rows = store.conn.execute(
             """
             SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
-                   last_seen_at, last_sync_at, last_error
+                   last_seen_at, last_sync_at, last_error,
+                   projects_include_json, projects_exclude_json
             FROM sync_peers
             ORDER BY name, peer_device_id
             """
         ).fetchall()
         peers = []
         for row in rows:
+            override_include_raw = row["projects_include_json"]
+            override_exclude_raw = row["projects_exclude_json"]
+            override_include = store._safe_json_list(override_include_raw)
+            override_exclude = store._safe_json_list(override_exclude_raw)
+            effective_include, effective_exclude = store._effective_sync_project_filters(
+                peer_device_id=str(row["peer_device_id"])
+            )
             addresses = (
                 load_peer_addresses(store.conn, row["peer_device_id"])
                 if include_diagnostics
@@ -304,6 +328,14 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                     "last_sync_at": row["last_sync_at"],
                     "last_error": row["last_error"] if include_diagnostics else None,
                     "has_error": bool(row["last_error"]),
+                    "project_scope": {
+                        "include": override_include,
+                        "exclude": override_exclude,
+                        "effective_include": effective_include,
+                        "effective_exclude": effective_exclude,
+                        "inherits_global": override_include_raw is None
+                        and override_exclude_raw is None,
+                    },
                 }
             )
         handler._send_json({"items": peers, "redacted": not include_diagnostics})
@@ -416,6 +448,75 @@ def handle_post(
         )
         store.conn.commit()
         handler._send_json({"ok": True})
+        return True
+
+    if path == "/api/sync/peers/scope":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        peer_device_id = payload.get("peer_device_id")
+        if not isinstance(peer_device_id, str) or not peer_device_id.strip():
+            handler._send_json({"error": "peer_device_id required"}, status=400)
+            return True
+        row = store.conn.execute(
+            "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
+            (peer_device_id.strip(),),
+        ).fetchone()
+        if row is None:
+            handler._send_json({"error": "peer not found"}, status=404)
+            return True
+        inherit_global = bool(payload.get("inherit_global"))
+
+        def _parse_scope_list(value: Any, *, field: str) -> list[str] | None:
+            if value is None:
+                return []
+            if not isinstance(value, list):
+                raise ValueError(field)
+            items: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    raise ValueError(field)
+                cleaned = item.strip()
+                if cleaned:
+                    items.append(cleaned)
+            return items
+
+        try:
+            include = (
+                None
+                if inherit_global
+                else _parse_scope_list(payload.get("include"), field="include")
+            )
+            exclude = (
+                None
+                if inherit_global
+                else _parse_scope_list(payload.get("exclude"), field="exclude")
+            )
+        except ValueError as exc:
+            handler._send_json({"error": f"invalid {exc.args[0]}"}, status=400)
+            return True
+
+        set_peer_project_filter(
+            store.conn,
+            peer_device_id.strip(),
+            include=include,
+            exclude=exclude,
+        )
+        effective_include, effective_exclude = store._effective_sync_project_filters(
+            peer_device_id=peer_device_id.strip()
+        )
+        handler._send_json(
+            {
+                "ok": True,
+                "project_scope": {
+                    "include": [] if include is None else include,
+                    "exclude": [] if exclude is None else exclude,
+                    "effective_include": effective_include,
+                    "effective_exclude": effective_exclude,
+                    "inherits_global": inherit_global,
+                },
+            }
+        )
         return True
 
     if path == "/api/sync/actions/sync-now":

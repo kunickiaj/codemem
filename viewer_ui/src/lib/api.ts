@@ -79,6 +79,30 @@ export async function loadPairing(): Promise<any> {
   return fetchJson('/api/sync/pairing?includeDiagnostics=1');
 }
 
+export async function updatePeerScope(
+  peerDeviceId: string,
+  include: string[] | null,
+  exclude: string[] | null,
+  inheritGlobal = false,
+): Promise<any> {
+  const resp = await fetch('/api/sync/peers/scope', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      peer_device_id: peerDeviceId,
+      include,
+      exclude,
+      inherit_global: inheritGlobal,
+    }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) {
+    throw new Error(payload?.error || text || 'request failed');
+  }
+  return payload;
+}
+
 export async function loadProjects(): Promise<string[]> {
   const payload = await fetchJson('/api/projects');
   return payload.projects || [];

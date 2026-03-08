@@ -237,6 +237,24 @@
   async function loadPairing() {
     return fetchJson("/api/sync/pairing?includeDiagnostics=1");
   }
+  async function updatePeerScope(peerDeviceId, include, exclude, inheritGlobal = false) {
+    const resp = await fetch("/api/sync/peers/scope", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        peer_device_id: peerDeviceId,
+        include,
+        exclude,
+        inherit_global: inheritGlobal
+      })
+    });
+    const text = await resp.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!resp.ok) {
+      throw new Error(payload?.error || text || "request failed");
+    }
+    return payload;
+  }
   async function loadProjects$1() {
     const payload = await fetchJson("/api/projects");
     return payload.projects || [];
@@ -1235,6 +1253,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const unique = Array.from(new Set(addresses.filter(Boolean)));
     return typeof unique[0] === "string" ? unique[0] : "";
   }
+  function parseScopeList(value) {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
   function renderActionList(container, actions) {
     if (!container) return;
     container.textContent = "";
@@ -1381,8 +1402,64 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
         lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never"
       ].join(" · "));
+      const scope = peer.project_scope || {};
+      const includeList = Array.isArray(scope.include) ? scope.include : [];
+      const excludeList = Array.isArray(scope.exclude) ? scope.exclude : [];
+      const effectiveInclude = Array.isArray(scope.effective_include) ? scope.effective_include : [];
+      const effectiveExclude = Array.isArray(scope.effective_exclude) ? scope.effective_exclude : [];
+      const inheritsGlobal = Boolean(scope.inherits_global);
+      const scopePanel = el("div", "peer-scope");
+      const scopeSummary = el(
+        "div",
+        "peer-scope-summary",
+        inheritsGlobal ? "Using global sync scope" : `Peer override · include: ${includeList.join(", ") || "all"} · exclude: ${excludeList.join(", ") || "none"}`
+      );
+      const effectiveSummary = el(
+        "div",
+        "peer-scope-effective",
+        `Effective scope · include: ${effectiveInclude.join(", ") || "all"} · exclude: ${effectiveExclude.join(", ") || "none"}`
+      );
+      const includeInput = el("input", "peer-scope-input");
+      includeInput.placeholder = "project-a, project-b";
+      includeInput.value = includeList.join(", ");
+      const excludeInput = el("input", "peer-scope-input");
+      excludeInput.placeholder = "private-repo";
+      excludeInput.value = excludeList.join(", ");
+      const inputRow = el("div", "peer-scope-row");
+      inputRow.append(includeInput, excludeInput);
+      const scopeActions = el("div", "peer-scope-actions");
+      const saveScopeBtn = el("button", "settings-button", "Save scope");
+      const inheritBtn = el("button", "settings-button", "Use global");
+      saveScopeBtn.addEventListener("click", async () => {
+        saveScopeBtn.disabled = true;
+        saveScopeBtn.textContent = "Saving...";
+        try {
+          await updatePeerScope(peerId, parseScopeList(includeInput.value), parseScopeList(excludeInput.value));
+          await loadSyncData();
+        } catch {
+          saveScopeBtn.textContent = "Retry save";
+        } finally {
+          saveScopeBtn.disabled = false;
+          if (saveScopeBtn.textContent === "Saving...") saveScopeBtn.textContent = "Save scope";
+        }
+      });
+      inheritBtn.addEventListener("click", async () => {
+        inheritBtn.disabled = true;
+        inheritBtn.textContent = "Resetting...";
+        try {
+          await updatePeerScope(peerId, null, null, true);
+          await loadSyncData();
+        } catch {
+          inheritBtn.textContent = "Retry reset";
+        } finally {
+          inheritBtn.disabled = false;
+          if (inheritBtn.textContent === "Resetting...") inheritBtn.textContent = "Use global";
+        }
+      });
+      scopeActions.append(saveScopeBtn, inheritBtn);
+      scopePanel.append(scopeSummary, effectiveSummary, inputRow, scopeActions);
       titleRow.append(name, actions);
-      card.append(titleRow, addressLabel, meta);
+      card.append(titleRow, addressLabel, meta, scopePanel);
       syncPeers.appendChild(card);
     });
   }
