@@ -26,19 +26,25 @@ export async function loadMemories(project: string): Promise<any> {
   return loadMemoriesPage(project);
 }
 
-function buildProjectParams(project: string, limit?: number, offset?: number): string {
+function buildProjectParams(
+  project: string,
+  limit?: number,
+  offset?: number,
+  scope?: string,
+): string {
   const params = new URLSearchParams();
   params.set('project', project || '');
   if (typeof limit === 'number') params.set('limit', String(limit));
   if (typeof offset === 'number') params.set('offset', String(offset));
+  if (scope) params.set('scope', scope);
   return params.toString();
 }
 
 export async function loadMemoriesPage(
   project: string,
-  options?: { limit?: number; offset?: number },
+  options?: { limit?: number; offset?: number; scope?: string },
 ): Promise<any> {
-  const query = buildProjectParams(project, options?.limit, options?.offset);
+  const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
   return fetchJson(`/api/memories?${query}`);
 }
 
@@ -48,9 +54,9 @@ export async function loadSummaries(project: string): Promise<any> {
 
 export async function loadSummariesPage(
   project: string,
-  options?: { limit?: number; offset?: number },
+  options?: { limit?: number; offset?: number; scope?: string },
 ): Promise<any> {
-  const query = buildProjectParams(project, options?.limit, options?.offset);
+  const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
   return fetchJson(`/api/summaries?${query}`);
 }
 

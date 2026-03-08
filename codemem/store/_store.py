@@ -146,12 +146,26 @@ class MemoryStore:
         actor_display_name = (
             self._clean_optional_str(metadata.get("actor_display_name")) or self.actor_display_name
         )
-        workspace_kind = self._clean_optional_str(metadata.get("workspace_kind")) or "personal"
+        explicit_workspace_kind = self._clean_optional_str(metadata.get("workspace_kind"))
+        explicit_workspace_id = self._clean_optional_str(metadata.get("workspace_id"))
+        visibility = self._clean_optional_str(metadata.get("visibility"))
+        if visibility is None:
+            if explicit_workspace_kind == "shared" or (
+                explicit_workspace_id is not None and explicit_workspace_id.startswith("shared:")
+            ):
+                visibility = "shared"
+            else:
+                visibility = "private"
+        if visibility not in {"private", "shared"}:
+            visibility = "private"
+        workspace_kind = explicit_workspace_kind or "personal"
         if workspace_kind not in {"personal", "shared"}:
+            workspace_kind = "shared" if visibility == "shared" else "personal"
+        elif visibility == "shared":
+            workspace_kind = "shared"
+        elif visibility == "private":
             workspace_kind = "personal"
-        workspace_id = self._clean_optional_str(
-            metadata.get("workspace_id")
-        ) or self._default_workspace_id(
+        workspace_id = explicit_workspace_id or self._default_workspace_id(
             actor_id=actor_id,
             workspace_kind=workspace_kind,
         )
@@ -165,6 +179,7 @@ class MemoryStore:
         return {
             "actor_id": actor_id,
             "actor_display_name": actor_display_name,
+            "visibility": visibility,
             "workspace_id": workspace_id,
             "workspace_kind": workspace_kind,
             "origin_device_id": origin_device_id,
@@ -190,6 +205,7 @@ class MemoryStore:
         return {
             "actor_id": actor_id,
             "actor_display_name": actor_display_name,
+            "visibility": self._clean_optional_str(metadata.get("visibility")) or "shared",
             "workspace_id": self._clean_optional_str(metadata.get("workspace_id"))
             or "shared:legacy",
             "workspace_kind": self._clean_optional_str(metadata.get("workspace_kind")) or "shared",
@@ -205,10 +221,11 @@ class MemoryStore:
         rows = self.conn.execute(
             """
             SELECT id, metadata_json, actor_id, actor_display_name, workspace_id, workspace_kind,
-                   origin_device_id, origin_source, trust_state
+                   visibility, origin_device_id, origin_source, trust_state
             FROM memory_items
             WHERE actor_id IS NULL
                OR actor_display_name IS NULL
+               OR visibility IS NULL
                OR workspace_id IS NULL
                OR workspace_kind IS NULL
                OR origin_device_id IS NULL
@@ -225,6 +242,7 @@ class MemoryStore:
                 UPDATE memory_items
                 SET actor_id = COALESCE(actor_id, ?),
                     actor_display_name = COALESCE(actor_display_name, ?),
+                    visibility = COALESCE(visibility, ?),
                     workspace_id = COALESCE(workspace_id, ?),
                     workspace_kind = COALESCE(workspace_kind, ?),
                     origin_device_id = COALESCE(origin_device_id, ?),
@@ -235,6 +253,7 @@ class MemoryStore:
                 (
                     provenance["actor_id"],
                     provenance["actor_display_name"],
+                    provenance["visibility"],
                     provenance["workspace_id"],
                     provenance["workspace_kind"],
                     provenance["origin_device_id"],
@@ -1022,6 +1041,7 @@ class MemoryStore:
                 metadata_json,
                 actor_id,
                 actor_display_name,
+                visibility,
                 workspace_id,
                 workspace_kind,
                 origin_device_id,
@@ -1032,7 +1052,7 @@ class MemoryStore:
                 rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -1046,6 +1066,7 @@ class MemoryStore:
                 db.to_json(metadata_payload),
                 provenance["actor_id"],
                 provenance["actor_display_name"],
+                provenance["visibility"],
                 provenance["workspace_id"],
                 provenance["workspace_kind"],
                 provenance["origin_device_id"],
@@ -1143,6 +1164,7 @@ class MemoryStore:
                 metadata_json,
                 actor_id,
                 actor_display_name,
+                visibility,
                 workspace_id,
                 workspace_kind,
                 origin_device_id,
@@ -1160,7 +1182,7 @@ class MemoryStore:
                 rev,
                 import_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -1174,6 +1196,7 @@ class MemoryStore:
                 db.to_json(metadata_payload),
                 provenance["actor_id"],
                 provenance["actor_display_name"],
+                provenance["visibility"],
                 provenance["workspace_id"],
                 provenance["workspace_kind"],
                 provenance["origin_device_id"],
