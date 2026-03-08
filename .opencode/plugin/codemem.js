@@ -13,7 +13,7 @@ import {
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
-const PINNED_BACKEND_VERSION = "0.17.0";
+const PINNED_BACKEND_VERSION = "0.18.0";
 const DEFAULT_UVX_SOURCE = `codemem==${PINNED_BACKEND_VERSION}`;
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
