@@ -29,6 +29,9 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
         visibility_column = conn.execute(
             "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'visibility'"
         ).fetchone()
+        claimed_local_actor_column = conn.execute(
+            "SELECT name FROM pragma_table_info('sync_peers') WHERE name = 'claimed_local_actor'"
+        ).fetchone()
         workspace_column = conn.execute(
             "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'workspace_id'"
         ).fetchone()
@@ -43,6 +46,7 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
     assert attempt_column is not None
     assert actor_column is not None
     assert visibility_column is not None
+    assert claimed_local_actor_column is not None
     assert workspace_column is not None
 
 
@@ -154,6 +158,86 @@ def test_initialize_schema_upgrades_existing_v3_db_with_identity_columns(
 
     assert actor_column is not None
     assert visibility_column is not None
+    assert row is not None
+    assert int(row[0]) == db.SCHEMA_VERSION
+
+
+def test_initialize_schema_upgrades_existing_v4_db_with_peer_claim_column(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEMEM_EMBEDDING_DISABLED", "1")
+    conn = db.connect(tmp_path / "mem.sqlite")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sync_peers (
+                peer_device_id TEXT PRIMARY KEY,
+                name TEXT,
+                pinned_fingerprint TEXT,
+                public_key TEXT,
+                addresses_json TEXT,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT,
+                last_sync_at TEXT,
+                last_error TEXT
+            );
+
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                cwd TEXT,
+                project TEXT,
+                git_remote TEXT,
+                git_branch TEXT,
+                user TEXT,
+                tool_version TEXT,
+                metadata_json TEXT,
+                import_key TEXT
+            );
+
+            CREATE TABLE memory_items (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body_text TEXT NOT NULL,
+                confidence REAL DEFAULT 0.5,
+                tags_text TEXT DEFAULT '',
+                active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata_json TEXT
+            );
+
+            CREATE TABLE user_prompts (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER,
+                project TEXT,
+                prompt_text TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE raw_event_flush_batches (
+                id INTEGER PRIMARY KEY,
+                opencode_session_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+
+        db.initialize_schema(conn)
+
+        claimed_column = conn.execute(
+            "SELECT name FROM pragma_table_info('sync_peers') WHERE name = 'claimed_local_actor'"
+        ).fetchone()
+        row = conn.execute("PRAGMA user_version").fetchone()
+    finally:
+        conn.close()
+
+    assert claimed_column is not None
     assert row is not None
     assert int(row[0]) == db.SCHEMA_VERSION
 

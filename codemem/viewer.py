@@ -129,6 +129,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         strict_paths = {
             "/api/sync/peers/rename",
+            "/api/sync/peers/identity",
             "/api/sync/peers/scope",
             "/api/sync/actions/sync-now",
             "/api/sync/run",

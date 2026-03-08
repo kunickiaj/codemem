@@ -608,6 +608,34 @@ def test_shared_memories_replicate(tmp_path: Path) -> None:
         store.close()
 
 
+def test_private_memories_replicate_to_claimed_same_actor_peer(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-self", "[]", 1, "2026-01-24T00:00:00Z"),
+        )
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.remember(session_id, kind="note", title="Private", body_text="Body")
+        ops, _ = store.load_replication_ops_since(None, limit=10)
+
+        filtered, _cursor, skipped = store.filter_replication_ops_for_sync_with_status(
+            ops, peer_device_id="peer-self"
+        )
+
+        assert len(filtered) == 1
+        assert skipped is None
+    finally:
+        store.close()
+
+
 def test_replication_delete_wins_over_older_upsert(tmp_path: Path) -> None:
     store_a = MemoryStore(tmp_path / "a.sqlite")
     store_b = MemoryStore(tmp_path / "b.sqlite")
