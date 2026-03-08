@@ -101,7 +101,7 @@
   const SYNC_PAIRING_KEY = "codemem-sync-pairing";
   const SYNC_REDACT_KEY = "codemem-sync-redact";
   const FEED_FILTERS = ["all", "observations", "summaries"];
-  const FEED_SCOPES = ["all", "mine", "shared"];
+  const FEED_SCOPES = ["all", "mine", "theirs", "shared"];
   const state = {
     /* Tab */
     activeTab: "feed",
@@ -460,8 +460,18 @@
   let feedProjectGeneration = 0;
   function feedScopeLabel(scope) {
     if (scope === "mine") return " · mine";
+    if (scope === "theirs") return " · theirs";
     if (scope === "shared") return " · shared";
     return "";
+  }
+  function provenanceChip(label, variant = "") {
+    return el("span", `provenance-chip ${variant}`.trim(), label);
+  }
+  function authorLabel(item) {
+    const actorId = String(item.actor_id || "").trim();
+    const actorName = String(item.actor_display_name || "").trim();
+    if (actorId && actorId === state.lastStatsPayload?.identity?.actor_id) return "You";
+    return actorName || actorId || "Unknown author";
   }
   function resetPagination(project) {
     lastFeedProject = project;
@@ -756,13 +766,30 @@
     const tags = parseJsonArray(item.tags || []);
     const files = parseJsonArray(item.files || []);
     const project = item.project || "";
-    const actor = String(item.actor_display_name || item.actor_id || "").trim();
+    const actor = authorLabel(item);
     const visibility = String(item.visibility || metadata?.visibility || "private").trim();
-    const authorLabel = actor ? ` · Author: ${actor}` : "";
-    const visibilityLabel = visibility ? ` · Visibility: ${visibility}` : "";
+    const workspaceKind = String(item.workspace_kind || metadata?.workspace_kind || "").trim();
+    const originSource = String(item.origin_source || metadata?.origin_source || "").trim();
+    const originDeviceId = String(item.origin_device_id || metadata?.origin_device_id || "").trim();
+    const trustState = String(item.trust_state || metadata?.trust_state || "").trim();
     const tagContent = tags.length ? ` · ${tags.map((t) => formatTagLabel(t)).join(", ")}` : "";
     const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
-    meta.textContent = `${project ? `Project: ${project}` : "Project: n/a"}${authorLabel}${visibilityLabel}${tagContent}${fileContent}`;
+    meta.textContent = `${project ? `Project: ${project}` : "Project: n/a"}${tagContent}${fileContent}`;
+    const provenance = el("div", "feed-provenance");
+    provenance.appendChild(
+      provenanceChip(actor, actor === "You" ? "mine" : "author")
+    );
+    provenance.appendChild(provenanceChip(visibility || "private", visibility || "private"));
+    if (workspaceKind && workspaceKind !== visibility) {
+      provenance.appendChild(provenanceChip(workspaceKind, "workspace"));
+    }
+    if (originSource) provenance.appendChild(provenanceChip(originSource, "source"));
+    if (originDeviceId && actor !== "You") {
+      provenance.appendChild(provenanceChip(originDeviceId, "device"));
+    }
+    if (trustState && trustState !== "trusted") {
+      provenance.appendChild(provenanceChip(trustState.replace(/_/g, " "), "trust"));
+    }
     const footer = el("div", "feed-footer");
     const footerLeft = el("div", "feed-footer-left");
     const filesWrap = el("div", "feed-files");
@@ -775,7 +802,7 @@
     if (filesWrap.childElementCount) footerLeft.appendChild(filesWrap);
     if (tagsWrap.childElementCount) footerLeft.appendChild(tagsWrap);
     footer.append(footerLeft, footerRight);
-    card.append(header, meta, bodyNode, footer);
+    card.append(header, provenance, meta, bodyNode, footer);
     return card;
   }
   function filterByType(items) {
@@ -909,7 +936,7 @@
       btn.classList.toggle("active", value === state.feedScopeFilter);
     });
   }
-  function updateFeedView() {
+  function updateFeedView(force = false) {
     const feedList = document.getElementById("feedList");
     const feedMeta = document.getElementById("feedMeta");
     if (!feedList) return;
@@ -919,7 +946,7 @@
     const filterLabel = state.feedTypeFilter === "observations" ? " · observations" : state.feedTypeFilter === "summaries" ? " · session summaries" : "";
     const scopeLabel = feedScopeLabel(state.feedScopeFilter);
     const sig = computeSignature(visible);
-    const changed = sig !== state.lastFeedSignature;
+    const changed = force || sig !== state.lastFeedSignature;
     state.lastFeedSignature = sig;
     if (feedMeta) {
       const filteredLabel = !state.feedQuery.trim() && state.lastFeedFilteredCount ? ` · ${state.lastFeedFilteredCount} observations filtered` : "";
@@ -1279,6 +1306,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (typeof globalThis.lucide !== "undefined") globalThis.lucide.createIcons();
   }
   async function loadHealthData() {
+    const previousActorId = state.lastStatsPayload?.identity?.actor_id || null;
     const [statsPayload, usagePayload, sessionsPayload, rawEventsPayload] = await Promise.all([
       loadStats(),
       loadUsage(state.currentProject),
@@ -1288,9 +1316,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     state.lastStatsPayload = statsPayload || {};
     state.lastUsagePayload = usagePayload || {};
     state.lastRawEventsPayload = rawEventsPayload || {};
+    const nextActorId = state.lastStatsPayload?.identity?.actor_id || null;
     renderStats();
     renderSessionSummary();
     renderHealthOverview();
+    if (state.activeTab === "feed" && previousActorId !== nextActorId) {
+      updateFeedView(true);
+    }
   }
   function redactIpOctets(text) {
     return text.replace(/\b(\d{1,3}\.\d{1,3})\.\d{1,3}\.\d{1,3}\b/g, "$1.#.#");
