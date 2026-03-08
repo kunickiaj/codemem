@@ -723,7 +723,7 @@ export async function loadFeedData() {
   const firstPageFeedItems = [...summaryItems, ...filtered].sort((a, b) => {
     return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
   });
-  const feedItems = firstPageFeedItems;
+  const feedItems = mergeRefreshFeedItems(state.lastFeedItems, firstPageFeedItems);
 
   const newCount = countNewItems(feedItems, state.lastFeedItems);
   if (newCount) {
@@ -735,11 +735,11 @@ export async function loadFeedData() {
 
   state.pendingFeedItems = null;
   state.lastFeedItems = feedItems;
-  state.lastFeedFilteredCount = filteredCount;
+  state.lastFeedFilteredCount = Math.max(state.lastFeedFilteredCount, filteredCount);
   summaryHasMore = pageHasMore(summaries, summaryItems.length, summariesLimit);
   observationHasMore = pageHasMore(observations, observationItems.length, observationsLimit);
-  summaryOffset = pageNextOffset(summaries, summaryItems.length);
-  observationOffset = pageNextOffset(observations, observationItems.length);
+  summaryOffset = Math.max(summaryOffset, pageNextOffset(summaries, summaryItems.length));
+  observationOffset = Math.max(observationOffset, pageNextOffset(observations, observationItems.length));
   lastFeedScope = state.feedScopeFilter;
   updateFeedView();
 }
