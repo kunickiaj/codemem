@@ -99,6 +99,14 @@ Contributor-aware retrieval layers on top of this baseline without changing the 
 
 New memories default to `visibility=private`. Shared memories (`visibility=shared`) remain part of the same retrieval corpus but are the only memories eligible for peer-to-peer replication.
 
+`trust_state` is intentionally lightweight in MVP:
+
+- `trusted` - normal fully-known local/shared provenance
+- `legacy_unknown` - older synced data backfilled from incomplete provenance
+- `unreviewed` - reserved for future review workflows
+
+It does not currently gate sync or retrieval. See `docs/plans/2026-03-08-shared-memory-trust-state-semantics.md` for the contract.
+
 ### Semantic search (sqlite-vec)
 
 When embeddings are available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`.
