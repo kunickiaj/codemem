@@ -44,7 +44,7 @@ function parseScopeList(value: string): string[] {
     .filter(Boolean);
 }
 
-function createChipEditor(initialValues: string[], placeholder: string) {
+function createChipEditor(initialValues: string[], placeholder: string, emptyLabel: string) {
   let values = [...initialValues];
   const container = el('div', 'peer-scope-editor');
   const chips = el('div', 'peer-scope-chips');
@@ -54,7 +54,7 @@ function createChipEditor(initialValues: string[], placeholder: string) {
   const syncChips = () => {
     chips.textContent = '';
     if (!values.length) {
-      chips.appendChild(el('span', 'peer-scope-chip empty', 'None'));
+      chips.appendChild(el('span', 'peer-scope-chip empty', emptyLabel));
       return;
     }
     values.forEach((value, index) => {
@@ -315,8 +315,8 @@ export function renderSyncPeers() {
       'peer-scope-effective',
       `Effective scope · include: ${effectiveInclude.join(', ') || 'all'} · exclude: ${effectiveExclude.join(', ') || 'none'}`,
     );
-    const includeEditor = createChipEditor(includeList, 'Add included project');
-    const excludeEditor = createChipEditor(excludeList, 'Add excluded project');
+    const includeEditor = createChipEditor(includeList, 'Add included project', 'All projects');
+    const excludeEditor = createChipEditor(excludeList, 'Add excluded project', 'No exclusions');
     const inputRow = el('div', 'peer-scope-row');
     inputRow.append(includeEditor.element, excludeEditor.element);
     const scopeActions = el('div', 'peer-scope-actions');
