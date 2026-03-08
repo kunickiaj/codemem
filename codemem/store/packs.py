@@ -15,6 +15,7 @@ def _get_metadata(item: MemoryResult | dict[str, Any]) -> dict[str, Any]:
     provenance_keys = (
         "actor_id",
         "actor_display_name",
+        "visibility",
         "workspace_id",
         "workspace_kind",
         "origin_device_id",

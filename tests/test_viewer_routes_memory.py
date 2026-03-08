@@ -108,3 +108,61 @@ def test_observations_endpoint_rejects_invalid_pagination_params(tmp_path: Path)
         assert handler.response == {"error": "limit and offset must be int"}
     finally:
         store.close()
+
+
+def test_observations_endpoint_supports_scope_filter(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session = store.start_session(
+            cwd="/tmp/work",
+            git_remote=None,
+            git_branch="main",
+            user="tester",
+            tool_version="test",
+            project="proj",
+        )
+        mine_id = store.remember(session, kind="bugfix", title="Mine", body_text="Local note")
+        shared_id = store.remember(
+            session,
+            kind="bugfix",
+            title="Shared",
+            body_text="Shared note",
+            metadata={
+                "actor_id": "actor:teammate",
+                "actor_display_name": "Teammate",
+                "visibility": "shared",
+                "workspace_id": "shared:team-alpha",
+                "workspace_kind": "shared",
+            },
+        )
+        store.end_session(session)
+
+        mine_handler = DummyHandler()
+        handled = memory.handle_get(mine_handler, store, "/api/observations", "scope=mine")
+        assert handled is True
+        assert mine_handler.status == 200
+        assert mine_handler.response is not None
+        assert [item["id"] for item in mine_handler.response["items"]] == [mine_id]
+
+        shared_handler = DummyHandler()
+        handled = memory.handle_get(shared_handler, store, "/api/observations", "scope=shared")
+        assert handled is True
+        assert shared_handler.status == 200
+        assert shared_handler.response is not None
+        assert [item["id"] for item in shared_handler.response["items"]] == [shared_id]
+    finally:
+        store.close()
+
+
+def test_observations_endpoint_rejects_invalid_scope(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        handler = DummyHandler()
+
+        handled = memory.handle_get(handler, store, "/api/observations", "scope=nope")
+
+        assert handled is True
+        assert handler.status == 400
+        assert handler.response == {"error": "invalid_scope"}
+    finally:
+        store.close()

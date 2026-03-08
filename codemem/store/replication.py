@@ -78,6 +78,20 @@ def _sync_project_allowed(
     return True
 
 
+def _sync_visibility_allowed(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    visibility = str(payload.get("visibility") or "").strip().lower()
+    if not visibility:
+        workspace_kind = str(payload.get("workspace_kind") or "").strip().lower()
+        workspace_id = str(payload.get("workspace_id") or "").strip().lower()
+        if workspace_kind == "shared" or workspace_id.startswith("shared:"):
+            visibility = "shared"
+        else:
+            return True
+    return visibility == "shared"
+
+
 def count_replication_ops_missing_project(store: MemoryStore) -> int:
     """Count memory_item replication ops whose payload lacks a usable project.
 
@@ -156,6 +170,21 @@ def filter_replication_ops_for_sync_with_status(
             project = None
             payload = op.get("payload")
             if isinstance(payload, dict):
+                if not _sync_visibility_allowed(payload):
+                    skipped_count += 1
+                    if first_skipped is None:
+                        first_skipped = {
+                            "reason": "visibility_filter",
+                            "op_id": str(op.get("op_id") or ""),
+                            "created_at": str(op.get("created_at") or ""),
+                            "entity_type": entity_type,
+                            "entity_id": str(op.get("entity_id") or ""),
+                            "visibility": payload.get("visibility"),
+                        }
+                    next_cursor = store_utils.compute_cursor(
+                        str(op.get("created_at") or ""), str(op.get("op_id") or "")
+                    )
+                    continue
                 project_value = payload.get("project")
                 project = project_value if isinstance(project_value, str) else None
             if not _sync_project_allowed(store, project, peer_device_id=peer_device_id):
@@ -579,6 +608,7 @@ def _memory_item_payload(store: MemoryStore, row: dict[str, Any]) -> dict[str, A
         "actor_id": row.get("actor_id") or legacy_provenance["actor_id"],
         "actor_display_name": row.get("actor_display_name")
         or legacy_provenance["actor_display_name"],
+        "visibility": row.get("visibility") or legacy_provenance["visibility"],
         "workspace_id": row.get("workspace_id") or legacy_provenance["workspace_id"],
         "workspace_kind": row.get("workspace_kind") or legacy_provenance["workspace_kind"],
         "origin_device_id": row.get("origin_device_id") or legacy_provenance["origin_device_id"],
@@ -1131,6 +1161,9 @@ def apply_replication_ops(
             if not _sync_project_allowed(store, project, peer_device_id=source_device_id):
                 skipped += 1
                 continue
+            if not _sync_visibility_allowed(payload if isinstance(payload, dict) else None):
+                skipped += 1
+                continue
             if op_type == "upsert":
                 action = _apply_memory_item_upsert(store, op)
             elif op_type == "delete":
@@ -1197,6 +1230,9 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
         store._clean_optional_str(payload.get("actor_display_name"))
         or fallback_provenance["actor_display_name"]
     )
+    visibility = (
+        store._clean_optional_str(payload.get("visibility")) or fallback_provenance["visibility"]
+    )
     workspace_id = (
         store._clean_optional_str(payload.get("workspace_id"))
         or fallback_provenance["workspace_id"]
@@ -1257,6 +1293,7 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
         metadata_json,
         actor_id,
         actor_display_name,
+        visibility,
         workspace_id,
         workspace_kind,
         origin_device_id,
@@ -1290,6 +1327,7 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
                 metadata_json,
                 actor_id,
                 actor_display_name,
+                visibility,
                 workspace_id,
                 workspace_kind,
                 origin_device_id,
@@ -1307,7 +1345,7 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
                 deleted_at,
                 rev
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1327,6 +1365,7 @@ def _apply_memory_item_upsert(store: MemoryStore, op: ReplicationOp) -> str:
             metadata_json = ?,
             actor_id = ?,
             actor_display_name = ?,
+            visibility = ?,
             workspace_id = ?,
             workspace_kind = ?,
             origin_device_id = ?,
@@ -1402,6 +1441,34 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
     deleted_at = str(clock.get("updated_at") or payload.get("deleted_at") or "")
     updated_at = deleted_at
     rev = int(clock.get("rev") or payload.get("rev") or 0)
+    fallback_provenance = store._derive_legacy_row_provenance({"metadata_json": metadata})
+    actor_id = store._clean_optional_str(payload.get("actor_id")) or fallback_provenance["actor_id"]
+    actor_display_name = (
+        store._clean_optional_str(payload.get("actor_display_name"))
+        or fallback_provenance["actor_display_name"]
+    )
+    visibility = (
+        store._clean_optional_str(payload.get("visibility")) or fallback_provenance["visibility"]
+    )
+    workspace_id = (
+        store._clean_optional_str(payload.get("workspace_id"))
+        or fallback_provenance["workspace_id"]
+    )
+    workspace_kind = (
+        store._clean_optional_str(payload.get("workspace_kind"))
+        or fallback_provenance["workspace_kind"]
+    )
+    origin_device_id = (
+        store._clean_optional_str(payload.get("origin_device_id"))
+        or fallback_provenance["origin_device_id"]
+    )
+    origin_source = (
+        store._clean_optional_str(payload.get("origin_source"))
+        or fallback_provenance["origin_source"]
+    )
+    trust_state = (
+        store._clean_optional_str(payload.get("trust_state")) or fallback_provenance["trust_state"]
+    )
     if row is None:
         raw_session_import_key = payload.get("session_import_key")
         session_import_key = (
@@ -1459,6 +1526,14 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
                 created_at,
                 updated_at,
                 metadata_json,
+                actor_id,
+                actor_display_name,
+                visibility,
+                workspace_id,
+                workspace_kind,
+                origin_device_id,
+                origin_source,
+                trust_state,
                 subtitle,
                 facts,
                 narrative,
@@ -1470,7 +1545,7 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
                 deleted_at,
                 rev
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resolved_session_id,
@@ -1483,6 +1558,14 @@ def _apply_memory_item_delete(store: MemoryStore, op: ReplicationOp) -> str:
                 created_at,
                 updated_at,
                 metadata_json,
+                actor_id,
+                actor_display_name,
+                visibility,
+                workspace_id,
+                workspace_kind,
+                origin_device_id,
+                origin_source,
+                trust_state,
                 payload.get("subtitle"),
                 _json_text(payload.get("facts")),
                 payload.get("narrative"),

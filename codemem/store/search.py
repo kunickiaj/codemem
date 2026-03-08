@@ -51,6 +51,15 @@ def _normalize_workspace_kinds(value: Any) -> list[str]:
     return normalized
 
 
+def _normalize_visibility_values(value: Any) -> list[str]:
+    normalized: list[str] = []
+    for raw in _normalize_filter_strings(value):
+        lowered = raw.lower()
+        if lowered in {"private", "shared"} and lowered not in normalized:
+            normalized.append(lowered)
+    return normalized
+
+
 def _personal_first_enabled(filters: dict[str, Any] | None) -> bool:
     if not filters or "personal_first" not in filters:
         return True
@@ -69,6 +78,7 @@ def _metadata_with_provenance(raw_metadata: Any, row: Any) -> dict[str, Any]:
     for key in (
         "actor_id",
         "actor_display_name",
+        "visibility",
         "workspace_id",
         "workspace_kind",
         "origin_device_id",
@@ -150,6 +160,15 @@ def _extend_memory_filter_clauses(
         column="memory_items.actor_id",
         include_values=_normalize_filter_strings(filters.get("include_actor_ids")),
         exclude_values=_normalize_filter_strings(filters.get("exclude_actor_ids")),
+    )
+    _add_multi_value_filter(
+        where_clauses,
+        params,
+        column="memory_items.visibility",
+        include_values=_normalize_visibility_values(
+            filters.get("include_visibility") or filters.get("visibility")
+        ),
+        exclude_values=_normalize_visibility_values(filters.get("exclude_visibility")),
     )
     _add_multi_value_filter(
         where_clauses,
@@ -1428,6 +1447,12 @@ def search(
                 "project": filters.get("project"),
                 "working_set_paths": len(working_set_paths),
                 "personal_first": _personal_first_enabled(filters),
+                "include_visibility": _normalize_visibility_values(
+                    filters.get("include_visibility") or filters.get("visibility")
+                ),
+                "exclude_visibility": _normalize_visibility_values(
+                    filters.get("exclude_visibility")
+                ),
                 "include_actor_ids": _normalize_filter_strings(filters.get("include_actor_ids")),
                 "exclude_actor_ids": _normalize_filter_strings(filters.get("exclude_actor_ids")),
                 "include_workspace_ids": _normalize_filter_strings(
