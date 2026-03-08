@@ -9,9 +9,13 @@ from codemem.store import MemoryStore
 def test_pack_project_filter_is_subset(monkeypatch, tmp_path: Path) -> None:
     class FakeEmbeddingClient:
         def embed(self, texts):
-            return [[1.0, 0.0] for _ in texts]
+            vector = [0.0] * 384
+            vector[0] = 1.0
+            return [list(vector) for _ in texts]
 
     monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.semantic.get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.store.vectors.get_embedding_client", lambda: FakeEmbeddingClient())
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     a = store.start_session(
