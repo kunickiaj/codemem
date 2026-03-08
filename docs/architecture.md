@@ -90,6 +90,12 @@ where `recency = 1.0 / (1.0 + (days_ago / 7.0))`.
 
 This is the baseline search path used by `codemem search`, MCP `memory_search`, and as input to pack construction.
 
+Contributor-aware retrieval layers on top of this baseline without changing the storage model:
+
+- actor filters: `include_actor_ids` / `exclude_actor_ids`
+- workspace filters: `include_workspace_ids`, `exclude_workspace_ids`, `include_workspace_kinds`, `exclude_workspace_kinds`
+- `personal_first`: enabled by default, adding a ranking bonus for memories authored by the local actor
+
 ### Semantic search (sqlite-vec)
 
 When embeddings are available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`.
@@ -123,7 +129,7 @@ where:
 
 In baseline mode (hybrid disabled), the formula is slightly different: `base_score * 1.5 + recency + kind_bonus` with no semantic boost.
 
-**Scope note:** Hybrid merge/re-rank only runs in the pack-building path. Direct search endpoints (`codemem search`, MCP `memory_search`) use FTS5 scoring with recency weighting but don't merge semantic results.
+**Scope note:** Hybrid merge/re-rank only runs in the pack-building path. Direct search endpoints (`codemem search`, MCP `memory_search`) use FTS5 scoring with recency weighting, actor/workspace filters, and personal-first ranking bias, but don't merge semantic results.
 
 ```mermaid
 flowchart TD

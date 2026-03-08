@@ -1485,17 +1485,13 @@ class MemoryStore:
     ) -> list[dict[str, Any]]:
         filters = filters or {}
         params: list[Any] = []
-        where = ["active = 1"]
-        join_sessions = False
-        if filters.get("kind"):
-            where.append("kind = ?")
-            params.append(filters["kind"])
-        if filters.get("project"):
-            clause, clause_params = self._project_clause(filters["project"])
-            if clause:
-                where.append(clause)
-                params.extend(clause_params)
-            join_sessions = True
+        where = ["memory_items.active = 1"]
+        join_sessions = store_search._extend_memory_filter_clauses(
+            self,
+            filters,
+            where_clauses=where,
+            params=params,
+        )
         where_clause = " AND ".join(where)
         from_clause = "memory_items"
         if join_sessions:
@@ -1523,6 +1519,7 @@ class MemoryStore:
                 "results": len(results),
                 "kind": filters.get("kind"),
                 "project": filters.get("project"),
+                "personal_first": store_search._personal_first_enabled(filters),
             },
         )
         return results
@@ -1540,16 +1537,15 @@ class MemoryStore:
             return []
         params: list[Any] = list(kinds_list)
         where = [
-            "active = 1",
-            "kind IN ({})".format(", ".join("?" for _ in kinds_list)),
+            "memory_items.active = 1",
+            "memory_items.kind IN ({})".format(", ".join("?" for _ in kinds_list)),
         ]
-        join_sessions = False
-        if filters.get("project"):
-            clause, clause_params = self._project_clause(filters["project"])
-            if clause:
-                where.append(clause)
-                params.extend(clause_params)
-            join_sessions = True
+        join_sessions = store_search._extend_memory_filter_clauses(
+            self,
+            filters,
+            where_clauses=where,
+            params=params,
+        )
         where_clause = " AND ".join(where)
         from_clause = "memory_items"
         if join_sessions:
