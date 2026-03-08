@@ -18,6 +18,161 @@ if TYPE_CHECKING:
 
 SQLITE_INT64_MIN = -(2**63)
 SQLITE_INT64_MAX = (2**63) - 1
+PERSONAL_FIRST_BONUS = 0.45
+
+
+def _normalize_filter_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidate = value.strip()
+        return [candidate] if candidate else []
+    if not isinstance(value, Sequence) or isinstance(value, (bytes, bytearray)):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        if raw is None:
+            continue
+        candidate = str(raw).strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _normalize_workspace_kinds(value: Any) -> list[str]:
+    normalized: list[str] = []
+    for raw in _normalize_filter_strings(value):
+        lowered = raw.lower()
+        if lowered in {"personal", "shared"} and lowered not in normalized:
+            normalized.append(lowered)
+    return normalized
+
+
+def _personal_first_enabled(filters: dict[str, Any] | None) -> bool:
+    if not filters or "personal_first" not in filters:
+        return True
+    value = filters.get("personal_first")
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+    return bool(value)
+
+
+def _metadata_with_provenance(raw_metadata: Any, row: Any) -> dict[str, Any]:
+    metadata = _coerce_metadata_dict(raw_metadata)
+    for key in (
+        "actor_id",
+        "actor_display_name",
+        "workspace_id",
+        "workspace_kind",
+        "origin_device_id",
+        "origin_source",
+        "trust_state",
+    ):
+        try:
+            value = row[key]
+        except (IndexError, KeyError, TypeError):
+            value = None
+        if value is not None:
+            metadata[key] = value
+    return metadata
+
+
+def _actor_id_for(item: MemoryResult | dict[str, Any]) -> str | None:
+    if isinstance(item, MemoryResult):
+        value = item.metadata.get("actor_id")
+        return str(value) if value else None
+    value = item.get("actor_id")
+    if value:
+        return str(value)
+    metadata = _coerce_metadata_dict(item.get("metadata_json") or item.get("metadata"))
+    actor_id = metadata.get("actor_id")
+    return str(actor_id) if actor_id else None
+
+
+def _personal_bias(
+    store: MemoryStore | None, item: MemoryResult | dict[str, Any], filters: dict[str, Any] | None
+) -> float:
+    if store is None or not _personal_first_enabled(filters):
+        return 0.0
+    actor_id = _actor_id_for(item)
+    if not actor_id or actor_id != store.actor_id:
+        return 0.0
+    return PERSONAL_FIRST_BONUS
+
+
+def _add_multi_value_filter(
+    where_clauses: list[str],
+    params: list[Any],
+    *,
+    column: str,
+    include_values: list[str],
+    exclude_values: list[str],
+) -> None:
+    if include_values:
+        placeholders = ", ".join("?" for _ in include_values)
+        where_clauses.append(f"{column} IN ({placeholders})")
+        params.extend(include_values)
+    if exclude_values:
+        placeholders = ", ".join("?" for _ in exclude_values)
+        where_clauses.append(f"({column} IS NULL OR {column} NOT IN ({placeholders}))")
+        params.extend(exclude_values)
+
+
+def _extend_memory_filter_clauses(
+    store: MemoryStore,
+    filters: dict[str, Any] | None,
+    *,
+    where_clauses: list[str],
+    params: list[Any],
+) -> bool:
+    filters = filters or {}
+    join_sessions = False
+    if filters.get("kind"):
+        where_clauses.append("memory_items.kind = ?")
+        params.append(filters["kind"])
+    if filters.get("session_id"):
+        where_clauses.append("memory_items.session_id = ?")
+        params.append(filters["session_id"])
+    if filters.get("since"):
+        where_clauses.append("memory_items.created_at >= ?")
+        params.append(filters["since"])
+
+    _add_multi_value_filter(
+        where_clauses,
+        params,
+        column="memory_items.actor_id",
+        include_values=_normalize_filter_strings(filters.get("include_actor_ids")),
+        exclude_values=_normalize_filter_strings(filters.get("exclude_actor_ids")),
+    )
+    _add_multi_value_filter(
+        where_clauses,
+        params,
+        column="memory_items.workspace_id",
+        include_values=_normalize_filter_strings(filters.get("include_workspace_ids")),
+        exclude_values=_normalize_filter_strings(filters.get("exclude_workspace_ids")),
+    )
+    _add_multi_value_filter(
+        where_clauses,
+        params,
+        column="memory_items.workspace_kind",
+        include_values=_normalize_workspace_kinds(filters.get("include_workspace_kinds")),
+        exclude_values=_normalize_workspace_kinds(filters.get("exclude_workspace_kinds")),
+    )
+
+    if filters.get("project"):
+        clause, clause_params = store._project_clause(filters["project"])
+        if clause:
+            where_clauses.append(clause)
+            params.extend(clause_params)
+            join_sessions = True
+    return join_sessions
 
 
 def search_index(
@@ -363,20 +518,12 @@ def _load_items_by_ids_for_explain(
 
     scoped_where_clauses = ["memory_items.active = 1", f"memory_items.id IN ({placeholders})"]
     scoped_params: list[Any] = list(ids)
-    join_sessions = False
-    if filters.get("kind"):
-        scoped_where_clauses.append("memory_items.kind = ?")
-        scoped_params.append(filters["kind"])
-    if filters.get("session_id"):
-        scoped_where_clauses.append("memory_items.session_id = ?")
-        scoped_params.append(filters["session_id"])
-    if filters.get("since"):
-        scoped_where_clauses.append("memory_items.created_at >= ?")
-        scoped_params.append(filters["since"])
-    if filters.get("project") and project_clause:
-        scoped_where_clauses.append(project_clause)
-        scoped_params.extend(project_params)
-        join_sessions = True
+    join_sessions = _extend_memory_filter_clauses(
+        store,
+        filters,
+        where_clauses=scoped_where_clauses,
+        params=scoped_params,
+    )
     scoped_join = "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
     scoped_rows = store.conn.execute(
         f"""
@@ -454,8 +601,9 @@ def _explain_item(
     recency_component = _recency_score(item.created_at, now=reference_now)
     kind_component = _kind_bonus(item.kind)
     total_score: float | None = None
+    personal_bias = _personal_bias(store, item, {"personal_first": True})
     if base_score is not None:
-        total_score = (base_score * 1.5) + recency_component + kind_component
+        total_score = (base_score * 1.5) + recency_component + kind_component + personal_bias
 
     return {
         "id": item.id,
@@ -473,6 +621,7 @@ def _explain_item(
                 "base": base_score,
                 "recency": recency_component,
                 "kind_bonus": kind_component,
+                "personal_bias": personal_bias,
                 "semantic_boost": None,
             },
         },
@@ -687,22 +836,12 @@ def _semantic_search(
     params: list[Any] = [query_embedding, limit]
     where_clauses = ["memory_items.active = 1"]
     join_sessions = False
-    if filters:
-        if filters.get("kind"):
-            where_clauses.append("memory_items.kind = ?")
-            params.append(filters["kind"])
-        if filters.get("session_id"):
-            where_clauses.append("memory_items.session_id = ?")
-            params.append(filters["session_id"])
-        if filters.get("since"):
-            where_clauses.append("memory_items.created_at >= ?")
-            params.append(filters["since"])
-        if filters.get("project"):
-            clause, clause_params = store._project_clause(filters["project"])
-            if clause:
-                where_clauses.append(clause)
-                params.extend(clause_params)
-            join_sessions = True
+    join_sessions = _extend_memory_filter_clauses(
+        store,
+        filters,
+        where_clauses=where_clauses,
+        params=params,
+    )
     where = " AND ".join(where_clauses)
     join_clause = "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
     sql = f"""
@@ -726,7 +865,7 @@ def _semantic_search(
                 "body_text": row["body_text"],
                 "confidence": row["confidence"],
                 "tags_text": row["tags_text"],
-                "metadata_json": row["metadata_json"],
+                "metadata_json": _metadata_with_provenance(row["metadata_json"], row),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "session_id": row["session_id"],
@@ -782,6 +921,9 @@ def _rerank_results(
     results: list[MemoryResult],
     limit: int,
     recency_days: int | None = None,
+    *,
+    store: MemoryStore | None = None,
+    filters: dict[str, Any] | None = None,
 ) -> list[MemoryResult]:
     if recency_days:
         recent_results = _filter_recent_results(results, recency_days)
@@ -794,6 +936,7 @@ def _rerank_results(
             (item.score * 1.5)
             + _recency_score(item.created_at, now=reference_now)
             + _kind_bonus(item.kind)
+            + _personal_bias(store, item, filters)
         )
 
     ordered = sorted(results, key=score, reverse=True)
@@ -806,6 +949,8 @@ def _rerank_results_hybrid(
     limit: int,
     semantic_ids: set[int],
     recency_days: int | None = None,
+    store: MemoryStore | None = None,
+    filters: dict[str, Any] | None = None,
 ) -> list[MemoryResult]:
     if recency_days:
         recent_results = _filter_recent_results(results, recency_days)
@@ -819,6 +964,7 @@ def _rerank_results_hybrid(
             (item.score * 1.2)
             + (_recency_score(item.created_at, now=reference_now) * 0.8)
             + _kind_bonus(item.kind)
+            + _personal_bias(store, item, filters)
             + semantic_boost
         )
 
@@ -943,7 +1089,13 @@ def _merge_ranked_results(
                 metadata=metadata,
             )
         )
-    baseline = _rerank_results(reranked, limit=limit, recency_days=store.RECALL_RECENCY_DAYS)
+    baseline = _rerank_results(
+        reranked,
+        limit=limit,
+        recency_days=store.RECALL_RECENCY_DAYS,
+        store=store,
+        filters=filters,
+    )
     should_shadow = store._hybrid_retrieval_shadow_log and _should_log_shadow(
         sample_rate=store._hybrid_retrieval_shadow_sample_rate
     )
@@ -954,6 +1106,8 @@ def _merge_ranked_results(
         limit=limit,
         semantic_ids=semantic_ids,
         recency_days=store.RECALL_RECENCY_DAYS,
+        store=store,
+        filters=filters,
     )
     if should_shadow:
         _log_shadow_comparison(
@@ -988,14 +1142,13 @@ def _timeline_around(
         return []
     filters = filters or {}
     params: list[Any] = []
-    join_sessions = False
     where_base = ["memory_items.active = 1"]
-    if filters.get("project"):
-        clause, clause_params = store._project_clause(filters["project"])
-        if clause:
-            where_base.append(clause)
-            params.extend(clause_params)
-        join_sessions = True
+    join_sessions = _extend_memory_filter_clauses(
+        store,
+        filters,
+        where_clauses=where_base,
+        params=params,
+    )
     if anchor_session_id:
         where_base.append("memory_items.session_id = ?")
         params.append(anchor_session_id)
@@ -1197,29 +1350,19 @@ def search(
     effective_limit = max(1, int(limit))
     working_set_paths = _normalize_working_set_paths(filters.get("working_set_paths"))
     query_limit = effective_limit
-    if working_set_paths:
+    if working_set_paths or _personal_first_enabled(filters):
         query_limit = max(effective_limit, min(max(effective_limit * 4, effective_limit + 8), 200))
     expanded_query = _expand_query(query)
     if not expanded_query:
         return []
     params: list[Any] = [expanded_query]
     where_clauses = ["memory_items.active = 1", "memory_fts MATCH ?"]
-    join_sessions = False
-    if filters.get("kind"):
-        where_clauses.append("memory_items.kind = ?")
-        params.append(filters["kind"])
-    if filters.get("session_id"):
-        where_clauses.append("memory_items.session_id = ?")
-        params.append(filters["session_id"])
-    if filters.get("since"):
-        where_clauses.append("memory_items.created_at >= ?")
-        params.append(filters["since"])
-    if filters.get("project"):
-        clause, clause_params = store._project_clause(filters["project"])
-        if clause:
-            where_clauses.append(clause)
-            params.extend(clause_params)
-        join_sessions = True
+    join_sessions = _extend_memory_filter_clauses(
+        store,
+        filters,
+        where_clauses=where_clauses,
+        params=params,
+    )
     where = " AND ".join(where_clauses)
     join_clause = "JOIN sessions ON sessions.id = memory_items.session_id" if join_sessions else ""
     sql = f"""
@@ -1237,32 +1380,37 @@ def search(
     results: list[MemoryResult] = []
     base_scores: dict[int, float] = {}
     for row in rows:
-        metadata = _coerce_metadata_dict(row["metadata_json"])
+        metadata = _metadata_with_provenance(row["metadata_json"], row)
         files_modified = db.from_json(row["files_modified"])
         if isinstance(files_modified, list):
             metadata = dict(metadata)
             metadata.setdefault("files_modified", files_modified)
-        base_score = (float(row["score"]) * 1.5) + float(row["recency"])
-        results.append(
-            MemoryResult(
-                id=row["id"],
-                kind=row["kind"],
-                title=row["title"],
-                body_text=row["body_text"],
-                confidence=row["confidence"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                tags_text=row["tags_text"],
-                score=float(row["score"]),
-                session_id=row["session_id"],
-                metadata=metadata,
-            )
+        result = MemoryResult(
+            id=row["id"],
+            kind=row["kind"],
+            title=row["title"],
+            body_text=row["body_text"],
+            confidence=row["confidence"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            tags_text=row["tags_text"],
+            score=float(row["score"]),
+            session_id=row["session_id"],
+            metadata=metadata,
         )
+        base_score = (
+            (float(row["score"]) * 1.5)
+            + float(row["recency"])
+            + _personal_bias(store, result, filters)
+        )
+        results.append(result)
         base_scores[int(row["id"])] = base_score
 
     if working_set_paths:
         results = _rerank_with_working_set(results, base_scores, working_set_paths)
         results = results[:effective_limit]
+    else:
+        results = _rerank_results(results, limit=effective_limit, store=store, filters=filters)
 
     if log_usage:
         tokens_read = sum(
@@ -1277,6 +1425,21 @@ def search(
                 "kind": filters.get("kind"),
                 "project": filters.get("project"),
                 "working_set_paths": len(working_set_paths),
+                "personal_first": _personal_first_enabled(filters),
+                "include_actor_ids": _normalize_filter_strings(filters.get("include_actor_ids")),
+                "exclude_actor_ids": _normalize_filter_strings(filters.get("exclude_actor_ids")),
+                "include_workspace_ids": _normalize_filter_strings(
+                    filters.get("include_workspace_ids")
+                ),
+                "exclude_workspace_ids": _normalize_filter_strings(
+                    filters.get("exclude_workspace_ids")
+                ),
+                "include_workspace_kinds": _normalize_workspace_kinds(
+                    filters.get("include_workspace_kinds")
+                ),
+                "exclude_workspace_kinds": _normalize_workspace_kinds(
+                    filters.get("exclude_workspace_kinds")
+                ),
             },
         )
     return results

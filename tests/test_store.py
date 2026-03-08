@@ -337,6 +337,7 @@ def test_replication_payload_includes_actor_and_workspace_provenance(tmp_path: P
         )
         ops, _ = store.load_replication_ops_since(None, limit=10)
         payload = ops[0]["payload"]
+        assert payload is not None
         assert payload["actor_id"] == store.actor_id
         assert payload["workspace_kind"] == "shared"
         assert payload["workspace_id"] == "shared:team-alpha"
@@ -2494,12 +2495,17 @@ def test_pack_semantic_fallback(monkeypatch, tmp_path: Path) -> None:
             for text in texts:
                 lowered = text.lower()
                 if "alpha" in lowered or "alfa" in lowered:
-                    vectors.append([1.0, 0.0])
+                    vector = [0.0] * 384
+                    vector[0] = 1.0
                 else:
-                    vectors.append([0.0, 1.0])
+                    vector = [0.0] * 384
+                    vector[1] = 1.0
+                vectors.append(vector)
             return vectors
 
     monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.semantic.get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.store.vectors.get_embedding_client", lambda: FakeEmbeddingClient())
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
@@ -2526,12 +2532,17 @@ def test_semantic_search_respects_project_filter(monkeypatch, tmp_path: Path) ->
             for text in texts:
                 lowered = text.lower()
                 if "alpha" in lowered:
-                    vectors.append([1.0, 0.0])
+                    vector = [0.0] * 384
+                    vector[0] = 1.0
                 else:
-                    vectors.append([0.0, 1.0])
+                    vector = [0.0] * 384
+                    vector[1] = 1.0
+                vectors.append(vector)
             return vectors
 
     monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.semantic.get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.store.vectors.get_embedding_client", lambda: FakeEmbeddingClient())
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     session_a = store.start_session(
@@ -2565,9 +2576,13 @@ def test_semantic_search_respects_project_filter(monkeypatch, tmp_path: Path) ->
 def test_semantic_search_respects_kind_filter(monkeypatch, tmp_path: Path) -> None:
     class FakeEmbeddingClient:
         def embed(self, texts):
-            return [[1.0, 0.0] for _ in texts]
+            vector = [0.0] * 384
+            vector[0] = 1.0
+            return [list(vector) for _ in texts]
 
     monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.semantic.get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.store.vectors.get_embedding_client", lambda: FakeEmbeddingClient())
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(
@@ -2596,9 +2611,13 @@ def test_semantic_search_respects_kind_filter(monkeypatch, tmp_path: Path) -> No
 def test_semantic_search_respects_project_and_kind_filter(monkeypatch, tmp_path: Path) -> None:
     class FakeEmbeddingClient:
         def embed(self, texts):
-            return [[1.0, 0.0] for _ in texts]
+            vector = [0.0] * 384
+            vector[0] = 1.0
+            return [list(vector) for _ in texts]
 
     monkeypatch.setattr(store_module, "get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.semantic.get_embedding_client", lambda: FakeEmbeddingClient())
+    monkeypatch.setattr("codemem.store.vectors.get_embedding_client", lambda: FakeEmbeddingClient())
 
     store = MemoryStore(tmp_path / "mem.sqlite")
     a = store.start_session(
@@ -3065,6 +3084,148 @@ def test_search_working_set_large_limit_returns_requested_count(tmp_path: Path) 
     assert len(results) == 230
 
 
+def test_search_personal_first_prefers_local_actor_by_default(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    personal_id = store.remember(
+        session,
+        kind="note",
+        title="Parser cleanup",
+        body_text="Parser cleanup notes",
+    )
+    shared_id = store.remember(
+        session,
+        kind="note",
+        title="Parser cleanup",
+        body_text="Parser cleanup notes",
+        metadata={
+            "actor_id": "actor:teammate",
+            "actor_display_name": "Teammate",
+            "workspace_id": "shared:team-alpha",
+            "workspace_kind": "shared",
+        },
+    )
+    store.end_session(session)
+
+    preferred = store.search("parser cleanup", limit=2, filters={"project": "/tmp/project-a"})
+    baseline = store.search(
+        "parser cleanup",
+        limit=2,
+        filters={"project": "/tmp/project-a", "personal_first": False},
+    )
+
+    assert [item.id for item in preferred] == [personal_id, shared_id]
+    assert [item.id for item in baseline] == [shared_id, personal_id]
+    assert preferred[0].metadata["actor_id"] == store.actor_id
+    assert preferred[1].metadata["workspace_kind"] == "shared"
+
+
+def test_search_filters_by_actor_and_workspace(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    personal_id = store.remember(
+        session,
+        kind="note",
+        title="Shared parser",
+        body_text="Local parser note",
+    )
+    shared_id = store.remember(
+        session,
+        kind="note",
+        title="Shared parser",
+        body_text="Remote parser note",
+        metadata={
+            "actor_id": "actor:teammate",
+            "actor_display_name": "Teammate",
+            "workspace_id": "shared:team-alpha",
+            "workspace_kind": "shared",
+        },
+    )
+    store.end_session(session)
+
+    actor_filtered = store.search(
+        "shared parser",
+        limit=5,
+        filters={
+            "project": "/tmp/project-a",
+            "include_actor_ids": ["actor:teammate"],
+        },
+    )
+    shared_filtered = store.search(
+        "shared parser",
+        limit=5,
+        filters={
+            "project": "/tmp/project-a",
+            "include_workspace_kinds": ["shared"],
+        },
+    )
+    excluded = store.search(
+        "shared parser",
+        limit=5,
+        filters={
+            "project": "/tmp/project-a",
+            "exclude_workspace_ids": ["shared:team-alpha"],
+        },
+    )
+
+    assert [item.id for item in actor_filtered] == [shared_id]
+    assert [item.id for item in shared_filtered] == [shared_id]
+    assert [item.id for item in excluded] == [personal_id]
+
+
+def test_explain_reports_filter_mismatch_for_actor_filter(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    personal_id = store.remember(session, kind="note", title="Alpha", body_text="Alpha body")
+    shared_id = store.remember(
+        session,
+        kind="note",
+        title="Alpha",
+        body_text="Shared alpha body",
+        metadata={
+            "actor_id": "actor:teammate",
+            "actor_display_name": "Teammate",
+            "workspace_id": "shared:team-alpha",
+            "workspace_kind": "shared",
+        },
+    )
+    store.end_session(session)
+
+    payload = store.explain(
+        ids=[personal_id, shared_id],
+        filters={
+            "project": "/tmp/project-a",
+            "include_actor_ids": [store.actor_id],
+        },
+    )
+
+    assert [item["id"] for item in payload["items"]] == [personal_id]
+    assert payload["missing_ids"] == [shared_id]
+    errors_by_code = {error["code"]: error for error in payload["errors"]}
+    assert errors_by_code["FILTER_MISMATCH"]["ids"] == [shared_id]
+
+
 def test_explain_ids_reports_missing_and_project_mismatch(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session_a = store.start_session(
@@ -3184,6 +3345,46 @@ def test_explain_include_pack_context_returns_deterministic_shape(tmp_path: Path
     payload = store.explain(ids=[memory_id], include_pack_context=True)
 
     assert payload["items"][0]["pack_context"] == {"included": None, "section": None}
+
+
+def test_pack_filters_by_workspace_and_includes_provenance_metadata(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    store.remember(session, kind="note", title="Alpha", body_text="Local alpha note")
+    shared_id = store.remember(
+        session,
+        kind="note",
+        title="Alpha",
+        body_text="Shared alpha note",
+        metadata={
+            "actor_id": "actor:teammate",
+            "actor_display_name": "Teammate",
+            "workspace_id": "shared:team-alpha",
+            "workspace_kind": "shared",
+        },
+    )
+    store.end_session(session)
+
+    pack = store.build_memory_pack(
+        "alpha",
+        limit=5,
+        filters={
+            "project": "/tmp/project-a",
+            "include_workspace_kinds": ["shared"],
+            "personal_first": False,
+        },
+    )
+
+    assert [item["id"] for item in pack["items"]] == [shared_id]
+    assert pack["items"][0]["metadata"]["actor_id"] == "actor:teammate"
+    assert pack["items"][0]["metadata"]["workspace_kind"] == "shared"
 
 
 def test_merge_ranked_results_shadow_logs_without_changing_baseline(
