@@ -66,11 +66,13 @@ def _apply_scope_filter(
     store: MemoryStore, filters: dict[str, Any] | None, scope: str | None
 ) -> tuple[dict[str, Any], bool]:
     normalized = str(scope or "all").strip().lower()
-    if normalized not in {"all", "mine", "shared"}:
+    if normalized not in {"all", "mine", "theirs", "shared"}:
         return {}, False
     scoped = dict(filters or {})
     if normalized == "mine":
         scoped["include_actor_ids"] = [store.actor_id]
+    elif normalized == "theirs":
+        scoped["exclude_actor_ids"] = [store.actor_id]
     elif normalized == "shared":
         scoped["include_visibility"] = ["shared"]
     return scoped, True

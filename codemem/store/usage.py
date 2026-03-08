@@ -256,6 +256,10 @@ def stats(store: MemoryStore) -> dict[str, Any]:
     }
 
     return {
+        "identity": {
+            "actor_id": store.actor_id,
+            "actor_display_name": store.actor_display_name,
+        },
         "database": {
             "path": db_path,
             "size_bytes": size_bytes,
