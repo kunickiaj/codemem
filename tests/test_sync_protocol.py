@@ -34,8 +34,20 @@ def test_ops_cursor_paging(tmp_path: Path) -> None:
             tool_version="test",
             project="/tmp/project-a",
         )
-        store.remember(session_id, kind="note", title="A", body_text="One")
-        store.remember(session_id, kind="note", title="B", body_text="Two")
+        store.remember(
+            session_id,
+            kind="note",
+            title="A",
+            body_text="One",
+            metadata={"visibility": "shared"},
+        )
+        store.remember(
+            session_id,
+            kind="note",
+            title="B",
+            body_text="Two",
+            metadata={"visibility": "shared"},
+        )
     finally:
         store.close()
 

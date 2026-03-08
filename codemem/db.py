@@ -15,7 +15,7 @@ LEGACY_DEFAULT_DB_PATHS = (
     Path.home() / ".codemem.sqlite",
     Path.home() / ".opencode-mem.sqlite",
 )
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _sidecar_paths(path: Path) -> list[Path]:
@@ -150,6 +150,7 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             metadata_json TEXT,
             actor_id TEXT,
             actor_display_name TEXT,
+            visibility TEXT,
             workspace_id TEXT,
             workspace_kind TEXT,
             origin_device_id TEXT,
@@ -379,6 +380,7 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "memory_items", "rev", "INTEGER")
     _ensure_column(conn, "memory_items", "actor_id", "TEXT")
     _ensure_column(conn, "memory_items", "actor_display_name", "TEXT")
+    _ensure_column(conn, "memory_items", "visibility", "TEXT")
     _ensure_column(conn, "memory_items", "workspace_id", "TEXT")
     _ensure_column(conn, "memory_items", "workspace_kind", "TEXT")
     _ensure_column(conn, "memory_items", "origin_device_id", "TEXT")
@@ -403,6 +405,9 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_memory_items_user_prompt_id ON memory_items(user_prompt_id)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_actor_id ON memory_items(actor_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_visibility ON memory_items(visibility)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_id ON memory_items(workspace_id)"
     )

@@ -26,6 +26,9 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
         actor_column = conn.execute(
             "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'actor_id'"
         ).fetchone()
+        visibility_column = conn.execute(
+            "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'visibility'"
+        ).fetchone()
         workspace_column = conn.execute(
             "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'workspace_id'"
         ).fetchone()
@@ -39,6 +42,7 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
     assert ingest_reason_column is not None
     assert attempt_column is not None
     assert actor_column is not None
+    assert visibility_column is not None
     assert workspace_column is not None
 
 

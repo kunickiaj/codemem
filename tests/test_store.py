@@ -184,7 +184,13 @@ def test_replication_ops_roundtrip(tmp_path: Path) -> None:
             tool_version="test",
             project="/tmp/project-a",
         )
-        store_a.remember(session_id, kind="note", title="Alpha", body_text="Alpha body")
+        store_a.remember(
+            session_id,
+            kind="note",
+            title="Alpha",
+            body_text="Alpha body",
+            metadata={"visibility": "shared"},
+        )
         ops, cursor = store_a.load_replication_ops_since(None, limit=10)
         assert len(ops) == 1
         assert cursor
@@ -261,7 +267,13 @@ def test_apply_replication_ops_uses_session_import_key_to_avoid_numeric_collisio
             project="codemem",
             metadata={"import_key": "opencode:remote-session-1"},
         )
-        store_a.remember(remote_session, kind="note", title="Synced", body_text="From remote")
+        store_a.remember(
+            remote_session,
+            kind="note",
+            title="Synced",
+            body_text="From remote",
+            metadata={"visibility": "shared"},
+        )
         ops, _ = store_a.load_replication_ops_since(None, limit=10)
         assert len(ops) == 1
 
@@ -305,7 +317,13 @@ def test_replication_ops_idempotent(tmp_path: Path) -> None:
             tool_version="test",
             project="/tmp/project-a",
         )
-        store_a.remember(session_id, kind="note", title="Beta", body_text="Beta body")
+        store_a.remember(
+            session_id,
+            kind="note",
+            title="Beta",
+            body_text="Beta body",
+            metadata={"visibility": "shared"},
+        )
         ops, _ = store_a.load_replication_ops_since(None, limit=10)
 
         first = store_b.apply_replication_ops(ops)
@@ -339,6 +357,7 @@ def test_replication_payload_includes_actor_and_workspace_provenance(tmp_path: P
         payload = ops[0]["payload"]
         assert payload is not None
         assert payload["actor_id"] == store.actor_id
+        assert payload["visibility"] == "shared"
         assert payload["workspace_kind"] == "shared"
         assert payload["workspace_id"] == "shared:team-alpha"
         assert payload["origin_device_id"] == store.device_id
@@ -379,7 +398,7 @@ def test_apply_replication_ops_preserves_actor_and_workspace_provenance(tmp_path
         row = store_b.conn.execute(
             """
             SELECT actor_id, actor_display_name, workspace_id, workspace_kind,
-                   origin_source, trust_state
+                   visibility, origin_source, trust_state
             FROM memory_items
             WHERE import_key = ?
             """,
@@ -388,6 +407,7 @@ def test_apply_replication_ops_preserves_actor_and_workspace_provenance(tmp_path
         assert row is not None
         assert row["actor_id"] == "actor:alice"
         assert row["actor_display_name"] == "Alice"
+        assert row["visibility"] == "shared"
         assert row["workspace_id"] == "shared:team-alpha"
         assert row["workspace_kind"] == "shared"
         assert row["origin_source"] == "observer"
@@ -413,7 +433,7 @@ def test_remember_persists_default_actor_and_personal_workspace(tmp_path: Path) 
         row = store.conn.execute(
             """
             SELECT actor_id, actor_display_name, workspace_id, workspace_kind,
-                   origin_device_id, trust_state
+                   visibility, origin_device_id, trust_state
             FROM memory_items
             WHERE id = ?
             """,
@@ -422,6 +442,7 @@ def test_remember_persists_default_actor_and_personal_workspace(tmp_path: Path) 
         assert row is not None
         assert row["actor_id"] == store.actor_id
         assert row["actor_display_name"] == store.actor_display_name
+        assert row["visibility"] == "private"
         assert row["workspace_id"] == f"personal:{store.actor_id}"
         assert row["workspace_kind"] == "personal"
         assert row["origin_device_id"] == store.device_id
@@ -465,11 +486,12 @@ def test_store_backfills_legacy_local_memories_to_personal_workspace(tmp_path: P
     reopened = MemoryStore(db_path)
     try:
         row = reopened.conn.execute(
-            "SELECT actor_id, workspace_id, workspace_kind, trust_state FROM memory_items WHERE title = ?",
+            "SELECT actor_id, visibility, workspace_id, workspace_kind, trust_state FROM memory_items WHERE title = ?",
             ("Legacy",),
         ).fetchone()
         assert row is not None
         assert row["actor_id"] == reopened.actor_id
+        assert row["visibility"] == "private"
         assert row["workspace_id"] == f"personal:{reopened.actor_id}"
         assert row["workspace_kind"] == "personal"
         assert row["trust_state"] == "trusted"
@@ -514,7 +536,7 @@ def test_store_backfills_legacy_synced_memories_to_shared_workspace(tmp_path: Pa
         row = reopened.conn.execute(
             """
             SELECT actor_id, actor_display_name, workspace_id, workspace_kind,
-                   origin_device_id, origin_source, trust_state
+                   visibility, origin_device_id, origin_source, trust_state
             FROM memory_items
             WHERE title = ?
             """,
@@ -523,6 +545,7 @@ def test_store_backfills_legacy_synced_memories_to_shared_workspace(tmp_path: Pa
         assert row is not None
         assert row["actor_id"] == "legacy-sync:peer-123"
         assert row["actor_display_name"] == "Legacy synced peer"
+        assert row["visibility"] == "shared"
         assert row["workspace_id"] == "shared:legacy"
         assert row["workspace_kind"] == "shared"
         assert row["origin_device_id"] == "peer-123"
@@ -530,6 +553,59 @@ def test_store_backfills_legacy_synced_memories_to_shared_workspace(tmp_path: Pa
         assert row["trust_state"] == "legacy_unknown"
     finally:
         reopened.close()
+
+
+def test_private_memories_do_not_replicate(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.remember(session_id, kind="note", title="Private", body_text="Body")
+        ops, _ = store.load_replication_ops_since(None, limit=10)
+
+        filtered, _cursor, skipped = store.filter_replication_ops_for_sync_with_status(ops)
+
+        assert filtered == []
+        assert skipped is not None
+        assert skipped["reason"] == "visibility_filter"
+    finally:
+        store.close()
+
+
+def test_shared_memories_replicate(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.remember(
+            session_id,
+            kind="note",
+            title="Shared",
+            body_text="Body",
+            metadata={"visibility": "shared"},
+        )
+        ops, _ = store.load_replication_ops_since(None, limit=10)
+
+        filtered, _cursor, skipped = store.filter_replication_ops_for_sync_with_status(ops)
+
+        assert len(filtered) == 1
+        assert skipped is None
+        assert filtered[0]["payload"] is not None
+        assert filtered[0]["payload"]["visibility"] == "shared"
+    finally:
+        store.close()
 
 
 def test_replication_delete_wins_over_older_upsert(tmp_path: Path) -> None:
@@ -549,6 +625,7 @@ def test_replication_delete_wins_over_older_upsert(tmp_path: Path) -> None:
             kind="note",
             title="Gamma",
             body_text="Gamma body",
+            metadata={"visibility": "shared"},
         )
         store_a.forget(memory_id)
         ops, _ = store_a.load_replication_ops_since(None, limit=10)
