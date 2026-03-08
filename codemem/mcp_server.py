@@ -59,6 +59,40 @@ def build_server() -> FastMCP:
     def with_store(handler):
         return handler(get_store())
 
+    def build_filters(
+        *,
+        kind: str | None = None,
+        project: str | None = None,
+        include_actor_ids: list[str] | None = None,
+        exclude_actor_ids: list[str] | None = None,
+        include_workspace_ids: list[str] | None = None,
+        exclude_workspace_ids: list[str] | None = None,
+        include_workspace_kinds: list[str] | None = None,
+        exclude_workspace_kinds: list[str] | None = None,
+        personal_first: bool | None = None,
+    ) -> dict[str, Any]:
+        filters: dict[str, Any] = {}
+        if kind:
+            filters["kind"] = kind
+        resolved_project = project or default_project
+        if resolved_project:
+            filters["project"] = resolved_project
+        if include_actor_ids:
+            filters["include_actor_ids"] = include_actor_ids
+        if exclude_actor_ids:
+            filters["exclude_actor_ids"] = exclude_actor_ids
+        if include_workspace_ids:
+            filters["include_workspace_ids"] = include_workspace_ids
+        if exclude_workspace_ids:
+            filters["exclude_workspace_ids"] = exclude_workspace_ids
+        if include_workspace_kinds:
+            filters["include_workspace_kinds"] = include_workspace_kinds
+        if exclude_workspace_kinds:
+            filters["exclude_workspace_kinds"] = exclude_workspace_kinds
+        if personal_first is not None:
+            filters["personal_first"] = personal_first
+        return filters
+
     def _dedupe_ordered_ids(ids: list[Any]) -> tuple[list[int], list[str]]:
         deduped: list[int] = []
         seen: set[int] = set()
@@ -93,14 +127,26 @@ def build_server() -> FastMCP:
         limit: int = 8,
         kind: str | None = None,
         project: str | None = None,
+        include_actor_ids: list[str] | None = None,
+        exclude_actor_ids: list[str] | None = None,
+        include_workspace_ids: list[str] | None = None,
+        exclude_workspace_ids: list[str] | None = None,
+        include_workspace_kinds: list[str] | None = None,
+        exclude_workspace_kinds: list[str] | None = None,
+        personal_first: bool | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
-            filters: dict[str, Any] = {}
-            if kind:
-                filters["kind"] = kind
-            resolved_project = project or default_project
-            if resolved_project:
-                filters["project"] = resolved_project
+            filters = build_filters(
+                kind=kind,
+                project=project,
+                include_actor_ids=include_actor_ids,
+                exclude_actor_ids=exclude_actor_ids,
+                include_workspace_ids=include_workspace_ids,
+                exclude_workspace_ids=exclude_workspace_ids,
+                include_workspace_kinds=include_workspace_kinds,
+                exclude_workspace_kinds=exclude_workspace_kinds,
+                personal_first=personal_first,
+            )
             items = store.search_index(query, limit=limit, filters=filters or None)
             return {"items": items}
 
@@ -113,12 +159,25 @@ def build_server() -> FastMCP:
         depth_before: int = 3,
         depth_after: int = 3,
         project: str | None = None,
+        include_actor_ids: list[str] | None = None,
+        exclude_actor_ids: list[str] | None = None,
+        include_workspace_ids: list[str] | None = None,
+        exclude_workspace_ids: list[str] | None = None,
+        include_workspace_kinds: list[str] | None = None,
+        exclude_workspace_kinds: list[str] | None = None,
+        personal_first: bool | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
-            filters: dict[str, Any] = {}
-            resolved_project = project or default_project
-            if resolved_project:
-                filters["project"] = resolved_project
+            filters = build_filters(
+                project=project,
+                include_actor_ids=include_actor_ids,
+                exclude_actor_ids=exclude_actor_ids,
+                include_workspace_ids=include_workspace_ids,
+                exclude_workspace_ids=exclude_workspace_ids,
+                include_workspace_kinds=include_workspace_kinds,
+                exclude_workspace_kinds=exclude_workspace_kinds,
+                personal_first=personal_first,
+            )
             items = store.timeline(
                 query=query,
                 memory_id=memory_id,
@@ -282,14 +341,26 @@ def build_server() -> FastMCP:
         limit: int = 5,
         kind: str | None = None,
         project: str | None = None,
+        include_actor_ids: list[str] | None = None,
+        exclude_actor_ids: list[str] | None = None,
+        include_workspace_ids: list[str] | None = None,
+        exclude_workspace_ids: list[str] | None = None,
+        include_workspace_kinds: list[str] | None = None,
+        exclude_workspace_kinds: list[str] | None = None,
+        personal_first: bool | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
-            filters: dict[str, Any] = {}
-            if kind:
-                filters["kind"] = kind
-            resolved_project = project or default_project
-            if resolved_project:
-                filters["project"] = resolved_project
+            filters = build_filters(
+                kind=kind,
+                project=project,
+                include_actor_ids=include_actor_ids,
+                exclude_actor_ids=exclude_actor_ids,
+                include_workspace_ids=include_workspace_ids,
+                exclude_workspace_ids=exclude_workspace_ids,
+                include_workspace_kinds=include_workspace_kinds,
+                exclude_workspace_kinds=exclude_workspace_kinds,
+                personal_first=personal_first,
+            )
             matches = store.search(query, limit=limit, filters=filters or None)
             return {
                 "items": [
@@ -316,15 +387,30 @@ def build_server() -> FastMCP:
         limit: int = 10,
         project: str | None = None,
         include_pack_context: bool = False,
+        include_actor_ids: list[str] | None = None,
+        exclude_actor_ids: list[str] | None = None,
+        include_workspace_ids: list[str] | None = None,
+        exclude_workspace_ids: list[str] | None = None,
+        include_workspace_kinds: list[str] | None = None,
+        exclude_workspace_kinds: list[str] | None = None,
+        personal_first: bool | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
-            resolved_project = project or default_project
-            filters = {"project": resolved_project} if resolved_project else None
+            filters = build_filters(
+                project=project,
+                include_actor_ids=include_actor_ids,
+                exclude_actor_ids=exclude_actor_ids,
+                include_workspace_ids=include_workspace_ids,
+                exclude_workspace_ids=exclude_workspace_ids,
+                include_workspace_kinds=include_workspace_kinds,
+                exclude_workspace_kinds=exclude_workspace_kinds,
+                personal_first=personal_first,
+            )
             return store.explain(
                 query=query,
                 ids=ids,
                 limit=limit,
-                filters=filters,
+                filters=filters or None,
                 include_pack_context=include_pack_context,
             )
 
@@ -342,15 +428,29 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     def memory_recent(
-        limit: int = 8, kind: str | None = None, project: str | None = None
+        limit: int = 8,
+        kind: str | None = None,
+        project: str | None = None,
+        include_actor_ids: list[str] | None = None,
+        exclude_actor_ids: list[str] | None = None,
+        include_workspace_ids: list[str] | None = None,
+        exclude_workspace_ids: list[str] | None = None,
+        include_workspace_kinds: list[str] | None = None,
+        exclude_workspace_kinds: list[str] | None = None,
+        personal_first: bool | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
-            filters: dict[str, Any] = {}
-            if kind:
-                filters["kind"] = kind
-            resolved_project = project or default_project
-            if resolved_project:
-                filters["project"] = resolved_project
+            filters = build_filters(
+                kind=kind,
+                project=project,
+                include_actor_ids=include_actor_ids,
+                exclude_actor_ids=exclude_actor_ids,
+                include_workspace_ids=include_workspace_ids,
+                exclude_workspace_ids=exclude_workspace_ids,
+                include_workspace_kinds=include_workspace_kinds,
+                exclude_workspace_kinds=exclude_workspace_kinds,
+                personal_first=personal_first,
+            )
             items = store.recent(limit=limit, filters=filters or None)
             return {"items": items}
 
@@ -358,16 +458,33 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     def memory_pack(
-        context: str, limit: int | None = None, project: str | None = None
+        context: str,
+        limit: int | None = None,
+        project: str | None = None,
+        include_actor_ids: list[str] | None = None,
+        exclude_actor_ids: list[str] | None = None,
+        include_workspace_ids: list[str] | None = None,
+        exclude_workspace_ids: list[str] | None = None,
+        include_workspace_kinds: list[str] | None = None,
+        exclude_workspace_kinds: list[str] | None = None,
+        personal_first: bool | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
-            resolved_project = project or default_project
-            filters = {"project": resolved_project} if resolved_project else None
+            filters = build_filters(
+                project=project,
+                include_actor_ids=include_actor_ids,
+                exclude_actor_ids=exclude_actor_ids,
+                include_workspace_ids=include_workspace_ids,
+                exclude_workspace_ids=exclude_workspace_ids,
+                include_workspace_kinds=include_workspace_kinds,
+                exclude_workspace_kinds=exclude_workspace_kinds,
+                personal_first=personal_first,
+            )
             config = load_config()
             return store.build_memory_pack(
                 context=context,
                 limit=limit or config.pack_observation_limit,
-                filters=filters,
+                filters=filters or None,
             )
 
         return with_store(handler)
@@ -431,7 +548,19 @@ def build_server() -> FastMCP:
                 "files_modified": "list<string>",
                 "prompt_number": "int",
             },
-            "filters": ["kind", "session_id", "since", "project"],
+            "filters": [
+                "kind",
+                "session_id",
+                "since",
+                "project",
+                "include_actor_ids",
+                "exclude_actor_ids",
+                "include_workspace_ids",
+                "exclude_workspace_ids",
+                "include_workspace_kinds",
+                "exclude_workspace_kinds",
+                "personal_first",
+            ],
         }
 
     @mcp.tool()
