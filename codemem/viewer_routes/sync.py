@@ -248,6 +248,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             item["status"] = _attempt_status(item)
             item["address"] = _attempt_address(item)
             attempts_items.append(item)
+        legacy_devices = store.claimable_legacy_device_ids()
 
         if daemon_state_value == "ok":
             peer_states = {
@@ -288,7 +289,8 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 **status_payload,
                 "status": status_block,
                 "peers": peers_items,
-                "attempts": attempts_items,
+                "attempts": attempts_items[:5],
+                "legacy_devices": legacy_devices,
             }
         )
         return True
@@ -550,6 +552,27 @@ def handle_post(
         if claimed_local_actor:
             store.reconcile_claimed_same_actor_legacy_memories(peer_device_id.strip())
         handler._send_json({"ok": True, "claimed_local_actor": claimed_local_actor})
+        return True
+
+    if path == "/api/sync/legacy-devices/claim":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        origin_device_id = payload.get("origin_device_id")
+        if not isinstance(origin_device_id, str) or not origin_device_id.strip():
+            handler._send_json({"error": "origin_device_id required"}, status=400)
+            return True
+        updated = store.claim_legacy_device_id_as_self(origin_device_id.strip())
+        if updated <= 0:
+            handler._send_json({"error": "legacy device not found"}, status=404)
+            return True
+        handler._send_json(
+            {
+                "ok": True,
+                "origin_device_id": origin_device_id.strip(),
+                "updated": updated,
+            }
+        )
         return True
 
     if path == "/api/sync/actions/sync-now":

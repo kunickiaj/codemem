@@ -370,6 +370,145 @@ def test_sync_peer_identity_endpoint_reconciles_legacy_claimed_memories(
         store.close()
 
 
+def test_sync_status_exposes_claimable_legacy_device_ids(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
+    store = MemoryStore(db_path)
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.remember(
+            session_id,
+            kind="note",
+            title="Legacy orphan",
+            body_text="From an old machine",
+            metadata={
+                "actor_id": "legacy-sync:peer-old",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-old",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+        store.remember(
+            session_id,
+            kind="note",
+            title="Known peer",
+            body_text="Still a current peer",
+            metadata={
+                "actor_id": "legacy-sync:peer-1",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-1",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["legacy_devices"] == [
+            {
+                "origin_device_id": "peer-old",
+                "memory_count": 1,
+                "last_seen_at": payload["legacy_devices"][0]["last_seen_at"],
+            }
+        ]
+    finally:
+        server.shutdown()
+
+
+def test_sync_legacy_device_claim_endpoint_reconciles_memories(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id,
+            kind="note",
+            title="Legacy orphan",
+            body_text="From my old machine",
+            metadata={
+                "actor_id": "legacy-sync:peer-old",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-old",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/legacy-devices/claim",
+            body=json.dumps({"origin_device_id": "peer-old"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["origin_device_id"] == "peer-old"
+        assert payload["updated"] == 1
+    finally:
+        server.shutdown()
+
+    store = MemoryStore(db_path)
+    try:
+        row = store.conn.execute(
+            "SELECT actor_id, visibility, workspace_id, workspace_kind, trust_state FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == store.actor_id
+        assert row["visibility"] == "private"
+        assert row["workspace_id"] == f"personal:{store.actor_id}"
+        assert row["workspace_kind"] == "personal"
+        assert row["trust_state"] == "trusted"
+    finally:
+        store.close()
+
+
 def test_sync_status_endpoint_includes_diagnostics_when_requested(
     tmp_path: Path, monkeypatch
 ) -> None:

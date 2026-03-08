@@ -314,6 +314,77 @@ class MemoryStore:
             return
         self._reconcile_claimed_same_actor_legacy_memories()
 
+    def claimable_legacy_device_ids(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT origin_device_id, COUNT(*) AS memory_count, MAX(created_at) AS last_seen_at
+            FROM memory_items
+            WHERE origin_device_id IS NOT NULL
+              AND origin_device_id != ''
+              AND origin_device_id != 'unknown'
+              AND (
+                    actor_id LIKE 'legacy-sync:%'
+                 OR actor_display_name = 'Legacy synced peer'
+                 OR workspace_id = 'shared:legacy'
+                 OR workspace_kind = 'shared'
+                 OR trust_state = 'legacy_unknown'
+              )
+              AND origin_device_id != ?
+              AND origin_device_id NOT IN (
+                    SELECT peer_device_id FROM sync_peers WHERE peer_device_id IS NOT NULL
+              )
+            GROUP BY origin_device_id
+            ORDER BY last_seen_at DESC, origin_device_id ASC
+            """,
+            (self.device_id,),
+        ).fetchall()
+        return [
+            {
+                "origin_device_id": str(row["origin_device_id"]),
+                "memory_count": int(row["memory_count"] or 0),
+                "last_seen_at": row["last_seen_at"],
+            }
+            for row in rows
+            if row["origin_device_id"]
+        ]
+
+    def claim_legacy_device_id_as_self(self, origin_device_id: str) -> int:
+        device_id = self._clean_optional_str(origin_device_id)
+        if not device_id or device_id in {"unknown", self.device_id}:
+            return 0
+        personal_workspace_id = self._default_workspace_id(
+            actor_id=self.actor_id,
+            workspace_kind="personal",
+        )
+        cursor = self.conn.execute(
+            """
+            UPDATE memory_items
+            SET actor_id = ?,
+                actor_display_name = ?,
+                visibility = 'private',
+                workspace_id = ?,
+                workspace_kind = 'personal',
+                trust_state = 'trusted'
+            WHERE origin_device_id = ?
+              AND (
+                    actor_id LIKE 'legacy-sync:%'
+                 OR actor_display_name = 'Legacy synced peer'
+                 OR workspace_id = 'shared:legacy'
+                 OR workspace_kind = 'shared'
+                 OR trust_state = 'legacy_unknown'
+              )
+            """,
+            (
+                self.actor_id,
+                self.actor_display_name,
+                personal_workspace_id,
+                device_id,
+            ),
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+        return int(cursor.rowcount or 0)
+
     def same_actor_peer_ids(self) -> list[str]:
         rows = self.conn.execute(
             "SELECT peer_device_id FROM sync_peers WHERE claimed_local_actor = 1 ORDER BY peer_device_id"

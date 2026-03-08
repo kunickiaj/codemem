@@ -899,6 +899,52 @@
       .peer-actions { display: flex; gap: 6px; }
       .peer-actions button { border: 1px solid var(--border); background: transparent; border-radius: var(--radius-pill); padding: 5px 10px; font-family: var(--font-sans); font-size: 12px; cursor: pointer; color: var(--text-secondary); }
       .peer-actions button:hover { border-color: var(--border-hover); background: var(--surface-2); }
+      .sync-legacy-claim-row { margin-top: 12px; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .sync-legacy-select {
+        min-width: 320px;
+        max-width: 100%;
+        flex: 1 1 320px;
+        padding: 8px 12px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .sync-legacy-select:hover { border-color: var(--border-hover); }
+      .sync-legacy-select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+      .sync-legacy-button {
+        border: 1px solid var(--control-border);
+        background: var(--control-bg);
+        color: var(--control-text);
+        border-radius: var(--radius-pill);
+        padding: 8px 14px;
+        font-family: var(--font-sans);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+      }
+      .sync-legacy-button:hover {
+        background: var(--control-hover-bg);
+        border-color: var(--control-hover-border);
+      }
+      .sync-legacy-button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .sync-legacy-button:disabled {
+        opacity: 0.7;
+        cursor: default;
+        transform: none;
+      }
       .peer-meta { font-size: 13px; color: var(--text-tertiary); }
       .peer-addresses { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); opacity: 0.7; }
       .attempts-list { margin-top: var(--sp-3); display: grid; gap: 6px; font-size: 13px; color: var(--text-tertiary); }
@@ -1450,16 +1496,25 @@
         <div class="peer-list" id="syncPeers"></div>
       </div>
 
-      <div class="card" style="animation-delay: 0.1s">
-        <h2>Recent sync attempts</h2>
-        <div class="attempts-list" id="syncAttempts"></div>
+      <div class="card" id="syncLegacyClaims" style="animation-delay: 0.08s" hidden>
+        <h2>Claim old device as mine</h2>
+        <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
+        <div class="peer-actions sync-legacy-claim-row">
+          <select class="sync-legacy-select" id="syncLegacyDeviceSelect"></select>
+          <button class="sync-legacy-button" id="syncLegacyClaimButton">Claim as mine</button>
+        </div>
       </div>
 
-      <div class="section-meta" style="text-align:right;">
+      <div class="section-meta" style="text-align:right; margin-bottom:12px;">
         <label class="small" style="display:inline-flex;align-items:center;gap:8px;">
           <input id="syncRedact" type="checkbox" checked />
           Redact sensitive details
         </label>
+      </div>
+
+      <div class="card" style="animation-delay: 0.1s">
+        <h2>Recent sync attempts</h2>
+        <div class="attempts-list" id="syncAttempts"></div>
       </div>
     </div>
 

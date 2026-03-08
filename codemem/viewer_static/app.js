@@ -131,6 +131,7 @@
     lastSyncStatus: null,
     lastSyncPeers: [],
     lastSyncAttempts: [],
+    lastSyncLegacyDevices: [],
     pairingPayloadRaw: null,
     pairingCommandRaw: "",
     /* Config */
@@ -286,6 +287,17 @@
         peer_device_id: peerDeviceId,
         claimed_local_actor: claimedLocalActor
       })
+    });
+    const text = await resp.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(payload?.error || text || "request failed");
+    return payload;
+  }
+  async function claimLegacyDeviceIdentity(originDeviceId) {
+    const resp = await fetch("/api/sync/legacy-devices/claim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ origin_device_id: originDeviceId })
     });
     const text = await resp.text();
     const payload = text ? JSON.parse(text) : {};
@@ -1635,13 +1647,45 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       syncPeers.appendChild(card);
     });
   }
+  function renderLegacyDeviceClaims() {
+    const panel = document.getElementById("syncLegacyClaims");
+    const select = document.getElementById("syncLegacyDeviceSelect");
+    const button = document.getElementById("syncLegacyClaimButton");
+    const meta = document.getElementById("syncLegacyClaimsMeta");
+    if (!panel || !select || !button || !meta) return;
+    const devices = Array.isArray(state.lastSyncLegacyDevices) ? state.lastSyncLegacyDevices : [];
+    select.textContent = "";
+    meta.textContent = "";
+    if (!devices.length) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    devices.forEach((device, index) => {
+      const option = document.createElement("option");
+      const deviceId = String(device.origin_device_id || "").trim();
+      if (!deviceId) return;
+      const count = Number(device.memory_count || 0);
+      const lastSeen = String(device.last_seen_at || "").trim();
+      option.value = deviceId;
+      option.textContent = count > 0 ? `${deviceId} (${count} memories)` : deviceId;
+      if (index === 0) option.selected = true;
+      select.appendChild(option);
+      if (!meta.textContent && lastSeen) {
+        meta.textContent = `Detected from older synced memories. Latest memory: ${formatTimestamp(lastSeen)}`;
+      }
+    });
+    if (!meta.textContent) {
+      meta.textContent = "Detected from older synced memories that are not attached to a current peer.";
+    }
+  }
   function renderSyncAttempts() {
     const syncAttempts = document.getElementById("syncAttempts");
     if (!syncAttempts) return;
     syncAttempts.textContent = "";
     const attempts = state.lastSyncAttempts;
     if (!Array.isArray(attempts) || !attempts.length) return;
-    attempts.forEach((attempt) => {
+    attempts.slice(0, 5).forEach((attempt) => {
       const line = el("div", "diag-line");
       const left = el("div", "left");
       left.append(
@@ -1689,8 +1733,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       if (statusPayload) state.lastSyncStatus = statusPayload;
       state.lastSyncPeers = payload.peers || [];
       state.lastSyncAttempts = payload.attempts || [];
+      state.lastSyncLegacyDevices = payload.legacy_devices || [];
       renderSyncStatus();
       renderSyncPeers();
+      renderLegacyDeviceClaims();
       renderSyncAttempts();
       renderHealthOverview();
     } catch {
@@ -1711,6 +1757,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const syncPairingToggle = document.getElementById("syncPairingToggle");
     const syncNowButton = document.getElementById("syncNowButton");
     const syncRedact = document.getElementById("syncRedact");
+    const syncLegacyClaimButton = document.getElementById("syncLegacyClaimButton");
+    const syncLegacyDeviceSelect = document.getElementById("syncLegacyDeviceSelect");
     const pairingCopy = document.getElementById("pairingCopy");
     const syncPairing = document.getElementById("syncPairing");
     if (syncPairing) syncPairing.hidden = !state.syncPairingOpen;
@@ -1735,6 +1783,23 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       renderSyncPeers();
       renderSyncAttempts();
       renderPairing();
+    });
+    syncLegacyClaimButton?.addEventListener("click", async () => {
+      const originDeviceId = String(syncLegacyDeviceSelect?.value || "").trim();
+      if (!originDeviceId || !syncLegacyClaimButton) return;
+      syncLegacyClaimButton.disabled = true;
+      const originalText = syncLegacyClaimButton.textContent || "Claim as mine";
+      syncLegacyClaimButton.textContent = "Claiming...";
+      try {
+        await claimLegacyDeviceIdentity(originDeviceId);
+        await loadSyncData();
+      } catch {
+        syncLegacyClaimButton.textContent = "Retry claim";
+        syncLegacyClaimButton.disabled = false;
+        return;
+      }
+      syncLegacyClaimButton.textContent = originalText;
+      syncLegacyClaimButton.disabled = false;
     });
     syncNowButton?.addEventListener("click", async () => {
       if (!syncNowButton) return;
