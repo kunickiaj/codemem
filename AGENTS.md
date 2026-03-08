@@ -1,6 +1,4 @@
-# Agent Guidelines for codemem
-
-This file is for agentic coding tools working in this repo.
+# codemem
 
 ## Public repository safety
 
@@ -17,9 +15,17 @@ will be published.
 
 If you are about to run commands, prefer `uv run ...` (no manual venv activation needed).
 
-## Releases (reproducible process)
+## Execution Contract
 
-This repo uses PR-only `main` with required CI checks.
+- Treat work as incomplete until the requested change is implemented, the smallest relevant validation has run, and any remaining gaps are called out explicitly as blocked or deferred.
+- Do not stop at analysis, a partial fix, or "here's what I would do" unless the user explicitly asked for plan-only work.
+- Before acting, check prerequisites first: read the file you will change, inspect nearby tests/docs when behavior or public usage changes, and resolve dependency outputs from earlier steps before continuing.
+- If a lookup/search result is empty or suspiciously narrow, try at least one fallback query or adjacent source before concluding that nothing relevant exists.
+- Before finalizing, verify: requirements are met, claims are grounded in repo/tool output, requested format is satisfied, and the smallest relevant test/lint/build/doc check has passed.
+- For substantial work, send short progress updates at phase changes only: what changed or was learned, and the next step. Do not narrate routine tool calls.
+- For commits, pushes, issue updates, server restarts, or maintenance commands, briefly state the intended action first, then confirm the outcome and validation afterward.
+
+## Releases
 
 Release checklist:
 
@@ -39,7 +45,7 @@ Release checklist:
 6. Tag the merge commit as `vX.Y.Z` and push the tag
    - The `Release` workflow triggers on `v*` tags and publishes the GitHub Release artifacts.
 
-## Stack (what this repo uses)
+## Stack
 
 - Python: >=3.11,<3.15
 - Env/tooling: `uv` (creates `.venv/`)
@@ -53,7 +59,7 @@ Release checklist:
 
 ## Quick Commands
 
-### Setup (recommended)
+### Setup
 - Install dev deps + create venv: `uv sync`
 - Run commands via the venv (no activate): `uv run codemem --help`
 - Activate (fish): `source .venv/bin/activate.fish`
@@ -81,10 +87,8 @@ Release checklist:
 - Run a single test: `uv run pytest tests/test_store.py::test_store_roundtrip`
 - Run by substring match: `uv run pytest -k "roundtrip and store"`
 
-Single-test example:
 - `uv run pytest tests/test_store.py::test_deactivate_low_signal_observations`
 
-Notes:
 - Pytest default opts are in `pyproject.toml` (`addopts = "-q"`).
 
 ### Lint / Format (ruff)
@@ -101,7 +105,7 @@ Ruff config (from `pyproject.toml`):
 ### Coverage (optional)
 - `uv run pytest --cov=codemem --cov-report=term`
 
-## Frontend Development (viewer + plugin)
+## Frontend Development
 
 This repo does not have a separate JS build step (no Vite/Next/etc). The UI is embedded.
 
@@ -118,7 +122,7 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
   - must never crash OpenCode (no uncaught exceptions)
   - avoid blocking hooks; defer heavy work to background CLI calls
 
-## Repo Map (where things live)
+## Repo Map
 - `codemem/`: Python package (CLI, ingest pipeline, MCP server, viewer, store)
 - `codemem/store/_store.py`: SQLite store entrypoint (most store methods hang off `MemoryStore`)
 - `codemem/plugin_ingest.py`: ingestion + filtering of tool events / transcripts
@@ -135,7 +139,7 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 - Export/Import: `codemem export-memories`, `codemem import-memories`
 - Store maintenance: `codemem db prune-memories` (use `--dry-run` first)
 
-## Environment Variables (most used)
+## Environment Variables
 
 - `CODEMEM_DB`: sqlite path (example: `~/.codemem/mem.sqlite`)
 - `CODEMEM_PLUGIN_LOG`: set to `1` to enable plugin logging
@@ -169,7 +173,7 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
   - Avoid blocking work in hooks; defer heavy work to background CLI calls
   - Keep helper functions small and testable; prefer pure transformations
 
-## Memory Quality Rules (important)
+## Memory Quality
 - Don't store raw tool logs as memories
 - Filter low-signal tool events (`read`, `edit`, `glob`, `grep`, etc.)
 - Prefer typed memory kinds: `discovery`, `change`, `feature`, `bugfix`, `refactor`, `decision`, `exploration`
@@ -207,7 +211,7 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
   - `codemem/viewer.py` (UI kind lists)
   - `tests/test_e2e_pipeline.py` coverage around documented types
 
-## PR Hygiene (Required)
+## PR Hygiene
 
 - Always use `.github/PULL_REQUEST_TEMPLATE.md` for every PR.
 - Replace all template placeholder text before requesting review.
@@ -225,41 +229,11 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 - Validate: `uv run pytest` and `uv run ruff check codemem tests`
 - Tag + push: `git tag vX.Y.Z` then `git push origin main --tags`
 
-## Cursor / Copilot Rules
-- No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` found.
-- If added later, summarize and mirror them here.
-
 ## Do / Don't
 - Do keep changes small and deterministic; prefer adding tests when behavior changes
 - Do validate inputs at boundaries; keep DB writes intentional
 - Don't add new heavy dependencies without a clear need
 - Don't let the plugin throw uncaught exceptions or block OpenCode hooks
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
 
 <!-- BEGIN BEADS INTEGRATION -->
 ## Issue Tracking with bd (beads)
