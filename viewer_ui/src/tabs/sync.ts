@@ -44,14 +44,60 @@ function parseScopeList(value: string): string[] {
     .filter(Boolean);
 }
 
-function renderScopeChips(values: string[], emptyLabel: string): HTMLElement {
-  const wrap = el('div', 'peer-scope-chips');
-  if (!values.length) {
-    wrap.appendChild(el('span', 'peer-scope-chip empty', emptyLabel));
-    return wrap;
-  }
-  values.forEach((value) => wrap.appendChild(el('span', 'peer-scope-chip', value)));
-  return wrap;
+function createChipEditor(initialValues: string[], placeholder: string, emptyLabel: string) {
+  let values = [...initialValues];
+  const container = el('div', 'peer-scope-editor');
+  const chips = el('div', 'peer-scope-chips');
+  const input = el('input', 'peer-scope-input') as HTMLInputElement;
+  input.placeholder = placeholder;
+
+  const syncChips = () => {
+    chips.textContent = '';
+    if (!values.length) {
+      chips.appendChild(el('span', 'peer-scope-chip empty', emptyLabel));
+      return;
+    }
+    values.forEach((value, index) => {
+      const chip = el('span', 'peer-scope-chip');
+      const label = el('span', null, value);
+      const remove = el('button', 'peer-scope-chip-remove', 'x') as HTMLButtonElement;
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        values = values.filter((_, currentIndex) => currentIndex !== index);
+        syncChips();
+      });
+      chip.append(label, remove);
+      chips.appendChild(chip);
+    });
+  };
+
+  const commitInput = () => {
+    const incoming = parseScopeList(input.value);
+    if (incoming.length) {
+      values = Array.from(new Set([...values, ...incoming]));
+      input.value = '';
+      syncChips();
+    }
+  };
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault();
+      commitInput();
+    }
+    if (event.key === 'Backspace' && !input.value && values.length) {
+      values = values.slice(0, -1);
+      syncChips();
+    }
+  });
+  input.addEventListener('blur', commitInput);
+
+  syncChips();
+  container.append(chips, input);
+  return {
+    element: container,
+    values: () => [...values],
+  };
 }
 
 function renderActionList(container: HTMLElement | null, actions: Array<{ label: string; command: string }>) {
@@ -229,7 +275,7 @@ export function renderSyncPeers() {
     const identityMeta = el(
       'div',
       'peer-meta',
-      peer.claimed_local_actor ? 'Belongs to your identity' : 'Different or unknown identity',
+      peer.claimed_local_actor ? 'Mine' : 'Different or unknown',
     );
 
     const scope = peer.project_scope || {};
@@ -244,7 +290,7 @@ export function renderSyncPeers() {
     identityCheckbox.type = 'checkbox';
     identityCheckbox.checked = Boolean(peer.claimed_local_actor);
     const identityLabel = document.createElement('label');
-    identityLabel.append(identityCheckbox, document.createTextNode(' Belongs to my identity'));
+    identityLabel.append(identityCheckbox, document.createTextNode(' Belongs to me'));
     identityRow.appendChild(identityLabel);
     identityCheckbox.addEventListener('change', async () => {
       identityCheckbox.disabled = true;
@@ -269,19 +315,10 @@ export function renderSyncPeers() {
       'peer-scope-effective',
       `Effective scope · include: ${effectiveInclude.join(', ') || 'all'} · exclude: ${effectiveExclude.join(', ') || 'none'}`,
     );
-    const chipRow = el('div', 'peer-scope-row');
-    chipRow.append(
-      renderScopeChips(includeList, 'All projects'),
-      renderScopeChips(excludeList, 'No exclusions'),
-    );
-    const includeInput = el('input', 'peer-scope-input') as HTMLInputElement;
-    includeInput.placeholder = 'project-a, project-b';
-    includeInput.value = includeList.join(', ');
-    const excludeInput = el('input', 'peer-scope-input') as HTMLInputElement;
-    excludeInput.placeholder = 'private-repo';
-    excludeInput.value = excludeList.join(', ');
+    const includeEditor = createChipEditor(includeList, 'Add included project', 'All projects');
+    const excludeEditor = createChipEditor(excludeList, 'Add excluded project', 'No exclusions');
     const inputRow = el('div', 'peer-scope-row');
-    inputRow.append(includeInput, excludeInput);
+    inputRow.append(includeEditor.element, excludeEditor.element);
     const scopeActions = el('div', 'peer-scope-actions');
     const saveScopeBtn = el('button', 'settings-button', 'Save scope') as HTMLButtonElement;
     const inheritBtn = el('button', 'settings-button', 'Use global') as HTMLButtonElement;
@@ -289,7 +326,7 @@ export function renderSyncPeers() {
       saveScopeBtn.disabled = true;
       saveScopeBtn.textContent = 'Saving...';
       try {
-        await api.updatePeerScope(peerId, parseScopeList(includeInput.value), parseScopeList(excludeInput.value));
+        await api.updatePeerScope(peerId, includeEditor.values(), excludeEditor.values());
         await loadSyncData();
       } catch {
         saveScopeBtn.textContent = 'Retry save';
@@ -312,7 +349,7 @@ export function renderSyncPeers() {
       }
     });
     scopeActions.append(saveScopeBtn, inheritBtn);
-    scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, chipRow, inputRow, scopeActions);
+    scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, inputRow, scopeActions);
 
     titleRow.append(name, actions);
     card.append(titleRow, addressLabel, meta, scopePanel);
