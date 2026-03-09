@@ -241,3 +241,36 @@ def test_observations_claimed_peer_counts_as_mine(tmp_path: Path) -> None:
         assert theirs_handler.response["items"][0]["owned_by_self"] is False
     finally:
         store.close()
+
+
+def test_session_endpoint_reports_unfiltered_counts_without_project(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session = store.start_session(
+            cwd="/tmp/work",
+            git_remote=None,
+            git_branch="main",
+            user="tester",
+            tool_version="test",
+            project="proj",
+        )
+        store.add_user_prompt(session, "proj", "Prompt")
+        store.add_artifact(session, kind="transcript", path=None, content_text="hello")
+        store.remember(session, kind="bugfix", title="Bug", body_text="Fix")
+        store.remember(session, kind="session_summary", title="Summary", body_text="Summary body")
+        store.end_session(session)
+
+        handler = DummyHandler()
+        handled = memory.handle_get(handler, store, "/api/session", "")
+
+        assert handled is True
+        assert handler.status == 200
+        assert handler.response == {
+            "total": 4,
+            "memories": 2,
+            "artifacts": 1,
+            "prompts": 1,
+            "observations": 1,
+        }
+    finally:
+        store.close()
