@@ -132,6 +132,46 @@ def test_compress_artifacts_compresses_existing_rows(tmp_path: Path) -> None:
     store.close()
 
 
+def test_compress_artifacts_uses_utf8_byte_length_threshold(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    text = "🙂" * 2000
+    store.conn.execute(
+        """
+        INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session,
+            "transcript",
+            None,
+            text,
+            "emoji-hash",
+            dt.datetime.now(dt.UTC).isoformat(),
+            db.to_json({}),
+        ),
+    )
+    store.conn.commit()
+
+    result = store.compress_artifacts(min_bytes=4096, dry_run=False)
+    assert result["compressed"] >= 1
+    row = store.conn.execute(
+        "SELECT content_text, content_encoding, content_blob FROM artifacts ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["content_text"] is None
+    assert row["content_encoding"] == store.ARTIFACT_COMPRESSION_ENCODING
+    assert row["content_blob"] is not None
+    store.close()
+
+
 def test_rejects_invalid_memory_kind(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

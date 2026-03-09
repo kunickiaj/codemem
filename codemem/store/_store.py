@@ -2000,7 +2000,7 @@ class MemoryStore:
             FROM artifacts
             WHERE content_blob IS NULL
               AND content_text IS NOT NULL
-              AND LENGTH(content_text) >= ?
+              AND LENGTH(CAST(content_text AS BLOB)) >= ?
             ORDER BY id ASC
         """
         params: list[Any] = [threshold]
