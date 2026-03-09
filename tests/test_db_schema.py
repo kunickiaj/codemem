@@ -35,6 +35,12 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
         workspace_column = conn.execute(
             "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'workspace_id'"
         ).fetchone()
+        artifact_encoding_column = conn.execute(
+            "SELECT name FROM pragma_table_info('artifacts') WHERE name = 'content_encoding'"
+        ).fetchone()
+        artifact_blob_column = conn.execute(
+            "SELECT name FROM pragma_table_info('artifacts') WHERE name = 'content_blob'"
+        ).fetchone()
     finally:
         conn.close()
 
@@ -48,6 +54,8 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
     assert visibility_column is not None
     assert claimed_local_actor_column is not None
     assert workspace_column is not None
+    assert artifact_encoding_column is not None
+    assert artifact_blob_column is not None
 
 
 def test_initialize_schema_skips_reinit_but_keeps_kind_normalization(

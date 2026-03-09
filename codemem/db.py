@@ -1051,6 +1051,13 @@ def _ensure_sync_peer_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "sync_peers", "claimed_local_actor", "INTEGER NOT NULL DEFAULT 0")
 
 
+def _ensure_artifact_storage_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "artifacts"):
+        return
+    _ensure_column(conn, "artifacts", "content_encoding", "TEXT")
+    _ensure_column(conn, "artifacts", "content_blob", "BLOB")
+
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
     current_version = _schema_user_version(conn)
     raw_event_identity_migrate = _raw_event_identity_needs_data_migration(conn)
@@ -1059,6 +1066,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         current_version = 1
     _ensure_memory_identity_schema(conn)
     _ensure_sync_peer_schema(conn)
+    _ensure_artifact_storage_schema(conn)
     _ensure_raw_event_identity_schema(conn, migrate_data=raw_event_identity_migrate)
     if current_version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

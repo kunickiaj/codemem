@@ -22,6 +22,7 @@ from .commands.common import (
     write_config_or_exit,
 )
 from .commands.db_cmds import (
+    compress_artifacts_cmd,
     normalize_projects_cmd,
     prune_memories_cmd,
     prune_observations_cmd,
@@ -1282,6 +1283,24 @@ def db_size_report(
     """Show SQLite file size and major storage consumers."""
 
     size_report_cmd(store_from_path=_store, db_path=db_path, limit=limit)
+
+
+@db_app.command("compress-artifacts")
+def db_compress_artifacts(
+    db_path: str = typer.Option(None, help="Path to codemem SQLite database"),
+    min_bytes: int = typer.Option(4096, min=1, help="Minimum artifact text size to compress"),
+    limit: int | None = typer.Option(None, min=1, help="Optional row limit"),
+    dry_run: bool = typer.Option(False, help="Preview without writing changes"),
+) -> None:
+    """Compress large stored artifact text payloads."""
+
+    compress_artifacts_cmd(
+        store_from_path=_store,
+        db_path=db_path,
+        min_bytes=min_bytes,
+        limit=limit,
+        dry_run=dry_run,
+    )
 
 
 @app.command()
