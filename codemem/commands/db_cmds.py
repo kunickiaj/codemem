@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 from rich import print
 
 
@@ -81,3 +84,113 @@ def rename_project_cmd(
     print(f"- Usage events: {result.get('usage_events_to_update')}")
     if result.get("dry_run"):
         print("\n[dim]Pass --apply to execute.[/dim]")
+
+
+def size_report_cmd(*, store_from_path, db_path: str | None, limit: int) -> None:
+    """Report SQLite file size and major storage consumers."""
+
+    store = store_from_path(db_path)
+    try:
+        conn = store.conn
+        db_file = Path(store.db_path)
+
+        page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+        page_count = int(conn.execute("PRAGMA page_count").fetchone()[0])
+        freelist_count = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
+        used_pages = max(0, page_count - freelist_count)
+
+        print("[bold]Database size report[/bold]")
+        print(f"- Path: {db_file}")
+        print(f"- File size: {_format_bytes(db_file.stat().st_size if db_file.exists() else 0)}")
+        print(f"- Page size: {page_size:,} B")
+        print(f"- Pages: total {page_count:,} used {used_pages:,} free {freelist_count:,}")
+        print(f"- Approx used bytes: {_format_bytes(used_pages * page_size)}")
+        print(f"- Approx free bytes: {_format_bytes(freelist_count * page_size)}")
+
+        objects = _dbstat_objects(conn, limit=limit)
+        if objects:
+            print("\n[bold]Largest tables / indexes[/bold]")
+            for item in objects:
+                print(
+                    f"- {item['name']} ({item['kind']}): {_format_bytes(item['bytes'])}"
+                    f" [{item['pages']:,} pages]"
+                )
+
+        counts = _selected_table_counts(conn)
+        if counts:
+            print("\n[bold]Selected row counts[/bold]")
+            for name, count in counts:
+                print(f"- {name}: {count:,}")
+    finally:
+        store.close()
+
+
+def _format_bytes(num_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(num_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{num_bytes} B"
+
+
+def _dbstat_objects(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, int | str]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT name, SUM(pgsize) AS total_bytes, COUNT(*) AS pages
+            FROM dbstat
+            WHERE name NOT LIKE 'sqlite_%'
+            GROUP BY name
+            ORDER BY total_bytes DESC, name ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    table_names = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+    return [
+        {
+            "name": str(row[0]),
+            "bytes": int(row[1] or 0),
+            "pages": int(row[2] or 0),
+            "kind": "table" if str(row[0]) in table_names else "index",
+        }
+        for row in rows
+    ]
+
+
+def _selected_table_counts(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+    selected = [
+        "memory_items",
+        "artifacts",
+        "raw_events",
+        "raw_event_sessions",
+        "raw_event_flush_batches",
+        "usage_events",
+        "sessions",
+        "tags",
+    ]
+    existing = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+    counts: list[tuple[str, int]] = []
+    for table in selected:
+        if table not in existing:
+            continue
+        count = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        counts.append((table, count))
+    return counts

@@ -26,6 +26,7 @@ from .commands.db_cmds import (
     prune_memories_cmd,
     prune_observations_cmd,
     rename_project_cmd,
+    size_report_cmd,
 )
 from .commands.import_export_cmds import export_memories_cmd, import_memories_cmd
 from .commands.maintenance_cmds import (
@@ -1271,6 +1272,16 @@ def db_rename_project(
     rename_project_cmd(
         store_from_path=_store, db_path=db_path, old_name=old_name, new_name=new_name, apply=apply
     )
+
+
+@db_app.command("size-report")
+def db_size_report(
+    db_path: str = typer.Option(None, help="Path to codemem SQLite database"),
+    limit: int = typer.Option(12, min=1, help="Number of largest tables/indexes to show"),
+) -> None:
+    """Show SQLite file size and major storage consumers."""
+
+    size_report_cmd(store_from_path=_store, db_path=db_path, limit=limit)
 
 
 @app.command()
