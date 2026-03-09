@@ -199,38 +199,52 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         params = parse_qs(query)
         project = params.get("project", [None])[0]
 
-        prompts = store.conn.execute(
-            "SELECT COUNT(*) AS total FROM user_prompts WHERE (? IS NULL OR project = ?)",
-            (project, project),
-        ).fetchone()["total"]
-        artifacts = store.conn.execute(
-            """
-            SELECT COUNT(*) AS total
-            FROM artifacts
-            JOIN sessions ON sessions.id = artifacts.session_id
-            WHERE (? IS NULL OR sessions.project = ?)
-            """,
-            (project, project),
-        ).fetchone()["total"]
-        memories = store.conn.execute(
-            """
-            SELECT COUNT(*) AS total
-            FROM memory_items
-            JOIN sessions ON sessions.id = memory_items.session_id
-            WHERE (? IS NULL OR sessions.project = ?)
-            """,
-            (project, project),
-        ).fetchone()["total"]
-        observations = store.conn.execute(
-            """
-            SELECT COUNT(*) AS total
-            FROM memory_items
-            JOIN sessions ON sessions.id = memory_items.session_id
-            WHERE kind != 'session_summary'
-              AND (? IS NULL OR sessions.project = ?)
-            """,
-            (project, project),
-        ).fetchone()["total"]
+        if project:
+            prompts = store.conn.execute(
+                "SELECT COUNT(*) AS total FROM user_prompts WHERE project = ?",
+                (project,),
+            ).fetchone()["total"]
+            artifacts = store.conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM artifacts
+                JOIN sessions ON sessions.id = artifacts.session_id
+                WHERE sessions.project = ?
+                """,
+                (project,),
+            ).fetchone()["total"]
+            memories = store.conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM memory_items
+                JOIN sessions ON sessions.id = memory_items.session_id
+                WHERE sessions.project = ?
+                """,
+                (project,),
+            ).fetchone()["total"]
+            observations = store.conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM memory_items
+                JOIN sessions ON sessions.id = memory_items.session_id
+                WHERE kind != 'session_summary'
+                  AND sessions.project = ?
+                """,
+                (project,),
+            ).fetchone()["total"]
+        else:
+            prompts = store.conn.execute("SELECT COUNT(*) AS total FROM user_prompts").fetchone()[
+                "total"
+            ]
+            artifacts = store.conn.execute("SELECT COUNT(*) AS total FROM artifacts").fetchone()[
+                "total"
+            ]
+            memories = store.conn.execute("SELECT COUNT(*) AS total FROM memory_items").fetchone()[
+                "total"
+            ]
+            observations = store.conn.execute(
+                "SELECT COUNT(*) AS total FROM memory_items WHERE kind != 'session_summary'"
+            ).fetchone()["total"]
         total = int(prompts or 0) + int(artifacts or 0) + int(memories or 0)
 
         handler._send_json(
