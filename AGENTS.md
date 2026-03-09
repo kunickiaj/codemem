@@ -42,8 +42,20 @@ Release checklist:
 4. Ensure JS installs use the public npm registry (avoid private registries/mirrors)
    - Keep `.opencode/.npmrc` with `registry=https://registry.npmjs.org/`
 5. Wait for CI to pass, then squash-merge the PR
-6. Tag the merge commit as `vX.Y.Z` and push the tag
+6. After the release PR merges, switch to updated `main` and verify `HEAD` is the merged release commit
+   - Run `git checkout main`
+   - Run `git pull --rebase`
+   - Run `git status --short --branch` and confirm the worktree is clean
+   - Run `git show --stat --summary HEAD` and confirm the release version/artifact changes are present on `main`
+7. Tag the merge commit on `main` as `vX.Y.Z` and push the tag
+   - Never tag the release branch commit directly
+   - Never create/push the release tag while checked out on `release/*`
+   - Never assume the release branch tip and merged `main` commit are interchangeable; verify before tagging
    - The `Release` workflow triggers on `v*` tags and publishes the GitHub Release artifacts.
+8. Do not immediately bump `main` to the next unreleased version with the current shared versioning model
+   - `main` also carries live marketplace/plugin metadata and pinned `uvx codemem==X.Y.Z` references
+   - A post-release bump on `main` can point live install paths at a package version that is not published yet
+   - Keep next-version bumps in a later release-prep branch/PR unless versioning is explicitly decoupled first
 
 ## Stack
 
@@ -223,11 +235,15 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 - Keep PR titles/bodies and commit messages free of private inspiration references or other non-public context.
 
 ## Releases
-- Bump versions:
-  - `pyproject.toml` (semver)
-  - `codemem/__init__.py` (`__version__`)
-- Validate: `uv run pytest` and `uv run ruff check codemem tests`
-- Tag + push: `git tag vX.Y.Z` then `git push origin main --tags`
+- Release versions are prepared on a release branch + PR, then tagged only after that PR is merged to `main`.
+- Before tagging:
+  - `git checkout main`
+  - `git pull --rebase`
+  - verify the merged release commit is at `HEAD`
+  - verify the worktree is clean
+- Tag from `main` only: `git tag vX.Y.Z` then `git push origin vX.Y.Z`
+- Do not tag from `release/*` branches.
+- Do not immediately bump `main` to the next unreleased version with the current shared marketplace/package versioning model.
 
 ## Do / Don't
 - Do keep changes small and deterministic; prefer adding tests when behavior changes
