@@ -4,6 +4,8 @@ import datetime as dt
 import hashlib
 import math
 import os
+import sqlite3
+import zlib
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,8 @@ class MemoryStore:
     FUZZY_CANDIDATE_LIMIT = 200
     FUZZY_MIN_SCORE = 0.18
     SEMANTIC_CANDIDATE_LIMIT = 200
+    ARTIFACT_COMPRESSION_MIN_BYTES = 4096
+    ARTIFACT_COMPRESSION_ENCODING = "zlib+utf8"
     STOPWORDS = {
         "a",
         "an",
@@ -1109,6 +1113,9 @@ class MemoryStore:
     ) -> int:
         created_at = dt.datetime.now(dt.UTC).isoformat()
         content_hash = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
+        content_text_value, content_encoding, content_blob = self._artifact_storage_payload(
+            content_text
+        )
         if metadata and metadata.get("flush_batch"):
             meta_text = db.to_json(metadata)
             row = self.conn.execute(
@@ -1123,17 +1130,29 @@ class MemoryStore:
                 return int(row["id"])
         cur = self.conn.execute(
             """
-            INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
+            INSERT INTO artifacts(
                 session_id,
                 kind,
                 path,
                 content_text,
                 content_hash,
                 created_at,
+                metadata_json,
+                content_encoding,
+                content_blob
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                kind,
+                path,
+                content_text_value,
+                content_hash,
+                created_at,
                 db.to_json(metadata),
+                content_encoding,
+                content_blob,
             ),
         )
         self.conn.commit()
@@ -1951,20 +1970,111 @@ class MemoryStore:
         results = db.rows_to_dicts(rows)
         for item in results:
             item["metadata_json"] = db.from_json(item.get("metadata_json"))
+            item["content_text"] = self._artifact_text_from_row(item)
+            item.pop("content_blob", None)
         return results
 
     def latest_transcript(self, session_id: int) -> str | None:
         row = self.conn.execute(
             """
-            SELECT content_text FROM artifacts
+            SELECT content_text, content_encoding, content_blob FROM artifacts
             WHERE session_id = ? AND kind = 'transcript'
             ORDER BY id DESC LIMIT 1
             """,
             (session_id,),
         ).fetchone()
         if row:
-            return row["content_text"]
+            return self._artifact_text_from_row(row)
         return None
+
+    def compress_artifacts(
+        self,
+        *,
+        min_bytes: int | None = None,
+        limit: int | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
+        threshold = max(1, int(min_bytes or self.ARTIFACT_COMPRESSION_MIN_BYTES))
+        query = """
+            SELECT id, content_text
+            FROM artifacts
+            WHERE content_blob IS NULL
+              AND content_text IS NOT NULL
+              AND LENGTH(content_text) >= ?
+            ORDER BY id ASC
+        """
+        params: list[Any] = [threshold]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        rows = self.conn.execute(query, params).fetchall()
+
+        checked = len(rows)
+        compressed = 0
+        raw_bytes = 0
+        compressed_bytes = 0
+        updates: list[tuple[None, str, bytes, int]] = []
+        for row in rows:
+            text = str(row["content_text"] or "")
+            raw = text.encode("utf-8")
+            blob = zlib.compress(raw, level=6)
+            if len(blob) >= len(raw):
+                continue
+            raw_bytes += len(raw)
+            compressed_bytes += len(blob)
+            compressed += 1
+            if not dry_run:
+                updates.append((None, self.ARTIFACT_COMPRESSION_ENCODING, blob, int(row["id"])))
+        if updates:
+            self.conn.executemany(
+                """
+                UPDATE artifacts
+                SET content_text = ?, content_encoding = ?, content_blob = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+            self.conn.commit()
+        return {
+            "checked": checked,
+            "compressed": compressed,
+            "raw_bytes": raw_bytes,
+            "compressed_bytes": compressed_bytes,
+            "saved_bytes": max(0, raw_bytes - compressed_bytes),
+            "dry_run": 1 if dry_run else 0,
+        }
+
+    def _artifact_storage_payload(
+        self, content_text: str
+    ) -> tuple[str | None, str | None, bytes | None]:
+        raw = content_text.encode("utf-8")
+        if len(raw) < self.ARTIFACT_COMPRESSION_MIN_BYTES:
+            return content_text, None, None
+        blob = zlib.compress(raw, level=6)
+        if len(blob) >= len(raw):
+            return content_text, None, None
+        return None, self.ARTIFACT_COMPRESSION_ENCODING, blob
+
+    def _artifact_text_from_row(self, row: sqlite3.Row | dict[str, Any]) -> str | None:
+        content_text = (
+            row["content_text"] if isinstance(row, sqlite3.Row) else row.get("content_text")
+        )
+        if content_text is not None:
+            return str(content_text)
+        content_encoding = (
+            row["content_encoding"] if isinstance(row, sqlite3.Row) else row.get("content_encoding")
+        )
+        content_blob = (
+            row["content_blob"] if isinstance(row, sqlite3.Row) else row.get("content_blob")
+        )
+        if not content_encoding or content_blob is None:
+            return None
+        if str(content_encoding) != self.ARTIFACT_COMPRESSION_ENCODING:
+            raise ValueError(f"Unsupported artifact content encoding: {content_encoding}")
+        try:
+            return zlib.decompress(bytes(content_blob)).decode("utf-8")
+        except (zlib.error, UnicodeDecodeError) as exc:
+            raise ValueError("Failed to decode compressed artifact content") from exc
 
     def replace_session_summary(self, session_id: int, summary: Summary) -> None:
         now = dt.datetime.now(dt.UTC).isoformat()

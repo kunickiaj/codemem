@@ -112,7 +112,7 @@ def size_report_cmd(*, store_from_path, db_path: str | None, limit: int) -> None
             print("\n[bold]Largest tables / indexes[/bold]")
             for item in objects:
                 print(
-                    f"- {item['name']} ({item['kind']}): {_format_bytes(item['bytes'])}"
+                    f"- {item['name']} ({item['kind']}): {_format_bytes(int(item['bytes']))}"
                     f" [{item['pages']:,} pages]"
                 )
 
@@ -123,6 +123,31 @@ def size_report_cmd(*, store_from_path, db_path: str | None, limit: int) -> None
                 print(f"- {name}: {count:,}")
     finally:
         store.close()
+
+
+def compress_artifacts_cmd(
+    *,
+    store_from_path,
+    db_path: str | None,
+    min_bytes: int,
+    limit: int | None,
+    dry_run: bool,
+) -> None:
+    """Compress large artifact text payloads."""
+
+    store = store_from_path(db_path)
+    try:
+        result = store.compress_artifacts(min_bytes=min_bytes, limit=limit, dry_run=dry_run)
+    finally:
+        store.close()
+
+    action = "Would compress" if dry_run else "Compressed"
+    print(
+        f"[bold]{action}[/bold] {result['compressed']} of {result['checked']} candidate artifacts"
+    )
+    print(f"- Raw bytes: {_format_bytes(result['raw_bytes'])}")
+    print(f"- Compressed bytes: {_format_bytes(result['compressed_bytes'])}")
+    print(f"- Saved bytes: {_format_bytes(result['saved_bytes'])}")
 
 
 def _format_bytes(num_bytes: int) -> str:

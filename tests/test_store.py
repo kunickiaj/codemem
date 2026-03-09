@@ -64,6 +64,74 @@ def test_recent_filters(tmp_path: Path) -> None:
     assert observations[0]["kind"] == "observation"
 
 
+def test_artifact_reads_transparently_decompress_large_content(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    text = "abc123\n" * 2000
+    artifact_id = store.add_artifact(session, kind="transcript", path=None, content_text=text)
+    row = store.conn.execute(
+        "SELECT content_text, content_encoding, content_blob FROM artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["content_text"] is None
+    assert row["content_encoding"] == store.ARTIFACT_COMPRESSION_ENCODING
+    assert row["content_blob"] is not None
+
+    artifacts = store.session_artifacts(session)
+    assert artifacts[0]["content_text"] == text
+    assert store.latest_transcript(session) == text
+    store.close()
+
+
+def test_compress_artifacts_compresses_existing_rows(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    session = store.start_session(
+        cwd="/tmp",
+        git_remote=None,
+        git_branch="main",
+        user="tester",
+        tool_version="test",
+        project="/tmp/project-a",
+    )
+    text = "legacy transcript\n" * 1000
+    store.conn.execute(
+        """
+        INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session,
+            "transcript",
+            None,
+            text,
+            "legacy-hash",
+            dt.datetime.now(dt.UTC).isoformat(),
+            db.to_json({}),
+        ),
+    )
+    store.conn.commit()
+
+    result = store.compress_artifacts(dry_run=False)
+    assert result["compressed"] >= 1
+    row = store.conn.execute(
+        "SELECT content_text, content_encoding, content_blob FROM artifacts ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["content_text"] is None
+    assert row["content_encoding"] == store.ARTIFACT_COMPRESSION_ENCODING
+    assert row["content_blob"] is not None
+    assert store.latest_transcript(session) == text
+    store.close()
+
+
 def test_rejects_invalid_memory_kind(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     session = store.start_session(

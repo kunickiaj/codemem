@@ -98,19 +98,7 @@ def _session_discovery_tokens_by_prompt(
 
 
 def _session_discovery_tokens_from_transcript(store: MemoryStore, session_id: int) -> int:
-    row = store.conn.execute(
-        """
-        SELECT content_text
-        FROM artifacts
-        WHERE session_id = ? AND kind = 'transcript'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (session_id,),
-    ).fetchone()
-    if row is None:
-        return 0
-    text = str(row["content_text"] or "")
+    text = store.latest_transcript(session_id) or ""
     if not text.strip():
         return 0
     return store.estimate_tokens(text)
