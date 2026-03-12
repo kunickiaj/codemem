@@ -163,6 +163,11 @@ function mergeRefreshFeedItems(currentItems: any[], firstPageItems: any[]): any[
   return mergeFeedItems(olderItems, firstPageItems);
 }
 
+function replaceFeedItem(updatedItem: any) {
+  const key = itemKey(updatedItem);
+  state.lastFeedItems = state.lastFeedItems.map((item) => (itemKey(item) === key ? updatedItem : item));
+}
+
 /* ── Summary object extraction ───────────────────────────── */
 
 function getSummaryObject(item: any): Record<string, any> | null {
@@ -516,38 +521,40 @@ function renderFeedItem(item: any): HTMLElement {
       option.selected = optionData.value === visibility;
       visibilitySelect.appendChild(option);
     });
-    const visibilityButton = el('button', 'settings-button', 'Save visibility') as HTMLButtonElement;
     visibilitySelect.setAttribute('aria-label', `Visibility for ${String(item.title || 'memory')}`);
     const visibilityNote = el(
       'div',
       'feed-visibility-note',
       visibility === 'shared'
-        ? 'Shared memories can sync to trusted peers and stay in shared scope.'
-        : 'Private memories stay local unless the peer is assigned to your local actor.',
+        ? 'This memory can sync to peers allowed by your project filters.'
+        : 'This memory stays local unless the peer is assigned to your local actor.',
     );
     visibilitySelect.addEventListener('change', () => {
       visibilityNote.textContent = visibilitySelect.value === 'shared'
-        ? 'Shared memories can sync to trusted peers and stay in shared scope.'
-        : 'Private memories stay local unless the peer is assigned to your local actor.';
+        ? 'This memory can sync to peers allowed by your project filters.'
+        : 'This memory stays local unless the peer is assigned to your local actor.';
     });
-    visibilityButton.addEventListener('click', async () => {
-      visibilityButton.disabled = true;
+    visibilitySelect.addEventListener('change', async () => {
+      const previousVisibility = visibility;
       visibilitySelect.disabled = true;
-      visibilityButton.textContent = 'Saving...';
       try {
-        await api.updateMemoryVisibility(memoryId, visibilitySelect.value as 'private' | 'shared');
+        const payload = await api.updateMemoryVisibility(memoryId, visibilitySelect.value as 'private' | 'shared');
+        if (payload?.item) {
+          replaceFeedItem(payload.item);
+          updateFeedView(true);
+        }
         showGlobalNotice(visibilitySelect.value === 'shared' ? 'Memory will now sync as shared context.' : 'Memory is private again.');
-        await loadFeedData();
       } catch (error) {
+        visibilitySelect.value = previousVisibility;
+        visibilityNote.textContent = previousVisibility === 'shared'
+          ? 'This memory can sync to peers allowed by your project filters.'
+          : 'This memory stays local unless the peer is assigned to your local actor.';
         showGlobalNotice(error instanceof Error ? error.message : 'Failed to save visibility.', 'warning');
-        visibilityButton.textContent = 'Retry save';
       } finally {
-        visibilityButton.disabled = false;
         visibilitySelect.disabled = false;
-        if (visibilityButton.textContent === 'Saving...') visibilityButton.textContent = 'Save visibility';
       }
     });
-    visibilityControls.append(visibilitySelect, visibilityButton, visibilityNote);
+    visibilityControls.append(visibilitySelect, visibilityNote);
     footerLeft.appendChild(visibilityControls);
   }
   footer.append(footerLeft, footerRight);

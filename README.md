@@ -205,7 +205,7 @@ codemem sync daemon        # start sync daemon
 codemem sync install       # autostart on macOS + Linux
 ```
 
-The viewer now includes actor management for mapping multiple peers to one logical person, plus owned-memory visibility controls so shared versus private scope can be changed explicitly instead of relying on metadata conventions.
+The viewer now includes actor management for mapping multiple peers to one logical person, plus owned-memory visibility controls so project-filtered memories share by default while `Only me` stays a per-memory local override.
 
 Project filters, peer-to-actor assignment, visibility controls, and config keys are documented in [docs/user-guide.md](docs/user-guide.md).
 

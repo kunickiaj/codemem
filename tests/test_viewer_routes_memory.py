@@ -121,7 +121,13 @@ def test_observations_endpoint_supports_scope_filter(tmp_path: Path) -> None:
             tool_version="test",
             project="proj",
         )
-        mine_id = store.remember(session, kind="bugfix", title="Mine", body_text="Local note")
+        mine_id = store.remember(
+            session,
+            kind="bugfix",
+            title="Mine",
+            body_text="Local note",
+            metadata={"visibility": "private"},
+        )
         shared_id = store.remember(
             session,
             kind="bugfix",

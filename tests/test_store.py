@@ -525,7 +525,7 @@ def test_apply_replication_ops_preserves_actor_and_workspace_provenance(tmp_path
         store_b.close()
 
 
-def test_remember_persists_default_actor_and_personal_workspace(tmp_path: Path) -> None:
+def test_remember_persists_default_actor_and_shared_workspace(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "mem.sqlite")
     try:
         session_id = store.start_session(
@@ -550,16 +550,16 @@ def test_remember_persists_default_actor_and_personal_workspace(tmp_path: Path) 
         assert row is not None
         assert row["actor_id"] == store.actor_id
         assert row["actor_display_name"] == store.actor_display_name
-        assert row["visibility"] == "private"
-        assert row["workspace_id"] == f"personal:{store.actor_id}"
-        assert row["workspace_kind"] == "personal"
+        assert row["visibility"] == "shared"
+        assert row["workspace_id"] == "shared:default"
+        assert row["workspace_kind"] == "shared"
         assert row["origin_device_id"] == store.device_id
         assert row["trust_state"] == "trusted"
     finally:
         store.close()
 
 
-def test_store_backfills_legacy_local_memories_to_personal_workspace(tmp_path: Path) -> None:
+def test_store_backfills_legacy_local_memories_to_shared_workspace(tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     store = MemoryStore(db_path)
     try:
@@ -599,9 +599,9 @@ def test_store_backfills_legacy_local_memories_to_personal_workspace(tmp_path: P
         ).fetchone()
         assert row is not None
         assert row["actor_id"] == reopened.actor_id
-        assert row["visibility"] == "private"
-        assert row["workspace_id"] == f"personal:{reopened.actor_id}"
-        assert row["workspace_kind"] == "personal"
+        assert row["visibility"] == "shared"
+        assert row["workspace_id"] == "shared:default"
+        assert row["workspace_kind"] == "shared"
         assert row["trust_state"] == "trusted"
     finally:
         reopened.close()
@@ -674,7 +674,13 @@ def test_private_memories_do_not_replicate(tmp_path: Path) -> None:
             tool_version="test",
             project="codemem",
         )
-        store.remember(session_id, kind="note", title="Private", body_text="Body")
+        store.remember(
+            session_id,
+            kind="note",
+            title="Private",
+            body_text="Body",
+            metadata={"visibility": "private"},
+        )
         ops, _ = store.load_replication_ops_since(None, limit=10)
 
         filtered, _cursor, skipped = store.filter_replication_ops_for_sync_with_status(ops)
@@ -684,6 +690,75 @@ def test_private_memories_do_not_replicate(tmp_path: Path) -> None:
         assert skipped["reason"] == "visibility_filter"
     finally:
         store.close()
+
+
+def test_default_project_memories_replicate_to_non_local_peers(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.remember(session_id, kind="note", title="Default shared", body_text="Body")
+        ops, _ = store.load_replication_ops_since(None, limit=10)
+
+        filtered, _cursor, skipped = store.filter_replication_ops_for_sync_with_status(
+            ops, peer_device_id="peer-other"
+        )
+
+        assert len(filtered) == 1
+        assert skipped is None
+        assert filtered[0]["payload"] is not None
+        assert filtered[0]["payload"]["visibility"] == "shared"
+    finally:
+        store.close()
+
+
+def test_store_migrates_legacy_implicit_private_local_memories_to_shared(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    store = MemoryStore(db_path)
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id, kind="note", title="Legacy default", body_text="Body"
+        )
+        store.conn.execute(
+            "UPDATE memory_items SET visibility = 'private', workspace_kind = 'personal', workspace_id = ? WHERE id = ?",
+            (f"personal:{store.actor_id}", memory_id),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+
+    reopened = MemoryStore(db_path)
+    try:
+        row = reopened.conn.execute(
+            "SELECT visibility, workspace_kind, workspace_id FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        ops, _ = reopened.load_replication_ops_since(None, limit=20)
+        filtered, _cursor, _skipped = reopened.filter_replication_ops_for_sync_with_status(
+            ops, peer_device_id="peer-other"
+        )
+
+        assert row is not None
+        assert row["visibility"] == "shared"
+        assert row["workspace_kind"] == "shared"
+        assert row["workspace_id"] == "shared:default"
+        assert any(op.get("entity_type") == "memory_item" for op in filtered)
+    finally:
+        reopened.close()
 
 
 def test_shared_memories_replicate(tmp_path: Path) -> None:
@@ -3946,6 +4021,7 @@ def test_search_filters_by_actor_and_workspace(tmp_path: Path) -> None:
         kind="note",
         title="Shared parser",
         body_text="Local parser note",
+        metadata={"visibility": "private"},
     )
     shared_id = store.remember(
         session,
@@ -4161,7 +4237,13 @@ def test_pack_filters_by_workspace_and_includes_provenance_metadata(tmp_path: Pa
         tool_version="test",
         project="/tmp/project-a",
     )
-    store.remember(session, kind="note", title="Alpha", body_text="Local alpha note")
+    store.remember(
+        session,
+        kind="note",
+        title="Alpha",
+        body_text="Local alpha note",
+        metadata={"visibility": "private"},
+    )
     shared_id = store.remember(
         session,
         kind="note",

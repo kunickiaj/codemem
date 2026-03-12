@@ -19,6 +19,17 @@ if TYPE_CHECKING:
 SQLITE_INT64_MIN = -(2**63)
 SQLITE_INT64_MAX = (2**63) - 1
 PERSONAL_FIRST_BONUS = 0.45
+TRUST_BIAS_LEGACY_UNKNOWN_PENALTY = 0.18
+TRUST_BIAS_UNREVIEWED_PENALTY = 0.12
+WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS = 3
+WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE = 0.0
+WIDEN_SHARED_MAX_SHARED_RESULTS = 2
+PERSONAL_QUERY_PATTERNS = (
+    re.compile(r"\bwhat did i\b", re.IGNORECASE),
+    re.compile(r"\bmy notes\b", re.IGNORECASE),
+    re.compile(r"\bmy last session\b", re.IGNORECASE),
+    re.compile(r"\bmy machine\b", re.IGNORECASE),
+)
 
 
 def _normalize_filter_strings(value: Any) -> list[str]:
@@ -60,6 +71,15 @@ def _normalize_visibility_values(value: Any) -> list[str]:
     return normalized
 
 
+def _normalize_trust_states(value: Any) -> list[str]:
+    normalized: list[str] = []
+    for raw in _normalize_filter_strings(value):
+        lowered = raw.lower()
+        if lowered in {"trusted", "legacy_unknown", "unreviewed"} and lowered not in normalized:
+            normalized.append(lowered)
+    return normalized
+
+
 def _personal_first_enabled(filters: dict[str, Any] | None) -> bool:
     if not filters or "personal_first" not in filters:
         return True
@@ -71,6 +91,141 @@ def _personal_first_enabled(filters: dict[str, Any] | None) -> bool:
         if lowered in {"1", "true", "yes", "on"}:
             return True
     return bool(value)
+
+
+def _trust_bias_mode(filters: dict[str, Any] | None) -> str:
+    if not filters:
+        return "off"
+    value = str(filters.get("trust_bias") or "off").strip().lower()
+    return value if value in {"off", "soft"} else "off"
+
+
+def _widen_shared_when_weak_enabled(filters: dict[str, Any] | None) -> bool:
+    if not filters or "widen_shared_when_weak" not in filters:
+        return False
+    value = filters.get("widen_shared_when_weak")
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+    return bool(value)
+
+
+def _widen_shared_min_personal_results(filters: dict[str, Any] | None) -> int:
+    if not filters:
+        return WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS
+    try:
+        parsed = int(
+            filters.get(
+                "widen_shared_min_personal_results", WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS
+            )
+        )
+    except (TypeError, ValueError):
+        return WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS
+    return max(1, parsed)
+
+
+def _widen_shared_min_personal_score(filters: dict[str, Any] | None) -> float:
+    if not filters:
+        return WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE
+    try:
+        parsed = float(
+            filters.get("widen_shared_min_personal_score", WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE)
+        )
+    except (TypeError, ValueError):
+        return WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE
+    return max(0.0, parsed)
+
+
+def _query_blocks_shared_widening(query: str) -> bool:
+    return any(pattern.search(query) for pattern in PERSONAL_QUERY_PATTERNS)
+
+
+def _filters_block_shared_widening(filters: dict[str, Any] | None) -> bool:
+    filters = filters or {}
+    ownership_scope = str(filters.get("ownership_scope") or "").strip().lower()
+    if ownership_scope in {"mine", "theirs"}:
+        return True
+    include_visibility = _normalize_visibility_values(
+        filters.get("include_visibility") or filters.get("visibility")
+    )
+    exclude_visibility = _normalize_visibility_values(filters.get("exclude_visibility"))
+    include_workspace_ids = _normalize_filter_strings(filters.get("include_workspace_ids"))
+    exclude_workspace_ids = _normalize_filter_strings(filters.get("exclude_workspace_ids"))
+    include_workspace_kinds = _normalize_workspace_kinds(filters.get("include_workspace_kinds"))
+    exclude_workspace_kinds = _normalize_workspace_kinds(filters.get("exclude_workspace_kinds"))
+    if include_visibility or include_workspace_ids or include_workspace_kinds:
+        return True
+    if "private" in exclude_visibility or "shared" in exclude_visibility:
+        return True
+    if "shared" in exclude_workspace_kinds or "personal" in exclude_workspace_kinds:
+        return True
+    return any(
+        value.startswith("personal:") or value.startswith("shared:")
+        for value in exclude_workspace_ids
+    )
+
+
+def _mark_widening_metadata(
+    items: Sequence[MemoryResult], *, widened_from_shared: bool
+) -> list[MemoryResult]:
+    marked: list[MemoryResult] = []
+    for item in items:
+        metadata = dict(item.metadata or {})
+        metadata["widened_from_shared"] = widened_from_shared
+        item.metadata = metadata
+        marked.append(item)
+    return marked
+
+
+def _shared_widening_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
+    widened = dict(filters or {})
+    widened.pop("visibility", None)
+    widened.pop("ownership_scope", None)
+    widened["include_visibility"] = ["shared"]
+    widened["include_workspace_kinds"] = ["shared"]
+    widened["personal_first"] = False
+    widened["widen_shared_when_weak"] = False
+    return widened
+
+
+def _search_usage_metadata(
+    filters: dict[str, Any],
+    *,
+    limit: int,
+    results: Sequence[MemoryResult],
+    working_set_paths: list[str],
+    widening: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "limit": limit,
+        "results": len(results),
+        "kind": filters.get("kind"),
+        "project": filters.get("project"),
+        "working_set_paths": len(working_set_paths),
+        "personal_first": _personal_first_enabled(filters),
+        "include_visibility": _normalize_visibility_values(
+            filters.get("include_visibility") or filters.get("visibility")
+        ),
+        "exclude_visibility": _normalize_visibility_values(filters.get("exclude_visibility")),
+        "include_actor_ids": _normalize_filter_strings(filters.get("include_actor_ids")),
+        "exclude_actor_ids": _normalize_filter_strings(filters.get("exclude_actor_ids")),
+        "include_workspace_ids": _normalize_filter_strings(filters.get("include_workspace_ids")),
+        "exclude_workspace_ids": _normalize_filter_strings(filters.get("exclude_workspace_ids")),
+        "include_workspace_kinds": _normalize_workspace_kinds(
+            filters.get("include_workspace_kinds")
+        ),
+        "exclude_workspace_kinds": _normalize_workspace_kinds(
+            filters.get("exclude_workspace_kinds")
+        ),
+        "include_trust_states": _normalize_trust_states(filters.get("include_trust_states")),
+        "exclude_trust_states": _normalize_trust_states(filters.get("exclude_trust_states")),
+        "trust_bias": _trust_bias_mode(filters),
+        "widen_shared_when_weak": _widen_shared_when_weak_enabled(filters),
+        **widening,
+    }
 
 
 def _metadata_with_provenance(raw_metadata: Any, row: Any) -> dict[str, Any]:
@@ -134,6 +289,30 @@ def _personal_bias(
     if store is None or not _personal_first_enabled(filters):
         return 0.0
     return PERSONAL_FIRST_BONUS if store.memory_owned_by_self(item) else 0.0
+
+
+def _shared_trust_penalty(
+    store: MemoryStore | None, item: MemoryResult | dict[str, Any], filters: dict[str, Any] | None
+) -> float:
+    if store is None or _trust_bias_mode(filters) != "soft":
+        return 0.0
+    if store.memory_owned_by_self(item):
+        return 0.0
+    metadata = (
+        item.metadata
+        if isinstance(item, MemoryResult)
+        else _coerce_metadata_dict(item.get("metadata_json"))
+    )
+    visibility = str(metadata.get("visibility") or "").strip().lower()
+    workspace_kind = str(metadata.get("workspace_kind") or "").strip().lower()
+    if visibility != "shared" and workspace_kind != "shared":
+        return 0.0
+    trust_state = str(metadata.get("trust_state") or "trusted").strip().lower()
+    if trust_state == "legacy_unknown":
+        return TRUST_BIAS_LEGACY_UNKNOWN_PENALTY
+    if trust_state == "unreviewed":
+        return TRUST_BIAS_UNREVIEWED_PENALTY
+    return 0.0
 
 
 def _add_multi_value_filter(
@@ -208,6 +387,13 @@ def _extend_memory_filter_clauses(
         column="memory_items.workspace_kind",
         include_values=_normalize_workspace_kinds(filters.get("include_workspace_kinds")),
         exclude_values=_normalize_workspace_kinds(filters.get("exclude_workspace_kinds")),
+    )
+    _add_multi_value_filter(
+        where_clauses,
+        params,
+        column="memory_items.trust_state",
+        include_values=_normalize_trust_states(filters.get("include_trust_states")),
+        exclude_values=_normalize_trust_states(filters.get("exclude_trust_states")),
     )
 
     if filters.get("project"):
@@ -983,6 +1169,7 @@ def _rerank_results(
             + _recency_score(item.created_at, now=reference_now)
             + _kind_bonus(item.kind)
             + _personal_bias(store, item, filters)
+            - _shared_trust_penalty(store, item, filters)
         )
 
     ordered = sorted(results, key=score, reverse=True)
@@ -1011,6 +1198,7 @@ def _rerank_results_hybrid(
             + (_recency_score(item.created_at, now=reference_now) * 0.8)
             + _kind_bonus(item.kind)
             + _personal_bias(store, item, filters)
+            - _shared_trust_penalty(store, item, filters)
             + semantic_boost
         )
 
@@ -1364,6 +1552,9 @@ def _rerank_with_working_set(
     results: list[MemoryResult],
     base_scores: dict[int, float],
     working_set_paths: list[str],
+    *,
+    store: MemoryStore | None = None,
+    filters: dict[str, Any] | None = None,
 ) -> list[MemoryResult]:
     if not results or not working_set_paths:
         return list(results)
@@ -1371,7 +1562,17 @@ def _rerank_with_working_set(
     for item in results:
         boost = _working_set_overlap_boost(item, working_set_paths)
         base_score = float(base_scores.get(item.id, item.score))
-        scored.append((base_score + boost, boost, item.created_at, item.id, item))
+        personal_bias = _personal_bias(store, item, filters)
+        trust_penalty = _shared_trust_penalty(store, item, filters)
+        scored.append(
+            (
+                base_score + boost + personal_bias - trust_penalty,
+                boost,
+                item.created_at,
+                item.id,
+                item,
+            )
+        )
     scored.sort(key=lambda entry: (entry[0], entry[1], entry[2], entry[3]), reverse=True)
     return [entry[4] for entry in scored]
 
@@ -1385,12 +1586,11 @@ def _coerce_metadata_dict(raw_metadata: Any) -> dict[str, Any]:
     return {}
 
 
-def search(
+def _search_once(
     store: MemoryStore,
     query: str,
     limit: int = 10,
     filters: dict[str, Any] | None = None,
-    log_usage: bool = True,
 ) -> list[MemoryResult]:
     filters = filters or {}
     effective_limit = max(1, int(limit))
@@ -1453,10 +1653,72 @@ def search(
         base_scores[int(row["id"])] = base_score
 
     if working_set_paths:
-        results = _rerank_with_working_set(results, base_scores, working_set_paths)
+        results = _rerank_with_working_set(
+            results,
+            base_scores,
+            working_set_paths,
+            store=store,
+            filters=filters,
+        )
         results = results[:effective_limit]
     else:
         results = _rerank_results(results, limit=effective_limit, store=store, filters=filters)
+
+    return results
+
+
+def search_with_diagnostics(
+    store: MemoryStore,
+    query: str,
+    limit: int = 10,
+    filters: dict[str, Any] | None = None,
+    log_usage: bool = True,
+) -> tuple[list[MemoryResult], dict[str, Any]]:
+    filters = filters or {}
+    working_set_paths = _normalize_working_set_paths(filters.get("working_set_paths"))
+    primary_results = _search_once(store, query, limit=limit, filters=filters)
+    strong_result_threshold = _widen_shared_min_personal_score(filters)
+    strong_personal_results = [
+        item for item in primary_results if float(item.score) >= strong_result_threshold
+    ]
+    widening = {
+        "widening_applied": False,
+        "personal_result_count": len(primary_results),
+        "shared_result_count": 0,
+        "strong_personal_result_count": len(strong_personal_results),
+    }
+    results = _mark_widening_metadata(primary_results, widened_from_shared=False)
+
+    should_widen = (
+        _widen_shared_when_weak_enabled(filters)
+        and not _filters_block_shared_widening(filters)
+        and not _query_blocks_shared_widening(query)
+        and len(strong_personal_results) < _widen_shared_min_personal_results(filters)
+    )
+    if should_widen:
+        shared_results = _search_once(
+            store,
+            query,
+            limit=max(limit, WIDEN_SHARED_MAX_SHARED_RESULTS),
+            filters=_shared_widening_filters(filters),
+        )
+        seen_ids = {item.id for item in results}
+        widened_shared_results: list[MemoryResult] = []
+        for item in shared_results:
+            if item.id in seen_ids:
+                continue
+            seen_ids.add(item.id)
+            widened_shared_results.append(item)
+            if len(widened_shared_results) >= WIDEN_SHARED_MAX_SHARED_RESULTS:
+                break
+        if widened_shared_results:
+            widening["widening_applied"] = True
+            widening["shared_result_count"] = len(widened_shared_results)
+            results = results + _mark_widening_metadata(
+                widened_shared_results,
+                widened_from_shared=True,
+            )
+            results = results[: max(1, int(limit)) + WIDEN_SHARED_MAX_SHARED_RESULTS]
 
     if log_usage:
         tokens_read = sum(
@@ -1465,33 +1727,29 @@ def search(
         store.record_usage(
             "search",
             tokens_read=tokens_read,
-            metadata={
-                "limit": limit,
-                "results": len(results),
-                "kind": filters.get("kind"),
-                "project": filters.get("project"),
-                "working_set_paths": len(working_set_paths),
-                "personal_first": _personal_first_enabled(filters),
-                "include_visibility": _normalize_visibility_values(
-                    filters.get("include_visibility") or filters.get("visibility")
-                ),
-                "exclude_visibility": _normalize_visibility_values(
-                    filters.get("exclude_visibility")
-                ),
-                "include_actor_ids": _normalize_filter_strings(filters.get("include_actor_ids")),
-                "exclude_actor_ids": _normalize_filter_strings(filters.get("exclude_actor_ids")),
-                "include_workspace_ids": _normalize_filter_strings(
-                    filters.get("include_workspace_ids")
-                ),
-                "exclude_workspace_ids": _normalize_filter_strings(
-                    filters.get("exclude_workspace_ids")
-                ),
-                "include_workspace_kinds": _normalize_workspace_kinds(
-                    filters.get("include_workspace_kinds")
-                ),
-                "exclude_workspace_kinds": _normalize_workspace_kinds(
-                    filters.get("exclude_workspace_kinds")
-                ),
-            },
+            metadata=_search_usage_metadata(
+                filters,
+                limit=limit,
+                results=results,
+                working_set_paths=working_set_paths,
+                widening=widening,
+            ),
         )
+    return results, widening
+
+
+def search(
+    store: MemoryStore,
+    query: str,
+    limit: int = 10,
+    filters: dict[str, Any] | None = None,
+    log_usage: bool = True,
+) -> list[MemoryResult]:
+    results, _widening = search_with_diagnostics(
+        store,
+        query,
+        limit=limit,
+        filters=filters,
+        log_usage=log_usage,
+    )
     return results
