@@ -34,6 +34,8 @@ class MemoryStore:
     SEMANTIC_CANDIDATE_LIMIT = 200
     ARTIFACT_COMPRESSION_MIN_BYTES = 4096
     ARTIFACT_COMPRESSION_ENCODING = "zlib+utf8"
+    LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer"
+    LEGACY_SHARED_WORKSPACE_ID = "shared:legacy"
     STOPWORDS = {
         "a",
         "an",
@@ -114,6 +116,8 @@ class MemoryStore:
         self._sync_projects_exclude = [
             p.strip() for p in cfg.sync_projects_exclude if p and p.strip()
         ]
+        self._ensure_local_actor_record()
+        self._sync_peer_actor_compatibility_state()
         self._backfill_identity_provenance()
         self._reconcile_claimed_same_actor_legacy_memories()
 
@@ -142,6 +146,344 @@ class MemoryStore:
         if workspace_kind == "shared":
             return "shared:default"
         return f"personal:{actor_id}"
+
+    def _upsert_actor_record(
+        self,
+        *,
+        actor_id: str,
+        display_name: str,
+        is_local: bool,
+    ) -> None:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        if is_local:
+            self.conn.execute("UPDATE actors SET is_local = 0 WHERE actor_id != ?", (actor_id,))
+            self.conn.execute(
+                """
+                INSERT INTO actors(
+                    actor_id,
+                    display_name,
+                    is_local,
+                    status,
+                    merged_into_actor_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, 1, 'active', NULL, ?, ?)
+                ON CONFLICT(actor_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    is_local = 1,
+                    status = 'active',
+                    merged_into_actor_id = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (actor_id, display_name, now, now),
+            )
+            return
+        self.conn.execute(
+            """
+            INSERT INTO actors(
+                actor_id,
+                display_name,
+                is_local,
+                status,
+                merged_into_actor_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, 0, 'active', NULL, ?, ?)
+            ON CONFLICT(actor_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                updated_at = excluded.updated_at
+            """,
+            (actor_id, display_name, now, now),
+        )
+
+    def _ensure_local_actor_record(self) -> None:
+        self._upsert_actor_record(
+            actor_id=self.actor_id,
+            display_name=self.actor_display_name,
+            is_local=True,
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+
+    def _sync_peer_actor_compatibility_state(self) -> None:
+        self.conn.execute(
+            """
+            UPDATE sync_peers
+            SET actor_id = ?
+            WHERE claimed_local_actor = 1
+              AND (actor_id IS NULL OR TRIM(actor_id) = '')
+            """,
+            (self.actor_id,),
+        )
+        self.conn.execute(
+            "UPDATE sync_peers SET claimed_local_actor = 1 WHERE actor_id = ?",
+            (self.actor_id,),
+        )
+        self.conn.execute(
+            """
+            UPDATE sync_peers
+            SET claimed_local_actor = 0
+            WHERE actor_id IS NOT NULL
+              AND TRIM(actor_id) != ''
+              AND actor_id != ?
+            """,
+            (self.actor_id,),
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+
+    def get_actor(self, actor_id: str) -> dict[str, Any] | None:
+        cleaned = self._clean_optional_str(actor_id)
+        if not cleaned:
+            return None
+        row = self.conn.execute(
+            """
+            SELECT actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+            FROM actors
+            WHERE actor_id = ?
+            """,
+            (cleaned,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "actor_id": str(row["actor_id"]),
+            "display_name": str(row["display_name"]),
+            "is_local": bool(row["is_local"]),
+            "status": str(row["status"]),
+            "merged_into_actor_id": row["merged_into_actor_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def resolve_actor(self, actor_id: str) -> dict[str, Any] | None:
+        cleaned_actor_id = self._clean_optional_str(actor_id)
+        if not cleaned_actor_id:
+            return None
+        seen: set[str] = set()
+        current_actor_id = cleaned_actor_id
+        while current_actor_id and current_actor_id not in seen:
+            seen.add(current_actor_id)
+            actor = self.get_actor(current_actor_id)
+            if actor is None:
+                return None
+            merged_into_actor_id = self._clean_optional_str(actor.get("merged_into_actor_id"))
+            if actor["status"] != "merged" or not merged_into_actor_id:
+                return actor
+            current_actor_id = merged_into_actor_id
+        raise ValueError("actor merge redirect cycle")
+
+    def list_actors(self, *, include_merged: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_merged else "WHERE status = 'active'"
+        rows = self.conn.execute(
+            f"""
+            SELECT actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+            FROM actors
+            {where}
+            ORDER BY is_local DESC, display_name COLLATE NOCASE ASC, actor_id ASC
+            """
+        ).fetchall()
+        return [
+            {
+                "actor_id": str(row["actor_id"]),
+                "display_name": str(row["display_name"]),
+                "is_local": bool(row["is_local"]),
+                "status": str(row["status"]),
+                "merged_into_actor_id": row["merged_into_actor_id"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def create_actor(self, *, display_name: str, actor_id: str | None = None) -> dict[str, Any]:
+        cleaned_name = self._clean_optional_str(display_name)
+        if not cleaned_name:
+            raise ValueError("display_name required")
+        cleaned_actor_id = self._clean_optional_str(actor_id)
+        if cleaned_actor_id == self.actor_id:
+            self._ensure_local_actor_record()
+            actor = self.get_actor(self.actor_id)
+            if actor is None:
+                raise ValueError("local actor missing")
+            return actor
+        if cleaned_actor_id is None:
+            cleaned_actor_id = f"actor:{uuid4()}"
+        self._upsert_actor_record(
+            actor_id=cleaned_actor_id,
+            display_name=cleaned_name,
+            is_local=False,
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+        actor = self.get_actor(cleaned_actor_id)
+        if actor is None:
+            raise ValueError("actor create failed")
+        return actor
+
+    def rename_actor(self, actor_id: str, *, display_name: str) -> dict[str, Any]:
+        cleaned_actor_id = self._clean_optional_str(actor_id)
+        cleaned_name = self._clean_optional_str(display_name)
+        if not cleaned_actor_id:
+            raise ValueError("actor_id required")
+        if not cleaned_name:
+            raise ValueError("display_name required")
+        actor = self.get_actor(cleaned_actor_id)
+        if actor is None:
+            raise LookupError("actor not found")
+        if actor["is_local"]:
+            raise ValueError("local actor rename not supported")
+        if actor["status"] != "active":
+            raise ValueError("merged actor rename not supported")
+        self._upsert_actor_record(
+            actor_id=cleaned_actor_id,
+            display_name=cleaned_name,
+            is_local=bool(actor["is_local"]),
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+        renamed = self.get_actor(cleaned_actor_id)
+        if renamed is None:
+            raise LookupError("actor not found")
+        return renamed
+
+    def peer_actor_assignment(self, peer_device_id: str) -> dict[str, Any] | None:
+        cleaned_peer_id = self._clean_optional_str(peer_device_id)
+        if not cleaned_peer_id:
+            return None
+        row = self.conn.execute(
+            """
+            SELECT p.peer_device_id, p.actor_id, p.claimed_local_actor, a.display_name AS actor_display_name
+            FROM sync_peers AS p
+            LEFT JOIN actors AS a ON a.actor_id = p.actor_id
+            WHERE p.peer_device_id = ?
+            """,
+            (cleaned_peer_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        actor_id = self._clean_optional_str(row["actor_id"])
+        return {
+            "peer_device_id": str(row["peer_device_id"]),
+            "actor_id": actor_id,
+            "actor_display_name": row["actor_display_name"],
+            "claimed_local_actor": bool(row["claimed_local_actor"]),
+        }
+
+    def assigned_actor_for_peer(self, peer_device_id: str) -> dict[str, Any] | None:
+        assignment = self.peer_actor_assignment(peer_device_id)
+        actor_id = self._clean_optional_str(assignment.get("actor_id")) if assignment else None
+        if not actor_id:
+            return None
+        return self.resolve_actor(actor_id)
+
+    def assign_peer_actor(self, peer_device_id: str, *, actor_id: str | None) -> dict[str, Any]:
+        cleaned_peer_id = self._clean_optional_str(peer_device_id)
+        if not cleaned_peer_id:
+            raise ValueError("peer_device_id required")
+        row = self.conn.execute(
+            "SELECT 1 FROM sync_peers WHERE peer_device_id = ?",
+            (cleaned_peer_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError("peer not found")
+        cleaned_actor_id = self._clean_optional_str(actor_id)
+        claimed_local_actor = False
+        if cleaned_actor_id is not None:
+            actor = self.resolve_actor(cleaned_actor_id)
+            if actor is None:
+                raise LookupError("actor not found")
+            cleaned_actor_id = str(actor["actor_id"])
+            claimed_local_actor = cleaned_actor_id == self.actor_id
+        self.conn.execute(
+            """
+            UPDATE sync_peers
+            SET actor_id = ?,
+                claimed_local_actor = ?
+            WHERE peer_device_id = ?
+            """,
+            (cleaned_actor_id, 1 if claimed_local_actor else 0, cleaned_peer_id),
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+        if cleaned_actor_id is not None:
+            self.reconcile_peer_actor_legacy_memories(cleaned_peer_id)
+        assignment = self.peer_actor_assignment(cleaned_peer_id)
+        if assignment is None:
+            raise LookupError("peer not found")
+        return assignment
+
+    def merge_actor(self, *, primary_actor_id: str, secondary_actor_id: str) -> dict[str, Any]:
+        cleaned_primary_actor_id = self._clean_optional_str(primary_actor_id)
+        cleaned_secondary_actor_id = self._clean_optional_str(secondary_actor_id)
+        if not cleaned_primary_actor_id:
+            raise ValueError("primary_actor_id required")
+        if not cleaned_secondary_actor_id:
+            raise ValueError("secondary_actor_id required")
+        if cleaned_primary_actor_id == cleaned_secondary_actor_id:
+            raise ValueError("cannot merge actor into itself")
+
+        primary_actor = self.resolve_actor(cleaned_primary_actor_id)
+        secondary_actor = self.get_actor(cleaned_secondary_actor_id)
+        if primary_actor is None:
+            raise LookupError("primary actor not found")
+        if secondary_actor is None:
+            raise LookupError("secondary actor not found")
+        if secondary_actor["is_local"]:
+            raise ValueError("local actor cannot be merged into another actor")
+        if secondary_actor["status"] != "active":
+            raise ValueError("secondary actor already merged")
+
+        resolved_primary_actor_id = str(primary_actor["actor_id"])
+        if resolved_primary_actor_id == cleaned_secondary_actor_id:
+            raise ValueError("secondary actor already redirects to primary actor")
+
+        now = self._now_iso()
+        claimed_local_actor = 1 if resolved_primary_actor_id == self.actor_id else 0
+        peer_update = self.conn.execute(
+            """
+            UPDATE sync_peers
+            SET actor_id = ?,
+                claimed_local_actor = ?
+            WHERE actor_id = ?
+            """,
+            (resolved_primary_actor_id, claimed_local_actor, cleaned_secondary_actor_id),
+        )
+        self.conn.execute(
+            """
+            UPDATE actors
+            SET status = 'merged',
+                merged_into_actor_id = ?,
+                updated_at = ?
+            WHERE actor_id = ?
+            """,
+            (resolved_primary_actor_id, now, cleaned_secondary_actor_id),
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+
+        reassigned_peer_count = int(peer_update.rowcount or 0)
+        if reassigned_peer_count:
+            rows = self.conn.execute(
+                "SELECT peer_device_id FROM sync_peers WHERE actor_id = ? ORDER BY peer_device_id",
+                (resolved_primary_actor_id,),
+            ).fetchall()
+            for row in rows:
+                peer_device_id = self._clean_optional_str(row["peer_device_id"])
+                if peer_device_id:
+                    self.reconcile_peer_actor_legacy_memories(peer_device_id)
+
+        primary = self.get_actor(resolved_primary_actor_id)
+        secondary = self.get_actor(cleaned_secondary_actor_id)
+        if primary is None or secondary is None:
+            raise LookupError("actor not found")
+        return {
+            "primary_actor": primary,
+            "secondary_actor": secondary,
+            "reassigned_peer_count": reassigned_peer_count,
+        }
 
     def _resolve_memory_provenance(
         self, metadata: dict[str, Any] | None = None
@@ -201,18 +543,56 @@ class MemoryStore:
         if is_local:
             return self._resolve_memory_provenance(metadata)
         origin_device_id = clock_device_id or "unknown"
+        assigned_actor = self.assigned_actor_for_peer(origin_device_id)
+        if assigned_actor is not None:
+            assigned_actor_id = str(assigned_actor["actor_id"])
+            assigned_display_name = str(assigned_actor["display_name"])
+            if assigned_actor_id == self.actor_id:
+                return {
+                    "actor_id": self.actor_id,
+                    "actor_display_name": self.actor_display_name,
+                    "visibility": "private",
+                    "workspace_id": self._default_workspace_id(
+                        actor_id=self.actor_id,
+                        workspace_kind="personal",
+                    ),
+                    "workspace_kind": "personal",
+                    "origin_device_id": origin_device_id,
+                    "origin_source": self._clean_optional_str(metadata.get("origin_source"))
+                    or source
+                    or "sync",
+                    "trust_state": self._clean_optional_str(metadata.get("trust_state"))
+                    or "trusted",
+                }
+            return {
+                "actor_id": assigned_actor_id,
+                "actor_display_name": assigned_display_name,
+                "visibility": self._clean_optional_str(metadata.get("visibility")) or "shared",
+                "workspace_id": self._clean_optional_str(metadata.get("workspace_id"))
+                or self._default_workspace_id(
+                    actor_id=assigned_actor_id,
+                    workspace_kind="shared",
+                ),
+                "workspace_kind": "shared",
+                "origin_device_id": origin_device_id,
+                "origin_source": self._clean_optional_str(metadata.get("origin_source"))
+                or source
+                or "sync",
+                "trust_state": self._clean_optional_str(metadata.get("trust_state")) or "trusted",
+            }
         actor_id = (
             self._clean_optional_str(metadata.get("actor_id")) or f"legacy-sync:{origin_device_id}"
         )
         actor_display_name = (
-            self._clean_optional_str(metadata.get("actor_display_name")) or "Legacy synced peer"
+            self._clean_optional_str(metadata.get("actor_display_name"))
+            or self.LEGACY_SYNC_ACTOR_DISPLAY_NAME
         )
         return {
             "actor_id": actor_id,
             "actor_display_name": actor_display_name,
             "visibility": self._clean_optional_str(metadata.get("visibility")) or "shared",
             "workspace_id": self._clean_optional_str(metadata.get("workspace_id"))
-            or "shared:legacy",
+            or self.LEGACY_SHARED_WORKSPACE_ID,
             "workspace_kind": self._clean_optional_str(metadata.get("workspace_kind")) or "shared",
             "origin_device_id": origin_device_id,
             "origin_source": self._clean_optional_str(metadata.get("origin_source"))
@@ -289,22 +669,95 @@ class MemoryStore:
                 trust_state = 'trusted'
             WHERE origin_device_id IN ({placeholders})
               AND (
-                    actor_id LIKE 'legacy-sync:%'
-                 OR actor_display_name = 'Legacy synced peer'
-                 OR workspace_id = 'shared:legacy'
-                 OR workspace_kind = 'shared'
-                 OR trust_state = 'legacy_unknown'
-              )
+                    (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                     OR actor_id = ?
+                    )
+                AND (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                     OR actor_display_name = ?
+                     OR workspace_id = ?
+                     OR trust_state = 'legacy_unknown'
+                    )
+                )
             """,
             [
                 self.actor_id,
                 self.actor_display_name,
                 personal_workspace_id,
                 *claimed_peers,
+                self.actor_id,
+                self.LEGACY_SYNC_ACTOR_DISPLAY_NAME,
+                self.LEGACY_SHARED_WORKSPACE_ID,
             ],
         )
         if self.conn.in_transaction:
             self.conn.commit()
+
+    def reconcile_peer_actor_legacy_memories(self, peer_device_id: str) -> int:
+        assignment = self.peer_actor_assignment(peer_device_id)
+        actor_id = self._clean_optional_str(assignment.get("actor_id")) if assignment else None
+        if not assignment or not actor_id:
+            return 0
+        actor = self.get_actor(actor_id)
+        if actor is None:
+            return 0
+        cleaned_peer_id = str(assignment["peer_device_id"])
+        if actor_id == self.actor_id:
+            self.reconcile_claimed_same_actor_legacy_memories(cleaned_peer_id)
+            row = self.conn.execute(
+                "SELECT COUNT(1) AS total FROM memory_items WHERE origin_device_id = ? AND actor_id = ?",
+                (cleaned_peer_id, self.actor_id),
+            ).fetchone()
+            return int(row["total"] or 0) if row else 0
+        cursor = self.conn.execute(
+            """
+            UPDATE memory_items
+            SET actor_id = ?,
+                actor_display_name = ?,
+                visibility = CASE WHEN visibility = 'shared' THEN visibility ELSE 'shared' END,
+                workspace_id = CASE
+                    WHEN workspace_id IS NULL OR TRIM(workspace_id) = '' OR workspace_id = ? THEN ?
+                    ELSE workspace_id
+                END,
+                workspace_kind = CASE WHEN workspace_kind = 'shared' THEN workspace_kind ELSE 'shared' END,
+                trust_state = 'trusted'
+            WHERE origin_device_id = ?
+              AND (
+                    (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                     OR actor_id = ?
+                    )
+                AND (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                     OR actor_display_name = ?
+                     OR workspace_id = ?
+                     OR trust_state = 'legacy_unknown'
+                    )
+              )
+            """,
+            (
+                actor_id,
+                str(actor["display_name"]),
+                self.LEGACY_SHARED_WORKSPACE_ID,
+                self._default_workspace_id(actor_id=actor_id, workspace_kind="shared"),
+                cleaned_peer_id,
+                actor_id,
+                self.LEGACY_SYNC_ACTOR_DISPLAY_NAME,
+                self.LEGACY_SHARED_WORKSPACE_ID,
+            ),
+        )
+        if self.conn.in_transaction:
+            self.conn.commit()
+        return int(cursor.rowcount or 0)
 
     def reconcile_claimed_same_actor_legacy_memories(self, peer_device_id: str) -> None:
         peer_id = self._clean_optional_str(peer_device_id)
@@ -327,12 +780,20 @@ class MemoryStore:
               AND origin_device_id != ''
               AND origin_device_id != 'unknown'
               AND (
-                    actor_id LIKE 'legacy-sync:%'
-                 OR actor_display_name = 'Legacy synced peer'
-                 OR workspace_id = 'shared:legacy'
-                 OR workspace_kind = 'shared'
-                 OR trust_state = 'legacy_unknown'
-              )
+                    (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                    )
+                AND (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                     OR actor_display_name = ?
+                     OR workspace_id = ?
+                     OR trust_state = 'legacy_unknown'
+                    )
+                )
               AND origin_device_id != ?
               AND origin_device_id NOT IN (
                     SELECT peer_device_id FROM sync_peers WHERE peer_device_id IS NOT NULL
@@ -340,7 +801,7 @@ class MemoryStore:
             GROUP BY origin_device_id
             ORDER BY last_seen_at DESC, origin_device_id ASC
             """,
-            (self.device_id,),
+            (self.LEGACY_SYNC_ACTOR_DISPLAY_NAME, self.LEGACY_SHARED_WORKSPACE_ID, self.device_id),
         ).fetchall()
         return [
             {
@@ -374,18 +835,30 @@ class MemoryStore:
                     SELECT peer_device_id FROM sync_peers WHERE peer_device_id IS NOT NULL
               )
               AND (
-                    actor_id LIKE 'legacy-sync:%'
-                 OR actor_display_name = 'Legacy synced peer'
-                 OR workspace_id = 'shared:legacy'
-                 OR workspace_kind = 'shared'
-                 OR trust_state = 'legacy_unknown'
-              )
+                    (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                     OR actor_id = ?
+                    )
+                AND (
+                        actor_id IS NULL
+                     OR TRIM(actor_id) = ''
+                     OR actor_id LIKE 'legacy-sync:%'
+                     OR actor_display_name = ?
+                     OR workspace_id = ?
+                     OR trust_state = 'legacy_unknown'
+                    )
+                )
             """,
             (
                 self.actor_id,
                 self.actor_display_name,
                 personal_workspace_id,
                 device_id,
+                self.actor_id,
+                self.LEGACY_SYNC_ACTOR_DISPLAY_NAME,
+                self.LEGACY_SHARED_WORKSPACE_ID,
             ),
         )
         if self.conn.in_transaction:
@@ -394,7 +867,13 @@ class MemoryStore:
 
     def same_actor_peer_ids(self) -> list[str]:
         rows = self.conn.execute(
-            "SELECT peer_device_id FROM sync_peers WHERE claimed_local_actor = 1 ORDER BY peer_device_id"
+            """
+            SELECT peer_device_id
+            FROM sync_peers
+            WHERE claimed_local_actor = 1 OR actor_id = ?
+            ORDER BY peer_device_id
+            """,
+            (self.actor_id,),
         ).fetchall()
         return [str(row["peer_device_id"]) for row in rows if row["peer_device_id"]]
 
@@ -1633,6 +2112,68 @@ class MemoryStore:
         self.conn.commit()
         self._record_memory_item_op(memory_id, "delete")
 
+    def update_memory_visibility(self, memory_id: int, *, visibility: str) -> dict[str, Any]:
+        cleaned_visibility = self._clean_optional_str(visibility)
+        if cleaned_visibility not in {"private", "shared"}:
+            raise ValueError("visibility must be private or shared")
+        row = self.conn.execute(
+            "SELECT * FROM memory_items WHERE id = ? AND active = 1",
+            (memory_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError("memory not found")
+        row_data = dict(row)
+        if not self.memory_owned_by_self(row_data):
+            raise PermissionError("memory not owned by self")
+        actor_id = self._clean_optional_str(row_data.get("actor_id")) or self.actor_id
+        workspace_kind = "shared" if cleaned_visibility == "shared" else "personal"
+        current_workspace_id = self._clean_optional_str(row_data.get("workspace_id"))
+        if (
+            cleaned_visibility == "shared"
+            and current_workspace_id
+            and current_workspace_id.startswith("shared:")
+        ):
+            workspace_id = current_workspace_id
+        else:
+            workspace_id = self._default_workspace_id(
+                actor_id=actor_id,
+                workspace_kind=workspace_kind,
+            )
+        metadata = self._normalize_metadata(row_data.get("metadata_json"))
+        metadata["visibility"] = cleaned_visibility
+        metadata["workspace_kind"] = workspace_kind
+        metadata["workspace_id"] = workspace_id
+        metadata["clock_device_id"] = self.device_id
+        now = self._now_iso()
+        rev = int(row_data.get("rev") or 0) + 1
+        self.conn.execute(
+            """
+            UPDATE memory_items
+            SET visibility = ?,
+                workspace_kind = ?,
+                workspace_id = ?,
+                updated_at = ?,
+                metadata_json = ?,
+                rev = ?
+            WHERE id = ?
+            """,
+            (
+                cleaned_visibility,
+                workspace_kind,
+                workspace_id,
+                now,
+                db.to_json(metadata),
+                rev,
+                memory_id,
+            ),
+        )
+        self.conn.commit()
+        self._record_memory_item_op(memory_id, "upsert")
+        updated = self.get(memory_id)
+        if updated is None:
+            raise LookupError("memory not found")
+        return updated
+
     def get(self, memory_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM memory_items WHERE id = ?",
@@ -1938,6 +2479,21 @@ class MemoryStore:
         log_usage: bool = True,
     ) -> list[MemoryResult]:
         return store_search.search(self, query, limit=limit, filters=filters, log_usage=log_usage)
+
+    def search_with_diagnostics(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: dict[str, Any] | None = None,
+        log_usage: bool = True,
+    ) -> tuple[list[MemoryResult], dict[str, Any]]:
+        return store_search.search_with_diagnostics(
+            self,
+            query,
+            limit=limit,
+            filters=filters,
+            log_usage=log_usage,
+        )
 
     def build_memory_pack(
         self,

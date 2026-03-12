@@ -208,6 +208,131 @@ def test_sync_peers_endpoint_exposes_local_actor_claim(tmp_path: Path, monkeypat
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 200
         assert payload["items"][0]["claimed_local_actor"] is True
+        assert payload["items"][0]["actor_id"] is not None
+    finally:
+        server.shutdown()
+
+
+def test_sync_actors_endpoint_lists_local_and_created_actors(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        local_actor_id = store.actor_id
+        teammate = store.create_actor(display_name="Teammate")
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/actors")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        actor_ids = {item["actor_id"] for item in payload["items"]}
+        assert local_actor_id in actor_ids
+        assert teammate["actor_id"] in actor_ids
+    finally:
+        server.shutdown()
+
+
+def test_sync_actors_create_endpoint_creates_actor(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/actors",
+            body=json.dumps({"display_name": "Teammate"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 201
+        assert payload["display_name"] == "Teammate"
+        assert str(payload["actor_id"]).startswith("actor:")
+    finally:
+        server.shutdown()
+
+
+def test_sync_actors_rename_endpoint_renames_non_local_actor(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        actor = store.create_actor(display_name="Teammate")
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/actors/rename",
+            body=json.dumps({"actor_id": actor["actor_id"], "display_name": "Teammate Prime"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["display_name"] == "Teammate Prime"
+    finally:
+        server.shutdown()
+
+
+def test_sync_actors_merge_endpoint_reassigns_secondary_actor_peers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        primary = store.create_actor(display_name="Primary")
+        secondary = store.create_actor(display_name="Secondary")
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, actor_id, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "[]", secondary["actor_id"], "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/actors/merge",
+            body=json.dumps(
+                {
+                    "primary_actor_id": primary["actor_id"],
+                    "secondary_actor_id": secondary["actor_id"],
+                }
+            ),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["reassigned_peer_count"] == 1
+        assert payload["secondary_actor"]["status"] == "merged"
+        assert payload["secondary_actor"]["merged_into_actor_id"] == primary["actor_id"]
     finally:
         server.shutdown()
 
@@ -242,17 +367,19 @@ def test_sync_peer_identity_endpoint_updates_claim(tmp_path: Path, monkeypatch) 
         payload = json.loads(resp.read().decode("utf-8"))
         assert resp.status == 200
         assert payload["claimed_local_actor"] is True
+        assert payload["actor_id"] is not None
     finally:
         server.shutdown()
 
     conn = db.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+            "SELECT claimed_local_actor, actor_id FROM sync_peers WHERE peer_device_id = ?",
             ("peer-1",),
         ).fetchone()
         assert row is not None
         assert int(row["claimed_local_actor"]) == 1
+        assert row["actor_id"] is not None
     finally:
         conn.close()
 
@@ -294,6 +421,134 @@ def test_sync_peer_identity_endpoint_updates_claim(tmp_path: Path, monkeypatch) 
         assert json.loads(row["projects_exclude_json"]) == ["secret"]
     finally:
         conn.close()
+
+
+def test_sync_peer_identity_endpoint_updates_explicit_actor_assignment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+        actor = store.create_actor(display_name="Teammate")
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/peers/identity",
+            body=json.dumps({"peer_device_id": "peer-1", "actor_id": actor["actor_id"]}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["actor_id"] == actor["actor_id"]
+        assert payload["actor_display_name"] == "Teammate"
+        assert payload["claimed_local_actor"] is False
+    finally:
+        server.shutdown()
+
+    conn = db.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT actor_id, claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        assert row is not None
+        assert row["actor_id"] == actor["actor_id"]
+        assert int(row["claimed_local_actor"] or 0) == 0
+    finally:
+        conn.close()
+
+
+def test_sync_peer_identity_endpoint_rejects_conflicting_assignment_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+        actor = store.create_actor(display_name="Teammate")
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/peers/identity",
+            body=json.dumps(
+                {
+                    "peer_device_id": "peer-1",
+                    "actor_id": actor["actor_id"],
+                    "claimed_local_actor": True,
+                }
+            ),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 400
+        assert payload["error"] == "provide actor_id or claimed_local_actor, not both"
+    finally:
+        server.shutdown()
+
+
+def test_sync_peer_identity_endpoint_rejects_non_boolean_claim_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/peers/identity",
+            body=json.dumps({"peer_device_id": "peer-1", "claimed_local_actor": "false"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 400
+        assert payload["error"] == "claimed_local_actor must be boolean"
+    finally:
+        server.shutdown()
 
 
 def test_sync_peer_identity_endpoint_reconciles_legacy_claimed_memories(
@@ -368,6 +623,98 @@ def test_sync_peer_identity_endpoint_reconciles_legacy_claimed_memories(
         assert row["trust_state"] == "trusted"
     finally:
         store.close()
+
+
+def test_memory_visibility_endpoint_updates_owned_memory(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(session_id, kind="note", title="Owned note", body_text="Body")
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/memories/visibility",
+            body=json.dumps({"memory_id": memory_id, "visibility": "shared"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["item"]["visibility"] == "shared"
+        assert payload["item"]["workspace_kind"] == "shared"
+    finally:
+        server.shutdown()
+
+
+def test_memory_visibility_endpoint_rejects_memory_not_owned_by_self(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    store = MemoryStore(db_path)
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id,
+            kind="note",
+            title="Teammate note",
+            body_text="Body",
+            metadata={
+                "actor_id": "actor:teammate",
+                "actor_display_name": "Teammate",
+                "origin_device_id": "peer-1",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:default",
+                "workspace_kind": "shared",
+                "trust_state": "trusted",
+            },
+        )
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/memories/visibility",
+            body=json.dumps({"memory_id": memory_id, "visibility": "private"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 403
+        assert payload["error"] == "memory not owned by self"
+    finally:
+        server.shutdown()
 
 
 def test_sync_status_exposes_claimable_legacy_device_ids(tmp_path: Path, monkeypatch) -> None:

@@ -82,9 +82,18 @@ def _sync_visibility_allowed(payload: dict[str, Any] | None) -> bool:
     if not isinstance(payload, dict):
         return False
     visibility = str(payload.get("visibility") or "").strip().lower()
+    metadata_value = payload.get("metadata_json")
+    metadata = cast(dict[str, Any], metadata_value) if isinstance(metadata_value, dict) else {}
+    metadata_visibility = str(metadata.get("visibility") or "").strip().lower()
+    if not visibility and metadata_visibility:
+        visibility = metadata_visibility
     if not visibility:
         workspace_kind = str(payload.get("workspace_kind") or "").strip().lower()
         workspace_id = str(payload.get("workspace_id") or "").strip().lower()
+        if not workspace_kind:
+            workspace_kind = str(metadata.get("workspace_kind") or "").strip().lower()
+        if not workspace_id:
+            workspace_id = str(metadata.get("workspace_id") or "").strip().lower()
         if workspace_kind == "shared" or workspace_id.startswith("shared:"):
             visibility = "shared"
         else:
@@ -1173,7 +1182,9 @@ def apply_replication_ops(
             if not _sync_project_allowed(store, project, peer_device_id=source_device_id):
                 skipped += 1
                 continue
-            if not _sync_visibility_allowed(payload if isinstance(payload, dict) else None):
+            if not _sync_visibility_allowed(
+                payload if isinstance(payload, dict) else None
+            ) and not _peer_claimed_local_actor(store, source_device_id):
                 skipped += 1
                 continue
             if op_type == "upsert":

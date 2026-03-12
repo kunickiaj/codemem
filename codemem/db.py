@@ -15,7 +15,7 @@ LEGACY_DEFAULT_DB_PATHS = (
     Path.home() / ".codemem.sqlite",
     Path.home() / ".opencode-mem.sqlite",
 )
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _sidecar_paths(path: Path) -> list[Path]:
@@ -1042,6 +1042,27 @@ def _ensure_memory_identity_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_actor_registry_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS actors (
+            actor_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            is_local INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            merged_into_actor_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actors_is_local ON actors(is_local)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actors_status ON actors(status)")
+    if _table_exists(conn, "sync_peers"):
+        _ensure_column(conn, "sync_peers", "actor_id", "TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_peers_actor_id ON sync_peers(actor_id)")
+
+
 def _ensure_sync_peer_schema(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "sync_peers"):
         return
@@ -1049,6 +1070,8 @@ def _ensure_sync_peer_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "sync_peers", "projects_include_json", "TEXT")
     _ensure_column(conn, "sync_peers", "projects_exclude_json", "TEXT")
     _ensure_column(conn, "sync_peers", "claimed_local_actor", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "sync_peers", "actor_id", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_peers_actor_id ON sync_peers(actor_id)")
 
 
 def _ensure_artifact_storage_schema(conn: sqlite3.Connection) -> None:
@@ -1065,6 +1088,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         _initialize_schema_v1(conn)
         current_version = 1
     _ensure_memory_identity_schema(conn)
+    _ensure_actor_registry_schema(conn)
     _ensure_sync_peer_schema(conn)
     _ensure_artifact_storage_schema(conn)
     _ensure_raw_event_identity_schema(conn, migrate_data=raw_event_identity_migrate)

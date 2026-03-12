@@ -793,6 +793,282 @@ def test_claimed_peer_legacy_memories_are_reconciled_to_local_actor(tmp_path: Pa
         store.close()
 
 
+def test_store_bootstrap_creates_local_actor_and_migrates_claimed_peer_assignment(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    store = MemoryStore(db_path)
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-self", "[]", 1, "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+
+    store = MemoryStore(db_path)
+    try:
+        actor_row = store.conn.execute(
+            "SELECT actor_id, display_name, is_local, status FROM actors WHERE actor_id = ?",
+            (store.actor_id,),
+        ).fetchone()
+        peer_row = store.conn.execute(
+            "SELECT actor_id, claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-self",),
+        ).fetchone()
+
+        assert actor_row is not None
+        assert actor_row["actor_id"] == store.actor_id
+        assert actor_row["display_name"] == store.actor_display_name
+        assert actor_row["is_local"] == 1
+        assert actor_row["status"] == "active"
+        assert peer_row is not None
+        assert peer_row["actor_id"] == store.actor_id
+        assert int(peer_row["claimed_local_actor"] or 0) == 1
+    finally:
+        store.close()
+
+
+def test_assign_peer_actor_persists_non_local_assignment(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        actor = store.create_actor(display_name="Teammate")
+        assignment = store.assign_peer_actor("peer-1", actor_id=actor["actor_id"])
+
+        row = store.conn.execute(
+            "SELECT actor_id, claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+
+        assert assignment["actor_id"] == actor["actor_id"]
+        assert assignment["actor_display_name"] == "Teammate"
+        assert assignment["claimed_local_actor"] is False
+        assert row is not None
+        assert row["actor_id"] == actor["actor_id"]
+        assert int(row["claimed_local_actor"] or 0) == 0
+    finally:
+        store.close()
+
+
+def test_assigned_peer_legacy_memories_are_reconciled_to_assigned_actor(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+        actor = store.create_actor(display_name="Teammate")
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id,
+            kind="note",
+            title="Legacy teammate memory",
+            body_text="Shared from a teammate",
+            metadata={
+                "actor_id": "legacy-sync:peer-1",
+                "actor_display_name": "Legacy synced peer",
+                "origin_device_id": "peer-1",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "legacy_unknown",
+            },
+        )
+
+        assignment = store.assign_peer_actor("peer-1", actor_id=actor["actor_id"])
+
+        row = store.conn.execute(
+            "SELECT actor_id, actor_display_name, visibility, workspace_id, workspace_kind, trust_state FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+
+        assert assignment["actor_id"] == actor["actor_id"]
+        assert row is not None
+        assert row["actor_id"] == actor["actor_id"]
+        assert row["actor_display_name"] == "Teammate"
+        assert row["visibility"] == "shared"
+        assert row["workspace_id"] == "shared:default"
+        assert row["workspace_kind"] == "shared"
+        assert row["trust_state"] == "trusted"
+    finally:
+        store.close()
+
+
+def test_claimable_legacy_device_ids_excludes_explicit_shared_actor_rows(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        store.remember(
+            session_id,
+            kind="note",
+            title="Explicit teammate shared memory",
+            body_text="Already resolved to a named actor",
+            metadata={
+                "actor_id": "actor:teammate",
+                "actor_display_name": "Teammate",
+                "origin_device_id": "peer-1",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:default",
+                "workspace_kind": "shared",
+                "trust_state": "trusted",
+            },
+        )
+
+        assert store.claimable_legacy_device_ids() == []
+    finally:
+        store.close()
+
+
+def test_assign_peer_actor_does_not_rewrite_explicit_non_legacy_actor_rows(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+        actor = store.create_actor(display_name="Teammate")
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id,
+            kind="note",
+            title="Explicit actor row",
+            body_text="Should stay attached to its explicit actor",
+            metadata={
+                "actor_id": "actor:already-known",
+                "actor_display_name": "Already Known",
+                "origin_device_id": "peer-1",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:legacy",
+                "workspace_kind": "shared",
+                "trust_state": "trusted",
+            },
+        )
+
+        store.assign_peer_actor("peer-1", actor_id=actor["actor_id"])
+
+        row = store.conn.execute(
+            "SELECT actor_id, actor_display_name, visibility, workspace_id, workspace_kind, trust_state FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+
+        assert row is not None
+        assert row["actor_id"] == "actor:already-known"
+        assert row["actor_display_name"] == "Already Known"
+        assert row["workspace_id"] == "shared:legacy"
+        assert row["trust_state"] == "trusted"
+    finally:
+        store.close()
+
+
+def test_merge_actor_reassigns_peers_and_marks_secondary_merged(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        primary = store.create_actor(display_name="Primary")
+        secondary = store.create_actor(display_name="Secondary")
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, actor_id, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "[]", secondary["actor_id"], "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        result = store.merge_actor(
+            primary_actor_id=primary["actor_id"],
+            secondary_actor_id=secondary["actor_id"],
+        )
+
+        peer_row = store.conn.execute(
+            "SELECT actor_id, claimed_local_actor FROM sync_peers WHERE peer_device_id = ?",
+            ("peer-1",),
+        ).fetchone()
+        merged_actor = store.get_actor(secondary["actor_id"])
+        actors = store.list_actors()
+
+        assert result["reassigned_peer_count"] == 1
+        assert peer_row is not None
+        assert peer_row["actor_id"] == primary["actor_id"]
+        assert int(peer_row["claimed_local_actor"] or 0) == 0
+        assert merged_actor is not None
+        assert merged_actor["status"] == "merged"
+        assert merged_actor["merged_into_actor_id"] == primary["actor_id"]
+        assert all(actor["actor_id"] != secondary["actor_id"] for actor in actors)
+    finally:
+        store.close()
+
+
+def test_assign_peer_actor_resolves_merged_actor_to_primary(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        primary = store.create_actor(display_name="Primary")
+        secondary = store.create_actor(display_name="Secondary")
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+        store.merge_actor(
+            primary_actor_id=primary["actor_id"],
+            secondary_actor_id=secondary["actor_id"],
+        )
+
+        assignment = store.assign_peer_actor("peer-1", actor_id=secondary["actor_id"])
+
+        assert assignment["actor_id"] == primary["actor_id"]
+        assert assignment["actor_display_name"] == "Primary"
+    finally:
+        store.close()
+
+
+def test_merge_actor_rejects_merging_local_actor_into_another(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        teammate = store.create_actor(display_name="Teammate")
+
+        try:
+            store.merge_actor(
+                primary_actor_id=teammate["actor_id"],
+                secondary_actor_id=store.actor_id,
+            )
+        except ValueError as exc:
+            assert str(exc) == "local actor cannot be merged into another actor"
+        else:
+            raise AssertionError("expected ValueError")
+    finally:
+        store.close()
+
+
 def test_replication_delete_wins_over_older_upsert(tmp_path: Path) -> None:
     store_a = MemoryStore(tmp_path / "a.sqlite")
     store_b = MemoryStore(tmp_path / "b.sqlite")
@@ -2697,6 +2973,272 @@ def test_apply_replication_ops_does_not_link_prompt_by_raw_numeric_id(tmp_path: 
     ).fetchone()
     assert row is not None
     assert row["user_prompt_id"] is None
+
+
+def test_apply_replication_ops_uses_assigned_actor_for_legacy_peer_fallback(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+        actor = store.create_actor(display_name="Teammate")
+        store.assign_peer_actor("peer-1", actor_id=actor["actor_id"])
+
+        op: ReplicationOp = {
+            "op_id": "op-assigned-fallback",
+            "entity_type": "memory_item",
+            "entity_id": "export:memory:assigned-fallback",
+            "op_type": "upsert",
+            "payload": {
+                "session_id": 1,
+                "project": "project-a",
+                "kind": "discovery",
+                "title": "Assigned actor fallback",
+                "body_text": "body",
+                "confidence": 0.7,
+                "tags_text": "",
+                "active": 1,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "metadata_json": {},
+                "subtitle": None,
+                "facts": [],
+                "narrative": "body",
+                "concepts": [],
+                "files_read": [],
+                "files_modified": [],
+                "prompt_number": 1,
+                "import_key": "export:memory:assigned-fallback",
+                "deleted_at": None,
+                "rev": 1,
+            },
+            "clock": {
+                "rev": 1,
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "device_id": "peer-1",
+            },
+            "device_id": "peer-1",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+
+        result = store.apply_replication_ops([op], source_device_id="peer-1")
+
+        row = store.conn.execute(
+            "SELECT actor_id, actor_display_name, visibility, workspace_id, workspace_kind, trust_state FROM memory_items WHERE import_key = ?",
+            ("export:memory:assigned-fallback",),
+        ).fetchone()
+
+        assert result["inserted"] == 1
+        assert row is not None
+        assert row["actor_id"] == actor["actor_id"]
+        assert row["actor_display_name"] == "Teammate"
+        assert row["visibility"] == "shared"
+        assert row["workspace_id"] == "shared:default"
+        assert row["workspace_kind"] == "shared"
+        assert row["trust_state"] == "trusted"
+    finally:
+        store.close()
+
+
+def test_apply_replication_ops_accepts_private_memory_from_local_actor_peer(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-self", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+        store.assign_peer_actor("peer-self", actor_id=store.actor_id)
+
+        op: ReplicationOp = {
+            "op_id": "op-private-local-actor",
+            "entity_type": "memory_item",
+            "entity_id": "export:memory:private-local-actor",
+            "op_type": "upsert",
+            "payload": {
+                "session_id": 1,
+                "project": "project-a",
+                "kind": "note",
+                "title": "Private from my other machine",
+                "body_text": "body",
+                "confidence": 0.7,
+                "tags_text": "",
+                "active": 1,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "metadata_json": {},
+                "subtitle": None,
+                "facts": [],
+                "narrative": "body",
+                "concepts": [],
+                "files_read": [],
+                "files_modified": [],
+                "prompt_number": 1,
+                "visibility": "private",
+                "import_key": "export:memory:private-local-actor",
+                "deleted_at": None,
+                "rev": 1,
+            },
+            "clock": {
+                "rev": 1,
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "device_id": "peer-self",
+            },
+            "device_id": "peer-self",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+
+        result = store.apply_replication_ops([op], source_device_id="peer-self")
+
+        row = store.conn.execute(
+            "SELECT actor_id, visibility, workspace_id, workspace_kind FROM memory_items WHERE import_key = ?",
+            ("export:memory:private-local-actor",),
+        ).fetchone()
+
+        assert result["inserted"] == 1
+        assert row is not None
+        assert row["actor_id"] == store.actor_id
+        assert row["visibility"] == "private"
+        assert row["workspace_id"] == f"personal:{store.actor_id}"
+        assert row["workspace_kind"] == "personal"
+    finally:
+        store.close()
+
+
+def test_apply_replication_ops_rejects_metadata_only_private_memory_from_non_local_peer(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        store.conn.commit()
+
+        op: ReplicationOp = {
+            "op_id": "op-metadata-private-nonlocal",
+            "entity_type": "memory_item",
+            "entity_id": "export:memory:metadata-private-nonlocal",
+            "op_type": "upsert",
+            "payload": {
+                "session_id": 1,
+                "project": "project-a",
+                "kind": "note",
+                "title": "Should be rejected",
+                "body_text": "body",
+                "confidence": 0.7,
+                "tags_text": "",
+                "active": 1,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "metadata_json": {"visibility": "private", "workspace_kind": "personal"},
+                "subtitle": None,
+                "facts": [],
+                "narrative": "body",
+                "concepts": [],
+                "files_read": [],
+                "files_modified": [],
+                "prompt_number": 1,
+                "import_key": "export:memory:metadata-private-nonlocal",
+                "deleted_at": None,
+                "rev": 1,
+            },
+            "clock": {
+                "rev": 1,
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "device_id": "peer-1",
+            },
+            "device_id": "peer-1",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+
+        result = store.apply_replication_ops([op], source_device_id="peer-1")
+        row = store.conn.execute(
+            "SELECT 1 FROM memory_items WHERE import_key = ?",
+            ("export:memory:metadata-private-nonlocal",),
+        ).fetchone()
+
+        assert result["skipped"] >= 1
+        assert row is None
+    finally:
+        store.close()
+
+
+def test_update_memory_visibility_updates_workspace_and_records_replication(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(session_id, kind="note", title="Alpha", body_text="Body")
+
+        updated = store.update_memory_visibility(memory_id, visibility="shared")
+
+        row = store.conn.execute(
+            "SELECT visibility, workspace_kind, workspace_id, rev FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        op_row = store.conn.execute(
+            "SELECT op_type FROM replication_ops WHERE entity_type = 'memory_item' AND entity_id = ? ORDER BY created_at DESC LIMIT 1",
+            (updated["import_key"],),
+        ).fetchone()
+
+        assert updated["visibility"] == "shared"
+        assert row is not None
+        assert row["visibility"] == "shared"
+        assert row["workspace_kind"] == "shared"
+        assert row["workspace_id"] == "shared:default"
+        assert int(row["rev"] or 0) >= 2
+        assert op_row is not None
+        assert op_row["op_type"] == "upsert"
+    finally:
+        store.close()
+
+
+def test_update_memory_visibility_rejects_memory_not_owned_by_self(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    try:
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="codemem",
+        )
+        memory_id = store.remember(
+            session_id,
+            kind="note",
+            title="Teammate note",
+            body_text="Body",
+            metadata={
+                "actor_id": "actor:teammate",
+                "actor_display_name": "Teammate",
+                "origin_device_id": "peer-1",
+                "origin_source": "sync",
+                "visibility": "shared",
+                "workspace_id": "shared:default",
+                "workspace_kind": "shared",
+                "trust_state": "trusted",
+            },
+        )
+
+        try:
+            store.update_memory_visibility(memory_id, visibility="private")
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("expected PermissionError")
+    finally:
+        store.close()
 
 
 def test_record_replication_op_backfills_missing_prompt_import_key(tmp_path: Path) -> None:

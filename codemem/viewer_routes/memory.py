@@ -330,3 +330,40 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         return True
 
     return False
+
+
+def handle_post(
+    handler: _ViewerHandler, store: MemoryStore, path: str, payload: dict[str, Any] | None
+) -> bool:
+    if path != "/api/memories/visibility":
+        return False
+    if payload is None:
+        handler._send_json({"error": "invalid json"}, status=400)
+        return True
+    memory_id = payload.get("memory_id")
+    visibility = payload.get("visibility")
+    try:
+        resolved_memory_id = int(memory_id)
+    except (TypeError, ValueError):
+        handler._send_json({"error": "memory_id must be int"}, status=400)
+        return True
+    if not isinstance(visibility, str) or visibility.strip() not in {"private", "shared"}:
+        handler._send_json({"error": "visibility must be private or shared"}, status=400)
+        return True
+    try:
+        item = store.update_memory_visibility(
+            resolved_memory_id,
+            visibility=visibility.strip(),
+        )
+    except ValueError as exc:
+        handler._send_json({"error": str(exc)}, status=400)
+        return True
+    except LookupError:
+        handler._send_json({"error": "memory not found"}, status=404)
+        return True
+    except PermissionError:
+        handler._send_json({"error": "memory not owned by self"}, status=403)
+        return True
+    item["owned_by_self"] = store.memory_owned_by_self(item)
+    handler._send_json({"item": item})
+    return True

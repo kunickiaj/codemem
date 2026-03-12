@@ -12,7 +12,6 @@ from ..store import MemoryStore
 from ..sync.discovery import (
     load_peer_addresses,
     normalize_address,
-    set_peer_local_actor_claim,
     set_peer_project_filter,
 )
 from ..sync.sync_pass import sync_once
@@ -188,10 +187,12 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         # Compatibility: older UI expects status/peers/attempts keys.
         peers_rows = store.conn.execute(
             """
-            SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
-                   last_seen_at, last_sync_at, last_error,
-                   projects_include_json, projects_exclude_json, claimed_local_actor
-            FROM sync_peers
+            SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
+                   p.last_seen_at, p.last_sync_at, p.last_error,
+                   p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,
+                   p.actor_id, a.display_name AS actor_display_name
+            FROM sync_peers AS p
+            LEFT JOIN actors AS a ON a.actor_id = p.actor_id
             ORDER BY name, peer_device_id
             """
         ).fetchall()
@@ -221,6 +222,8 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 "last_error": row["last_error"] if include_diagnostics else None,
                 "has_error": bool(row["last_error"]),
                 "claimed_local_actor": bool(row["claimed_local_actor"]),
+                "actor_id": row["actor_id"],
+                "actor_display_name": row["actor_display_name"],
                 "project_scope": {
                     "include": override_include,
                     "exclude": override_exclude,
@@ -304,10 +307,12 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         }
         rows = store.conn.execute(
             """
-            SELECT peer_device_id, name, pinned_fingerprint, addresses_json,
-                   last_seen_at, last_sync_at, last_error,
-                   projects_include_json, projects_exclude_json, claimed_local_actor
-            FROM sync_peers
+            SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
+                   p.last_seen_at, p.last_sync_at, p.last_error,
+                   p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,
+                   p.actor_id, a.display_name AS actor_display_name
+            FROM sync_peers AS p
+            LEFT JOIN actors AS a ON a.actor_id = p.actor_id
             ORDER BY name, peer_device_id
             """
         ).fetchall()
@@ -337,6 +342,8 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                     "last_error": row["last_error"] if include_diagnostics else None,
                     "has_error": bool(row["last_error"]),
                     "claimed_local_actor": bool(row["claimed_local_actor"]),
+                    "actor_id": row["actor_id"],
+                    "actor_display_name": row["actor_display_name"],
                     "project_scope": {
                         "include": override_include,
                         "exclude": override_exclude,
@@ -348,6 +355,12 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 }
             )
         handler._send_json({"items": peers, "redacted": not include_diagnostics})
+        return True
+
+    if path == "/api/sync/actors":
+        params = parse_qs(query)
+        include_merged = params.get("includeMerged", ["0"])[0] in {"1", "true", "yes"}
+        handler._send_json({"items": store.list_actors(include_merged=include_merged)})
         return True
 
     if path == "/api/sync/attempts":
@@ -431,6 +444,75 @@ def handle_post(
     if path == "/api/sync/run":
         # Compatibility endpoint for the bundled web UI.
         path = "/api/sync/actions/sync-now"
+
+    if path == "/api/sync/actors":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        display_name = payload.get("display_name")
+        actor_id = payload.get("actor_id")
+        if not isinstance(display_name, str) or not display_name.strip():
+            handler._send_json({"error": "display_name required"}, status=400)
+            return True
+        if actor_id is not None and not isinstance(actor_id, str):
+            handler._send_json({"error": "actor_id must be string or null"}, status=400)
+            return True
+        try:
+            actor = store.create_actor(display_name=display_name, actor_id=actor_id)
+        except ValueError as exc:
+            handler._send_json({"error": str(exc)}, status=400)
+            return True
+        handler._send_json(actor, status=201)
+        return True
+
+    if path == "/api/sync/actors/rename":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        actor_id = payload.get("actor_id")
+        display_name = payload.get("display_name")
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            handler._send_json({"error": "actor_id required"}, status=400)
+            return True
+        if not isinstance(display_name, str) or not display_name.strip():
+            handler._send_json({"error": "display_name required"}, status=400)
+            return True
+        try:
+            actor = store.rename_actor(actor_id.strip(), display_name=display_name)
+        except ValueError as exc:
+            handler._send_json({"error": str(exc)}, status=400)
+            return True
+        except LookupError:
+            handler._send_json({"error": "actor not found"}, status=404)
+            return True
+        handler._send_json(actor)
+        return True
+
+    if path == "/api/sync/actors/merge":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        primary_actor_id = payload.get("primary_actor_id")
+        secondary_actor_id = payload.get("secondary_actor_id")
+        if not isinstance(primary_actor_id, str) or not primary_actor_id.strip():
+            handler._send_json({"error": "primary_actor_id required"}, status=400)
+            return True
+        if not isinstance(secondary_actor_id, str) or not secondary_actor_id.strip():
+            handler._send_json({"error": "secondary_actor_id required"}, status=400)
+            return True
+        try:
+            result = store.merge_actor(
+                primary_actor_id=primary_actor_id,
+                secondary_actor_id=secondary_actor_id,
+            )
+        except ValueError as exc:
+            handler._send_json({"error": str(exc)}, status=400)
+            return True
+        except LookupError as exc:
+            handler._send_json({"error": str(exc)}, status=404)
+            return True
+        handler._send_json(result)
+        return True
 
     if path == "/api/sync/peers/rename":
         if payload is None:
@@ -543,15 +625,36 @@ def handle_post(
         if row is None:
             handler._send_json({"error": "peer not found"}, status=404)
             return True
-        claimed_local_actor = bool(payload.get("claimed_local_actor"))
-        set_peer_local_actor_claim(
-            store.conn,
-            peer_device_id.strip(),
-            claimed_local_actor=claimed_local_actor,
-        )
-        if claimed_local_actor:
-            store.reconcile_claimed_same_actor_legacy_memories(peer_device_id.strip())
-        handler._send_json({"ok": True, "claimed_local_actor": claimed_local_actor})
+        raw_actor_id = payload.get("actor_id") if "actor_id" in payload else None
+        if "actor_id" in payload and raw_actor_id is not None and not isinstance(raw_actor_id, str):
+            handler._send_json({"error": "actor_id must be string or null"}, status=400)
+            return True
+        if "actor_id" in payload and "claimed_local_actor" in payload:
+            handler._send_json(
+                {"error": "provide actor_id or claimed_local_actor, not both"},
+                status=400,
+            )
+            return True
+        if (
+            "actor_id" not in payload
+            and "claimed_local_actor" in payload
+            and not isinstance(payload.get("claimed_local_actor"), bool)
+        ):
+            handler._send_json({"error": "claimed_local_actor must be boolean"}, status=400)
+            return True
+        actor_id = raw_actor_id if "actor_id" in payload else None
+        if "actor_id" not in payload:
+            actor_id = store.actor_id if bool(payload.get("claimed_local_actor")) else None
+        try:
+            assignment = store.assign_peer_actor(peer_device_id.strip(), actor_id=actor_id)
+        except LookupError as exc:
+            status = 404 if str(exc) in {"peer not found", "actor not found"} else 400
+            handler._send_json({"error": str(exc)}, status=status)
+            return True
+        except ValueError as exc:
+            handler._send_json({"error": str(exc)}, status=400)
+            return True
+        handler._send_json({"ok": True, **assignment})
         return True
 
     if path == "/api/sync/legacy-devices/claim":
