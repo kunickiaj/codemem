@@ -129,6 +129,7 @@
     lastUsagePayload: null,
     lastRawEventsPayload: null,
     lastSyncStatus: null,
+    lastSyncActors: [],
     lastSyncPeers: [],
     lastSyncAttempts: [],
     lastSyncLegacyDevices: [],
@@ -227,6 +228,17 @@
     const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
     return fetchJson(`/api/memories?${query}`);
   }
+  async function updateMemoryVisibility(memoryId, visibility) {
+    const resp = await fetch("/api/memories/visibility", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory_id: memoryId, visibility })
+    });
+    const text = await resp.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(payload?.error || text || "request failed");
+    return payload;
+  }
   async function loadSummariesPage(project, options) {
     const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
     return fetchJson(`/api/summaries?${query}`);
@@ -258,6 +270,9 @@
     const param = "?includeDiagnostics=1";
     return fetchJson(`/api/sync/status${param}`);
   }
+  async function loadSyncActors() {
+    return fetchJson("/api/sync/actors");
+  }
   async function loadPairing() {
     return fetchJson("/api/sync/pairing?includeDiagnostics=1");
   }
@@ -279,13 +294,49 @@
     }
     return payload;
   }
-  async function updatePeerIdentity(peerDeviceId, claimedLocalActor) {
+  async function assignPeerActor(peerDeviceId, actorId) {
     const resp = await fetch("/api/sync/peers/identity", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         peer_device_id: peerDeviceId,
-        claimed_local_actor: claimedLocalActor
+        actor_id: actorId
+      })
+    });
+    const text = await resp.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(payload?.error || text || "request failed");
+    return payload;
+  }
+  async function createActor(displayName) {
+    const resp = await fetch("/api/sync/actors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName })
+    });
+    const text = await resp.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(payload?.error || text || "request failed");
+    return payload;
+  }
+  async function renameActor(actorId, displayName) {
+    const resp = await fetch("/api/sync/actors/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actor_id: actorId, display_name: displayName })
+    });
+    const text = await resp.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(payload?.error || text || "request failed");
+    return payload;
+  }
+  async function mergeActor(primaryActorId, secondaryActorId) {
+    const resp = await fetch("/api/sync/actors/merge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        primary_actor_id: primaryActorId,
+        secondary_actor_id: secondaryActorId
       })
     });
     const text = await resp.text();
@@ -426,6 +477,29 @@
     if (colonIndex === -1) return trimmed;
     return trimmed.slice(0, colonIndex).trim();
   }
+  function hideGlobalNotice() {
+    const notice = $("globalNotice");
+    if (!notice) return;
+    hide(notice);
+    notice.textContent = "";
+    notice.classList.remove("success", "warning");
+    if (state.noticeTimer) {
+      clearTimeout(state.noticeTimer);
+      state.noticeTimer = null;
+    }
+  }
+  function showGlobalNotice(message, type = "success") {
+    const notice = $("globalNotice");
+    if (!notice || !message) return;
+    notice.textContent = message;
+    notice.classList.remove("success", "warning");
+    notice.classList.add(type === "warning" ? "warning" : "success");
+    show(notice);
+    if (state.noticeTimer) clearTimeout(state.noticeTimer);
+    state.noticeTimer = setTimeout(() => {
+      hideGlobalNotice();
+    }, 12e3);
+  }
   function mergeMetadata(metadata) {
     if (!metadata || typeof metadata !== "object") return {};
     const importMeta = metadata.import_metadata;
@@ -486,12 +560,17 @@
   let feedProjectGeneration = 0;
   let lastFeedScope = "all";
   function feedScopeLabel(scope) {
-    if (scope === "mine") return " · mine";
-    if (scope === "theirs") return " · theirs";
+    if (scope === "mine") return " · my memories";
+    if (scope === "theirs") return " · other actors";
     return "";
   }
   function provenanceChip(label, variant = "") {
     return el("span", `provenance-chip ${variant}`.trim(), label);
+  }
+  function trustStateLabel(trustState) {
+    if (trustState === "legacy_unknown") return "legacy provenance";
+    if (trustState === "unreviewed") return "unreviewed";
+    return trustState.replace(/_/g, " ");
   }
   function authorLabel(item) {
     if (item?.owned_by_self === true) return "You";
@@ -816,7 +895,7 @@
       provenance.appendChild(provenanceChip(originDeviceId, "device"));
     }
     if (trustState && trustState !== "trusted") {
-      provenance.appendChild(provenanceChip(trustState.replace(/_/g, " "), "trust"));
+      provenance.appendChild(provenanceChip(trustStateLabel(trustState), "trust"));
     }
     const footer = el("div", "feed-footer");
     const footerLeft = el("div", "feed-footer-left");
@@ -829,6 +908,51 @@
     });
     if (filesWrap.childElementCount) footerLeft.appendChild(filesWrap);
     if (tagsWrap.childElementCount) footerLeft.appendChild(tagsWrap);
+    const memoryId = Number(item.id || 0);
+    if (Boolean(item.owned_by_self) && memoryId > 0) {
+      const visibilityControls = el("div", "feed-visibility-controls");
+      const visibilitySelect = document.createElement("select");
+      visibilitySelect.className = "feed-visibility-select";
+      [
+        { value: "private", label: "Only me" },
+        { value: "shared", label: "Share with peers" }
+      ].forEach((optionData) => {
+        const option = document.createElement("option");
+        option.value = optionData.value;
+        option.textContent = optionData.label;
+        option.selected = optionData.value === visibility;
+        visibilitySelect.appendChild(option);
+      });
+      const visibilityButton = el("button", "settings-button", "Save visibility");
+      visibilitySelect.setAttribute("aria-label", `Visibility for ${String(item.title || "memory")}`);
+      const visibilityNote = el(
+        "div",
+        "feed-visibility-note",
+        visibility === "shared" ? "Shared memories can sync to trusted peers and stay in shared scope." : "Private memories stay local unless the peer is assigned to your local actor."
+      );
+      visibilitySelect.addEventListener("change", () => {
+        visibilityNote.textContent = visibilitySelect.value === "shared" ? "Shared memories can sync to trusted peers and stay in shared scope." : "Private memories stay local unless the peer is assigned to your local actor.";
+      });
+      visibilityButton.addEventListener("click", async () => {
+        visibilityButton.disabled = true;
+        visibilitySelect.disabled = true;
+        visibilityButton.textContent = "Saving...";
+        try {
+          await updateMemoryVisibility(memoryId, visibilitySelect.value);
+          showGlobalNotice(visibilitySelect.value === "shared" ? "Memory will now sync as shared context." : "Memory is private again.");
+          await loadFeedData();
+        } catch (error) {
+          showGlobalNotice(error instanceof Error ? error.message : "Failed to save visibility.", "warning");
+          visibilityButton.textContent = "Retry save";
+        } finally {
+          visibilityButton.disabled = false;
+          visibilitySelect.disabled = false;
+          if (visibilityButton.textContent === "Saving...") visibilityButton.textContent = "Save visibility";
+        }
+      });
+      visibilityControls.append(visibilitySelect, visibilityButton, visibilityNote);
+      footerLeft.appendChild(visibilityControls);
+    }
     footer.append(footerLeft, footerRight);
     card.append(header, provenance, meta, bodyNode, footer);
     return card;
@@ -953,7 +1077,9 @@
     if (!toggle) return;
     toggle.querySelectorAll(".toggle-button").forEach((btn) => {
       const value = btn.dataset?.filter || "all";
-      btn.classList.toggle("active", value === state.feedTypeFilter);
+      const active = value === state.feedTypeFilter;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
   }
   function updateFeedScopeToggle() {
@@ -961,7 +1087,9 @@
     if (!toggle) return;
     toggle.querySelectorAll(".toggle-button").forEach((btn) => {
       const value = btn.dataset?.filter || "all";
-      btn.classList.toggle("active", value === state.feedScopeFilter);
+      const active = value === state.feedScopeFilter;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
   }
   function updateFeedView(force = false) {
@@ -1370,6 +1498,55 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   function parseScopeList(value) {
     return value.split(",").map((item) => item.trim()).filter(Boolean);
   }
+  function actorLabel(actor) {
+    if (!actor || typeof actor !== "object") return "Unknown actor";
+    const displayName = String(actor.display_name || "").trim();
+    if (!displayName) return String(actor.actor_id || "Unknown actor");
+    return displayName;
+  }
+  function assignedActorCount(actorId) {
+    const peers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
+    return peers.filter((peer) => String(peer?.actor_id || "") === actorId).length;
+  }
+  function assignmentNote(actorId) {
+    if (!actorId) return "Unassigned peers keep legacy fallback attribution until you choose an actor.";
+    const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+    const actor = actors.find((item) => String(item?.actor_id || "") === actorId);
+    if (actor?.is_local) {
+      return "Local actor assignment keeps this peer in your same-person continuity path, including private sync.";
+    }
+    return "Only memories marked shared sync to this actor. Existing private memories stay local until you change their visibility in the feed.";
+  }
+  function buildActorOptions(selectedActorId) {
+    const options = [];
+    const unassigned = document.createElement("option");
+    unassigned.value = "";
+    unassigned.textContent = "No actor assigned";
+    options.push(unassigned);
+    const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+    actors.forEach((actor) => {
+      const option = document.createElement("option");
+      option.value = String(actor.actor_id || "");
+      option.textContent = actor.is_local ? `${actorLabel(actor)} (local)` : actorLabel(actor);
+      option.selected = option.value === selectedActorId;
+      options.push(option);
+    });
+    if (!selectedActorId) options[0].selected = true;
+    return options;
+  }
+  function mergeTargetActors(actorId) {
+    const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+    return actors.filter((actor) => String(actor?.actor_id || "") !== actorId);
+  }
+  function actorMergeNote(targetActorId, secondaryActorId) {
+    const target = mergeTargetActors(secondaryActorId).find(
+      (actor) => String(actor?.actor_id || "") === targetActorId
+    );
+    if (!targetActorId || !target) {
+      return "Choose where this duplicate actor should collapse.";
+    }
+    return `Merge into ${actorLabel(target)}. Assigned peers move now; existing memories already stamped with this actor keep their current provenance for now.`;
+  }
   function createChipEditor(initialValues, placeholder, emptyLabel) {
     let values = [...initialValues];
     const container = el("div", "peer-scope-editor");
@@ -1387,6 +1564,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         const label = el("span", null, value);
         const remove = el("button", "peer-scope-chip-remove", "x");
         remove.type = "button";
+        remove.setAttribute("aria-label", `Remove ${value}`);
         remove.addEventListener("click", () => {
           values = values.filter((_, currentIndex) => currentIndex !== index);
           syncChips();
@@ -1570,7 +1748,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       const identityMeta = el(
         "div",
         "peer-meta",
-        peer.claimed_local_actor ? "Mine" : "Different or unknown"
+        peer.actor_display_name ? `Assigned to ${String(peer.actor_display_name)}${peer.claimed_local_actor ? " · local actor" : ""}` : "Unassigned actor"
       );
       const scope = peer.project_scope || {};
       const includeList = Array.isArray(scope.include) ? scope.include : [];
@@ -1580,23 +1758,35 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       const inheritsGlobal = Boolean(scope.inherits_global);
       const scopePanel = el("div", "peer-scope");
       const identityRow = el("div", "peer-scope-summary");
-      const identityCheckbox = el("input", "cm-checkbox");
-      identityCheckbox.type = "checkbox";
-      identityCheckbox.checked = Boolean(peer.claimed_local_actor);
-      const identityLabel = document.createElement("label");
-      identityLabel.append(identityCheckbox, document.createTextNode(" Belongs to me"));
-      identityRow.appendChild(identityLabel);
-      identityCheckbox.addEventListener("change", async () => {
-        identityCheckbox.disabled = true;
+      identityRow.textContent = "Assigned actor";
+      const actorRow = el("div", "peer-actor-row");
+      const actorSelect = document.createElement("select");
+      actorSelect.className = "sync-actor-select";
+      actorSelect.setAttribute("aria-label", `Assigned actor for ${displayName}`);
+      buildActorOptions(String(peer.actor_id || "")).forEach((option) => actorSelect.appendChild(option));
+      const applyActorBtn = el("button", "settings-button", "Save actor");
+      const actorHint = el("div", "peer-scope-effective", assignmentNote(String(peer.actor_id || "")));
+      actorSelect.addEventListener("change", () => {
+        actorHint.textContent = assignmentNote(actorSelect.value);
+      });
+      applyActorBtn.addEventListener("click", async () => {
+        applyActorBtn.disabled = true;
+        actorSelect.disabled = true;
+        applyActorBtn.textContent = "Applying...";
         try {
-          await updatePeerIdentity(peerId, identityCheckbox.checked);
+          await assignPeerActor(peerId, actorSelect.value || null);
+          showGlobalNotice(actorSelect.value ? "Peer actor updated." : "Peer actor cleared.");
           await loadSyncData();
-        } catch {
-          identityCheckbox.checked = !identityCheckbox.checked;
+        } catch (error) {
+          showGlobalNotice(error instanceof Error ? error.message : "Failed to update peer actor.", "warning");
+          applyActorBtn.textContent = "Retry actor";
         } finally {
-          identityCheckbox.disabled = false;
+          actorSelect.disabled = false;
+          applyActorBtn.disabled = false;
+          if (applyActorBtn.textContent === "Applying...") applyActorBtn.textContent = "Save actor";
         }
       });
+      actorRow.append(actorSelect, applyActorBtn);
       const scopeSummary = el(
         "div",
         "peer-scope-summary",
@@ -1613,14 +1803,16 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       inputRow.append(includeEditor.element, excludeEditor.element);
       const scopeActions = el("div", "peer-scope-actions");
       const saveScopeBtn = el("button", "settings-button", "Save scope");
-      const inheritBtn = el("button", "settings-button", "Use global");
+      const inheritBtn = el("button", "settings-button", "Reset to global scope");
       saveScopeBtn.addEventListener("click", async () => {
         saveScopeBtn.disabled = true;
         saveScopeBtn.textContent = "Saving...";
         try {
           await updatePeerScope(peerId, includeEditor.values(), excludeEditor.values());
+          showGlobalNotice("Peer sync scope saved.");
           await loadSyncData();
-        } catch {
+        } catch (error) {
+          showGlobalNotice(error instanceof Error ? error.message : "Failed to save peer scope.", "warning");
           saveScopeBtn.textContent = "Retry save";
         } finally {
           saveScopeBtn.disabled = false;
@@ -1632,19 +1824,129 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         inheritBtn.textContent = "Resetting...";
         try {
           await updatePeerScope(peerId, null, null, true);
+          showGlobalNotice("Peer sync scope reset to global defaults.");
           await loadSyncData();
-        } catch {
+        } catch (error) {
+          showGlobalNotice(error instanceof Error ? error.message : "Failed to reset peer scope.", "warning");
           inheritBtn.textContent = "Retry reset";
         } finally {
           inheritBtn.disabled = false;
-          if (inheritBtn.textContent === "Resetting...") inheritBtn.textContent = "Use global";
+          if (inheritBtn.textContent === "Resetting...") inheritBtn.textContent = "Reset to global scope";
         }
       });
       scopeActions.append(saveScopeBtn, inheritBtn);
-      scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, inputRow, scopeActions);
+      scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, inputRow, scopeActions);
       titleRow.append(name, actions);
       card.append(titleRow, addressLabel, meta, scopePanel);
       syncPeers.appendChild(card);
+    });
+  }
+  function renderSyncActors() {
+    const actorList = document.getElementById("syncActorsList");
+    const actorMeta = document.getElementById("syncActorsMeta");
+    if (!actorList) return;
+    actorList.textContent = "";
+    const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+    if (actorMeta) {
+      actorMeta.textContent = actors.length ? "Create, rename, and merge actors here. Assign each peer below. Non-local actors only receive memories marked shared." : "No named actors yet. Create one here, then assign peers below.";
+    }
+    actors.forEach((actor) => {
+      const row = el("div", "actor-row");
+      const details = el("div", "actor-details");
+      const title = el("div", "actor-title");
+      const name = el("strong", null, actorLabel(actor));
+      const badge = el("span", `badge actor-badge${actor.is_local ? " local" : ""}`, actor.is_local ? "Local" : `${assignedActorCount(String(actor.actor_id || ""))} peer${assignedActorCount(String(actor.actor_id || "")) === 1 ? "" : "s"}`);
+      title.append(name, badge);
+      const note = el(
+        "div",
+        "peer-meta",
+        actor.is_local ? "Used for this device and same-person peers." : `${assignedActorCount(String(actor.actor_id || ""))} assigned peer${assignedActorCount(String(actor.actor_id || "")) === 1 ? "" : "s"}`
+      );
+      details.append(title, note);
+      const actions = el("div", "actor-actions");
+      if (actor.is_local) {
+        actions.appendChild(el("div", "peer-meta", "Rename in config"));
+      } else {
+        const actorId = String(actor.actor_id || "");
+        const input = document.createElement("input");
+        input.className = "peer-scope-input actor-name-input";
+        input.value = actorLabel(actor);
+        input.setAttribute("aria-label", `Rename ${actorLabel(actor)}`);
+        const renameBtn = el("button", "settings-button", "Rename");
+        renameBtn.addEventListener("click", async () => {
+          const nextName = input.value.trim();
+          if (!nextName) return;
+          renameBtn.disabled = true;
+          input.disabled = true;
+          renameBtn.textContent = "Saving...";
+          try {
+            await renameActor(actorId, nextName);
+            await loadSyncData();
+          } catch {
+            renameBtn.textContent = "Retry rename";
+          } finally {
+            renameBtn.disabled = false;
+            input.disabled = false;
+            if (renameBtn.textContent === "Saving...") renameBtn.textContent = "Rename";
+          }
+        });
+        const mergeTargets = mergeTargetActors(actorId);
+        const mergeControls = el("div", "actor-merge-controls");
+        const mergeSelect = document.createElement("select");
+        mergeSelect.className = "sync-actor-select actor-merge-select";
+        mergeSelect.setAttribute("aria-label", `Merge ${actorLabel(actor)} into another actor`);
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Merge into actor";
+        placeholder.selected = true;
+        mergeSelect.appendChild(placeholder);
+        mergeTargets.forEach((target) => {
+          const option = document.createElement("option");
+          option.value = String(target.actor_id || "");
+          option.textContent = target.is_local ? `${actorLabel(target)} (local)` : actorLabel(target);
+          mergeSelect.appendChild(option);
+        });
+        const mergeBtn = el("button", "settings-button", "Merge into selected actor");
+        mergeBtn.disabled = mergeTargets.length === 0;
+        const mergeNote = el(
+          "div",
+          "peer-meta actor-merge-note",
+          mergeTargets.length ? actorMergeNote("", actorId) : "No merge targets yet. Create another actor or use the local actor."
+        );
+        mergeSelect.addEventListener("change", () => {
+          mergeNote.textContent = actorMergeNote(mergeSelect.value, actorId);
+        });
+        mergeBtn.addEventListener("click", async () => {
+          if (!mergeSelect.value) return;
+          const target = mergeTargets.find((candidate) => String(candidate.actor_id || "") === mergeSelect.value);
+          if (!window.confirm(`Merge ${actorLabel(actor)} into ${actorLabel(target)}? Assigned peers move now, but older memories keep their current stamped provenance for now.`)) {
+            return;
+          }
+          mergeBtn.disabled = true;
+          mergeSelect.disabled = true;
+          input.disabled = true;
+          renameBtn.disabled = true;
+          mergeBtn.textContent = "Merging...";
+          try {
+            await mergeActor(mergeSelect.value, actorId);
+            showGlobalNotice("Actor merged. Assigned peers were moved to the selected actor.");
+            await loadSyncData();
+          } catch (error) {
+            showGlobalNotice(error instanceof Error ? error.message : "Failed to merge actor.", "warning");
+            mergeBtn.textContent = "Retry merge";
+          } finally {
+            mergeBtn.disabled = mergeTargets.length === 0;
+            mergeSelect.disabled = false;
+            input.disabled = false;
+            renameBtn.disabled = false;
+            if (mergeBtn.textContent === "Merging...") mergeBtn.textContent = "Merge into selected actor";
+          }
+        });
+        mergeControls.append(mergeSelect, mergeBtn);
+        actions.append(input, renameBtn, mergeControls, mergeNote);
+      }
+      row.append(details, actions);
+      actorList.appendChild(row);
     });
   }
   function renderLegacyDeviceClaims() {
@@ -1729,16 +2031,29 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   async function loadSyncData() {
     try {
       const payload = await loadSyncStatus(true);
+      let actorsPayload = null;
+      let actorLoadError = false;
+      try {
+        actorsPayload = await loadSyncActors();
+      } catch {
+        actorLoadError = true;
+      }
       const statusPayload = payload.status && typeof payload.status === "object" ? payload.status : null;
       if (statusPayload) state.lastSyncStatus = statusPayload;
+      state.lastSyncActors = Array.isArray(actorsPayload?.items) ? actorsPayload.items : [];
       state.lastSyncPeers = payload.peers || [];
       state.lastSyncAttempts = payload.attempts || [];
       state.lastSyncLegacyDevices = payload.legacy_devices || [];
       renderSyncStatus();
+      renderSyncActors();
       renderSyncPeers();
       renderLegacyDeviceClaims();
       renderSyncAttempts();
       renderHealthOverview();
+      if (actorLoadError) {
+        const actorMeta = document.getElementById("syncActorsMeta");
+        if (actorMeta) actorMeta.textContent = "Actor controls are temporarily unavailable. Peer status and sync health still loaded.";
+      }
     } catch {
       const syncMeta = document.getElementById("syncMeta");
       if (syncMeta) syncMeta.textContent = "Sync unavailable";
@@ -1757,18 +2072,20 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const syncPairingToggle = document.getElementById("syncPairingToggle");
     const syncNowButton = document.getElementById("syncNowButton");
     const syncRedact = document.getElementById("syncRedact");
+    const syncActorCreateButton = document.getElementById("syncActorCreateButton");
+    const syncActorCreateInput = document.getElementById("syncActorCreateInput");
     const syncLegacyClaimButton = document.getElementById("syncLegacyClaimButton");
     const syncLegacyDeviceSelect = document.getElementById("syncLegacyDeviceSelect");
     const pairingCopy = document.getElementById("pairingCopy");
     const syncPairing = document.getElementById("syncPairing");
     if (syncPairing) syncPairing.hidden = !state.syncPairingOpen;
-    if (syncPairingToggle) syncPairingToggle.textContent = state.syncPairingOpen ? "Close" : "Pair";
+    if (syncPairingToggle) syncPairingToggle.textContent = state.syncPairingOpen ? "Hide pairing" : "Show pairing";
     if (syncRedact) syncRedact.checked = isSyncRedactionEnabled();
     syncPairingToggle?.addEventListener("click", () => {
       const next = !state.syncPairingOpen;
       setSyncPairingOpen(next);
       if (syncPairing) syncPairing.hidden = !next;
-      if (syncPairingToggle) syncPairingToggle.textContent = next ? "Close" : "Pair";
+      if (syncPairingToggle) syncPairingToggle.textContent = next ? "Hide pairing" : "Show pairing";
       if (next) {
         const pairingPayloadEl = document.getElementById("pairingPayload");
         const pairingHint = document.getElementById("pairingHint");
@@ -1784,16 +2101,41 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       renderSyncAttempts();
       renderPairing();
     });
+    syncActorCreateButton?.addEventListener("click", async () => {
+      const displayName = String(syncActorCreateInput?.value || "").trim();
+      if (!displayName || !syncActorCreateButton || !syncActorCreateInput) return;
+      syncActorCreateButton.disabled = true;
+      syncActorCreateInput.disabled = true;
+      syncActorCreateButton.textContent = "Creating...";
+      try {
+        await createActor(displayName);
+        showGlobalNotice("Actor created.");
+        syncActorCreateInput.value = "";
+        await loadSyncData();
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : "Failed to create actor.", "warning");
+        syncActorCreateButton.textContent = "Retry create";
+        syncActorCreateButton.disabled = false;
+        syncActorCreateInput.disabled = false;
+        return;
+      }
+      syncActorCreateButton.textContent = "Create actor";
+      syncActorCreateButton.disabled = false;
+      syncActorCreateInput.disabled = false;
+    });
     syncLegacyClaimButton?.addEventListener("click", async () => {
       const originDeviceId = String(syncLegacyDeviceSelect?.value || "").trim();
       if (!originDeviceId || !syncLegacyClaimButton) return;
+      if (!window.confirm(`Attach old device history from ${originDeviceId} to your local actor? This updates legacy provenance for that device.`)) return;
       syncLegacyClaimButton.disabled = true;
-      const originalText = syncLegacyClaimButton.textContent || "Claim as mine";
-      syncLegacyClaimButton.textContent = "Claiming...";
+      const originalText = syncLegacyClaimButton.textContent || "Attach device history";
+      syncLegacyClaimButton.textContent = "Attaching...";
       try {
         await claimLegacyDeviceIdentity(originDeviceId);
+        showGlobalNotice("Old device history attached to your local actor.");
         await loadSyncData();
-      } catch {
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : "Failed to attach old device history.", "warning");
         syncLegacyClaimButton.textContent = "Retry claim";
         syncLegacyClaimButton.disabled = false;
         return;
@@ -1807,7 +2149,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       syncNowButton.textContent = "Syncing...";
       try {
         await triggerSync();
-      } catch {
+        showGlobalNotice("Sync pass started.");
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : "Failed to start sync.", "warning");
       }
       syncNowButton.disabled = false;
       syncNowButton.textContent = "Sync now";
@@ -2128,29 +2472,6 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   }
   function isSettingsOpen() {
     return settingsOpen;
-  }
-  function hideGlobalNotice() {
-    const notice = $("globalNotice");
-    if (!notice) return;
-    hide(notice);
-    notice.textContent = "";
-    notice.classList.remove("success", "warning");
-    if (state.noticeTimer) {
-      clearTimeout(state.noticeTimer);
-      state.noticeTimer = null;
-    }
-  }
-  function showGlobalNotice(message, type = "success") {
-    const notice = $("globalNotice");
-    if (!notice || !message) return;
-    notice.textContent = message;
-    notice.classList.remove("success", "warning");
-    notice.classList.add(type === "warning" ? "warning" : "success");
-    show(notice);
-    if (state.noticeTimer) clearTimeout(state.noticeTimer);
-    state.noticeTimer = setTimeout(() => {
-      hideGlobalNotice();
-    }, 12e3);
   }
   function formatSettingsKey(key) {
     return String(key || "").replace(/_/g, " ");

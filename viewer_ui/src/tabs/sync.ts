@@ -10,6 +10,7 @@ import {
   setSyncRedactionEnabled,
 } from '../lib/state';
 import * as api from '../lib/api';
+import { showGlobalNotice } from '../lib/notice';
 import { renderHealthOverview } from './health';
 
 const PAIRING_FILTER_HINT =
@@ -44,6 +45,62 @@ function parseScopeList(value: string): string[] {
     .filter(Boolean);
 }
 
+function actorLabel(actor: any): string {
+  if (!actor || typeof actor !== 'object') return 'Unknown actor';
+  const displayName = String(actor.display_name || '').trim();
+  if (!displayName) return String(actor.actor_id || 'Unknown actor');
+  return displayName;
+}
+
+function assignedActorCount(actorId: string): number {
+  const peers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
+  return peers.filter((peer) => String(peer?.actor_id || '') === actorId).length;
+}
+
+function assignmentNote(actorId: string): string {
+  if (!actorId) return 'Unassigned peers keep legacy fallback attribution until you choose an actor.';
+  const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+  const actor = actors.find((item) => String(item?.actor_id || '') === actorId);
+  if (actor?.is_local) {
+    return 'Local actor assignment keeps this peer in your same-person continuity path, including private sync.';
+  }
+  return 'Only memories marked shared sync to this actor. Existing private memories stay local until you change their visibility in the feed.';
+}
+
+function buildActorOptions(selectedActorId: string): HTMLOptionElement[] {
+  const options: HTMLOptionElement[] = [];
+  const unassigned = document.createElement('option');
+  unassigned.value = '';
+  unassigned.textContent = 'No actor assigned';
+  options.push(unassigned);
+
+  const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+  actors.forEach((actor) => {
+    const option = document.createElement('option');
+    option.value = String(actor.actor_id || '');
+    option.textContent = actor.is_local ? `${actorLabel(actor)} (local)` : actorLabel(actor);
+    option.selected = option.value === selectedActorId;
+    options.push(option);
+  });
+  if (!selectedActorId) options[0].selected = true;
+  return options;
+}
+
+function mergeTargetActors(actorId: string): any[] {
+  const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+  return actors.filter((actor) => String(actor?.actor_id || '') !== actorId);
+}
+
+function actorMergeNote(targetActorId: string, secondaryActorId: string): string {
+  const target = mergeTargetActors(secondaryActorId).find(
+    (actor) => String(actor?.actor_id || '') === targetActorId,
+  );
+  if (!targetActorId || !target) {
+    return 'Choose where this duplicate actor should collapse.';
+  }
+  return `Merge into ${actorLabel(target)}. Assigned peers move now; existing memories already stamped with this actor keep their current provenance for now.`;
+}
+
 function createChipEditor(initialValues: string[], placeholder: string, emptyLabel: string) {
   let values = [...initialValues];
   const container = el('div', 'peer-scope-editor');
@@ -62,6 +119,7 @@ function createChipEditor(initialValues: string[], placeholder: string, emptyLab
       const label = el('span', null, value);
       const remove = el('button', 'peer-scope-chip-remove', 'x') as HTMLButtonElement;
       remove.type = 'button';
+      remove.setAttribute('aria-label', `Remove ${value}`);
       remove.addEventListener('click', () => {
         values = values.filter((_, currentIndex) => currentIndex !== index);
         syncChips();
@@ -275,7 +333,9 @@ export function renderSyncPeers() {
     const identityMeta = el(
       'div',
       'peer-meta',
-      peer.claimed_local_actor ? 'Mine' : 'Different or unknown',
+      peer.actor_display_name
+        ? `Assigned to ${String(peer.actor_display_name)}${peer.claimed_local_actor ? ' · local actor' : ''}`
+        : 'Unassigned actor',
     );
 
     const scope = peer.project_scope || {};
@@ -286,23 +346,35 @@ export function renderSyncPeers() {
     const inheritsGlobal = Boolean(scope.inherits_global);
     const scopePanel = el('div', 'peer-scope');
     const identityRow = el('div', 'peer-scope-summary');
-    const identityCheckbox = el('input', 'cm-checkbox') as HTMLInputElement;
-    identityCheckbox.type = 'checkbox';
-    identityCheckbox.checked = Boolean(peer.claimed_local_actor);
-    const identityLabel = document.createElement('label');
-    identityLabel.append(identityCheckbox, document.createTextNode(' Belongs to me'));
-    identityRow.appendChild(identityLabel);
-    identityCheckbox.addEventListener('change', async () => {
-      identityCheckbox.disabled = true;
+    identityRow.textContent = 'Assigned actor';
+    const actorRow = el('div', 'peer-actor-row');
+    const actorSelect = document.createElement('select');
+    actorSelect.className = 'sync-actor-select';
+    actorSelect.setAttribute('aria-label', `Assigned actor for ${displayName}`);
+    buildActorOptions(String(peer.actor_id || '')).forEach((option) => actorSelect.appendChild(option));
+    const applyActorBtn = el('button', 'settings-button', 'Save actor') as HTMLButtonElement;
+    const actorHint = el('div', 'peer-scope-effective', assignmentNote(String(peer.actor_id || '')));
+    actorSelect.addEventListener('change', () => {
+      actorHint.textContent = assignmentNote(actorSelect.value);
+    });
+    applyActorBtn.addEventListener('click', async () => {
+      applyActorBtn.disabled = true;
+      actorSelect.disabled = true;
+      applyActorBtn.textContent = 'Applying...';
       try {
-        await api.updatePeerIdentity(peerId, identityCheckbox.checked);
+        await api.assignPeerActor(peerId, actorSelect.value || null);
+        showGlobalNotice(actorSelect.value ? 'Peer actor updated.' : 'Peer actor cleared.');
         await loadSyncData();
-      } catch {
-        identityCheckbox.checked = !identityCheckbox.checked;
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : 'Failed to update peer actor.', 'warning');
+        applyActorBtn.textContent = 'Retry actor';
       } finally {
-        identityCheckbox.disabled = false;
+        actorSelect.disabled = false;
+        applyActorBtn.disabled = false;
+        if (applyActorBtn.textContent === 'Applying...') applyActorBtn.textContent = 'Save actor';
       }
     });
+    actorRow.append(actorSelect, applyActorBtn);
     const scopeSummary = el(
       'div',
       'peer-scope-summary',
@@ -321,14 +393,16 @@ export function renderSyncPeers() {
     inputRow.append(includeEditor.element, excludeEditor.element);
     const scopeActions = el('div', 'peer-scope-actions');
     const saveScopeBtn = el('button', 'settings-button', 'Save scope') as HTMLButtonElement;
-    const inheritBtn = el('button', 'settings-button', 'Use global') as HTMLButtonElement;
+    const inheritBtn = el('button', 'settings-button', 'Reset to global scope') as HTMLButtonElement;
     saveScopeBtn.addEventListener('click', async () => {
       saveScopeBtn.disabled = true;
       saveScopeBtn.textContent = 'Saving...';
       try {
         await api.updatePeerScope(peerId, includeEditor.values(), excludeEditor.values());
+        showGlobalNotice('Peer sync scope saved.');
         await loadSyncData();
-      } catch {
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : 'Failed to save peer scope.', 'warning');
         saveScopeBtn.textContent = 'Retry save';
       } finally {
         saveScopeBtn.disabled = false;
@@ -340,20 +414,141 @@ export function renderSyncPeers() {
       inheritBtn.textContent = 'Resetting...';
       try {
         await api.updatePeerScope(peerId, null, null, true);
+        showGlobalNotice('Peer sync scope reset to global defaults.');
         await loadSyncData();
-      } catch {
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : 'Failed to reset peer scope.', 'warning');
         inheritBtn.textContent = 'Retry reset';
       } finally {
         inheritBtn.disabled = false;
-        if (inheritBtn.textContent === 'Resetting...') inheritBtn.textContent = 'Use global';
+        if (inheritBtn.textContent === 'Resetting...') inheritBtn.textContent = 'Reset to global scope';
       }
     });
     scopeActions.append(saveScopeBtn, inheritBtn);
-    scopePanel.append(identityRow, identityMeta, scopeSummary, effectiveSummary, inputRow, scopeActions);
+    scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, inputRow, scopeActions);
 
     titleRow.append(name, actions);
     card.append(titleRow, addressLabel, meta, scopePanel);
     syncPeers.appendChild(card);
+  });
+}
+
+export function renderSyncActors() {
+  const actorList = document.getElementById('syncActorsList');
+  const actorMeta = document.getElementById('syncActorsMeta');
+  if (!actorList) return;
+  actorList.textContent = '';
+
+  const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+  if (actorMeta) {
+    actorMeta.textContent = actors.length
+      ? 'Create, rename, and merge actors here. Assign each peer below. Non-local actors only receive memories marked shared.'
+      : 'No named actors yet. Create one here, then assign peers below.';
+  }
+
+  actors.forEach((actor) => {
+    const row = el('div', 'actor-row');
+    const details = el('div', 'actor-details');
+    const title = el('div', 'actor-title');
+    const name = el('strong', null, actorLabel(actor));
+    const badge = el('span', `badge actor-badge${actor.is_local ? ' local' : ''}`, actor.is_local ? 'Local' : `${assignedActorCount(String(actor.actor_id || ''))} peer${assignedActorCount(String(actor.actor_id || '')) === 1 ? '' : 's'}`);
+    title.append(name, badge);
+    const note = el(
+      'div',
+      'peer-meta',
+      actor.is_local
+        ? 'Used for this device and same-person peers.'
+        : `${assignedActorCount(String(actor.actor_id || ''))} assigned peer${assignedActorCount(String(actor.actor_id || '')) === 1 ? '' : 's'}`,
+    );
+    details.append(title, note);
+
+    const actions = el('div', 'actor-actions');
+    if (actor.is_local) {
+      actions.appendChild(el('div', 'peer-meta', 'Rename in config')); 
+    } else {
+      const actorId = String(actor.actor_id || '');
+      const input = document.createElement('input');
+      input.className = 'peer-scope-input actor-name-input';
+      input.value = actorLabel(actor);
+      input.setAttribute('aria-label', `Rename ${actorLabel(actor)}`);
+      const renameBtn = el('button', 'settings-button', 'Rename') as HTMLButtonElement;
+      renameBtn.addEventListener('click', async () => {
+        const nextName = input.value.trim();
+        if (!nextName) return;
+        renameBtn.disabled = true;
+        input.disabled = true;
+        renameBtn.textContent = 'Saving...';
+        try {
+          await api.renameActor(actorId, nextName);
+          await loadSyncData();
+        } catch {
+          renameBtn.textContent = 'Retry rename';
+        } finally {
+          renameBtn.disabled = false;
+          input.disabled = false;
+          if (renameBtn.textContent === 'Saving...') renameBtn.textContent = 'Rename';
+        }
+      });
+      const mergeTargets = mergeTargetActors(actorId);
+      const mergeControls = el('div', 'actor-merge-controls');
+      const mergeSelect = document.createElement('select');
+      mergeSelect.className = 'sync-actor-select actor-merge-select';
+      mergeSelect.setAttribute('aria-label', `Merge ${actorLabel(actor)} into another actor`);
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = 'Merge into actor';
+      placeholder.selected = true;
+      mergeSelect.appendChild(placeholder);
+      mergeTargets.forEach((target) => {
+        const option = document.createElement('option');
+        option.value = String(target.actor_id || '');
+        option.textContent = target.is_local ? `${actorLabel(target)} (local)` : actorLabel(target);
+        mergeSelect.appendChild(option);
+      });
+      const mergeBtn = el('button', 'settings-button', 'Merge into selected actor') as HTMLButtonElement;
+      mergeBtn.disabled = mergeTargets.length === 0;
+      const mergeNote = el(
+        'div',
+        'peer-meta actor-merge-note',
+        mergeTargets.length
+          ? actorMergeNote('', actorId)
+          : 'No merge targets yet. Create another actor or use the local actor.',
+      );
+      mergeSelect.addEventListener('change', () => {
+        mergeNote.textContent = actorMergeNote(mergeSelect.value, actorId);
+      });
+      mergeBtn.addEventListener('click', async () => {
+        if (!mergeSelect.value) return;
+        const target = mergeTargets.find((candidate) => String(candidate.actor_id || '') === mergeSelect.value);
+        if (!window.confirm(`Merge ${actorLabel(actor)} into ${actorLabel(target)}? Assigned peers move now, but older memories keep their current stamped provenance for now.`)) {
+          return;
+        }
+        mergeBtn.disabled = true;
+        mergeSelect.disabled = true;
+        input.disabled = true;
+        renameBtn.disabled = true;
+        mergeBtn.textContent = 'Merging...';
+        try {
+          await api.mergeActor(mergeSelect.value, actorId);
+          showGlobalNotice('Actor merged. Assigned peers were moved to the selected actor.');
+          await loadSyncData();
+        } catch (error) {
+          showGlobalNotice(error instanceof Error ? error.message : 'Failed to merge actor.', 'warning');
+          mergeBtn.textContent = 'Retry merge';
+        } finally {
+          mergeBtn.disabled = mergeTargets.length === 0;
+          mergeSelect.disabled = false;
+          input.disabled = false;
+          renameBtn.disabled = false;
+          if (mergeBtn.textContent === 'Merging...') mergeBtn.textContent = 'Merge into selected actor';
+        }
+      });
+      mergeControls.append(mergeSelect, mergeBtn);
+      actions.append(input, renameBtn, mergeControls, mergeNote);
+    }
+
+    row.append(details, actions);
+    actorList.appendChild(row);
   });
 }
 
@@ -453,17 +648,30 @@ export function renderPairing() {
 export async function loadSyncData() {
   try {
     const payload = await api.loadSyncStatus(true);
+    let actorsPayload: any = null;
+    let actorLoadError = false;
+    try {
+      actorsPayload = await api.loadSyncActors();
+    } catch {
+      actorLoadError = true;
+    }
     const statusPayload = payload.status && typeof payload.status === 'object' ? payload.status : null;
     if (statusPayload) state.lastSyncStatus = statusPayload;
+    state.lastSyncActors = Array.isArray(actorsPayload?.items) ? actorsPayload.items : [];
     state.lastSyncPeers = payload.peers || [];
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
     renderSyncStatus();
+    renderSyncActors();
     renderSyncPeers();
     renderLegacyDeviceClaims();
     renderSyncAttempts();
     // Re-render health indicators since they consume sync state (health dot, etc.)
     renderHealthOverview();
+    if (actorLoadError) {
+      const actorMeta = document.getElementById('syncActorsMeta');
+      if (actorMeta) actorMeta.textContent = 'Actor controls are temporarily unavailable. Peer status and sync health still loaded.';
+    }
   } catch {
     const syncMeta = document.getElementById('syncMeta');
     if (syncMeta) syncMeta.textContent = 'Sync unavailable';
@@ -486,6 +694,8 @@ export function initSyncTab(refreshCallback: () => void) {
   const syncPairingToggle = document.getElementById('syncPairingToggle') as HTMLButtonElement | null;
   const syncNowButton = document.getElementById('syncNowButton') as HTMLButtonElement | null;
   const syncRedact = document.getElementById('syncRedact') as HTMLInputElement | null;
+  const syncActorCreateButton = document.getElementById('syncActorCreateButton') as HTMLButtonElement | null;
+  const syncActorCreateInput = document.getElementById('syncActorCreateInput') as HTMLInputElement | null;
   const syncLegacyClaimButton = document.getElementById('syncLegacyClaimButton') as HTMLButtonElement | null;
   const syncLegacyDeviceSelect = document.getElementById('syncLegacyDeviceSelect') as HTMLSelectElement | null;
   const pairingCopy = document.getElementById('pairingCopy') as HTMLButtonElement | null;
@@ -493,14 +703,14 @@ export function initSyncTab(refreshCallback: () => void) {
 
   // Apply initial toggle states
   if (syncPairing) (syncPairing as any).hidden = !state.syncPairingOpen;
-  if (syncPairingToggle) syncPairingToggle.textContent = state.syncPairingOpen ? 'Close' : 'Pair';
+  if (syncPairingToggle) syncPairingToggle.textContent = state.syncPairingOpen ? 'Hide pairing' : 'Show pairing';
   if (syncRedact) syncRedact.checked = isSyncRedactionEnabled();
 
   syncPairingToggle?.addEventListener('click', () => {
     const next = !state.syncPairingOpen;
     setSyncPairingOpen(next);
     if (syncPairing) (syncPairing as any).hidden = !next;
-    if (syncPairingToggle) syncPairingToggle.textContent = next ? 'Close' : 'Pair';
+    if (syncPairingToggle) syncPairingToggle.textContent = next ? 'Hide pairing' : 'Show pairing';
     if (next) {
       const pairingPayloadEl = document.getElementById('pairingPayload');
       const pairingHint = document.getElementById('pairingHint');
@@ -518,16 +728,42 @@ export function initSyncTab(refreshCallback: () => void) {
     renderPairing();
   });
 
+  syncActorCreateButton?.addEventListener('click', async () => {
+    const displayName = String(syncActorCreateInput?.value || '').trim();
+    if (!displayName || !syncActorCreateButton || !syncActorCreateInput) return;
+    syncActorCreateButton.disabled = true;
+    syncActorCreateInput.disabled = true;
+    syncActorCreateButton.textContent = 'Creating...';
+    try {
+      await api.createActor(displayName);
+      showGlobalNotice('Actor created.');
+      syncActorCreateInput.value = '';
+      await loadSyncData();
+    } catch (error) {
+      showGlobalNotice(error instanceof Error ? error.message : 'Failed to create actor.', 'warning');
+      syncActorCreateButton.textContent = 'Retry create';
+      syncActorCreateButton.disabled = false;
+      syncActorCreateInput.disabled = false;
+      return;
+    }
+    syncActorCreateButton.textContent = 'Create actor';
+    syncActorCreateButton.disabled = false;
+    syncActorCreateInput.disabled = false;
+  });
+
   syncLegacyClaimButton?.addEventListener('click', async () => {
     const originDeviceId = String(syncLegacyDeviceSelect?.value || '').trim();
     if (!originDeviceId || !syncLegacyClaimButton) return;
+    if (!window.confirm(`Attach old device history from ${originDeviceId} to your local actor? This updates legacy provenance for that device.`)) return;
     syncLegacyClaimButton.disabled = true;
-    const originalText = syncLegacyClaimButton.textContent || 'Claim as mine';
-    syncLegacyClaimButton.textContent = 'Claiming...';
+    const originalText = syncLegacyClaimButton.textContent || 'Attach device history';
+    syncLegacyClaimButton.textContent = 'Attaching...';
     try {
       await api.claimLegacyDeviceIdentity(originDeviceId);
+      showGlobalNotice('Old device history attached to your local actor.');
       await loadSyncData();
-    } catch {
+    } catch (error) {
+      showGlobalNotice(error instanceof Error ? error.message : 'Failed to attach old device history.', 'warning');
       syncLegacyClaimButton.textContent = 'Retry claim';
       syncLegacyClaimButton.disabled = false;
       return;
@@ -540,7 +776,12 @@ export function initSyncTab(refreshCallback: () => void) {
     if (!syncNowButton) return;
     syncNowButton.disabled = true;
     syncNowButton.textContent = 'Syncing...';
-    try { await api.triggerSync(); } catch {}
+    try {
+      await api.triggerSync();
+      showGlobalNotice('Sync pass started.');
+    } catch (error) {
+      showGlobalNotice(error instanceof Error ? error.message : 'Failed to start sync.', 'warning');
+    }
     syncNowButton.disabled = false;
     syncNowButton.textContent = 'Sync now';
     refreshCallback();

@@ -1,6 +1,7 @@
 /* Settings modal — observer config, sync settings. */
 
 import { $, $input, $select, $button, hide, show } from '../lib/dom';
+import { hideGlobalNotice, showGlobalNotice } from '../lib/notice';
 import { state } from '../lib/state';
 import * as api from '../lib/api';
 
@@ -356,31 +357,6 @@ function trapModalFocus(event: KeyboardEvent) {
 
 export function isSettingsOpen(): boolean {
   return settingsOpen;
-}
-
-function hideGlobalNotice() {
-  const notice = $('globalNotice');
-  if (!notice) return;
-  hide(notice);
-  notice.textContent = '';
-  notice.classList.remove('success', 'warning');
-  if (state.noticeTimer) {
-    clearTimeout(state.noticeTimer);
-    state.noticeTimer = null;
-  }
-}
-
-function showGlobalNotice(message: string, type: 'success' | 'warning' = 'success') {
-  const notice = $('globalNotice');
-  if (!notice || !message) return;
-  notice.textContent = message;
-  notice.classList.remove('success', 'warning');
-  notice.classList.add(type === 'warning' ? 'warning' : 'success');
-  show(notice);
-  if (state.noticeTimer) clearTimeout(state.noticeTimer);
-  state.noticeTimer = setTimeout(() => {
-    hideGlobalNotice();
-  }, 12_000);
 }
 
 function formatSettingsKey(key: string): string {
