@@ -209,6 +209,8 @@ The viewer now includes actor management for mapping multiple peers to one logic
 
 Project filters, peer-to-actor assignment, visibility controls, and config keys are documented in [docs/user-guide.md](docs/user-guide.md).
 
+For cross-network setups where peer addresses change frequently or mDNS does not cross VPN/network boundaries, codemem also supports optional coordinator-backed discovery with a self-hosted coordinator. The preferred deployment path is the built-in `codemem sync coordinator` service; see [docs/coordinator-discovery.md](docs/coordinator-discovery.md).
+
 ## Semantic recall
 
 Embeddings are stored in sqlite-vec and written automatically when memories are created. Use `codemem embed` to backfill existing memories. If sqlite-vec cannot load, keyword search still works.
@@ -256,6 +258,7 @@ Start OpenCode inside the codemem repo directory — the plugin auto-loads from 
 ## Documentation
 
 - [Architecture](docs/architecture.md) — data flow, retrieval, observer pipeline, design tradeoffs
+- [Coordinator-backed discovery](docs/coordinator-discovery.md) — self-hosted cross-network peer discovery
 - [User guide](docs/user-guide.md) — viewer usage, sync setup, troubleshooting
 - [Plugin reference](docs/plugin-reference.md) — plugin behavior, env vars, stream reliability
 - [Migration guide](docs/rename-migration.md) — migrating from `opencode-mem`
