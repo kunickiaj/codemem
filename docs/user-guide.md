@@ -159,6 +159,13 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 - `codemem sync status` and `codemem sync start|stop|restart` for daemon control.
 
+### Coordinator-backed discovery
+
+- Use coordinator-backed discovery when peers are reachable but their addresses change frequently or mDNS does not work across network boundaries such as VPNs.
+- Set `sync_coordinator_url` and `sync_coordinator_group` to enable it.
+- The coordinator is self-hosted/operator-run and only helps peers discover fresh addresses; direct peer-to-peer sync remains the data path.
+- See [docs/coordinator-discovery.md](coordinator-discovery.md) for setup, config, and current limitations.
+
 ### Keychain (optional)
 
 - `sync_key_store=keychain` (or `CODEMEM_SYNC_KEY_STORE=keychain`) stores the private key in Secret Service (Linux) or Keychain (macOS).
@@ -180,6 +187,6 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 ## Viewer sync panel
 - The `Actors` section gives actor creation/rename one home, while peer cards keep assignment close to the peer being changed.
 - `Assigned actor` replaces the older `Belongs to me` language in the peer cards.
-- Feed cards you own include a `Save visibility` control so shared/private intent can be changed without editing raw metadata.
+- Feed cards you own include a visibility control so shared/private intent can be changed without editing raw metadata.
 - `Redact sensitive details` lives above Recent sync attempts so it is easier to find before you inspect peer addresses and attempt history.
 - Recent sync attempts intentionally show only the latest few rows in the viewer; use CLI diagnostics for deeper history if needed.
