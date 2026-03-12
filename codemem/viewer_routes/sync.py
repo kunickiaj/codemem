@@ -128,6 +128,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             "true",
             "yes",
         }
+        project = str(params.get("project", [""])[0] or "").strip() or None
         config = _viewer.load_config()
         device_row = store.conn.execute(
             "SELECT device_id, fingerprint FROM sync_device LIMIT 1"
@@ -252,6 +253,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             item["address"] = _attempt_address(item)
             attempts_items.append(item)
         legacy_devices = store.claimable_legacy_device_ids()
+        sharing_review = store.sharing_review_summary(project=project)
 
         if daemon_state_value == "ok":
             peer_states = {
@@ -294,6 +296,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 "peers": peers_items,
                 "attempts": attempts_items[:5],
                 "legacy_devices": legacy_devices,
+                "sharing_review": sharing_review,
             }
         )
         return True

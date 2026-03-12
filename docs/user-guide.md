@@ -142,6 +142,7 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - Assigning a peer to a non-local actor keeps that peer's history shared; assigning it to your local actor keeps it personal/private.
 - Non-local actors receive memories from projects allowed by their include/exclude filters by default.
 - Use `Only me` on a memory when it should stay local and not sync to non-local actors.
+- The Sync panel also shows a teammate review card with per-peer counts for memories that will share by default versus memories marked `Only me`, plus a one-click jump into `My memories` in the Feed for review.
 
 ### One-off sync
 
