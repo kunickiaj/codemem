@@ -129,8 +129,18 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 ### Claim your own devices
 
-- In the Sync panel, use `Belongs to me` for currently paired machines that should count as your identity.
-- If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to you.
+- In the Sync panel, use `Assigned actor` to map a peer to your local actor when that machine should count as part of your identity.
+- Peers assigned to your local actor stay on the same-person continuity path, including private sync.
+- If a machine is replaced or re-paired, use `Claim old device as mine` to reconnect older synced history to your local actor.
+
+### Manage actors
+
+- The Sync panel now has an `Actors` section for creating and renaming non-local actors.
+- The same section can merge a duplicate actor into another actor; this immediately moves assigned peers, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them.
+- Assign each paired peer below to `Unassigned actor`, your local actor, or a named actor.
+- Assigning a peer changes how older synced memories from that peer are attributed.
+- Assigning a peer to a non-local actor keeps that peer's history shared; assigning it to your local actor keeps it personal/private.
+- Non-local actors do not receive your private memories. If you add a new teammate peer and want existing context to sync, mark the relevant memories as shared from the feed.
 
 ### One-off sync
 
@@ -160,9 +170,14 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 ## Retrieval scope
 - New memories default to private visibility and stay local unless written as shared.
+- Owned feed items now expose a visibility control so you can explicitly switch a memory between `Private memory` and `Shared memory`.
+- Switching a memory to shared moves it into shared workspace scope; switching it back to private restores personal workspace scope.
 - The feed supports `All`, `Mine`, and `Theirs` scopes without splitting memories into separate databases.
 - Shared memories are the only ones eligible for peer-to-peer sync; project and per-peer sync filters still narrow where shared memories flow.
 
 ## Viewer sync panel
+- The `Actors` section gives actor creation/rename one home, while peer cards keep assignment close to the peer being changed.
+- `Assigned actor` replaces the older `Belongs to me` language in the peer cards.
+- Feed cards you own include a `Save visibility` control so shared/private intent can be changed without editing raw metadata.
 - `Redact sensitive details` lives above Recent sync attempts so it is easier to find before you inspect peer addresses and attempt history.
 - Recent sync attempts intentionally show only the latest few rows in the viewer; use CLI diagnostics for deeper history if needed.

@@ -48,6 +48,18 @@ export async function loadMemoriesPage(
   return fetchJson(`/api/memories?${query}`);
 }
 
+export async function updateMemoryVisibility(memoryId: number, visibility: 'private' | 'shared'): Promise<any> {
+  const resp = await fetch('/api/memories/visibility', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ memory_id: memoryId, visibility }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
 export async function loadSummaries(project: string): Promise<any> {
   return loadSummariesPage(project);
 }
@@ -89,6 +101,10 @@ export async function loadSyncStatus(includeDiagnostics: boolean): Promise<any> 
   return fetchJson(`/api/sync/status${param}`);
 }
 
+export async function loadSyncActors(): Promise<any> {
+  return fetchJson('/api/sync/actors');
+}
+
 export async function loadPairing(): Promise<any> {
   return fetchJson('/api/sync/pairing?includeDiagnostics=1');
 }
@@ -124,6 +140,60 @@ export async function updatePeerIdentity(peerDeviceId: string, claimedLocalActor
     body: JSON.stringify({
       peer_device_id: peerDeviceId,
       claimed_local_actor: claimedLocalActor,
+    }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
+export async function assignPeerActor(peerDeviceId: string, actorId: string | null): Promise<any> {
+  const resp = await fetch('/api/sync/peers/identity', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      peer_device_id: peerDeviceId,
+      actor_id: actorId,
+    }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
+export async function createActor(displayName: string): Promise<any> {
+  const resp = await fetch('/api/sync/actors', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ display_name: displayName }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
+export async function renameActor(actorId: string, displayName: string): Promise<any> {
+  const resp = await fetch('/api/sync/actors/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actor_id: actorId, display_name: displayName }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
+export async function mergeActor(primaryActorId: string, secondaryActorId: string): Promise<any> {
+  const resp = await fetch('/api/sync/actors/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      primary_actor_id: primaryActorId,
+      secondary_actor_id: secondaryActorId,
     }),
   });
   const text = await resp.text();

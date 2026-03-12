@@ -762,6 +762,18 @@
       }
       .feed-footer-left { display: flex; flex-direction: column; gap: 6px; }
       .feed-footer-right { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
+      .feed-visibility-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      .feed-visibility-select {
+        min-width: 180px;
+        padding: 6px 10px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 12px;
+      }
+      .feed-visibility-note { width: 100%; max-width: 60ch; font-size: 12px; color: var(--text-tertiary); }
 
       .feed-expand {
         border: 1px solid var(--border);
@@ -883,10 +895,23 @@
 
       .peer-list { display: grid; gap: var(--sp-3); }
       .peer-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-4); background: var(--surface-1); display: grid; gap: var(--sp-2); }
-      .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+      .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-title strong { font-size: 15px; }
+      .actor-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
+      .actor-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-3); background: var(--surface-1); }
+      .actor-details { min-width: 0; display: grid; gap: 6px; }
+      .actor-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .actor-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+      .actor-name-input { min-width: 220px; }
+      .actor-merge-controls { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+      .actor-merge-select { min-width: 200px; }
+      .actor-merge-note { width: 100%; }
+      .actor-create-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-3); }
+      .actor-create-row input { flex: 1 1 260px; }
+      .actor-badge.local { background: rgba(31, 111, 92, 0.12); color: var(--accent); }
       .peer-scope { display: grid; gap: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
       .peer-scope-summary, .peer-scope-effective { font-size: 12px; color: var(--text-secondary); }
+      .peer-actor-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-scope-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
       .peer-scope-editor { display: grid; gap: 8px; }
       .peer-scope-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
@@ -944,6 +969,26 @@
         opacity: 0.7;
         cursor: default;
         transform: none;
+      }
+      .sync-actor-select {
+        min-width: 220px;
+        max-width: 100%;
+        flex: 1 1 220px;
+        padding: 8px 12px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .sync-actor-select:hover { border-color: var(--border-hover); }
+      .sync-actor-select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
       }
       .peer-meta { font-size: 13px; color: var(--text-tertiary); }
       .peer-addresses { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); opacity: 0.7; }
@@ -1198,6 +1243,10 @@
         .summary-row { grid-template-columns: 1fr; }
         .feed-card-header { flex-wrap: wrap; }
         .feed-actions { width: 100%; justify-content: flex-end; }
+        .actor-row { align-items: stretch; flex-direction: column; }
+        .peer-scope-row { grid-template-columns: 1fr; }
+        .feed-visibility-controls { align-items: stretch; }
+        .feed-visibility-select { width: 100%; }
       }
 
       @media (max-width: 520px) {
@@ -1428,8 +1477,8 @@
           <input class="feed-search" id="feedSearch" placeholder="Search title, body, tags…" />
           <div class="feed-toggle" id="feedScopeToggle">
             <button class="toggle-button" data-filter="all">All</button>
-            <button class="toggle-button" data-filter="mine">Mine</button>
-            <button class="toggle-button" data-filter="theirs">Theirs</button>
+            <button class="toggle-button" data-filter="mine">My memories</button>
+            <button class="toggle-button" data-filter="theirs">Other actors</button>
           </div>
           <div class="feed-toggle" id="feedTypeToggle">
             <button class="toggle-button" data-filter="all">All</button>
@@ -1471,7 +1520,7 @@
         <div class="section-header">
           <h2>Sync</h2>
           <div class="section-actions">
-            <button class="settings-button" id="syncPairingToggle">Pair</button>
+            <button class="settings-button" id="syncPairingToggle">Show pairing</button>
             <button class="settings-button" id="syncNowButton">Sync now</button>
           </div>
         </div>
@@ -1491,17 +1540,27 @@
         </div>
       </div>
 
+      <div class="card" style="animation-delay: 0.04s">
+        <h2>Actors</h2>
+        <div class="section-meta" id="syncActorsMeta">Create and rename actors here. Assign each peer below.</div>
+        <div class="actor-create-row">
+          <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named actor" />
+          <button class="settings-button" id="syncActorCreateButton">Create actor</button>
+        </div>
+        <div class="actor-list" id="syncActorsList"></div>
+      </div>
+
       <div class="card" style="animation-delay: 0.05s">
         <h2>Peers</h2>
         <div class="peer-list" id="syncPeers"></div>
       </div>
 
       <div class="card" id="syncLegacyClaims" style="animation-delay: 0.08s" hidden>
-        <h2>Claim old device as mine</h2>
+        <h2>Attach old device history to local actor</h2>
         <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
         <div class="peer-actions sync-legacy-claim-row">
           <select class="sync-legacy-select" id="syncLegacyDeviceSelect"></select>
-          <button class="sync-legacy-button" id="syncLegacyClaimButton">Claim as mine</button>
+          <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
         </div>
       </div>
 

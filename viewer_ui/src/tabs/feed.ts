@@ -12,6 +12,7 @@ import {
 } from '../lib/format';
 import { state, setFeedScopeFilter, setFeedTypeFilter } from '../lib/state';
 import * as api from '../lib/api';
+import { showGlobalNotice } from '../lib/notice';
 
 /* ── Helpers ─────────────────────────────────────────────── */
 
@@ -85,13 +86,19 @@ let feedProjectGeneration = 0;
 let lastFeedScope = 'all';
 
 function feedScopeLabel(scope: string): string {
-  if (scope === 'mine') return ' · mine';
-  if (scope === 'theirs') return ' · theirs';
+  if (scope === 'mine') return ' · my memories';
+  if (scope === 'theirs') return ' · other actors';
   return '';
 }
 
 function provenanceChip(label: string, variant = ''): HTMLElement {
   return el('span', `provenance-chip ${variant}`.trim(), label);
+}
+
+function trustStateLabel(trustState: string): string {
+  if (trustState === 'legacy_unknown') return 'legacy provenance';
+  if (trustState === 'unreviewed') return 'unreviewed';
+  return trustState.replace(/_/g, ' ');
 }
 
 function authorLabel(item: any): string {
@@ -482,7 +489,7 @@ function renderFeedItem(item: any): HTMLElement {
     provenance.appendChild(provenanceChip(originDeviceId, 'device'));
   }
   if (trustState && trustState !== 'trusted') {
-    provenance.appendChild(provenanceChip(trustState.replace(/_/g, ' '), 'trust'));
+    provenance.appendChild(provenanceChip(trustStateLabel(trustState), 'trust'));
   }
 
   // Footer
@@ -494,6 +501,55 @@ function renderFeedItem(item: any): HTMLElement {
   tags.forEach((t: any) => { const chip = createTagChip(t); if (chip) tagsWrap.appendChild(chip); });
   if (filesWrap.childElementCount) footerLeft.appendChild(filesWrap);
   if (tagsWrap.childElementCount) footerLeft.appendChild(tagsWrap);
+  const memoryId = Number(item.id || 0);
+  if (Boolean(item.owned_by_self) && memoryId > 0) {
+    const visibilityControls = el('div', 'feed-visibility-controls');
+    const visibilitySelect = document.createElement('select');
+    visibilitySelect.className = 'feed-visibility-select';
+    [
+      { value: 'private', label: 'Only me' },
+      { value: 'shared', label: 'Share with peers' },
+    ].forEach((optionData) => {
+      const option = document.createElement('option');
+      option.value = optionData.value;
+      option.textContent = optionData.label;
+      option.selected = optionData.value === visibility;
+      visibilitySelect.appendChild(option);
+    });
+    const visibilityButton = el('button', 'settings-button', 'Save visibility') as HTMLButtonElement;
+    visibilitySelect.setAttribute('aria-label', `Visibility for ${String(item.title || 'memory')}`);
+    const visibilityNote = el(
+      'div',
+      'feed-visibility-note',
+      visibility === 'shared'
+        ? 'Shared memories can sync to trusted peers and stay in shared scope.'
+        : 'Private memories stay local unless the peer is assigned to your local actor.',
+    );
+    visibilitySelect.addEventListener('change', () => {
+      visibilityNote.textContent = visibilitySelect.value === 'shared'
+        ? 'Shared memories can sync to trusted peers and stay in shared scope.'
+        : 'Private memories stay local unless the peer is assigned to your local actor.';
+    });
+    visibilityButton.addEventListener('click', async () => {
+      visibilityButton.disabled = true;
+      visibilitySelect.disabled = true;
+      visibilityButton.textContent = 'Saving...';
+      try {
+        await api.updateMemoryVisibility(memoryId, visibilitySelect.value as 'private' | 'shared');
+        showGlobalNotice(visibilitySelect.value === 'shared' ? 'Memory will now sync as shared context.' : 'Memory is private again.');
+        await loadFeedData();
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : 'Failed to save visibility.', 'warning');
+        visibilityButton.textContent = 'Retry save';
+      } finally {
+        visibilityButton.disabled = false;
+        visibilitySelect.disabled = false;
+        if (visibilityButton.textContent === 'Saving...') visibilityButton.textContent = 'Save visibility';
+      }
+    });
+    visibilityControls.append(visibilitySelect, visibilityButton, visibilityNote);
+    footerLeft.appendChild(visibilityControls);
+  }
   footer.append(footerLeft, footerRight);
 
   card.append(header, provenance, meta, bodyNode, footer);
@@ -646,7 +702,9 @@ export function updateFeedTypeToggle() {
   if (!toggle) return;
   toggle.querySelectorAll('.toggle-button').forEach((btn) => {
     const value = (btn as HTMLButtonElement).dataset?.filter || 'all';
-    btn.classList.toggle('active', value === state.feedTypeFilter);
+    const active = value === state.feedTypeFilter;
+    btn.classList.toggle('active', active);
+    (btn as HTMLButtonElement).setAttribute('aria-pressed', active ? 'true' : 'false');
   });
 }
 
@@ -655,7 +713,9 @@ export function updateFeedScopeToggle() {
   if (!toggle) return;
   toggle.querySelectorAll('.toggle-button').forEach((btn) => {
     const value = (btn as HTMLButtonElement).dataset?.filter || 'all';
-    btn.classList.toggle('active', value === state.feedScopeFilter);
+    const active = value === state.feedScopeFilter;
+    btn.classList.toggle('active', active);
+    (btn as HTMLButtonElement).setAttribute('aria-pressed', active ? 'true' : 'false');
   });
 }
 
