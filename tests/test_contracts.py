@@ -93,6 +93,7 @@ def test_viewer_api_contract_smoke(tmp_path, monkeypatch) -> None:
         "/api/memories?project=",
         "/api/summaries?project=",
         "/api/sync/status",
+        "/api/sync/actors",
     ]:
         payload = _wait_for_http_json(base + path)
         assert isinstance(payload, dict)

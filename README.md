@@ -205,7 +205,9 @@ codemem sync daemon        # start sync daemon
 codemem sync install       # autostart on macOS + Linux
 ```
 
-Project filters, per-peer overrides, and config keys are documented in [docs/user-guide.md](docs/user-guide.md).
+The viewer now includes actor management for mapping multiple peers to one logical person, plus owned-memory visibility controls so shared versus private scope can be changed explicitly instead of relying on metadata conventions.
+
+Project filters, peer-to-actor assignment, visibility controls, and config keys are documented in [docs/user-guide.md](docs/user-guide.md).
 
 ## Semantic recall
 

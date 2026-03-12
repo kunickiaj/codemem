@@ -50,6 +50,7 @@ export const state = {
   lastUsagePayload: null as any,
   lastRawEventsPayload: null as any,
   lastSyncStatus: null as any,
+  lastSyncActors: [] as any[],
   lastSyncPeers: [] as any[],
   lastSyncAttempts: [] as any[],
   lastSyncLegacyDevices: [] as any[],
