@@ -64,7 +64,7 @@ function assignmentNote(actorId: string): string {
   if (actor?.is_local) {
     return 'Local actor assignment keeps this peer in your same-person continuity path, including private sync.';
   }
-  return 'Only memories marked shared sync to this actor. Existing private memories stay local until you change their visibility in the feed.';
+  return 'This actor receives memories from allowed projects by default. Use Only me on a memory when it should stay local.';
 }
 
 function buildActorOptions(selectedActorId: string): HTMLOptionElement[] {
@@ -442,7 +442,7 @@ export function renderSyncActors() {
   const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
   if (actorMeta) {
     actorMeta.textContent = actors.length
-      ? 'Create, rename, and merge actors here. Assign each peer below. Non-local actors only receive memories marked shared.'
+      ? 'Create, rename, and merge actors here. Assign each peer below. Non-local actors receive memories from allowed projects unless you mark them Only me.'
       : 'No named actors yet. Create one here, then assign peers below.';
   }
 

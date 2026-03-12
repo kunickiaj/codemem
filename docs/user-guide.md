@@ -140,7 +140,8 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - Assign each paired peer below to `Unassigned actor`, your local actor, or a named actor.
 - Assigning a peer changes how older synced memories from that peer are attributed.
 - Assigning a peer to a non-local actor keeps that peer's history shared; assigning it to your local actor keeps it personal/private.
-- Non-local actors do not receive your private memories. If you add a new teammate peer and want existing context to sync, mark the relevant memories as shared from the feed.
+- Non-local actors receive memories from projects allowed by their include/exclude filters by default.
+- Use `Only me` on a memory when it should stay local and not sync to non-local actors.
 
 ### One-off sync
 
@@ -169,11 +170,11 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - Sync errors: `codemem sync status` shows the last error per peer.
 
 ## Retrieval scope
-- New memories default to private visibility and stay local unless written as shared.
-- Owned feed items now expose a visibility control so you can explicitly switch a memory between `Private memory` and `Shared memory`.
-- Switching a memory to shared moves it into shared workspace scope; switching it back to private restores personal workspace scope.
+- New memories default to the shared path for projects allowed by sync filters.
+- Owned feed items expose a visibility control so you can explicitly switch a memory between `Only me` and `Share with peers`.
+- Choosing `Only me` keeps the memory local and restores personal workspace scope; choosing `Share with peers` keeps it eligible for allowed-project sync and shared workspace scope.
 - The feed supports `All`, `Mine`, and `Theirs` scopes without splitting memories into separate databases.
-- Shared memories are the only ones eligible for peer-to-peer sync; project and per-peer sync filters still narrow where shared memories flow.
+- For non-local peers, project and per-peer sync filters define the default eligible sync set, and `Only me` acts as a per-memory override.
 
 ## Viewer sync panel
 - The `Actors` section gives actor creation/rename one home, while peer cards keep assignment close to the peer being changed.

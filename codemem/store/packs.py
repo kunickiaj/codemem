@@ -600,6 +600,9 @@ def build_memory_pack(
         }
         for m in final_items
     ]
+    widened_shared_items = sum(
+        1 for item in formatted if bool((item.get("metadata") or {}).get("widened_from_shared"))
+    )
 
     section_blocks = []
     section_unique_ids: set[int] = set()
@@ -736,6 +739,8 @@ def build_memory_pack(
         else True,
         "semantic_candidates": semantic_candidates,
         "semantic_hits": semantic_hits,
+        "widening_applied": widened_shared_items > 0,
+        "widened_shared_items": widened_shared_items,
         "exact_dedupe_enabled": exact_dedupe_enabled,
         "exact_duplicates_collapsed": returned_duplicates_collapsed,
         "exact_candidates_total": returned_candidates_total,

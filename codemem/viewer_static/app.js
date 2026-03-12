@@ -626,6 +626,10 @@
     const olderItems = currentItems.filter((item) => !firstPageKeys.has(itemKey(item)));
     return mergeFeedItems(olderItems, firstPageItems);
   }
+  function replaceFeedItem(updatedItem) {
+    const key = itemKey(updatedItem);
+    state.lastFeedItems = state.lastFeedItems.map((item) => itemKey(item) === key ? updatedItem : item);
+  }
   function getSummaryObject(item) {
     const preferredKeys = ["request", "outcome", "plan", "completed", "learned", "investigated", "next", "next_steps", "notes"];
     const looksLikeSummary = (v) => {
@@ -923,34 +927,34 @@
         option.selected = optionData.value === visibility;
         visibilitySelect.appendChild(option);
       });
-      const visibilityButton = el("button", "settings-button", "Save visibility");
       visibilitySelect.setAttribute("aria-label", `Visibility for ${String(item.title || "memory")}`);
       const visibilityNote = el(
         "div",
         "feed-visibility-note",
-        visibility === "shared" ? "Shared memories can sync to trusted peers and stay in shared scope." : "Private memories stay local unless the peer is assigned to your local actor."
+        visibility === "shared" ? "This memory can sync to peers allowed by your project filters." : "This memory stays local unless the peer is assigned to your local actor."
       );
       visibilitySelect.addEventListener("change", () => {
-        visibilityNote.textContent = visibilitySelect.value === "shared" ? "Shared memories can sync to trusted peers and stay in shared scope." : "Private memories stay local unless the peer is assigned to your local actor.";
+        visibilityNote.textContent = visibilitySelect.value === "shared" ? "This memory can sync to peers allowed by your project filters." : "This memory stays local unless the peer is assigned to your local actor.";
       });
-      visibilityButton.addEventListener("click", async () => {
-        visibilityButton.disabled = true;
+      visibilitySelect.addEventListener("change", async () => {
+        const previousVisibility = visibility;
         visibilitySelect.disabled = true;
-        visibilityButton.textContent = "Saving...";
         try {
-          await updateMemoryVisibility(memoryId, visibilitySelect.value);
+          const payload = await updateMemoryVisibility(memoryId, visibilitySelect.value);
+          if (payload?.item) {
+            replaceFeedItem(payload.item);
+            updateFeedView(true);
+          }
           showGlobalNotice(visibilitySelect.value === "shared" ? "Memory will now sync as shared context." : "Memory is private again.");
-          await loadFeedData();
         } catch (error) {
+          visibilitySelect.value = previousVisibility;
+          visibilityNote.textContent = previousVisibility === "shared" ? "This memory can sync to peers allowed by your project filters." : "This memory stays local unless the peer is assigned to your local actor.";
           showGlobalNotice(error instanceof Error ? error.message : "Failed to save visibility.", "warning");
-          visibilityButton.textContent = "Retry save";
         } finally {
-          visibilityButton.disabled = false;
           visibilitySelect.disabled = false;
-          if (visibilityButton.textContent === "Saving...") visibilityButton.textContent = "Save visibility";
         }
       });
-      visibilityControls.append(visibilitySelect, visibilityButton, visibilityNote);
+      visibilityControls.append(visibilitySelect, visibilityNote);
       footerLeft.appendChild(visibilityControls);
     }
     footer.append(footerLeft, footerRight);
@@ -1515,7 +1519,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     if (actor?.is_local) {
       return "Local actor assignment keeps this peer in your same-person continuity path, including private sync.";
     }
-    return "Only memories marked shared sync to this actor. Existing private memories stay local until you change their visibility in the feed.";
+    return "This actor receives memories from allowed projects by default. Use Only me on a memory when it should stay local.";
   }
   function buildActorOptions(selectedActorId) {
     const options = [];
@@ -1848,7 +1852,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     actorList.textContent = "";
     const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
     if (actorMeta) {
-      actorMeta.textContent = actors.length ? "Create, rename, and merge actors here. Assign each peer below. Non-local actors only receive memories marked shared." : "No named actors yet. Create one here, then assign peers below.";
+      actorMeta.textContent = actors.length ? "Create, rename, and merge actors here. Assign each peer below. Non-local actors receive memories from allowed projects unless you mark them Only me." : "No named actors yet. Create one here, then assign peers below.";
     }
     actors.forEach((actor) => {
       const row = el("div", "actor-row");

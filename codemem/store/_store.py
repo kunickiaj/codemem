@@ -119,6 +119,7 @@ class MemoryStore:
         self._ensure_local_actor_record()
         self._sync_peer_actor_compatibility_state()
         self._backfill_identity_provenance()
+        self._migrate_project_first_sharing_defaults()
         self._reconcile_claimed_same_actor_legacy_memories()
 
     def _resolve_actor_id(self, configured_actor_id: str | None) -> str:
@@ -502,10 +503,10 @@ class MemoryStore:
             ):
                 visibility = "shared"
             else:
-                visibility = "private"
+                visibility = "shared"
         if visibility not in {"private", "shared"}:
-            visibility = "private"
-        workspace_kind = explicit_workspace_kind or "personal"
+            visibility = "shared"
+        workspace_kind = explicit_workspace_kind or "shared"
         if workspace_kind not in {"personal", "shared"}:
             workspace_kind = "shared" if visibility == "shared" else "personal"
         elif visibility == "shared":
@@ -648,6 +649,51 @@ class MemoryStore:
                 ),
             )
         self.conn.commit()
+
+    def _migrate_project_first_sharing_defaults(self) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT id, metadata_json, rev
+            FROM memory_items
+            WHERE active = 1
+              AND actor_id = ?
+              AND visibility = 'private'
+              AND workspace_kind = 'personal'
+            ORDER BY id ASC
+            """,
+            (self.actor_id,),
+        ).fetchall()
+        migrated_ids: list[int] = []
+        for row in rows:
+            metadata = self._normalize_metadata(row["metadata_json"])
+            if "visibility" in metadata:
+                continue
+            now = self._now_iso()
+            rev = int(row["rev"] or 0) + 1
+            memory_id = int(row["id"])
+            self.conn.execute(
+                """
+                UPDATE memory_items
+                SET visibility = 'shared',
+                    workspace_kind = 'shared',
+                    workspace_id = ?,
+                    updated_at = ?,
+                    rev = ?
+                WHERE id = ?
+                """,
+                (
+                    self._default_workspace_id(actor_id=self.actor_id, workspace_kind="shared"),
+                    now,
+                    rev,
+                    memory_id,
+                ),
+            )
+            migrated_ids.append(memory_id)
+        if not migrated_ids:
+            return
+        self.conn.commit()
+        for memory_id in migrated_ids:
+            self._record_memory_item_op(memory_id, "upsert")
 
     def _reconcile_claimed_same_actor_legacy_memories(self) -> None:
         claimed_peers = self.same_actor_peer_ids()

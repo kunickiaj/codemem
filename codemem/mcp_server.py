@@ -67,11 +67,17 @@ def build_server() -> FastMCP:
         exclude_actor_ids: list[str] | None = None,
         include_visibility: list[str] | None = None,
         exclude_visibility: list[str] | None = None,
+        include_trust_states: list[str] | None = None,
+        exclude_trust_states: list[str] | None = None,
         include_workspace_ids: list[str] | None = None,
         exclude_workspace_ids: list[str] | None = None,
         include_workspace_kinds: list[str] | None = None,
         exclude_workspace_kinds: list[str] | None = None,
         personal_first: bool | None = None,
+        trust_bias: str | None = None,
+        widen_shared_when_weak: bool | None = None,
+        widen_shared_min_personal_results: int | None = None,
+        widen_shared_min_personal_score: float | None = None,
     ) -> dict[str, Any]:
         filters: dict[str, Any] = {}
         if kind:
@@ -87,6 +93,10 @@ def build_server() -> FastMCP:
             filters["include_visibility"] = include_visibility
         if exclude_visibility:
             filters["exclude_visibility"] = exclude_visibility
+        if include_trust_states:
+            filters["include_trust_states"] = include_trust_states
+        if exclude_trust_states:
+            filters["exclude_trust_states"] = exclude_trust_states
         if include_workspace_ids:
             filters["include_workspace_ids"] = include_workspace_ids
         if exclude_workspace_ids:
@@ -97,6 +107,14 @@ def build_server() -> FastMCP:
             filters["exclude_workspace_kinds"] = exclude_workspace_kinds
         if personal_first is not None:
             filters["personal_first"] = personal_first
+        if trust_bias is not None:
+            filters["trust_bias"] = trust_bias
+        if widen_shared_when_weak is not None:
+            filters["widen_shared_when_weak"] = widen_shared_when_weak
+        if widen_shared_min_personal_results is not None:
+            filters["widen_shared_min_personal_results"] = widen_shared_min_personal_results
+        if widen_shared_min_personal_score is not None:
+            filters["widen_shared_min_personal_score"] = widen_shared_min_personal_score
         return filters
 
     def _dedupe_ordered_ids(ids: list[Any]) -> tuple[list[int], list[str]]:
@@ -137,11 +155,17 @@ def build_server() -> FastMCP:
         exclude_actor_ids: list[str] | None = None,
         include_visibility: list[str] | None = None,
         exclude_visibility: list[str] | None = None,
+        include_trust_states: list[str] | None = None,
+        exclude_trust_states: list[str] | None = None,
         include_workspace_ids: list[str] | None = None,
         exclude_workspace_ids: list[str] | None = None,
         include_workspace_kinds: list[str] | None = None,
         exclude_workspace_kinds: list[str] | None = None,
         personal_first: bool | None = None,
+        trust_bias: str | None = None,
+        widen_shared_when_weak: bool | None = None,
+        widen_shared_min_personal_results: int | None = None,
+        widen_shared_min_personal_score: float | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
             filters = build_filters(
@@ -151,14 +175,39 @@ def build_server() -> FastMCP:
                 exclude_actor_ids=exclude_actor_ids,
                 include_visibility=include_visibility,
                 exclude_visibility=exclude_visibility,
+                include_trust_states=include_trust_states,
+                exclude_trust_states=exclude_trust_states,
                 include_workspace_ids=include_workspace_ids,
                 exclude_workspace_ids=exclude_workspace_ids,
                 include_workspace_kinds=include_workspace_kinds,
                 exclude_workspace_kinds=exclude_workspace_kinds,
                 personal_first=personal_first,
+                trust_bias=trust_bias,
+                widen_shared_when_weak=widen_shared_when_weak,
+                widen_shared_min_personal_results=widen_shared_min_personal_results,
+                widen_shared_min_personal_score=widen_shared_min_personal_score,
             )
-            items = store.search_index(query, limit=limit, filters=filters or None)
-            return {"items": items}
+            items, widening = store.search_with_diagnostics(
+                query,
+                limit=limit,
+                filters=filters or None,
+                log_usage=False,
+            )
+            return {
+                "items": [
+                    {
+                        "id": item.id,
+                        "kind": item.kind,
+                        "title": item.title,
+                        "score": item.score,
+                        "created_at": item.created_at,
+                        "session_id": item.session_id,
+                        "metadata": item.metadata,
+                    }
+                    for item in items
+                ],
+                "widening": widening,
+            }
 
         return with_store(handler)
 
@@ -359,11 +408,17 @@ def build_server() -> FastMCP:
         exclude_actor_ids: list[str] | None = None,
         include_visibility: list[str] | None = None,
         exclude_visibility: list[str] | None = None,
+        include_trust_states: list[str] | None = None,
+        exclude_trust_states: list[str] | None = None,
         include_workspace_ids: list[str] | None = None,
         exclude_workspace_ids: list[str] | None = None,
         include_workspace_kinds: list[str] | None = None,
         exclude_workspace_kinds: list[str] | None = None,
         personal_first: bool | None = None,
+        trust_bias: str | None = None,
+        widen_shared_when_weak: bool | None = None,
+        widen_shared_min_personal_results: int | None = None,
+        widen_shared_min_personal_score: float | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
             filters = build_filters(
@@ -373,13 +428,21 @@ def build_server() -> FastMCP:
                 exclude_actor_ids=exclude_actor_ids,
                 include_visibility=include_visibility,
                 exclude_visibility=exclude_visibility,
+                include_trust_states=include_trust_states,
+                exclude_trust_states=exclude_trust_states,
                 include_workspace_ids=include_workspace_ids,
                 exclude_workspace_ids=exclude_workspace_ids,
                 include_workspace_kinds=include_workspace_kinds,
                 exclude_workspace_kinds=exclude_workspace_kinds,
                 personal_first=personal_first,
+                trust_bias=trust_bias,
+                widen_shared_when_weak=widen_shared_when_weak,
+                widen_shared_min_personal_results=widen_shared_min_personal_results,
+                widen_shared_min_personal_score=widen_shared_min_personal_score,
             )
-            matches = store.search(query, limit=limit, filters=filters or None)
+            matches, widening = store.search_with_diagnostics(
+                query, limit=limit, filters=filters or None
+            )
             return {
                 "items": [
                     {
@@ -393,7 +456,8 @@ def build_server() -> FastMCP:
                         "metadata": m.metadata,
                     }
                     for m in matches
-                ]
+                ],
+                "widening": widening,
             }
 
         return with_store(handler)
@@ -491,11 +555,17 @@ def build_server() -> FastMCP:
         exclude_actor_ids: list[str] | None = None,
         include_visibility: list[str] | None = None,
         exclude_visibility: list[str] | None = None,
+        include_trust_states: list[str] | None = None,
+        exclude_trust_states: list[str] | None = None,
         include_workspace_ids: list[str] | None = None,
         exclude_workspace_ids: list[str] | None = None,
         include_workspace_kinds: list[str] | None = None,
         exclude_workspace_kinds: list[str] | None = None,
         personal_first: bool | None = None,
+        trust_bias: str | None = None,
+        widen_shared_when_weak: bool | None = None,
+        widen_shared_min_personal_results: int | None = None,
+        widen_shared_min_personal_score: float | None = None,
     ) -> dict[str, Any]:
         def handler(store: MemoryStore) -> dict[str, Any]:
             filters = build_filters(
@@ -504,11 +574,17 @@ def build_server() -> FastMCP:
                 exclude_actor_ids=exclude_actor_ids,
                 include_visibility=include_visibility,
                 exclude_visibility=exclude_visibility,
+                include_trust_states=include_trust_states,
+                exclude_trust_states=exclude_trust_states,
                 include_workspace_ids=include_workspace_ids,
                 exclude_workspace_ids=exclude_workspace_ids,
                 include_workspace_kinds=include_workspace_kinds,
                 exclude_workspace_kinds=exclude_workspace_kinds,
                 personal_first=personal_first,
+                trust_bias=trust_bias,
+                widen_shared_when_weak=widen_shared_when_weak,
+                widen_shared_min_personal_results=widen_shared_min_personal_results,
+                widen_shared_min_personal_score=widen_shared_min_personal_score,
             )
             config = load_config()
             return store.build_memory_pack(
