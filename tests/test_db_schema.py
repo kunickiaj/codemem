@@ -32,6 +32,12 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
         claimed_local_actor_column = conn.execute(
             "SELECT name FROM pragma_table_info('sync_peers') WHERE name = 'claimed_local_actor'"
         ).fetchone()
+        peer_actor_column = conn.execute(
+            "SELECT name FROM pragma_table_info('sync_peers') WHERE name = 'actor_id'"
+        ).fetchone()
+        actors_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actors'"
+        ).fetchone()
         workspace_column = conn.execute(
             "SELECT name FROM pragma_table_info('memory_items') WHERE name = 'workspace_id'"
         ).fetchone()
@@ -53,6 +59,8 @@ def test_initialize_schema_sets_user_version(monkeypatch, tmp_path: Path) -> Non
     assert actor_column is not None
     assert visibility_column is not None
     assert claimed_local_actor_column is not None
+    assert peer_actor_column is not None
+    assert actors_table is not None
     assert workspace_column is not None
     assert artifact_encoding_column is not None
     assert artifact_blob_column is not None
@@ -170,7 +178,7 @@ def test_initialize_schema_upgrades_existing_v3_db_with_identity_columns(
     assert int(row[0]) == db.SCHEMA_VERSION
 
 
-def test_initialize_schema_upgrades_existing_v4_db_with_peer_claim_column(
+def test_initialize_schema_upgrades_existing_v4_db_with_actor_registry_columns(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("CODEMEM_EMBEDDING_DISABLED", "1")
@@ -241,11 +249,19 @@ def test_initialize_schema_upgrades_existing_v4_db_with_peer_claim_column(
         claimed_column = conn.execute(
             "SELECT name FROM pragma_table_info('sync_peers') WHERE name = 'claimed_local_actor'"
         ).fetchone()
+        actor_column = conn.execute(
+            "SELECT name FROM pragma_table_info('sync_peers') WHERE name = 'actor_id'"
+        ).fetchone()
+        actors_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actors'"
+        ).fetchone()
         row = conn.execute("PRAGMA user_version").fetchone()
     finally:
         conn.close()
 
     assert claimed_column is not None
+    assert actor_column is not None
+    assert actors_table is not None
     assert row is not None
     assert int(row[0]) == db.SCHEMA_VERSION
 

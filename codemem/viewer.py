@@ -128,6 +128,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         strict_paths = {
+            "/api/memories/visibility",
+            "/api/sync/actors",
+            "/api/sync/actors/merge",
+            "/api/sync/actors/rename",
             "/api/sync/peers/rename",
             "/api/sync/peers/identity",
             "/api/sync/peers/scope",
@@ -147,6 +151,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             store = MemoryStore(os.environ.get("CODEMEM_DB") or DEFAULT_DB_PATH)
             try:
                 if viewer_routes_sync.handle_post(self, store, parsed.path, payload):
+                    return
+                if viewer_routes_memory.handle_post(self, store, parsed.path, payload):
                     return
             finally:
                 store.close()
