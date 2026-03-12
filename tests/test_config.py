@@ -164,6 +164,47 @@ def test_load_config_invalid_int_env_does_not_crash_and_warns(
     assert cfg.sync_port == 7337
 
 
+def test_load_config_reads_sync_coordinator_fields_from_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "sync_coordinator_url": "https://coord.example",
+                "sync_coordinator_group": "team-alpha",
+                "sync_coordinator_timeout_s": 5,
+                "sync_coordinator_presence_ttl_s": 240,
+            }
+        )
+        + "\n"
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.sync_coordinator_url == "https://coord.example"
+    assert cfg.sync_coordinator_group == "team-alpha"
+    assert cfg.sync_coordinator_timeout_s == 5
+    assert cfg.sync_coordinator_presence_ttl_s == 240
+
+
+def test_load_config_reads_sync_coordinator_fields_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_URL", "https://coord.example")
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_GROUP", "team-alpha")
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_TIMEOUT_S", "6")
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S", "300")
+
+    cfg = load_config(config_path)
+
+    assert cfg.sync_coordinator_url == "https://coord.example"
+    assert cfg.sync_coordinator_group == "team-alpha"
+    assert cfg.sync_coordinator_timeout_s == 6
+    assert cfg.sync_coordinator_presence_ttl_s == 300
+
+
 def test_load_config_invalid_config_value_does_not_crash_and_warns(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text('{"sync_port": "abc"}\n')
