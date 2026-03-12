@@ -78,6 +78,11 @@ from .commands.sync_cmds import (
     sync_status_cmd,
     sync_uninstall_cmd,
 )
+from .commands.sync_coordinator_cmds import (
+    coordinator_enroll_device_cmd,
+    coordinator_group_create_cmd,
+    coordinator_serve_cmd,
+)
 from .commands.sync_service_cmds import install_autostart_quiet as _install_autostart_quiet
 from .commands.sync_service_cmds import run_service_action as _run_service_action
 from .commands.sync_service_cmds import run_service_action_quiet as _run_service_action_quiet
@@ -110,10 +115,12 @@ from .viewer import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT
 app = typer.Typer(help="codemem: persistent memory for OpenCode CLI")
 sync_app = typer.Typer(help="Sync codemem between devices")
 sync_peers_app = typer.Typer(help="Manage sync peers")
+sync_coordinator_app = typer.Typer(help="Run or manage coordinator-backed discovery")
 serve_app = typer.Typer(help="Run or manage the viewer", invoke_without_command=True)
 db_app = typer.Typer(help="Database maintenance")
 app.add_typer(sync_app, name="sync")
 sync_app.add_typer(sync_peers_app, name="peers")
+sync_app.add_typer(sync_coordinator_app, name="coordinator")
 app.add_typer(serve_app, name="serve")
 app.add_typer(db_app, name="db")
 
@@ -1123,6 +1130,46 @@ def sync_daemon(
         host=host,
         port=port,
         interval_s=interval_s,
+    )
+
+
+@sync_coordinator_app.command("serve")
+def sync_coordinator_serve(
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+    host: str = typer.Option("127.0.0.1", help="Host to bind coordinator server"),
+    port: int = typer.Option(7347, help="Port to bind coordinator server"),
+) -> None:
+    """Run the built-in coordinator discovery service."""
+    coordinator_serve_cmd(db_path=db_path, host=host, port=port)
+
+
+@sync_coordinator_app.command("group-create")
+def sync_coordinator_group_create(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    name: str | None = typer.Option(None, help="Optional display name"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+) -> None:
+    """Create a coordinator group."""
+    coordinator_group_create_cmd(group_id=group_id, name=name, db_path=db_path)
+
+
+@sync_coordinator_app.command("enroll-device")
+def sync_coordinator_enroll_device(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    device_id: str = typer.Argument(..., help="Device ID to enroll"),
+    fingerprint: str = typer.Option(..., help="Pinned fingerprint for the device"),
+    public_key_file: str = typer.Option(..., help="Path to the device public key file"),
+    name: str | None = typer.Option(None, help="Optional display name"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+) -> None:
+    """Enroll a device into a coordinator group."""
+    coordinator_enroll_device_cmd(
+        group_id=group_id,
+        device_id=device_id,
+        fingerprint=fingerprint,
+        public_key_file=public_key_file,
+        name=name,
+        db_path=db_path,
     )
 
 

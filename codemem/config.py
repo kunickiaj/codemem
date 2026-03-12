@@ -38,6 +38,10 @@ CONFIG_ENV_OVERRIDES = {
     "sync_mdns": "CODEMEM_SYNC_MDNS",
     "sync_key_store": "CODEMEM_SYNC_KEY_STORE",
     "sync_advertise": "CODEMEM_SYNC_ADVERTISE",
+    "sync_coordinator_url": "CODEMEM_SYNC_COORDINATOR_URL",
+    "sync_coordinator_group": "CODEMEM_SYNC_COORDINATOR_GROUP",
+    "sync_coordinator_timeout_s": "CODEMEM_SYNC_COORDINATOR_TIMEOUT_S",
+    "sync_coordinator_presence_ttl_s": "CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S",
     "sync_projects_include": "CODEMEM_SYNC_PROJECTS_INCLUDE",
     "sync_projects_exclude": "CODEMEM_SYNC_PROJECTS_EXCLUDE",
     "raw_events_sweeper_interval_s": "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
@@ -227,6 +231,10 @@ class OpencodeMemConfig:
     sync_key_store: str = "file"
 
     sync_advertise: str = "auto"
+    sync_coordinator_url: str | None = None
+    sync_coordinator_group: str | None = None
+    sync_coordinator_timeout_s: int = 3
+    sync_coordinator_presence_ttl_s: int = 180
 
     raw_events_sweeper_interval_s: int = 30
 
@@ -425,6 +433,8 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
             "plugin_cmd_timeout_ms",
             "sync_port",
             "sync_interval_s",
+            "sync_coordinator_timeout_s",
+            "sync_coordinator_presence_ttl_s",
             "raw_events_sweeper_interval_s",
         }:
             setattr(cfg, key, _parse_int(value, getattr(cfg, key), key=key))
@@ -581,6 +591,20 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.sync_mdns = _parse_bool(os.getenv("CODEMEM_SYNC_MDNS"), cfg.sync_mdns)
     cfg.sync_key_store = os.getenv("CODEMEM_SYNC_KEY_STORE", cfg.sync_key_store)
     cfg.sync_advertise = os.getenv("CODEMEM_SYNC_ADVERTISE", cfg.sync_advertise)
+    cfg.sync_coordinator_url = os.getenv("CODEMEM_SYNC_COORDINATOR_URL", cfg.sync_coordinator_url)
+    cfg.sync_coordinator_group = os.getenv(
+        "CODEMEM_SYNC_COORDINATOR_GROUP", cfg.sync_coordinator_group
+    )
+    cfg.sync_coordinator_timeout_s = _parse_int(
+        os.getenv("CODEMEM_SYNC_COORDINATOR_TIMEOUT_S"),
+        cfg.sync_coordinator_timeout_s,
+        key="sync_coordinator_timeout_s",
+    )
+    cfg.sync_coordinator_presence_ttl_s = _parse_int(
+        os.getenv("CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S"),
+        cfg.sync_coordinator_presence_ttl_s,
+        key="sync_coordinator_presence_ttl_s",
+    )
 
     include = _coerce_str_list(
         os.getenv("CODEMEM_SYNC_PROJECTS_INCLUDE"), key="sync_projects_include"

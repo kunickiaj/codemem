@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlencode
@@ -11,7 +12,7 @@ from ..store import MemoryStore, ReplicationOp
 from ..sync_api import MAX_SYNC_BODY_BYTES
 from ..sync_auth import build_auth_headers
 from ..sync_identity import ensure_device_identity
-from . import discovery, http_client, replication
+from . import coordinator, discovery, http_client, replication
 
 
 def _backfill_derived_fields_for_applied_ops(
@@ -106,6 +107,8 @@ def run_sync_pass(
     mdns_entries: list[dict[str, Any]] | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
+    with suppress(Exception):
+        coordinator.refresh_peer_address_cache(store)
     if mdns_entries is None:
         mdns_entries = discovery.discover_peers_via_mdns() if discovery.mdns_enabled() else []
     stored = discovery.load_peer_addresses(store.conn, peer_device_id)
