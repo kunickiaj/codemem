@@ -96,9 +96,12 @@ export async function saveConfig(payload: any): Promise<void> {
   return parsed;
 }
 
-export async function loadSyncStatus(includeDiagnostics: boolean): Promise<any> {
-  const param = includeDiagnostics ? '?includeDiagnostics=1' : '';
-  return fetchJson(`/api/sync/status${param}`);
+export async function loadSyncStatus(includeDiagnostics: boolean, project = ''): Promise<any> {
+  const params = new URLSearchParams();
+  if (includeDiagnostics) params.set('includeDiagnostics', '1');
+  if (project) params.set('project', project);
+  const suffix = params.size ? `?${params.toString()}` : '';
+  return fetchJson(`/api/sync/status${suffix}`);
 }
 
 export async function loadSyncActors(): Promise<any> {

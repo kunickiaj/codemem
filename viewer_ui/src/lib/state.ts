@@ -52,6 +52,7 @@ export const state = {
   lastSyncStatus: null as any,
   lastSyncActors: [] as any[],
   lastSyncPeers: [] as any[],
+  lastSyncSharingReview: [] as any[],
   lastSyncAttempts: [] as any[],
   lastSyncLegacyDevices: [] as any[],
   pairingPayloadRaw: null as any,

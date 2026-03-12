@@ -953,6 +953,76 @@ class MemoryStore:
     ) -> bool:
         return store_replication._sync_project_allowed(self, project, peer_device_id=peer_device_id)
 
+    def sharing_review_summary(self, *, project: str | None = None) -> list[dict[str, Any]]:
+        selected_project = self._clean_optional_str(project)
+        claimed_peers = self.same_actor_peer_ids()
+        legacy_actor_ids = self.claimed_same_actor_legacy_actor_ids()
+        ownership_clauses = ["memory_items.actor_id = ?"]
+        params: list[Any] = [self.actor_id]
+        if claimed_peers:
+            placeholders = ", ".join("?" for _ in claimed_peers)
+            ownership_clauses.append(f"memory_items.origin_device_id IN ({placeholders})")
+            params.extend(claimed_peers)
+        if legacy_actor_ids:
+            placeholders = ", ".join("?" for _ in legacy_actor_ids)
+            ownership_clauses.append(f"memory_items.actor_id IN ({placeholders})")
+            params.extend(legacy_actor_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT sync_peers.peer_device_id, sync_peers.name, sync_peers.actor_id,
+                   sessions.project AS project, memory_items.visibility AS visibility,
+                   COUNT(*) AS total
+            FROM sync_peers
+            JOIN memory_items ON memory_items.active = 1
+            JOIN sessions ON sessions.id = memory_items.session_id
+            WHERE sync_peers.actor_id IS NOT NULL
+              AND TRIM(sync_peers.actor_id) != ''
+              AND sync_peers.actor_id != ?
+              AND ({" OR ".join(ownership_clauses)})
+            GROUP BY sync_peers.peer_device_id, sync_peers.name, sync_peers.actor_id, sessions.project, memory_items.visibility
+            ORDER BY sync_peers.name, sync_peers.peer_device_id
+            """,
+            [self.actor_id, *params],
+        ).fetchall()
+        by_peer: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            peer_device_id = str(row["peer_device_id"])
+            actor = self.resolve_actor(str(row["actor_id"] or ""))
+            if actor is None or actor["is_local"]:
+                continue
+            project_name = self._clean_optional_str(row["project"])
+            if selected_project:
+                project_basename = self._project_basename(project_name) if project_name else ""
+                selected_basename = self._project_basename(selected_project)
+                if project_name != selected_project and project_basename != selected_basename:
+                    continue
+            if not self._sync_project_allowed(project_name, peer_device_id=peer_device_id):
+                continue
+            item = by_peer.setdefault(
+                peer_device_id,
+                {
+                    "peer_device_id": peer_device_id,
+                    "peer_name": self._clean_optional_str(row["name"]) or peer_device_id,
+                    "actor_id": actor["actor_id"],
+                    "actor_display_name": actor["display_name"],
+                    "project": selected_project,
+                    "scope_label": selected_project or "All allowed projects",
+                    "shareable_count": 0,
+                    "private_count": 0,
+                },
+            )
+            total = int(row["total"] or 0)
+            if str(row["visibility"] or "") == "private":
+                item["private_count"] += total
+            else:
+                item["shareable_count"] += total
+        results = list(by_peer.values())
+        for item in results:
+            item["total_count"] = item["shareable_count"] + item["private_count"]
+        return sorted(
+            results, key=lambda item: (str(item["peer_name"]).lower(), item["peer_device_id"])
+        )
+
     def count_replication_ops_missing_project(self) -> int:
         return store_replication.count_replication_ops_missing_project(self)
 

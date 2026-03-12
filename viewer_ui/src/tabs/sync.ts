@@ -5,6 +5,7 @@ import { formatAgeShort, formatTimestamp, secondsSince, titleCase } from '../lib
 import {
   state,
   isSyncPairingOpen,
+  setFeedScopeFilter,
   setSyncPairingOpen,
   isSyncRedactionEnabled,
   setSyncRedactionEnabled,
@@ -552,6 +553,51 @@ export function renderSyncActors() {
   });
 }
 
+function openFeedSharingReview() {
+  setFeedScopeFilter('mine');
+  state.feedQuery = '';
+  window.location.hash = 'feed';
+}
+
+export function renderSyncSharingReview() {
+  const panel = document.getElementById('syncSharingReview');
+  const meta = document.getElementById('syncSharingReviewMeta');
+  const list = document.getElementById('syncSharingReviewList');
+  if (!panel || !meta || !list) return;
+  list.textContent = '';
+  const items = Array.isArray(state.lastSyncSharingReview) ? state.lastSyncSharingReview : [];
+  if (!items.length) {
+    (panel as any).hidden = true;
+    return;
+  }
+  (panel as any).hidden = false;
+  const scopeLabel = state.currentProject ? `current project (${state.currentProject})` : 'all allowed projects';
+  meta.textContent = `Teammate peers receive memories from ${scopeLabel} by default. Use Only me on a memory when it should stay local.`;
+  items.forEach((item) => {
+    const row = el('div', 'actor-row');
+    const details = el('div', 'actor-details');
+    const title = el('div', 'actor-title');
+    title.append(
+      el('strong', null, String(item.peer_name || item.peer_device_id || 'Peer')),
+      el('span', 'badge actor-badge', `actor: ${String(item.actor_display_name || item.actor_id || 'unknown')}`),
+    );
+    const note = el(
+      'div',
+      'peer-meta',
+      `${Number(item.shareable_count || 0)} share by default · ${Number(item.private_count || 0)} marked Only me · ${String(item.scope_label || 'All allowed projects')}`,
+    );
+    details.append(title, note);
+    const actions = el('div', 'actor-actions');
+    const reviewBtn = el('button', 'settings-button', 'Review my memories in Feed') as HTMLButtonElement;
+    reviewBtn.addEventListener('click', () => {
+      openFeedSharingReview();
+    });
+    actions.appendChild(reviewBtn);
+    row.append(details, actions);
+    list.appendChild(row);
+  });
+}
+
 export function renderLegacyDeviceClaims() {
   const panel = document.getElementById('syncLegacyClaims');
   const select = document.getElementById('syncLegacyDeviceSelect') as HTMLSelectElement | null;
@@ -647,7 +693,7 @@ export function renderPairing() {
 
 export async function loadSyncData() {
   try {
-    const payload = await api.loadSyncStatus(true);
+    const payload = await api.loadSyncStatus(true, state.currentProject || '');
     let actorsPayload: any = null;
     let actorLoadError = false;
     try {
@@ -659,10 +705,12 @@ export async function loadSyncData() {
     if (statusPayload) state.lastSyncStatus = statusPayload;
     state.lastSyncActors = Array.isArray(actorsPayload?.items) ? actorsPayload.items : [];
     state.lastSyncPeers = payload.peers || [];
+    state.lastSyncSharingReview = payload.sharing_review || [];
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
     renderSyncStatus();
     renderSyncActors();
+    renderSyncSharingReview();
     renderSyncPeers();
     renderLegacyDeviceClaims();
     renderSyncAttempts();

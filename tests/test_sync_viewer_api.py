@@ -100,6 +100,95 @@ def test_sync_status_endpoint(tmp_path: Path, monkeypatch) -> None:
         server.shutdown()
 
 
+def test_sync_status_endpoint_includes_sharing_review_for_teammate_peer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
+    store = MemoryStore(db_path)
+    try:
+        actor = store.create_actor(display_name="Teammate")
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, actor_id, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "[]", actor["actor_id"], "2026-01-24T00:00:00Z"),
+        )
+        session_id = store.start_session(
+            cwd=str(tmp_path),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project="project-a",
+        )
+        store.remember(session_id, kind="note", title="Shared", body_text="Shared body")
+        store.remember(
+            session_id,
+            kind="note",
+            title="Private",
+            body_text="Private body",
+            metadata={"visibility": "private"},
+        )
+        store.end_session(session_id)
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status?project=project-a")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        review = payload["sharing_review"]
+        assert len(review) == 1
+        assert review[0]["peer_device_id"] == "peer-1"
+        assert review[0]["shareable_count"] == 1
+        assert review[0]["private_count"] == 1
+        assert review[0]["scope_label"] == "project-a"
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_sharing_review_matches_project_basename(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
+    store = MemoryStore(db_path)
+    try:
+        actor = store.create_actor(display_name="Teammate")
+        store.conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, actor_id, created_at) VALUES (?, ?, ?, ?)",
+            ("peer-1", "[]", actor["actor_id"], "2026-01-24T00:00:00Z"),
+        )
+        session_id = store.start_session(
+            cwd=str(tmp_path / "repo"),
+            git_remote=None,
+            git_branch=None,
+            user="tester",
+            tool_version="test",
+            project=str(tmp_path / "repo"),
+        )
+        store.remember(session_id, kind="note", title="Shared", body_text="Shared body")
+        store.end_session(session_id)
+    finally:
+        store.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status?project=repo")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        review = payload["sharing_review"]
+        assert len(review) == 1
+        assert review[0]["shareable_count"] == 1
+        assert review[0]["scope_label"] == "repo"
+    finally:
+        server.shutdown()
+
+
 def test_sync_peers_endpoint_exposes_project_scope(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("CODEMEM_DB", str(db_path))
