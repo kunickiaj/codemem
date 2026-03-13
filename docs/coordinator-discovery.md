@@ -60,11 +60,18 @@ Basic flow:
 ```fish
 codemem sync coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem sync coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/id_ed25519.pub --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
 ```
 
 This keeps the primary deployment path inside the main `codemem` artifact and reuses the existing Python signature
 verification code directly.
+
+These management commands operate on the built-in local coordinator store only. Remote coordinator admin flows require a
+separate access-control model before they should be exposed over HTTP.
 
 ## How discovery works
 
