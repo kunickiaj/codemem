@@ -216,6 +216,133 @@ def test_serve_restart_subcommand_matches_legacy_flag(monkeypatch) -> None:
     ]
 
 
+def test_sync_coordinator_management_commands(tmp_path: Path) -> None:
+    db_path = tmp_path / "coordinator.sqlite"
+    public_key_file = tmp_path / "device.key.pub"
+    public_key_file.write_text("ssh-ed25519 AAAAtest example@test\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "group-create",
+            "team-alpha",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "enroll-device",
+            "team-alpha",
+            "device-1",
+            "--fingerprint",
+            "fp-1",
+            "--public-key-file",
+            str(public_key_file),
+            "--name",
+            "laptop",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "list-devices",
+            "team-alpha",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "laptop (enabled) (device-1)" in result.stdout
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "rename-device",
+            "team-alpha",
+            "device-1",
+            "--name",
+            "work-laptop",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "disable-device",
+            "team-alpha",
+            "device-1",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "list-devices",
+            "team-alpha",
+            "--include-disabled",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "work-laptop (disabled) (device-1)" in result.stdout
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "remove-device",
+            "team-alpha",
+            "device-1",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "list-devices",
+            "team-alpha",
+            "--include-disabled",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "No enrolled devices" in result.stdout
+
+
 def test_serve_start_defaults_to_background(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

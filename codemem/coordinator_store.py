@@ -111,6 +111,22 @@ class CoordinatorStore:
         )
         self.conn.commit()
 
+    def list_enrolled_devices(
+        self, *, group_id: str, include_disabled: bool = False
+    ) -> list[dict[str, Any]]:
+        where = "" if include_disabled else "AND enabled = 1"
+        rows = self.conn.execute(
+            f"""
+            SELECT group_id, device_id, fingerprint, display_name, enabled, created_at
+            FROM enrolled_devices
+            WHERE group_id = ?
+            {where}
+            ORDER BY created_at ASC, device_id ASC
+            """,
+            (group_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_enrollment(self, *, group_id: str, device_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
@@ -121,6 +137,42 @@ class CoordinatorStore:
             (group_id, device_id),
         ).fetchone()
         return dict(row) if row is not None else None
+
+    def rename_device(self, *, group_id: str, device_id: str, display_name: str) -> bool:
+        result = self.conn.execute(
+            """
+            UPDATE enrolled_devices
+            SET display_name = ?
+            WHERE group_id = ? AND device_id = ?
+            """,
+            (display_name, group_id, device_id),
+        )
+        self.conn.commit()
+        return int(result.rowcount or 0) > 0
+
+    def set_device_enabled(self, *, group_id: str, device_id: str, enabled: bool) -> bool:
+        result = self.conn.execute(
+            """
+            UPDATE enrolled_devices
+            SET enabled = ?
+            WHERE group_id = ? AND device_id = ?
+            """,
+            (1 if enabled else 0, group_id, device_id),
+        )
+        self.conn.commit()
+        return int(result.rowcount or 0) > 0
+
+    def remove_device(self, *, group_id: str, device_id: str) -> bool:
+        self.conn.execute(
+            "DELETE FROM presence_records WHERE group_id = ? AND device_id = ?",
+            (group_id, device_id),
+        )
+        result = self.conn.execute(
+            "DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?",
+            (group_id, device_id),
+        )
+        self.conn.commit()
+        return int(result.rowcount or 0) > 0
 
     def upsert_presence(
         self,
