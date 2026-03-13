@@ -19,10 +19,10 @@ the network boundary you care about (for example VPNs).
 
 ## Config
 
-Set both of these to enable coordinator-backed discovery:
+Set these to enable coordinator-backed discovery:
 
 - `sync_coordinator_url`
-- `sync_coordinator_group`
+- either `sync_coordinator_group` or `sync_coordinator_groups`
 
 Optional knobs:
 
@@ -35,6 +35,7 @@ Environment variable equivalents:
 
 - `CODEMEM_SYNC_COORDINATOR_URL`
 - `CODEMEM_SYNC_COORDINATOR_GROUP`
+- `CODEMEM_SYNC_COORDINATOR_GROUPS`
 - `CODEMEM_SYNC_COORDINATOR_TIMEOUT_S`
 - `CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S`
 
@@ -50,6 +51,22 @@ Example config:
   "sync_advertise": "tailscale"
 }
 ```
+
+Multi-group config is also supported:
+
+```json
+{
+  "sync_coordinator_url": "https://coord.example.workers.dev",
+  "sync_coordinator_groups": ["team-alpha", "lab"]
+}
+```
+
+Backward compatibility:
+
+- `sync_coordinator_group` still works
+- when only the legacy single-group field is set, codemem treats it as a one-item `sync_coordinator_groups`
+- when `sync_coordinator_groups` is set, the first entry becomes the legacy single-group value for compatibility with
+  older surfaces
 
 ## Built-in coordinator service
 

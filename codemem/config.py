@@ -40,6 +40,7 @@ CONFIG_ENV_OVERRIDES = {
     "sync_advertise": "CODEMEM_SYNC_ADVERTISE",
     "sync_coordinator_url": "CODEMEM_SYNC_COORDINATOR_URL",
     "sync_coordinator_group": "CODEMEM_SYNC_COORDINATOR_GROUP",
+    "sync_coordinator_groups": "CODEMEM_SYNC_COORDINATOR_GROUPS",
     "sync_coordinator_timeout_s": "CODEMEM_SYNC_COORDINATOR_TIMEOUT_S",
     "sync_coordinator_presence_ttl_s": "CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S",
     "sync_coordinator_admin_secret": "CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET",
@@ -234,6 +235,7 @@ class OpencodeMemConfig:
     sync_advertise: str = "auto"
     sync_coordinator_url: str | None = None
     sync_coordinator_group: str | None = None
+    sync_coordinator_groups: list[str] = field(default_factory=list)
     sync_coordinator_timeout_s: int = 3
     sync_coordinator_presence_ttl_s: int = 180
     sync_coordinator_admin_secret: str | None = None
@@ -473,7 +475,7 @@ def _apply_dict(cfg: OpencodeMemConfig, data: dict[str, Any]) -> OpencodeMemConf
             if parsed is not None:
                 setattr(cfg, key, parsed)
             continue
-        if key in {"sync_projects_include", "sync_projects_exclude"}:
+        if key in {"sync_projects_include", "sync_projects_exclude", "sync_coordinator_groups"}:
             parsed = _coerce_str_list(value, key=key)
             if parsed is not None:
                 setattr(cfg, key, parsed)
@@ -597,6 +599,11 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     cfg.sync_coordinator_group = os.getenv(
         "CODEMEM_SYNC_COORDINATOR_GROUP", cfg.sync_coordinator_group
     )
+    coordinator_groups = _coerce_str_list(
+        os.getenv("CODEMEM_SYNC_COORDINATOR_GROUPS"), key="sync_coordinator_groups"
+    )
+    if coordinator_groups is not None:
+        cfg.sync_coordinator_groups = coordinator_groups
     cfg.sync_coordinator_timeout_s = _parse_int(
         os.getenv("CODEMEM_SYNC_COORDINATOR_TIMEOUT_S"),
         cfg.sync_coordinator_timeout_s,
@@ -621,4 +628,10 @@ def _apply_env(cfg: OpencodeMemConfig) -> OpencodeMemConfig:
     )
     if exclude is not None:
         cfg.sync_projects_exclude = exclude
+
+    if cfg.sync_coordinator_groups:
+        if not cfg.sync_coordinator_group:
+            cfg.sync_coordinator_group = cfg.sync_coordinator_groups[0]
+    elif cfg.sync_coordinator_group:
+        cfg.sync_coordinator_groups = [cfg.sync_coordinator_group]
     return cfg
