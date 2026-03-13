@@ -45,7 +45,17 @@ _HOT_RELOAD_KEYS = {
     "raw_events_sweeper_interval_s",
 }
 _LIVE_APPLY_KEYS = {"pack_observation_limit", "pack_session_limit"}
-_SYNC_ACTION_KEYS = {"sync_enabled", "sync_host", "sync_port", "sync_interval_s", "sync_mdns"}
+_SYNC_ACTION_KEYS = {
+    "sync_enabled",
+    "sync_host",
+    "sync_port",
+    "sync_interval_s",
+    "sync_mdns",
+    "sync_coordinator_url",
+    "sync_coordinator_group",
+    "sync_coordinator_timeout_s",
+    "sync_coordinator_presence_ttl_s",
+}
 
 
 def _config_value_changed(before: dict[str, Any], after: dict[str, Any], key: str) -> bool:
@@ -241,10 +251,17 @@ def _build_effects(
 
 
 def _as_positive_int(value: Any, *, key: str, allow_zero: bool = False) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        parsed = int(value)
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
     if allow_zero:
         return parsed if parsed >= 0 else None
     return parsed if parsed > 0 else None
@@ -359,6 +376,10 @@ def handle_post(
         "sync_port",
         "sync_interval_s",
         "sync_mdns",
+        "sync_coordinator_url",
+        "sync_coordinator_group",
+        "sync_coordinator_timeout_s",
+        "sync_coordinator_presence_ttl_s",
         "raw_events_sweeper_interval_s",
     )
     allowed_providers = set(load_provider_options())
@@ -545,7 +566,22 @@ def handle_post(
                 continue
             config_data[key] = host_value
             continue
-        if key in {"sync_port", "sync_interval_s"}:
+        if key in {"sync_coordinator_url", "sync_coordinator_group"}:
+            if not isinstance(value, str):
+                handler._send_json({"error": f"{key} must be string"}, status=400)
+                return True
+            string_value = value.strip()
+            if not string_value:
+                config_data.pop(key, None)
+                continue
+            config_data[key] = string_value
+            continue
+        if key in {
+            "sync_port",
+            "sync_interval_s",
+            "sync_coordinator_timeout_s",
+            "sync_coordinator_presence_ttl_s",
+        }:
             parsed = _as_positive_int(value, key=key)
             if parsed is None:
                 handler._send_json({"error": f"{key} must be int"}, status=400)
