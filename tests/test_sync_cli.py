@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+from http.server import HTTPServer
 from pathlib import Path
 
 import typer
@@ -7,8 +9,17 @@ from typer.testing import CliRunner
 
 from codemem import db, sync_identity
 from codemem.cli import app
+from codemem.coordinator_api import build_coordinator_handler
 
 runner = CliRunner()
+
+
+def _start_coordinator_server(db_path: Path) -> tuple[HTTPServer, int]:
+    handler = build_coordinator_handler(db_path)
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, int(server.server_address[1])
 
 
 def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:

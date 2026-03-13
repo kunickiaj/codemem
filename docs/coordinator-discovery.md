@@ -96,6 +96,25 @@ If the coordinator is unavailable, codemem falls back to cached addresses and mD
 - enrollment is explicit per device/group
 - there is no username/password or codemem-operated account layer in this model
 
+## Remote admin flow
+
+Built-in local coordinator management commands operate directly on the local SQLite store.
+
+For remote coordinators, the first admin model uses a separate operator-managed admin secret. Remote management commands
+reuse the same `codemem sync coordinator ...` verbs, but target a remote coordinator when you pass `--remote-url` and
+an admin secret (or configure `sync_coordinator_admin_secret`).
+
+Examples:
+
+```fish
+codemem sync coordinator list-devices nerdworld --remote-url "https://coord.codemem.sh"
+codemem sync coordinator enroll-device nerdworld <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --remote-url "https://coord.codemem.sh"
+codemem sync coordinator rename-device nerdworld <device-id> --name "work-laptop" --remote-url "https://coord.codemem.sh"
+```
+
+Device participation auth still uses the enrolled device keypair for `presence` and `peers` endpoints; the admin secret
+is only for remote mutation/listing endpoints.
+
 ## Cloudflare Worker reference deployment
 
 The design targets a runtime-agnostic HTTP contract, but a Cloudflare Worker is the canonical low-cost reference
