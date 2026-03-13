@@ -67,6 +67,77 @@ def test_config_route_accepts_observer_auth_fields(
     assert saved["raw_events_sweeper_interval_s"] == 45
 
 
+def test_config_route_accepts_sync_coordinator_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler(
+        {
+            "sync_coordinator_url": "https://coord.example.workers.dev",
+            "sync_coordinator_group": "nerdworld",
+            "sync_coordinator_timeout_s": 5,
+            "sync_coordinator_presence_ttl_s": 240,
+        }
+    )
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 200
+    saved = read_config_file(config_path)
+    assert saved["sync_coordinator_url"] == "https://coord.example.workers.dev"
+    assert saved["sync_coordinator_group"] == "nerdworld"
+    assert saved["sync_coordinator_timeout_s"] == 5
+    assert saved["sync_coordinator_presence_ttl_s"] == 240
+
+
+def test_config_route_rejects_invalid_sync_coordinator_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler({"sync_coordinator_timeout_s": "abc"})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "sync_coordinator_timeout_s must be int"}
+
+
+def test_config_route_rejects_fractional_sync_coordinator_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("CODEMEM_CONFIG", str(config_path))
+
+    handler = DummyHandler({"sync_coordinator_timeout_s": 1.9})
+
+    handled = viewer_config.handle_post(
+        handler,
+        path="/api/config",
+        load_provider_options=lambda: ["openai", "anthropic"],
+    )
+
+    assert handled is True
+    assert handler.status == 400
+    assert handler.response == {"error": "sync_coordinator_timeout_s must be int"}
+
+
 def test_config_route_preserves_observer_auth_command_exactly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

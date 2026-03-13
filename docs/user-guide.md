@@ -163,6 +163,7 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 - Use coordinator-backed discovery when peers are reachable but their addresses change frequently or mDNS does not work across network boundaries such as VPNs.
 - Set `sync_coordinator_url` and `sync_coordinator_group` to enable it.
+- The Settings UI exposes coordinator URL, group, timeout, and presence TTL fields under the Sync tab.
 - The coordinator is self-hosted/operator-run and only helps peers discover fresh addresses; direct peer-to-peer sync remains the data path.
 - See [docs/coordinator-discovery.md](coordinator-discovery.md) for setup, config, and current limitations.
 

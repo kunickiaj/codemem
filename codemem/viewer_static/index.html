@@ -1455,6 +1455,24 @@
               <div class="field settings-advanced" hidden><label for="syncHost">Sync host</label><input id="syncHost" placeholder="127.0.0.1" /></div>
               <div class="field settings-advanced" hidden><label for="syncPort">Sync port</label><input id="syncPort" type="number" min="1" /></div>
               <div class="field field-checkbox settings-advanced" hidden><input class="cm-checkbox" id="syncMdns" type="checkbox" /><label for="syncMdns">Enable mDNS discovery</label></div>
+              <div class="field">
+                <label for="syncCoordinatorUrl">Coordinator URL</label>
+                <input id="syncCoordinatorUrl" placeholder="https://coord.example.workers.dev" />
+                <div class="small">Optional self-hosted/operator-run discovery service. Direct peer-to-peer sync remains the data path.</div>
+              </div>
+              <div class="field">
+                <label for="syncCoordinatorGroup">Coordinator group</label>
+                <input id="syncCoordinatorGroup" placeholder="nerdworld" />
+                <div class="small">Discovery namespace for peers using the same coordinator.</div>
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
+                <input id="syncCoordinatorTimeout" type="number" min="1" />
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="syncCoordinatorPresenceTtl">Presence TTL (seconds)</label>
+                <input id="syncCoordinatorPresenceTtl" type="number" min="1" />
+              </div>
             </div>
           </div>
 

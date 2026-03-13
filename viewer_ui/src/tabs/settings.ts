@@ -39,6 +39,10 @@ const INPUT_TO_CONFIG_KEY: Record<string, string> = {
   syncPort: 'sync_port',
   syncInterval: 'sync_interval_s',
   syncMdns: 'sync_mdns',
+  syncCoordinatorUrl: 'sync_coordinator_url',
+  syncCoordinatorGroup: 'sync_coordinator_group',
+  syncCoordinatorTimeout: 'sync_coordinator_timeout_s',
+  syncCoordinatorPresenceTtl: 'sync_coordinator_presence_ttl_s',
 };
 
 function loadAdvancedPreference(): boolean {
@@ -116,6 +120,8 @@ function configuredValueForKey(config: any, key: string): unknown {
     case 'observer_model':
     case 'observer_auth_file':
     case 'sync_host':
+    case 'sync_coordinator_url':
+    case 'sync_coordinator_group':
       return normalizeTextValue(asInputString(config?.[key]));
     case 'observer_runtime':
       return normalizeTextValue(asInputString(config?.observer_runtime));
@@ -147,6 +153,12 @@ function configuredValueForKey(config: any, key: string): unknown {
       if (!hasOwn(config, key)) return '';
       const parsed = Number(config[key]);
       return Number.isFinite(parsed) && parsed !== 0 ? parsed : '';
+    }
+    case 'sync_coordinator_timeout_s':
+    case 'sync_coordinator_presence_ttl_s': {
+      if (!hasOwn(config, key)) return '';
+      const parsed = Number(config[key]);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : '';
     }
     case 'observer_auth_cache_ttl_s': {
       if (!hasOwn(config, key)) return '';
@@ -453,6 +465,10 @@ export function renderConfigModal(payload: any) {
   const syncPort = $input('syncPort');
   const syncInterval = $input('syncInterval');
   const syncMdns = $input('syncMdns');
+  const syncCoordinatorUrl = $input('syncCoordinatorUrl');
+  const syncCoordinatorGroup = $input('syncCoordinatorGroup');
+  const syncCoordinatorTimeout = $input('syncCoordinatorTimeout');
+  const syncCoordinatorPresenceTtl = $input('syncCoordinatorPresenceTtl');
   const settingsPath = $('settingsPath');
   const observerModelHint = $('observerModelHint');
   const observerMaxCharsHint = $('observerMaxCharsHint');
@@ -505,6 +521,10 @@ export function renderConfigModal(payload: any) {
   if (syncPort) syncPort.value = asInputString(effectiveOrConfigured(config, effective, 'sync_port'));
   if (syncInterval) syncInterval.value = asInputString(effectiveOrConfigured(config, effective, 'sync_interval_s'));
   if (syncMdns) syncMdns.checked = Boolean(effectiveOrConfigured(config, effective, 'sync_mdns'));
+  if (syncCoordinatorUrl) syncCoordinatorUrl.value = asInputString(effectiveOrConfigured(config, effective, 'sync_coordinator_url'));
+  if (syncCoordinatorGroup) syncCoordinatorGroup.value = asInputString(effectiveOrConfigured(config, effective, 'sync_coordinator_group'));
+  if (syncCoordinatorTimeout) syncCoordinatorTimeout.value = asInputString(effectiveOrConfigured(config, effective, 'sync_coordinator_timeout_s'));
+  if (syncCoordinatorPresenceTtl) syncCoordinatorPresenceTtl.value = asInputString(effectiveOrConfigured(config, effective, 'sync_coordinator_presence_ttl_s'));
 
   if (settingsPath) settingsPath.textContent = state.configPath ? `Config path: ${state.configPath}` : 'Config path: n/a';
   if (observerModelHint) renderObserverModelHint();
@@ -657,6 +677,10 @@ function collectSettingsPayload(options: { allowUntouchedParseErrors?: boolean }
     sync_port: Number($input('syncPort')?.value || 0) || '',
     sync_interval_s: Number($input('syncInterval')?.value || 0) || '',
     sync_mdns: $input('syncMdns')?.checked || false,
+    sync_coordinator_url: normalizeTextValue($input('syncCoordinatorUrl')?.value || ''),
+    sync_coordinator_group: normalizeTextValue($input('syncCoordinatorGroup')?.value || ''),
+    sync_coordinator_timeout_s: Number($input('syncCoordinatorTimeout')?.value || 0) || '',
+    sync_coordinator_presence_ttl_s: Number($input('syncCoordinatorPresenceTtl')?.value || 0) || '',
   };
 }
 
@@ -810,6 +834,10 @@ export function initSettings(stopPolling: () => void, startPolling: () => void, 
     'syncPort',
     'syncInterval',
     'syncMdns',
+    'syncCoordinatorUrl',
+    'syncCoordinatorGroup',
+    'syncCoordinatorTimeout',
+    'syncCoordinatorPresenceTtl',
   ];
   inputs.forEach((id) => {
     const input = document.getElementById(id);
