@@ -23,6 +23,7 @@ def _load_bootstrap_module():
 def test_cloudflare_bootstrap_script_outputs_json(tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     keys_dir = tmp_path / "keys"
+    config_path = tmp_path / "config.json"
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -44,8 +45,11 @@ def test_cloudflare_bootstrap_script_outputs_json(tmp_path: Path) -> None:
             "nerdworld",
             "--worker-url",
             "https://coord.example.workers.dev",
+            "--config-path",
+            str(config_path),
             "--device-name",
             "laptop",
+            "--write-config",
             "--non-interactive",
             "--format",
             "json",
@@ -60,8 +64,12 @@ def test_cloudflare_bootstrap_script_outputs_json(tmp_path: Path) -> None:
     assert payload["group"] == "nerdworld"
     assert payload["device_id"] == device_id
     assert payload["fingerprint"] == fingerprint
+    assert payload["steps"]["write_config"]["status"] == "executed"
     assert payload["config_snippet"]["sync_coordinator_group"] == "nerdworld"
     assert payload["config_snippet"]["sync_coordinator_url"] == "https://coord.example.workers.dev"
+    saved = json.loads(config_path.read_text())
+    assert saved["sync_coordinator_group"] == "nerdworld"
+    assert saved["sync_coordinator_url"] == "https://coord.example.workers.dev"
     assert "INSERT INTO groups" in payload["enrollment_sql"]
     assert any("wrangler d1 create" in command for command in payload["wrangler_commands"])
 
@@ -69,6 +77,7 @@ def test_cloudflare_bootstrap_script_outputs_json(tmp_path: Path) -> None:
 def test_cloudflare_bootstrap_script_supports_full_dry_run_flow(tmp_path: Path) -> None:
     db_path = tmp_path / "mem.sqlite"
     keys_dir = tmp_path / "keys"
+    config_path = tmp_path / "config.json"
     conn = db.connect(db_path)
     try:
         db.initialize_schema(conn)
@@ -90,12 +99,15 @@ def test_cloudflare_bootstrap_script_supports_full_dry_run_flow(tmp_path: Path) 
             "nerdworld",
             "--worker-url",
             "https://coord.example.workers.dev",
+            "--config-path",
+            str(config_path),
             "--device-name",
             "laptop",
             "--create-d1",
             "--apply-schema",
             "--deploy",
             "--enroll-local",
+            "--write-config",
             "--dry-run",
             "--non-interactive",
             "--format",
@@ -118,6 +130,7 @@ def test_cloudflare_bootstrap_script_supports_full_dry_run_flow(tmp_path: Path) 
     assert payload["enroll_local"]["command"][:3] == ["wrangler", "d1", "execute"]
     assert "--remote" in payload["schema_apply"]["command"]
     assert "--remote" in payload["enroll_local"]["command"]
+    assert payload["steps"]["write_config"]["status"] == "dry_run"
 
 
 def test_create_d1_database_reuses_existing_database_id() -> None:
@@ -144,3 +157,12 @@ def test_create_d1_database_reuses_existing_database_id() -> None:
 
     assert result["database_id"] == "784d138d-ab3c-4f5c-9464-cf45c5b69af3"
     assert result["reused_existing"] is True
+
+
+def test_smoke_check_guidance_handles_cloudflare_1010() -> None:
+    module = _load_bootstrap_module()
+    guidance = module._smoke_check_guidance(
+        "POST https://coord.example.workers.dev/v1/presence failed with HTTP 403: error code: 1010"
+    )
+    assert guidance is not None
+    assert "Browser Integrity Check" in guidance
