@@ -55,7 +55,10 @@ def coordinator_enroll_device_cmd(
 
 
 def coordinator_list_devices_cmd(
-    *, group_id: str, include_disabled: bool, db_path: str | None
+    *,
+    group_id: str,
+    include_disabled: bool,
+    db_path: str | None,
 ) -> None:
     store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
     try:
@@ -73,7 +76,11 @@ def coordinator_list_devices_cmd(
 
 
 def coordinator_rename_device_cmd(
-    *, group_id: str, device_id: str, name: str, db_path: str | None
+    *,
+    group_id: str,
+    device_id: str,
+    name: str,
+    db_path: str | None,
 ) -> None:
     store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
     try:
@@ -85,7 +92,12 @@ def coordinator_rename_device_cmd(
     print(f"[green]Renamed device[/green] {device_id} -> {name}")
 
 
-def coordinator_disable_device_cmd(*, group_id: str, device_id: str, db_path: str | None) -> None:
+def coordinator_disable_device_cmd(
+    *,
+    group_id: str,
+    device_id: str,
+    db_path: str | None,
+) -> None:
     store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
     try:
         updated = store.set_device_enabled(group_id=group_id, device_id=device_id, enabled=False)
@@ -96,7 +108,12 @@ def coordinator_disable_device_cmd(*, group_id: str, device_id: str, db_path: st
     print(f"[green]Disabled device[/green] {device_id}")
 
 
-def coordinator_remove_device_cmd(*, group_id: str, device_id: str, db_path: str | None) -> None:
+def coordinator_remove_device_cmd(
+    *,
+    group_id: str,
+    device_id: str,
+    db_path: str | None,
+) -> None:
     store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
     try:
         removed = store.remove_device(group_id=group_id, device_id=device_id)

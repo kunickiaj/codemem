@@ -1214,7 +1214,11 @@ def sync_coordinator_disable_device(
     db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
 ) -> None:
     """Disable an enrolled device without deleting its record."""
-    coordinator_disable_device_cmd(group_id=group_id, device_id=device_id, db_path=db_path)
+    coordinator_disable_device_cmd(
+        group_id=group_id,
+        device_id=device_id,
+        db_path=db_path,
+    )
 
 
 @sync_coordinator_app.command("remove-device")
@@ -1224,7 +1228,11 @@ def sync_coordinator_remove_device(
     db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
 ) -> None:
     """Remove an enrolled device and its cached presence record."""
-    coordinator_remove_device_cmd(group_id=group_id, device_id=device_id, db_path=db_path)
+    coordinator_remove_device_cmd(
+        group_id=group_id,
+        device_id=device_id,
+        db_path=db_path,
+    )
 
 
 def sync_service_status(
