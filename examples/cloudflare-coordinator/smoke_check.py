@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from urllib import request
+from urllib import error, request
 
 from codemem import db
 from codemem.sync_auth import build_auth_headers
@@ -17,8 +17,12 @@ def _json_request(
     if body is not None:
         body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = request.Request(url, data=body_bytes, headers=headers, method=method)
-    with request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
 
 
 def main() -> None:
