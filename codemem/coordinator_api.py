@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from .coordinator_store import DEFAULT_COORDINATOR_DB_PATH, CoordinatorStore
 from .sync_auth import DEFAULT_TIME_WINDOW_S, verify_signature
 
 MAX_COORDINATOR_BODY_BYTES = 64 * 1024
+ADMIN_HEADER = "X-Codemem-Coordinator-Admin"
 
 
 def _send_json(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
@@ -42,6 +44,24 @@ def _parse_json_body(raw: bytes) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _admin_secret() -> str | None:
+    value = os.environ.get("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET")
+    cleaned = str(value or "").strip()
+    return cleaned or None
+
+
+def _authorize_admin_request(handler: BaseHTTPRequestHandler) -> tuple[bool, str]:
+    expected = _admin_secret()
+    if not expected:
+        return False, "admin_not_configured"
+    provided = str(handler.headers.get(ADMIN_HEADER) or "").strip()
+    if not provided:
+        return False, "missing_admin_header"
+    if provided != expected:
+        return False, "invalid_admin_secret"
+    return True, "ok"
 
 
 def _record_nonce(store: CoordinatorStore, *, device_id: str, nonce: str, created_at: str) -> bool:
@@ -109,6 +129,8 @@ def build_coordinator_handler(db_path: Path | None = None):
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/v1/admin/devices"):
+                return self._handle_admin_post(parsed.path)
             if parsed.path != "/v1/presence":
                 _send_json(self, {"error": "not_found"}, status=404)
                 return
@@ -166,6 +188,8 @@ def build_coordinator_handler(db_path: Path | None = None):
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == "/v1/admin/devices":
+                return self._handle_admin_list(parsed.query)
             if parsed.path != "/v1/peers":
                 _send_json(self, {"error": "not_found"}, status=404)
                 return
@@ -189,5 +213,108 @@ def build_coordinator_handler(db_path: Path | None = None):
                 _send_json(self, {"items": items})
             finally:
                 store.close()
+
+        def _handle_admin_list(self, query: str) -> None:
+            ok, reason = _authorize_admin_request(self)
+            if not ok:
+                _send_json(self, {"error": reason}, status=401)
+                return
+            params = parse_qs(query)
+            group_id = str(params.get("group_id", [""])[0] or "").strip()
+            include_disabled = str(
+                params.get("include_disabled", ["0"])[0] or ""
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            if not group_id:
+                _send_json(self, {"error": "group_id_required"}, status=400)
+                return
+            store = self._store()
+            try:
+                _send_json(
+                    self,
+                    {
+                        "items": store.list_enrolled_devices(
+                            group_id=group_id,
+                            include_disabled=include_disabled,
+                        )
+                    },
+                )
+            finally:
+                store.close()
+
+        def _handle_admin_post(self, path: str) -> None:
+            ok, reason = _authorize_admin_request(self)
+            if not ok:
+                _send_json(self, {"error": reason}, status=401)
+                return
+            try:
+                raw = _read_body(self)
+            except ValueError as exc:
+                if str(exc) == "body_too_large":
+                    _send_json(self, {"error": "body_too_large"}, status=413)
+                    return
+                raise
+            data = _parse_json_body(raw)
+            if data is None:
+                _send_json(self, {"error": "invalid_json"}, status=400)
+                return
+            group_id = str(data.get("group_id") or "").strip()
+            device_id = str(data.get("device_id") or "").strip()
+            if path == "/v1/admin/devices":
+                fingerprint = str(data.get("fingerprint") or "").strip()
+                public_key = str(data.get("public_key") or "").strip()
+                display_name = str(data.get("display_name") or "").strip() or None
+                if not group_id or not device_id or not fingerprint or not public_key:
+                    _send_json(
+                        self,
+                        {"error": "group_id_device_id_fingerprint_public_key_required"},
+                        status=400,
+                    )
+                    return
+                store = self._store()
+                try:
+                    store.create_group(group_id)
+                    store.enroll_device(
+                        group_id,
+                        device_id=device_id,
+                        fingerprint=fingerprint,
+                        public_key=public_key,
+                        display_name=display_name,
+                    )
+                finally:
+                    store.close()
+                _send_json(self, {"ok": True})
+                return
+            if not group_id or not device_id:
+                _send_json(self, {"error": "group_id_and_device_id_required"}, status=400)
+                return
+            store = self._store()
+            try:
+                if path == "/v1/admin/devices/rename":
+                    display_name = str(data.get("display_name") or "").strip()
+                    if not display_name:
+                        _send_json(self, {"error": "display_name_required"}, status=400)
+                        return
+                    ok = store.rename_device(
+                        group_id=group_id, device_id=device_id, display_name=display_name
+                    )
+                elif path == "/v1/admin/devices/disable":
+                    ok = store.set_device_enabled(
+                        group_id=group_id, device_id=device_id, enabled=False
+                    )
+                elif path == "/v1/admin/devices/remove":
+                    ok = store.remove_device(group_id=group_id, device_id=device_id)
+                else:
+                    _send_json(self, {"error": "not_found"}, status=404)
+                    return
+            finally:
+                store.close()
+            if not ok:
+                _send_json(self, {"error": "device_not_found"}, status=404)
+                return
+            _send_json(self, {"ok": True})
 
     return CoordinatorHandler
