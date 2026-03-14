@@ -44,7 +44,7 @@ Example config:
 ```json
 {
   "sync_enabled": true,
-  "sync_coordinator_url": "https://coord.example.workers.dev",
+  "sync_coordinator_url": "https://coord.example.com",
   "sync_coordinator_group": "team-alpha",
   "sync_coordinator_timeout_s": 3,
   "sync_coordinator_presence_ttl_s": 180,
@@ -56,7 +56,7 @@ Multi-group config is also supported:
 
 ```json
 {
-  "sync_coordinator_url": "https://coord.example.workers.dev",
+  "sync_coordinator_url": "https://coord.example.com",
   "sync_coordinator_groups": ["team-alpha", "lab"]
 }
 ```
@@ -135,16 +135,28 @@ codemem sync coordinator rename-device nerdworld <device-id> --name "work-laptop
 Device participation auth still uses the enrolled device keypair for `presence` and `peers` endpoints; the admin secret
 is only for remote mutation/listing endpoints.
 
+## Canonical deployment target
+
+The built-in Python coordinator (`codemem sync coordinator serve`) is the canonical deployment target for ongoing
+product development and dogfooding.
+
+Recommended deployment patterns:
+
+- **Native**: run `codemem sync coordinator serve` on a reachable machine (VPS, homelab, always-on workstation)
+- **Container**: run via Docker/Podman with the coordinator SQLite volume mounted
+- **Exposure**: use Tailscale Funnel or Cloudflare Tunnel to make the coordinator reachable from outside a local network
+
+This keeps the deployment path inside the main `codemem` artifact, avoids a separate JS runtime dependency, and ensures
+new coordinator features (invites, join requests, admin flows) are immediately available without porting.
+
 ## Cloudflare Worker reference deployment
 
-The design targets a runtime-agnostic HTTP contract, but a Cloudflare Worker is the canonical low-cost reference
-deployment.
+A Cloudflare Worker reference implementation exists in `examples/cloudflare-coordinator/`. It implements the same HTTP
+contract against D1, but is secondary to the Python coordinator for ongoing feature development.
 
-That means the coordinator API should be simple enough to implement anywhere, but the first example deployment is
-expected to be a Worker-backed service at a stable address.
-
-The Cloudflare Worker remains an optional alternate reference deployment. Its scaffold lives in a follow-up PR in this
-stack, not in this docs-only change.
+Use the Cloudflare Worker path when you specifically want a serverless/edge deployment and are comfortable with the
+feature lag — new coordinator capabilities (invite/join flows, admin endpoints) land in the Python coordinator first and
+may not be ported to the Worker immediately.
 
 ## Current limitations
 

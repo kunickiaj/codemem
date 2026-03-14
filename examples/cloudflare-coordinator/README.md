@@ -1,6 +1,8 @@
 # Cloudflare Worker reference coordinator
 
-This is the canonical low-cost reference deployment for the coordinator-backed discovery contract.
+This is a secondary reference deployment for the coordinator-backed discovery contract. The canonical deployment target
+is the built-in Python coordinator (`codemem sync coordinator serve`). See `docs/coordinator-discovery.md` for the
+recommended deployment path.
 
 It is intentionally narrow:
 
