@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 from codemem import db, sync_identity
 from codemem.cli import app
 from codemem.coordinator_api import build_coordinator_handler
+from codemem.coordinator_invites import encode_invite_payload
+from codemem.coordinator_store import CoordinatorStore
 
 runner = CliRunner()
 
@@ -389,6 +391,70 @@ def test_sync_coordinator_create_invite_local(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Invite created" in result.stdout
     assert "codemem://join?invite=" in result.stdout
+
+
+def test_sync_coordinator_import_invite_local(tmp_path: Path) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    keys_dir = tmp_path / "keys"
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n")
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        sync_identity.ensure_device_identity(conn, keys_dir=keys_dir)
+    finally:
+        conn.close()
+
+    coordinator_db = tmp_path / "coordinator.sqlite"
+    store = CoordinatorStore(coordinator_db)
+    try:
+        store.create_group("team-alpha", display_name="Team Alpha")
+        invite = store.create_invite(
+            group_id="team-alpha",
+            policy="auto_admit",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+    finally:
+        store.close()
+    payload = {
+        "v": 1,
+        "kind": "coordinator_team_invite",
+        "coordinator_url": "http://127.0.0.1:1",
+        "group_id": "team-alpha",
+        "policy": "auto_admit",
+        "token": invite["token"],
+        "expires_at": "2099-01-01T00:00:00Z",
+        "team_name": "Team Alpha",
+    }
+
+    server = HTTPServer(("127.0.0.1", 0), build_coordinator_handler(coordinator_db))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload["coordinator_url"] = f"http://127.0.0.1:{server.server_address[1]}"
+        encoded = encode_invite_payload(payload)  # type: ignore[arg-type]
+        result = runner.invoke(
+            app,
+            [
+                "sync",
+                "coordinator",
+                "import-invite",
+                encoded,
+                "--db-path",
+                str(db_path),
+                "--keys-dir",
+                str(keys_dir),
+                "--config-path",
+                str(config_path),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Invite imported" in result.stdout
+        assert "status: enrolled" in result.stdout
+        saved = json.loads(config_path.read_text())
+        assert saved["sync_coordinator_group"] == "team-alpha"
+    finally:
+        server.shutdown()
 
 
 def test_serve_start_defaults_to_background(monkeypatch) -> None:

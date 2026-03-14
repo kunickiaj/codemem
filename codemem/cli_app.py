@@ -83,6 +83,7 @@ from .commands.sync_coordinator_cmds import (
     coordinator_disable_device_cmd,
     coordinator_enroll_device_cmd,
     coordinator_group_create_cmd,
+    coordinator_import_invite_cmd,
     coordinator_list_devices_cmd,
     coordinator_remove_device_cmd,
     coordinator_rename_device_cmd,
@@ -1259,6 +1260,22 @@ def sync_coordinator_create_invite(
         db_path=db_path,
         remote_url=remote_url,
         admin_secret=admin_secret,
+    )
+
+
+@sync_coordinator_app.command("import-invite")
+def sync_coordinator_import_invite(
+    invite_value: str = typer.Argument(..., help="Invite payload or codemem://join link"),
+    db_path: str = typer.Option(None, help="Path to local codemem DB"),
+    keys_dir: str = typer.Option(None, help="Path to local codemem keys directory"),
+    config_path: str = typer.Option(None, help="Path to config file to update"),
+) -> None:
+    """Import a coordinator team invite."""
+    coordinator_import_invite_cmd(
+        invite_value=invite_value,
+        db_path=db_path,
+        keys_dir=keys_dir,
+        config_path=config_path,
     )
 
 

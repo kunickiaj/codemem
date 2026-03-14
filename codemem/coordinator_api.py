@@ -134,6 +134,8 @@ def build_coordinator_handler(db_path: Path | None = None):
                 return self._handle_admin_post(parsed.path)
             if parsed.path == "/v1/admin/invites":
                 return self._handle_admin_post(parsed.path)
+            if parsed.path == "/v1/join":
+                return self._handle_join()
             if parsed.path != "/v1/presence":
                 _send_json(self, {"error": "not_found"}, status=404)
                 return
@@ -397,5 +399,102 @@ def build_coordinator_handler(db_path: Path | None = None):
                 _send_json(self, {"error": "device_not_found"}, status=404)
                 return
             _send_json(self, {"ok": True})
+
+        def _handle_join(self) -> None:
+            try:
+                raw = _read_body(self)
+            except ValueError as exc:
+                if str(exc) == "body_too_large":
+                    _send_json(self, {"error": "body_too_large"}, status=413)
+                    return
+                raise
+            data = _parse_json_body(raw)
+            if data is None:
+                _send_json(self, {"error": "invalid_json"}, status=400)
+                return
+            token = str(data.get("token") or "").strip()
+            device_id = str(data.get("device_id") or "").strip()
+            fingerprint = str(data.get("fingerprint") or "").strip()
+            public_key = str(data.get("public_key") or "").strip()
+            display_name = str(data.get("display_name") or "").strip() or None
+            if not token or not device_id or not fingerprint or not public_key:
+                _send_json(
+                    self, {"error": "token_device_id_fingerprint_public_key_required"}, status=400
+                )
+                return
+            store = self._store()
+            try:
+                invite = store.get_invite_by_token(token=token)
+                if invite is None:
+                    _send_json(self, {"error": "invalid_token"}, status=404)
+                    return
+                if invite.get("revoked_at"):
+                    _send_json(self, {"error": "revoked_token"}, status=400)
+                    return
+                expires_at = str(invite.get("expires_at") or "")
+                if expires_at and dt.datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00")
+                ) <= dt.datetime.now(dt.UTC):
+                    _send_json(self, {"error": "expired_token"}, status=400)
+                    return
+                existing = store.get_enrollment(
+                    group_id=str(invite["group_id"]), device_id=device_id
+                )
+                if existing is not None:
+                    _send_json(
+                        self,
+                        {
+                            "ok": True,
+                            "status": "already_enrolled",
+                            "group_id": invite["group_id"],
+                            "policy": invite["policy"],
+                        },
+                    )
+                    return
+                if invite["policy"] not in {"auto_admit", "approval_required"}:
+                    _send_json(
+                        self,
+                        {"error": f"unknown invite policy: {invite['policy']}"},
+                        status=400,
+                    )
+                    return
+                if invite["policy"] == "approval_required":
+                    request = store.create_join_request(
+                        group_id=str(invite["group_id"]),
+                        device_id=device_id,
+                        public_key=public_key,
+                        fingerprint=fingerprint,
+                        display_name=display_name,
+                        token=token,
+                    )
+                    _send_json(
+                        self,
+                        {
+                            "ok": True,
+                            "status": "pending",
+                            "group_id": invite["group_id"],
+                            "policy": invite["policy"],
+                            "request_id": request.get("request_id"),
+                        },
+                    )
+                    return
+                store.enroll_device(
+                    str(invite["group_id"]),
+                    device_id=device_id,
+                    fingerprint=fingerprint,
+                    public_key=public_key,
+                    display_name=display_name,
+                )
+                _send_json(
+                    self,
+                    {
+                        "ok": True,
+                        "status": "enrolled",
+                        "group_id": invite["group_id"],
+                        "policy": invite["policy"],
+                    },
+                )
+            finally:
+                store.close()
 
     return CoordinatorHandler

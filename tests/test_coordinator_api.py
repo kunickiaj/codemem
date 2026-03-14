@@ -389,3 +389,59 @@ def test_admin_invite_generation_flow(tmp_path: Path, monkeypatch) -> None:
         assert payload["link"].startswith("codemem://join?invite=")
     finally:
         server.shutdown()
+
+
+def test_join_endpoint_auto_admit_and_pending(tmp_path: Path, monkeypatch) -> None:
+    coordinator_db = tmp_path / "coordinator.sqlite"
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "topsecret")
+    store = CoordinatorStore(coordinator_db)
+    try:
+        store.create_group("team-alpha", display_name="Team Alpha")
+        invite_auto = store.create_invite(
+            group_id="team-alpha",
+            policy="auto_admit",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+        invite_pending = store.create_invite(
+            group_id="team-alpha",
+            policy="approval_required",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+    finally:
+        store.close()
+
+    server, port = _start_server(coordinator_db)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = json.dumps(
+            {
+                "token": invite_auto["token"],
+                "device_id": "device-auto",
+                "public_key": "ssh-ed25519 AAAAtest auto@test",
+                "fingerprint": "fp-auto",
+                "display_name": "auto-device",
+            }
+        )
+        conn.request("POST", "/v1/join", body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["status"] == "enrolled"
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = json.dumps(
+            {
+                "token": invite_pending["token"],
+                "device_id": "device-pending",
+                "public_key": "ssh-ed25519 AAAAtest pending@test",
+                "fingerprint": "fp-pending",
+                "display_name": "pending-device",
+            }
+        )
+        conn.request("POST", "/v1/join", body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["status"] == "pending"
+    finally:
+        server.shutdown()

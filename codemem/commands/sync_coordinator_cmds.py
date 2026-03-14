@@ -5,11 +5,19 @@ from pathlib import Path
 
 from rich import print
 
-from ..config import load_config
+from .. import db
+from ..config import get_config_path, load_config, read_config_file, write_config_file
 from ..coordinator_api import build_coordinator_handler
-from ..coordinator_invites import InvitePayload, encode_invite_payload, invite_link
+from ..coordinator_invites import (
+    InvitePayload,
+    decode_invite_payload,
+    encode_invite_payload,
+    extract_invite_payload,
+    invite_link,
+)
 from ..coordinator_store import DEFAULT_COORDINATOR_DB_PATH, CoordinatorStore
 from ..sync import http_client
+from ..sync_identity import ensure_device_identity, load_public_key
 
 VALID_INVITE_POLICIES = {"auto_admit", "approval_required"}
 
@@ -233,3 +241,57 @@ def coordinator_create_invite_cmd(
     print(f"[green]Invite created[/green] {group_id}")
     print(f"- import: {encoded}")
     print(f"- link: {invite_link(encoded)}")
+
+
+def coordinator_import_invite_cmd(
+    *,
+    invite_value: str,
+    db_path: str | None,
+    keys_dir: str | None,
+    config_path: str | None,
+) -> None:
+    payload: InvitePayload = decode_invite_payload(extract_invite_payload(invite_value))
+    resolved_db_path = (
+        Path(db_path).expanduser() if db_path else Path.home() / ".codemem" / "mem.sqlite"
+    )
+    resolved_keys_dir = Path(keys_dir).expanduser() if keys_dir else None
+    resolved_config_path = get_config_path(Path(config_path).expanduser() if config_path else None)
+
+    conn = db.connect(resolved_db_path)
+    try:
+        db.initialize_schema(conn)
+        device_id, fingerprint = ensure_device_identity(conn, keys_dir=resolved_keys_dir)
+    finally:
+        conn.close()
+    public_key = load_public_key(resolved_keys_dir)
+    if not public_key:
+        raise SystemExit("public key missing")
+
+    resolved_config = load_config(resolved_config_path)
+    display_name = resolved_config.actor_display_name or device_id
+
+    status, response = http_client.request_json(
+        "POST",
+        f"{str(payload['coordinator_url']).rstrip('/')}/v1/join",
+        body={
+            "token": str(payload["token"]),
+            "device_id": device_id,
+            "public_key": public_key,
+            "fingerprint": fingerprint,
+            "display_name": display_name,
+        },
+        timeout_s=3.0,
+    )
+    if not (200 <= status < 300):
+        detail = response.get("error") if isinstance(response, dict) else None
+        raise SystemExit(f"Invite import failed ({status}): {detail or 'unknown'}")
+    response_data = response if isinstance(response, dict) else {}
+
+    config_data = read_config_file(resolved_config_path)
+    config_data["sync_coordinator_url"] = str(payload["coordinator_url"])
+    config_data["sync_coordinator_group"] = str(payload["group_id"])
+    write_config_file(config_data, resolved_config_path)
+
+    print(f"[green]Invite imported[/green] {payload['group_id']}")
+    print(f"- coordinator: {payload['coordinator_url']}")
+    print(f"- status: {response_data.get('status')}")

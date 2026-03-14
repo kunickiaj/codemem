@@ -83,6 +83,23 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coordinator_join_requests (
+            request_id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            public_key TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            display_name TEXT,
+            token TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            reviewed_by TEXT
+        )
+        """
+    )
     conn.commit()
 
 
@@ -233,6 +250,47 @@ class CoordinatorStore:
             FROM coordinator_invites WHERE invite_id = ?
             """,
             (invite_id,),
+        ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def get_invite_by_token(self, *, token: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+            FROM coordinator_invites
+            WHERE token = ?
+            """,
+            (token,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def create_join_request(
+        self,
+        *,
+        group_id: str,
+        device_id: str,
+        public_key: str,
+        fingerprint: str,
+        display_name: str | None,
+        token: str,
+    ) -> dict[str, Any]:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        request_id = secrets.token_urlsafe(12)
+        self.conn.execute(
+            """
+            INSERT INTO coordinator_join_requests(
+                request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL)
+            """,
+            (request_id, group_id, device_id, public_key, fingerprint, display_name, token, now),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            """
+            SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+            FROM coordinator_join_requests WHERE request_id = ?
+            """,
+            (request_id,),
         ).fetchone()
         return dict(row) if row is not None else {}
 

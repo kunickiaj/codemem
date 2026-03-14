@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from typing import TypedDict
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 
 class InvitePayload(TypedDict):
@@ -32,3 +32,14 @@ def decode_invite_payload(value: str) -> InvitePayload:
 
 def invite_link(encoded_payload: str) -> str:
     return f"codemem://join?invite={quote(encoded_payload)}"
+
+
+def extract_invite_payload(value: str) -> str:
+    raw = value.strip()
+    if raw.startswith("codemem://"):
+        parsed = urlparse(raw)
+        invite = parse_qs(parsed.query).get("invite", [""])[0]
+        if not invite:
+            raise ValueError("invite payload missing from link")
+        return invite
+    return raw
