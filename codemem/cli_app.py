@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -85,8 +86,10 @@ from .commands.sync_coordinator_cmds import (
     coordinator_group_create_cmd,
     coordinator_import_invite_cmd,
     coordinator_list_devices_cmd,
+    coordinator_list_join_requests_cmd,
     coordinator_remove_device_cmd,
     coordinator_rename_device_cmd,
+    coordinator_review_join_request_cmd,
     coordinator_serve_cmd,
 )
 from .commands.sync_service_cmds import install_autostart_quiet as _install_autostart_quiet
@@ -914,10 +917,8 @@ def dev(
         )
     finally:
         if watcher is not None:
-            try:
+            with contextlib.suppress(Exception):
                 watcher.terminate()
-            except Exception:
-                return
 
 
 @sync_app.command("enable")
@@ -1276,6 +1277,60 @@ def sync_coordinator_import_invite(
         db_path=db_path,
         keys_dir=keys_dir,
         config_path=config_path,
+    )
+
+
+@sync_coordinator_app.command("list-join-requests")
+def sync_coordinator_list_join_requests(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+) -> None:
+    """List pending coordinator join requests."""
+    coordinator_list_join_requests_cmd(
+        group_id=group_id,
+        db_path=db_path,
+        remote_url=remote_url,
+        admin_secret=admin_secret,
+    )
+
+
+@sync_coordinator_app.command("approve-join-request")
+def sync_coordinator_approve_join_request(
+    request_id: str = typer.Argument(..., help="Coordinator join request id"),
+    reviewed_by: str = typer.Option(None, help="Optional reviewer label"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+) -> None:
+    """Approve a pending coordinator join request."""
+    coordinator_review_join_request_cmd(
+        request_id=request_id,
+        approve=True,
+        reviewed_by=reviewed_by,
+        db_path=db_path,
+        remote_url=remote_url,
+        admin_secret=admin_secret,
+    )
+
+
+@sync_coordinator_app.command("deny-join-request")
+def sync_coordinator_deny_join_request(
+    request_id: str = typer.Argument(..., help="Coordinator join request id"),
+    reviewed_by: str = typer.Option(None, help="Optional reviewer label"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+) -> None:
+    """Deny a pending coordinator join request."""
+    coordinator_review_join_request_cmd(
+        request_id=request_id,
+        approve=False,
+        reviewed_by=reviewed_by,
+        db_path=db_path,
+        remote_url=remote_url,
+        admin_secret=admin_secret,
     )
 
 
