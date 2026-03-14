@@ -13,6 +13,7 @@ from rich.prompt import Confirm, Prompt
 from rich.syntax import Syntax
 
 from codemem import db
+from codemem.config import get_config_path, read_config_file, write_config_file
 from codemem.sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
 
 app = typer.Typer(add_completion=False, help="Bootstrap the Cloudflare coordinator example")
@@ -81,6 +82,17 @@ def build_config_snippet(*, worker_url: str, group: str) -> dict[str, str]:
         "sync_coordinator_url": worker_url.rstrip("/"),
         "sync_coordinator_group": group,
     }
+
+
+def write_config_snippet(
+    *, config_path: Path, snippet: dict[str, str], dry_run: bool
+) -> dict[str, Any]:
+    if dry_run:
+        return {"path": str(config_path), "written": False, "dry_run": True}
+    data = read_config_file(config_path)
+    data.update(snippet)
+    write_config_file(data, config_path)
+    return {"path": str(config_path), "written": True, "dry_run": False}
 
 
 def build_wrangle_commands(*, database_name: str) -> list[str]:
@@ -161,7 +173,12 @@ def list_d1_databases(*, dry_run: bool, cwd: Path) -> dict[str, Any]:
     command = ["wrangler", "d1", "list", "--json"]
     result = run_command(command, dry_run=dry_run, cwd=cwd)
     output = "\n".join(part for part in [result.stdout, result.stderr] if part)
-    return {"command": command, "databases": parse_d1_list_output(output), "output": output}
+    return {
+        "command": command,
+        "databases": parse_d1_list_output(output),
+        "output": output,
+        "dry_run": dry_run,
+    }
 
 
 def find_existing_database_id(
@@ -214,6 +231,7 @@ def create_d1_database(*, database_name: str, dry_run: bool, cwd: Path) -> dict[
             "output": "",
             "reused_existing": False,
             "list_result": None,
+            "dry_run": True,
         }
     try:
         result = run_command(command, dry_run=dry_run, cwd=cwd)
@@ -239,6 +257,7 @@ def create_d1_database(*, database_name: str, dry_run: bool, cwd: Path) -> dict[
         "output": output,
         "reused_existing": reused_existing,
         "list_result": list_result,
+        "dry_run": dry_run,
     }
 
 
@@ -253,14 +272,24 @@ def apply_schema(*, database_name: str, dry_run: bool, cwd: Path) -> dict[str, A
         str(SCHEMA_SQL_PATH),
     ]
     result = run_command(command, dry_run=dry_run, cwd=cwd)
-    return {"command": command, "stdout": result.stdout, "stderr": result.stderr}
+    return {
+        "command": command,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "dry_run": dry_run,
+    }
 
 
 def deploy_worker(*, dry_run: bool, cwd: Path) -> dict[str, Any]:
     command = ["wrangler", "deploy"]
     result = run_command(command, dry_run=dry_run, cwd=cwd)
     output = "\n".join(part for part in [result.stdout, result.stderr] if part)
-    return {"command": command, "worker_url": parse_worker_url_output(output), "output": output}
+    return {
+        "command": command,
+        "worker_url": parse_worker_url_output(output),
+        "output": output,
+        "dry_run": dry_run,
+    }
 
 
 def apply_enrollment_sql(
@@ -268,10 +297,17 @@ def apply_enrollment_sql(
 ) -> dict[str, Any]:
     command = ["wrangler", "d1", "execute", database_name, "--remote", "--command", sql]
     result = run_command(command, dry_run=dry_run, cwd=cwd)
-    return {"command": command, "stdout": result.stdout, "stderr": result.stderr}
+    return {
+        "command": command,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "dry_run": dry_run,
+    }
 
 
-def _run_smoke_check(*, db_path: Path, worker_url: str, group: str, keys_dir: Path | None) -> int:
+def _run_smoke_check(
+    *, db_path: Path, worker_url: str, group: str, keys_dir: Path | None
+) -> tuple[int, str, str]:
     command = [
         "uv",
         "run",
@@ -286,8 +322,31 @@ def _run_smoke_check(*, db_path: Path, worker_url: str, group: str, keys_dir: Pa
     ]
     if keys_dir is not None:
         command.extend(["--keys-dir", str(keys_dir)])
-    result = subprocess.run(command, check=False)
-    return int(result.returncode)
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    return int(result.returncode), (result.stdout or ""), (result.stderr or "")
+
+
+def _smoke_check_guidance(stderr_text: str) -> str | None:
+    text = stderr_text.strip()
+    lowered = text.lower()
+    if "error code: 1010" in lowered:
+        return (
+            "Cloudflare blocked the request before it reached the coordinator. Check Browser Integrity Check or WAF rules "
+            "for the Worker hostname/custom domain."
+        )
+    if "unknown_device" in lowered:
+        return "The device is not enrolled in the coordinator group yet. Apply the enrollment SQL remotely and retry."
+    if "invalid_admin_secret" in lowered:
+        return "The configured remote admin secret is wrong for this coordinator."
+    return None
+
+
+def _step_status(selected: bool, *, result: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not selected:
+        return {"status": "skipped"}
+    if result is None:
+        return {"status": "failed"}
+    return {"status": "dry_run" if result.get("dry_run") else "executed", **result}
 
 
 @app.command()
@@ -306,6 +365,7 @@ def main(
         Path(__file__).with_name("wrangler.toml"),
         help="Path to generated wrangler.toml",
     ),
+    config_path: Path | None = typer.Option(None, help="Path to codemem config file to update"),
     create_d1: bool = typer.Option(False, help="Create the D1 database with wrangler"),
     apply_schema_sql: bool = typer.Option(
         False, "--apply-schema", help="Apply schema.sql with wrangler"
@@ -319,6 +379,7 @@ def main(
     format: str = typer.Option("text", help="Output format: text or json"),
     print_sql: bool = typer.Option(True, help="Include bootstrap SQL in the output"),
     print_config: bool = typer.Option(True, help="Include config snippet in the output"),
+    write_config: bool = typer.Option(False, help="Write coordinator config into config.json"),
     run_smoke_check: bool = typer.Option(
         False, help="Run smoke_check.py after printing bootstrap info"
     ),
@@ -328,6 +389,9 @@ def main(
     resolved_db_path = db_path.expanduser()
     resolved_keys_dir = keys_dir.expanduser() if keys_dir is not None else None
     resolved_wrangler_toml = wrangler_toml.expanduser()
+    resolved_config_path = get_config_path(
+        config_path.expanduser() if config_path is not None else None
+    )
     script_dir = Path(__file__).resolve().parent
     identity = _load_local_identity(resolved_db_path, resolved_keys_dir)
 
@@ -350,6 +414,11 @@ def main(
             device_name = identity["device_id"]
         else:
             device_name = Prompt.ask("Device display name", default=identity["device_id"])
+    if not non_interactive:
+        write_config = write_config or Confirm.ask(
+            f"Write coordinator settings to {resolved_config_path}?",
+            default=True,
+        )
 
     needs_wrangler = create_d1 or apply_schema_sql or deploy or enroll_local
     try:
@@ -411,13 +480,22 @@ def main(
         worker_url = Prompt.ask("Worker URL", default="https://your-worker.example.workers.dev")
 
     sql = build_enrollment_sql(
-        group=group,
+        group=str(group),
         device_id=identity["device_id"],
         fingerprint=identity["fingerprint"],
         public_key=identity["public_key"],
-        device_name=device_name,
+        device_name=str(device_name),
     )
-    config_snippet = build_config_snippet(worker_url=worker_url, group=group)
+    config_snippet = build_config_snippet(worker_url=str(worker_url), group=str(group))
+    config_write_result = (
+        write_config_snippet(
+            config_path=resolved_config_path,
+            snippet=config_snippet,
+            dry_run=dry_run,
+        )
+        if write_config
+        else None
+    )
     try:
         enrollment_result = (
             apply_enrollment_sql(
@@ -440,20 +518,34 @@ def main(
         "wrangler_ready": wrangler_ready,
         "database_id": database_id,
         "wrangler_toml": str(resolved_wrangler_toml),
+        "config_path": str(resolved_config_path),
         "needs_wrangler": needs_wrangler,
         "wrangler_commands": build_wrangle_commands(database_name=database_name),
         "d1_create": d1_create,
         "schema_apply": schema_result,
         "deploy": deploy_result,
         "enroll_local": enrollment_result,
+        "config_write": config_write_result,
         "enrollment_sql": sql if print_sql else None,
         "config_snippet": config_snippet if print_config else None,
         "dry_run": dry_run,
+        "steps": {
+            "wrangler_ready": _step_status(needs_wrangler, result=wrangler_ready),
+            "create_d1": _step_status(create_d1, result=d1_create),
+            "apply_schema": _step_status(apply_schema_sql, result=schema_result),
+            "deploy": _step_status(deploy, result=deploy_result),
+            "enroll_local": _step_status(enroll_local, result=enrollment_result),
+            "write_config": _step_status(write_config, result=config_write_result),
+        },
     }
 
-    if format == "json":
+    should_run_smoke = run_smoke_check
+    if not non_interactive and not should_run_smoke:
+        should_run_smoke = Confirm.ask("Run smoke check now?", default=False)
+
+    if format == "json" and not should_run_smoke:
         console.print_json(data=payload)
-    else:
+    elif format != "json":
         console.print(Panel.fit("Cloudflare coordinator bootstrap", style="cyan"))
         console.print(f"[bold]Device ID:[/bold] {identity['device_id']}")
         console.print(f"[bold]Fingerprint:[/bold] {identity['fingerprint']}")
@@ -462,6 +554,10 @@ def main(
         if database_id:
             console.print(f"[bold]D1 database id:[/bold] {database_id}")
         console.print(f"[bold]wrangler.toml:[/bold] {resolved_wrangler_toml}")
+        console.print(f"[bold]config.json:[/bold] {resolved_config_path}")
+        console.print("\n[bold]Step status[/bold]")
+        for name, item in payload["steps"].items():
+            console.print(f"- {name}: {item['status']}")
         console.print("\n[bold]Wrangler setup commands[/bold]")
         for command in payload["wrangler_commands"]:
             console.print(f"- {command}")
@@ -472,20 +568,38 @@ def main(
             console.print("\n[bold]Config snippet[/bold]")
             console.print(Syntax(json.dumps(config_snippet, indent=2), "json", word_wrap=True))
         console.print("\n[bold]Next steps[/bold]")
-        console.print("1. Confirm wrangler commands succeeded")
-        console.print("2. Add the config snippet to your codemem config")
-        console.print("3. Run the smoke check")
+        console.print("1. Review any failed step above")
+        console.print("2. If config was not written, add the config snippet manually")
+        console.print("3. Run the smoke check if remote steps succeeded")
 
-    should_run_smoke = run_smoke_check
-    if not non_interactive and not should_run_smoke:
-        should_run_smoke = Confirm.ask("Run smoke check now?", default=False)
     if should_run_smoke:
-        exit_code = _run_smoke_check(
+        exit_code, stdout_text, stderr_text = _run_smoke_check(
             db_path=resolved_db_path,
-            worker_url=worker_url,
-            group=group,
+            worker_url=str(worker_url),
+            group=str(group),
             keys_dir=resolved_keys_dir,
         )
+        payload["steps"]["smoke_check"] = {
+            "status": "executed" if exit_code == 0 else "failed",
+            "exit_code": exit_code,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "guidance": _smoke_check_guidance(stderr_text),
+        }
+        if format == "json":
+            console.print_json(data=payload)
+            if exit_code != 0:
+                raise typer.Exit(code=exit_code)
+            return
+        if stdout_text.strip():
+            console.print("\n[bold]Smoke check output[/bold]")
+            console.print(stdout_text.rstrip())
+        if stderr_text.strip():
+            console.print("\n[bold red]Smoke check error[/bold red]")
+            console.print(stderr_text.rstrip())
+        guidance = _smoke_check_guidance(stderr_text)
+        if guidance:
+            console.print(f"\n[yellow]{guidance}[/yellow]")
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
 
