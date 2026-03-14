@@ -489,7 +489,7 @@ def test_sync_coordinator_join_request_management_local(tmp_path: Path) -> None:
             str(coordinator_db),
         ],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, f"list-join-requests failed: {result.output}"
     assert request["request_id"] in result.stdout
 
     result = runner.invoke(
@@ -503,7 +503,7 @@ def test_sync_coordinator_join_request_management_local(tmp_path: Path) -> None:
             str(coordinator_db),
         ],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, f"approve-join-request failed: {result.output}"
     assert "Approved join request" in result.stdout
 
 

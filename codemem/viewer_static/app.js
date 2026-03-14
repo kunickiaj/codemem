@@ -133,6 +133,9 @@
     lastSyncPeers: [],
     lastSyncSharingReview: [],
     lastSyncCoordinator: null,
+    lastSyncJoinRequests: [],
+    lastTeamInvite: null,
+    lastTeamJoin: null,
     lastSyncAttempts: [],
     lastSyncLegacyDevices: [],
     pairingPayloadRaw: null,
@@ -274,6 +277,39 @@
     if (project) params.set("project", project);
     const suffix = params.size ? `?${params.toString()}` : "";
     return fetchJson(`/api/sync/status${suffix}`);
+  }
+  async function createCoordinatorInvite(payload) {
+    const resp = await fetch("/api/sync/invites/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const text = await resp.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(data?.error || text || "request failed");
+    return data;
+  }
+  async function importCoordinatorInvite(invite) {
+    const resp = await fetch("/api/sync/invites/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invite })
+    });
+    const text = await resp.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(data?.error || text || "request failed");
+    return data;
+  }
+  async function reviewJoinRequest(requestId, action) {
+    const resp = await fetch("/api/sync/join-requests/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId, action })
+    });
+    const text = await resp.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!resp.ok) throw new Error(data?.error || text || "request failed");
+    return data;
   }
   async function loadSyncActors() {
     return fetchJson("/api/sync/actors");
@@ -2006,15 +2042,23 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const meta = document.getElementById("syncCoordinatorMeta");
     const list = document.getElementById("syncCoordinatorList");
     const actions = document.getElementById("syncCoordinatorActions");
+    const invitePanel = document.getElementById("syncInvitePanel");
+    const joinPanel = document.getElementById("syncJoinPanel");
+    const joinRequests = document.getElementById("syncJoinRequests");
     if (!panel || !meta || !list || !actions) return;
     list.textContent = "";
+    if (joinRequests) joinRequests.textContent = "";
     const coordinator = state.lastSyncCoordinator;
-    if (!coordinator || !coordinator.configured) {
-      panel.hidden = true;
+    panel.hidden = false;
+    const configured = Boolean(coordinator && coordinator.configured);
+    meta.textContent = configured ? `${String(coordinator.coordinator_url || "")} · groups: ${(coordinator.groups || []).join(", ") || "none"}` : "Set up a team coordinator or join an invite to start coordinator-backed sync.";
+    if (invitePanel) invitePanel.hidden = false;
+    if (joinPanel) joinPanel.hidden = false;
+    if (!configured) {
+      list.appendChild(el("div", "peer-meta", "Use Create team invite if you administer a team, or Join team if someone shared an invite with you."));
+      renderActionList(actions, []);
       return;
     }
-    panel.hidden = false;
-    meta.textContent = `${String(coordinator.coordinator_url || "")} · groups: ${(coordinator.groups || []).join(", ") || "none"}`;
     const rows = [
       ["Enrollment", coordinator.presence_status === "posted" ? "Enrolled and posting presence" : coordinator.presence_status === "not_enrolled" ? "Not enrolled in coordinator" : "Coordinator error"],
       ["Paired peers", String(coordinator.paired_peer_count || 0)],
@@ -2037,6 +2081,54 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       actionItems.push({ label: "No fresh peers were discovered from the coordinator.", command: "uv run codemem sync once" });
     }
     renderActionList(actions, actionItems);
+    const pending = Array.isArray(state.lastSyncJoinRequests) ? state.lastSyncJoinRequests : [];
+    if (joinRequests && pending.length) {
+      const title = el("div", "peer-meta", `${pending.length} pending join request${pending.length === 1 ? "" : "s"}`);
+      joinRequests.appendChild(title);
+      pending.forEach((request) => {
+        const row = el("div", "actor-row");
+        const details = el("div", "actor-details");
+        const name = String(request.display_name || request.device_id || "Pending device");
+        details.append(
+          el("div", "actor-title", name),
+          el("div", "peer-meta", `request: ${String(request.request_id || "")}`)
+        );
+        const rowActions = el("div", "actor-actions");
+        const approveBtn = el("button", "settings-button", "Approve");
+        const denyBtn = el("button", "settings-button", "Deny");
+        approveBtn.addEventListener("click", async () => {
+          approveBtn.disabled = true;
+          denyBtn.disabled = true;
+          try {
+            await reviewJoinRequest(String(request.request_id || ""), "approve");
+            showGlobalNotice("Join request approved.");
+            await loadSyncData();
+          } catch (error) {
+            showGlobalNotice(error instanceof Error ? error.message : "Failed to approve join request.", "warning");
+          } finally {
+            approveBtn.disabled = false;
+            denyBtn.disabled = false;
+          }
+        });
+        denyBtn.addEventListener("click", async () => {
+          approveBtn.disabled = true;
+          denyBtn.disabled = true;
+          try {
+            await reviewJoinRequest(String(request.request_id || ""), "deny");
+            showGlobalNotice("Join request denied.");
+            await loadSyncData();
+          } catch (error) {
+            showGlobalNotice(error instanceof Error ? error.message : "Failed to deny join request.", "warning");
+          } finally {
+            approveBtn.disabled = false;
+            denyBtn.disabled = false;
+          }
+        });
+        rowActions.append(approveBtn, denyBtn);
+        row.append(details, rowActions);
+        joinRequests.appendChild(row);
+      });
+    }
   }
   function renderLegacyDeviceClaims() {
     const panel = document.getElementById("syncLegacyClaims");
@@ -2133,6 +2225,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       state.lastSyncPeers = payload.peers || [];
       state.lastSyncSharingReview = payload.sharing_review || [];
       state.lastSyncCoordinator = payload.coordinator || null;
+      state.lastSyncJoinRequests = payload.join_requests || [];
       state.lastSyncAttempts = payload.attempts || [];
       state.lastSyncLegacyDevices = payload.legacy_devices || [];
       renderSyncStatus();
@@ -2167,6 +2260,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const syncRedact = document.getElementById("syncRedact");
     const syncActorCreateButton = document.getElementById("syncActorCreateButton");
     const syncActorCreateInput = document.getElementById("syncActorCreateInput");
+    const syncCreateInviteButton = document.getElementById("syncCreateInviteButton");
+    const syncInviteGroup = document.getElementById("syncInviteGroup");
+    const syncInvitePolicy = document.getElementById("syncInvitePolicy");
+    const syncInviteTtl = document.getElementById("syncInviteTtl");
+    const syncInviteOutput = document.getElementById("syncInviteOutput");
+    const syncJoinButton = document.getElementById("syncJoinButton");
+    const syncJoinInvite = document.getElementById("syncJoinInvite");
     const syncLegacyClaimButton = document.getElementById("syncLegacyClaimButton");
     const syncLegacyDeviceSelect = document.getElementById("syncLegacyDeviceSelect");
     const pairingCopy = document.getElementById("pairingCopy");
@@ -2215,6 +2315,42 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       syncActorCreateButton.textContent = "Create actor";
       syncActorCreateButton.disabled = false;
       syncActorCreateInput.disabled = false;
+    });
+    syncCreateInviteButton?.addEventListener("click", async () => {
+      if (!syncCreateInviteButton || !syncInviteGroup || !syncInvitePolicy || !syncInviteTtl || !syncInviteOutput) return;
+      syncCreateInviteButton.disabled = true;
+      syncCreateInviteButton.textContent = "Creating...";
+      try {
+        const result = await createCoordinatorInvite({
+          group_id: syncInviteGroup.value.trim(),
+          policy: syncInvitePolicy.value,
+          ttl_hours: Number(syncInviteTtl.value || 24) || 24
+        });
+        state.lastTeamInvite = result;
+        syncInviteOutput.value = String(result.encoded || "");
+        showGlobalNotice("Invite created.");
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : "Failed to create invite.", "warning");
+      } finally {
+        syncCreateInviteButton.disabled = false;
+        syncCreateInviteButton.textContent = "Create invite";
+      }
+    });
+    syncJoinButton?.addEventListener("click", async () => {
+      if (!syncJoinButton || !syncJoinInvite) return;
+      syncJoinButton.disabled = true;
+      syncJoinButton.textContent = "Joining...";
+      try {
+        const result = await importCoordinatorInvite(syncJoinInvite.value.trim());
+        state.lastTeamJoin = result;
+        showGlobalNotice(result.status === "pending" ? "Join request submitted. Waiting for approval." : "Team invite imported.");
+        await loadSyncData();
+      } catch (error) {
+        showGlobalNotice(error instanceof Error ? error.message : "Failed to import invite.", "warning");
+      } finally {
+        syncJoinButton.disabled = false;
+        syncJoinButton.textContent = "Join team";
+      }
     });
     syncLegacyClaimButton?.addEventListener("click", async () => {
       const originDeviceId = String(syncLegacyDeviceSelect?.value || "").trim();

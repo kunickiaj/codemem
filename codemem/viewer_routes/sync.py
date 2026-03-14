@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs
 
+from ..commands.sync_coordinator_cmds import (
+    coordinator_create_invite_action,
+    coordinator_import_invite_action,
+    coordinator_list_join_requests_action,
+    coordinator_review_join_request_action,
+)
 from ..net import pick_advertise_host, pick_advertise_hosts
 from ..store import MemoryStore
 from ..sync import coordinator
@@ -26,6 +32,14 @@ PAIRING_FILTER_HINT = (
 )
 
 SYNC_STALE_AFTER_SECONDS = 10 * 60
+
+
+def _coordinator_remote_target(config: Any) -> tuple[str | None, str | None]:
+    remote_url = str(getattr(config, "sync_coordinator_url", "") or "").strip() or None
+    admin_secret = str(getattr(config, "sync_coordinator_admin_secret", "") or "").strip() or None
+    if not remote_url:
+        return None, None
+    return remote_url, admin_secret
 
 
 def _is_recent_iso(value: Any, *, window_s: int = SYNC_STALE_AFTER_SECONDS) -> bool:
@@ -256,6 +270,21 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
         legacy_devices = store.claimable_legacy_device_ids()
         sharing_review = store.sharing_review_summary(project=project)
         coordinator_status = coordinator.status_snapshot(store, config=config)
+        join_requests: list[dict[str, Any]] = []
+        coordinator_group = str(getattr(config, "sync_coordinator_group", "") or "").strip()
+        coordinator_url, coordinator_admin_secret = _coordinator_remote_target(config)
+        if coordinator_group:
+            try:
+                join_requests = coordinator_list_join_requests_action(
+                    group_id=coordinator_group,
+                    db_path=None,
+                    remote_url=coordinator_url,
+                    admin_secret=coordinator_admin_secret,
+                )
+            except SystemExit:
+                join_requests = []
+            except Exception:
+                join_requests = []
 
         if daemon_state_value == "ok":
             peer_states = {
@@ -300,6 +329,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 "legacy_devices": legacy_devices,
                 "sharing_review": sharing_review,
                 "coordinator": coordinator_status,
+                "join_requests": join_requests,
             }
         )
         return True
@@ -716,6 +746,107 @@ def handle_post(
             addresses = load_peer_addresses(store.conn, peer_id)
             results.append(sync_once(store, peer_id, addresses))
         handler._send_json({"items": results})
+        return True
+
+    if path == "/api/sync/invites/create":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        from .. import viewer as _viewer
+
+        group_id = payload.get("group_id")
+        coordinator_url = payload.get("coordinator_url")
+        policy = payload.get("policy") or "auto_admit"
+        ttl_hours = payload.get("ttl_hours") or 24
+        if not isinstance(group_id, str) or not group_id.strip():
+            handler._send_json({"error": "group_id required"}, status=400)
+            return True
+        if coordinator_url is not None and not isinstance(coordinator_url, str):
+            handler._send_json({"error": "coordinator_url must be string"}, status=400)
+            return True
+        if not isinstance(policy, str) or policy not in {"auto_admit", "approval_required"}:
+            handler._send_json(
+                {"error": "policy must be auto_admit or approval_required"}, status=400
+            )
+            return True
+        try:
+            ttl = int(ttl_hours)
+        except (TypeError, ValueError):
+            handler._send_json({"error": "ttl_hours must be int"}, status=400)
+            return True
+        config = _viewer.load_config()
+        remote_url, admin_secret = _coordinator_remote_target(config)
+        try:
+            result = coordinator_create_invite_action(
+                group_id=group_id.strip(),
+                coordinator_url=coordinator_url,
+                policy=policy,
+                ttl_hours=ttl,
+                created_by=None,
+                db_path=None,
+                remote_url=remote_url,
+                admin_secret=admin_secret,
+            )
+        except SystemExit as exc:
+            handler._send_json({"error": str(exc)}, status=400)
+            return True
+        handler._send_json(result)
+        return True
+
+    if path == "/api/sync/invites/import":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        invite_value = payload.get("invite")
+        if not isinstance(invite_value, str) or not invite_value.strip():
+            handler._send_json({"error": "invite required"}, status=400)
+            return True
+        try:
+            result = coordinator_import_invite_action(
+                invite_value=invite_value,
+                db_path=None,
+                keys_dir=None,
+                config_path=None,
+            )
+        except SystemExit as exc:
+            handler._send_json({"error": str(exc)}, status=400)
+            return True
+        handler._send_json(result)
+        return True
+
+    if path == "/api/sync/join-requests/review":
+        if payload is None:
+            handler._send_json({"error": "invalid json"}, status=400)
+            return True
+        from .. import viewer as _viewer
+
+        request_id = payload.get("request_id")
+        action = payload.get("action")
+        if not isinstance(request_id, str) or not request_id.strip():
+            handler._send_json({"error": "request_id required"}, status=400)
+            return True
+        if action not in {"approve", "deny"}:
+            handler._send_json({"error": "action must be approve or deny"}, status=400)
+            return True
+        config = _viewer.load_config()
+        remote_url, admin_secret = _coordinator_remote_target(config)
+        try:
+            result = coordinator_review_join_request_action(
+                request_id=request_id.strip(),
+                approve=action == "approve",
+                reviewed_by=None,
+                db_path=None,
+                remote_url=remote_url,
+                admin_secret=admin_secret,
+            )
+        except SystemExit as exc:
+            status = 404 if "request_not_found" in str(exc) else 400
+            handler._send_json({"error": str(exc)}, status=status)
+            return True
+        if result is None:
+            handler._send_json({"error": "join request not found"}, status=404)
+            return True
+        handler._send_json({"ok": True, "request": result})
         return True
 
     return False
