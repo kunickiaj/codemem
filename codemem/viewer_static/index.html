@@ -1534,12 +1534,76 @@
 
     <!-- ── Tab: Sync ───────────────────────────────────────── -->
     <div class="tab-panel" id="tab-sync" hidden>
-      <div class="card">
+
+      <!-- 1. Team sync — primary, always visible -->
+      <div class="card" id="syncTeamCard">
         <div class="section-header">
-          <h2>Sync</h2>
+          <h2>Team sync</h2>
+          <div class="section-actions">
+            <button class="settings-button" id="syncNowButton">Sync now</button>
+          </div>
+        </div>
+        <div class="section-meta" id="syncTeamMeta"></div>
+        <div class="actor-create-row" id="syncInvitePanel">
+          <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team group" />
+          <select class="sync-actor-select" id="syncInvitePolicy">
+            <option value="auto_admit">Auto-admit</option>
+            <option value="approval_required">Approval required</option>
+          </select>
+          <input class="peer-scope-input" id="syncInviteTtl" type="number" min="1" value="24" placeholder="TTL hours" />
+          <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
+        </div>
+        <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite output appears here"></textarea>
+        <div class="actor-create-row" id="syncJoinPanel">
+          <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste team invite or codemem:// link"></textarea>
+          <button class="settings-button" id="syncJoinButton">Join team</button>
+        </div>
+        <div class="actor-list" id="syncTeamStatus"></div>
+        <div class="actor-list" id="syncJoinRequests"></div>
+        <div class="sync-actions" id="syncTeamActions" hidden></div>
+      </div>
+
+      <!-- 2. People — actors, devices, sharing, legacy claims -->
+      <div class="card" style="animation-delay: 0.04s">
+        <h2>People</h2>
+
+        <h3 class="settings-group-title">Actors</h3>
+        <div class="section-meta" id="syncActorsMeta">Create and rename actors here. Assign each device below.</div>
+        <div class="actor-create-row">
+          <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named actor" />
+          <button class="settings-button" id="syncActorCreateButton">Create actor</button>
+        </div>
+        <div class="actor-list" id="syncActorsList"></div>
+
+        <h3 class="settings-group-title" style="margin-top: 20px">Devices</h3>
+        <div class="peer-list" id="syncPeers"></div>
+
+        <div id="syncSharingReview" hidden>
+          <h3 class="settings-group-title" style="margin-top: 20px">What teammates will receive</h3>
+          <div class="section-meta" id="syncSharingReviewMeta"></div>
+          <div class="actor-list" id="syncSharingReviewList"></div>
+        </div>
+
+        <div id="syncLegacyClaims" hidden>
+          <h3 class="settings-group-title" style="margin-top: 20px">Legacy device history</h3>
+          <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
+          <div class="peer-actions sync-legacy-claim-row">
+            <select class="sync-legacy-select" id="syncLegacyDeviceSelect"></select>
+            <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Diagnostics — status, pairing, attempts -->
+      <div class="card" style="animation-delay: 0.06s">
+        <div class="section-header">
+          <h2>Diagnostics</h2>
           <div class="section-actions">
             <button class="settings-button" id="syncPairingToggle">Show pairing</button>
-            <button class="settings-button" id="syncNowButton">Sync now</button>
+            <label class="small" style="display:inline-flex;align-items:center;gap:6px;">
+              <input id="syncRedact" type="checkbox" checked />
+              Redact
+            </label>
           </div>
         </div>
         <div class="section-meta" id="syncMeta">Loading sync status…</div>
@@ -1556,69 +1620,8 @@
           </div>
           <div class="peer-meta" id="pairingHint">Copy and run on the other device. Use --include/--exclude to control which projects sync.</div>
         </div>
-      </div>
 
-      <div class="card" style="animation-delay: 0.04s">
-        <h2>Actors</h2>
-        <div class="section-meta" id="syncActorsMeta">Create and rename actors here. Assign each peer below.</div>
-        <div class="actor-create-row">
-          <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named actor" />
-          <button class="settings-button" id="syncActorCreateButton">Create actor</button>
-        </div>
-        <div class="actor-list" id="syncActorsList"></div>
-      </div>
-
-      <div class="card" id="syncCoordinatorOverview" style="animation-delay: 0.045s" hidden>
-        <h2>Team sync</h2>
-        <div class="section-meta" id="syncCoordinatorMeta"></div>
-        <div class="actor-create-row" id="syncInvitePanel">
-          <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team group" />
-          <select class="sync-actor-select" id="syncInvitePolicy">
-            <option value="auto_admit">Auto-admit</option>
-            <option value="approval_required">Approval required</option>
-          </select>
-          <input class="peer-scope-input" id="syncInviteTtl" type="number" min="1" value="24" placeholder="TTL hours" />
-          <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
-        </div>
-        <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite output appears here"></textarea>
-        <div class="actor-create-row" id="syncJoinPanel">
-          <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste team invite or codemem:// link"></textarea>
-          <button class="settings-button" id="syncJoinButton">Join team</button>
-        </div>
-        <div class="actor-list" id="syncCoordinatorList"></div>
-        <div class="actor-list" id="syncJoinRequests"></div>
-        <div class="sync-actions" id="syncCoordinatorActions" hidden></div>
-      </div>
-
-      <div class="card" style="animation-delay: 0.05s">
-        <h2>Peers</h2>
-        <div class="peer-list" id="syncPeers"></div>
-      </div>
-
-      <div class="card" id="syncSharingReview" style="animation-delay: 0.06s" hidden>
-        <h2>Review what teammates will receive</h2>
-        <div class="section-meta" id="syncSharingReviewMeta"></div>
-        <div class="actor-list" id="syncSharingReviewList"></div>
-      </div>
-
-      <div class="card" id="syncLegacyClaims" style="animation-delay: 0.08s" hidden>
-        <h2>Attach old device history to local actor</h2>
-        <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
-        <div class="peer-actions sync-legacy-claim-row">
-          <select class="sync-legacy-select" id="syncLegacyDeviceSelect"></select>
-          <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
-        </div>
-      </div>
-
-      <div class="section-meta" style="text-align:right; margin-bottom:12px;">
-        <label class="small" style="display:inline-flex;align-items:center;gap:8px;">
-          <input id="syncRedact" type="checkbox" checked />
-          Redact sensitive details
-        </label>
-      </div>
-
-      <div class="card" style="animation-delay: 0.1s">
-        <h2>Recent sync attempts</h2>
+        <h3 class="settings-group-title" style="margin-top: 20px">Recent sync attempts</h3>
         <div class="attempts-list" id="syncAttempts"></div>
       </div>
     </div>
