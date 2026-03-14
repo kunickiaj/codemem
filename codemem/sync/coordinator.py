@@ -17,10 +17,16 @@ from . import discovery, http_client
 
 def coordinator_enabled(config: OpencodeMemConfig | None = None) -> bool:
     cfg = config or load_config()
-    return bool(
-        str(cfg.sync_coordinator_url or "").strip()
-        and str(cfg.sync_coordinator_group or "").strip()
-    )
+    return bool(str(cfg.sync_coordinator_url or "").strip() and _coordinator_groups(cfg))
+
+
+def _coordinator_groups(config: OpencodeMemConfig) -> list[str]:
+    if config.sync_coordinator_groups:
+        return [
+            str(group).strip() for group in config.sync_coordinator_groups if str(group).strip()
+        ]
+    group = str(config.sync_coordinator_group or "").strip()
+    return [group] if group else []
 
 
 def _coordinator_base_url(config: OpencodeMemConfig) -> str:
@@ -60,34 +66,38 @@ def register_presence(
     base_url = _coordinator_base_url(cfg)
     if not base_url:
         raise RuntimeError("coordinator url missing")
+    groups = _coordinator_groups(cfg)
     payload = {
-        "group_id": str(cfg.sync_coordinator_group or "").strip(),
         "fingerprint": fingerprint,
         "public_key": public_key,
         "addresses": _advertised_sync_addresses(cfg),
         "ttl_s": max(1, int(cfg.sync_coordinator_presence_ttl_s)),
     }
-    body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    url = f"{base_url}/v1/presence"
-    headers = build_auth_headers(
-        device_id=device_id,
-        method="POST",
-        url=url,
-        body_bytes=body_bytes,
-        keys_dir=keys_dir,
-    )
-    status, response = http_client.request_json(
-        "POST",
-        url,
-        headers=headers,
-        body=payload,
-        body_bytes=body_bytes,
-        timeout_s=max(1.0, float(cfg.sync_coordinator_timeout_s)),
-    )
-    if status != 200 or not isinstance(response, dict):
-        detail = response.get("error") if isinstance(response, dict) else None
-        raise RuntimeError(f"coordinator presence failed ({status}: {detail or 'unknown'})")
-    return response
+    responses: list[dict[str, Any]] = []
+    for group_id in groups:
+        group_payload = {**payload, "group_id": group_id}
+        body_bytes = json.dumps(group_payload, ensure_ascii=False).encode("utf-8")
+        url = f"{base_url}/v1/presence"
+        headers = build_auth_headers(
+            device_id=device_id,
+            method="POST",
+            url=url,
+            body_bytes=body_bytes,
+            keys_dir=keys_dir,
+        )
+        status, response = http_client.request_json(
+            "POST",
+            url,
+            headers=headers,
+            body=group_payload,
+            body_bytes=body_bytes,
+            timeout_s=max(1.0, float(cfg.sync_coordinator_timeout_s)),
+        )
+        if status != 200 or not isinstance(response, dict):
+            detail = response.get("error") if isinstance(response, dict) else None
+            raise RuntimeError(f"coordinator presence failed ({status}: {detail or 'unknown'})")
+        responses.append(response)
+    return {"groups": groups, "responses": responses}
 
 
 def lookup_peers(
@@ -101,28 +111,57 @@ def lookup_peers(
     base_url = _coordinator_base_url(cfg)
     if not base_url:
         return []
-    query = urlencode({"group_id": str(cfg.sync_coordinator_group or "").strip()})
-    url = f"{base_url}/v1/peers?{query}"
-    headers = build_auth_headers(
-        device_id=device_id,
-        method="GET",
-        url=url,
-        body_bytes=b"",
-        keys_dir=keys_dir,
-    )
-    status, response = http_client.request_json(
-        "GET",
-        url,
-        headers=headers,
-        timeout_s=max(1.0, float(cfg.sync_coordinator_timeout_s)),
-    )
-    if status != 200 or not isinstance(response, dict):
-        detail = response.get("error") if isinstance(response, dict) else None
-        raise RuntimeError(f"coordinator lookup failed ({status}: {detail or 'unknown'})")
-    items = response.get("items")
-    if not isinstance(items, list):
-        return []
-    return [item for item in items if isinstance(item, dict)]
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for group_id in _coordinator_groups(cfg):
+        query = urlencode({"group_id": group_id})
+        url = f"{base_url}/v1/peers?{query}"
+        headers = build_auth_headers(
+            device_id=device_id,
+            method="GET",
+            url=url,
+            body_bytes=b"",
+            keys_dir=keys_dir,
+        )
+        status, response = http_client.request_json(
+            "GET",
+            url,
+            headers=headers,
+            timeout_s=max(1.0, float(cfg.sync_coordinator_timeout_s)),
+        )
+        if status != 200 or not isinstance(response, dict):
+            detail = response.get("error") if isinstance(response, dict) else None
+            raise RuntimeError(f"coordinator lookup failed ({status}: {detail or 'unknown'})")
+        items = response.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("device_id") or "").strip(),
+                str(item.get("fingerprint") or "").strip(),
+            )
+            if not key[0]:
+                continue
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = {
+                    **item,
+                    "addresses": discovery.merge_addresses([], item.get("addresses") or []),
+                    "groups": [group_id],
+                }
+                continue
+            existing["addresses"] = discovery.merge_addresses(
+                existing.get("addresses") or [], item.get("addresses") or []
+            )
+            existing["groups"] = discovery.merge_addresses(existing.get("groups") or [], [group_id])
+            existing["stale"] = bool(existing.get("stale", True) and item.get("stale", True))
+            if item.get("last_seen_at") and str(item.get("last_seen_at")) > str(
+                existing.get("last_seen_at") or ""
+            ):
+                existing["last_seen_at"] = item.get("last_seen_at")
+                existing["expires_at"] = item.get("expires_at")
+    return list(merged.values())
 
 
 def refresh_peer_address_cache(

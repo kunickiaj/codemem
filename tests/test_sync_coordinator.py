@@ -97,6 +97,130 @@ def test_refresh_peer_address_cache_updates_matching_peer(tmp_path: Path, monkey
         store.close()
 
 
+def test_register_presence_posts_only_configured_groups(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    keys_dir = tmp_path / "keys"
+    monkeypatch.setenv("CODEMEM_KEYS_DIR", str(keys_dir))
+    store = MemoryStore(db_path)
+    calls: list[str] = []
+    try:
+        ensure_device_identity(store.conn, keys_dir=keys_dir)
+
+        def fake_request_json(method: str, url: str, *, body=None, **_kwargs):
+            calls.append(str((body or {}).get("group_id") or ""))
+            return 200, {"ok": True}
+
+        monkeypatch.setattr("codemem.sync.coordinator.http_client.request_json", fake_request_json)
+
+        coordinator.register_presence(
+            store,
+            config=OpencodeMemConfig(
+                sync_coordinator_url="https://coord.example",
+                sync_coordinator_group="legacy-only",
+                sync_coordinator_groups=["team-alpha", "lab"],
+                sync_coordinator_timeout_s=3,
+                sync_coordinator_presence_ttl_s=180,
+                sync_advertise="127.0.0.1",
+                sync_port=7337,
+            ),
+        )
+
+        assert calls == ["team-alpha", "lab"]
+    finally:
+        store.close()
+
+
+def test_register_presence_posts_to_each_configured_group(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    keys_dir = tmp_path / "keys"
+    monkeypatch.setenv("CODEMEM_KEYS_DIR", str(keys_dir))
+    store = MemoryStore(db_path)
+    calls: list[dict[str, str]] = []
+    try:
+        ensure_device_identity(store.conn, keys_dir=keys_dir)
+
+        def fake_request_json(method: str, url: str, *, body=None, **_kwargs):
+            calls.append({"method": method, "group_id": str((body or {}).get("group_id") or "")})
+            return 200, {"ok": True, "group_id": (body or {}).get("group_id")}
+
+        monkeypatch.setattr("codemem.sync.coordinator.http_client.request_json", fake_request_json)
+
+        coordinator.register_presence(
+            store,
+            config=OpencodeMemConfig(
+                sync_coordinator_url="https://coord.example",
+                sync_coordinator_groups=["team-alpha", "lab"],
+                sync_coordinator_timeout_s=3,
+                sync_coordinator_presence_ttl_s=180,
+                sync_advertise="127.0.0.1",
+                sync_port=7337,
+            ),
+        )
+
+        assert calls == [
+            {"method": "POST", "group_id": "team-alpha"},
+            {"method": "POST", "group_id": "lab"},
+        ]
+    finally:
+        store.close()
+
+
+def test_lookup_peers_merges_results_from_multiple_groups(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    keys_dir = tmp_path / "keys"
+    monkeypatch.setenv("CODEMEM_KEYS_DIR", str(keys_dir))
+    store = MemoryStore(db_path)
+    try:
+        ensure_device_identity(store.conn, keys_dir=keys_dir)
+
+        def fake_request_json(method: str, url: str, **_kwargs):
+            if method == "GET" and "group_id=team-alpha" in url:
+                return 200, {
+                    "items": [
+                        {
+                            "device_id": "peer-1",
+                            "fingerprint": "fp-peer-1",
+                            "addresses": ["http://10.0.0.2:7337"],
+                            "last_seen_at": "2026-03-13T10:00:00Z",
+                            "expires_at": "2026-03-13T10:03:00Z",
+                            "stale": False,
+                        }
+                    ]
+                }
+            if method == "GET" and "group_id=lab" in url:
+                return 200, {
+                    "items": [
+                        {
+                            "device_id": "peer-1",
+                            "fingerprint": "fp-peer-1",
+                            "addresses": ["http://100.64.0.5:7337"],
+                            "last_seen_at": "2026-03-13T11:00:00Z",
+                            "expires_at": "2026-03-13T11:03:00Z",
+                            "stale": False,
+                        }
+                    ]
+                }
+            raise AssertionError(url)
+
+        monkeypatch.setattr("codemem.sync.coordinator.http_client.request_json", fake_request_json)
+
+        items = coordinator.lookup_peers(
+            store,
+            config=OpencodeMemConfig(
+                sync_coordinator_url="https://coord.example",
+                sync_coordinator_groups=["team-alpha", "lab"],
+                sync_coordinator_timeout_s=3,
+            ),
+        )
+
+        assert len(items) == 1
+        assert items[0]["groups"] == ["team-alpha", "lab"]
+        assert items[0]["addresses"] == ["http://10.0.0.2:7337", "http://100.64.0.5:7337"]
+        assert items[0]["last_seen_at"] == "2026-03-13T11:00:00Z"
+    finally:
+        store.close()
+
+
 def test_refresh_peer_address_cache_ignores_fingerprint_mismatch(
     tmp_path: Path, monkeypatch
 ) -> None:
