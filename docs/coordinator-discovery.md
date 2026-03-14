@@ -106,6 +106,9 @@ Dial preference is intentionally conservative:
 
 If the coordinator is unavailable, codemem falls back to cached addresses and mDNS.
 
+Address storage is normalized to explicit base URLs (for example `http://host:7337`) so equivalent discovery results do
+not accumulate as mixed `host:port` and `http://host:port` variants in local peer caches.
+
 ## Auth model
 
 - the coordinator is self-hosted/operator-run
