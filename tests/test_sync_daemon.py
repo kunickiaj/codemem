@@ -860,6 +860,26 @@ def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> Non
         store.close()
 
 
+def test_sync_daemon_tick_refreshes_coordinator_presence_without_peers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    calls: list[str] = []
+    try:
+        monkeypatch.setattr(sync_pass.discovery, "mdns_enabled", lambda: False)
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.coordinator.refresh_peer_address_cache",
+            lambda _store: calls.append("refresh") or {"updated_peers": 0, "ignored_peers": 0},
+        )
+
+        result = sync_pass.sync_daemon_tick(store)
+
+        assert calls == ["refresh"]
+        assert result == []
+    finally:
+        store.close()
+
+
 def test_is_connectivity_error_ignores_generic_address_failure_prefix() -> None:
     error = (
         "all addresses failed | "

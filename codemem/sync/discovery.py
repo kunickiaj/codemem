@@ -33,7 +33,22 @@ def normalize_address(address: str) -> str:
         path = parsed.path.rstrip("/")
         scheme = parsed.scheme.lower()
         return f"{scheme}://{netloc}{path}"
+    parsed = urlparse(f"//{value}")
+    host = (parsed.hostname or "").lower()
+    if host and parsed.port:
+        return f"{host}:{parsed.port}"
     return value.rstrip("/")
+
+
+def _address_dedupe_key(address: str) -> str:
+    cleaned = normalize_address(address)
+    if not cleaned:
+        return ""
+    parsed = urlparse(cleaned)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme in {"", "http"} and host and parsed.port and not parsed.path:
+        return f"{host}:{parsed.port}"
+    return cleaned
 
 
 def merge_addresses(existing: list[str], candidates: list[str]) -> list[str]:
@@ -41,9 +56,10 @@ def merge_addresses(existing: list[str], candidates: list[str]) -> list[str]:
     seen: set[str] = set()
     for address in existing + candidates:
         cleaned = normalize_address(address)
-        if not cleaned or cleaned in seen:
+        dedupe_key = _address_dedupe_key(cleaned)
+        if not cleaned or dedupe_key in seen:
             continue
-        seen.add(cleaned)
+        seen.add(dedupe_key)
         normalized.append(cleaned)
     return normalized
 
