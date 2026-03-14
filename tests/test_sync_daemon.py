@@ -9,6 +9,7 @@ import pytest
 
 from codemem import db
 from codemem.store import MemoryStore, ReplicationOp
+from codemem.sync import daemon as sync_daemon
 from codemem.sync import http_client, replication, sync_pass
 from codemem.sync.discovery import update_peer_addresses
 from codemem.sync_api import build_sync_handler
@@ -858,6 +859,46 @@ def test_sync_daemon_tick_uses_run_sync_pass(monkeypatch, tmp_path: Path) -> Non
         assert set(called) == {"peer-1", "peer-2"}
     finally:
         store.close()
+
+
+def test_sync_daemon_tick_refreshes_coordinator_presence_without_peers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    store = MemoryStore(tmp_path / "mem.sqlite")
+    calls: list[str] = []
+    try:
+        monkeypatch.setattr(sync_pass.discovery, "mdns_enabled", lambda: False)
+        monkeypatch.setattr(
+            "codemem.sync.sync_pass.coordinator.refresh_peer_address_cache",
+            lambda _store: calls.append("refresh") or {"updated_peers": 0, "ignored_peers": 0},
+        )
+
+        result = sync_pass.sync_daemon_tick(store)
+
+        assert calls == ["refresh"]
+        assert result == []
+    finally:
+        store.close()
+
+
+def test_run_sync_daemon_skips_startup_tick_when_already_stopped(
+    monkeypatch, tmp_path: Path
+) -> None:
+    stop = threading.Event()
+    stop.set()
+    calls: list[str] = []
+
+    monkeypatch.setattr(sync_pass, "sync_daemon_tick", lambda store: calls.append("tick") or [])
+
+    sync_daemon.run_sync_daemon(
+        host="127.0.0.1",
+        port=7337,
+        interval_s=1,
+        db_path=tmp_path / "mem.sqlite",
+        stop_event=stop,
+    )
+
+    assert calls == []
 
 
 def test_is_connectivity_error_ignores_generic_address_failure_prefix() -> None:

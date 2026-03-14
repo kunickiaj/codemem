@@ -50,19 +50,25 @@ def run_sync_daemon(
             store.close()
         zeroconf = advertise_mdns(device_id=device_id, port=port)
     stop = stop_event or threading.Event()
-    try:
-        while not stop.wait(interval_s):
-            store = MemoryStore(db_path or db.DEFAULT_DB_PATH)
+
+    def _run_tick_once() -> None:
+        store = MemoryStore(db_path or db.DEFAULT_DB_PATH)
+        try:
             try:
-                try:
-                    sync_pass.sync_daemon_tick(store)
-                    store.set_sync_daemon_ok()
-                except Exception as exc:
-                    tb = traceback.format_exc()
-                    store.set_sync_daemon_error(str(exc), tb)
-                    _append_sync_daemon_log(tb)
-            finally:
-                store.close()
+                sync_pass.sync_daemon_tick(store)
+                store.set_sync_daemon_ok()
+            except Exception as exc:
+                tb = traceback.format_exc()
+                store.set_sync_daemon_error(str(exc), tb)
+                _append_sync_daemon_log(tb)
+        finally:
+            store.close()
+
+    try:
+        if not stop.is_set():
+            _run_tick_once()
+        while not stop.wait(interval_s):
+            _run_tick_once()
     finally:
         server.shutdown()
         if zeroconf is not None:
