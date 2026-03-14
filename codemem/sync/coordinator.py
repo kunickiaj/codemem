@@ -17,20 +17,23 @@ from . import discovery, http_client
 
 def coordinator_enabled(config: OpencodeMemConfig | None = None) -> bool:
     cfg = config or load_config()
-    return bool(str(cfg.sync_coordinator_url or "").strip() and _coordinator_groups(cfg))
+    return bool(
+        str(getattr(cfg, "sync_coordinator_url", "") or "").strip() and _coordinator_groups(cfg)
+    )
 
 
 def _coordinator_groups(config: OpencodeMemConfig) -> list[str]:
-    if config.sync_coordinator_groups:
-        return [
-            str(group).strip() for group in config.sync_coordinator_groups if str(group).strip()
-        ]
-    group = str(config.sync_coordinator_group or "").strip()
+    groups_value = getattr(config, "sync_coordinator_groups", []) or []
+    if groups_value:
+        return [str(group).strip() for group in groups_value if str(group).strip()]
+    group = str(getattr(config, "sync_coordinator_group", "") or "").strip()
     return [group] if group else []
 
 
 def _coordinator_base_url(config: OpencodeMemConfig) -> str:
-    return http_client.build_base_url(str(config.sync_coordinator_url or "").strip())
+    return http_client.build_base_url(
+        str(getattr(config, "sync_coordinator_url", "") or "").strip()
+    )
 
 
 def _keys_dir() -> Path | None:
@@ -40,7 +43,7 @@ def _keys_dir() -> Path | None:
 
 def _advertised_sync_addresses(config: OpencodeMemConfig) -> list[str]:
     addresses: list[str] = []
-    for host in pick_advertise_hosts(config.sync_advertise):
+    for host in pick_advertise_hosts(getattr(config, "sync_advertise", "auto")):
         host_value = host.strip()
         if not host_value:
             continue
@@ -48,7 +51,9 @@ def _advertised_sync_addresses(config: OpencodeMemConfig) -> list[str]:
         if parsed.scheme:
             addresses.append(http_client.build_base_url(host_value))
             continue
-        addresses.append(http_client.build_base_url(f"http://{host_value}:{config.sync_port}"))
+        addresses.append(
+            http_client.build_base_url(f"http://{host_value}:{getattr(config, 'sync_port', 7337)}")
+        )
     return discovery.merge_addresses([], addresses)
 
 
@@ -71,7 +76,7 @@ def register_presence(
         "fingerprint": fingerprint,
         "public_key": public_key,
         "addresses": _advertised_sync_addresses(cfg),
-        "ttl_s": max(1, int(cfg.sync_coordinator_presence_ttl_s)),
+        "ttl_s": max(1, int(getattr(cfg, "sync_coordinator_presence_ttl_s", 180))),
     }
     responses: list[dict[str, Any]] = []
     for group_id in groups:
@@ -91,7 +96,7 @@ def register_presence(
             headers=headers,
             body=group_payload,
             body_bytes=body_bytes,
-            timeout_s=max(1.0, float(cfg.sync_coordinator_timeout_s)),
+            timeout_s=max(1.0, float(getattr(cfg, "sync_coordinator_timeout_s", 3))),
         )
         if status != 200 or not isinstance(response, dict):
             detail = response.get("error") if isinstance(response, dict) else None
@@ -126,7 +131,7 @@ def lookup_peers(
             "GET",
             url,
             headers=headers,
-            timeout_s=max(1.0, float(cfg.sync_coordinator_timeout_s)),
+            timeout_s=max(1.0, float(getattr(cfg, "sync_coordinator_timeout_s", 3))),
         )
         if status != 200 or not isinstance(response, dict):
             detail = response.get("error") if isinstance(response, dict) else None
@@ -222,3 +227,60 @@ def refresh_peer_address_cache(
         store.conn.commit()
         updated += 1
     return {"updated_peers": updated, "ignored_peers": ignored}
+
+
+def status_snapshot(
+    store: MemoryStore, *, config: OpencodeMemConfig | None = None
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    groups = _coordinator_groups(cfg)
+    if not coordinator_enabled(cfg):
+        return {
+            "enabled": False,
+            "configured": False,
+            "groups": groups,
+            "paired_peer_count": int(
+                store.conn.execute("SELECT COUNT(1) AS total FROM sync_peers").fetchone()["total"]
+                or 0
+            ),
+        }
+
+    paired_peer_count = int(
+        store.conn.execute("SELECT COUNT(1) AS total FROM sync_peers").fetchone()["total"] or 0
+    )
+    snapshot: dict[str, Any] = {
+        "enabled": True,
+        "configured": True,
+        "coordinator_url": str(getattr(cfg, "sync_coordinator_url", "") or "").strip(),
+        "groups": groups,
+        "paired_peer_count": paired_peer_count,
+        "presence_status": "unknown",
+        "presence_error": None,
+        "advertised_addresses": [],
+        "fresh_peer_count": 0,
+        "stale_peer_count": 0,
+        "discovered_peer_count": 0,
+    }
+    try:
+        registration = register_presence(store, config=cfg) or {}
+        snapshot["presence_status"] = "posted"
+        responses = registration.get("responses") if isinstance(registration, dict) else []
+        if isinstance(responses, list) and responses:
+            first = responses[0]
+            if isinstance(first, dict):
+                snapshot["advertised_addresses"] = first.get("addresses") or []
+    except Exception as exc:
+        message = str(exc)
+        snapshot["presence_status"] = "error"
+        snapshot["presence_error"] = message
+        if "unknown_device" in message:
+            snapshot["presence_status"] = "not_enrolled"
+
+    try:
+        peers = lookup_peers(store, config=cfg)
+        snapshot["discovered_peer_count"] = len(peers)
+        snapshot["fresh_peer_count"] = sum(1 for item in peers if not bool(item.get("stale")))
+        snapshot["stale_peer_count"] = sum(1 for item in peers if bool(item.get("stale")))
+    except Exception as exc:
+        snapshot["lookup_error"] = str(exc)
+    return snapshot
