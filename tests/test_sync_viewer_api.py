@@ -150,6 +150,47 @@ def test_sync_status_endpoint_includes_sharing_review_for_teammate_peer(
         server.shutdown()
 
 
+def test_sync_status_endpoint_includes_coordinator_status(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    _monkeypatch_sync_enabled(monkeypatch)
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.coordinator.status_snapshot",
+        lambda store, config=None: {
+            "configured": True,
+            "coordinator_url": "https://coord.example",
+            "groups": ["team-alpha"],
+            "presence_status": "posted",
+            "paired_peer_count": 1,
+            "fresh_peer_count": 1,
+            "stale_peer_count": 0,
+            "advertised_addresses": ["http://192.0.2.10:7337"],
+        },
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.execute(
+            "INSERT INTO sync_peers(peer_device_id, addresses_json, created_at) VALUES (?, ?, ?)",
+            ("peer-1", "[]", "2026-01-24T00:00:00Z"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["coordinator"]["configured"] is True
+        assert payload["coordinator"]["fresh_peer_count"] == 1
+    finally:
+        server.shutdown()
+
+
 def test_sync_status_sharing_review_matches_project_basename(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "mem.sqlite"
     monkeypatch.setenv("CODEMEM_DB", str(db_path))

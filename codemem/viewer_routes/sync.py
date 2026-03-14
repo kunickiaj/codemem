@@ -9,6 +9,7 @@ from urllib.parse import parse_qs
 
 from ..net import pick_advertise_host, pick_advertise_hosts
 from ..store import MemoryStore
+from ..sync import coordinator
 from ..sync.discovery import (
     load_peer_addresses,
     normalize_address,
@@ -254,6 +255,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
             attempts_items.append(item)
         legacy_devices = store.claimable_legacy_device_ids()
         sharing_review = store.sharing_review_summary(project=project)
+        coordinator_status = coordinator.status_snapshot(store, config=config)
 
         if daemon_state_value == "ok":
             peer_states = {
@@ -297,6 +299,7 @@ def handle_get(handler: _ViewerHandler, store: MemoryStore, path: str, query: st
                 "attempts": attempts_items[:5],
                 "legacy_devices": legacy_devices,
                 "sharing_review": sharing_review,
+                "coordinator": coordinator_status,
             }
         )
         return True
