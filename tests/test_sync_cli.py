@@ -432,7 +432,7 @@ def test_sync_pair_accept_stores_peer(tmp_path: Path) -> None:
         ).fetchone()
         assert stored is not None
         addresses = json.loads(stored["addresses_json"])
-        assert "peer:7337" in addresses
+        assert "http://peer:7337" in addresses
     finally:
         conn.close()
 
@@ -761,7 +761,7 @@ def test_sync_once_updates_addresses_from_mdns(monkeypatch, tmp_path: Path) -> N
         ).fetchone()
         assert row is not None
         addresses = json.loads(row["addresses_json"])
-        assert "192.168.1.22:7337" in addresses
+        assert "http://192.168.1.22:7337" in addresses
     finally:
         conn.close()
 

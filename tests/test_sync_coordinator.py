@@ -8,7 +8,7 @@ from pathlib import Path
 
 from codemem.config import OpencodeMemConfig
 from codemem.store import MemoryStore
-from codemem.sync import coordinator
+from codemem.sync import coordinator, discovery
 from codemem.sync.sync_pass import run_sync_pass
 from codemem.sync_api import build_sync_handler
 from codemem.sync_identity import ensure_device_identity, fingerprint_public_key, load_public_key
@@ -95,6 +95,26 @@ def test_refresh_peer_address_cache_updates_matching_peer(tmp_path: Path, monkey
         ]
     finally:
         store.close()
+
+
+def test_normalize_address_canonicalizes_bare_host_port() -> None:
+    assert discovery.normalize_address("192.168.42.123:7337") == "http://192.168.42.123:7337"
+    assert discovery.normalize_address("http://192.168.42.123:7337") == "http://192.168.42.123:7337"
+    assert discovery.merge_addresses([], ["192.168.42.123:7337", "http://192.168.42.123:7337"]) == [
+        "http://192.168.42.123:7337"
+    ]
+
+
+def test_normalize_address_ignores_invalid_bare_port() -> None:
+    assert discovery.normalize_address("peer:notaport") == "peer:notaport"
+    assert discovery.normalize_address("peer:99999") == ""
+    assert discovery.merge_addresses(
+        [], ["peer:notaport", "peer:99999", "http://192.168.42.123:7337"]
+    ) == ["peer:notaport", "http://192.168.42.123:7337"]
+
+
+def test_normalize_address_preserves_colon_delimited_non_address_tokens() -> None:
+    assert discovery.normalize_address("team:alpha") == "team:alpha"
 
 
 def test_register_presence_posts_only_configured_groups(tmp_path: Path, monkeypatch) -> None:
