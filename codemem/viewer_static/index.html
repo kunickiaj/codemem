@@ -850,6 +850,9 @@
         font-weight: 600;
       }
       .pill.alt { background: var(--accent-warm-subtle); color: var(--accent-warm); }
+      .pill-success { background: var(--green-bg, #16a34a22); color: var(--green-text, #16a34a); }
+      .pill-warning { background: var(--yellow-bg, #ca8a0422); color: var(--yellow-text, #ca8a04); }
+      .pill-error { background: var(--red-bg, #dc262622); color: var(--red-text, #dc2626); }
 
       .match {
         padding: 0 2px;
@@ -924,6 +927,67 @@
       .peer-actions { display: flex; gap: 6px; }
       .peer-actions button { border: 1px solid var(--border); background: transparent; border-radius: var(--radius-pill); padding: 5px 10px; font-family: var(--font-sans); font-size: 12px; cursor: pointer; color: var(--text-secondary); }
       .peer-actions button:hover { border-color: var(--border-hover); background: var(--surface-2); }
+      .peer-scope-editor-wrap { display: grid; gap: var(--sp-2); }
+      .sync-empty-state {
+        padding: 20px;
+        text-align: center;
+        color: var(--text-dim, var(--text-tertiary));
+        font-size: 0.9rem;
+        border: 1px dashed var(--border);
+        border-radius: 8px;
+        margin: 8px 0;
+      }
+      .sync-toggle-admin {
+        background: none;
+        border: none;
+        color: var(--text-dim, var(--text-tertiary));
+        padding: 4px 0;
+        cursor: pointer;
+        text-align: left;
+        margin-top: 16px;
+        font-size: 0.8rem;
+        text-decoration: underline;
+        text-decoration-style: dashed;
+        text-underline-offset: 3px;
+      }
+      .sync-toggle-admin:hover {
+        color: var(--accent);
+      }
+      .sync-ttl-group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .sync-ttl-group label {
+        font-size: 0.8rem;
+        color: var(--text-dim, var(--text-tertiary));
+        white-space: nowrap;
+      }
+      .sync-team-summary {
+        display: grid;
+        gap: 8px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface-2);
+      }
+      .sync-team-status-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .sync-team-status-label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
+      .sync-team-metrics {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
       .sync-legacy-claim-row { margin-top: 12px; gap: 12px; align-items: center; flex-wrap: wrap; }
       .sync-legacy-select {
         min-width: 320px;
@@ -1544,19 +1608,36 @@
           </div>
         </div>
         <div class="section-meta" id="syncTeamMeta"></div>
-        <div class="actor-create-row" id="syncInvitePanel">
-          <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team group" />
-          <select class="sync-actor-select" id="syncInvitePolicy">
-            <option value="auto_admit">Auto-admit</option>
-            <option value="approval_required">Approval required</option>
-          </select>
-          <input class="peer-scope-input" id="syncInviteTtl" type="number" min="1" value="24" placeholder="TTL hours" />
-          <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
-        </div>
-        <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite output appears here"></textarea>
-        <div class="actor-create-row" id="syncJoinPanel">
-          <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste team invite or codemem:// link"></textarea>
-          <button class="settings-button" id="syncJoinButton">Join team</button>
+        <div id="syncSetupPanel">
+          <div id="syncJoinSection">
+            <h3 class="settings-group-title">Join a team</h3>
+            <div class="section-meta">Have an invite? Paste it here.</div>
+            <div class="actor-create-row" id="syncJoinPanel">
+              <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste team invite or codemem:// link"></textarea>
+              <button class="settings-button" id="syncJoinButton">Join team</button>
+            </div>
+          </div>
+          <div id="syncAdminSection">
+            <button class="sync-toggle-admin" id="syncToggleAdmin">Set up a new team instead…</button>
+            <div id="syncInvitePanel" hidden>
+              <h3 class="settings-group-title" style="margin-top:12px">Create a team</h3>
+              <div class="section-meta">Generate an invite to share with teammates.</div>
+              <div class="actor-create-row">
+                <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team name (e.g. my-team)" />
+                <select class="sync-actor-select" id="syncInvitePolicy">
+                  <option value="auto_admit">Auto-admit</option>
+                  <option value="approval_required">Approval required</option>
+                </select>
+                <div class="sync-ttl-group">
+                  <label for="syncInviteTtl">Expires in</label>
+                  <input class="peer-scope-input" id="syncInviteTtl" type="number" min="1" value="24" style="width:64px" />
+                  <label>hours</label>
+                </div>
+                <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
+              </div>
+              <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite will appear here" hidden></textarea>
+            </div>
+          </div>
         </div>
         <div class="actor-list" id="syncTeamStatus"></div>
         <div class="actor-list" id="syncJoinRequests"></div>

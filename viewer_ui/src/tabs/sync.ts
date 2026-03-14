@@ -19,6 +19,10 @@ const PAIRING_FILTER_HINT =
   'On that accepting device, --include/--exclude only control what it sends to peers. ' +
   'This device does not yet enforce incoming project filters.';
 
+let adminSetupExpanded = false;
+let teamInvitePanelOpen = false;
+const openPeerScopeEditors = new Set<string>();
+
 /* ── Helpers ─────────────────────────────────────────────── */
 
 /** Redact the last two octets of IPv4 addresses while keeping the network prefix visible. */
@@ -176,6 +180,28 @@ function renderActionList(container: HTMLElement | null, actions: Array<{ label:
   });
 }
 
+function ensureInvitePanelInAdminSection() {
+  const invitePanel = document.getElementById('syncInvitePanel');
+  const adminSection = document.getElementById('syncAdminSection');
+  if (!invitePanel || !adminSection) return;
+  if (invitePanel.parentElement !== adminSection) adminSection.appendChild(invitePanel);
+}
+
+function ensureJoinPanelInSetupSection() {
+  const joinPanel = document.getElementById('syncJoinPanel');
+  const joinSection = document.getElementById('syncJoinSection');
+  if (!joinPanel || !joinSection) return;
+  if (joinPanel.parentElement !== joinSection) joinSection.appendChild(joinPanel);
+}
+
+function setInviteOutputVisibility() {
+  const syncInviteOutput = document.getElementById('syncInviteOutput') as HTMLTextAreaElement | null;
+  if (!syncInviteOutput) return;
+  const encoded = String(state.lastTeamInvite?.encoded || '').trim();
+  syncInviteOutput.value = encoded;
+  (syncInviteOutput as any).hidden = !encoded;
+}
+
 /* ── Sync status renderer ────────────────────────────────── */
 
 export function renderSyncStatus() {
@@ -289,7 +315,16 @@ export function renderSyncPeers() {
   if (!syncPeers) return;
   syncPeers.textContent = '';
   const peers = state.lastSyncPeers;
-  if (!Array.isArray(peers) || !peers.length) return;
+  if (!Array.isArray(peers) || !peers.length) {
+    syncPeers.appendChild(
+      el(
+        'div',
+        'sync-empty-state',
+        'No devices paired yet. Use the pairing command in Diagnostics to connect another device.',
+      ),
+    );
+    return;
+  }
 
   peers.forEach((peer) => {
     const card = el('div', 'peer-card');
@@ -318,6 +353,8 @@ export function renderSyncPeers() {
       syncBtn.textContent = 'Sync now';
     });
     actions.appendChild(syncBtn);
+    const toggleScopeBtn = el('button', null, 'Edit scope') as HTMLButtonElement;
+    actions.appendChild(toggleScopeBtn);
 
     const peerAddresses = Array.isArray(peer.addresses) ? Array.from(new Set(peer.addresses.filter(Boolean))) : [];
     const addressLine = peerAddresses.length
@@ -390,6 +427,9 @@ export function renderSyncPeers() {
     );
     const includeEditor = createChipEditor(includeList, 'Add included project', 'All projects');
     const excludeEditor = createChipEditor(excludeList, 'Add excluded project', 'No exclusions');
+    const editorWrap = el('div', 'peer-scope-editor-wrap');
+    const scopeEditorOpen = openPeerScopeEditors.has(peerId);
+    (editorWrap as any).hidden = !scopeEditorOpen;
     const inputRow = el('div', 'peer-scope-row');
     inputRow.append(includeEditor.element, excludeEditor.element);
     const scopeActions = el('div', 'peer-scope-actions');
@@ -426,7 +466,24 @@ export function renderSyncPeers() {
       }
     });
     scopeActions.append(saveScopeBtn, inheritBtn);
-    scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, inputRow, scopeActions);
+    editorWrap.append(inputRow, scopeActions);
+    toggleScopeBtn.textContent = scopeEditorOpen ? 'Hide scope editor' : 'Edit scope';
+    toggleScopeBtn.addEventListener('click', () => {
+      const nextHidden = !(editorWrap as any).hidden;
+      (editorWrap as any).hidden = nextHidden;
+      if (nextHidden) openPeerScopeEditors.delete(peerId);
+      else openPeerScopeEditors.add(peerId);
+      toggleScopeBtn.textContent = nextHidden ? 'Edit scope' : 'Hide scope editor';
+    });
+    scopePanel.append(
+      identityRow,
+      identityMeta,
+      actorRow,
+      actorHint,
+      scopeSummary,
+      effectiveSummary,
+      editorWrap,
+    );
 
     titleRow.append(name, actions);
     card.append(titleRow, addressLabel, meta, scopePanel);
@@ -445,6 +502,17 @@ export function renderSyncActors() {
     actorMeta.textContent = actors.length
       ? 'Create, rename, and merge actors here. Assign each device below. Non-local actors receive memories from allowed projects unless you mark them Only me.'
       : 'No named actors yet. Create one here, then assign devices below.';
+  }
+
+  if (!actors.length) {
+    actorList.appendChild(
+      el(
+        'div',
+        'sync-empty-state',
+        'No actors yet. Create one to represent yourself or a teammate.',
+      ),
+    );
+    return;
   }
 
   actors.forEach((actor) => {
@@ -600,53 +668,113 @@ export function renderSyncSharingReview() {
 }
 
 export function renderTeamSync() {
-  const panel = document.getElementById('syncTeamCard');
   const meta = document.getElementById('syncTeamMeta');
+  const setupPanel = document.getElementById('syncSetupPanel');
   const list = document.getElementById('syncTeamStatus');
   const actions = document.getElementById('syncTeamActions');
   const invitePanel = document.getElementById('syncInvitePanel');
+  const toggleAdmin = document.getElementById('syncToggleAdmin') as HTMLButtonElement | null;
   const joinPanel = document.getElementById('syncJoinPanel');
   const joinRequests = document.getElementById('syncJoinRequests');
-  if (!panel || !meta || !list || !actions) return;
+  if (!meta || !setupPanel || !list || !actions) return;
+  // Move panels back to their home sections BEFORE clearing, so they survive the wipe
+  ensureInvitePanelInAdminSection();
+  ensureJoinPanelInSetupSection();
   list.textContent = '';
+  actions.textContent = '';
   if (joinRequests) joinRequests.textContent = '';
+  setInviteOutputVisibility();
   const coordinator = state.lastSyncCoordinator;
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
     ? `Connected to ${String(coordinator.coordinator_url || '')} · group: ${(coordinator.groups || []).join(', ') || 'none'}`
     : 'Create a team invite or join an existing team to start syncing memories with teammates.';
-  if (invitePanel) (invitePanel as any).hidden = false;
-  if (joinPanel) (joinPanel as any).hidden = false;
   if (!configured) {
-    list.appendChild(el('div', 'peer-meta', 'Use Create invite if you are the team admin, or paste a team invite below to join.'));
-    renderActionList(actions, []);
+    (setupPanel as any).hidden = false;
+    (list as any).hidden = true;
+    (actions as any).hidden = true;
+    if (joinRequests) (joinRequests as any).hidden = true;
+    if (invitePanel) (invitePanel as any).hidden = !adminSetupExpanded;
+    if (toggleAdmin) {
+      toggleAdmin.textContent = adminSetupExpanded ? 'Hide team setup' : 'Set up a new team instead\u2026';
+    }
     return;
   }
+  (setupPanel as any).hidden = true;
+  (list as any).hidden = false;
+  (actions as any).hidden = false;
+  if (joinRequests) (joinRequests as any).hidden = false;
   const presenceLabel = coordinator.presence_status === 'posted'
     ? 'Connected'
     : coordinator.presence_status === 'not_enrolled'
       ? 'Not connected — import an invite or ask your admin to enroll this device'
       : 'Connection error';
-  const rows = [
-    ['Status', presenceLabel],
-    ['Paired devices', String(coordinator.paired_peer_count || 0)],
-    ['Discovered devices', String(coordinator.fresh_peer_count || 0)],
+  const statusRow = el('div', 'sync-team-summary');
+  const statusLine = el('div', 'sync-team-status-row');
+  const statusLabel = el('span', 'sync-team-status-label', 'Status');
+  const statusBadge = el(
+    'span',
+    `pill ${coordinator.presence_status === 'posted' ? 'pill-success' : coordinator.presence_status === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
+    presenceLabel,
+  );
+  const metricParts = [
+    `Paired devices: ${Number(coordinator.paired_peer_count || 0)}`,
+    `Discovered: ${Number(coordinator.fresh_peer_count || 0)}`,
   ];
   if (Number(coordinator.stale_peer_count || 0) > 0) {
-    rows.push(['Inactive devices', String(coordinator.stale_peer_count)]);
+    metricParts.push(`Inactive: ${Number(coordinator.stale_peer_count || 0)}`);
   }
-  rows.forEach(([label, value]) => {
-    const row = el('div', 'peer-meta', `${label}: ${value}`);
-    list.appendChild(row);
+  statusLine.append(statusLabel, statusBadge);
+  statusRow.append(statusLine, el('div', 'sync-team-metrics', metricParts.join(' · ')));
+  list.appendChild(statusRow);
+
+  const inviteToggleRow = el('div', 'sync-action');
+  const inviteToggleText = el('div', 'sync-action-text');
+  inviteToggleText.textContent = 'Generate an invite to add another teammate to this team.';
+  const inviteToggleBtn = el('button', 'settings-button', 'Invite a teammate') as HTMLButtonElement;
+  inviteToggleBtn.addEventListener('click', () => {
+    if (!invitePanel) return;
+    teamInvitePanelOpen = !teamInvitePanelOpen;
+    if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
+    (invitePanel as any).hidden = !teamInvitePanelOpen;
+    inviteToggleBtn.textContent = teamInvitePanelOpen ? 'Hide invite form' : 'Invite a teammate';
   });
-  const actionItems: Array<{ label: string; command: string }> = [];
+  inviteToggleRow.append(inviteToggleText, inviteToggleBtn);
+  actions.appendChild(inviteToggleRow);
+  if (invitePanel) {
+    if (teamInvitePanelOpen) {
+      if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
+      (invitePanel as any).hidden = false;
+      inviteToggleBtn.textContent = 'Hide invite form';
+    } else {
+      (invitePanel as any).hidden = true;
+    }
+  }
+
   if (coordinator.presence_status === 'not_enrolled') {
-    actionItems.push({ label: 'This device is not connected to the team yet.', command: 'Import a team invite or ask your admin to enroll this device' });
+    if (joinPanel) {
+      if (joinPanel.parentElement !== actions) actions.appendChild(joinPanel);
+      (joinPanel as any).hidden = false;
+    }
+    const row = el('div', 'sync-action');
+    const textWrap = el('div', 'sync-action-text');
+    textWrap.textContent = 'This device is not connected to the team yet.';
+    textWrap.appendChild(
+      el('span', 'sync-action-command', 'Import a team invite or ask your admin to enroll this device'),
+    );
+    actions.appendChild(row);
+    row.appendChild(textWrap);
   }
   if (!Number(coordinator.paired_peer_count || 0) && coordinator.presence_status === 'posted') {
-    actionItems.push({ label: 'No devices are paired yet.', command: 'uv run codemem sync pair --payload-only' });
+    const row = el('div', 'sync-action');
+    const textWrap = el('div', 'sync-action-text');
+    textWrap.textContent = 'No devices are paired yet.';
+    textWrap.appendChild(el('span', 'sync-action-command', 'uv run codemem sync pair --payload-only'));
+    const btn = el('button', 'settings-button sync-action-copy', 'Copy') as HTMLButtonElement;
+    btn.addEventListener('click', () => copyToClipboard('uv run codemem sync pair --payload-only', btn));
+    row.append(textWrap, btn);
+    actions.appendChild(row);
   }
-  renderActionList(actions, actionItems);
 
   const pending = Array.isArray(state.lastSyncJoinRequests) ? state.lastSyncJoinRequests : [];
   if (joinRequests && pending.length) {
@@ -695,6 +823,8 @@ export function renderTeamSync() {
       row.append(details, rowActions);
       joinRequests.appendChild(row);
     });
+  } else if (joinRequests) {
+    (joinRequests as any).hidden = true;
   }
 }
 
@@ -852,6 +982,8 @@ export function initSyncTab(refreshCallback: () => void) {
   const syncInvitePolicy = document.getElementById('syncInvitePolicy') as HTMLSelectElement | null;
   const syncInviteTtl = document.getElementById('syncInviteTtl') as HTMLInputElement | null;
   const syncInviteOutput = document.getElementById('syncInviteOutput') as HTMLTextAreaElement | null;
+  const syncToggleAdmin = document.getElementById('syncToggleAdmin') as HTMLButtonElement | null;
+  const syncInvitePanel = document.getElementById('syncInvitePanel');
   const syncJoinButton = document.getElementById('syncJoinButton') as HTMLButtonElement | null;
   const syncJoinInvite = document.getElementById('syncJoinInvite') as HTMLTextAreaElement | null;
   const syncLegacyClaimButton = document.getElementById('syncLegacyClaimButton') as HTMLButtonElement | null;
@@ -909,6 +1041,13 @@ export function initSyncTab(refreshCallback: () => void) {
     syncActorCreateInput.disabled = false;
   });
 
+  syncToggleAdmin?.addEventListener('click', () => {
+    if (!syncInvitePanel) return;
+    adminSetupExpanded = !adminSetupExpanded;
+    (syncInvitePanel as any).hidden = !adminSetupExpanded;
+    syncToggleAdmin.textContent = adminSetupExpanded ? 'Hide team setup' : 'Set up a new team instead\u2026';
+  });
+
   syncCreateInviteButton?.addEventListener('click', async () => {
     if (!syncCreateInviteButton || !syncInviteGroup || !syncInvitePolicy || !syncInviteTtl || !syncInviteOutput) return;
     syncCreateInviteButton.disabled = true;
@@ -921,6 +1060,9 @@ export function initSyncTab(refreshCallback: () => void) {
       });
       state.lastTeamInvite = result;
       syncInviteOutput.value = String(result.encoded || '');
+      (syncInviteOutput as any).hidden = false;
+      syncInviteOutput.focus();
+      syncInviteOutput.select();
       showGlobalNotice('Invite created.');
     } catch (error) {
       showGlobalNotice(error instanceof Error ? error.message : 'Failed to create invite.', 'warning');
