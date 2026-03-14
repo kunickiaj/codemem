@@ -294,6 +294,68 @@ class CoordinatorStore:
         ).fetchone()
         return dict(row) if row is not None else {}
 
+    def list_join_requests(self, *, group_id: str, status: str = "pending") -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+            FROM coordinator_join_requests
+            WHERE group_id = ? AND status = ?
+            ORDER BY created_at ASC, device_id ASC
+            """,
+            (group_id, status),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def review_join_request(
+        self,
+        *,
+        request_id: str,
+        approved: bool,
+        reviewed_by: str | None = None,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status
+            FROM coordinator_join_requests
+            WHERE request_id = ?
+            """,
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        if data.get("status") != "pending":
+            data["_no_transition"] = True
+            return data
+        reviewed_at = dt.datetime.now(dt.UTC).isoformat()
+        next_status = "approved" if approved else "denied"
+        if approved:
+            self.enroll_device(
+                str(data["group_id"]),
+                device_id=str(data["device_id"]),
+                fingerprint=str(data["fingerprint"]),
+                public_key=str(data["public_key"]),
+                display_name=(str(data.get("display_name") or "").strip() or None),
+            )
+        self.conn.execute(
+            """
+            UPDATE coordinator_join_requests
+            SET status = ?, reviewed_at = ?, reviewed_by = ?
+            WHERE request_id = ?
+            """,
+            (next_status, reviewed_at, reviewed_by, request_id),
+        )
+        self.conn.commit()
+        updated = self.conn.execute(
+            """
+            SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+            FROM coordinator_join_requests
+            WHERE request_id = ?
+            """,
+            (request_id,),
+        ).fetchone()
+        return dict(updated) if updated is not None else None
+
     def upsert_presence(
         self,
         *,

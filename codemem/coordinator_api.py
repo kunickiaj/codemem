@@ -134,6 +134,8 @@ def build_coordinator_handler(db_path: Path | None = None):
                 return self._handle_admin_post(parsed.path)
             if parsed.path == "/v1/admin/invites":
                 return self._handle_admin_post(parsed.path)
+            if parsed.path.startswith("/v1/admin/join-requests"):
+                return self._handle_admin_post(parsed.path)
             if parsed.path == "/v1/join":
                 return self._handle_join()
             if parsed.path != "/v1/presence":
@@ -197,6 +199,8 @@ def build_coordinator_handler(db_path: Path | None = None):
                 return self._handle_admin_list(parsed.query)
             if parsed.path == "/v1/admin/invites":
                 return self._handle_admin_list_invites(parsed.query)
+            if parsed.path == "/v1/admin/join-requests":
+                return self._handle_admin_list_join_requests(parsed.query)
             if parsed.path != "/v1/peers":
                 _send_json(self, {"error": "not_found"}, status=404)
                 return
@@ -274,6 +278,22 @@ def build_coordinator_handler(db_path: Path | None = None):
                     (group_id,),
                 ).fetchall()
                 _send_json(self, {"items": [dict(row) for row in rows]})
+            finally:
+                store.close()
+
+        def _handle_admin_list_join_requests(self, query: str) -> None:
+            ok, reason = _authorize_admin_request(self)
+            if not ok:
+                _send_json(self, {"error": reason}, status=401)
+                return
+            params = parse_qs(query)
+            group_id = str(params.get("group_id", [""])[0] or "").strip()
+            if not group_id:
+                _send_json(self, {"error": "group_id_required"}, status=400)
+                return
+            store = self._store()
+            try:
+                _send_json(self, {"items": store.list_join_requests(group_id=group_id)})
             finally:
                 store.close()
 
@@ -370,6 +390,36 @@ def build_coordinator_handler(db_path: Path | None = None):
                         "link": invite_link(encoded),
                     },
                 )
+                return
+            if path in {"/v1/admin/join-requests/approve", "/v1/admin/join-requests/deny"}:
+                request_id = str(data.get("request_id") or "").strip()
+                reviewed_by = str(data.get("reviewed_by") or "").strip() or None
+                if not request_id:
+                    _send_json(self, {"error": "request_id_required"}, status=400)
+                    return
+                store = self._store()
+                try:
+                    request = store.review_join_request(
+                        request_id=request_id,
+                        approved=path.endswith("/approve"),
+                        reviewed_by=reviewed_by,
+                    )
+                finally:
+                    store.close()
+                if request is None:
+                    _send_json(self, {"error": "request_not_found"}, status=404)
+                    return
+                if request.get("_no_transition"):
+                    _send_json(
+                        self,
+                        {
+                            "error": "request_not_pending",
+                            "status": request.get("status"),
+                        },
+                        status=409,
+                    )
+                    return
+                _send_json(self, {"ok": True, "request": request})
                 return
             if not group_id or not device_id:
                 _send_json(self, {"error": "group_id_and_device_id_required"}, status=400)

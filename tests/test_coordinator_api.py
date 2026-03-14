@@ -445,3 +445,54 @@ def test_join_endpoint_auto_admit_and_pending(tmp_path: Path, monkeypatch) -> No
         assert payload["status"] == "pending"
     finally:
         server.shutdown()
+
+
+def test_admin_can_list_and_approve_pending_join_request(tmp_path: Path, monkeypatch) -> None:
+    coordinator_db = tmp_path / "coordinator.sqlite"
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "topsecret")
+    store = CoordinatorStore(coordinator_db)
+    try:
+        store.create_group("team-alpha", display_name="Team Alpha")
+        invite = store.create_invite(
+            group_id="team-alpha",
+            policy="approval_required",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+        request = store.create_join_request(
+            group_id="team-alpha",
+            device_id="device-pending",
+            public_key="ssh-ed25519 AAAAtest pending@test",
+            fingerprint="fp-pending",
+            display_name="pending-device",
+            token=invite["token"],
+        )
+    finally:
+        store.close()
+
+    server, port = _start_server(coordinator_db)
+    headers = {"X-Codemem-Coordinator-Admin": "topsecret", "Content-Type": "application/json"}
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "GET",
+            "/v1/admin/join-requests?group_id=team-alpha",
+            headers={"X-Codemem-Coordinator-Admin": "topsecret"},
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["items"][0]["request_id"] == request["request_id"]
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/v1/admin/join-requests/approve",
+            body=json.dumps({"request_id": request["request_id"], "reviewed_by": "admin"}),
+            headers=headers,
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["request"]["status"] == "approved"
+    finally:
+        server.shutdown()
