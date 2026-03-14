@@ -457,6 +457,56 @@ def test_sync_coordinator_import_invite_local(tmp_path: Path) -> None:
         server.shutdown()
 
 
+def test_sync_coordinator_join_request_management_local(tmp_path: Path) -> None:
+    coordinator_db = tmp_path / "coordinator.sqlite"
+    store = CoordinatorStore(coordinator_db)
+    try:
+        store.create_group("team-alpha", display_name="Team Alpha")
+        invite = store.create_invite(
+            group_id="team-alpha",
+            policy="approval_required",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+        request = store.create_join_request(
+            group_id="team-alpha",
+            device_id="device-pending",
+            public_key="ssh-ed25519 AAAAtest pending@test",
+            fingerprint="fp-pending",
+            display_name="pending-device",
+            token=invite["token"],
+        )
+    finally:
+        store.close()
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "list-join-requests",
+            "team-alpha",
+            "--db-path",
+            str(coordinator_db),
+        ],
+    )
+    assert result.exit_code == 0
+    assert request["request_id"] in result.stdout
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "approve-join-request",
+            request["request_id"],
+            "--db-path",
+            str(coordinator_db),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Approved join request" in result.stdout
+
+
 def test_serve_start_defaults_to_background(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

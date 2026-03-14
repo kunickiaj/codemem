@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from http.server import HTTPServer
 from pathlib import Path
+from urllib.parse import quote
 
 from rich import print
 
@@ -295,3 +296,68 @@ def coordinator_import_invite_cmd(
     print(f"[green]Invite imported[/green] {payload['group_id']}")
     print(f"- coordinator: {payload['coordinator_url']}")
     print(f"- status: {response_data.get('status')}")
+
+
+def coordinator_list_join_requests_cmd(
+    *, group_id: str, db_path: str | None, remote_url: str | None, admin_secret: str | None
+) -> None:
+    resolved_remote_url, resolved_admin_secret = _resolve_remote_target(remote_url, admin_secret)
+    if resolved_remote_url:
+        if not resolved_admin_secret:
+            raise SystemExit("Remote coordinator admin secret required")
+        payload = _remote_request(
+            "GET",
+            f"{resolved_remote_url.rstrip('/')}/v1/admin/join-requests?group_id={quote(group_id, safe='')}",
+            admin_secret=resolved_admin_secret,
+        )
+        rows = payload.get("items") if isinstance(payload, dict) else []
+    else:
+        store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
+        try:
+            rows = store.list_join_requests(group_id=group_id)
+        finally:
+            store.close()
+    if not rows:
+        print(f"[yellow]No pending join requests[/yellow] for {group_id}")
+        return
+    print(f"[bold]Pending join requests[/bold] for {group_id}")
+    for row in rows:
+        display_name = row.get("display_name") or row.get("device_id")
+        print(f"- {display_name} ({row.get('device_id')}) request_id={row.get('request_id')}")
+
+
+def coordinator_review_join_request_cmd(
+    *,
+    request_id: str,
+    approve: bool,
+    reviewed_by: str | None,
+    db_path: str | None,
+    remote_url: str | None,
+    admin_secret: str | None,
+) -> None:
+    resolved_remote_url, resolved_admin_secret = _resolve_remote_target(remote_url, admin_secret)
+    if resolved_remote_url:
+        if not resolved_admin_secret:
+            raise SystemExit("Remote coordinator admin secret required")
+        endpoint = "/v1/admin/join-requests/approve" if approve else "/v1/admin/join-requests/deny"
+        payload = _remote_request(
+            "POST",
+            f"{resolved_remote_url.rstrip('/')}{endpoint}",
+            admin_secret=resolved_admin_secret,
+            body={"request_id": request_id, "reviewed_by": reviewed_by},
+        )
+        request = payload.get("request") if isinstance(payload, dict) else None
+    else:
+        store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
+        try:
+            request = store.review_join_request(
+                request_id=request_id,
+                approved=approve,
+                reviewed_by=reviewed_by,
+            )
+        finally:
+            store.close()
+    if not request:
+        raise SystemExit(f"Join request not found: {request_id}")
+    action = "Approved" if approve else "Denied"
+    print(f"[green]{action} join request[/green] {request_id}")
