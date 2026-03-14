@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+from http.server import HTTPServer
 from pathlib import Path
 
 import typer
@@ -7,8 +9,17 @@ from typer.testing import CliRunner
 
 from codemem import db, sync_identity
 from codemem.cli import app
+from codemem.coordinator_api import build_coordinator_handler
 
 runner = CliRunner()
+
+
+def _start_coordinator_server(db_path: Path) -> tuple[HTTPServer, int]:
+    handler = build_coordinator_handler(db_path)
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, int(server.server_address[1])
 
 
 def _write_fake_keys(private_key_path: Path, public_key_path: Path) -> None:
@@ -214,6 +225,133 @@ def test_serve_restart_subcommand_matches_legacy_flag(monkeypatch) -> None:
             "restart": True,
         }
     ]
+
+
+def test_sync_coordinator_management_commands(tmp_path: Path) -> None:
+    db_path = tmp_path / "coordinator.sqlite"
+    public_key_file = tmp_path / "device.key.pub"
+    public_key_file.write_text("ssh-ed25519 AAAAtest example@test\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "group-create",
+            "team-alpha",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "enroll-device",
+            "team-alpha",
+            "device-1",
+            "--fingerprint",
+            "fp-1",
+            "--public-key-file",
+            str(public_key_file),
+            "--name",
+            "laptop",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "list-devices",
+            "team-alpha",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "laptop (enabled) (device-1)" in result.stdout
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "rename-device",
+            "team-alpha",
+            "device-1",
+            "--name",
+            "work-laptop",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "disable-device",
+            "team-alpha",
+            "device-1",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "list-devices",
+            "team-alpha",
+            "--include-disabled",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "work-laptop (disabled) (device-1)" in result.stdout
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "remove-device",
+            "team-alpha",
+            "device-1",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "list-devices",
+            "team-alpha",
+            "--include-disabled",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "No enrolled devices" in result.stdout
 
 
 def test_serve_start_defaults_to_background(monkeypatch) -> None:

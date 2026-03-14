@@ -60,11 +60,18 @@ Basic flow:
 ```fish
 codemem sync coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem sync coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/id_ed25519.pub --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
 ```
 
 This keeps the primary deployment path inside the main `codemem` artifact and reuses the existing Python signature
 verification code directly.
+
+These management commands operate on the built-in local coordinator store only. Remote coordinator admin flows require a
+separate access-control model before they should be exposed over HTTP.
 
 ## How discovery works
 
@@ -88,6 +95,25 @@ If the coordinator is unavailable, codemem falls back to cached addresses and mD
 - devices authenticate with their existing sync keypair
 - enrollment is explicit per device/group
 - there is no username/password or codemem-operated account layer in this model
+
+## Remote admin flow
+
+Built-in local coordinator management commands operate directly on the local SQLite store.
+
+For remote coordinators, the first admin model uses a separate operator-managed admin secret. Remote management commands
+reuse the same `codemem sync coordinator ...` verbs, but target a remote coordinator when you pass `--remote-url` and
+an admin secret (or configure `sync_coordinator_admin_secret`).
+
+Examples:
+
+```fish
+codemem sync coordinator list-devices nerdworld --remote-url "https://coord.codemem.sh"
+codemem sync coordinator enroll-device nerdworld <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --remote-url "https://coord.codemem.sh"
+codemem sync coordinator rename-device nerdworld <device-id> --name "work-laptop" --remote-url "https://coord.codemem.sh"
+```
+
+Device participation auth still uses the enrolled device keypair for `presence` and `peers` endpoints; the admin secret
+is only for remote mutation/listing endpoints.
 
 ## Cloudflare Worker reference deployment
 

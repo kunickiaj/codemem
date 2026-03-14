@@ -79,8 +79,12 @@ from .commands.sync_cmds import (
     sync_uninstall_cmd,
 )
 from .commands.sync_coordinator_cmds import (
+    coordinator_disable_device_cmd,
     coordinator_enroll_device_cmd,
     coordinator_group_create_cmd,
+    coordinator_list_devices_cmd,
+    coordinator_remove_device_cmd,
+    coordinator_rename_device_cmd,
     coordinator_serve_cmd,
 )
 from .commands.sync_service_cmds import install_autostart_quiet as _install_autostart_quiet
@@ -1169,6 +1173,64 @@ def sync_coordinator_enroll_device(
         fingerprint=fingerprint,
         public_key_file=public_key_file,
         name=name,
+        db_path=db_path,
+    )
+
+
+@sync_coordinator_app.command("list-devices")
+def sync_coordinator_list_devices(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    include_disabled: bool = typer.Option(False, help="Include disabled devices"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+) -> None:
+    """List enrolled devices in a coordinator group."""
+    coordinator_list_devices_cmd(
+        group_id=group_id,
+        include_disabled=include_disabled,
+        db_path=db_path,
+    )
+
+
+@sync_coordinator_app.command("rename-device")
+def sync_coordinator_rename_device(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    device_id: str = typer.Argument(..., help="Device ID to rename"),
+    name: str = typer.Option(..., help="New display name"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+) -> None:
+    """Rename an enrolled device display name."""
+    coordinator_rename_device_cmd(
+        group_id=group_id,
+        device_id=device_id,
+        name=name,
+        db_path=db_path,
+    )
+
+
+@sync_coordinator_app.command("disable-device")
+def sync_coordinator_disable_device(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    device_id: str = typer.Argument(..., help="Device ID to disable"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+) -> None:
+    """Disable an enrolled device without deleting its record."""
+    coordinator_disable_device_cmd(
+        group_id=group_id,
+        device_id=device_id,
+        db_path=db_path,
+    )
+
+
+@sync_coordinator_app.command("remove-device")
+def sync_coordinator_remove_device(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    device_id: str = typer.Argument(..., help="Device ID to remove"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+) -> None:
+    """Remove an enrolled device and its cached presence record."""
+    coordinator_remove_device_cmd(
+        group_id=group_id,
+        device_id=device_id,
         db_path=db_path,
     )
 
