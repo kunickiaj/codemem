@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import secrets
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,21 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coordinator_invites (
+            invite_id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            policy TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            team_name_snapshot TEXT,
+            revoked_at TEXT
+        )
+        """
+    )
     conn.commit()
 
 
@@ -85,6 +101,13 @@ class CoordinatorStore:
             (group_id, display_name, now),
         )
         self.conn.commit()
+
+    def get_group(self, group_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT group_id, display_name, created_at FROM groups WHERE group_id = ?",
+            (group_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
     def enroll_device(
         self,
@@ -173,6 +196,45 @@ class CoordinatorStore:
         )
         self.conn.commit()
         return int(result.rowcount or 0) > 0
+
+    def create_invite(
+        self,
+        *,
+        group_id: str,
+        policy: str,
+        expires_at: str,
+        created_by: str | None = None,
+    ) -> dict[str, Any]:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        invite_id = secrets.token_urlsafe(12)
+        token = secrets.token_urlsafe(24)
+        group = self.get_group(group_id)
+        self.conn.execute(
+            """
+            INSERT INTO coordinator_invites(
+                invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                invite_id,
+                group_id,
+                token,
+                policy,
+                expires_at,
+                now,
+                created_by,
+                (group or {}).get("display_name"),
+            ),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            """
+            SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+            FROM coordinator_invites WHERE invite_id = ?
+            """,
+            (invite_id,),
+        ).fetchone()
+        return dict(row) if row is not None else {}
 
     def upsert_presence(
         self,
