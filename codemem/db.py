@@ -1106,7 +1106,12 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_typ
     existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column in existing:
         return
-    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc):
+            return
+        raise
 
 
 def _cleanup_orphan_prompt_links(conn: sqlite3.Connection) -> None:
