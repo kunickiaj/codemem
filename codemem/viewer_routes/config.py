@@ -318,12 +318,21 @@ def handle_get(
     except ValueError:
         handler._send_json({"error": "config file could not be read"}, status=500)
         return True
-    effective = asdict(load_config(config_path))
+    redacted_keys = {"sync_coordinator_admin_secret"}
+    config_data = {key: value for key, value in config_data.items() if key not in redacted_keys}
+    effective = {
+        key: value
+        for key, value in asdict(load_config(config_path)).items()
+        if key not in redacted_keys
+    }
+    defaults = {
+        key: value for key, value in asdict(OpencodeMemConfig()).items() if key not in redacted_keys
+    }
     handler._send_json(
         {
             "path": str(config_path),
             "config": config_data,
-            "defaults": asdict(OpencodeMemConfig()),
+            "defaults": defaults,
             "effective": effective,
             "env_overrides": get_env_overrides(),
             "providers": load_provider_options(),

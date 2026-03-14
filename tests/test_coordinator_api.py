@@ -238,3 +238,119 @@ def test_coordinator_presence_rejects_large_body(tmp_path: Path) -> None:
         assert payload["error"] == "body_too_large"
     finally:
         server.shutdown()
+
+
+def test_admin_endpoints_require_admin_secret(tmp_path: Path, monkeypatch) -> None:
+    coordinator_db = tmp_path / "coordinator.sqlite"
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "topsecret")
+    store = CoordinatorStore(coordinator_db)
+    try:
+        store.create_group("team-alpha")
+    finally:
+        store.close()
+
+    server, port = _start_server(coordinator_db)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/v1/admin/devices?group_id=team-alpha")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 401
+        assert payload["error"] == "missing_admin_header"
+    finally:
+        server.shutdown()
+
+
+def test_admin_device_management_flow(tmp_path: Path, monkeypatch) -> None:
+    coordinator_db = tmp_path / "coordinator.sqlite"
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "topsecret")
+    store = CoordinatorStore(coordinator_db)
+    try:
+        store.create_group("team-alpha")
+    finally:
+        store.close()
+
+    server, port = _start_server(coordinator_db)
+    headers = {"X-Codemem-Coordinator-Admin": "topsecret", "Content-Type": "application/json"}
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = json.dumps(
+            {
+                "group_id": "team-alpha",
+                "device_id": "device-1",
+                "fingerprint": "fp-1",
+                "public_key": "ssh-ed25519 AAAAtest example@test",
+                "display_name": "laptop",
+            }
+        )
+        conn.request("POST", "/v1/admin/devices", body=body, headers=headers)
+        resp = conn.getresponse()
+        assert resp.status == 200
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "GET",
+            "/v1/admin/devices?group_id=team-alpha",
+            headers={"X-Codemem-Coordinator-Admin": "topsecret"},
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["items"][0]["display_name"] == "laptop"
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/v1/admin/devices/rename",
+            body=json.dumps(
+                {"group_id": "team-alpha", "device_id": "device-1", "display_name": "work-laptop"}
+            ),
+            headers=headers,
+        )
+        resp = conn.getresponse()
+        assert resp.status == 200
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/v1/admin/devices/disable",
+            body=json.dumps({"group_id": "team-alpha", "device_id": "device-1"}),
+            headers=headers,
+        )
+        resp = conn.getresponse()
+        assert resp.status == 200
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "GET",
+            "/v1/admin/devices?group_id=team-alpha&include_disabled=1",
+            headers={"X-Codemem-Coordinator-Admin": "topsecret"},
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["items"][0]["display_name"] == "work-laptop"
+        assert payload["items"][0]["enabled"] == 0
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/v1/admin/devices/remove",
+            body=json.dumps({"group_id": "team-alpha", "device_id": "device-1"}),
+            headers=headers,
+        )
+        resp = conn.getresponse()
+        assert resp.status == 200
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "GET",
+            "/v1/admin/devices?group_id=team-alpha&include_disabled=1",
+            headers={"X-Codemem-Coordinator-Admin": "topsecret"},
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["items"] == []
+    finally:
+        server.shutdown()
