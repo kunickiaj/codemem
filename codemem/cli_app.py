@@ -79,6 +79,7 @@ from .commands.sync_cmds import (
     sync_uninstall_cmd,
 )
 from .commands.sync_coordinator_cmds import (
+    coordinator_create_invite_cmd,
     coordinator_disable_device_cmd,
     coordinator_enroll_device_cmd,
     coordinator_group_create_cmd,
@@ -1232,6 +1233,32 @@ def sync_coordinator_remove_device(
         group_id=group_id,
         device_id=device_id,
         db_path=db_path,
+    )
+
+
+@sync_coordinator_app.command("create-invite")
+def sync_coordinator_create_invite(
+    group_id: str = typer.Argument(..., help="Coordinator group identifier"),
+    coordinator_url: str = typer.Option(
+        None, help="Coordinator URL embedded in the invite payload"
+    ),
+    policy: str = typer.Option("auto_admit", help="Invite policy: auto_admit or approval_required"),
+    ttl_hours: int = typer.Option(24, help="Invite lifetime in hours"),
+    created_by: str = typer.Option(None, help="Optional creator label"),
+    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+) -> None:
+    """Create a team-scoped coordinator invite."""
+    coordinator_create_invite_cmd(
+        group_id=group_id,
+        coordinator_url=coordinator_url,
+        policy=policy,
+        ttl_hours=ttl_hours,
+        created_by=created_by,
+        db_path=db_path,
+        remote_url=remote_url,
+        admin_secret=admin_secret,
     )
 
 
