@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .coordinator_invites import InvitePayload, encode_invite_payload, invite_link
 from .coordinator_store import DEFAULT_COORDINATOR_DB_PATH, CoordinatorStore
 from .sync_auth import DEFAULT_TIME_WINDOW_S, verify_signature
 
@@ -131,6 +132,8 @@ def build_coordinator_handler(db_path: Path | None = None):
             parsed = urlparse(self.path)
             if parsed.path.startswith("/v1/admin/devices"):
                 return self._handle_admin_post(parsed.path)
+            if parsed.path == "/v1/admin/invites":
+                return self._handle_admin_post(parsed.path)
             if parsed.path != "/v1/presence":
                 _send_json(self, {"error": "not_found"}, status=404)
                 return
@@ -190,6 +193,8 @@ def build_coordinator_handler(db_path: Path | None = None):
             parsed = urlparse(self.path)
             if parsed.path == "/v1/admin/devices":
                 return self._handle_admin_list(parsed.query)
+            if parsed.path == "/v1/admin/invites":
+                return self._handle_admin_list_invites(parsed.query)
             if parsed.path != "/v1/peers":
                 _send_json(self, {"error": "not_found"}, status=404)
                 return
@@ -245,6 +250,31 @@ def build_coordinator_handler(db_path: Path | None = None):
             finally:
                 store.close()
 
+        def _handle_admin_list_invites(self, query: str) -> None:
+            ok, reason = _authorize_admin_request(self)
+            if not ok:
+                _send_json(self, {"error": reason}, status=401)
+                return
+            params = parse_qs(query)
+            group_id = str(params.get("group_id", [""])[0] or "").strip()
+            if not group_id:
+                _send_json(self, {"error": "group_id_required"}, status=400)
+                return
+            store = self._store()
+            try:
+                rows = store.conn.execute(
+                    """
+                    SELECT invite_id, group_id, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
+                    FROM coordinator_invites
+                    WHERE group_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (group_id,),
+                ).fetchall()
+                _send_json(self, {"items": [dict(row) for row in rows]})
+            finally:
+                store.close()
+
         def _handle_admin_post(self, path: str) -> None:
             ok, reason = _authorize_admin_request(self)
             if not ok:
@@ -287,6 +317,57 @@ def build_coordinator_handler(db_path: Path | None = None):
                 finally:
                     store.close()
                 _send_json(self, {"ok": True})
+                return
+            if path == "/v1/admin/invites":
+                policy = str(data.get("policy") or "auto_admit").strip()
+                expires_at = str(data.get("expires_at") or "").strip()
+                created_by = str(data.get("created_by") or "").strip() or None
+                if (
+                    not group_id
+                    or policy not in {"auto_admit", "approval_required"}
+                    or not expires_at
+                ):
+                    _send_json(
+                        self,
+                        {"error": "group_id_policy_and_expires_at_required"},
+                        status=400,
+                    )
+                    return
+                store = self._store()
+                try:
+                    group = store.get_group(group_id)
+                    if group is None:
+                        _send_json(self, {"error": "group_not_found"}, status=404)
+                        return
+                    invite = store.create_invite(
+                        group_id=group_id,
+                        policy=policy,
+                        expires_at=expires_at,
+                        created_by=created_by,
+                    )
+                finally:
+                    store.close()
+                payload: InvitePayload = {
+                    "v": 1,
+                    "kind": "coordinator_team_invite",
+                    "coordinator_url": str(data.get("coordinator_url") or "").strip(),
+                    "group_id": group_id,
+                    "policy": policy,
+                    "token": str(invite.get("token") or ""),
+                    "expires_at": expires_at,
+                    "team_name": invite.get("team_name_snapshot"),
+                }
+                encoded = encode_invite_payload(payload)
+                _send_json(
+                    self,
+                    {
+                        "ok": True,
+                        "invite": {k: v for k, v in invite.items() if k != "token"},
+                        "payload": payload,
+                        "encoded": encoded,
+                        "link": invite_link(encoded),
+                    },
+                )
                 return
             if not group_id or not device_id:
                 _send_json(self, {"error": "group_id_and_device_id_required"}, status=400)

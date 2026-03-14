@@ -354,6 +354,43 @@ def test_sync_coordinator_management_commands(tmp_path: Path) -> None:
     assert "No enrolled devices" in result.stdout
 
 
+def test_sync_coordinator_create_invite_local(tmp_path: Path) -> None:
+    db_path = tmp_path / "coordinator.sqlite"
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "group-create",
+            "team-alpha",
+            "--name",
+            "Team Alpha",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "coordinator",
+            "create-invite",
+            "team-alpha",
+            "--coordinator-url",
+            "https://coord.example",
+            "--ttl-hours",
+            "24",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Invite created" in result.stdout
+    assert "codemem://join?invite=" in result.stdout
+
+
 def test_serve_start_defaults_to_background(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

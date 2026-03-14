@@ -354,3 +354,38 @@ def test_admin_device_management_flow(tmp_path: Path, monkeypatch) -> None:
         assert payload["items"] == []
     finally:
         server.shutdown()
+
+
+def test_admin_invite_generation_flow(tmp_path: Path, monkeypatch) -> None:
+    coordinator_db = tmp_path / "coordinator.sqlite"
+    monkeypatch.setenv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "topsecret")
+    store = CoordinatorStore(coordinator_db)
+    try:
+        store.create_group("team-alpha", display_name="Team Alpha")
+    finally:
+        store.close()
+
+    server, port = _start_server(coordinator_db)
+    headers = {"X-Codemem-Coordinator-Admin": "topsecret", "Content-Type": "application/json"}
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        body = json.dumps(
+            {
+                "group_id": "team-alpha",
+                "policy": "auto_admit",
+                "expires_at": "2026-03-15T00:00:00Z",
+                "created_by": "admin",
+                "coordinator_url": f"http://127.0.0.1:{port}",
+            }
+        )
+        conn.request("POST", "/v1/admin/invites", body=body, headers=headers)
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["ok"] is True
+        assert payload["payload"]["group_id"] == "team-alpha"
+        assert payload["payload"]["policy"] == "auto_admit"
+        assert payload["encoded"]
+        assert payload["link"].startswith("codemem://join?invite=")
+    finally:
+        server.shutdown()
