@@ -1569,9 +1569,24 @@
       </div>
 
       <div class="card" id="syncCoordinatorOverview" style="animation-delay: 0.045s" hidden>
-        <h2>Coordinator onboarding</h2>
+        <h2>Team sync</h2>
         <div class="section-meta" id="syncCoordinatorMeta"></div>
+        <div class="actor-create-row" id="syncInvitePanel">
+          <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team group" />
+          <select class="sync-actor-select" id="syncInvitePolicy">
+            <option value="auto_admit">Auto-admit</option>
+            <option value="approval_required">Approval required</option>
+          </select>
+          <input class="peer-scope-input" id="syncInviteTtl" type="number" min="1" value="24" placeholder="TTL hours" />
+          <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
+        </div>
+        <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite output appears here"></textarea>
+        <div class="actor-create-row" id="syncJoinPanel">
+          <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste team invite or codemem:// link"></textarea>
+          <button class="settings-button" id="syncJoinButton">Join team</button>
+        </div>
         <div class="actor-list" id="syncCoordinatorList"></div>
+        <div class="actor-list" id="syncJoinRequests"></div>
         <div class="sync-actions" id="syncCoordinatorActions" hidden></div>
       </div>
 

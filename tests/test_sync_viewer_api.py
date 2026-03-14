@@ -38,6 +38,9 @@ def _monkeypatch_sync_enabled(monkeypatch) -> None:
                 "sync_interval_s": 60,
                 "sync_projects_include": [],
                 "sync_projects_exclude": [],
+                "sync_coordinator_url": None,
+                "sync_coordinator_group": None,
+                "sync_coordinator_admin_secret": None,
             },
         )(),
     )
@@ -187,6 +190,276 @@ def test_sync_status_endpoint_includes_coordinator_status(tmp_path: Path, monkey
         assert resp.status == 200
         assert payload["coordinator"]["configured"] is True
         assert payload["coordinator"]["fresh_peer_count"] == 1
+    finally:
+        server.shutdown()
+
+
+def test_sync_status_endpoint_ignores_join_request_load_errors(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": [],
+                "sync_projects_exclude": [],
+                "sync_coordinator_url": "https://coord.example",
+                "sync_coordinator_group": "team-alpha",
+                "sync_coordinator_admin_secret": "secret-123",
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.coordinator.status_snapshot",
+        lambda store, config=None: {"configured": True},
+    )
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.coordinator_list_join_requests_action",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sync/status")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["join_requests"] == []
+    finally:
+        server.shutdown()
+
+
+def test_sync_invite_create_endpoint_uses_configured_remote_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": [],
+                "sync_projects_exclude": [],
+                "sync_coordinator_url": "https://coord.example",
+                "sync_coordinator_group": "team-alpha",
+                "sync_coordinator_admin_secret": "secret-123",
+            },
+        )(),
+    )
+
+    def fake_create_invite_action(**kwargs):
+        captured.update(kwargs)
+        return {"group_id": kwargs["group_id"], "encoded": "invite-blob"}
+
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.coordinator_create_invite_action",
+        fake_create_invite_action,
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/invites/create",
+            body=json.dumps({"group_id": "team-alpha"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["encoded"] == "invite-blob"
+        assert captured["remote_url"] == "https://coord.example"
+        assert captured["admin_secret"] == "secret-123"
+    finally:
+        server.shutdown()
+
+
+def test_sync_join_request_review_returns_404_when_request_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": [],
+                "sync_projects_exclude": [],
+                "sync_coordinator_url": "https://coord.example",
+                "sync_coordinator_group": "team-alpha",
+                "sync_coordinator_admin_secret": "secret-123",
+            },
+        )(),
+    )
+
+    def fake_review_join_request_action(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.coordinator_review_join_request_action",
+        fake_review_join_request_action,
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/join-requests/review",
+            body=json.dumps({"request_id": "req-123", "action": "approve"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 404
+        assert payload["error"] == "join request not found"
+        assert captured["remote_url"] == "https://coord.example"
+        assert captured["admin_secret"] == "secret-123"
+    finally:
+        server.shutdown()
+
+
+def test_sync_invite_import_endpoint_routes_to_sync_handler(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    captured: dict[str, object] = {}
+    _monkeypatch_sync_enabled(monkeypatch)
+
+    def fake_import_invite_action(**kwargs):
+        captured.update(kwargs)
+        return {"status": "imported", "group_id": "team-alpha"}
+
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.coordinator_import_invite_action",
+        fake_import_invite_action,
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/invites/import",
+            body=json.dumps({"invite": "invite-blob"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 200
+        assert payload["status"] == "imported"
+        assert captured["invite_value"] == "invite-blob"
+    finally:
+        server.shutdown()
+
+
+def test_sync_join_request_review_maps_remote_request_not_found_to_404(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "mem.sqlite"
+    monkeypatch.setenv("CODEMEM_DB", str(db_path))
+    monkeypatch.setattr(
+        "codemem.viewer.load_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "sync_enabled": True,
+                "sync_host": "127.0.0.1",
+                "sync_port": 7337,
+                "sync_interval_s": 60,
+                "sync_projects_include": [],
+                "sync_projects_exclude": [],
+                "sync_coordinator_url": "https://coord.example",
+                "sync_coordinator_group": "team-alpha",
+                "sync_coordinator_admin_secret": "secret-123",
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "codemem.viewer_routes.sync.coordinator_review_join_request_action",
+        lambda **kwargs: (_ for _ in ()).throw(
+            SystemExit("Remote coordinator request failed (404): request_not_found")
+        ),
+    )
+    conn = db.connect(db_path)
+    try:
+        db.initialize_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    server, port = _start_server(db_path)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/sync/join-requests/review",
+            body=json.dumps({"request_id": "req-404", "action": "deny"}),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:38888",
+            },
+        )
+        resp = conn.getresponse()
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert resp.status == 404
+        assert payload["error"] == "Remote coordinator request failed (404): request_not_found"
     finally:
         server.shutdown()
 
