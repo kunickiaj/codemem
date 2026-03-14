@@ -598,6 +598,44 @@ export function renderSyncSharingReview() {
   });
 }
 
+export function renderSyncCoordinatorOverview() {
+  const panel = document.getElementById('syncCoordinatorOverview');
+  const meta = document.getElementById('syncCoordinatorMeta');
+  const list = document.getElementById('syncCoordinatorList');
+  const actions = document.getElementById('syncCoordinatorActions');
+  if (!panel || !meta || !list || !actions) return;
+  list.textContent = '';
+  const coordinator = state.lastSyncCoordinator;
+  if (!coordinator || !coordinator.configured) {
+    (panel as any).hidden = true;
+    return;
+  }
+  (panel as any).hidden = false;
+  meta.textContent = `${String(coordinator.coordinator_url || '')} · groups: ${(coordinator.groups || []).join(', ') || 'none'}`;
+  const rows = [
+    ['Enrollment', coordinator.presence_status === 'posted' ? 'Enrolled and posting presence' : coordinator.presence_status === 'not_enrolled' ? 'Not enrolled in coordinator' : 'Coordinator error'],
+    ['Paired peers', String(coordinator.paired_peer_count || 0)],
+    ['Fresh discovered peers', String(coordinator.fresh_peer_count || 0)],
+    ['Stale discovered peers', String(coordinator.stale_peer_count || 0)],
+    ['Advertised addresses', Array.isArray(coordinator.advertised_addresses) && coordinator.advertised_addresses.length ? coordinator.advertised_addresses.join(' · ') : 'None'],
+  ];
+  rows.forEach(([label, value]) => {
+    const row = el('div', 'peer-meta', `${label}: ${value}`);
+    list.appendChild(row);
+  });
+  const actionItems: Array<{ label: string; command: string }> = [];
+  if (coordinator.presence_status === 'not_enrolled') {
+    actionItems.push({ label: 'This device is not enrolled in the coordinator group.', command: 'Use invite import or remote admin enrollment for this device' });
+  }
+  if (!Number(coordinator.paired_peer_count || 0)) {
+    actionItems.push({ label: 'No trusted sync peers are paired yet.', command: 'uv run codemem sync pair --payload-only' });
+  }
+  if (!Number(coordinator.fresh_peer_count || 0)) {
+    actionItems.push({ label: 'No fresh peers were discovered from the coordinator.', command: 'uv run codemem sync once' });
+  }
+  renderActionList(actions, actionItems);
+}
+
 export function renderLegacyDeviceClaims() {
   const panel = document.getElementById('syncLegacyClaims');
   const select = document.getElementById('syncLegacyDeviceSelect') as HTMLSelectElement | null;
@@ -706,9 +744,11 @@ export async function loadSyncData() {
     state.lastSyncActors = Array.isArray(actorsPayload?.items) ? actorsPayload.items : [];
     state.lastSyncPeers = payload.peers || [];
     state.lastSyncSharingReview = payload.sharing_review || [];
+    state.lastSyncCoordinator = payload.coordinator || null;
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
     renderSyncStatus();
+    renderSyncCoordinatorOverview();
     renderSyncActors();
     renderSyncSharingReview();
     renderSyncPeers();
