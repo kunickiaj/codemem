@@ -408,6 +408,8 @@ def _should_skip_offline_peer(store: MemoryStore, peer_device_id: str) -> bool:
 
 def sync_daemon_tick(store: MemoryStore) -> list[dict[str, Any]]:
     sync_pass_preflight(store)
+    with suppress(Exception):
+        coordinator.refresh_peer_address_cache(store)
     rows = store.conn.execute("SELECT peer_device_id FROM sync_peers").fetchall()
     mdns_entries = discovery.discover_peers_via_mdns() if discovery.mdns_enabled() else []
     results: list[dict[str, Any]] = []
