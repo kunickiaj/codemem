@@ -59,11 +59,11 @@ function assignedActorCount(actorId: string): number {
 }
 
 function assignmentNote(actorId: string): string {
-  if (!actorId) return 'Unassigned peers keep legacy fallback attribution until you choose an actor.';
+  if (!actorId) return 'Unassigned devices keep legacy fallback attribution until you choose an actor.';
   const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
   const actor = actors.find((item) => String(item?.actor_id || '') === actorId);
   if (actor?.is_local) {
-    return 'Local actor assignment keeps this peer in your same-person continuity path, including private sync.';
+    return 'Local actor assignment keeps this device in your same-person continuity path, including private sync.';
   }
   return 'This actor receives memories from allowed projects by default. Use Only me on a memory when it should stay local.';
 }
@@ -99,7 +99,7 @@ function actorMergeNote(targetActorId: string, secondaryActorId: string): string
   if (!targetActorId || !target) {
     return 'Choose where this duplicate actor should collapse.';
   }
-  return `Merge into ${actorLabel(target)}. Assigned peers move now; existing memories already stamped with this actor keep their current provenance for now.`;
+  return `Merge into ${actorLabel(target)}. Assigned devices move now; existing memories keep their current provenance.`;
 }
 
 function createChipEditor(initialValues: string[], placeholder: string, emptyLabel: string) {
@@ -282,7 +282,7 @@ export function renderSyncStatus() {
   renderActionList(syncActions, actions);
 }
 
-/* ── Peers renderer ──────────────────────────────────────── */
+/* ── Devices renderer ────────────────────────────────────── */
 
 export function renderSyncPeers() {
   const syncPeers = document.getElementById('syncPeers');
@@ -364,11 +364,11 @@ export function renderSyncPeers() {
       applyActorBtn.textContent = 'Applying...';
       try {
         await api.assignPeerActor(peerId, actorSelect.value || null);
-        showGlobalNotice(actorSelect.value ? 'Peer actor updated.' : 'Peer actor cleared.');
+        showGlobalNotice(actorSelect.value ? 'Device actor updated.' : 'Device actor cleared.');
         await loadSyncData();
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : 'Failed to update peer actor.', 'warning');
-        applyActorBtn.textContent = 'Retry actor';
+        showGlobalNotice(error instanceof Error ? error.message : 'Failed to update device actor.', 'warning');
+        applyActorBtn.textContent = 'Retry';
       } finally {
         actorSelect.disabled = false;
         applyActorBtn.disabled = false;
@@ -381,7 +381,7 @@ export function renderSyncPeers() {
       'peer-scope-summary',
       inheritsGlobal
         ? 'Using global sync scope'
-        : `Peer override · include: ${includeList.join(', ') || 'all'} · exclude: ${excludeList.join(', ') || 'none'}`,
+        : `Device override · include: ${includeList.join(', ') || 'all'} · exclude: ${excludeList.join(', ') || 'none'}`,
     );
     const effectiveSummary = el(
       'div',
@@ -400,10 +400,10 @@ export function renderSyncPeers() {
       saveScopeBtn.textContent = 'Saving...';
       try {
         await api.updatePeerScope(peerId, includeEditor.values(), excludeEditor.values());
-        showGlobalNotice('Peer sync scope saved.');
+        showGlobalNotice('Device sync scope saved.');
         await loadSyncData();
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : 'Failed to save peer scope.', 'warning');
+        showGlobalNotice(error instanceof Error ? error.message : 'Failed to save device scope.', 'warning');
         saveScopeBtn.textContent = 'Retry save';
       } finally {
         saveScopeBtn.disabled = false;
@@ -415,10 +415,10 @@ export function renderSyncPeers() {
       inheritBtn.textContent = 'Resetting...';
       try {
         await api.updatePeerScope(peerId, null, null, true);
-        showGlobalNotice('Peer sync scope reset to global defaults.');
+        showGlobalNotice('Device sync scope reset to global defaults.');
         await loadSyncData();
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : 'Failed to reset peer scope.', 'warning');
+        showGlobalNotice(error instanceof Error ? error.message : 'Failed to reset device scope.', 'warning');
         inheritBtn.textContent = 'Retry reset';
       } finally {
         inheritBtn.disabled = false;
@@ -443,8 +443,8 @@ export function renderSyncActors() {
   const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
   if (actorMeta) {
     actorMeta.textContent = actors.length
-      ? 'Create, rename, and merge actors here. Assign each peer below. Non-local actors receive memories from allowed projects unless you mark them Only me.'
-      : 'No named actors yet. Create one here, then assign peers below.';
+      ? 'Create, rename, and merge actors here. Assign each device below. Non-local actors receive memories from allowed projects unless you mark them Only me.'
+      : 'No named actors yet. Create one here, then assign devices below.';
   }
 
   actors.forEach((actor) => {
@@ -452,14 +452,15 @@ export function renderSyncActors() {
     const details = el('div', 'actor-details');
     const title = el('div', 'actor-title');
     const name = el('strong', null, actorLabel(actor));
-    const badge = el('span', `badge actor-badge${actor.is_local ? ' local' : ''}`, actor.is_local ? 'Local' : `${assignedActorCount(String(actor.actor_id || ''))} peer${assignedActorCount(String(actor.actor_id || '')) === 1 ? '' : 's'}`);
+    const count = assignedActorCount(String(actor.actor_id || ''));
+    const badge = el('span', `badge actor-badge${actor.is_local ? ' local' : ''}`, actor.is_local ? 'Local' : `${count} device${count === 1 ? '' : 's'}`);
     title.append(name, badge);
     const note = el(
       'div',
       'peer-meta',
       actor.is_local
-        ? 'Used for this device and same-person peers.'
-        : `${assignedActorCount(String(actor.actor_id || ''))} assigned peer${assignedActorCount(String(actor.actor_id || '')) === 1 ? '' : 's'}`,
+        ? 'Used for this device and same-person devices.'
+        : `${count} assigned device${count === 1 ? '' : 's'}`,
     );
     details.append(title, note);
 
@@ -521,7 +522,7 @@ export function renderSyncActors() {
       mergeBtn.addEventListener('click', async () => {
         if (!mergeSelect.value) return;
         const target = mergeTargets.find((candidate) => String(candidate.actor_id || '') === mergeSelect.value);
-        if (!window.confirm(`Merge ${actorLabel(actor)} into ${actorLabel(target)}? Assigned peers move now, but older memories keep their current stamped provenance for now.`)) {
+        if (!window.confirm(`Merge ${actorLabel(actor)} into ${actorLabel(target)}? Assigned devices move now, but older memories keep their current stamped provenance for now.`)) {
           return;
         }
         mergeBtn.disabled = true;
@@ -531,7 +532,7 @@ export function renderSyncActors() {
         mergeBtn.textContent = 'Merging...';
         try {
           await api.mergeActor(mergeSelect.value, actorId);
-          showGlobalNotice('Actor merged. Assigned peers were moved to the selected actor.');
+          showGlobalNotice('Actor merged. Assigned devices moved to the selected actor.');
           await loadSyncData();
         } catch (error) {
           showGlobalNotice(error instanceof Error ? error.message : 'Failed to merge actor.', 'warning');
@@ -572,13 +573,13 @@ export function renderSyncSharingReview() {
   }
   (panel as any).hidden = false;
   const scopeLabel = state.currentProject ? `current project (${state.currentProject})` : 'all allowed projects';
-  meta.textContent = `Teammate peers receive memories from ${scopeLabel} by default. Use Only me on a memory when it should stay local.`;
+  meta.textContent = `Teammates receive memories from ${scopeLabel} by default. Use Only me on a memory when it should stay local.`;
   items.forEach((item) => {
     const row = el('div', 'actor-row');
     const details = el('div', 'actor-details');
     const title = el('div', 'actor-title');
     title.append(
-      el('strong', null, String(item.peer_name || item.peer_device_id || 'Peer')),
+      el('strong', null, String(item.peer_name || item.peer_device_id || 'Device')),
       el('span', 'badge actor-badge', `actor: ${String(item.actor_display_name || item.actor_id || 'unknown')}`),
     );
     const note = el(
@@ -598,11 +599,11 @@ export function renderSyncSharingReview() {
   });
 }
 
-export function renderSyncCoordinatorOverview() {
-  const panel = document.getElementById('syncCoordinatorOverview');
-  const meta = document.getElementById('syncCoordinatorMeta');
-  const list = document.getElementById('syncCoordinatorList');
-  const actions = document.getElementById('syncCoordinatorActions');
+export function renderTeamSync() {
+  const panel = document.getElementById('syncTeamCard');
+  const meta = document.getElementById('syncTeamMeta');
+  const list = document.getElementById('syncTeamStatus');
+  const actions = document.getElementById('syncTeamActions');
   const invitePanel = document.getElementById('syncInvitePanel');
   const joinPanel = document.getElementById('syncJoinPanel');
   const joinRequests = document.getElementById('syncJoinRequests');
@@ -610,38 +611,40 @@ export function renderSyncCoordinatorOverview() {
   list.textContent = '';
   if (joinRequests) joinRequests.textContent = '';
   const coordinator = state.lastSyncCoordinator;
-  (panel as any).hidden = false;
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
-    ? `${String(coordinator.coordinator_url || '')} · groups: ${(coordinator.groups || []).join(', ') || 'none'}`
-    : 'Set up a team coordinator or join an invite to start coordinator-backed sync.';
+    ? `Connected to ${String(coordinator.coordinator_url || '')} · group: ${(coordinator.groups || []).join(', ') || 'none'}`
+    : 'Create a team invite or join an existing team to start syncing memories with teammates.';
   if (invitePanel) (invitePanel as any).hidden = false;
   if (joinPanel) (joinPanel as any).hidden = false;
   if (!configured) {
-    list.appendChild(el('div', 'peer-meta', 'Use Create team invite if you administer a team, or Join team if someone shared an invite with you.'));
+    list.appendChild(el('div', 'peer-meta', 'Use Create invite if you are the team admin, or paste a team invite below to join.'));
     renderActionList(actions, []);
     return;
   }
+  const presenceLabel = coordinator.presence_status === 'posted'
+    ? 'Connected'
+    : coordinator.presence_status === 'not_enrolled'
+      ? 'Not connected — import an invite or ask your admin to enroll this device'
+      : 'Connection error';
   const rows = [
-    ['Enrollment', coordinator.presence_status === 'posted' ? 'Enrolled and posting presence' : coordinator.presence_status === 'not_enrolled' ? 'Not enrolled in coordinator' : 'Coordinator error'],
-    ['Paired peers', String(coordinator.paired_peer_count || 0)],
-    ['Fresh discovered peers', String(coordinator.fresh_peer_count || 0)],
-    ['Stale discovered peers', String(coordinator.stale_peer_count || 0)],
-    ['Advertised addresses', Array.isArray(coordinator.advertised_addresses) && coordinator.advertised_addresses.length ? coordinator.advertised_addresses.join(' · ') : 'None'],
+    ['Status', presenceLabel],
+    ['Paired devices', String(coordinator.paired_peer_count || 0)],
+    ['Discovered devices', String(coordinator.fresh_peer_count || 0)],
   ];
+  if (Number(coordinator.stale_peer_count || 0) > 0) {
+    rows.push(['Inactive devices', String(coordinator.stale_peer_count)]);
+  }
   rows.forEach(([label, value]) => {
     const row = el('div', 'peer-meta', `${label}: ${value}`);
     list.appendChild(row);
   });
   const actionItems: Array<{ label: string; command: string }> = [];
   if (coordinator.presence_status === 'not_enrolled') {
-    actionItems.push({ label: 'This device is not enrolled in the coordinator group.', command: 'Use invite import or remote admin enrollment for this device' });
+    actionItems.push({ label: 'This device is not connected to the team yet.', command: 'Import a team invite or ask your admin to enroll this device' });
   }
-  if (!Number(coordinator.paired_peer_count || 0)) {
-    actionItems.push({ label: 'No trusted sync peers are paired yet.', command: 'uv run codemem sync pair --payload-only' });
-  }
-  if (!Number(coordinator.fresh_peer_count || 0)) {
-    actionItems.push({ label: 'No fresh peers were discovered from the coordinator.', command: 'uv run codemem sync once' });
+  if (!Number(coordinator.paired_peer_count || 0) && coordinator.presence_status === 'posted') {
+    actionItems.push({ label: 'No devices are paired yet.', command: 'uv run codemem sync pair --payload-only' });
   }
   renderActionList(actions, actionItems);
 
@@ -726,7 +729,7 @@ export function renderLegacyDeviceClaims() {
     }
   });
   if (!meta.textContent) {
-    meta.textContent = 'Detected from older synced memories that are not attached to a current peer.';
+    meta.textContent = 'Detected from older synced memories not yet attached to a current device.';
   }
 }
 
@@ -808,7 +811,7 @@ export async function loadSyncData() {
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
     renderSyncStatus();
-    renderSyncCoordinatorOverview();
+    renderTeamSync();
     renderSyncActors();
     renderSyncSharingReview();
     renderSyncPeers();
