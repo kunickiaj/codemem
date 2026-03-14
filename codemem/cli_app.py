@@ -1214,7 +1214,7 @@ def sync_coordinator_rename_device(
 def sync_coordinator_disable_device(
     group_id: str = typer.Argument(..., help="Coordinator group identifier"),
     device_id: str = typer.Argument(..., help="Device ID to disable"),
-    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+    db_path: str | None = typer.Option(None, help="Path to coordinator SQLite database"),
 ) -> None:
     """Disable an enrolled device without deleting its record."""
     coordinator_disable_device_cmd(
@@ -1228,7 +1228,7 @@ def sync_coordinator_disable_device(
 def sync_coordinator_remove_device(
     group_id: str = typer.Argument(..., help="Coordinator group identifier"),
     device_id: str = typer.Argument(..., help="Device ID to remove"),
-    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
+    db_path: str | None = typer.Option(None, help="Path to coordinator SQLite database"),
 ) -> None:
     """Remove an enrolled device and its cached presence record."""
     coordinator_remove_device_cmd(
@@ -1241,15 +1241,15 @@ def sync_coordinator_remove_device(
 @sync_coordinator_app.command("create-invite")
 def sync_coordinator_create_invite(
     group_id: str = typer.Argument(..., help="Coordinator group identifier"),
-    coordinator_url: str = typer.Option(
+    coordinator_url: str | None = typer.Option(
         None, help="Coordinator URL embedded in the invite payload"
     ),
     policy: str = typer.Option("auto_admit", help="Invite policy: auto_admit or approval_required"),
     ttl_hours: int = typer.Option(24, help="Invite lifetime in hours"),
-    created_by: str = typer.Option(None, help="Optional creator label"),
-    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
-    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
-    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+    created_by: str | None = typer.Option(None, help="Optional creator label"),
+    db_path: str | None = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str | None = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str | None = typer.Option(None, help="Remote coordinator admin secret"),
 ) -> None:
     """Create a team-scoped coordinator invite."""
     coordinator_create_invite_cmd(
@@ -1267,9 +1267,9 @@ def sync_coordinator_create_invite(
 @sync_coordinator_app.command("import-invite")
 def sync_coordinator_import_invite(
     invite_value: str = typer.Argument(..., help="Invite payload or codemem://join link"),
-    db_path: str = typer.Option(None, help="Path to local codemem DB"),
-    keys_dir: str = typer.Option(None, help="Path to local codemem keys directory"),
-    config_path: str = typer.Option(None, help="Path to config file to update"),
+    db_path: str | None = typer.Option(None, help="Path to local codemem DB"),
+    keys_dir: str | None = typer.Option(None, help="Path to local codemem keys directory"),
+    config_path: str | None = typer.Option(None, help="Path to config file to update"),
 ) -> None:
     """Import a coordinator team invite."""
     coordinator_import_invite_cmd(
@@ -1283,9 +1283,9 @@ def sync_coordinator_import_invite(
 @sync_coordinator_app.command("list-join-requests")
 def sync_coordinator_list_join_requests(
     group_id: str = typer.Argument(..., help="Coordinator group identifier"),
-    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
-    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
-    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+    db_path: str | None = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str | None = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str | None = typer.Option(None, help="Remote coordinator admin secret"),
 ) -> None:
     """List pending coordinator join requests."""
     coordinator_list_join_requests_cmd(
@@ -1299,10 +1299,10 @@ def sync_coordinator_list_join_requests(
 @sync_coordinator_app.command("approve-join-request")
 def sync_coordinator_approve_join_request(
     request_id: str = typer.Argument(..., help="Coordinator join request id"),
-    reviewed_by: str = typer.Option(None, help="Optional reviewer label"),
-    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
-    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
-    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+    reviewed_by: str | None = typer.Option(None, help="Optional reviewer label"),
+    db_path: str | None = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str | None = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str | None = typer.Option(None, help="Remote coordinator admin secret"),
 ) -> None:
     """Approve a pending coordinator join request."""
     coordinator_review_join_request_cmd(
@@ -1318,10 +1318,10 @@ def sync_coordinator_approve_join_request(
 @sync_coordinator_app.command("deny-join-request")
 def sync_coordinator_deny_join_request(
     request_id: str = typer.Argument(..., help="Coordinator join request id"),
-    reviewed_by: str = typer.Option(None, help="Optional reviewer label"),
-    db_path: str = typer.Option(None, help="Path to coordinator SQLite database"),
-    remote_url: str = typer.Option(None, help="Remote coordinator base URL"),
-    admin_secret: str = typer.Option(None, help="Remote coordinator admin secret"),
+    reviewed_by: str | None = typer.Option(None, help="Optional reviewer label"),
+    db_path: str | None = typer.Option(None, help="Path to coordinator SQLite database"),
+    remote_url: str | None = typer.Option(None, help="Remote coordinator base URL"),
+    admin_secret: str | None = typer.Option(None, help="Remote coordinator admin secret"),
 ) -> None:
     """Deny a pending coordinator join request."""
     coordinator_review_join_request_cmd(

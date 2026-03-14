@@ -175,7 +175,7 @@ def _remote_request(
     return payload
 
 
-def coordinator_create_invite_cmd(
+def coordinator_create_invite_action(
     *,
     group_id: str,
     coordinator_url: str | None,
@@ -185,7 +185,7 @@ def coordinator_create_invite_cmd(
     db_path: str | None,
     remote_url: str | None,
     admin_secret: str | None,
-) -> None:
+) -> dict[str, object]:
     if policy not in VALID_INVITE_POLICIES:
         raise SystemExit(
             f"Invalid policy: {policy!r}. Must be one of: {', '.join(sorted(VALID_INVITE_POLICIES))}"
@@ -210,10 +210,14 @@ def coordinator_create_invite_cmd(
                 "coordinator_url": coordinator_url or resolved_remote_url,
             },
         )
-        print(f"[green]Invite created[/green] {group_id}")
-        print(f"- import: {payload.get('encoded')}")
-        print(f"- link: {payload.get('link')}")
-        return
+        remote_payload = payload if isinstance(payload, dict) else {}
+        return {
+            "group_id": group_id,
+            "encoded": remote_payload.get("encoded"),
+            "link": remote_payload.get("link"),
+            "payload": remote_payload.get("payload"),
+            "mode": "remote",
+        }
 
     store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
     try:
@@ -239,19 +243,50 @@ def coordinator_create_invite_cmd(
         "team_name": invite.get("team_name_snapshot"),
     }
     encoded = encode_invite_payload(payload)
+    return {
+        "group_id": group_id,
+        "encoded": encoded,
+        "link": invite_link(encoded),
+        "payload": payload,
+        "mode": "local",
+    }
+
+
+def coordinator_create_invite_cmd(
+    *,
+    group_id: str,
+    coordinator_url: str | None,
+    policy: str,
+    ttl_hours: int,
+    created_by: str | None,
+    db_path: str | None,
+    remote_url: str | None,
+    admin_secret: str | None,
+) -> None:
+    result = coordinator_create_invite_action(
+        group_id=group_id,
+        coordinator_url=coordinator_url,
+        policy=policy,
+        ttl_hours=ttl_hours,
+        created_by=created_by,
+        db_path=db_path,
+        remote_url=remote_url,
+        admin_secret=admin_secret,
+    )
     print(f"[green]Invite created[/green] {group_id}")
-    print(f"- import: {encoded}")
-    print(f"- link: {invite_link(encoded)}")
+    print(f"- import: {result.get('encoded')}")
+    print(f"- link: {result.get('link')}")
 
 
-def coordinator_import_invite_cmd(
+def coordinator_import_invite_action(
     *,
     invite_value: str,
     db_path: str | None,
     keys_dir: str | None,
     config_path: str | None,
-) -> None:
-    payload: InvitePayload = decode_invite_payload(extract_invite_payload(invite_value))
+) -> dict[str, object]:
+    decoded = decode_invite_payload(extract_invite_payload(invite_value))
+    payload: InvitePayload = decoded
     resolved_db_path = (
         Path(db_path).expanduser() if db_path else Path.home() / ".codemem" / "mem.sqlite"
     )
@@ -293,14 +328,35 @@ def coordinator_import_invite_cmd(
     config_data["sync_coordinator_group"] = str(payload["group_id"])
     write_config_file(config_data, resolved_config_path)
 
-    print(f"[green]Invite imported[/green] {payload['group_id']}")
-    print(f"- coordinator: {payload['coordinator_url']}")
-    print(f"- status: {response_data.get('status')}")
+    return {
+        "group_id": payload["group_id"],
+        "coordinator_url": payload["coordinator_url"],
+        "status": response_data.get("status"),
+        "config_path": str(resolved_config_path),
+    }
 
 
-def coordinator_list_join_requests_cmd(
-    *, group_id: str, db_path: str | None, remote_url: str | None, admin_secret: str | None
+def coordinator_import_invite_cmd(
+    *,
+    invite_value: str,
+    db_path: str | None,
+    keys_dir: str | None,
+    config_path: str | None,
 ) -> None:
+    result = coordinator_import_invite_action(
+        invite_value=invite_value,
+        db_path=db_path,
+        keys_dir=keys_dir,
+        config_path=config_path,
+    )
+    print(f"[green]Invite imported[/green] {result['group_id']}")
+    print(f"- coordinator: {result['coordinator_url']}")
+    print(f"- status: {result['status']}")
+
+
+def coordinator_list_join_requests_action(
+    *, group_id: str, db_path: str | None, remote_url: str | None, admin_secret: str | None
+) -> list[dict[str, object]]:
     resolved_remote_url, resolved_admin_secret = _resolve_remote_target(remote_url, admin_secret)
     if resolved_remote_url:
         if not resolved_admin_secret:
@@ -311,12 +367,26 @@ def coordinator_list_join_requests_cmd(
             admin_secret=resolved_admin_secret,
         )
         rows = payload.get("items") if isinstance(payload, dict) else []
-    else:
-        store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
-        try:
-            rows = store.list_join_requests(group_id=group_id)
-        finally:
-            store.close()
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+    store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
+    try:
+        rows = store.list_join_requests(group_id=group_id)
+    finally:
+        store.close()
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def coordinator_list_join_requests_cmd(
+    *, group_id: str, db_path: str | None, remote_url: str | None, admin_secret: str | None
+) -> None:
+    rows = coordinator_list_join_requests_action(
+        group_id=group_id,
+        db_path=db_path,
+        remote_url=remote_url,
+        admin_secret=admin_secret,
+    )
     if not rows:
         print(f"[yellow]No pending join requests[/yellow] for {group_id}")
         return
@@ -326,7 +396,7 @@ def coordinator_list_join_requests_cmd(
         print(f"- {display_name} ({row.get('device_id')}) request_id={row.get('request_id')}")
 
 
-def coordinator_review_join_request_cmd(
+def coordinator_review_join_request_action(
     *,
     request_id: str,
     approve: bool,
@@ -334,7 +404,7 @@ def coordinator_review_join_request_cmd(
     db_path: str | None,
     remote_url: str | None,
     admin_secret: str | None,
-) -> None:
+) -> dict[str, object] | None:
     resolved_remote_url, resolved_admin_secret = _resolve_remote_target(remote_url, admin_secret)
     if resolved_remote_url:
         if not resolved_admin_secret:
@@ -347,16 +417,35 @@ def coordinator_review_join_request_cmd(
             body={"request_id": request_id, "reviewed_by": reviewed_by},
         )
         request = payload.get("request") if isinstance(payload, dict) else None
-    else:
-        store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
-        try:
-            request = store.review_join_request(
-                request_id=request_id,
-                approved=approve,
-                reviewed_by=reviewed_by,
-            )
-        finally:
-            store.close()
+        return request if isinstance(request, dict) else None
+    store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
+    try:
+        return store.review_join_request(
+            request_id=request_id,
+            approved=approve,
+            reviewed_by=reviewed_by,
+        )
+    finally:
+        store.close()
+
+
+def coordinator_review_join_request_cmd(
+    *,
+    request_id: str,
+    approve: bool,
+    reviewed_by: str | None,
+    db_path: str | None,
+    remote_url: str | None,
+    admin_secret: str | None,
+) -> None:
+    request = coordinator_review_join_request_action(
+        request_id=request_id,
+        approve=approve,
+        reviewed_by=reviewed_by,
+        db_path=db_path,
+        remote_url=remote_url,
+        admin_secret=admin_secret,
+    )
     if not request:
         raise SystemExit(f"Join request not found: {request_id}")
     action = "Approved" if approve else "Denied"

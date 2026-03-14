@@ -603,15 +603,25 @@ export function renderSyncCoordinatorOverview() {
   const meta = document.getElementById('syncCoordinatorMeta');
   const list = document.getElementById('syncCoordinatorList');
   const actions = document.getElementById('syncCoordinatorActions');
+  const invitePanel = document.getElementById('syncInvitePanel');
+  const joinPanel = document.getElementById('syncJoinPanel');
+  const joinRequests = document.getElementById('syncJoinRequests');
   if (!panel || !meta || !list || !actions) return;
   list.textContent = '';
+  if (joinRequests) joinRequests.textContent = '';
   const coordinator = state.lastSyncCoordinator;
-  if (!coordinator || !coordinator.configured) {
-    (panel as any).hidden = true;
+  (panel as any).hidden = false;
+  const configured = Boolean(coordinator && coordinator.configured);
+  meta.textContent = configured
+    ? `${String(coordinator.coordinator_url || '')} · groups: ${(coordinator.groups || []).join(', ') || 'none'}`
+    : 'Set up a team coordinator or join an invite to start coordinator-backed sync.';
+  if (invitePanel) (invitePanel as any).hidden = false;
+  if (joinPanel) (joinPanel as any).hidden = false;
+  if (!configured) {
+    list.appendChild(el('div', 'peer-meta', 'Use Create team invite if you administer a team, or Join team if someone shared an invite with you.'));
+    renderActionList(actions, []);
     return;
   }
-  (panel as any).hidden = false;
-  meta.textContent = `${String(coordinator.coordinator_url || '')} · groups: ${(coordinator.groups || []).join(', ') || 'none'}`;
   const rows = [
     ['Enrollment', coordinator.presence_status === 'posted' ? 'Enrolled and posting presence' : coordinator.presence_status === 'not_enrolled' ? 'Not enrolled in coordinator' : 'Coordinator error'],
     ['Paired peers', String(coordinator.paired_peer_count || 0)],
@@ -634,6 +644,55 @@ export function renderSyncCoordinatorOverview() {
     actionItems.push({ label: 'No fresh peers were discovered from the coordinator.', command: 'uv run codemem sync once' });
   }
   renderActionList(actions, actionItems);
+
+  const pending = Array.isArray(state.lastSyncJoinRequests) ? state.lastSyncJoinRequests : [];
+  if (joinRequests && pending.length) {
+    const title = el('div', 'peer-meta', `${pending.length} pending join request${pending.length === 1 ? '' : 's'}`);
+    joinRequests.appendChild(title);
+    pending.forEach((request) => {
+      const row = el('div', 'actor-row');
+      const details = el('div', 'actor-details');
+      const name = String(request.display_name || request.device_id || 'Pending device');
+      details.append(
+        el('div', 'actor-title', name),
+        el('div', 'peer-meta', `request: ${String(request.request_id || '')}`),
+      );
+      const rowActions = el('div', 'actor-actions');
+      const approveBtn = el('button', 'settings-button', 'Approve') as HTMLButtonElement;
+      const denyBtn = el('button', 'settings-button', 'Deny') as HTMLButtonElement;
+      approveBtn.addEventListener('click', async () => {
+        approveBtn.disabled = true;
+        denyBtn.disabled = true;
+        try {
+          await api.reviewJoinRequest(String(request.request_id || ''), 'approve');
+          showGlobalNotice('Join request approved.');
+          await loadSyncData();
+        } catch (error) {
+          showGlobalNotice(error instanceof Error ? error.message : 'Failed to approve join request.', 'warning');
+        } finally {
+          approveBtn.disabled = false;
+          denyBtn.disabled = false;
+        }
+      });
+      denyBtn.addEventListener('click', async () => {
+        approveBtn.disabled = true;
+        denyBtn.disabled = true;
+        try {
+          await api.reviewJoinRequest(String(request.request_id || ''), 'deny');
+          showGlobalNotice('Join request denied.');
+          await loadSyncData();
+        } catch (error) {
+          showGlobalNotice(error instanceof Error ? error.message : 'Failed to deny join request.', 'warning');
+        } finally {
+          approveBtn.disabled = false;
+          denyBtn.disabled = false;
+        }
+      });
+      rowActions.append(approveBtn, denyBtn);
+      row.append(details, rowActions);
+      joinRequests.appendChild(row);
+    });
+  }
 }
 
 export function renderLegacyDeviceClaims() {
@@ -745,6 +804,7 @@ export async function loadSyncData() {
     state.lastSyncPeers = payload.peers || [];
     state.lastSyncSharingReview = payload.sharing_review || [];
     state.lastSyncCoordinator = payload.coordinator || null;
+    state.lastSyncJoinRequests = payload.join_requests || [];
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
     renderSyncStatus();
@@ -784,6 +844,13 @@ export function initSyncTab(refreshCallback: () => void) {
   const syncRedact = document.getElementById('syncRedact') as HTMLInputElement | null;
   const syncActorCreateButton = document.getElementById('syncActorCreateButton') as HTMLButtonElement | null;
   const syncActorCreateInput = document.getElementById('syncActorCreateInput') as HTMLInputElement | null;
+  const syncCreateInviteButton = document.getElementById('syncCreateInviteButton') as HTMLButtonElement | null;
+  const syncInviteGroup = document.getElementById('syncInviteGroup') as HTMLInputElement | null;
+  const syncInvitePolicy = document.getElementById('syncInvitePolicy') as HTMLSelectElement | null;
+  const syncInviteTtl = document.getElementById('syncInviteTtl') as HTMLInputElement | null;
+  const syncInviteOutput = document.getElementById('syncInviteOutput') as HTMLTextAreaElement | null;
+  const syncJoinButton = document.getElementById('syncJoinButton') as HTMLButtonElement | null;
+  const syncJoinInvite = document.getElementById('syncJoinInvite') as HTMLTextAreaElement | null;
   const syncLegacyClaimButton = document.getElementById('syncLegacyClaimButton') as HTMLButtonElement | null;
   const syncLegacyDeviceSelect = document.getElementById('syncLegacyDeviceSelect') as HTMLSelectElement | null;
   const pairingCopy = document.getElementById('pairingCopy') as HTMLButtonElement | null;
@@ -837,6 +904,44 @@ export function initSyncTab(refreshCallback: () => void) {
     syncActorCreateButton.textContent = 'Create actor';
     syncActorCreateButton.disabled = false;
     syncActorCreateInput.disabled = false;
+  });
+
+  syncCreateInviteButton?.addEventListener('click', async () => {
+    if (!syncCreateInviteButton || !syncInviteGroup || !syncInvitePolicy || !syncInviteTtl || !syncInviteOutput) return;
+    syncCreateInviteButton.disabled = true;
+    syncCreateInviteButton.textContent = 'Creating...';
+    try {
+      const result = await api.createCoordinatorInvite({
+        group_id: syncInviteGroup.value.trim(),
+        policy: syncInvitePolicy.value as 'auto_admit' | 'approval_required',
+        ttl_hours: Number(syncInviteTtl.value || 24) || 24,
+      });
+      state.lastTeamInvite = result;
+      syncInviteOutput.value = String(result.encoded || '');
+      showGlobalNotice('Invite created.');
+    } catch (error) {
+      showGlobalNotice(error instanceof Error ? error.message : 'Failed to create invite.', 'warning');
+    } finally {
+      syncCreateInviteButton.disabled = false;
+      syncCreateInviteButton.textContent = 'Create invite';
+    }
+  });
+
+  syncJoinButton?.addEventListener('click', async () => {
+    if (!syncJoinButton || !syncJoinInvite) return;
+    syncJoinButton.disabled = true;
+    syncJoinButton.textContent = 'Joining...';
+    try {
+      const result = await api.importCoordinatorInvite(syncJoinInvite.value.trim());
+      state.lastTeamJoin = result;
+      showGlobalNotice(result.status === 'pending' ? 'Join request submitted. Waiting for approval.' : 'Team invite imported.');
+      await loadSyncData();
+    } catch (error) {
+      showGlobalNotice(error instanceof Error ? error.message : 'Failed to import invite.', 'warning');
+    } finally {
+      syncJoinButton.disabled = false;
+      syncJoinButton.textContent = 'Join team';
+    }
   });
 
   syncLegacyClaimButton?.addEventListener('click', async () => {

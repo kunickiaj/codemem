@@ -104,6 +104,47 @@ export async function loadSyncStatus(includeDiagnostics: boolean, project = ''):
   return fetchJson(`/api/sync/status${suffix}`);
 }
 
+export async function createCoordinatorInvite(payload: {
+  group_id: string;
+  coordinator_url?: string;
+  policy: 'auto_admit' | 'approval_required';
+  ttl_hours: number;
+}): Promise<any> {
+  const resp = await fetch('/api/sync/invites/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const text = await resp.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(data?.error || text || 'request failed');
+  return data;
+}
+
+export async function importCoordinatorInvite(invite: string): Promise<any> {
+  const resp = await fetch('/api/sync/invites/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ invite }),
+  });
+  const text = await resp.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(data?.error || text || 'request failed');
+  return data;
+}
+
+export async function reviewJoinRequest(requestId: string, action: 'approve' | 'deny'): Promise<any> {
+  const resp = await fetch('/api/sync/join-requests/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_id: requestId, action }),
+  });
+  const text = await resp.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(data?.error || text || 'request failed');
+  return data;
+}
+
 export async function loadSyncActors(): Promise<any> {
   return fetchJson('/api/sync/actors');
 }
