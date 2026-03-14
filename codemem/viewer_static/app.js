@@ -1527,6 +1527,37 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       updateFeedView(true);
     }
   }
+  function shakeField(input) {
+    input.classList.add("sync-shake");
+    input.addEventListener("animationend", () => input.classList.remove("sync-shake"), { once: true });
+  }
+  function markFieldError(input, message) {
+    input.classList.add("sync-field-error");
+    const existing = input.parentElement?.querySelector(".sync-field-hint");
+    if (existing) existing.remove();
+    const hint = document.createElement("div");
+    hint.className = "sync-field-hint";
+    hint.textContent = message;
+    input.insertAdjacentElement("afterend", hint);
+    shakeField(input);
+    input.addEventListener("input", () => clearFieldError(input), { once: true });
+    return false;
+  }
+  function clearFieldError(input) {
+    input.classList.remove("sync-field-error");
+    const hint = input.parentElement?.querySelector(".sync-field-hint");
+    if (hint) hint.remove();
+  }
+  function friendlyError(error, fallback) {
+    if (error instanceof Error) {
+      const msg = error.message;
+      if (msg.includes("fetch") || msg.includes("network") || msg.includes("Failed to fetch")) {
+        return "Network error — check your connection and try again.";
+      }
+      return msg;
+    }
+    return fallback;
+  }
   let adminSetupExpanded = false;
   let teamInvitePanelOpen = false;
   const openPeerScopeEditors = /* @__PURE__ */ new Set();
@@ -1856,7 +1887,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
           showGlobalNotice(actorSelect.value ? "Device actor updated." : "Device actor cleared.");
           await loadSyncData();
         } catch (error) {
-          showGlobalNotice(error instanceof Error ? error.message : "Failed to update device actor.", "warning");
+          showGlobalNotice(friendlyError(error, "Failed to update device actor."), "warning");
           applyActorBtn.textContent = "Retry";
         } finally {
           actorSelect.disabled = false;
@@ -1893,7 +1924,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
           showGlobalNotice("Device sync scope saved.");
           await loadSyncData();
         } catch (error) {
-          showGlobalNotice(error instanceof Error ? error.message : "Failed to save device scope.", "warning");
+          showGlobalNotice(friendlyError(error, "Failed to save device scope."), "warning");
           saveScopeBtn.textContent = "Retry save";
         } finally {
           saveScopeBtn.disabled = false;
@@ -1908,7 +1939,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
           showGlobalNotice("Device sync scope reset to global defaults.");
           await loadSyncData();
         } catch (error) {
-          showGlobalNotice(error instanceof Error ? error.message : "Failed to reset device scope.", "warning");
+          showGlobalNotice(friendlyError(error, "Failed to reset device scope."), "warning");
           inheritBtn.textContent = "Retry reset";
         } finally {
           inheritBtn.disabled = false;
@@ -2041,7 +2072,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
             showGlobalNotice("Actor merged. Assigned devices moved to the selected actor.");
             await loadSyncData();
           } catch (error) {
-            showGlobalNotice(error instanceof Error ? error.message : "Failed to merge actor.", "warning");
+            showGlobalNotice(friendlyError(error, "Failed to merge actor."), "warning");
             mergeBtn.textContent = "Retry merge";
           } finally {
             mergeBtn.disabled = mergeTargets.length === 0;
@@ -2218,26 +2249,31 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         approveBtn.addEventListener("click", async () => {
           approveBtn.disabled = true;
           denyBtn.disabled = true;
+          approveBtn.textContent = "Approving…";
           try {
             await reviewJoinRequest(String(request.request_id || ""), "approve");
-            showGlobalNotice("Join request approved.");
+            showGlobalNotice(`Approved ${name}. They can now sync with the team.`);
             await loadSyncData();
           } catch (error) {
-            showGlobalNotice(error instanceof Error ? error.message : "Failed to approve join request.", "warning");
+            showGlobalNotice(friendlyError(error, "Failed to approve join request."), "warning");
+            approveBtn.textContent = "Retry";
           } finally {
             approveBtn.disabled = false;
             denyBtn.disabled = false;
           }
         });
         denyBtn.addEventListener("click", async () => {
+          if (!window.confirm(`Deny join request from ${name}? They will need a new invite to try again.`)) return;
           approveBtn.disabled = true;
           denyBtn.disabled = true;
+          denyBtn.textContent = "Denying…";
           try {
             await reviewJoinRequest(String(request.request_id || ""), "deny");
-            showGlobalNotice("Join request denied.");
+            showGlobalNotice(`Denied join request from ${name}.`);
             await loadSyncData();
           } catch (error) {
-            showGlobalNotice(error instanceof Error ? error.message : "Failed to deny join request.", "warning");
+            showGlobalNotice(friendlyError(error, "Failed to deny join request."), "warning");
+            denyBtn.textContent = "Retry deny";
           } finally {
             approveBtn.disabled = false;
             denyBtn.disabled = false;
@@ -2418,8 +2454,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       renderPairing();
     });
     syncActorCreateButton?.addEventListener("click", async () => {
-      const displayName = String(syncActorCreateInput?.value || "").trim();
-      if (!displayName || !syncActorCreateButton || !syncActorCreateInput) return;
+      if (!syncActorCreateButton || !syncActorCreateInput) return;
+      const displayName = String(syncActorCreateInput.value || "").trim();
+      if (!displayName) {
+        markFieldError(syncActorCreateInput, "Enter a name for the actor.");
+        return;
+      }
+      clearFieldError(syncActorCreateInput);
       syncActorCreateButton.disabled = true;
       syncActorCreateInput.disabled = true;
       syncActorCreateButton.textContent = "Creating...";
@@ -2429,8 +2470,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         syncActorCreateInput.value = "";
         await loadSyncData();
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : "Failed to create actor.", "warning");
-        syncActorCreateButton.textContent = "Retry create";
+        showGlobalNotice(friendlyError(error, "Failed to create actor."), "warning");
+        syncActorCreateButton.textContent = "Retry";
         syncActorCreateButton.disabled = false;
         syncActorCreateInput.disabled = false;
         return;
@@ -2447,22 +2488,36 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     });
     syncCreateInviteButton?.addEventListener("click", async () => {
       if (!syncCreateInviteButton || !syncInviteGroup || !syncInvitePolicy || !syncInviteTtl || !syncInviteOutput) return;
+      const groupName = syncInviteGroup.value.trim();
+      const ttlValue = Number(syncInviteTtl.value);
+      let valid = true;
+      if (!groupName) {
+        valid = markFieldError(syncInviteGroup, "Team name is required.");
+      } else {
+        clearFieldError(syncInviteGroup);
+      }
+      if (!ttlValue || ttlValue < 1) {
+        valid = markFieldError(syncInviteTtl, "Must be at least 1 hour.");
+      } else {
+        clearFieldError(syncInviteTtl);
+      }
+      if (!valid) return;
       syncCreateInviteButton.disabled = true;
-      syncCreateInviteButton.textContent = "Creating...";
+      syncCreateInviteButton.textContent = "Creating…";
       try {
         const result = await createCoordinatorInvite({
-          group_id: syncInviteGroup.value.trim(),
+          group_id: groupName,
           policy: syncInvitePolicy.value,
-          ttl_hours: Number(syncInviteTtl.value || 24) || 24
+          ttl_hours: ttlValue || 24
         });
         state.lastTeamInvite = result;
         syncInviteOutput.value = String(result.encoded || "");
         syncInviteOutput.hidden = false;
         syncInviteOutput.focus();
         syncInviteOutput.select();
-        showGlobalNotice("Invite created.");
+        showGlobalNotice("Invite created. Copy the text above and share it with your teammate.");
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : "Failed to create invite.", "warning");
+        showGlobalNotice(friendlyError(error, "Failed to create invite."), "warning");
       } finally {
         syncCreateInviteButton.disabled = false;
         syncCreateInviteButton.textContent = "Create invite";
@@ -2470,15 +2525,22 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     });
     syncJoinButton?.addEventListener("click", async () => {
       if (!syncJoinButton || !syncJoinInvite) return;
+      const inviteValue = syncJoinInvite.value.trim();
+      if (!inviteValue) {
+        markFieldError(syncJoinInvite, "Paste a team invite to join.");
+        return;
+      }
+      clearFieldError(syncJoinInvite);
       syncJoinButton.disabled = true;
-      syncJoinButton.textContent = "Joining...";
+      syncJoinButton.textContent = "Joining…";
       try {
-        const result = await importCoordinatorInvite(syncJoinInvite.value.trim());
+        const result = await importCoordinatorInvite(inviteValue);
         state.lastTeamJoin = result;
-        showGlobalNotice(result.status === "pending" ? "Join request submitted. Waiting for approval." : "Team invite imported.");
+        showGlobalNotice(result.status === "pending" ? "Join request submitted — waiting for admin approval." : "Joined team successfully.");
+        syncJoinInvite.value = "";
         await loadSyncData();
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : "Failed to import invite.", "warning");
+        showGlobalNotice(friendlyError(error, "Failed to import invite."), "warning");
       } finally {
         syncJoinButton.disabled = false;
         syncJoinButton.textContent = "Join team";
@@ -2496,8 +2558,8 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         showGlobalNotice("Old device history attached to your local actor.");
         await loadSyncData();
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : "Failed to attach old device history.", "warning");
-        syncLegacyClaimButton.textContent = "Retry claim";
+        showGlobalNotice(friendlyError(error, "Failed to attach old device history."), "warning");
+        syncLegacyClaimButton.textContent = "Retry";
         syncLegacyClaimButton.disabled = false;
         return;
       }
@@ -2512,7 +2574,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
         await triggerSync();
         showGlobalNotice("Sync pass started.");
       } catch (error) {
-        showGlobalNotice(error instanceof Error ? error.message : "Failed to start sync.", "warning");
+        showGlobalNotice(friendlyError(error, "Failed to start sync."), "warning");
       }
       syncNowButton.disabled = false;
       syncNowButton.textContent = "Sync now";

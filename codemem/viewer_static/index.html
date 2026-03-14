@@ -937,6 +937,25 @@
         border-radius: 8px;
         margin: 8px 0;
       }
+      .sync-field-error {
+        outline: 1.5px solid var(--red-text, #dc2626) !important;
+        outline-offset: -1px;
+      }
+      .sync-field-hint {
+        font-size: 0.78rem;
+        color: var(--red-text, #dc2626);
+        margin: 2px 0 0 2px;
+      }
+      @keyframes sync-shake {
+        0%, 100% { transform: translateX(0); }
+        20%, 60% { transform: translateX(-4px); }
+        40%, 80% { transform: translateX(4px); }
+      }
+      .sync-shake { animation: sync-shake 0.3s ease-in-out; }
+      .settings-button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
       .sync-toggle-admin {
         background: none;
         border: none;
