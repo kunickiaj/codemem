@@ -3,6 +3,13 @@
 import { el, copyToClipboard } from '../../lib/dom';
 import { state } from '../../lib/state';
 
+/* ── Skeleton helpers ────────────────────────────────────── */
+
+export function hideSkeleton(id: string): void {
+  const skeleton = document.getElementById(id);
+  if (skeleton) skeleton.remove();
+}
+
 /* ── Module-level UI state ───────────────────────────────── */
 
 export let adminSetupExpanded = false;

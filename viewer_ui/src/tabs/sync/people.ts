@@ -17,6 +17,7 @@ import {
   actorMergeNote,
   createChipEditor,
   openPeerScopeEditors,
+  hideSkeleton,
 } from './helpers';
 
 /* ── loadSyncData callback (set by index module) ─────────── */
@@ -32,6 +33,7 @@ export function renderSyncActors() {
   const actorList = document.getElementById('syncActorsList');
   const actorMeta = document.getElementById('syncActorsMeta');
   if (!actorList) return;
+  hideSkeleton('syncActorsSkeleton');
   actorList.textContent = '';
 
   const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
@@ -175,6 +177,7 @@ export function renderSyncActors() {
 export function renderSyncPeers() {
   const syncPeers = document.getElementById('syncPeers');
   if (!syncPeers) return;
+  hideSkeleton('syncPeersSkeleton');
   syncPeers.textContent = '';
   const peers = state.lastSyncPeers;
   if (!Array.isArray(peers) || !peers.length) {
