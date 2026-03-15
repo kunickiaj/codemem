@@ -6,7 +6,9 @@ import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+from . import observer_anthropic as _observer_anthropic
 from . import observer_auth as _observer_auth
 from . import observer_codex as _observer_codex
 from . import observer_config as _observer_config
@@ -18,6 +20,7 @@ DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku"
 CODEX_API_ENDPOINT = _observer_codex.CODEX_API_ENDPOINT
 DEFAULT_CODEX_ENDPOINT = _observer_codex.DEFAULT_CODEX_ENDPOINT
+ANTHROPIC_MESSAGES_ENDPOINT = _observer_anthropic.ANTHROPIC_MESSAGES_ENDPOINT
 
 
 logger = logging.getLogger(__name__)
@@ -102,6 +105,11 @@ _render_observer_headers = _observer_auth._render_observer_headers
 _redact_text = _observer_codex._redact_text
 _resolve_oauth_provider = _observer_auth._resolve_oauth_provider
 
+_build_anthropic_headers = _observer_anthropic._build_anthropic_headers
+_build_anthropic_payload = _observer_anthropic._build_anthropic_payload
+_parse_anthropic_stream = _observer_anthropic._parse_anthropic_stream
+_resolve_anthropic_endpoint = _observer_anthropic._resolve_anthropic_endpoint
+
 _build_codex_payload = _observer_codex._build_codex_payload
 _parse_codex_stream = _observer_codex._parse_codex_stream
 _resolve_codex_endpoint = _observer_codex._resolve_codex_endpoint
@@ -121,6 +129,7 @@ _resolve_placeholder = _observer_config._resolve_placeholder
 _strip_json_comments = _observer_config._strip_json_comments
 _strip_trailing_commas = _observer_config._strip_trailing_commas
 
+del _observer_anthropic
 del _observer_auth
 del _observer_codex
 del _observer_config
@@ -217,6 +226,7 @@ class ObserverClient:
         self.client: object | None = None
         self.codex_access: str | None = None
         self.codex_account_id: str | None = None
+        self.anthropic_oauth_access: str | None = None
 
         if self.runtime == "api_http":
             self._init_provider_client(force_refresh=False)
@@ -225,6 +235,7 @@ class ObserverClient:
         self.client = None
         self.codex_access = None
         self.codex_account_id = None
+        self.anthropic_oauth_access = None
 
         oauth_cache = _load_opencode_oauth_cache()
         oauth_access = None
@@ -282,13 +293,17 @@ class ObserverClient:
             if not self.auth.token:
                 logger.warning("observer auth: missing anthropic api key")
                 return
-            try:
-                import anthropic  # type: ignore
+            if self.auth.source == "oauth" and oauth_access:
+                self.anthropic_oauth_access = oauth_access
+                logger.info("observer auth: using anthropic oauth consumer path")
+            else:
+                try:
+                    import anthropic  # type: ignore
 
-                self.client = anthropic.Anthropic(api_key=self.auth.token)
-            except Exception as exc:  # pragma: no cover
-                logger.exception("observer auth: anthropic client init failed", exc_info=exc)
-                self.client = None
+                    self.client = anthropic.Anthropic(api_key=self.auth.token)
+                except Exception as exc:  # pragma: no cover
+                    logger.exception("observer auth: anthropic client init failed", exc_info=exc)
+                    self.client = None
         else:
             self.auth = self.auth_adapter.resolve(
                 explicit_token=self.api_key,
@@ -319,7 +334,9 @@ class ObserverClient:
     def _refresh_provider_client(self) -> bool:
         self.auth_adapter.invalidate_cache()
         self._init_provider_client(force_refresh=True)
-        return self.client is not None or bool(self.codex_access)
+        return (
+            self.client is not None or bool(self.codex_access) or bool(self.anthropic_oauth_access)
+        )
 
     def observe(self, context: ObserverContext) -> ObserverResponse:
         prompt = build_observer_prompt(context)
@@ -428,10 +445,14 @@ class ObserverClient:
         return output
 
     def _call_once(self, prompt: str) -> str | None:
+        if self.anthropic_oauth_access:
+            return self._call_anthropic_consumer(prompt)
         if self.codex_access:
             return self._call_codex(prompt)
         if not self.client:
             self._refresh_provider_client()
+            if self.anthropic_oauth_access:
+                return self._call_anthropic_consumer(prompt)
             if self.codex_access:
                 return self._call_codex(prompt)
             if not self.client:
@@ -609,6 +630,110 @@ class ObserverClient:
                     "status": status_code,
                     "error": error_summary,
                     "exc_chain": _exc_chain(exc),
+                    "exc_type": exc.__class__.__name__,
+                },
+                exc_info=exc,
+            )
+            return None
+
+    def _call_anthropic_consumer(self, prompt: str) -> str | None:
+        if not self.anthropic_oauth_access:
+            logger.warning("observer auth: missing anthropic oauth access token")
+            return None
+        headers = _build_anthropic_headers(self.anthropic_oauth_access)
+        if self.observer_headers:
+            anthropic_auth = ObserverAuthMaterial(
+                token=self.anthropic_oauth_access,
+                auth_type="bearer",
+                source=self.auth.source,
+            )
+            headers.update(_render_observer_headers(self.observer_headers, anthropic_auth))
+        payload = _build_anthropic_payload(self.model, prompt, self.max_tokens)
+        endpoint = _resolve_anthropic_endpoint()
+        parsed_url = urlparse(endpoint)
+        params = parse_qs(parsed_url.query)
+        params["beta"] = ["true"]
+        url = urlunparse(parsed_url._replace(query=urlencode(params, doseq=True)))
+
+        try:
+            import httpx
+
+            with (
+                httpx.Client(timeout=60) as client,
+                client.stream(
+                    "POST",
+                    url,
+                    json=payload,
+                    headers=headers,
+                ) as response,
+            ):
+                if response.status_code >= 400:
+                    error_text = None
+                    try:
+                        response.read()
+                        error_text = response.text
+                    except Exception:
+                        error_text = None
+                    error_summary = _redact_text(error_text or "")
+                    request_id = None
+                    try:
+                        request_id = response.headers.get("request-id")
+                    except Exception:
+                        request_id = None
+                    message = "observer anthropic oauth call failed"
+                    if error_summary:
+                        message = f"{message}: {error_summary}"
+                    if response.status_code in (401, 403):
+                        raise ObserverAuthError(message)
+                    logger.error(
+                        message,
+                        extra={
+                            "provider": self.provider,
+                            "model": self.model,
+                            "endpoint": endpoint,
+                            "status": response.status_code,
+                            "error": error_summary,
+                            "request_id": request_id,
+                        },
+                    )
+                    return None
+                response.raise_for_status()
+                return _parse_anthropic_stream(response)
+        except ObserverAuthError:
+            raise
+        except Exception as exc:  # pragma: no cover
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+            error_text = None
+            if response is not None:
+                try:
+                    response.read()
+                    error_text = response.text
+                except Exception:
+                    error_text = None
+            error_summary = _redact_text(error_text or "")
+            message = "observer anthropic oauth call failed"
+            if error_summary:
+                message = f"{message}: {error_summary}"
+
+            request_url = None
+            try:
+                req = getattr(response, "request", None) or getattr(exc, "request", None)
+                request_url = str(getattr(req, "url", None) or "") or None
+            except Exception:
+                request_url = None
+
+            if status_code in (401, 403) or _is_auth_error(exc):
+                raise ObserverAuthError(message) from exc
+            logger.exception(
+                message,
+                extra={
+                    "provider": self.provider,
+                    "model": self.model,
+                    "endpoint": endpoint,
+                    "request_url": request_url,
+                    "status": status_code,
+                    "error": error_summary,
                     "exc_type": exc.__class__.__name__,
                 },
                 exc_info=exc,
