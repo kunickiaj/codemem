@@ -34,7 +34,7 @@ function setInviteOutputVisibility() {
   if (!syncInviteOutput) return;
   const encoded = String(state.lastTeamInvite?.encoded || '').trim();
   syncInviteOutput.value = encoded;
-  (syncInviteOutput as any).hidden = !encoded;
+  syncInviteOutput.hidden = !encoded;
 }
 
 /* ── Sharing review renderer ─────────────────────────────── */
@@ -53,10 +53,10 @@ export function renderSyncSharingReview() {
   list.textContent = '';
   const items = Array.isArray(state.lastSyncSharingReview) ? state.lastSyncSharingReview : [];
   if (!items.length) {
-    (panel as any).hidden = true;
+    panel.hidden = true;
     return;
   }
-  (panel as any).hidden = false;
+  panel.hidden = false;
   const scopeLabel = state.currentProject
     ? `current project (${state.currentProject})`
     : 'all allowed projects';
@@ -120,11 +120,11 @@ export function renderTeamSync() {
     ? `Connected to ${String(coordinator.coordinator_url || '')} \u00b7 group: ${(coordinator.groups || []).join(', ') || 'none'}`
     : 'Create a team invite or join an existing team to start syncing memories with teammates.';
   if (!configured) {
-    (setupPanel as any).hidden = false;
-    (list as any).hidden = true;
-    (actions as any).hidden = true;
-    if (joinRequests) (joinRequests as any).hidden = true;
-    if (invitePanel) (invitePanel as any).hidden = !adminSetupExpanded;
+    setupPanel.hidden = false;
+    list.hidden = true;
+    actions.hidden = true;
+    if (joinRequests) joinRequests.hidden = true;
+    if (invitePanel) invitePanel.hidden = !adminSetupExpanded;
     if (toggleAdmin) {
       toggleAdmin.textContent = adminSetupExpanded
         ? 'Hide team setup'
@@ -132,10 +132,10 @@ export function renderTeamSync() {
     }
     return;
   }
-  (setupPanel as any).hidden = true;
-  (list as any).hidden = false;
-  (actions as any).hidden = false;
-  if (joinRequests) (joinRequests as any).hidden = false;
+  setupPanel.hidden = true;
+  list.hidden = false;
+  actions.hidden = false;
+  if (joinRequests) joinRequests.hidden = false;
   const presenceLabel =
     coordinator.presence_status === 'posted'
       ? 'Connected'
@@ -173,7 +173,7 @@ export function renderTeamSync() {
     if (!invitePanel) return;
     setTeamInvitePanelOpen(!teamInvitePanelOpen);
     if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
-    (invitePanel as any).hidden = !teamInvitePanelOpen;
+    invitePanel.hidden = !teamInvitePanelOpen;
     inviteToggleBtn.textContent = teamInvitePanelOpen ? 'Hide invite form' : 'Invite a teammate';
   });
   inviteToggleRow.append(inviteToggleText, inviteToggleBtn);
@@ -181,17 +181,17 @@ export function renderTeamSync() {
   if (invitePanel) {
     if (teamInvitePanelOpen) {
       if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
-      (invitePanel as any).hidden = false;
+      invitePanel.hidden = false;
       inviteToggleBtn.textContent = 'Hide invite form';
     } else {
-      (invitePanel as any).hidden = true;
+      invitePanel.hidden = true;
     }
   }
 
   if (coordinator.presence_status === 'not_enrolled') {
     if (joinPanel) {
       if (joinPanel.parentElement !== actions) actions.appendChild(joinPanel);
-      (joinPanel as any).hidden = false;
+      joinPanel.hidden = false;
     }
     const row = el('div', 'sync-action');
     const textWrap = el('div', 'sync-action-text');
@@ -283,7 +283,7 @@ export function renderTeamSync() {
       joinRequests.appendChild(row);
     });
   } else if (joinRequests) {
-    (joinRequests as any).hidden = true;
+    joinRequests.hidden = true;
   }
 }
 
@@ -311,7 +311,7 @@ export function initTeamSyncEvents(
   syncToggleAdmin?.addEventListener('click', () => {
     if (!syncInvitePanel) return;
     setAdminSetupExpanded(!adminSetupExpanded);
-    (syncInvitePanel as any).hidden = !adminSetupExpanded;
+    syncInvitePanel.hidden = !adminSetupExpanded;
     syncToggleAdmin.textContent = adminSetupExpanded
       ? 'Hide team setup'
       : 'Set up a new team instead\u2026';
@@ -350,7 +350,7 @@ export function initTeamSyncEvents(
       });
       state.lastTeamInvite = result;
       syncInviteOutput.value = String(result.encoded || '');
-      (syncInviteOutput as any).hidden = false;
+      syncInviteOutput.hidden = false;
       syncInviteOutput.focus();
       syncInviteOutput.select();
       showGlobalNotice('Invite created. Copy the text above and share it with your teammate.');
