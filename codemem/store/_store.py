@@ -1460,6 +1460,26 @@ class MemoryStore:
     def update_raw_event_flush_batch_status(self, batch_id: int, status: str) -> None:
         store_raw_events.update_raw_event_flush_batch_status(self.conn, batch_id, status)
 
+    def record_raw_event_flush_batch_failure(
+        self,
+        batch_id: int,
+        *,
+        message: str,
+        error_type: str,
+        observer_provider: str | None,
+        observer_model: str | None,
+        observer_runtime: str | None,
+    ) -> None:
+        store_raw_events.record_raw_event_flush_batch_failure(
+            self.conn,
+            batch_id,
+            message=message,
+            error_type=error_type,
+            observer_provider=observer_provider,
+            observer_model=observer_model,
+            observer_runtime=observer_runtime,
+        )
+
     def record_raw_event(
         self,
         *,
@@ -1657,6 +1677,9 @@ class MemoryStore:
             source=source,
             limit=limit,
         )
+
+    def latest_raw_event_flush_failure(self, *, source: str | None = None) -> dict[str, Any] | None:
+        return store_raw_events.latest_raw_event_flush_failure(self.conn, source=source)
 
     def raw_event_reliability_metrics(self, *, window_hours: float | None = None) -> dict[str, Any]:
         if window_hours is None:

@@ -166,6 +166,7 @@ Observer runtime/auth in `0.16`:
 
 - Runtime options: `api_http` and `claude_sidecar`.
 - `api_http` defaults to `gpt-5.1-codex-mini` (OpenAI path) unless you set `observer_model`.
+- Anthropic direct API calls accept Anthropic model IDs/aliases. codemem maps the common Claude shorthand `claude-4.5-haiku` to Anthropic's direct API alias `claude-haiku-4-5`; you can also set a pinned snapshot like `claude-haiku-4-5-20251001` explicitly.
 - `claude_sidecar` defaults to `claude-4.5-haiku`; if the selected `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's CLI default model.
 - `claude_sidecar` command is configurable with `claude_command` (`CODEMEM_CLAUDE_COMMAND`) as a JSON argv array.
   - Config file example: `"claude_command": ["wrapper", "claude", "--"]`

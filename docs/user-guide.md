@@ -31,6 +31,7 @@
 - Default model selection:
   - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
   - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- Anthropic direct API calls use Anthropic's direct model IDs. codemem translates the common shorthand `claude-4.5-haiku` to `claude-haiku-4-5`; if you want a fixed snapshot, set a versioned model like `claude-haiku-4-5-20251001` directly.
 - If a configured `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` is argv and must be a JSON string array, not a space-separated string.

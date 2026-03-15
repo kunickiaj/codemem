@@ -107,6 +107,7 @@ _resolve_oauth_provider = _observer_auth._resolve_oauth_provider
 
 _build_anthropic_headers = _observer_anthropic._build_anthropic_headers
 _build_anthropic_payload = _observer_anthropic._build_anthropic_payload
+_extract_anthropic_error_details = _observer_anthropic._extract_anthropic_error_details
 _parse_anthropic_stream = _observer_anthropic._parse_anthropic_stream
 _resolve_anthropic_endpoint = _observer_anthropic._resolve_anthropic_endpoint
 
@@ -229,6 +230,8 @@ class ObserverClient:
             cache_ttl_s=max(0, int(cfg.observer_auth_cache_ttl_s or 300)),
         )
         self.auth = ObserverAuthMaterial(token=None, auth_type="none", source="none")
+        self._last_error_code: str | None = None
+        self._last_error_message: str | None = None
         if model:
             self.model = model
         elif resolved_provider == "anthropic":
@@ -269,7 +272,7 @@ class ObserverClient:
             method = "sdk_client"
 
         token_present = bool(self.auth.token)
-        return {
+        status = {
             "provider": self.provider,
             "model": self.model,
             "runtime": self.runtime,
@@ -279,6 +282,23 @@ class ObserverClient:
                 "token_present": token_present,
             },
         }
+        if self._last_error_message:
+            status["last_error"] = {
+                "code": self._last_error_code or "observer_error",
+                "message": self._last_error_message,
+            }
+        return status
+
+    def _set_last_error(self, message: str, *, code: str | None = None) -> None:
+        text = message.strip()
+        if not text:
+            return
+        self._last_error_message = text
+        self._last_error_code = (code or "observer_error").strip() or "observer_error"
+
+    def _clear_last_error(self) -> None:
+        self._last_error_code = None
+        self._last_error_message = None
 
     def _init_provider_client(self, *, force_refresh: bool) -> None:
         self.client = None
@@ -392,6 +412,8 @@ class ObserverClient:
         if self.max_chars > 0 and len(prompt) > self.max_chars:
             prompt = prompt[: self.max_chars]
         raw = self._call(prompt)
+        if raw:
+            self._clear_last_error()
         parsed = parse_observer_output(raw or "")
         return ObserverResponse(raw=raw, parsed=parsed)
 
@@ -488,7 +510,16 @@ class ObserverClient:
             output, error = self._invoke_claude_sidecar(prompt, use_model=False)
         if error:
             if _is_claude_sidecar_auth_error(error):
+                self._set_last_error(
+                    "Claude authentication failed. Refresh credentials and retry.",
+                    code="auth_failed",
+                )
                 raise ObserverAuthError(error)
+            if _is_claude_sidecar_model_error(error):
+                self._set_last_error(
+                    f"Claude model is unavailable: {self._sidecar_model or self.model}.",
+                    code="invalid_model_id",
+                )
             logger.warning("observer claude_sidecar call failed: %s", error)
             return None
         return output
@@ -506,6 +537,9 @@ class ObserverClient:
                 return self._call_codex(prompt)
             if not self.client:
                 logger.warning("observer auth: missing client and codex token")
+                self._set_last_error(
+                    f"{self.provider.capitalize()} credentials are missing.", code="auth_missing"
+                )
                 return None
         try:
             if self.provider == "anthropic":
@@ -528,11 +562,19 @@ class ObserverClient:
             return resp.choices[0].message.content
         except Exception as exc:  # pragma: no cover
             if _is_auth_error(exc):
+                self._set_last_error(
+                    f"{self.provider.capitalize()} authentication failed. Refresh credentials and retry.",
+                    code="auth_failed",
+                )
                 raise ObserverAuthError(str(exc)) from exc
             logger.exception(
                 "observer call failed",
                 extra={"provider": self.provider, "model": self.model},
                 exc_info=exc,
+            )
+            self._set_last_error(
+                f"{self.provider.capitalize()} processing failed during observer inference.",
+                code="observer_call_failed",
             )
             return None
 
@@ -630,6 +672,10 @@ class ObserverClient:
                     if error_summary:
                         message = f"{message}: {error_summary}"
                     if response.status_code in (401, 403):
+                        self._set_last_error(
+                            "OpenAI authentication failed. Refresh credentials and retry.",
+                            code="auth_failed",
+                        )
                         raise ObserverAuthError(message)
                     logger.error(
                         message,
@@ -641,6 +687,10 @@ class ObserverClient:
                             "error": error_summary,
                             "request_id": request_id,
                         },
+                    )
+                    self._set_last_error(
+                        "OpenAI request failed during observer processing.",
+                        code="provider_request_failed",
                     )
                     return None
                 response.raise_for_status()
@@ -668,6 +718,10 @@ class ObserverClient:
                 request_url = None
 
             if status_code in (401, 403) or _is_auth_error(exc):
+                self._set_last_error(
+                    "OpenAI authentication failed. Refresh credentials and retry.",
+                    code="auth_failed",
+                )
                 raise ObserverAuthError(message) from exc
             logger.exception(
                 message,
@@ -682,6 +736,10 @@ class ObserverClient:
                     "exc_type": exc.__class__.__name__,
                 },
                 exc_info=exc,
+            )
+            self._set_last_error(
+                "OpenAI request failed during observer processing.",
+                code="provider_request_failed",
             )
             return None
 
@@ -732,7 +790,15 @@ class ObserverClient:
                     message = "observer anthropic oauth call failed"
                     if error_summary:
                         message = f"{message}: {error_summary}"
+                    details = _extract_anthropic_error_details(error_text)
                     if response.status_code in (401, 403):
+                        auth_message = (
+                            details["message"]
+                            if isinstance(details, dict)
+                            else "Anthropic authentication failed. Refresh credentials and retry."
+                        )
+                        auth_code = details["code"] if isinstance(details, dict) else "auth_failed"
+                        self._set_last_error(auth_message, code=auth_code)
                         raise ObserverAuthError(message)
                     logger.error(
                         message,
@@ -745,6 +811,13 @@ class ObserverClient:
                             "request_id": request_id,
                         },
                     )
+                    if isinstance(details, dict):
+                        self._set_last_error(details["message"], code=details["code"])
+                    else:
+                        self._set_last_error(
+                            "Anthropic request failed during observer processing.",
+                            code="provider_request_failed",
+                        )
                     return None
                 response.raise_for_status()
                 return _parse_anthropic_stream(response)
@@ -764,6 +837,7 @@ class ObserverClient:
             message = "observer anthropic oauth call failed"
             if error_summary:
                 message = f"{message}: {error_summary}"
+            details = _extract_anthropic_error_details(error_text)
 
             request_url = None
             try:
@@ -773,6 +847,13 @@ class ObserverClient:
                 request_url = None
 
             if status_code in (401, 403) or _is_auth_error(exc):
+                auth_message = (
+                    details["message"]
+                    if isinstance(details, dict)
+                    else "Anthropic authentication failed. Refresh credentials and retry."
+                )
+                auth_code = details["code"] if isinstance(details, dict) else "auth_failed"
+                self._set_last_error(auth_message, code=auth_code)
                 raise ObserverAuthError(message) from exc
             logger.exception(
                 message,
@@ -787,6 +868,13 @@ class ObserverClient:
                 },
                 exc_info=exc,
             )
+            if isinstance(details, dict):
+                self._set_last_error(details["message"], code=details["code"])
+            else:
+                self._set_last_error(
+                    "Anthropic request failed during observer processing.",
+                    code="provider_request_failed",
+                )
             return None
 
     def _extract_opencode_text(self, output: str) -> str:

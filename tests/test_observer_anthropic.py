@@ -18,6 +18,8 @@ from codemem.observer_anthropic import (
     ANTHROPIC_OAUTH_USER_AGENT,
     _build_anthropic_headers,
     _build_anthropic_payload,
+    _extract_anthropic_error_details,
+    _normalize_anthropic_model,
     _parse_anthropic_stream,
     _resolve_anthropic_endpoint,
 )
@@ -33,15 +35,34 @@ def test_build_anthropic_headers_sets_bearer_auth() -> None:
     assert "x-api-key" not in headers
 
 
+def test_normalize_anthropic_model_maps_opencode_alias() -> None:
+    assert _normalize_anthropic_model("claude-4.5-haiku") == "claude-haiku-4-5"
+
+
 def test_build_anthropic_payload_structure() -> None:
     payload = _build_anthropic_payload("claude-4.5-haiku", "hello world", 1024)
-    assert payload["model"] == "claude-4.5-haiku"
+    assert payload["model"] == "claude-haiku-4-5"
     assert payload["max_tokens"] == 1024
     assert payload["stream"] is True
     assert payload["system"] == "You are a memory observer."
     assert len(payload["messages"]) == 1
     assert payload["messages"][0]["role"] == "user"
     assert payload["messages"][0]["content"] == "hello world"
+
+
+def test_build_anthropic_payload_preserves_direct_model_id() -> None:
+    payload = _build_anthropic_payload("claude-haiku-4-5-20251001", "hello world", 1024)
+    assert payload["model"] == "claude-haiku-4-5-20251001"
+
+
+def test_extract_anthropic_error_details_for_invalid_model() -> None:
+    details = _extract_anthropic_error_details(
+        '{"type":"error","error":{"type":"not_found_error","message":"model: claude-4.5-haiku"}}'
+    )
+    assert details == {
+        "code": "invalid_model_id",
+        "message": "Anthropic model ID not found: claude-4.5-haiku.",
+    }
 
 
 def test_resolve_anthropic_endpoint_default() -> None:
@@ -209,6 +230,7 @@ def test_anthropic_consumer_call_success(tmp_path: Path) -> None:
 
     stream_lines = _anthropic_sse_lines("observer result")
     fake_response = _FakeStreamResponse(stream_lines, status_code=200)
+    captured_json: dict[str, Any] = {}
 
     class FakeHTTPXClient:
         def __init__(self, **_kwargs: object) -> None:
@@ -223,6 +245,9 @@ def test_anthropic_consumer_call_success(tmp_path: Path) -> None:
         def stream(self, method: str, url: str, **kwargs: object):
             self._captured_url = url
             self._captured_headers = kwargs.get("headers", {})
+            payload = kwargs.get("json")
+            if isinstance(payload, dict):
+                captured_json.update(payload)
             return _StreamContextManager(fake_response)
 
     class _StreamContextManager:
@@ -240,6 +265,7 @@ def test_anthropic_consumer_call_success(tmp_path: Path) -> None:
         result = client._call("hello")
 
     assert result == "observer result"
+    assert captured_json["model"] == "claude-haiku-4-5"
 
 
 def test_anthropic_consumer_call_auth_error(tmp_path: Path) -> None:
@@ -277,6 +303,49 @@ def test_anthropic_consumer_call_auth_error(tmp_path: Path) -> None:
         pytest.raises(ObserverAuthError),
     ):
         client._call("hello")
+
+
+def test_anthropic_consumer_records_invalid_model_error_on_status(tmp_path: Path) -> None:
+    client = _make_anthropic_oauth_client(tmp_path)
+
+    fake_response = _FakeStreamResponse(
+        [],
+        status_code=404,
+        text='{"type":"error","error":{"type":"not_found_error","message":"model: claude-4.5-haiku"}}',
+    )
+
+    class FakeHTTPXClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object):
+            pass
+
+        def stream(self, method: str, url: str, **kwargs: object):
+            return _StreamContextManager(fake_response)
+
+    class _StreamContextManager:
+        def __init__(self, resp: object) -> None:
+            self._resp = resp
+
+        def __enter__(self):
+            return self._resp
+
+        def __exit__(self, *_args: object):
+            pass
+
+    httpx_module = SimpleNamespace(Client=FakeHTTPXClient)
+    with patch.dict(sys.modules, {"httpx": httpx_module}):
+        result = client._call("hello")
+
+    assert result is None
+    assert client.get_status()["last_error"] == {
+        "code": "invalid_model_id",
+        "message": "Anthropic model ID not found: claude-4.5-haiku.",
+    }
 
 
 def test_anthropic_consumer_sends_correct_headers(tmp_path: Path) -> None:

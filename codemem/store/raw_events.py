@@ -143,8 +143,68 @@ def update_raw_event_flush_batch_status(
 ) -> None:
     now = dt.datetime.now(dt.UTC).isoformat()
     conn.execute(
-        "UPDATE raw_event_flush_batches SET status = ?, updated_at = ? WHERE id = ?",
-        (status, now, batch_id),
+        (
+            "UPDATE raw_event_flush_batches "
+            "SET status = ?, updated_at = ?, "
+            "error_message = CASE WHEN ? = ? THEN error_message ELSE NULL END, "
+            "error_type = CASE WHEN ? = ? THEN error_type ELSE NULL END, "
+            "observer_provider = CASE WHEN ? = ? THEN observer_provider ELSE NULL END, "
+            "observer_model = CASE WHEN ? = ? THEN observer_model ELSE NULL END, "
+            "observer_runtime = CASE WHEN ? = ? THEN observer_runtime ELSE NULL END "
+            "WHERE id = ?"
+        ),
+        (
+            status,
+            now,
+            status,
+            RAW_EVENT_QUEUE_FAILED,
+            status,
+            RAW_EVENT_QUEUE_FAILED,
+            status,
+            RAW_EVENT_QUEUE_FAILED,
+            status,
+            RAW_EVENT_QUEUE_FAILED,
+            status,
+            RAW_EVENT_QUEUE_FAILED,
+            batch_id,
+        ),
+    )
+    conn.commit()
+
+
+def record_raw_event_flush_batch_failure(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    *,
+    message: str,
+    error_type: str,
+    observer_provider: str | None,
+    observer_model: str | None,
+    observer_runtime: str | None,
+) -> None:
+    now = dt.datetime.now(dt.UTC).isoformat()
+    conn.execute(
+        """
+        UPDATE raw_event_flush_batches
+        SET status = ?,
+            updated_at = ?,
+            error_message = ?,
+            error_type = ?,
+            observer_provider = ?,
+            observer_model = ?,
+            observer_runtime = ?
+        WHERE id = ?
+        """,
+        (
+            RAW_EVENT_QUEUE_FAILED,
+            now,
+            message,
+            error_type,
+            observer_provider,
+            observer_model,
+            observer_runtime,
+            batch_id,
+        ),
     )
     conn.commit()
 
@@ -1045,7 +1105,19 @@ def raw_event_error_batches(
     )
     rows = conn.execute(
         """
-        SELECT id, start_event_seq, end_event_seq, extractor_version, status, updated_at
+        SELECT
+            id,
+            start_event_seq,
+            end_event_seq,
+            extractor_version,
+            status,
+            updated_at,
+            attempt_count,
+            error_message,
+            error_type,
+            observer_provider,
+            observer_model,
+            observer_runtime
         FROM raw_event_flush_batches
         WHERE source = ? AND stream_id = ? AND status IN ('error', ?)
         ORDER BY updated_at DESC
@@ -1059,6 +1131,42 @@ def raw_event_error_batches(
         item["status"] = "error"
         items.append(item)
     return items
+
+
+def latest_raw_event_flush_failure(
+    conn: sqlite3.Connection, *, source: str | None = None
+) -> dict[str, Any] | None:
+    query = """
+        SELECT
+            id,
+            source,
+            stream_id,
+            opencode_session_id,
+            start_event_seq,
+            end_event_seq,
+            extractor_version,
+            status,
+            updated_at,
+            attempt_count,
+            error_message,
+            error_type,
+            observer_provider,
+            observer_model,
+            observer_runtime
+        FROM raw_event_flush_batches
+        WHERE status IN ('error', ?)
+    """
+    params: list[Any] = [RAW_EVENT_QUEUE_FAILED]
+    if source is not None:
+        query += " AND source = ?"
+        params.append(source.strip().lower() or "opencode")
+    query += " ORDER BY updated_at DESC LIMIT 1"
+    row = conn.execute(query, tuple(params)).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    item["status"] = "error"
+    return item
 
 
 def mark_stuck_raw_event_batches_as_error(
@@ -1078,7 +1186,13 @@ def mark_stuck_raw_event_batches_as_error(
             LIMIT ?
         )
         UPDATE raw_event_flush_batches
-        SET status = ?, updated_at = ?
+        SET status = ?,
+            updated_at = ?,
+            error_message = 'Flush retry timed out.',
+            error_type = 'RawEventBatchStuck',
+            observer_provider = NULL,
+            observer_model = NULL,
+            observer_runtime = NULL
         WHERE id IN (SELECT id FROM candidates)
         """,
         (

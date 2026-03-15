@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -85,10 +86,8 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
             )
         raise RuntimeError(message) from exc
     finally:
-        try:
+        with contextlib.suppress(AttributeError):
             conn.enable_load_extension(False)
-        except AttributeError:
-            return
 
 
 def connect(db_path: Path | str, check_same_thread: bool = True) -> sqlite3.Connection:
@@ -253,6 +252,11 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             end_event_seq INTEGER NOT NULL,
             extractor_version TEXT NOT NULL,
             status TEXT NOT NULL,
+            error_message TEXT,
+            error_type TEXT,
+            observer_provider TEXT,
+            observer_model TEXT,
+            observer_runtime TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)
@@ -574,6 +578,10 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
     batch_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(raw_event_flush_batches)").fetchall()
     }
+
+    def _batch_select_expr(column: str) -> str:
+        return column if column in batch_columns else f"NULL AS {column}"
+
     batch_attempt_expr = "COALESCE(attempt_count, 0)" if "attempt_count" in batch_columns else "0"
 
     # Clean up any leftover _v2 tables from a previously failed migration attempt.
@@ -629,6 +637,11 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
             end_event_seq INTEGER NOT NULL,
             extractor_version TEXT NOT NULL,
             status TEXT NOT NULL,
+            error_message TEXT,
+            error_type TEXT,
+            observer_provider TEXT,
+            observer_model TEXT,
+            observer_runtime TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -715,6 +728,11 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
             end_event_seq,
             extractor_version,
             status,
+            error_message,
+            error_type,
+            observer_provider,
+            observer_model,
+            observer_runtime,
             created_at,
             updated_at,
             attempt_count
@@ -728,6 +746,11 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
             COALESCE(end_event_seq, 0),
             COALESCE(extractor_version, 'unknown'),
             COALESCE(status, 'unknown'),
+            {_batch_select_expr("error_message")},
+            {_batch_select_expr("error_type")},
+            {_batch_select_expr("observer_provider")},
+            {_batch_select_expr("observer_model")},
+            {_batch_select_expr("observer_runtime")},
             COALESCE(created_at, datetime('now')),
             COALESCE(updated_at, datetime('now')),
             {batch_attempt_expr}
@@ -1024,6 +1047,11 @@ def _ensure_raw_event_reliability_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "raw_event_ingest_stats", "skipped_conflict", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "raw_event_flush_batches", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "raw_event_flush_batches", "error_message", "TEXT")
+    _ensure_column(conn, "raw_event_flush_batches", "error_type", "TEXT")
+    _ensure_column(conn, "raw_event_flush_batches", "observer_provider", "TEXT")
+    _ensure_column(conn, "raw_event_flush_batches", "observer_model", "TEXT")
+    _ensure_column(conn, "raw_event_flush_batches", "observer_runtime", "TEXT")
 
 
 def _ensure_memory_identity_schema(conn: sqlite3.Connection) -> None:

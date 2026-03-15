@@ -818,6 +818,13 @@ function createEl(tag: string, className?: string, text?: string): HTMLElement {
   return el;
 }
 
+function formatFailureTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return 'Unknown time';
+  const ts = new Date(value);
+  if (Number.isNaN(ts.getTime())) return value;
+  return ts.toLocaleString();
+}
+
 function renderObserverStatusBanner(status: any) {
   const banner = $('observerStatusBanner');
   if (!banner) return;
@@ -866,6 +873,43 @@ function renderObserverStatusBanner(status: any) {
       row.append(span);
     });
     banner.append(row);
+  }
+
+  const failure = status.latest_failure;
+  if (failure && typeof failure === 'object') {
+    banner.append(createEl('div', 'status-label', 'Latest processing issue'));
+    const box = createEl('div', 'status-issue');
+    const message = typeof failure.error_message === 'string' && failure.error_message.trim()
+      ? failure.error_message.trim()
+      : 'Raw-event processing failed.';
+    box.append(createEl('div', 'status-issue-message', message));
+
+    const detailParts: string[] = [];
+    const provider = typeof failure.observer_provider === 'string' ? failure.observer_provider.trim() : '';
+    const model = typeof failure.observer_model === 'string' ? failure.observer_model.trim() : '';
+    const runtime = typeof failure.observer_runtime === 'string' ? failure.observer_runtime.trim() : '';
+    if (provider || model || runtime) {
+      const flow = [provider || 'observer', model ? `→ ${model}` : '', runtime ? `(${runtime})` : '']
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (flow) detailParts.push(flow);
+    }
+    const failedAt = formatFailureTimestamp(failure.updated_at);
+    if (failedAt) detailParts.push(`Last failure ${failedAt}`);
+    if (typeof failure.attempt_count === 'number' && Number.isFinite(failure.attempt_count)) {
+      detailParts.push(`Attempts ${failure.attempt_count}`);
+    }
+    if (detailParts.length) {
+      box.append(createEl('div', 'status-issue-meta', detailParts.join(' · ')));
+    }
+
+    const impact = typeof failure.impact === 'string' ? failure.impact.trim() : '';
+    if (impact) {
+      box.append(createEl('div', 'status-issue-impact', impact));
+    }
+    banner.append(box);
   }
 
   banner.hidden = false;
