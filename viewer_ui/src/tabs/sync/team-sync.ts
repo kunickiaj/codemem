@@ -312,6 +312,7 @@ export function initTeamSyncEvents(
     if (!syncInvitePanel) return;
     setAdminSetupExpanded(!adminSetupExpanded);
     syncInvitePanel.hidden = !adminSetupExpanded;
+    syncToggleAdmin.setAttribute('aria-expanded', String(adminSetupExpanded));
     syncToggleAdmin.textContent = adminSetupExpanded
       ? 'Hide team setup'
       : 'Set up a new team instead\u2026';

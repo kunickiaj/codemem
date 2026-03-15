@@ -839,6 +839,8 @@
         font-size: 12px;
         font-weight: 600;
       }
+      .badge-online { background: rgba(26, 107, 86, 0.12); color: var(--accent); }
+      .badge-offline { background: rgba(182, 75, 47, 0.15); color: var(--accent-warm); }
 
       .pill {
         display: inline-block;
@@ -1679,7 +1681,7 @@
           </div>
         </div>
         <div class="section-meta" id="syncTeamMeta"></div>
-        <div class="sync-skeleton" id="syncTeamSkeleton">
+        <div class="sync-skeleton" id="syncTeamSkeleton" role="status" aria-label="Loading team sync">
           <div class="sync-skeleton-line medium"></div>
           <div class="sync-skeleton-block"></div>
           <div class="sync-skeleton-line short"></div>
@@ -1689,17 +1691,20 @@
             <h3 class="settings-group-title">Join a team</h3>
             <div class="section-meta">Have an invite? Paste it here.</div>
             <div class="actor-create-row" id="syncJoinPanel">
+              <label for="syncJoinInvite" class="sr-only">Team invite</label>
               <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste team invite or codemem:// link"></textarea>
               <button class="settings-button" id="syncJoinButton">Join team</button>
             </div>
           </div>
           <div id="syncAdminSection">
-            <button class="sync-toggle-admin" id="syncToggleAdmin">Set up a new team instead…</button>
+            <button class="sync-toggle-admin" id="syncToggleAdmin" aria-expanded="false" aria-controls="syncInvitePanel">Set up a new team instead…</button>
             <div id="syncInvitePanel" hidden>
               <h3 class="settings-group-title" style="margin-top:12px">Create a team</h3>
               <div class="section-meta">Generate an invite to share with teammates.</div>
               <div class="actor-create-row">
+                <label for="syncInviteGroup" class="sr-only">Team name</label>
                 <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team name (e.g. my-team)" />
+                <label for="syncInvitePolicy" class="sr-only">Join policy</label>
                 <select class="sync-actor-select" id="syncInvitePolicy">
                   <option value="auto_admit">Auto-admit</option>
                   <option value="approval_required">Approval required</option>
@@ -1711,11 +1716,12 @@
                 </div>
                 <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
               </div>
-              <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite will appear here" hidden></textarea>
+              <label for="syncInviteOutput" class="sr-only">Generated invite</label>
+              <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite will appear here" readonly hidden></textarea>
             </div>
           </div>
         </div>
-        <div class="actor-list" id="syncTeamStatus"></div>
+        <div class="actor-list" id="syncTeamStatus" aria-live="polite"></div>
         <div class="actor-list" id="syncJoinRequests"></div>
         <div class="sync-actions" id="syncTeamActions" hidden></div>
       </div>
@@ -1727,18 +1733,19 @@
         <h3 class="settings-group-title">Actors</h3>
         <div class="section-meta" id="syncActorsMeta">Create and rename actors here. Assign each device below.</div>
         <div class="actor-create-row">
+          <label for="syncActorCreateInput" class="sr-only">Actor name</label>
           <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named actor" />
           <button class="settings-button" id="syncActorCreateButton">Create actor</button>
         </div>
         <div class="actor-list" id="syncActorsList"></div>
-        <div class="sync-skeleton" id="syncActorsSkeleton">
+        <div class="sync-skeleton" id="syncActorsSkeleton" role="status" aria-label="Loading actors">
           <div class="sync-skeleton-line long"></div>
           <div class="sync-skeleton-line medium"></div>
         </div>
 
         <h3 class="settings-group-title" style="margin-top: 20px">Devices</h3>
         <div class="peer-list" id="syncPeers"></div>
-        <div class="sync-skeleton" id="syncPeersSkeleton">
+        <div class="sync-skeleton" id="syncPeersSkeleton" role="status" aria-label="Loading devices">
           <div class="sync-skeleton-block"></div>
           <div class="sync-skeleton-block"></div>
         </div>
@@ -1753,6 +1760,7 @@
           <h3 class="settings-group-title" style="margin-top: 20px">Legacy device history</h3>
           <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
           <div class="peer-actions sync-legacy-claim-row">
+            <label for="syncLegacyDeviceSelect" class="sr-only">Legacy device</label>
             <select class="sync-legacy-select" id="syncLegacyDeviceSelect"></select>
             <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
           </div>
@@ -1772,7 +1780,7 @@
           </div>
         </div>
         <div class="section-meta" id="syncMeta">Loading sync status…</div>
-        <div class="sync-skeleton" id="syncDiagSkeleton">
+        <div class="sync-skeleton" id="syncDiagSkeleton" role="status" aria-label="Loading diagnostics">
           <div class="sync-skeleton-line long"></div>
           <div class="sync-skeleton-line medium"></div>
           <div class="sync-skeleton-line short"></div>

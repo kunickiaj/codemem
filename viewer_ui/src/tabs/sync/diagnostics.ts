@@ -239,16 +239,20 @@ export function initDiagnosticsEvents(refreshCallback: () => void) {
 
   // Apply initial toggle states
   if (syncPairing) syncPairing.hidden = !state.syncPairingOpen;
-  if (syncPairingToggle)
+  if (syncPairingToggle) {
     syncPairingToggle.textContent = state.syncPairingOpen ? 'Hide pairing' : 'Show pairing';
+    syncPairingToggle.setAttribute('aria-expanded', String(state.syncPairingOpen));
+  }
   if (syncRedact) syncRedact.checked = isSyncRedactionEnabled();
 
   syncPairingToggle?.addEventListener('click', () => {
     const next = !state.syncPairingOpen;
     setSyncPairingOpen(next);
     if (syncPairing) syncPairing.hidden = !next;
-    if (syncPairingToggle)
+    if (syncPairingToggle) {
       syncPairingToggle.textContent = next ? 'Hide pairing' : 'Show pairing';
+      syncPairingToggle.setAttribute('aria-expanded', String(next));
+    }
     if (next) {
       const pairingPayloadEl = document.getElementById('pairingPayload');
       const pairingHint = document.getElementById('pairingHint');
