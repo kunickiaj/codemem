@@ -10,6 +10,7 @@ import {
   setAdminSetupExpanded,
   teamInvitePanelOpen,
   setTeamInvitePanelOpen,
+  hideSkeleton,
 } from './helpers';
 
 /* ── DOM placement helpers ───────────────────────────────── */
@@ -105,6 +106,7 @@ export function renderTeamSync() {
   const joinPanel = document.getElementById('syncJoinPanel');
   const joinRequests = document.getElementById('syncJoinRequests');
   if (!meta || !setupPanel || !list || !actions) return;
+  hideSkeleton('syncTeamSkeleton');
   // Move panels back to their home sections BEFORE clearing, so they survive the wipe
   ensureInvitePanelInAdminSection();
   ensureJoinPanelInSetupSection();

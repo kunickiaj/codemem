@@ -9,7 +9,7 @@ import {
   isSyncRedactionEnabled,
   setSyncRedactionEnabled,
 } from '../../lib/state';
-import { redactAddress, renderActionList } from './helpers';
+import { redactAddress, renderActionList, hideSkeleton } from './helpers';
 
 /* ── Import render functions needed for redact toggle ────── */
 // These are set by the index module to avoid circular imports.
@@ -25,6 +25,7 @@ export function renderSyncStatus() {
   const syncMeta = document.getElementById('syncMeta');
   const syncActions = document.getElementById('syncActions');
   if (!syncStatusGrid) return;
+  hideSkeleton('syncDiagSkeleton');
   syncStatusGrid.textContent = '';
 
   const status = state.lastSyncStatus;
