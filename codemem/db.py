@@ -569,6 +569,18 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
     }
     batch_attempt_expr = "COALESCE(attempt_count, 0)" if "attempt_count" in batch_columns else "0"
 
+    # Clean up any leftover _v2 tables from a previously failed migration attempt.
+    # executescript auto-commits, so a crash mid-migration leaves _v2 tables behind
+    # that block retry. These are always stale — the rename at the end is the commit point.
+    conn.executescript(
+        """
+        DROP TABLE IF EXISTS raw_events_v2;
+        DROP TABLE IF EXISTS raw_event_sessions_v2;
+        DROP TABLE IF EXISTS raw_event_flush_batches_v2;
+        DROP TABLE IF EXISTS opencode_sessions_v2;
+        """
+    )
+
     conn.executescript(
         """
         CREATE TABLE raw_events_v2 (
