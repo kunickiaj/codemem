@@ -201,9 +201,7 @@ export function renderSyncPeers() {
 
     const peerStatus = peer.status || {};
     const online = peerStatus.sync_status === 'ok' || peerStatus.ping_status === 'ok';
-    const badge = el('span', 'badge', online ? 'Online' : 'Offline');
-    badge.style.background = online ? 'rgba(31, 111, 92, 0.12)' : 'rgba(230, 126, 77, 0.15)';
-    badge.style.color = online ? 'var(--accent)' : 'var(--accent-warm)';
+    const badge = el('span', `badge ${online ? 'badge-online' : 'badge-offline'}`, online ? 'Online' : 'Offline');
     name.append(' ', badge);
 
     const actions = el('div', 'peer-actions');
@@ -355,12 +353,14 @@ export function renderSyncPeers() {
     scopeActions.append(saveScopeBtn, inheritBtn);
     editorWrap.append(inputRow, scopeActions);
     toggleScopeBtn.textContent = scopeEditorOpen ? 'Hide scope editor' : 'Edit scope';
+    toggleScopeBtn.setAttribute('aria-expanded', String(scopeEditorOpen));
     toggleScopeBtn.addEventListener('click', () => {
       const isCollapsed = editorWrap.classList.contains('collapsed');
       editorWrap.classList.toggle('collapsed', !isCollapsed);
       editorWrap.inert = !isCollapsed;
       if (!isCollapsed) openPeerScopeEditors.delete(peerId);
       else openPeerScopeEditors.add(peerId);
+      toggleScopeBtn.setAttribute('aria-expanded', String(isCollapsed));
       toggleScopeBtn.textContent = isCollapsed ? 'Hide scope editor' : 'Edit scope';
     });
     scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);

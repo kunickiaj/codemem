@@ -1880,15 +1880,19 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const pairingCopy = document.getElementById("pairingCopy");
     const syncPairing = document.getElementById("syncPairing");
     if (syncPairing) syncPairing.hidden = !state.syncPairingOpen;
-    if (syncPairingToggle)
+    if (syncPairingToggle) {
       syncPairingToggle.textContent = state.syncPairingOpen ? "Hide pairing" : "Show pairing";
+      syncPairingToggle.setAttribute("aria-expanded", String(state.syncPairingOpen));
+    }
     if (syncRedact) syncRedact.checked = isSyncRedactionEnabled();
     syncPairingToggle?.addEventListener("click", () => {
       const next = !state.syncPairingOpen;
       setSyncPairingOpen(next);
       if (syncPairing) syncPairing.hidden = !next;
-      if (syncPairingToggle)
+      if (syncPairingToggle) {
         syncPairingToggle.textContent = next ? "Hide pairing" : "Show pairing";
+        syncPairingToggle.setAttribute("aria-expanded", String(next));
+      }
       if (next) {
         const pairingPayloadEl = document.getElementById("pairingPayload");
         const pairingHint = document.getElementById("pairingHint");
@@ -2204,6 +2208,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       if (!syncInvitePanel) return;
       setAdminSetupExpanded(!adminSetupExpanded);
       syncInvitePanel.hidden = !adminSetupExpanded;
+      syncToggleAdmin.setAttribute("aria-expanded", String(adminSetupExpanded));
       syncToggleAdmin.textContent = adminSetupExpanded ? "Hide team setup" : "Set up a new team instead…";
     });
     syncCreateInviteButton?.addEventListener("click", async () => {
@@ -2443,9 +2448,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       if (peerId) name.title = peerId;
       const peerStatus = peer.status || {};
       const online = peerStatus.sync_status === "ok" || peerStatus.ping_status === "ok";
-      const badge = el("span", "badge", online ? "Online" : "Offline");
-      badge.style.background = online ? "rgba(31, 111, 92, 0.12)" : "rgba(230, 126, 77, 0.15)";
-      badge.style.color = online ? "var(--accent)" : "var(--accent-warm)";
+      const badge = el("span", `badge ${online ? "badge-online" : "badge-offline"}`, online ? "Online" : "Offline");
       name.append(" ", badge);
       const actions = el("div", "peer-actions");
       const primaryAddress = pickPrimaryAddress(peer.addresses);
@@ -2584,12 +2587,14 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       scopeActions.append(saveScopeBtn, inheritBtn);
       editorWrap.append(inputRow, scopeActions);
       toggleScopeBtn.textContent = scopeEditorOpen ? "Hide scope editor" : "Edit scope";
+      toggleScopeBtn.setAttribute("aria-expanded", String(scopeEditorOpen));
       toggleScopeBtn.addEventListener("click", () => {
         const isCollapsed = editorWrap.classList.contains("collapsed");
         editorWrap.classList.toggle("collapsed", !isCollapsed);
         editorWrap.inert = !isCollapsed;
         if (!isCollapsed) openPeerScopeEditors.delete(peerId);
         else openPeerScopeEditors.add(peerId);
+        toggleScopeBtn.setAttribute("aria-expanded", String(isCollapsed));
         toggleScopeBtn.textContent = isCollapsed ? "Hide scope editor" : "Edit scope";
       });
       scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);
