@@ -2699,6 +2699,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       syncLegacyClaimButton.disabled = false;
     });
   }
+  let lastSyncHash = "";
   async function loadSyncData() {
     try {
       const payload = await loadSyncStatus(true, state.currentProject || "");
@@ -2709,6 +2710,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       } catch {
         actorLoadError = true;
       }
+      const hash = JSON.stringify([payload, actorsPayload]);
+      if (hash === lastSyncHash) return;
+      lastSyncHash = hash;
       const statusPayload = payload.status && typeof payload.status === "object" ? payload.status : null;
       if (statusPayload) state.lastSyncStatus = statusPayload;
       state.lastSyncActors = Array.isArray(actorsPayload?.items) ? actorsPayload.items : [];
@@ -3624,7 +3628,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     state.currentProject = $select("projectFilter")?.value || "";
     refresh();
   });
+  let refreshDebounceTimer = null;
   async function refresh() {
+    if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
+    refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
+  }
+  async function doRefresh() {
     if (state.refreshInFlight) {
       state.refreshQueued = true;
       return;
@@ -3634,11 +3643,13 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       setRefreshStatus("refreshing");
       const promises = [
         loadHealthData(),
-        loadConfigData(),
-        loadSyncData()
+        loadConfigData()
       ];
       if (state.activeTab === "feed") {
         promises.push(loadFeedData());
+      }
+      if (state.activeTab === "sync" || state.activeTab === "health") {
+        promises.push(loadSyncData());
       }
       if (state.syncPairingOpen) {
         promises.push(loadPairingData());
@@ -3651,7 +3662,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       state.refreshInFlight = false;
       if (state.refreshQueued) {
         state.refreshQueued = false;
-        refresh();
+        doRefresh();
       }
     }
   }
