@@ -1,14 +1,84 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 from typing import Any
 
-from .plugin_ingest import ingest
+from . import plugin_ingest
+from .observer import ObserverAuthError
 from .store import MemoryStore
-from .store.raw_events import RAW_EVENT_QUEUE_FAILED
 
 EXTRACTOR_VERSION = "raw_events_v1"
+logger = logging.getLogger(__name__)
+ingest = plugin_ingest.ingest
+
+
+def _truncate_error_message(message: str, *, limit: int = 280) -> str:
+    text = " ".join(message.split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3].rstrip()}..."
+
+
+def _provider_display_name(provider: str | None) -> str:
+    normalized = (provider or "").strip().lower()
+    if normalized == "openai":
+        return "OpenAI"
+    if normalized == "anthropic":
+        return "Anthropic"
+    if normalized:
+        return normalized.capitalize()
+    return "Observer"
+
+
+def _summarize_flush_failure(exc: Exception, *, provider: str | None) -> str:
+    provider_title = _provider_display_name(provider)
+    raw_message = str(exc).strip().lower()
+    if isinstance(exc, ObserverAuthError):
+        return f"{provider_title} authentication failed. Refresh credentials and retry."
+    if isinstance(exc, TimeoutError):
+        return f"{provider_title} request timed out during raw-event processing."
+    if raw_message == "observer failed during raw-event flush":
+        return f"{provider_title} returned no usable output for raw-event processing."
+    if "parse" in raw_message or "xml" in raw_message or "json" in raw_message:
+        return f"{provider_title} response could not be processed."
+    return f"{provider_title} processing failed during raw-event ingestion."
+
+
+def _flush_failure_details(exc: Exception) -> dict[str, str | None]:
+    observer = plugin_ingest.OBSERVER
+    active = observer.get_status() if observer is not None else None
+    provider = (
+        str(active.get("provider") or "").strip() or None if isinstance(active, dict) else None
+    )
+    model = str(active.get("model") or "").strip() or None if isinstance(active, dict) else None
+    runtime = str(active.get("runtime") or "").strip() or None if isinstance(active, dict) else None
+    last_error = active.get("last_error") if isinstance(active, dict) else None
+    last_error_message = None
+    last_error_code = None
+    if isinstance(last_error, dict):
+        last_error_message = str(last_error.get("message") or "").strip() or None
+        last_error_code = str(last_error.get("code") or "").strip() or None
+    logger.warning(
+        "raw event flush failed",
+        extra={
+            "observer_provider": provider or "unknown",
+            "observer_model": model or "unknown",
+            "observer_runtime": runtime or "unknown",
+            "error_type": exc.__class__.__name__,
+        },
+        exc_info=exc,
+    )
+    return {
+        "message": _truncate_error_message(
+            last_error_message or _summarize_flush_failure(exc, provider=provider)
+        ),
+        "error_type": last_error_code or exc.__class__.__name__,
+        "observer_provider": provider,
+        "observer_model": model,
+        "observer_runtime": runtime,
+    }
 
 
 def build_session_context(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -155,8 +225,16 @@ def flush_raw_events(
     }
     try:
         ingest(payload)
-    except Exception:
-        store.update_raw_event_flush_batch_status(batch_id, RAW_EVENT_QUEUE_FAILED)
+    except Exception as exc:
+        details = _flush_failure_details(exc)
+        store.record_raw_event_flush_batch_failure(
+            batch_id,
+            message=str(details["message"] or exc.__class__.__name__),
+            error_type=str(details["error_type"] or exc.__class__.__name__),
+            observer_provider=details["observer_provider"],
+            observer_model=details["observer_model"],
+            observer_runtime=details["observer_runtime"],
+        )
         raise
     store.update_raw_event_flush_batch_status(batch_id, "completed")
     store.update_raw_event_flush_state(opencode_session_id, last_event_seq, source=source)

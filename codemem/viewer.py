@@ -103,7 +103,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             if viewer_routes_memory.handle_get(self, store, parsed.path, parsed.query):
                 return
-            if viewer_routes_observer_status.handle_get(self, parsed.path):
+            if viewer_routes_observer_status.handle_get(self, store, parsed.path):
                 return
             if viewer_routes_config.handle_get(
                 self,

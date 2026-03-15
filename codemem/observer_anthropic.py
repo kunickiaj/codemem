@@ -10,6 +10,17 @@ ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20"
 ANTHROPIC_OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)"
 
+_ANTHROPIC_MODEL_ALIASES = {
+    "claude-4.5-haiku": "claude-haiku-4-5",
+    "claude-4.5-sonnet": "claude-sonnet-4-5",
+    "claude-4.5-opus": "claude-opus-4-5",
+    "claude-4.6-sonnet": "claude-sonnet-4-6",
+    "claude-4.6-opus": "claude-opus-4-6",
+    "claude-4.1-opus": "claude-opus-4-1",
+    "claude-4.0-sonnet": "claude-sonnet-4-0",
+    "claude-4.0-opus": "claude-opus-4-0",
+}
+
 _redact_text = _observer_auth._redact_text
 
 
@@ -27,9 +38,44 @@ def _build_anthropic_headers(access_token: str) -> dict[str, str]:
     }
 
 
+def _normalize_anthropic_model(model: str) -> str:
+    normalized = model.strip()
+    if not normalized:
+        return normalized
+    return _ANTHROPIC_MODEL_ALIASES.get(normalized.lower(), normalized)
+
+
+def _extract_anthropic_error_details(error_text: str | None) -> dict[str, str] | None:
+    if not error_text:
+        return None
+    try:
+        payload = json.loads(error_text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    error_type = str(error.get("type") or "").strip().lower()
+    message = str(error.get("message") or "").strip()
+    if error_type == "not_found_error" and message.lower().startswith("model:"):
+        missing_model = message.split(":", 1)[1].strip()
+        return {
+            "code": "invalid_model_id",
+            "message": f"Anthropic model ID not found: {missing_model}.",
+        }
+    if error_type in {"authentication_error", "permission_error"}:
+        return {
+            "code": "auth_failed",
+            "message": "Anthropic authentication failed. Refresh credentials and retry.",
+        }
+    return None
+
+
 def _build_anthropic_payload(model: str, prompt: str, max_tokens: int) -> dict[str, Any]:
     return {
-        "model": model,
+        "model": _normalize_anthropic_model(model),
         "max_tokens": max_tokens,
         "stream": True,
         "messages": [

@@ -122,7 +122,7 @@ slash commands in the OpenCode chat input.
 ## Observer model defaults
 
 - OpenAI: `gpt-5.1-codex-mini`
-- Anthropic: `claude-4.5-haiku`
+- Anthropic: `claude-4.5-haiku` (mapped to Anthropic direct API alias `claude-haiku-4-5` when using `api_http`)
 
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
 `CODEMEM_OBSERVER_MODEL`. Custom providers are loaded from OpenCode config.
@@ -135,8 +135,9 @@ Observer execution in `0.16` supports both API and Claude runtime paths.
 - `claude_sidecar` runs observer calls via local Claude runtime auth (no `ANTHROPIC_API_KEY` required).
 - `claude_sidecar` uses `claude_command` (or `CODEMEM_CLAUDE_COMMAND`) as argv prefix for launching Claude CLI. Default: `["claude"]`.
 - Default models:
-  - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
-  - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
+- `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- Anthropic direct API calls accept Anthropic model IDs/aliases; use `claude-haiku-4-5-20251001` if you need a pinned snapshot instead of the moving alias.
 - If `observer_model` is unsupported in Claude CLI, codemem retries once without `--model`.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
 - Supported: API keys and gateway tokens codemem can read directly.

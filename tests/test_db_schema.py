@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from codemem import db
@@ -618,7 +619,129 @@ def test_initialize_schema_skips_raw_event_backfill_for_already_migrated_v4(
         db.initialize_schema(conn)
 
         row = conn.execute("PRAGMA user_version").fetchone()
-        assert row is not None
-        assert int(row[0]) == db.SCHEMA_VERSION
     finally:
         conn.close()
+
+    assert row is not None
+    assert int(row[0]) == db.SCHEMA_VERSION
+
+
+def test_rebuild_raw_event_identity_tables_tolerates_missing_failure_columns(
+    tmp_path: Path,
+) -> None:
+    conn = sqlite3.connect(tmp_path / "mem.sqlite")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                cwd TEXT,
+                project TEXT,
+                git_remote TEXT,
+                git_branch TEXT,
+                user TEXT,
+                tool_version TEXT,
+                metadata_json TEXT,
+                import_key TEXT
+            );
+
+            CREATE TABLE raw_events (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL,
+                opencode_session_id TEXT NOT NULL,
+                event_id TEXT,
+                event_seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                ts_wall_ms INTEGER,
+                ts_mono_ms REAL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(source, stream_id, event_seq),
+                UNIQUE(source, stream_id, event_id)
+            );
+
+            CREATE TABLE raw_event_sessions (
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL,
+                opencode_session_id TEXT NOT NULL,
+                cwd TEXT,
+                project TEXT,
+                started_at TEXT,
+                last_seen_ts_wall_ms INTEGER,
+                last_received_event_seq INTEGER NOT NULL DEFAULT -1,
+                last_flushed_event_seq INTEGER NOT NULL DEFAULT -1,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (source, stream_id)
+            );
+
+            CREATE TABLE raw_event_flush_batches (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL,
+                opencode_session_id TEXT NOT NULL,
+                start_event_seq INTEGER NOT NULL,
+                end_event_seq INTEGER NOT NULL,
+                extractor_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)
+            );
+
+            CREATE TABLE opencode_sessions (
+                source TEXT NOT NULL DEFAULT 'opencode',
+                stream_id TEXT NOT NULL,
+                opencode_session_id TEXT NOT NULL,
+                session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (source, stream_id)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_event_flush_batches(id, source, stream_id, opencode_session_id, start_event_seq, end_event_seq, extractor_version, status, created_at, updated_at, attempt_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "opencode",
+                "sess-1",
+                "sess-1",
+                0,
+                2,
+                "v1",
+                "failed",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+                2,
+            ),
+        )
+        conn.commit()
+
+        db._rebuild_raw_event_identity_tables(conn)
+
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(raw_event_flush_batches)").fetchall()
+        }
+        row = conn.execute(
+            "SELECT error_message, error_type, observer_provider, observer_model, observer_runtime, attempt_count FROM raw_event_flush_batches WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert {
+        "error_message",
+        "error_type",
+        "observer_provider",
+        "observer_model",
+        "observer_runtime",
+    }.issubset(columns)
+    assert row is not None
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] is None
+    assert row[4] is None
+    assert int(row[5]) == 2

@@ -286,6 +286,14 @@ class RawEventSweeper:
         self._auth_error_logged = False
         self._wake.set()
 
+    def auth_backoff_status(self) -> dict[str, int | bool]:
+        now = time.time()
+        remaining = max(0, int(self._auth_backoff_until - now))
+        return {
+            "active": remaining > 0,
+            "remaining_s": remaining,
+        }
+
     def _run(self) -> None:
         while not self._stop.is_set():
             interval_ms = max(1000, self.interval_ms())
