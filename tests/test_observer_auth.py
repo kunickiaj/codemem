@@ -106,7 +106,35 @@ def test_openai_client_uses_oauth_token_when_api_key_missing(tmp_path: Path) -> 
         assert client.client.kwargs["api_key"] == "oa-access"
 
 
-def test_anthropic_client_uses_oauth_token_when_api_key_missing(tmp_path: Path) -> None:
+def test_anthropic_oauth_uses_consumer_path_when_api_key_missing(tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "anthropic": {
+                    "type": "oauth",
+                    "access": "anthropic-access",
+                    "refresh": "anthropic-refresh",
+                    "expires": 9999999999999,
+                }
+            }
+        )
+    )
+    cfg = OpencodeMemConfig(observer_api_key=None, observer_provider="anthropic")
+    with (
+        patch("codemem.observer.load_config", return_value=cfg),
+        patch("codemem.observer._get_opencode_auth_path", return_value=auth_path),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        from codemem.observer import ObserverClient
+
+        client = ObserverClient()
+        assert client.anthropic_oauth_access == "anthropic-access"
+        assert client.client is None
+
+
+def test_anthropic_api_key_uses_sdk_client_not_consumer_path(tmp_path: Path) -> None:
+    """When an explicit API key is set, use the Anthropic SDK client, not the OAuth consumer path."""
     auth_path = tmp_path / "auth.json"
     auth_path.write_text(
         json.dumps(
@@ -121,7 +149,7 @@ def test_anthropic_client_uses_oauth_token_when_api_key_missing(tmp_path: Path) 
         )
     )
     anthropic_module = SimpleNamespace(Anthropic=Mock())
-    cfg = OpencodeMemConfig(observer_api_key=None, observer_provider="anthropic")
+    cfg = OpencodeMemConfig(observer_api_key="explicit-key", observer_provider="anthropic")
     with (
         patch("codemem.observer.load_config", return_value=cfg),
         patch("codemem.observer._get_opencode_auth_path", return_value=auth_path),
@@ -131,8 +159,9 @@ def test_anthropic_client_uses_oauth_token_when_api_key_missing(tmp_path: Path) 
         from codemem.observer import ObserverClient
 
         client = ObserverClient()
+        assert client.anthropic_oauth_access is None
         assert client.client is not None
-        anthropic_module.Anthropic.assert_called_once_with(api_key="anthropic-access")
+        anthropic_module.Anthropic.assert_called_once_with(api_key="explicit-key")
 
 
 def test_oauth_skips_when_api_key_present(tmp_path: Path) -> None:
