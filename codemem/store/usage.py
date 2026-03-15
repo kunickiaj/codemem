@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -219,8 +220,11 @@ def stats(store: MemoryStore) -> dict[str, Any]:
     db_path = str(store.db_path)
     size_bytes = Path(db_path).stat().st_size if Path(db_path).exists() else 0
 
-    vector_rows = store.conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()
-    vector_count = vector_rows[0] if vector_rows else 0
+    try:
+        vector_rows = store.conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()
+        vector_count = vector_rows[0] if vector_rows else 0
+    except sqlite3.OperationalError:
+        vector_count = 0
     vector_coverage = 0.0
     if active_memories:
         vector_coverage = min(1.0, float(vector_count) / float(active_memories))
