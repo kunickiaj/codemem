@@ -1527,6 +1527,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       updateFeedView(true);
     }
   }
+  function hideSkeleton(id) {
+    const skeleton = document.getElementById(id);
+    if (skeleton) skeleton.remove();
+  }
   let adminSetupExpanded = false;
   function setAdminSetupExpanded(v) {
     adminSetupExpanded = v;
@@ -1682,6 +1686,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const syncMeta = document.getElementById("syncMeta");
     const syncActions = document.getElementById("syncActions");
     if (!syncStatusGrid) return;
+    hideSkeleton("syncDiagSkeleton");
     syncStatusGrid.textContent = "";
     const status = state.lastSyncStatus;
     if (!status) {
@@ -1998,6 +2003,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const joinPanel = document.getElementById("syncJoinPanel");
     const joinRequests = document.getElementById("syncJoinRequests");
     if (!meta || !setupPanel || !list || !actions) return;
+    hideSkeleton("syncTeamSkeleton");
     ensureInvitePanelInAdminSection();
     ensureJoinPanelInSetupSection();
     list.textContent = "";
@@ -2271,6 +2277,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
     const actorList = document.getElementById("syncActorsList");
     const actorMeta = document.getElementById("syncActorsMeta");
     if (!actorList) return;
+    hideSkeleton("syncActorsSkeleton");
     actorList.textContent = "";
     const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
     if (actorMeta) {
@@ -2398,6 +2405,7 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
   function renderSyncPeers() {
     const syncPeers = document.getElementById("syncPeers");
     if (!syncPeers) return;
+    hideSkeleton("syncPeersSkeleton");
     syncPeers.textContent = "";
     const peers = state.lastSyncPeers;
     if (!Array.isArray(peers) || !peers.length) {
@@ -2702,6 +2710,10 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
           actorMeta.textContent = "Actor controls are temporarily unavailable. Peer status and sync health still loaded.";
       }
     } catch {
+      hideSkeleton("syncTeamSkeleton");
+      hideSkeleton("syncActorsSkeleton");
+      hideSkeleton("syncPeersSkeleton");
+      hideSkeleton("syncDiagSkeleton");
       const syncMeta = document.getElementById("syncMeta");
       if (syncMeta) syncMeta.textContent = "Sync unavailable";
     }

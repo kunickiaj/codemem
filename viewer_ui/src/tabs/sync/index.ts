@@ -7,6 +7,7 @@ import { renderHealthOverview } from '../health';
 import { renderSyncStatus, renderSyncAttempts, renderPairing, initDiagnosticsEvents, setRenderSyncPeers } from './diagnostics';
 import { renderTeamSync, renderSyncSharingReview, initTeamSyncEvents, setLoadSyncData as setTeamSyncLoadData } from './team-sync';
 import { renderSyncActors, renderSyncPeers, renderLegacyDeviceClaims, initPeopleEvents, setLoadSyncData as setPeopleLoadData } from './people';
+import { hideSkeleton } from './helpers';
 
 /* ── Re-exports consumed by app.ts ───────────────────────── */
 
@@ -51,6 +52,11 @@ export async function loadSyncData() {
           'Actor controls are temporarily unavailable. Peer status and sync health still loaded.';
     }
   } catch {
+    // Clear all skeletons so the error state is visible, not masked by loading placeholders
+    hideSkeleton('syncTeamSkeleton');
+    hideSkeleton('syncActorsSkeleton');
+    hideSkeleton('syncPeersSkeleton');
+    hideSkeleton('syncDiagSkeleton');
     const syncMeta = document.getElementById('syncMeta');
     if (syncMeta) syncMeta.textContent = 'Sync unavailable';
   }

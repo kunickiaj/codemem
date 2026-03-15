@@ -928,6 +928,30 @@
       .peer-actions button { border: 1px solid var(--border); background: transparent; border-radius: var(--radius-pill); padding: 5px 10px; font-family: var(--font-sans); font-size: 12px; cursor: pointer; color: var(--text-secondary); }
       .peer-actions button:hover { border-color: var(--border-hover); background: var(--surface-2); }
       .peer-scope-editor-wrap { display: grid; gap: var(--sp-2); }
+      @keyframes sync-shimmer {
+        0% { background-position: -200px 0; }
+        100% { background-position: 200px 0; }
+      }
+      .sync-skeleton { padding: 16px 0; }
+      .sync-skeleton-line {
+        height: 12px;
+        border-radius: 6px;
+        background: linear-gradient(90deg, var(--border) 25%, var(--surface-2) 50%, var(--border) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer 1.5s ease-in-out infinite;
+        margin: 8px 0;
+      }
+      .sync-skeleton-line.short { width: 40%; }
+      .sync-skeleton-line.medium { width: 65%; }
+      .sync-skeleton-line.long { width: 85%; }
+      .sync-skeleton-block {
+        height: 56px;
+        border-radius: 8px;
+        background: linear-gradient(90deg, var(--border) 25%, var(--surface-2) 50%, var(--border) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer 1.5s ease-in-out infinite;
+        margin: 8px 0;
+      }
       .sync-empty-state {
         padding: 20px;
         text-align: center;
@@ -1627,6 +1651,11 @@
           </div>
         </div>
         <div class="section-meta" id="syncTeamMeta"></div>
+        <div class="sync-skeleton" id="syncTeamSkeleton">
+          <div class="sync-skeleton-line medium"></div>
+          <div class="sync-skeleton-block"></div>
+          <div class="sync-skeleton-line short"></div>
+        </div>
         <div id="syncSetupPanel">
           <div id="syncJoinSection">
             <h3 class="settings-group-title">Join a team</h3>
@@ -1674,9 +1703,17 @@
           <button class="settings-button" id="syncActorCreateButton">Create actor</button>
         </div>
         <div class="actor-list" id="syncActorsList"></div>
+        <div class="sync-skeleton" id="syncActorsSkeleton">
+          <div class="sync-skeleton-line long"></div>
+          <div class="sync-skeleton-line medium"></div>
+        </div>
 
         <h3 class="settings-group-title" style="margin-top: 20px">Devices</h3>
         <div class="peer-list" id="syncPeers"></div>
+        <div class="sync-skeleton" id="syncPeersSkeleton">
+          <div class="sync-skeleton-block"></div>
+          <div class="sync-skeleton-block"></div>
+        </div>
 
         <div id="syncSharingReview" hidden>
           <h3 class="settings-group-title" style="margin-top: 20px">What teammates will receive</h3>
@@ -1707,6 +1744,11 @@
           </div>
         </div>
         <div class="section-meta" id="syncMeta">Loading sync status…</div>
+        <div class="sync-skeleton" id="syncDiagSkeleton">
+          <div class="sync-skeleton-line long"></div>
+          <div class="sync-skeleton-line medium"></div>
+          <div class="sync-skeleton-line short"></div>
+        </div>
         <div class="sync-actions" id="syncActions"></div>
         <div class="grid-2" id="syncStatusGrid"></div>
 
