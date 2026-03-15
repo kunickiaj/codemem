@@ -24,11 +24,11 @@ export function $button(id: string): HTMLButtonElement | null {
 }
 
 export function hide(element: HTMLElement | null) {
-  if (element) (element as any).hidden = true;
+  if (element) element.hidden = true;
 }
 
 export function show(element: HTMLElement | null) {
-  if (element) (element as any).hidden = false;
+  if (element) element.hidden = false;
 }
 
 export function escapeHtml(value: string): string {

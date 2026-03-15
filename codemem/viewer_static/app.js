@@ -518,24 +518,40 @@
     if (colonIndex === -1) return trimmed;
     return trimmed.slice(0, colonIndex).trim();
   }
+  let hideAbort = null;
   function hideGlobalNotice() {
     const notice = $("globalNotice");
     if (!notice) return;
-    hide(notice);
-    notice.textContent = "";
-    notice.classList.remove("success", "warning");
     if (state.noticeTimer) {
       clearTimeout(state.noticeTimer);
       state.noticeTimer = null;
     }
+    if (hideAbort) hideAbort.abort();
+    hideAbort = new AbortController();
+    notice.classList.add("hiding");
+    notice.addEventListener(
+      "animationend",
+      () => {
+        hideAbort = null;
+        notice.hidden = true;
+        notice.textContent = "";
+        notice.classList.remove("success", "warning", "hiding");
+      },
+      { once: true, signal: hideAbort.signal }
+    );
   }
   function showGlobalNotice(message, type = "success") {
     const notice = $("globalNotice");
     if (!notice || !message) return;
+    if (hideAbort) {
+      hideAbort.abort();
+      hideAbort = null;
+    }
+    notice.classList.remove("hiding");
     notice.textContent = message;
     notice.classList.remove("success", "warning");
     notice.classList.add(type === "warning" ? "warning" : "success");
-    show(notice);
+    notice.hidden = false;
     if (state.noticeTimer) clearTimeout(state.noticeTimer);
     state.noticeTimer = setTimeout(() => {
       hideGlobalNotice();
@@ -2522,9 +2538,9 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       );
       const includeEditor = createChipEditor(includeList, "Add included project", "All projects");
       const excludeEditor = createChipEditor(excludeList, "Add excluded project", "No exclusions");
-      const editorWrap = el("div", "peer-scope-editor-wrap");
       const scopeEditorOpen = openPeerScopeEditors.has(peerId);
-      editorWrap.hidden = !scopeEditorOpen;
+      const editorWrap = el("div", `peer-scope-editor-wrap${scopeEditorOpen ? "" : " collapsed"}`);
+      if (!scopeEditorOpen) editorWrap.inert = true;
       const inputRow = el("div", "peer-scope-row");
       inputRow.append(includeEditor.element, excludeEditor.element);
       const scopeActions = el("div", "peer-scope-actions");
@@ -2569,11 +2585,12 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       editorWrap.append(inputRow, scopeActions);
       toggleScopeBtn.textContent = scopeEditorOpen ? "Hide scope editor" : "Edit scope";
       toggleScopeBtn.addEventListener("click", () => {
-        const nextHidden = !editorWrap.hidden;
-        editorWrap.hidden = nextHidden;
-        if (nextHidden) openPeerScopeEditors.delete(peerId);
+        const isCollapsed = editorWrap.classList.contains("collapsed");
+        editorWrap.classList.toggle("collapsed", !isCollapsed);
+        editorWrap.inert = !isCollapsed;
+        if (!isCollapsed) openPeerScopeEditors.delete(peerId);
         else openPeerScopeEditors.add(peerId);
-        toggleScopeBtn.textContent = nextHidden ? "Edit scope" : "Hide scope editor";
+        toggleScopeBtn.textContent = isCollapsed ? "Hide scope editor" : "Edit scope";
       });
       scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);
       titleRow.append(name, actions);

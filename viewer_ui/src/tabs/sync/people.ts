@@ -197,13 +197,13 @@ export function renderSyncPeers() {
     const peerId = peer.peer_device_id ? String(peer.peer_device_id) : '';
     const displayName = peer.name || (peerId ? peerId.slice(0, 8) : 'unknown');
     const name = el('strong', null, displayName);
-    if (peerId) (name as any).title = peerId;
+    if (peerId) name.title = peerId;
 
     const peerStatus = peer.status || {};
     const online = peerStatus.sync_status === 'ok' || peerStatus.ping_status === 'ok';
     const badge = el('span', 'badge', online ? 'Online' : 'Offline');
-    (badge as any).style.background = online ? 'rgba(31, 111, 92, 0.12)' : 'rgba(230, 126, 77, 0.15)';
-    (badge as any).style.color = online ? 'var(--accent)' : 'var(--accent-warm)';
+    badge.style.background = online ? 'rgba(31, 111, 92, 0.12)' : 'rgba(230, 126, 77, 0.15)';
+    badge.style.color = online ? 'var(--accent)' : 'var(--accent-warm)';
     name.append(' ', badge);
 
     const actions = el('div', 'peer-actions');
@@ -309,9 +309,9 @@ export function renderSyncPeers() {
     );
     const includeEditor = createChipEditor(includeList, 'Add included project', 'All projects');
     const excludeEditor = createChipEditor(excludeList, 'Add excluded project', 'No exclusions');
-    const editorWrap = el('div', 'peer-scope-editor-wrap');
     const scopeEditorOpen = openPeerScopeEditors.has(peerId);
-    (editorWrap as any).hidden = !scopeEditorOpen;
+    const editorWrap = el('div', `peer-scope-editor-wrap${scopeEditorOpen ? '' : ' collapsed'}`);
+    if (!scopeEditorOpen) editorWrap.inert = true;
     const inputRow = el('div', 'peer-scope-row');
     inputRow.append(includeEditor.element, excludeEditor.element);
     const scopeActions = el('div', 'peer-scope-actions');
@@ -356,11 +356,12 @@ export function renderSyncPeers() {
     editorWrap.append(inputRow, scopeActions);
     toggleScopeBtn.textContent = scopeEditorOpen ? 'Hide scope editor' : 'Edit scope';
     toggleScopeBtn.addEventListener('click', () => {
-      const nextHidden = !(editorWrap as any).hidden;
-      (editorWrap as any).hidden = nextHidden;
-      if (nextHidden) openPeerScopeEditors.delete(peerId);
+      const isCollapsed = editorWrap.classList.contains('collapsed');
+      editorWrap.classList.toggle('collapsed', !isCollapsed);
+      editorWrap.inert = !isCollapsed;
+      if (!isCollapsed) openPeerScopeEditors.delete(peerId);
       else openPeerScopeEditors.add(peerId);
-      toggleScopeBtn.textContent = nextHidden ? 'Edit scope' : 'Hide scope editor';
+      toggleScopeBtn.textContent = isCollapsed ? 'Hide scope editor' : 'Edit scope';
     });
     scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);
 
@@ -383,11 +384,11 @@ export function renderLegacyDeviceClaims() {
   select.textContent = '';
   meta.textContent = '';
   if (!devices.length) {
-    (panel as any).hidden = true;
+    panel.hidden = true;
     return;
   }
 
-  (panel as any).hidden = false;
+  panel.hidden = false;
   devices.forEach((device, index) => {
     const option = document.createElement('option');
     const deviceId = String(device.origin_device_id || '').trim();

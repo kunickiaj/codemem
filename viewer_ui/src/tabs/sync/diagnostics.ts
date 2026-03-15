@@ -238,7 +238,7 @@ export function initDiagnosticsEvents(refreshCallback: () => void) {
   const syncPairing = document.getElementById('syncPairing');
 
   // Apply initial toggle states
-  if (syncPairing) (syncPairing as any).hidden = !state.syncPairingOpen;
+  if (syncPairing) syncPairing.hidden = !state.syncPairingOpen;
   if (syncPairingToggle)
     syncPairingToggle.textContent = state.syncPairingOpen ? 'Hide pairing' : 'Show pairing';
   if (syncRedact) syncRedact.checked = isSyncRedactionEnabled();
@@ -246,7 +246,7 @@ export function initDiagnosticsEvents(refreshCallback: () => void) {
   syncPairingToggle?.addEventListener('click', () => {
     const next = !state.syncPairingOpen;
     setSyncPairingOpen(next);
-    if (syncPairing) (syncPairing as any).hidden = !next;
+    if (syncPairing) syncPairing.hidden = !next;
     if (syncPairingToggle)
       syncPairingToggle.textContent = next ? 'Hide pairing' : 'Show pairing';
     if (next) {

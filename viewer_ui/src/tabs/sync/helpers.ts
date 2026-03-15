@@ -176,10 +176,10 @@ export function renderActionList(
   if (!container) return;
   container.textContent = '';
   if (!actions.length) {
-    (container as any).hidden = true;
+    container.hidden = true;
     return;
   }
-  (container as any).hidden = false;
+  container.hidden = false;
   actions.slice(0, 2).forEach((item) => {
     const row = el('div', 'sync-action');
     const textWrap = el('div', 'sync-action-text');
