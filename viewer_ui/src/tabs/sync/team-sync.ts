@@ -1,0 +1,405 @@
+/* Team sync card — coordinator onboarding, invites, join requests. */
+
+import { el, copyToClipboard } from '../../lib/dom';
+import { state, setFeedScopeFilter } from '../../lib/state';
+import * as api from '../../lib/api';
+import { showGlobalNotice } from '../../lib/notice';
+import { markFieldError, clearFieldError, friendlyError } from '../../lib/form';
+import {
+  adminSetupExpanded,
+  setAdminSetupExpanded,
+  teamInvitePanelOpen,
+  setTeamInvitePanelOpen,
+} from './helpers';
+
+/* ── DOM placement helpers ───────────────────────────────── */
+
+function ensureInvitePanelInAdminSection() {
+  const invitePanel = document.getElementById('syncInvitePanel');
+  const adminSection = document.getElementById('syncAdminSection');
+  if (!invitePanel || !adminSection) return;
+  if (invitePanel.parentElement !== adminSection) adminSection.appendChild(invitePanel);
+}
+
+function ensureJoinPanelInSetupSection() {
+  const joinPanel = document.getElementById('syncJoinPanel');
+  const joinSection = document.getElementById('syncJoinSection');
+  if (!joinPanel || !joinSection) return;
+  if (joinPanel.parentElement !== joinSection) joinSection.appendChild(joinPanel);
+}
+
+function setInviteOutputVisibility() {
+  const syncInviteOutput = document.getElementById('syncInviteOutput') as HTMLTextAreaElement | null;
+  if (!syncInviteOutput) return;
+  const encoded = String(state.lastTeamInvite?.encoded || '').trim();
+  syncInviteOutput.value = encoded;
+  (syncInviteOutput as any).hidden = !encoded;
+}
+
+/* ── Sharing review renderer ─────────────────────────────── */
+
+function openFeedSharingReview() {
+  setFeedScopeFilter('mine');
+  state.feedQuery = '';
+  window.location.hash = 'feed';
+}
+
+export function renderSyncSharingReview() {
+  const panel = document.getElementById('syncSharingReview');
+  const meta = document.getElementById('syncSharingReviewMeta');
+  const list = document.getElementById('syncSharingReviewList');
+  if (!panel || !meta || !list) return;
+  list.textContent = '';
+  const items = Array.isArray(state.lastSyncSharingReview) ? state.lastSyncSharingReview : [];
+  if (!items.length) {
+    (panel as any).hidden = true;
+    return;
+  }
+  (panel as any).hidden = false;
+  const scopeLabel = state.currentProject
+    ? `current project (${state.currentProject})`
+    : 'all allowed projects';
+  meta.textContent = `Teammates receive memories from ${scopeLabel} by default. Use Only me on a memory when it should stay local.`;
+  items.forEach((item) => {
+    const row = el('div', 'actor-row');
+    const details = el('div', 'actor-details');
+    const title = el('div', 'actor-title');
+    title.append(
+      el('strong', null, String(item.peer_name || item.peer_device_id || 'Device')),
+      el(
+        'span',
+        'badge actor-badge',
+        `actor: ${String(item.actor_display_name || item.actor_id || 'unknown')}`,
+      ),
+    );
+    const note = el(
+      'div',
+      'peer-meta',
+      `${Number(item.shareable_count || 0)} share by default \u00b7 ${Number(item.private_count || 0)} marked Only me \u00b7 ${String(item.scope_label || 'All allowed projects')}`,
+    );
+    details.append(title, note);
+    const actions = el('div', 'actor-actions');
+    const reviewBtn = el('button', 'settings-button', 'Review my memories in Feed') as HTMLButtonElement;
+    reviewBtn.addEventListener('click', () => openFeedSharingReview());
+    actions.appendChild(reviewBtn);
+    row.append(details, actions);
+    list.appendChild(row);
+  });
+}
+
+/* ── Team sync renderer ──────────────────────────────────── */
+
+// loadSyncData is set by the index module after both are loaded.
+let _loadSyncData: () => Promise<void> = async () => {};
+export function setLoadSyncData(fn: () => Promise<void>) {
+  _loadSyncData = fn;
+}
+
+export function renderTeamSync() {
+  const meta = document.getElementById('syncTeamMeta');
+  const setupPanel = document.getElementById('syncSetupPanel');
+  const list = document.getElementById('syncTeamStatus');
+  const actions = document.getElementById('syncTeamActions');
+  const invitePanel = document.getElementById('syncInvitePanel');
+  const toggleAdmin = document.getElementById('syncToggleAdmin') as HTMLButtonElement | null;
+  const joinPanel = document.getElementById('syncJoinPanel');
+  const joinRequests = document.getElementById('syncJoinRequests');
+  if (!meta || !setupPanel || !list || !actions) return;
+  // Move panels back to their home sections BEFORE clearing, so they survive the wipe
+  ensureInvitePanelInAdminSection();
+  ensureJoinPanelInSetupSection();
+  list.textContent = '';
+  actions.textContent = '';
+  if (joinRequests) joinRequests.textContent = '';
+  setInviteOutputVisibility();
+  const coordinator = state.lastSyncCoordinator;
+  const configured = Boolean(coordinator && coordinator.configured);
+  meta.textContent = configured
+    ? `Connected to ${String(coordinator.coordinator_url || '')} \u00b7 group: ${(coordinator.groups || []).join(', ') || 'none'}`
+    : 'Create a team invite or join an existing team to start syncing memories with teammates.';
+  if (!configured) {
+    (setupPanel as any).hidden = false;
+    (list as any).hidden = true;
+    (actions as any).hidden = true;
+    if (joinRequests) (joinRequests as any).hidden = true;
+    if (invitePanel) (invitePanel as any).hidden = !adminSetupExpanded;
+    if (toggleAdmin) {
+      toggleAdmin.textContent = adminSetupExpanded
+        ? 'Hide team setup'
+        : 'Set up a new team instead\u2026';
+    }
+    return;
+  }
+  (setupPanel as any).hidden = true;
+  (list as any).hidden = false;
+  (actions as any).hidden = false;
+  if (joinRequests) (joinRequests as any).hidden = false;
+  const presenceLabel =
+    coordinator.presence_status === 'posted'
+      ? 'Connected'
+      : coordinator.presence_status === 'not_enrolled'
+        ? 'Not connected \u2014 import an invite or ask your admin to enroll this device'
+        : 'Connection error';
+  const statusRow = el('div', 'sync-team-summary');
+  const statusLine = el('div', 'sync-team-status-row');
+  const statusLabel = el('span', 'sync-team-status-label', 'Status');
+  const statusBadge = el(
+    'span',
+    `pill ${coordinator.presence_status === 'posted' ? 'pill-success' : coordinator.presence_status === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
+    presenceLabel,
+  );
+  const metricParts = [
+    `Paired devices: ${Number(coordinator.paired_peer_count || 0)}`,
+    `Discovered: ${Number(coordinator.fresh_peer_count || 0)}`,
+  ];
+  if (Number(coordinator.stale_peer_count || 0) > 0) {
+    metricParts.push(`Inactive: ${Number(coordinator.stale_peer_count || 0)}`);
+  }
+  statusLine.append(statusLabel, statusBadge);
+  statusRow.append(statusLine, el('div', 'sync-team-metrics', metricParts.join(' \u00b7 ')));
+  list.appendChild(statusRow);
+
+  const inviteToggleRow = el('div', 'sync-action');
+  const inviteToggleText = el('div', 'sync-action-text');
+  inviteToggleText.textContent = 'Generate an invite to add another teammate to this team.';
+  const inviteToggleBtn = el(
+    'button',
+    'settings-button',
+    'Invite a teammate',
+  ) as HTMLButtonElement;
+  inviteToggleBtn.addEventListener('click', () => {
+    if (!invitePanel) return;
+    setTeamInvitePanelOpen(!teamInvitePanelOpen);
+    if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
+    (invitePanel as any).hidden = !teamInvitePanelOpen;
+    inviteToggleBtn.textContent = teamInvitePanelOpen ? 'Hide invite form' : 'Invite a teammate';
+  });
+  inviteToggleRow.append(inviteToggleText, inviteToggleBtn);
+  actions.appendChild(inviteToggleRow);
+  if (invitePanel) {
+    if (teamInvitePanelOpen) {
+      if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
+      (invitePanel as any).hidden = false;
+      inviteToggleBtn.textContent = 'Hide invite form';
+    } else {
+      (invitePanel as any).hidden = true;
+    }
+  }
+
+  if (coordinator.presence_status === 'not_enrolled') {
+    if (joinPanel) {
+      if (joinPanel.parentElement !== actions) actions.appendChild(joinPanel);
+      (joinPanel as any).hidden = false;
+    }
+    const row = el('div', 'sync-action');
+    const textWrap = el('div', 'sync-action-text');
+    textWrap.textContent = 'This device is not connected to the team yet.';
+    textWrap.appendChild(
+      el(
+        'span',
+        'sync-action-command',
+        'Import a team invite or ask your admin to enroll this device',
+      ),
+    );
+    actions.appendChild(row);
+    row.appendChild(textWrap);
+  }
+  if (!Number(coordinator.paired_peer_count || 0) && coordinator.presence_status === 'posted') {
+    const row = el('div', 'sync-action');
+    const textWrap = el('div', 'sync-action-text');
+    textWrap.textContent = 'No devices are paired yet.';
+    textWrap.appendChild(
+      el('span', 'sync-action-command', 'uv run codemem sync pair --payload-only'),
+    );
+    const btn = el('button', 'settings-button sync-action-copy', 'Copy') as HTMLButtonElement;
+    btn.addEventListener('click', () =>
+      copyToClipboard('uv run codemem sync pair --payload-only', btn),
+    );
+    row.append(textWrap, btn);
+    actions.appendChild(row);
+  }
+
+  const pending = Array.isArray(state.lastSyncJoinRequests) ? state.lastSyncJoinRequests : [];
+  if (joinRequests && pending.length) {
+    const title = el(
+      'div',
+      'peer-meta',
+      `${pending.length} pending join request${pending.length === 1 ? '' : 's'}`,
+    );
+    joinRequests.appendChild(title);
+    pending.forEach((request) => {
+      const row = el('div', 'actor-row');
+      const details = el('div', 'actor-details');
+      const name = String(request.display_name || request.device_id || 'Pending device');
+      details.append(
+        el('div', 'actor-title', name),
+        el('div', 'peer-meta', `request: ${String(request.request_id || '')}`),
+      );
+      const rowActions = el('div', 'actor-actions');
+      const approveBtn = el('button', 'settings-button', 'Approve') as HTMLButtonElement;
+      const denyBtn = el('button', 'settings-button', 'Deny') as HTMLButtonElement;
+      approveBtn.addEventListener('click', async () => {
+        approveBtn.disabled = true;
+        denyBtn.disabled = true;
+        approveBtn.textContent = 'Approving\u2026';
+        try {
+          await api.reviewJoinRequest(String(request.request_id || ''), 'approve');
+          showGlobalNotice(`Approved ${name}. They can now sync with the team.`);
+          await _loadSyncData();
+        } catch (error) {
+          showGlobalNotice(friendlyError(error, 'Failed to approve join request.'), 'warning');
+          approveBtn.textContent = 'Retry';
+        } finally {
+          approveBtn.disabled = false;
+          denyBtn.disabled = false;
+        }
+      });
+      denyBtn.addEventListener('click', async () => {
+        if (
+          !window.confirm(
+            `Deny join request from ${name}? They will need a new invite to try again.`,
+          )
+        )
+          return;
+        approveBtn.disabled = true;
+        denyBtn.disabled = true;
+        denyBtn.textContent = 'Denying\u2026';
+        try {
+          await api.reviewJoinRequest(String(request.request_id || ''), 'deny');
+          showGlobalNotice(`Denied join request from ${name}.`);
+          await _loadSyncData();
+        } catch (error) {
+          showGlobalNotice(friendlyError(error, 'Failed to deny join request.'), 'warning');
+          denyBtn.textContent = 'Retry deny';
+        } finally {
+          approveBtn.disabled = false;
+          denyBtn.disabled = false;
+        }
+      });
+      rowActions.append(approveBtn, denyBtn);
+      row.append(details, rowActions);
+      joinRequests.appendChild(row);
+    });
+  } else if (joinRequests) {
+    (joinRequests as any).hidden = true;
+  }
+}
+
+/* ── Event wiring ────────────────────────────────────────── */
+
+export function initTeamSyncEvents(
+  refreshCallback: () => void,
+  loadSyncData: () => Promise<void>,
+) {
+  const syncNowButton = document.getElementById('syncNowButton') as HTMLButtonElement | null;
+  const syncToggleAdmin = document.getElementById('syncToggleAdmin') as HTMLButtonElement | null;
+  const syncInvitePanel = document.getElementById('syncInvitePanel');
+  const syncCreateInviteButton = document.getElementById(
+    'syncCreateInviteButton',
+  ) as HTMLButtonElement | null;
+  const syncInviteGroup = document.getElementById('syncInviteGroup') as HTMLInputElement | null;
+  const syncInvitePolicy = document.getElementById('syncInvitePolicy') as HTMLSelectElement | null;
+  const syncInviteTtl = document.getElementById('syncInviteTtl') as HTMLInputElement | null;
+  const syncInviteOutput = document.getElementById(
+    'syncInviteOutput',
+  ) as HTMLTextAreaElement | null;
+  const syncJoinButton = document.getElementById('syncJoinButton') as HTMLButtonElement | null;
+  const syncJoinInvite = document.getElementById('syncJoinInvite') as HTMLTextAreaElement | null;
+
+  syncToggleAdmin?.addEventListener('click', () => {
+    if (!syncInvitePanel) return;
+    setAdminSetupExpanded(!adminSetupExpanded);
+    (syncInvitePanel as any).hidden = !adminSetupExpanded;
+    syncToggleAdmin.textContent = adminSetupExpanded
+      ? 'Hide team setup'
+      : 'Set up a new team instead\u2026';
+  });
+
+  syncCreateInviteButton?.addEventListener('click', async () => {
+    if (
+      !syncCreateInviteButton ||
+      !syncInviteGroup ||
+      !syncInvitePolicy ||
+      !syncInviteTtl ||
+      !syncInviteOutput
+    )
+      return;
+    const groupName = syncInviteGroup.value.trim();
+    const ttlValue = Number(syncInviteTtl.value);
+    let valid = true;
+    if (!groupName) {
+      valid = markFieldError(syncInviteGroup, 'Team name is required.');
+    } else {
+      clearFieldError(syncInviteGroup);
+    }
+    if (!ttlValue || ttlValue < 1) {
+      valid = markFieldError(syncInviteTtl, 'Must be at least 1 hour.');
+    } else {
+      clearFieldError(syncInviteTtl);
+    }
+    if (!valid) return;
+    syncCreateInviteButton.disabled = true;
+    syncCreateInviteButton.textContent = 'Creating\u2026';
+    try {
+      const result = await api.createCoordinatorInvite({
+        group_id: groupName,
+        policy: syncInvitePolicy.value as 'auto_admit' | 'approval_required',
+        ttl_hours: ttlValue || 24,
+      });
+      state.lastTeamInvite = result;
+      syncInviteOutput.value = String(result.encoded || '');
+      (syncInviteOutput as any).hidden = false;
+      syncInviteOutput.focus();
+      syncInviteOutput.select();
+      showGlobalNotice('Invite created. Copy the text above and share it with your teammate.');
+    } catch (error) {
+      showGlobalNotice(friendlyError(error, 'Failed to create invite.'), 'warning');
+    } finally {
+      syncCreateInviteButton.disabled = false;
+      syncCreateInviteButton.textContent = 'Create invite';
+    }
+  });
+
+  syncJoinButton?.addEventListener('click', async () => {
+    if (!syncJoinButton || !syncJoinInvite) return;
+    const inviteValue = syncJoinInvite.value.trim();
+    if (!inviteValue) {
+      markFieldError(syncJoinInvite, 'Paste a team invite to join.');
+      return;
+    }
+    clearFieldError(syncJoinInvite);
+    syncJoinButton.disabled = true;
+    syncJoinButton.textContent = 'Joining\u2026';
+    try {
+      const result = await api.importCoordinatorInvite(inviteValue);
+      state.lastTeamJoin = result;
+      showGlobalNotice(
+        result.status === 'pending'
+          ? 'Join request submitted \u2014 waiting for admin approval.'
+          : 'Joined team successfully.',
+      );
+      syncJoinInvite.value = '';
+      await loadSyncData();
+    } catch (error) {
+      showGlobalNotice(friendlyError(error, 'Failed to import invite.'), 'warning');
+    } finally {
+      syncJoinButton.disabled = false;
+      syncJoinButton.textContent = 'Join team';
+    }
+  });
+
+  syncNowButton?.addEventListener('click', async () => {
+    if (!syncNowButton) return;
+    syncNowButton.disabled = true;
+    syncNowButton.textContent = 'Syncing\u2026';
+    try {
+      await api.triggerSync();
+      showGlobalNotice('Sync pass started.');
+    } catch (error) {
+      showGlobalNotice(friendlyError(error, 'Failed to start sync.'), 'warning');
+    }
+    syncNowButton.disabled = false;
+    syncNowButton.textContent = 'Sync now';
+    refreshCallback();
+  });
+}
