@@ -73,7 +73,7 @@ function switchTab(tab: TabId) {
   // Toggle tab panels
   TAB_IDS.forEach((id) => {
     const panel = $(`tab-${id}`);
-    if (panel) (panel as any).hidden = id !== tab;
+    if (panel) panel.hidden = id !== tab;
   });
 
   // Toggle tab buttons
@@ -132,7 +132,15 @@ $select('projectFilter')?.addEventListener('change', () => {
 
 /* ── Main refresh ────────────────────────────────────────── */
 
+let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function refresh() {
+  // Debounce rapid calls (tab switch + hash change + visibility)
+  if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
+  refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
+}
+
+async function doRefresh() {
   if (state.refreshInFlight) { state.refreshQueued = true; return; }
   state.refreshInFlight = true;
 
@@ -143,12 +151,15 @@ async function refresh() {
     const promises: Promise<any>[] = [
       loadHealthData(),
       loadConfigData(),
-      loadSyncData(),
     ];
 
     // Load tab-specific data
     if (state.activeTab === 'feed') {
       promises.push(loadFeedData());
+    }
+    // Sync data is needed by both Sync tab and Health tab (health cards derive sync state)
+    if (state.activeTab === 'sync' || state.activeTab === 'health') {
+      promises.push(loadSyncData());
     }
 
     // Load pairing if open
@@ -164,7 +175,7 @@ async function refresh() {
     state.refreshInFlight = false;
     if (state.refreshQueued) {
       state.refreshQueued = false;
-      refresh();
+      doRefresh();
     }
   }
 }

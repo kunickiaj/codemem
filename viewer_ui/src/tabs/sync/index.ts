@@ -16,6 +16,8 @@ export { renderSyncPeers } from './people';
 
 /* ── Data loading ────────────────────────────────────────── */
 
+let lastSyncHash = '';
+
 export async function loadSyncData() {
   try {
     const payload = await api.loadSyncStatus(true, state.currentProject || '');
@@ -26,6 +28,12 @@ export async function loadSyncData() {
     } catch {
       actorLoadError = true;
     }
+
+    // Skip re-render if data hasn't changed since last poll
+    const hash = JSON.stringify([payload, actorsPayload]);
+    if (hash === lastSyncHash) return;
+    lastSyncHash = hash;
+
     const statusPayload =
       payload.status && typeof payload.status === 'object' ? payload.status : null;
     if (statusPayload) state.lastSyncStatus = statusPayload;
