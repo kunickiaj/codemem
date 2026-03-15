@@ -23,6 +23,7 @@ from .viewer_http import (
 )
 from .viewer_routes import config as viewer_routes_config
 from .viewer_routes import memory as viewer_routes_memory
+from .viewer_routes import observer_status as viewer_routes_observer_status
 from .viewer_routes import raw_events as viewer_routes_raw_events
 from .viewer_routes import stats as viewer_routes_stats
 from .viewer_routes import sync as viewer_routes_sync
@@ -101,6 +102,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if viewer_routes_raw_events.handle_get(self, store, parsed.path, parsed.query):
                 return
             if viewer_routes_memory.handle_get(self, store, parsed.path, parsed.query):
+                return
+            if viewer_routes_observer_status.handle_get(self, parsed.path):
                 return
             if viewer_routes_config.handle_get(
                 self,

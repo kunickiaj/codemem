@@ -153,6 +153,29 @@ def _load_opencode_oauth_cache() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def probe_available_credentials() -> dict[str, dict[str, bool]]:
+    """Probe which credentials are available for each provider without creating clients.
+
+    Returns a dict keyed by provider name with booleans for each credential source.
+    """
+    oauth_cache = _load_opencode_oauth_cache()
+    now = _now_ms()
+    result: dict[str, dict[str, bool]] = {}
+    for provider_key in ("openai", "anthropic"):
+        oauth_access = _extract_oauth_access(oauth_cache, provider_key)
+        oauth_expires = _extract_oauth_expires(oauth_cache, provider_key)
+        oauth_valid = bool(oauth_access) and (oauth_expires is None or oauth_expires > now)
+        env_key = "OPENAI_API_KEY" if provider_key == "openai" else "ANTHROPIC_API_KEY"
+        env_present = bool(os.getenv(env_key))
+        explicit_present = bool(os.getenv("CODEMEM_OBSERVER_API_KEY"))
+        result[provider_key] = {
+            "oauth": oauth_valid,
+            "api_key": explicit_present,
+            "env_var": env_present,
+        }
+    return result
+
+
 @dataclass
 class ObserverResponse:
     raw: str | None
@@ -230,6 +253,32 @@ class ObserverClient:
 
         if self.runtime == "api_http":
             self._init_provider_client(force_refresh=False)
+
+    def get_status(self) -> dict[str, Any]:
+        """Return the resolved runtime state of this observer client."""
+        method = "none"
+        if self.runtime == "claude_sidecar":
+            method = "claude_sidecar"
+        elif self.use_opencode_run:
+            method = "opencode_run"
+        elif self.anthropic_oauth_access:
+            method = "anthropic_consumer"
+        elif self.codex_access:
+            method = "codex_consumer"
+        elif self.client is not None:
+            method = "sdk_client"
+
+        token_present = bool(self.auth.token)
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "runtime": self.runtime,
+            "auth": {
+                "source": self.auth.source,
+                "method": method,
+                "token_present": token_present,
+            },
+        }
 
     def _init_provider_client(self, *, force_refresh: bool) -> None:
         self.client = None
