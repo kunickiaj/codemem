@@ -43,6 +43,12 @@ dev = [
 codemem = "codemem.cli:main"
 codemem-mcp = "codemem.mcp_server:run"
 
+[tool.uv]
+# Override fastembed's pillow<12.0 cap to resolve CVE-2026-25990 (GHSA-cfh3-3jmp-rvhc).
+# fastembed main has uncapped pillow (PR #611) but no release yet.
+# Remove this override once fastembed >= 0.7.5 ships with the relaxed constraint.
+override-dependencies = ["pillow>=12.1.1"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 
