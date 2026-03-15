@@ -197,7 +197,11 @@ def coordinator_create_invite_action(
     resolved_remote_url, resolved_admin_secret = _resolve_remote_target(remote_url, admin_secret)
     if resolved_remote_url:
         if not resolved_admin_secret:
-            raise SystemExit("Remote coordinator admin secret required")
+            raise SystemExit(
+                "Admin secret required to create invites via the coordinator API. "
+                "Set sync_coordinator_admin_secret in config or "
+                "CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET env var on this device."
+            )
         payload = _remote_request(
             "POST",
             f"{resolved_remote_url.rstrip('/')}/v1/admin/invites",
@@ -219,6 +223,14 @@ def coordinator_create_invite_action(
             "mode": "remote",
         }
 
+    resolved_coordinator_url = (coordinator_url or "").strip()
+    if not resolved_coordinator_url:
+        cfg = load_config()
+        resolved_coordinator_url = str(getattr(cfg, "sync_coordinator_url", "") or "").strip()
+    if not resolved_coordinator_url:
+        raise SystemExit(
+            "Coordinator URL required. Pass --coordinator-url or set sync_coordinator_url in config."
+        )
     store = CoordinatorStore(db_path or DEFAULT_COORDINATOR_DB_PATH)
     try:
         group = store.get_group(group_id)
@@ -235,12 +247,12 @@ def coordinator_create_invite_action(
     payload: InvitePayload = {
         "v": 1,
         "kind": "coordinator_team_invite",
-        "coordinator_url": (coordinator_url or "").strip(),
+        "coordinator_url": resolved_coordinator_url,
         "group_id": group_id,
         "policy": policy,
         "token": str(invite.get("token") or ""),
         "expires_at": expires_value,
-        "team_name": invite.get("team_name_snapshot"),
+        "team_name": invite.get("team_name_snapshot") or group_id,
     }
     encoded = encode_invite_payload(payload)
     return {
@@ -303,12 +315,18 @@ def coordinator_import_invite_action(
     if not public_key:
         raise SystemExit("public key missing")
 
+    coordinator_url = str(payload.get("coordinator_url") or "").strip()
+    if not coordinator_url:
+        raise SystemExit(
+            "Invite is missing a coordinator URL. Ask the team admin for a new invite."
+        )
+
     resolved_config = load_config(resolved_config_path)
     display_name = resolved_config.actor_display_name or device_id
 
     status, response = http_client.request_json(
         "POST",
-        f"{str(payload['coordinator_url']).rstrip('/')}/v1/join",
+        f"{coordinator_url.rstrip('/')}/v1/join",
         body={
             "token": str(payload["token"]),
             "device_id": device_id,
@@ -324,7 +342,7 @@ def coordinator_import_invite_action(
     response_data = response if isinstance(response, dict) else {}
 
     config_data = read_config_file(resolved_config_path)
-    config_data["sync_coordinator_url"] = str(payload["coordinator_url"])
+    config_data["sync_coordinator_url"] = coordinator_url
     config_data["sync_coordinator_group"] = str(payload["group_id"])
     write_config_file(config_data, resolved_config_path)
 
@@ -360,7 +378,10 @@ def coordinator_list_join_requests_action(
     resolved_remote_url, resolved_admin_secret = _resolve_remote_target(remote_url, admin_secret)
     if resolved_remote_url:
         if not resolved_admin_secret:
-            raise SystemExit("Remote coordinator admin secret required")
+            raise SystemExit(
+                "Admin secret required. Set sync_coordinator_admin_secret in config "
+                "or CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET env var."
+            )
         payload = _remote_request(
             "GET",
             f"{resolved_remote_url.rstrip('/')}/v1/admin/join-requests?group_id={quote(group_id, safe='')}",
@@ -408,7 +429,10 @@ def coordinator_review_join_request_action(
     resolved_remote_url, resolved_admin_secret = _resolve_remote_target(remote_url, admin_secret)
     if resolved_remote_url:
         if not resolved_admin_secret:
-            raise SystemExit("Remote coordinator admin secret required")
+            raise SystemExit(
+                "Admin secret required. Set sync_coordinator_admin_secret in config "
+                "or CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET env var."
+            )
         endpoint = "/v1/admin/join-requests/approve" if approve else "/v1/admin/join-requests/deny"
         payload = _remote_request(
             "POST",

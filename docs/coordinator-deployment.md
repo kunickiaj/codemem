@@ -12,11 +12,17 @@ pip install codemem
 # Create a coordinator group
 codemem sync coordinator group-create my-team --db-path ~/.codemem/coordinator.sqlite
 
+# Set an admin secret (required for creating invites via the API)
+set -x CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET (python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+
 # Start the coordinator
 codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
 ```
 
 The coordinator is now listening on port 7347. Devices on the same network can connect using this machine's IP address.
+
+**Important:** Save the admin secret — you'll need it in your client config to create invites from the UI or API. The
+coordinator rejects admin operations (invite creation, join request review) without it.
 
 ## CLI reference
 
@@ -136,6 +142,21 @@ production use.
 
 Once the coordinator is reachable, teammates configure their codemem client:
 
+**Admin's machine** (the device running the coordinator):
+
+```json
+{
+  "sync_enabled": true,
+  "sync_coordinator_url": "https://coord.example.com",
+  "sync_coordinator_group": "my-team",
+  "sync_coordinator_admin_secret": "<the secret you generated above>"
+}
+```
+
+The admin secret lets you create invites and review join requests from the viewer UI or API. Only the admin needs this.
+
+**Teammate devices:**
+
 ```json
 {
   "sync_enabled": true,
@@ -152,6 +173,9 @@ set -x CODEMEM_SYNC_COORDINATOR_GROUP "my-team"
 ```
 
 Or through the viewer UI: Settings → Device Sync → Coordinator URL / Group.
+
+**Note:** Teammates who join via an invite link don't need to configure anything manually — the invite import
+auto-configures `sync_coordinator_url` and `sync_coordinator_group`.
 
 ## Onboarding teammates
 
