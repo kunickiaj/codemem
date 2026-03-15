@@ -1214,6 +1214,35 @@
       }
       .settings-panel { display: none; flex-direction: column; gap: var(--sp-3); }
       .settings-panel.active { display: flex; }
+      .observer-status-banner {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-1);
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-0);
+        font-size: 12px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+      .observer-status-banner .status-active {
+        color: var(--text-primary);
+        font-weight: 500;
+      }
+      .observer-status-banner .status-label {
+        color: var(--text-tertiary);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .observer-status-banner .status-cred {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .observer-status-banner .cred-ok { color: var(--semantic-success, #4ade80); }
+      .observer-status-banner .cred-none { color: var(--text-tertiary); }
       .settings-group {
         display: flex;
         flex-direction: column;
@@ -1466,6 +1495,7 @@
           </div>
 
           <div class="settings-panel active" id="settingsPanelObserver" data-settings-panel="observer">
+            <div id="observerStatusBanner" class="observer-status-banner" hidden></div>
             <div class="settings-group">
               <h3 class="settings-group-title">Connection</h3>
               <div class="field">

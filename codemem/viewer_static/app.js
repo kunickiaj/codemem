@@ -248,6 +248,9 @@
     const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
     return fetchJson(`/api/summaries?${query}`);
   }
+  async function loadObserverStatus() {
+    return fetchJson("/api/observer-status");
+  }
   async function loadConfig() {
     return fetchJson("/api/config");
   }
@@ -3452,11 +3455,90 @@ Global: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : "";
       saveBtn.disabled = !state.settingsDirty;
     }
   }
+  function formatAuthMethod(method) {
+    switch (method) {
+      case "anthropic_consumer":
+        return "OAuth (Claude Max/Pro)";
+      case "codex_consumer":
+        return "OAuth (ChatGPT subscription)";
+      case "sdk_client":
+        return "API key";
+      case "claude_sidecar":
+        return "Local Claude session";
+      case "opencode_run":
+        return "OpenCode sidecar";
+      default:
+        return method;
+    }
+  }
+  function formatCredentialSources(creds) {
+    const parts = [];
+    if (creds.oauth) parts.push("OAuth");
+    if (creds.api_key) parts.push("API key");
+    if (creds.env_var) parts.push("env var");
+    return parts.length ? parts.join(", ") : "none";
+  }
+  function createEl(tag, className, text) {
+    const el2 = document.createElement(tag);
+    if (className) el2.className = className;
+    if (text) el2.textContent = text;
+    return el2;
+  }
+  function renderObserverStatusBanner(status) {
+    const banner = $("observerStatusBanner");
+    if (!banner) return;
+    if (!status || typeof status !== "object") {
+      banner.hidden = true;
+      return;
+    }
+    banner.textContent = "";
+    const active = status.active;
+    const available = status.available_credentials || {};
+    if (active) {
+      const provider = String(active.provider || "unknown");
+      const model = String(active.model || "");
+      const method = formatAuthMethod(active.auth?.method || "none");
+      const tokenOk = active.auth?.token_present === true;
+      banner.append(createEl("div", "status-label", "Active observer"));
+      const row = createEl("div", "status-active");
+      row.textContent = `${provider} → ${model} via ${method} `;
+      const tokenSpan = createEl("span", tokenOk ? "cred-ok" : "cred-none", tokenOk ? "✓" : "✗");
+      row.append(tokenSpan);
+      banner.append(row);
+    } else {
+      banner.append(createEl("div", "status-label", "Observer status"));
+      banner.append(createEl("div", "status-active", "Not yet initialized (waiting for first session)"));
+    }
+    const credEntries = Object.entries(available).filter(
+      ([, creds]) => creds && typeof creds === "object"
+    );
+    if (credEntries.length) {
+      banner.append(createEl("div", "status-label", "Available credentials"));
+      const row = createEl("div");
+      credEntries.forEach(([provider, creds], idx) => {
+        const c = creds;
+        const sources = formatCredentialSources(c);
+        const hasAny = Object.values(c).some(Boolean);
+        const span = createEl("span", "status-cred");
+        const icon = createEl("span", hasAny ? "cred-ok" : "cred-none", hasAny ? "✓" : "–");
+        span.append(icon);
+        span.append(` ${String(provider)}: ${sources}`);
+        if (idx > 0) row.append(" · ");
+        row.append(span);
+      });
+      banner.append(row);
+    }
+    banner.hidden = false;
+  }
   async function loadConfigData() {
     if (settingsOpen) return;
     try {
-      const payload = await loadConfig();
+      const [payload, status] = await Promise.all([
+        loadConfig(),
+        loadObserverStatus().catch(() => null)
+      ]);
       renderConfigModal(payload);
+      renderObserverStatusBanner(status);
     } catch {
     }
   }
