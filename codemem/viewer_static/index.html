@@ -491,6 +491,7 @@
         font-size: 16px;
         color: var(--accent-cool);
         line-height: 1.2;
+        font-feature-settings: 'tnum' 1;
       }
 
       .stat .label {
@@ -902,7 +903,7 @@
       .peer-list { display: grid; gap: var(--sp-3); }
       .peer-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-4); background: var(--surface-1); display: grid; gap: var(--sp-2); }
       .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
-      .peer-title strong { font-size: 15px; }
+      .peer-title strong { font-size: 14px; font-weight: 600; }
       .actor-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
       .actor-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-3); background: var(--surface-1); }
       .actor-details { min-width: 0; display: grid; gap: 6px; }
@@ -1048,6 +1049,7 @@
       .sync-team-metrics {
         font-size: 13px;
         color: var(--text-secondary);
+        font-feature-settings: 'tnum' 1;
       }
       .sync-legacy-claim-row { margin-top: 12px; gap: 12px; align-items: center; flex-wrap: wrap; }
       .sync-legacy-select {
