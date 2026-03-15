@@ -72,6 +72,10 @@ export async function loadSummariesPage(
   return fetchJson(`/api/summaries?${query}`);
 }
 
+export async function loadObserverStatus(): Promise<any> {
+  return fetchJson('/api/observer-status');
+}
+
 export async function loadConfig(): Promise<any> {
   return fetchJson('/api/config');
 }
