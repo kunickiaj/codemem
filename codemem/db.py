@@ -489,13 +489,16 @@ def _raw_event_identity_needs_data_migration(conn: sqlite3.Connection) -> bool:
 
 
 def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
+    # Check for collisions using COALESCE'd values matching the INSERT transforms,
+    # not raw values. Raw NULLs that COALESCE to the same sentinel can collide
+    # even though they appear distinct before transformation.
     checks = [
         (
             "raw_events(source, stream_id, event_seq)",
             """
-            SELECT source, stream_id, event_seq
+            SELECT COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown'), COALESCE(event_seq, 0)
             FROM raw_events
-            GROUP BY source, stream_id, event_seq
+            GROUP BY COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown'), COALESCE(event_seq, 0)
             HAVING COUNT(*) > 1
             LIMIT 1
             """,
@@ -503,10 +506,10 @@ def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
         (
             "raw_events(source, stream_id, event_id)",
             """
-            SELECT source, stream_id, event_id
+            SELECT COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown'), event_id
             FROM raw_events
             WHERE event_id IS NOT NULL
-            GROUP BY source, stream_id, event_id
+            GROUP BY COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown'), event_id
             HAVING COUNT(*) > 1
             LIMIT 1
             """,
@@ -514,9 +517,9 @@ def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
         (
             "raw_event_sessions(source, stream_id)",
             """
-            SELECT source, stream_id
+            SELECT COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown')
             FROM raw_event_sessions
-            GROUP BY source, stream_id
+            GROUP BY COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown')
             HAVING COUNT(*) > 1
             LIMIT 1
             """,
@@ -524,9 +527,13 @@ def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
         (
             "raw_event_flush_batches(source, stream_id, start_event_seq, end_event_seq, extractor_version)",
             """
-            SELECT source, stream_id, start_event_seq, end_event_seq, extractor_version
+            SELECT COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown'),
+                   COALESCE(start_event_seq, 0), COALESCE(end_event_seq, 0),
+                   COALESCE(extractor_version, 'unknown')
             FROM raw_event_flush_batches
-            GROUP BY source, stream_id, start_event_seq, end_event_seq, extractor_version
+            GROUP BY COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown'),
+                     COALESCE(start_event_seq, 0), COALESCE(end_event_seq, 0),
+                     COALESCE(extractor_version, 'unknown')
             HAVING COUNT(*) > 1
             LIMIT 1
             """,
@@ -534,9 +541,9 @@ def _assert_no_raw_event_identity_collisions(conn: sqlite3.Connection) -> None:
         (
             "opencode_sessions(source, stream_id)",
             """
-            SELECT source, stream_id
+            SELECT COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown')
             FROM opencode_sessions
-            GROUP BY source, stream_id
+            GROUP BY COALESCE(source, 'opencode'), COALESCE(stream_id, 'unknown')
             HAVING COUNT(*) > 1
             LIMIT 1
             """,
@@ -656,16 +663,16 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
         )
         SELECT
             id,
-            source,
-            stream_id,
-            stream_id,
+            COALESCE(source, 'opencode'),
+            COALESCE(stream_id, 'unknown'),
+            COALESCE(stream_id, 'unknown'),
             event_id,
-            event_seq,
-            event_type,
+            COALESCE(event_seq, 0),
+            COALESCE(event_type, 'unknown'),
             ts_wall_ms,
             ts_mono_ms,
-            payload_json,
-            created_at
+            COALESCE(payload_json, '{}'),
+            COALESCE(created_at, datetime('now'))
         FROM raw_events
         """
     )
@@ -684,16 +691,16 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
             updated_at
         )
         SELECT
-            source,
-            stream_id,
-            stream_id,
+            COALESCE(source, 'opencode'),
+            COALESCE(stream_id, 'unknown'),
+            COALESCE(stream_id, 'unknown'),
             cwd,
             project,
             started_at,
             last_seen_ts_wall_ms,
-            last_received_event_seq,
-            last_flushed_event_seq,
-            updated_at
+            COALESCE(last_received_event_seq, -1),
+            COALESCE(last_flushed_event_seq, -1),
+            COALESCE(updated_at, datetime('now'))
         FROM raw_event_sessions
         """
     )
@@ -714,15 +721,15 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
         )
         SELECT
             id,
-            source,
-            stream_id,
-            stream_id,
-            start_event_seq,
-            end_event_seq,
-            extractor_version,
-            status,
-            created_at,
-            updated_at,
+            COALESCE(source, 'opencode'),
+            COALESCE(stream_id, 'unknown'),
+            COALESCE(stream_id, 'unknown'),
+            COALESCE(start_event_seq, 0),
+            COALESCE(end_event_seq, 0),
+            COALESCE(extractor_version, 'unknown'),
+            COALESCE(status, 'unknown'),
+            COALESCE(created_at, datetime('now')),
+            COALESCE(updated_at, datetime('now')),
             {batch_attempt_expr}
         FROM raw_event_flush_batches
         """
@@ -737,15 +744,15 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
             created_at
         )
         SELECT
-            os.source,
-            os.stream_id,
-            os.stream_id,
+            COALESCE(os.source, 'opencode'),
+            COALESCE(os.stream_id, 'unknown'),
+            COALESCE(os.stream_id, 'unknown'),
             CASE
                 WHEN os.session_id IS NULL THEN NULL
                 WHEN EXISTS(SELECT 1 FROM sessions s WHERE s.id = os.session_id) THEN os.session_id
                 ELSE NULL
             END,
-            os.created_at
+            COALESCE(os.created_at, datetime('now'))
         FROM opencode_sessions os
         """
     )
@@ -768,6 +775,11 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
             f"(before={before_counts}, after={after_counts})"
         )
 
+    # CAUTION: non-atomic rename phase. executescript auto-commits each statement
+    # individually. A crash between DROP and RENAME leaves the original table gone
+    # with data stranded in _v2. The DROP IF EXISTS cleanup at the top of this
+    # function handles the _v2-leftover case, but cannot recover a dropped original.
+    # A proper migration framework (codemem-gga) would fix this structurally.
     conn.executescript(
         """
         DROP TABLE raw_events;
