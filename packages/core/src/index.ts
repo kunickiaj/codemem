@@ -25,6 +25,35 @@ export {
 	toJson,
 } from "./db.js";
 export { buildFilterClauses } from "./filters.js";
+export type { ObserverAuthMaterial } from "./observer-auth.js";
+export {
+	buildCodexHeaders,
+	extractOAuthAccess,
+	extractOAuthAccountId,
+	extractOAuthExpires,
+	loadOpenCodeOAuthCache,
+	ObserverAuthAdapter,
+	readAuthFile,
+	redactText,
+	renderObserverHeaders,
+	resolveOAuthProvider,
+	runAuthCommand,
+} from "./observer-auth.js";
+export {
+	getOpenCodeProviderConfig,
+	getProviderApiKey,
+	getProviderBaseUrl,
+	getProviderHeaders,
+	getProviderOptions,
+	listCustomProviders,
+	loadOpenCodeConfig,
+	resolveCustomProviderDefaultModel,
+	resolveCustomProviderFromModel,
+	resolveCustomProviderModel,
+	resolvePlaceholder,
+	stripJsonComments,
+	stripTrailingCommas,
+} from "./observer-config.js";
 export { buildMemoryPack, estimateTokens } from "./pack.js";
 export type { StoreHandle } from "./search.js";
 export {
