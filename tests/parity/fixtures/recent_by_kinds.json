@@ -1,0 +1,38 @@
+{
+  "method": "recent_by_kinds",
+  "description": "Recent memories filtered to kinds=[discovery, change]",
+  "seed_db": "seed_v1",
+  "input": {
+    "kinds": [
+      "discovery",
+      "change"
+    ],
+    "limit": 3
+  },
+  "expected_output": {
+    "count": 3,
+    "ordered_ids": [
+      9,
+      8,
+      2
+    ],
+    "results": [
+      {
+        "id": 9,
+        "kind": "change",
+        "title": "Updated memory schema for identity columns"
+      },
+      {
+        "id": 8,
+        "kind": "discovery",
+        "title": "Found memory layer performance bottleneck"
+      },
+      {
+        "id": 2,
+        "kind": "change",
+        "title": "Refactored search ranking pipeline"
+      }
+    ],
+    "all_kinds_valid": true
+  }
+}

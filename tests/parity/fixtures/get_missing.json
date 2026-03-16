@@ -1,0 +1,11 @@
+{
+  "method": "get",
+  "description": "Get memory with non-existing id=99999",
+  "seed_db": "seed_v1",
+  "input": {
+    "memory_id": 99999
+  },
+  "expected_output": {
+    "found": false
+  }
+}

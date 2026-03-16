@@ -1,0 +1,20 @@
+{
+  "method": "get",
+  "description": "Get memory with id=1",
+  "seed_db": "seed_v1",
+  "input": {
+    "memory_id": 1
+  },
+  "expected_output": {
+    "found": true,
+    "id": 1,
+    "kind": "discovery",
+    "title": "Discovered memory layer architecture",
+    "body_text": "The memory layer uses SQLite FTS5 for full-text search with BM25 ranking. Vectors are stored in sqlite-vec for semantic recall. The store exposes search, timeline, and pack operations.",
+    "active": 1,
+    "confidence": 0.8,
+    "tags_text": "architecture fts5 sqlite",
+    "visibility": "shared",
+    "workspace_kind": "shared"
+  }
+}

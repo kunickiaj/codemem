@@ -1,0 +1,42 @@
+{
+  "method": "timeline",
+  "description": "Timeline anchored on query 'memory'",
+  "seed_db": "seed_v1",
+  "input": {
+    "query": "memory",
+    "memory_id": null,
+    "depth_before": 3,
+    "depth_after": 3
+  },
+  "expected_output": {
+    "count": 4,
+    "ordered_ids": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "results": [
+      {
+        "id": 1,
+        "kind": "discovery",
+        "title": "Discovered memory layer architecture"
+      },
+      {
+        "id": 2,
+        "kind": "change",
+        "title": "Refactored search ranking pipeline"
+      },
+      {
+        "id": 3,
+        "kind": "decision",
+        "title": "Chose SQLite over PostgreSQL for embedded storage"
+      },
+      {
+        "id": 4,
+        "kind": "feature",
+        "title": "Implemented memory pack builder"
+      }
+    ]
+  }
+}

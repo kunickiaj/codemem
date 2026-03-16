@@ -1,0 +1,14 @@
+{
+  "method": "update_memory_visibility",
+  "description": "Change visibility from private to shared",
+  "seed_db": "seed_v1",
+  "input": {
+    "memory_id": 4,
+    "visibility": "shared"
+  },
+  "expected_output": {
+    "before_visibility": "private",
+    "after_visibility": "shared",
+    "after_workspace_kind": "shared"
+  }
+}
