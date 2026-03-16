@@ -39,6 +39,20 @@ describe("expandQuery", () => {
 		expect(expandQuery("AND OR NOT")).toBe("");
 	});
 
+	it("strips NEAR operator", () => {
+		expect(expandQuery("NEAR database")).toBe("database");
+		expect(expandQuery("near tables")).toBe("tables");
+	});
+
+	it("strips PHRASE operator", () => {
+		expect(expandQuery("phrase match test")).toBe("match OR test");
+		expect(expandQuery("PHRASE only")).toBe("only");
+	});
+
+	it("returns empty when query is only NEAR/PHRASE operators", () => {
+		expect(expandQuery("NEAR PHRASE")).toBe("");
+	});
+
 	it("handles special characters by extracting alphanumeric tokens", () => {
 		expect(expandQuery("hello-world")).toBe("hello OR world");
 		expect(expandQuery("foo_bar")).toBe("foo_bar");
@@ -250,6 +264,54 @@ describe("MemoryStore.search", () => {
 		}
 	});
 
+	it("returns empty array when query becomes empty after operator filtering", () => {
+		seedMemories();
+		const results = store.search("AND OR NOT");
+		expect(results).toEqual([]);
+	});
+
+	it("filters by multiple criteria combined (kind + visibility)", () => {
+		const sessionId = insertTestSession(store.db);
+		// Insert memories with different kinds and visibility
+		const ts = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'bugfix', 'Database bugfix shared', 'Shared fix for DB', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, ts, ts);
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'bugfix', 'Database bugfix private', 'Private fix for DB', 0.5, '', 1, ?, ?, '{}', 1, 'private')`,
+			)
+			.run(sessionId, ts, ts);
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', 'Database feature shared', 'Shared feature for DB', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, ts, ts);
+
+		const results = store.search("database", 10, {
+			kind: "bugfix",
+			include_visibility: ["shared"],
+		});
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			expect(r.kind).toBe("bugfix");
+			// visibility is on metadata, but the filter should have applied
+		}
+		// The shared bugfix should be found, the private bugfix and feature should not
+		const titles = results.map((r) => r.title);
+		expect(titles).toContain("Database bugfix shared");
+		expect(titles).not.toContain("Database bugfix private");
+		expect(titles).not.toContain("Database feature shared");
+	});
+
 	it("returns MemoryResult objects with expected shape", () => {
 		seedMemories();
 		const results = store.search("authentication");
@@ -382,6 +444,36 @@ describe("MemoryStore.timeline", () => {
 		seedTimeline();
 		const results = store.timeline(null, 99999);
 		expect(results).toEqual([]);
+	});
+
+	it("with depthBefore=0 returns only anchor + after items", () => {
+		const { ids } = seedTimeline();
+		// Anchor on the 4th memory (index 3 = "API endpoints")
+		const anchorId = ids[3] as number;
+		const results = store.timeline(null, anchorId, 0, 2);
+		expect(results.length).toBeGreaterThan(0);
+		const resultIds = results.map((r) => r.id);
+		expect(resultIds).toContain(anchorId);
+		// Should not have any items before the anchor
+		const anchorIdx = resultIds.indexOf(anchorId);
+		expect(anchorIdx).toBe(0);
+		// Should have at most 2 items after anchor
+		expect(results.length).toBeLessThanOrEqual(3); // anchor + 2 after
+	});
+
+	it("with depthAfter=0 returns only before items + anchor", () => {
+		const { ids } = seedTimeline();
+		// Anchor on the 4th memory (index 3 = "API endpoints")
+		const anchorId = ids[3] as number;
+		const results = store.timeline(null, anchorId, 2, 0);
+		expect(results.length).toBeGreaterThan(0);
+		const resultIds = results.map((r) => r.id);
+		expect(resultIds).toContain(anchorId);
+		// Should have at most 2 items before anchor
+		const anchorIdx = resultIds.indexOf(anchorId);
+		expect(anchorIdx).toBeLessThanOrEqual(2);
+		// Anchor should be last (nothing after it)
+		expect(resultIds[resultIds.length - 1]).toBe(anchorId);
 	});
 });
 
@@ -526,5 +618,53 @@ describe("MemoryStore.explain", () => {
 		expect(metadata).toHaveProperty("query", "database");
 		expect(metadata).toHaveProperty("requested_ids_count", 0);
 		expect(typeof metadata.returned_items_count).toBe("number");
+	});
+
+	it("rejects booleans and floats in ids (dedupeOrderedIds)", () => {
+		const { id1 } = seedMemories();
+		// Pass booleans, a float, and one valid int
+		const result = store.explain(null, [true, false, 3.14, id1]) as Record<string, unknown>;
+		const items = result.items as Record<string, unknown>[];
+		// Only the valid integer id should produce an item
+		expect(items).toHaveLength(1);
+		expect(items[0]?.id).toBe(id1);
+		// The invalid values should be reported
+		const errors = result.errors as Record<string, unknown>[];
+		const invalidArgError = errors.find((e) => e.code === "INVALID_ARGUMENT");
+		expect(invalidArgError).toBeDefined();
+		const invalidIds = invalidArgError?.ids as string[];
+		expect(invalidIds).toContain("true");
+		expect(invalidIds).toContain("false");
+		expect(invalidIds).toContain("3.14");
+	});
+
+	it("excludes id-lookup memories that fail workspace_id filter (rowMatchesFilters)", () => {
+		const sessionId = insertTestSession(store.db);
+		// Insert a memory with a specific workspace_id
+		const ts = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, workspace_id)
+				 VALUES (?, 'discovery', 'WS memory', 'workspace body', 0.5, '', 1, ?, ?, '{}', 1, 'ws:team-alpha')`,
+			)
+			.run(sessionId, ts, ts);
+		const memId = Number(
+			(store.db.prepare("SELECT last_insert_rowid() as id").get() as { id: number }).id,
+		);
+
+		// Explain with include_workspace_ids filter that doesn't match
+		const result = store.explain(null, [memId], 10, {
+			include_workspace_ids: ["ws:team-beta"],
+		}) as Record<string, unknown>;
+
+		const items = result.items as Record<string, unknown>[];
+		expect(items).toHaveLength(0);
+
+		// Should report as filter mismatch
+		const errors = result.errors as Record<string, unknown>[];
+		const mismatch = errors.find((e) => e.code === "FILTER_MISMATCH");
+		expect(mismatch).toBeDefined();
+		expect((mismatch?.ids as number[]) ?? []).toContain(memId);
 	});
 });

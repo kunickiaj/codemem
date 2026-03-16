@@ -111,6 +111,29 @@ describe("MemoryStore", () => {
 			);
 		});
 
+		it("succeeds with empty title", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "", "Body with empty title");
+			expect(memId).toBeGreaterThan(0);
+
+			const row = store.get(memId);
+			expect(row).not.toBeNull();
+			expect(row?.title).toBe("");
+			expect(row?.body_text).toBe("Body with empty title");
+		});
+
+		it("rejects invalid kind with descriptive error including valid kinds", () => {
+			const sessionId = insertTestSession(store.db);
+			try {
+				store.remember(sessionId, "made_up_kind", "Title", "Body");
+				expect.unreachable("should have thrown");
+			} catch (e) {
+				const msg = (e as Error).message;
+				expect(msg).toMatch(/Invalid memory kind/);
+				expect(msg).toContain("made_up_kind");
+			}
+		});
+
 		it("sets clock_device_id in metadata", () => {
 			const sessionId = insertTestSession(store.db);
 			const memId = store.remember(sessionId, "discovery", "Title", "Body");
