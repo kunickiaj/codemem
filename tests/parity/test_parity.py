@@ -354,9 +354,12 @@ class TestPack:
         expected = fixture["expected_output"]
         assert pack["context"] == expected["context"]
         assert expected["has_items"] is True
-        assert len(pack.get("items", [])) >= expected["item_count_gte"]
+        items = pack.get("items", [])
+        assert len(items) >= expected["item_count_gte"]
         assert bool(pack.get("pack_text")) == expected["has_pack_text"]
         assert bool(pack.get("metrics")) == expected["has_metrics"]
+        actual_ids = [it["id"] for it in items if "id" in it]
+        assert actual_ids == expected["item_ids"]
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +377,7 @@ class TestMultiFilter:
         assert len(results) == expected["count"]
         if results:
             assert all(r.kind == "discovery" for r in results)
+        assert [r.id for r in results] == expected["ordered_ids"]
 
     def test_recent_kind_change_filter(self, seed_store: MemoryStore) -> None:
         fixture = _load_fixture("recent_kind_change_filter")
@@ -384,3 +388,4 @@ class TestMultiFilter:
         assert len(results) == expected["count"]
         if results:
             assert all(r.get("kind") == "change" for r in results)
+        assert [r["id"] for r in results] == expected["ordered_ids"]
