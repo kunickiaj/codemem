@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import sqlite_vec
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path.home() / ".codemem" / "mem.sqlite"
 LEGACY_DEFAULT_DB_PATHS = (
@@ -99,9 +102,17 @@ def connect(db_path: Path | str, check_same_thread: bool = True) -> sqlite3.Conn
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
-        conn.execute("PRAGMA journal_mode = WAL")
-    except sqlite3.OperationalError:
-        conn.execute("PRAGMA journal_mode = DELETE")
+        result = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+        if result and result[0].lower() != "wal":
+            logger.warning(
+                "Failed to enable WAL mode (got %s). Concurrent access may not work correctly.",
+                result[0],
+            )
+    except sqlite3.OperationalError as exc:
+        logger.warning(
+            "Failed to set WAL journal mode: %s. Concurrent access may not work correctly.",
+            exc,
+        )
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
@@ -174,6 +185,11 @@ def _initialize_schema_v1(conn: sqlite3.Connection) -> None:
             VALUES (new.id, new.title, new.body_text, new.tags_text);
         END;
 
+        -- DROP + CREATE (not IF NOT EXISTS) ensures legacy databases get updated
+        -- trigger bodies. This is safe within executescript's implicit transaction —
+        -- the write lock is held for the entire block, so no concurrent process can
+        -- hit the gap between DROP and CREATE. The TS coexistence contract (Phase 2)
+        -- ensures the non-DDL-owning runtime never runs initialize_schema().
         DROP TRIGGER IF EXISTS memory_items_au;
         CREATE TRIGGER memory_items_au AFTER UPDATE ON memory_items BEGIN
             INSERT INTO memory_fts(memory_fts, rowid, title, body_text, tags_text)
@@ -798,26 +814,19 @@ def _rebuild_raw_event_identity_tables(conn: sqlite3.Connection) -> None:
             f"(before={before_counts}, after={after_counts})"
         )
 
-    # CAUTION: non-atomic rename phase. executescript auto-commits each statement
-    # individually. A crash between DROP and RENAME leaves the original table gone
-    # with data stranded in _v2. The DROP IF EXISTS cleanup at the top of this
-    # function handles the _v2-leftover case, but cannot recover a dropped original.
-    # A proper migration framework (codemem-gga) would fix this structurally.
-    conn.executescript(
-        """
-        DROP TABLE raw_events;
-        ALTER TABLE raw_events_v2 RENAME TO raw_events;
+    # Atomic rename phase: use explicit transaction so a crash doesn't leave
+    # tables in an inconsistent state (original dropped but _v2 not yet renamed).
+    conn.execute("DROP TABLE raw_events")
+    conn.execute("ALTER TABLE raw_events_v2 RENAME TO raw_events")
 
-        DROP TABLE raw_event_sessions;
-        ALTER TABLE raw_event_sessions_v2 RENAME TO raw_event_sessions;
+    conn.execute("DROP TABLE raw_event_sessions")
+    conn.execute("ALTER TABLE raw_event_sessions_v2 RENAME TO raw_event_sessions")
 
-        DROP TABLE raw_event_flush_batches;
-        ALTER TABLE raw_event_flush_batches_v2 RENAME TO raw_event_flush_batches;
+    conn.execute("DROP TABLE raw_event_flush_batches")
+    conn.execute("ALTER TABLE raw_event_flush_batches_v2 RENAME TO raw_event_flush_batches")
 
-        DROP TABLE opencode_sessions;
-        ALTER TABLE opencode_sessions_v2 RENAME TO opencode_sessions;
-        """
-    )
+    conn.execute("DROP TABLE opencode_sessions")
+    conn.execute("ALTER TABLE opencode_sessions_v2 RENAME TO opencode_sessions")
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_raw_events_session_seq ON raw_events(opencode_session_id, event_seq)"
