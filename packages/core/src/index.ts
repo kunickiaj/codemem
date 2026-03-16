@@ -7,6 +7,7 @@
 
 export const VERSION = "0.0.1";
 
+export * as Api from "./api-types.js";
 export type { Database } from "./db.js";
 export {
 	assertSchemaReady,
@@ -32,8 +33,8 @@ export {
 	search,
 	timeline,
 } from "./search.js";
-
 export { MemoryStore } from "./store.js";
+
 export type {
 	Actor,
 	Artifact,
