@@ -21,7 +21,7 @@
     "test:watch": "pnpm exec vitest",
     "lint": "pnpm exec biome check packages/",
     "format": "pnpm exec biome check --write packages/",
-    "typecheck": "pnpm exec tsc --build --noEmit",
+    "typecheck": "pnpm exec tsc --build",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
   },
   "dependencies": {
