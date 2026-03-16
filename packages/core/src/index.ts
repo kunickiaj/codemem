@@ -18,6 +18,7 @@ export {
 	isEmbeddingDisabled,
 	loadSqliteVec,
 	MIN_COMPATIBLE_SCHEMA,
+	migrateLegacyDbPath,
 	resolveDbPath,
 	SCHEMA_VERSION,
 	tableExists,

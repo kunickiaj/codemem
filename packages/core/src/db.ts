@@ -6,7 +6,7 @@
  * The TS runtime validates the schema version but does NOT run migrations.
  */
 
-import { mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
@@ -44,17 +44,73 @@ export function resolveDbPath(explicit?: string): string {
 	return DEFAULT_DB_PATH;
 }
 
+/** Legacy database paths that may exist from older installs. */
+const LEGACY_DB_PATHS = [
+	join(homedir(), ".codemem.sqlite"),
+	join(homedir(), ".opencode-mem.sqlite"),
+];
+
+/** WAL sidecar extensions for a SQLite database file. */
+const SIDECAR_EXTENSIONS = ["-wal", "-shm"];
+
+/**
+ * Move a file and its WAL sidecars to a new location.
+ * Falls back to copy+delete if rename fails (cross-device).
+ */
+function moveWithSidecars(src: string, dst: string): void {
+	mkdirSync(dirname(dst), { recursive: true });
+	const pairs: [string, string][] = [
+		[src, dst],
+		...SIDECAR_EXTENSIONS.map((ext): [string, string] => [src + ext, dst + ext]),
+	];
+	for (const [srcPath, dstPath] of pairs) {
+		if (!existsSync(srcPath)) continue;
+		try {
+			renameSync(srcPath, dstPath);
+		} catch {
+			try {
+				copyFileSync(srcPath, dstPath);
+				try {
+					unlinkSync(srcPath);
+				} catch {
+					// Best effort — original left in place
+				}
+			} catch (copyErr) {
+				// TOCTOU: source vanished between existsSync and copy (concurrent migration).
+				// If target now exists, another process already migrated — that's fine.
+				if (existsSync(dstPath)) continue;
+				throw copyErr;
+			}
+		}
+	}
+}
+
+/**
+ * Migrate legacy database paths to the current default location.
+ *
+ * Only runs when dbPath is the DEFAULT_DB_PATH and doesn't already exist.
+ * Matches Python's migrate_legacy_default_db in db.py.
+ */
+export function migrateLegacyDbPath(dbPath: string): void {
+	if (dbPath !== DEFAULT_DB_PATH) return;
+	if (existsSync(dbPath)) return;
+
+	for (const legacyPath of LEGACY_DB_PATHS) {
+		if (!existsSync(legacyPath)) continue;
+		moveWithSidecars(legacyPath, dbPath);
+		return;
+	}
+}
+
 /**
  * Open a better-sqlite3 connection with the standard codemem pragmas.
  *
- * Creates parent directories if they don't exist (matches Python's connect()).
- * Sets WAL mode, busy timeout, foreign keys, and loads sqlite-vec.
+ * Migrates legacy DB paths if needed, creates parent directories,
+ * sets WAL mode, busy timeout, foreign keys.
  * Does NOT initialize or migrate the schema — during Phase 1, Python owns DDL.
- *
- * Note: Legacy path migration (~/.codemem.sqlite → ~/.codemem/mem.sqlite)
- * is handled by the Python runtime. In Phase 1, Python must run first.
  */
 export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
+	migrateLegacyDbPath(dbPath);
 	mkdirSync(dirname(dbPath), { recursive: true });
 	const db = new Database(dbPath);
 
