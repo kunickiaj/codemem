@@ -7,8 +7,9 @@
 		"codemem-ts": "./dist/index.js"
 	},
 	"scripts": {
-		"build": "tsup",
-		"typecheck": "tsc --noEmit"
+		"clean": "rm -rf dist",
+		"build": "pnpm exec vite build",
+		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
 		"@codemem/core": "workspace:*",
@@ -16,8 +17,8 @@
 		"@codemem/viewer-server": "workspace:*"
 	},
 	"devDependencies": {
-		"tsup": "catalog:",
 		"typescript": "catalog:",
+		"vite": "catalog:",
 		"vitest": "catalog:"
 	}
 }

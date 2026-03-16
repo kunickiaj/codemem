@@ -30,6 +30,38 @@ codemem/viewer_static/app.js.map
 packages/*/dist/
 *.tsbuildinfo
 
+# Agent skill symlink dirs (canonical source is .agents/skills/)
+# Keep .agents/ and .claude/ — ignore other agent tool dirs
+.adal/
+.agent/
+.augment/
+.codebuddy/
+.commandcode/
+.continue/
+.crush/
+.factory/
+.goose/
+.iflow/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.vibe/
+.windsurf/
+.zencoder/
+/skills/
+/skills-lock.json
+
 # Dolt database files (added by bd init)
 .dolt/
 *.db

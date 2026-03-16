@@ -10,13 +10,14 @@
 		}
 	},
 	"scripts": {
-		"build": "tsup",
-		"typecheck": "tsc --noEmit"
+		"clean": "rm -rf dist",
+		"build": "pnpm exec vite build",
+		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",
-		"tsup": "catalog:",
 		"typescript": "catalog:",
+		"vite": "catalog:",
 		"vitest": "catalog:"
 	},
 	"dependencies": {
