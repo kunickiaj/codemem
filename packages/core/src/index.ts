@@ -21,6 +21,7 @@ export {
 	toJson,
 } from "./db.js";
 export { buildFilterClauses } from "./filters.js";
+export { buildMemoryPack, estimateTokens } from "./pack.js";
 export type { StoreHandle } from "./search.js";
 export {
 	expandQuery,
