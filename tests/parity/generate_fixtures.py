@@ -825,18 +825,20 @@ def main() -> None:
         store, memory_ids, session_ids = build_seed_database(db_path)
 
         print("Generating fixtures...")
+        # Read-only fixtures first (against clean seed)
         generate_search_fixtures(store, memory_ids)
         generate_timeline_fixture(store)
         generate_recent_fixtures(store)
         generate_get_fixtures(store, memory_ids)
         generate_explain_fixture(store)
-        generate_remember_fixture(store, session_ids)
-        generate_forget_fixture(store, memory_ids, session_ids)
         generate_recent_by_kinds_fixture(store)
         generate_stats_fixture(store)
-        generate_update_visibility_fixture(store, memory_ids)
         generate_pack_fixture(store)
         generate_multi_filter_fixtures(store)
+        # Mutating fixtures last (these modify the seed DB)
+        generate_remember_fixture(store, session_ids)
+        generate_forget_fixture(store, memory_ids, session_ids)
+        generate_update_visibility_fixture(store, memory_ids)
 
         store.close()
 
