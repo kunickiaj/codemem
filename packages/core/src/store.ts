@@ -27,7 +27,16 @@ import {
 import { buildFilterClauses } from "./filters.js";
 import { buildMemoryPack } from "./pack.js";
 import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
-import type { MemoryFilters, MemoryItem, MemoryResult } from "./types.js";
+import type {
+	ExplainResponse,
+	MemoryFilters,
+	MemoryItem,
+	MemoryItemResponse,
+	MemoryResult,
+	PackResponse,
+	StoreStats,
+	TimelineItemResponse,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Memory kind validation (mirrors codemem/memory_kinds.py)
@@ -65,11 +74,11 @@ function nowIso(): string {
 
 /**
  * Parse a row's metadata_json string into a plain object.
- * Mutates the row in place and returns it for convenience.
+ * Returns a new MemoryItemResponse with metadata_json as a parsed object.
  */
-function parseMetadata(row: Record<string, unknown>): Record<string, unknown> {
-	row.metadata_json = fromJson(row.metadata_json as string | null | undefined);
-	return row;
+function parseMetadata(row: MemoryItem): MemoryItemResponse {
+	const { metadata_json, ...rest } = row;
+	return { ...rest, metadata_json: fromJson(metadata_json) };
 }
 
 // ---------------------------------------------------------------------------
@@ -104,12 +113,12 @@ export class MemoryStore {
 	 * Fetch a single memory item by ID.
 	 * Returns null if not found (does not filter by active status).
 	 */
-	get(memoryId: number): Record<string, unknown> | null {
+	get(memoryId: number): MemoryItemResponse | null {
 		const row = this.db.prepare("SELECT * FROM memory_items WHERE id = ?").get(memoryId) as
 			| MemoryItem
 			| undefined;
 		if (!row) return null;
-		return parseMetadata({ ...row });
+		return parseMetadata(row);
 	}
 
 	// -----------------------------------------------------------------------
@@ -206,7 +215,7 @@ export class MemoryStore {
 	 * Return recent active memories, newest first.
 	 * Supports optional filters via buildFilterClauses.
 	 */
-	recent(limit = 10, filters?: MemoryFilters | null, offset = 0): Record<string, unknown>[] {
+	recent(limit = 10, filters?: MemoryFilters | null, offset = 0): MemoryItemResponse[] {
 		const baseClauses = ["memory_items.active = 1"];
 		const filterResult = buildFilterClauses(filters);
 		const allClauses = [...baseClauses, ...filterResult.clauses];
@@ -225,9 +234,9 @@ export class MemoryStore {
 				 ORDER BY created_at DESC
 				 LIMIT ? OFFSET ?`,
 			)
-			.all(...filterResult.params, limit, Math.max(offset, 0)) as Record<string, unknown>[];
+			.all(...filterResult.params, limit, Math.max(offset, 0)) as MemoryItem[];
 
-		return rows.map((row) => parseMetadata({ ...row }));
+		return rows.map((row) => parseMetadata(row));
 	}
 
 	// -----------------------------------------------------------------------
@@ -242,7 +251,7 @@ export class MemoryStore {
 		limit = 10,
 		filters?: MemoryFilters | null,
 		offset = 0,
-	): Record<string, unknown>[] {
+	): MemoryItemResponse[] {
 		const kindsList = kinds.filter((k) => k.length > 0);
 		if (kindsList.length === 0) return [];
 
@@ -265,9 +274,9 @@ export class MemoryStore {
 				 ORDER BY created_at DESC
 				 LIMIT ? OFFSET ?`,
 			)
-			.all(...params) as Record<string, unknown>[];
+			.all(...params) as MemoryItem[];
 
-		return rows.map((row) => parseMetadata({ ...row }));
+		return rows.map((row) => parseMetadata(row));
 	}
 
 	// -----------------------------------------------------------------------
@@ -277,7 +286,7 @@ export class MemoryStore {
 	/**
 	 * Return database statistics matching the Python stats() output shape.
 	 */
-	stats(): Record<string, unknown> {
+	stats(): StoreStats {
 		const count = (sql: string): number => {
 			const row = this.db.prepare(sql).get() as { c: number } | undefined;
 			return row?.c ?? 0;
@@ -324,7 +333,7 @@ export class MemoryStore {
 	 * Throws if visibility is invalid, memory not found, memory is inactive,
 	 * or memory is not owned by this device/actor.
 	 */
-	updateMemoryVisibility(memoryId: number, visibility: string): Record<string, unknown> {
+	updateMemoryVisibility(memoryId: number, visibility: string): MemoryItemResponse {
 		const cleaned = visibility.trim();
 		if (cleaned !== "private" && cleaned !== "shared") {
 			throw new Error("visibility must be private or shared");
@@ -408,7 +417,7 @@ export class MemoryStore {
 		depthBefore = 3,
 		depthAfter = 3,
 		filters?: MemoryFilters | null,
-	): Record<string, unknown>[] {
+	): TimelineItemResponse[] {
 		return timelineFn(this, query, memoryId, depthBefore, depthAfter, filters);
 	}
 
@@ -427,7 +436,7 @@ export class MemoryStore {
 		ids?: unknown[] | null,
 		limit = 10,
 		filters?: MemoryFilters | null,
-	): Record<string, unknown> {
+	): ExplainResponse {
 		return explainFn(this, query, ids, limit, filters);
 	}
 
@@ -446,7 +455,7 @@ export class MemoryStore {
 		limit?: number,
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
-	): Record<string, unknown> {
+	): PackResponse {
 		return buildMemoryPack(this, context, limit, tokenBudget ?? null, filters);
 	}
 

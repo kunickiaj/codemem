@@ -11,7 +11,16 @@
 
 import { fromJson } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
-import type { MemoryFilters, MemoryResult } from "./types.js";
+import type {
+	ExplainError,
+	ExplainItem,
+	ExplainResponse,
+	MemoryFilters,
+	MemoryItem,
+	MemoryItemResponse,
+	MemoryResult,
+	TimelineItemResponse,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types — MemoryStore is referenced structurally to avoid circular imports.
@@ -21,18 +30,14 @@ import type { MemoryFilters, MemoryResult } from "./types.js";
 /** Structural type for the store parameter (avoids circular import). */
 export interface StoreHandle {
 	readonly db: import("better-sqlite3").Database;
-	get(memoryId: number): Record<string, unknown> | null;
-	recent(
-		limit?: number,
-		filters?: MemoryFilters | null,
-		offset?: number,
-	): Record<string, unknown>[];
+	get(memoryId: number): MemoryItemResponse | null;
+	recent(limit?: number, filters?: MemoryFilters | null, offset?: number): MemoryItemResponse[];
 	recentByKinds(
 		kinds: string[],
 		limit?: number,
 		filters?: MemoryFilters | null,
 		offset?: number,
-	): Record<string, unknown>[];
+	): MemoryItemResponse[];
 }
 
 // ---------------------------------------------------------------------------
@@ -241,29 +246,31 @@ export function timeline(
 	depthBefore = 3,
 	depthAfter = 3,
 	filters?: MemoryFilters | null,
-): Record<string, unknown>[] {
+): TimelineItemResponse[] {
 	// Find anchor: prefer explicit memoryId, fall back to search
-	let anchor: Record<string, unknown> | null = null;
+	let anchorRef: { id: number; session_id: number; created_at: string } | null = null;
 	if (memoryId != null) {
-		anchor = store.get(memoryId);
+		const row = store.get(memoryId);
+		if (row) {
+			anchorRef = { id: row.id, session_id: row.session_id, created_at: row.created_at };
+		}
 	}
-	if (anchor == null && query) {
+	if (anchorRef == null && query) {
 		const matches = search(store, query, 1, filters ?? undefined);
 		if (matches.length > 0) {
-			// Convert MemoryResult to dict-like shape for consistency
 			const m = matches[0] as MemoryResult;
-			anchor = {
+			anchorRef = {
 				id: m.id,
 				session_id: m.session_id,
 				created_at: m.created_at,
 			};
 		}
 	}
-	if (anchor == null) {
+	if (anchorRef == null) {
 		return [];
 	}
 
-	return timelineAround(store, anchor, depthBefore, depthAfter, filters);
+	return timelineAround(store, anchorRef, depthBefore, depthAfter, filters);
 }
 
 /**
@@ -273,14 +280,14 @@ export function timeline(
  */
 function timelineAround(
 	store: StoreHandle,
-	anchor: Record<string, unknown>,
+	anchor: { id: number; session_id: number; created_at: string },
 	depthBefore: number,
 	depthAfter: number,
 	filters?: MemoryFilters | null,
-): Record<string, unknown>[] {
-	const anchorId = anchor.id as number | undefined;
-	const anchorCreatedAt = anchor.created_at as string | undefined;
-	const anchorSessionId = anchor.session_id as number | undefined;
+): TimelineItemResponse[] {
+	const anchorId = anchor.id;
+	const anchorCreatedAt = anchor.created_at;
+	const anchorSessionId = anchor.session_id;
 
 	if (!anchorId || !anchorCreatedAt) {
 		return [];
@@ -310,7 +317,7 @@ function timelineAround(
 			 ORDER BY memory_items.created_at DESC
 			 LIMIT ?`,
 		)
-		.all(...baseParams, anchorCreatedAt, depthBefore) as Record<string, unknown>[];
+		.all(...baseParams, anchorCreatedAt, depthBefore) as MemoryItem[];
 
 	// After: newer memories, ascending
 	const afterRows = store.db
@@ -322,28 +329,26 @@ function timelineAround(
 			 ORDER BY memory_items.created_at ASC
 			 LIMIT ?`,
 		)
-		.all(...baseParams, anchorCreatedAt, depthAfter) as Record<string, unknown>[];
+		.all(...baseParams, anchorCreatedAt, depthAfter) as MemoryItem[];
 
 	// Re-fetch anchor row to get full columns (anchor from search may be partial)
 	const anchorRow = store.db
 		.prepare("SELECT * FROM memory_items WHERE id = ? AND active = 1")
-		.get(anchorId) as Record<string, unknown> | undefined;
+		.get(anchorId) as MemoryItem | undefined;
 
 	// Combine: reversed(before) + anchor + after
-	const rows: Record<string, unknown>[] = [...beforeRows.reverse()];
+	const rows: MemoryItem[] = [...beforeRows.reverse()];
 	if (anchorRow) {
 		rows.push(anchorRow);
 	}
 	rows.push(...afterRows);
 
 	// Parse metadata_json and add linked_prompt stub on each row.
-	// linked_prompt is set by Python's _attach_prompt_links — not yet ported,
-	// but the field must exist for MCP response shape stability.
-	return rows.map((row) => ({
-		...row,
-		metadata_json: fromJson(row.metadata_json as string | null),
-		linked_prompt: null,
-	}));
+	// linked_prompt will be populated once _attach_prompt_links is ported.
+	return rows.map((row) => {
+		const { metadata_json, ...rest } = row;
+		return { ...rest, metadata_json: fromJson(metadata_json), linked_prompt: null };
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +395,7 @@ function explainItem(
 	rank: number | null,
 	queryTokens: string[],
 	referenceNow: Date,
-): Record<string, unknown> {
+): ExplainItem {
 	const text = `${item.title} ${item.body_text} ${item.tags_text}`.toLowerCase();
 	const matchedTerms = queryTokens.filter((token) => text.includes(token));
 
@@ -436,7 +441,7 @@ function explainItem(
  * Check whether a row matches the given filters (client-side enforcement).
  * Used for ID-based lookups in explain() to enforce the same scope as query results.
  */
-function rowMatchesFilters(row: Record<string, unknown>, filters: MemoryFilters): boolean {
+function rowMatchesFilters(row: MemoryItemResponse, filters: MemoryFilters): boolean {
 	if (filters.kind && row.kind !== filters.kind) return false;
 	if (filters.include_visibility?.length) {
 		if (!filters.include_visibility.includes(row.visibility as string)) return false;
@@ -498,11 +503,11 @@ export function explain(
 	ids?: unknown[] | null,
 	limit = 10,
 	filters?: MemoryFilters | null,
-): Record<string, unknown> {
+): ExplainResponse {
 	const normalizedQuery = (query ?? "").trim();
 	const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(ids ?? []);
 
-	const errors: Record<string, unknown>[] = [];
+	const errors: ExplainError[] = [];
 	if (invalidIds.length > 0) {
 		errors.push({
 			code: "INVALID_ARGUMENT",
@@ -525,8 +530,10 @@ export function explain(
 			errors,
 			metadata: {
 				query: null,
+				project: null,
 				requested_ids_count: orderedIds.length,
 				returned_items_count: 0,
+				include_pack_context: false,
 			},
 		};
 	}
@@ -564,20 +571,17 @@ export function explain(
 			continue;
 		}
 		idLookup.set(memId, {
-			id: row.id as number,
-			kind: row.kind as string,
-			title: row.title as string,
-			body_text: row.body_text as string,
-			confidence: (row.confidence as number) ?? 0,
-			created_at: row.created_at as string,
-			updated_at: row.updated_at as string,
-			tags_text: (row.tags_text as string) ?? "",
+			id: row.id,
+			kind: row.kind,
+			title: row.title,
+			body_text: row.body_text,
+			confidence: row.confidence ?? 0,
+			created_at: row.created_at,
+			updated_at: row.updated_at,
+			tags_text: row.tags_text ?? "",
 			score: 0,
-			session_id: row.session_id as number,
-			metadata:
-				typeof row.metadata_json === "object" && row.metadata_json != null
-					? (row.metadata_json as Record<string, unknown>)
-					: fromJson(row.metadata_json as string | null),
+			session_id: row.session_id,
+			metadata: row.metadata_json,
 		});
 	}
 

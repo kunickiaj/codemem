@@ -525,49 +525,42 @@ describe("MemoryStore.explain", () => {
 
 	it("returns scored items for query", () => {
 		seedMemories();
-		const result = store.explain("database") as Record<string, unknown>;
-		const items = result.items as Record<string, unknown>[];
-		expect(items.length).toBeGreaterThan(0);
+		const result = store.explain("database");
+		expect(result.items.length).toBeGreaterThan(0);
 		expect(result.errors).toEqual([]);
 
 		// Each item should have the explain payload shape
-		for (const item of items) {
+		for (const item of result.items) {
 			expect(item).toHaveProperty("id");
 			expect(item).toHaveProperty("kind");
 			expect(item).toHaveProperty("title");
 			expect(item).toHaveProperty("retrieval");
 			expect(item).toHaveProperty("score");
 
-			const retrieval = item.retrieval as Record<string, unknown>;
-			expect(retrieval.source).toBe("query");
-			expect(typeof retrieval.rank).toBe("number");
+			expect(item.retrieval.source).toBe("query");
+			expect(typeof item.retrieval.rank).toBe("number");
 
-			const score = item.score as Record<string, unknown>;
-			expect(typeof score.total).toBe("number");
-			expect(score.total as number).toBeGreaterThanOrEqual(0);
+			expect(typeof item.score.total).toBe("number");
+			expect(item.score.total as number).toBeGreaterThanOrEqual(0);
 
-			const components = score.components as Record<string, unknown>;
-			expect(typeof components.base).toBe("number");
-			expect(typeof components.recency).toBe("number");
-			expect(typeof components.kind_bonus).toBe("number");
+			expect(typeof item.score.components.base).toBe("number");
+			expect(typeof item.score.components.recency).toBe("number");
+			expect(typeof item.score.components.kind_bonus).toBe("number");
 		}
 	});
 
 	it("returns items by id lookup", () => {
 		const { id1, id2 } = seedMemories();
-		const result = store.explain(null, [id1, id2]) as Record<string, unknown>;
-		const items = result.items as Record<string, unknown>[];
-		expect(items).toHaveLength(2);
+		const result = store.explain(null, [id1, id2]);
+		expect(result.items).toHaveLength(2);
 
-		for (const item of items) {
-			const retrieval = item.retrieval as Record<string, unknown>;
-			expect(retrieval.source).toBe("id_lookup");
-			expect(retrieval.rank).toBeNull();
+		for (const item of result.items) {
+			expect(item.retrieval.source).toBe("id_lookup");
+			expect(item.retrieval.rank).toBeNull();
 
 			// id_lookup items have null base score and null total
-			const score = item.score as Record<string, unknown>;
-			expect(score.total).toBeNull();
-			expect((score.components as Record<string, unknown>).base).toBeNull();
+			expect(item.score.total).toBeNull();
+			expect(item.score.components.base).toBeNull();
 		}
 	});
 
@@ -575,64 +568,57 @@ describe("MemoryStore.explain", () => {
 		const { id1, id2 } = seedMemories();
 		// id1 is "Database migration guide" — should match the query
 		// id2 is "Authentication system" — should only appear via id_lookup
-		const result = store.explain("database", [id1, id2]) as Record<string, unknown>;
-		const items = result.items as Record<string, unknown>[];
-		expect(items.length).toBeGreaterThanOrEqual(2);
+		const result = store.explain("database", [id1, id2]);
+		expect(result.items.length).toBeGreaterThanOrEqual(2);
 
-		const sources = items.map((i) => (i.retrieval as Record<string, unknown>).source);
+		const sources = result.items.map((i) => i.retrieval.source);
 		// id1 should appear as query+id_lookup (found by both query and id)
 		expect(sources).toContain("query+id_lookup");
 		// id2 should appear as id_lookup (not matched by "database" query)
 		expect(sources).toContain("id_lookup");
 
 		// No duplicates
-		const ids = items.map((i) => i.id);
+		const ids = result.items.map((i) => i.id);
 		expect(new Set(ids).size).toBe(ids.length);
 	});
 
 	it("reports missing ids", () => {
 		seedMemories();
-		const result = store.explain(null, [99999, 88888]) as Record<string, unknown>;
-		const missingIds = result.missing_ids as number[];
-		expect(missingIds).toContain(99999);
-		expect(missingIds).toContain(88888);
+		const result = store.explain(null, [99999, 88888]);
+		expect(result.missing_ids).toContain(99999);
+		expect(result.missing_ids).toContain(88888);
 
-		const errors = result.errors as Record<string, unknown>[];
-		const notFoundError = errors.find((e) => e.code === "NOT_FOUND");
+		const notFoundError = result.errors.find((e) => e.code === "NOT_FOUND");
 		expect(notFoundError).toBeDefined();
 	});
 
 	it("returns error when neither query nor ids provided", () => {
 		seedMemories();
-		const result = store.explain() as Record<string, unknown>;
+		const result = store.explain();
 		expect(result.items).toEqual([]);
-		const errors = result.errors as Record<string, unknown>[];
-		expect(errors.length).toBeGreaterThan(0);
-		expect(errors[0]).toHaveProperty("code", "INVALID_ARGUMENT");
+		expect(result.errors.length).toBeGreaterThan(0);
+		expect(result.errors[0]).toHaveProperty("code", "INVALID_ARGUMENT");
 	});
 
 	it("returns expected metadata shape", () => {
 		seedMemories();
-		const result = store.explain("database") as Record<string, unknown>;
-		const metadata = result.metadata as Record<string, unknown>;
-		expect(metadata).toHaveProperty("query", "database");
-		expect(metadata).toHaveProperty("requested_ids_count", 0);
-		expect(typeof metadata.returned_items_count).toBe("number");
+		const result = store.explain("database");
+		expect(result.metadata).toHaveProperty("query", "database");
+		expect(result.metadata).toHaveProperty("requested_ids_count", 0);
+		expect(typeof result.metadata.returned_items_count).toBe("number");
 	});
 
 	it("rejects booleans and floats in ids (dedupeOrderedIds)", () => {
 		const { id1 } = seedMemories();
 		// Pass booleans, a float, and one valid int
-		const result = store.explain(null, [true, false, 3.14, id1]) as Record<string, unknown>;
-		const items = result.items as Record<string, unknown>[];
+		const result = store.explain(null, [true, false, 3.14, id1]);
 		// Only the valid integer id should produce an item
-		expect(items).toHaveLength(1);
-		expect(items[0]?.id).toBe(id1);
+		expect(result.items).toHaveLength(1);
+		expect(result.items[0]?.id).toBe(id1);
 		// The invalid values should be reported
-		const errors = result.errors as Record<string, unknown>[];
-		const invalidArgError = errors.find((e) => e.code === "INVALID_ARGUMENT");
+		const invalidArgError = result.errors.find((e) => e.code === "INVALID_ARGUMENT");
 		expect(invalidArgError).toBeDefined();
-		const invalidIds = invalidArgError?.ids as string[];
+		const invalidIds = invalidArgError?.ids as (string | number)[];
 		expect(invalidIds).toContain("true");
 		expect(invalidIds).toContain("false");
 		expect(invalidIds).toContain("3.14");
@@ -656,15 +642,13 @@ describe("MemoryStore.explain", () => {
 		// Explain with include_workspace_ids filter that doesn't match
 		const result = store.explain(null, [memId], 10, {
 			include_workspace_ids: ["ws:team-beta"],
-		}) as Record<string, unknown>;
+		});
 
-		const items = result.items as Record<string, unknown>[];
-		expect(items).toHaveLength(0);
+		expect(result.items).toHaveLength(0);
 
 		// Should report as filter mismatch
-		const errors = result.errors as Record<string, unknown>[];
-		const mismatch = errors.find((e) => e.code === "FILTER_MISMATCH");
+		const mismatch = result.errors.find((e) => e.code === "FILTER_MISMATCH");
 		expect(mismatch).toBeDefined();
-		expect((mismatch?.ids as number[]) ?? []).toContain(memId);
+		expect(mismatch?.ids ?? []).toContain(memId);
 	});
 });

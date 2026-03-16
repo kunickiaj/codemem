@@ -287,6 +287,117 @@ export interface Actor {
 }
 
 // ---------------------------------------------------------------------------
+// Response types (parsed from DB rows)
+// ---------------------------------------------------------------------------
+
+/**
+ * MemoryItem with metadata_json parsed to an object.
+ * Returned by store.get(), store.recent(), updateMemoryVisibility(), etc.
+ */
+export interface MemoryItemResponse extends Omit<MemoryItem, "metadata_json"> {
+	metadata_json: Record<string, unknown>;
+}
+
+/**
+ * MemoryItemResponse with linked_prompt for timeline results.
+ * linked_prompt will be populated once _attach_prompt_links is ported.
+ */
+export interface TimelineItemResponse extends MemoryItemResponse {
+	linked_prompt: null;
+}
+
+/** Stats response from store.stats() */
+export interface StoreStats {
+	database: {
+		path: string;
+		size_bytes: number;
+		sessions: number;
+		memory_items: number;
+		active_memory_items: number;
+		artifacts: number;
+		vector_rows: number;
+		raw_events: number;
+	};
+}
+
+/** Score breakdown in explain results */
+export interface ExplainScoreComponents {
+	base: number | null;
+	recency: number;
+	kind_bonus: number;
+	personal_bias: number;
+	semantic_boost: number | null;
+}
+
+/** Single item in explain results */
+export interface ExplainItem {
+	id: number;
+	kind: string;
+	title: string;
+	created_at: string;
+	project: string | null;
+	retrieval: {
+		source: string;
+		rank: number | null;
+	};
+	score: {
+		total: number | null;
+		components: ExplainScoreComponents;
+	};
+	matches: {
+		query_terms: string[];
+		project_match: string | null;
+	};
+	pack_context: string | null;
+}
+
+/** Explain response */
+export interface ExplainResponse {
+	items: ExplainItem[];
+	missing_ids: number[];
+	errors: ExplainError[];
+	metadata: {
+		query: string | null;
+		project: string | null;
+		requested_ids_count: number;
+		returned_items_count: number;
+		include_pack_context: boolean;
+	};
+}
+
+export interface ExplainError {
+	code: string;
+	field: string;
+	message: string;
+	ids?: (string | number)[];
+}
+
+/** Single item in pack results */
+export interface PackItem {
+	id: number;
+	kind: string;
+	title: string;
+	body: string;
+	confidence: number;
+	tags: string;
+	metadata: Record<string, unknown>;
+}
+
+/** Pack response from buildMemoryPack() */
+export interface PackResponse {
+	context: string;
+	items: PackItem[];
+	item_ids: number[];
+	pack_text: string;
+	metrics: {
+		total_items: number;
+		pack_tokens: number;
+		fallback_used: boolean;
+		sources: { fts: number; semantic: number; fuzzy: number };
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Search result (returned by store.search())
 // ---------------------------------------------------------------------------
 
