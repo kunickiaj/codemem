@@ -125,6 +125,46 @@ export function initTestSchema(db: Database): void {
 			updated_at TEXT NOT NULL
 		);
 
+		CREATE TABLE IF NOT EXISTS sync_peers (
+			peer_device_id TEXT PRIMARY KEY,
+			name TEXT,
+			pinned_fingerprint TEXT,
+			public_key TEXT,
+			addresses_json TEXT,
+			claimed_local_actor INTEGER NOT NULL DEFAULT 0,
+			actor_id TEXT,
+			projects_include_json TEXT,
+			projects_exclude_json TEXT,
+			created_at TEXT NOT NULL,
+			last_seen_at TEXT,
+			last_sync_at TEXT,
+			last_error TEXT
+		);
+
+		CREATE TABLE IF NOT EXISTS sync_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			peer_device_id TEXT NOT NULL,
+			started_at TEXT NOT NULL,
+			finished_at TEXT,
+			ok INTEGER NOT NULL DEFAULT 0,
+			ops_in INTEGER NOT NULL DEFAULT 0,
+			ops_out INTEGER NOT NULL DEFAULT 0,
+			error TEXT
+		);
+
+		CREATE TABLE IF NOT EXISTS replication_ops (
+			op_id TEXT PRIMARY KEY,
+			entity_type TEXT NOT NULL,
+			entity_id TEXT NOT NULL,
+			op_type TEXT NOT NULL,
+			payload_json TEXT,
+			clock_rev INTEGER NOT NULL,
+			clock_updated_at TEXT NOT NULL,
+			clock_device_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+
 		-- FTS5 full-text index on memory_items
 		CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 			title, body_text, tags_text,
