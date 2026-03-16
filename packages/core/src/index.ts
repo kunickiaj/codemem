@@ -17,6 +17,8 @@ export {
 	getSchemaVersion,
 	isEmbeddingDisabled,
 	loadSqliteVec,
+	MIN_COMPATIBLE_SCHEMA,
+	resolveDbPath,
 	SCHEMA_VERSION,
 	tableExists,
 	toJson,

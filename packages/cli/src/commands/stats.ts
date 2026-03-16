@@ -1,13 +1,13 @@
-import { MemoryStore } from "@codemem/core";
+import { MemoryStore, resolveDbPath } from "@codemem/core";
 import chalk from "chalk";
 import { Command } from "commander";
 
 export const statsCommand = new Command("stats")
 	.description("Show database statistics")
-	.option("--db <path>", "database path")
+	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--json", "output as JSON")
 	.action((opts: { db?: string; json?: boolean }) => {
-		const store = new MemoryStore(opts.db);
+		const store = new MemoryStore(resolveDbPath(opts.db));
 		try {
 			const result = store.stats();
 			if (opts.json) {

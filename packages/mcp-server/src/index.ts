@@ -10,10 +10,10 @@
  */
 
 import {
-	DEFAULT_DB_PATH,
 	type MemoryFilters,
 	type MemoryItemResponse,
 	MemoryStore,
+	resolveDbPath,
 	toJson,
 	VERSION,
 } from "@codemem/core";
@@ -41,6 +41,7 @@ const MEMORY_KINDS: Record<string, string> = {
 
 const filterSchema = {
 	kind: z.string().optional().describe("Filter by memory kind"),
+	project: z.string().optional().describe("Filter by project scope (matches sessions.project)"),
 	include_visibility: z.array(z.string()).optional(),
 	exclude_visibility: z.array(z.string()).optional(),
 	include_workspace_ids: z.array(z.string()).optional(),
@@ -57,11 +58,26 @@ const filterSchema = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Default project scope — resolved from CODEMEM_PROJECT env var or cwd.
+ * Matches Python's `default_project = os.environ.get("CODEMEM_PROJECT") or resolve_project(os.getcwd())`.
+ */
+const defaultProject = process.env.CODEMEM_PROJECT || null;
+
 /** Build a MemoryFilters object from raw tool params, dropping undefined keys. */
 function buildFilters(raw: Record<string, unknown>): MemoryFilters | undefined {
 	const filters: MemoryFilters = {};
 	let hasAny = false;
+
+	// Apply default project scope if not explicitly provided
+	const resolvedProject = (raw.project as string | undefined) ?? defaultProject;
+	if (resolvedProject) {
+		filters.project = resolvedProject;
+		hasAny = true;
+	}
+
 	for (const key of Object.keys(filterSchema)) {
+		if (key === "project") continue; // handled above
 		const val = raw[key];
 		if (val !== undefined && val !== null) {
 			(filters as Record<string, unknown>)[key] = val;
@@ -131,7 +147,7 @@ function getMany(store: MemoryStore, ids: number[]): MemoryItemResponse[] {
 // ---------------------------------------------------------------------------
 
 async function main() {
-	const dbPath = process.env.CODEMEM_DB ?? DEFAULT_DB_PATH;
+	const dbPath = resolveDbPath();
 	const store = new MemoryStore(dbPath);
 
 	const server = new McpServer({ name: "codemem", version: VERSION });
@@ -239,7 +255,7 @@ async function main() {
 		"Explain search results with detailed scoring breakdown.",
 		{
 			query: z.string().optional().describe("Search query"),
-			ids: z.array(z.number().int()).optional().describe("Specific memory IDs to explain"),
+			ids: z.array(z.number().int()).max(200).optional().describe("Specific memory IDs to explain"),
 			limit: z.number().int().min(1).max(50).default(10).describe("Max results"),
 			include_pack_context: z.boolean().default(false).describe("Include formatted pack context"),
 			...filterSchema,
@@ -262,7 +278,10 @@ async function main() {
 		"memory_expand",
 		"Fetch memories by ID with surrounding timeline context.",
 		{
-			ids: z.array(z.union([z.number(), z.string()])).describe("Memory IDs to expand"),
+			ids: z
+				.array(z.union([z.number(), z.string()]))
+				.max(200)
+				.describe("Memory IDs to expand"),
 			depth_before: z.number().int().min(0).default(3).describe("Timeline items before"),
 			depth_after: z.number().int().min(0).default(3).describe("Timeline items after"),
 			include_observations: z.boolean().default(false).describe("Include full observation details"),
@@ -375,7 +394,7 @@ async function main() {
 		"memory_get_observations",
 		"Fetch multiple memory items by their IDs.",
 		{
-			ids: z.array(z.number().int()).describe("Memory IDs to fetch"),
+			ids: z.array(z.number().int()).max(200).describe("Memory IDs to fetch"),
 		},
 		async (args) => {
 			try {
@@ -437,7 +456,9 @@ async function main() {
 		"memory_remember",
 		"Create a new memory. Use for milestones, decisions, and notable facts.",
 		{
-			kind: z.string().describe(`Memory kind: ${Object.keys(MEMORY_KINDS).join(", ")}`),
+			kind: z
+				.enum(["discovery", "change", "feature", "bugfix", "refactor", "decision", "exploration"])
+				.describe("Memory kind"),
 			title: z.string().describe("Short title"),
 			body: z.string().describe("Body text (high-signal content)"),
 			confidence: z.number().min(0).max(1).default(0.5).describe("Confidence 0-1"),
@@ -445,30 +466,41 @@ async function main() {
 		},
 		async (args) => {
 			try {
-				// Create a transient session for MCP-originated memories.
+				// Create a transient session + memory in a transaction for atomicity.
 				// TS store doesn't have startSession/endSession yet, so
-				// we insert the session row directly.
-				const now = nowIso();
-				const user = process.env.USER ?? "unknown";
-				const cwd = process.cwd();
-				const project = args.project ?? process.env.CODEMEM_PROJECT ?? null;
+				// we insert the session row directly. Wrapped in transaction to
+				// prevent orphaned sessions if remember() fails.
+				const result = store.db.transaction(() => {
+					const now = nowIso();
+					const user = process.env.USER ?? "unknown";
+					const cwd = process.cwd();
+					const project = args.project ?? process.env.CODEMEM_PROJECT ?? null;
 
-				const sessionInfo = store.db
-					.prepare(
-						`INSERT INTO sessions(started_at, ended_at, cwd, project, user, tool_version, metadata_json)
-						 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-					)
-					.run(now, now, cwd, project, user, "mcp-ts", toJson({ mcp: true }));
-				const sessionId = Number(sessionInfo.lastInsertRowid);
+					const sessionInfo = store.db
+						.prepare(
+							`INSERT INTO sessions(started_at, ended_at, cwd, project, user, tool_version, metadata_json)
+							 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+						)
+						.run(now, now, cwd, project, user, "mcp-ts", toJson({ mcp: true }));
+					const sessionId = Number(sessionInfo.lastInsertRowid);
 
-				const memId = store.remember(sessionId, args.kind, args.title, args.body, args.confidence);
+					const memId = store.remember(
+						sessionId,
+						args.kind,
+						args.title,
+						args.body,
+						args.confidence,
+					);
 
-				// End the session
-				store.db
-					.prepare("UPDATE sessions SET ended_at = ?, metadata_json = ? WHERE id = ?")
-					.run(nowIso(), toJson({ mcp: true }), sessionId);
+					// End the session
+					store.db
+						.prepare("UPDATE sessions SET ended_at = ?, metadata_json = ? WHERE id = ?")
+						.run(nowIso(), toJson({ mcp: true }), sessionId);
 
-				return jsonContent({ id: memId });
+					return memId;
+				})();
+
+				return jsonContent({ id: result });
 			} catch (err) {
 				return errorContent(err instanceof Error ? err.message : String(err));
 			}

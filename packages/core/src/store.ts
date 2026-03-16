@@ -128,11 +128,9 @@ export class MemoryStore {
 	/**
 	 * Create a new memory item. Returns the new memory ID.
 	 *
-	 * Validates and normalizes the kind. Sets clock_device_id and
-	 * origin_device_id for replication tracing.
-	 *
-	 * NOT ported yet: full provenance resolution, vector storage,
-	 * flush_batch dedup (tracked for follow-up).
+	 * Validates and normalizes the kind. Resolves provenance fields (actor_id,
+	 * visibility, workspace_id, trust_state) matching Python's
+	 * _resolve_memory_provenance logic.
 	 */
 	remember(
 		sessionId: number,
@@ -152,13 +150,18 @@ export class MemoryStore {
 		const importKey = (metaPayload.import_key as string) || randomUUID();
 		metaPayload.import_key = importKey;
 
+		// Resolve provenance fields — mirrors Python's _resolve_memory_provenance
+		const provenance = this.resolveProvenance(metaPayload);
+
 		const info = this.db
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text,
 					active, created_at, updated_at, metadata_json,
-					origin_device_id, deleted_at, rev, import_key
-				) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, NULL, 1, ?)`,
+					actor_id, actor_display_name, visibility, workspace_id,
+					workspace_kind, origin_device_id, origin_source, trust_state,
+					deleted_at, rev, import_key
+				) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?)`,
 			)
 			.run(
 				sessionId,
@@ -170,11 +173,90 @@ export class MemoryStore {
 				now,
 				now,
 				toJson(metaPayload),
-				this.deviceId,
+				provenance.actor_id,
+				provenance.actor_display_name,
+				provenance.visibility,
+				provenance.workspace_id,
+				provenance.workspace_kind,
+				provenance.origin_device_id,
+				provenance.origin_source,
+				provenance.trust_state,
 				importKey,
 			);
 
 		return Number(info.lastInsertRowid);
+	}
+
+	// -----------------------------------------------------------------------
+	// provenance resolution
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Resolve provenance fields for a new memory, matching Python's
+	 * _resolve_memory_provenance. Uses metadata overrides when present,
+	 * falls back to store-level defaults.
+	 */
+	private resolveProvenance(metadata: Record<string, unknown>): {
+		actor_id: string | null;
+		actor_display_name: string | null;
+		visibility: string;
+		workspace_id: string;
+		workspace_kind: string;
+		origin_device_id: string;
+		origin_source: string | null;
+		trust_state: string;
+	} {
+		const clean = (v: unknown): string | null => {
+			if (v == null) return null;
+			const s = String(v).trim();
+			return s.length > 0 ? s : null;
+		};
+
+		const actorId = clean(metadata.actor_id) ?? this.deviceId;
+		const actorDisplayName = clean(metadata.actor_display_name) ?? null;
+
+		const explicitWorkspaceKind = clean(metadata.workspace_kind);
+		const explicitWorkspaceId = clean(metadata.workspace_id);
+
+		// Visibility defaults to "shared" (matches Python behavior)
+		let visibility = clean(metadata.visibility);
+		if (!visibility || (visibility !== "private" && visibility !== "shared")) {
+			if (explicitWorkspaceKind === "shared" || explicitWorkspaceId?.startsWith("shared:")) {
+				visibility = "shared";
+			} else {
+				visibility = "shared";
+			}
+		}
+
+		// Workspace kind derives from visibility
+		let workspaceKind = explicitWorkspaceKind ?? "shared";
+		if (workspaceKind !== "personal" && workspaceKind !== "shared") {
+			workspaceKind = visibility === "shared" ? "shared" : "personal";
+		} else if (visibility === "shared") {
+			workspaceKind = "shared";
+		} else if (visibility === "private") {
+			workspaceKind = "personal";
+		}
+
+		// Workspace ID with fallback
+		const workspaceId =
+			explicitWorkspaceId ??
+			(workspaceKind === "personal" ? `personal:${actorId}` : `shared:${actorId}`);
+
+		const originDeviceId = clean(metadata.origin_device_id) ?? this.deviceId;
+		const originSource = clean(metadata.origin_source) ?? clean(metadata.source) ?? null;
+		const trustState = clean(metadata.trust_state) ?? "trusted";
+
+		return {
+			actor_id: actorId,
+			actor_display_name: actorDisplayName,
+			visibility,
+			workspace_id: workspaceId,
+			workspace_kind: workspaceKind,
+			origin_device_id: originDeviceId,
+			origin_source: originSource,
+			trust_state: trustState,
+		};
 	}
 
 	// -----------------------------------------------------------------------

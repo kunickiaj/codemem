@@ -42,12 +42,6 @@ importers:
       '@codemem/core':
         specifier: workspace:*
         version: link:../core
-      '@codemem/mcp-server':
-        specifier: workspace:*
-        version: link:../mcp-server
-      '@codemem/viewer-server':
-        specifier: workspace:*
-        version: link:../viewer-server
       chalk:
         specifier: ^5.6.2
         version: 5.6.2

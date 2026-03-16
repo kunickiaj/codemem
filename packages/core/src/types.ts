@@ -421,6 +421,8 @@ export interface MemoryResult {
 
 export interface MemoryFilters {
 	kind?: string;
+	/** Project scope — matches sessions.project. Triggers session JOIN. */
+	project?: string;
 	include_visibility?: string[];
 	exclude_visibility?: string[];
 	include_workspace_ids?: string[];

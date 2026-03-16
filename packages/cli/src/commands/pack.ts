@@ -1,17 +1,17 @@
-import { MemoryStore } from "@codemem/core";
+import { MemoryStore, resolveDbPath } from "@codemem/core";
 import chalk from "chalk";
 import { Command } from "commander";
 
 export const packCommand = new Command("pack")
 	.description("Build a context-aware memory pack")
 	.argument("<context>", "context string to search for")
-	.option("--db <path>", "database path")
+	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("-n, --limit <n>", "max items", "10")
 	.option("--budget <tokens>", "token budget")
 	.option("--json", "output as JSON")
 	.action(
 		(context: string, opts: { db?: string; limit: string; budget?: string; json?: boolean }) => {
-			const store = new MemoryStore(opts.db);
+			const store = new MemoryStore(resolveDbPath(opts.db));
 			try {
 				const limit = Number.parseInt(opts.limit, 10) || 10;
 				const budget = opts.budget ? Number.parseInt(opts.budget, 10) : undefined;
