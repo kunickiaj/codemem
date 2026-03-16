@@ -15,12 +15,13 @@
     ".opencode/lib/compat.js"
   ],
   "scripts": {
-    "build": "pnpm -r run build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "biome check packages/",
-    "format": "biome check --write packages/",
-    "typecheck": "tsc --build",
+    "clean": "pnpm -r run clean && pnpm exec tsc --build --clean",
+    "build": "pnpm -r run build && pnpm exec tsc --build",
+    "test": "pnpm exec vitest run",
+    "test:watch": "pnpm exec vitest",
+    "lint": "pnpm exec biome check packages/",
+    "format": "pnpm exec biome check --write packages/",
+    "typecheck": "pnpm exec tsc --build --noEmit",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
   },
   "dependencies": {
@@ -28,8 +29,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.6",
-    "tsup": "^8.5.0",
     "typescript": "^5.8.2",
+    "vite": "^8.0.0",
     "vitest": "^3.1.4"
   },
   "engines": {
@@ -54,6 +55,9 @@
     "codemem"
   ],
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "@biomejs/biome", "better-sqlite3"]
+    "onlyBuiltDependencies": [
+      "@biomejs/biome",
+      "better-sqlite3"
+    ]
   }
 }

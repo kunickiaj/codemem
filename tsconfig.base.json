@@ -16,6 +16,7 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true,
+    "emitDeclarationOnly": true,
     "composite": true
   }
 }
