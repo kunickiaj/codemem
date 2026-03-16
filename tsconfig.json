@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/mcp-server" },
+    { "path": "packages/viewer-server" },
+    { "path": "packages/cli" }
+  ]
+}

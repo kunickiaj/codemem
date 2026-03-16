@@ -1,0 +1,23 @@
+{
+	"name": "@codemem/cli",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"bin": {
+		"codemem-ts": "./dist/index.js"
+	},
+	"scripts": {
+		"build": "tsup",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@codemem/core": "workspace:*",
+		"@codemem/mcp-server": "workspace:*",
+		"@codemem/viewer-server": "workspace:*"
+	},
+	"devDependencies": {
+		"tsup": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}

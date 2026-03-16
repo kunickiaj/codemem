@@ -69,6 +69,22 @@ Release checklist:
   - Viewer UI is embedded in Python: `codemem/viewer.py`
   - OpenCode plugin is ESM JS: `.opencode/plugin/codemem.js`
 
+### TypeScript Backend (migration in progress)
+
+- Node: >=22
+- Package manager: pnpm (workspace at root)
+- Build: tsup (ESM output)
+- Tests: vitest
+- Lint/format: biome
+- Packages: `packages/core`, `packages/mcp-server`, `packages/viewer-server`, `packages/cli`
+
+**Root package.json dual purpose:** The root `package.json` serves as both the pnpm
+workspace root AND the published `@kunickiaj/codemem` npm plugin package. The `files`
+field scopes what gets published (plugin files only). The `devDependencies` (biome, tsup,
+typescript, vitest) are workspace tooling and are NOT included in the published package.
+Do not add workspace-only config that would break the plugin publish, and do not add
+plugin-only config that breaks workspace commands.
+
 ## Quick Commands
 
 ### Setup
