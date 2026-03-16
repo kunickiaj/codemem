@@ -112,6 +112,18 @@ export {
 	timeline,
 } from "./search.js";
 export { MemoryStore } from "./store.js";
+export type { EnsureDeviceIdentityOptions } from "./sync-identity.js";
+export {
+	ensureDeviceIdentity,
+	fingerprintPublicKey,
+	generateKeypair,
+	loadPrivateKey,
+	loadPrivateKeyKeychain,
+	loadPublicKey,
+	resolveKeyPaths,
+	storePrivateKeyKeychain,
+	validateExistingKeypair,
+} from "./sync-identity.js";
 
 export type {
 	Actor,
