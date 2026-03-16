@@ -168,16 +168,25 @@ describe("peerBackoffSeconds", () => {
 		expect(peerBackoffSeconds(1)).toBe(0);
 	});
 
-	it("returns base backoff for 2 failures", () => {
-		expect(peerBackoffSeconds(2)).toBe(120);
+	it("returns base backoff with jitter for 2 failures", () => {
+		// Base = 120s, jitter range = [60, 120)
+		const result = peerBackoffSeconds(2);
+		expect(result).toBeGreaterThanOrEqual(60);
+		expect(result).toBeLessThanOrEqual(120);
 	});
 
-	it("doubles for 3 failures", () => {
-		expect(peerBackoffSeconds(3)).toBe(240);
+	it("doubles base for 3 failures (with jitter)", () => {
+		// Base = 240s, jitter range = [120, 240)
+		const result = peerBackoffSeconds(3);
+		expect(result).toBeGreaterThanOrEqual(120);
+		expect(result).toBeLessThanOrEqual(240);
 	});
 
-	it("caps at max backoff", () => {
-		expect(peerBackoffSeconds(20)).toBe(1800);
+	it("caps at max backoff (with jitter)", () => {
+		// Max = 1800s, jitter range = [900, 1800)
+		const result = peerBackoffSeconds(20);
+		expect(result).toBeGreaterThanOrEqual(900);
+		expect(result).toBeLessThanOrEqual(1800);
 	});
 });
 

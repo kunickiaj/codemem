@@ -199,8 +199,9 @@ function loadLocalOpsSince(
 
 /**
  * Compute a cursor string from a timestamp and op_id.
+ * Currently unused — will be needed when real apply logic advances the cursor.
  */
-function computeCursor(createdAt: string, opId: string): string {
+export function computeCursor(createdAt: string, opId: string): string {
 	return `${createdAt}|${opId}`;
 }
 
@@ -213,11 +214,14 @@ function computeCursor(createdAt: string, opId: string): string {
  *
  * On 413 (too large), splits the batch in half and retries recursively.
  */
+const MAX_PUSH_SPLIT_DEPTH = 8;
+
 async function pushOps(
 	postUrl: string,
 	deviceId: string,
 	ops: ReplicationOp[],
 	keysDir?: string,
+	depth = 0,
 ): Promise<void> {
 	if (ops.length === 0) return;
 
@@ -242,11 +246,12 @@ async function pushOps(
 	if (
 		status === 413 &&
 		ops.length > 1 &&
+		depth < MAX_PUSH_SPLIT_DEPTH &&
 		(detail === "payload_too_large" || detail === "too_many_ops")
 	) {
 		const mid = Math.floor(ops.length / 2);
-		await pushOps(postUrl, deviceId, ops.slice(0, mid), keysDir);
-		await pushOps(postUrl, deviceId, ops.slice(mid), keysDir);
+		await pushOps(postUrl, deviceId, ops.slice(0, mid), keysDir, depth + 1);
+		await pushOps(postUrl, deviceId, ops.slice(mid), keysDir, depth + 1);
 		return;
 	}
 
@@ -511,11 +516,13 @@ export function consecutiveConnectivityFailures(
 	return count;
 }
 
-/** Calculate backoff duration based on consecutive connectivity failures. */
+/** Calculate backoff duration with jitter to avoid thundering herd. */
 export function peerBackoffSeconds(consecutiveFailures: number): number {
 	if (consecutiveFailures <= 1) return 0;
 	const exponent = Math.min(consecutiveFailures - 1, 8);
-	return Math.min(PEER_BACKOFF_BASE_S * 2 ** (exponent - 1), PEER_BACKOFF_MAX_S);
+	const base = Math.min(PEER_BACKOFF_BASE_S * 2 ** (exponent - 1), PEER_BACKOFF_MAX_S);
+	// Add 50% jitter: base * [0.5, 1.0)
+	return base * (0.5 + Math.random() * 0.5);
 }
 
 /** Check if a peer should be skipped due to repeated connectivity failures. */
