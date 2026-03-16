@@ -112,6 +112,21 @@ export {
 	timeline,
 } from "./search.js";
 export { MemoryStore } from "./store.js";
+export type {
+	BuildAuthHeadersOptions,
+	SignRequestOptions,
+	VerifySignatureOptions,
+} from "./sync-auth.js";
+export {
+	buildAuthHeaders,
+	buildCanonicalRequest,
+	cleanupNonces,
+	DEFAULT_TIME_WINDOW_S,
+	recordNonce,
+	SIGNATURE_VERSION,
+	signRequest,
+	verifySignature,
+} from "./sync-auth.js";
 export type { EnsureDeviceIdentityOptions } from "./sync-identity.js";
 export {
 	ensureDeviceIdentity,

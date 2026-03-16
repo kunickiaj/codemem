@@ -112,6 +112,12 @@ export function initTestSchema(db: Database): void {
 			created_at TEXT NOT NULL
 		);
 
+		CREATE TABLE IF NOT EXISTS sync_nonces (
+			nonce TEXT PRIMARY KEY,
+			device_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+
 		-- FTS5 full-text index on memory_items
 		CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 			title, body_text, tags_text,
