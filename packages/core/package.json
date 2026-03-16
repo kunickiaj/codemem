@@ -14,8 +14,13 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
 		"tsup": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
+	},
+	"dependencies": {
+		"better-sqlite3": "^12.8.0",
+		"sqlite-vec": "0.1.7-alpha.2"
 	}
 }
