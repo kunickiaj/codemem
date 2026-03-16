@@ -332,7 +332,7 @@ These require two processes (not just two connections in one process):
 
 These must be completed before the TS runtime first opens the database:
 
-1. **FTS trigger DROP/CREATE race (codemem-zl8q).** The `au` and `ad` triggers are unconditionally dropped and recreated on every `initialize_schema()` call. Fix: use `CREATE TRIGGER IF NOT EXISTS` for all three triggers. The `ai` trigger already does this.
+1. **FTS trigger DROP/CREATE (codemem-zl8q).** The `au` and `ad` triggers are unconditionally dropped and recreated on every `initialize_schema()` call. This is intentional — legacy databases may have stale trigger bodies that need replacing. The DROP + CREATE is safe because `executescript` holds the write lock for the entire block, so no concurrent process can hit the gap. The TS coexistence contract (Phase 2) ensures the non-DDL-owning runtime never calls `initialize_schema()`, eliminating the race entirely.
 
 2. **executescript non-atomicity (codemem-i623).** `_rebuild_raw_event_identity_tables` uses `executescript` which auto-commits each statement individually. A crash between `DROP TABLE` and `RENAME` loses data. Either refactor to single-transaction DDL or gate this migration so it cannot run during coexistence.
 
