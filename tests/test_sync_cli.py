@@ -498,9 +498,10 @@ def test_sync_coordinator_join_request_management_local(tmp_path: Path) -> None:
             "sync",
             "coordinator",
             "approve-join-request",
-            request["request_id"],
             "--db-path",
             str(coordinator_db),
+            "--",
+            request["request_id"],
         ],
     )
     assert result.exit_code == 0, f"approve-join-request failed: {result.output}"
