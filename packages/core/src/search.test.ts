@@ -270,3 +270,261 @@ describe("MemoryStore.search", () => {
 		expect(typeof result.metadata).toBe("object");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Integration tests: MemoryStore.timeline
+// ---------------------------------------------------------------------------
+
+describe("MemoryStore.timeline", () => {
+	let tmpDir: string;
+	let dbPath: string;
+	let store: MemoryStore;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-timeline-test-"));
+		dbPath = join(tmpDir, "test.sqlite");
+		const setupDb = connect(dbPath);
+		initTestSchema(setupDb);
+		setupDb.close();
+		store = new MemoryStore(dbPath);
+	});
+
+	afterEach(() => {
+		store?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	/** Seed memories with controlled timestamps so ordering is deterministic. */
+	function seedTimeline() {
+		const sessionId = insertTestSession(store.db);
+		const baseTime = new Date("2025-01-01T00:00:00Z").getTime();
+		const ids: number[] = [];
+
+		// Insert 7 memories with 1-hour spacing in the same session
+		const titles = [
+			"First setup",
+			"Added models",
+			"Database schema",
+			"API endpoints",
+			"Authentication",
+			"Testing suite",
+			"Deployment config",
+		];
+		for (let i = 0; i < titles.length; i++) {
+			const ts = new Date(baseTime + i * 3_600_000).toISOString();
+			// Insert directly to control timestamps; FTS trigger auto-populates memory_fts
+			const info = store.db
+				.prepare(
+					`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+					 tags_text, active, created_at, updated_at, metadata_json, rev)
+					 VALUES (?, 'feature', ?, 'body text', 0.5, '', 1, ?, ?, '{}', 1)`,
+				)
+				.run(sessionId, titles[i], ts, ts);
+			ids.push(Number(info.lastInsertRowid));
+		}
+		return { sessionId, ids };
+	}
+
+	it("finds anchor by query and returns neighbors", () => {
+		seedTimeline();
+		const results = store.timeline("Database");
+		expect(results.length).toBeGreaterThan(0);
+		// Should find "Database schema" as anchor and include neighbors
+		const titles = results.map((r) => r.title);
+		expect(titles).toContain("Database schema");
+	});
+
+	it("finds anchor by memoryId", () => {
+		const { ids } = seedTimeline();
+		// Use the 4th memory (API endpoints) as anchor
+		const anchorId = ids[3] as number;
+		const results = store.timeline(null, anchorId, 2, 2);
+		expect(results.length).toBeGreaterThan(0);
+		// Should contain the anchor
+		const resultIds = results.map((r) => r.id);
+		expect(resultIds).toContain(anchorId);
+		// With depth 2 before + anchor + depth 2 after = up to 5
+		expect(results.length).toBeLessThanOrEqual(5);
+	});
+
+	it("returns empty for no match", () => {
+		seedTimeline();
+		const results = store.timeline("xyznonexistent");
+		expect(results).toEqual([]);
+	});
+
+	it("stays within same session", () => {
+		const { ids } = seedTimeline();
+		// Create a memory in a different session
+		const session2 = insertTestSession(store.db);
+		store.remember(session2, "feature", "Unrelated item", "Different session entirely");
+
+		// Use memoryId to anchor on a known session
+		const anchorId = ids[3] as number;
+		const results = store.timeline(null, anchorId, 3, 3);
+		expect(results.length).toBeGreaterThan(1);
+		// All results should share the same session_id
+		const sessionIds = new Set(results.map((r) => r.session_id));
+		expect(sessionIds.size).toBe(1);
+	});
+
+	it("parses metadata_json on each result", () => {
+		seedTimeline();
+		const results = store.timeline("Database");
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			// metadata_json should be parsed into an object, not a raw string
+			expect(typeof r.metadata_json).toBe("object");
+		}
+	});
+
+	it("returns empty when memoryId does not exist", () => {
+		seedTimeline();
+		const results = store.timeline(null, 99999);
+		expect(results).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Integration tests: MemoryStore.explain
+// ---------------------------------------------------------------------------
+
+describe("MemoryStore.explain", () => {
+	let tmpDir: string;
+	let dbPath: string;
+	let store: MemoryStore;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-explain-test-"));
+		dbPath = join(tmpDir, "test.sqlite");
+		const setupDb = connect(dbPath);
+		initTestSchema(setupDb);
+		setupDb.close();
+		store = new MemoryStore(dbPath);
+	});
+
+	afterEach(() => {
+		store?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function seedMemories() {
+		const sessionId = insertTestSession(store.db);
+		const id1 = store.remember(
+			sessionId,
+			"discovery",
+			"Database migration guide",
+			"How to run migrations",
+		);
+		const id2 = store.remember(
+			sessionId,
+			"feature",
+			"Authentication system",
+			"JWT tokens and refresh flow",
+		);
+		const id3 = store.remember(
+			sessionId,
+			"bugfix",
+			"Database connection fix",
+			"Fixed connection leak",
+		);
+		return { sessionId, id1, id2, id3 };
+	}
+
+	it("returns scored items for query", () => {
+		seedMemories();
+		const result = store.explain("database") as Record<string, unknown>;
+		const items = result.items as Record<string, unknown>[];
+		expect(items.length).toBeGreaterThan(0);
+		expect(result.errors).toEqual([]);
+
+		// Each item should have the explain payload shape
+		for (const item of items) {
+			expect(item).toHaveProperty("id");
+			expect(item).toHaveProperty("kind");
+			expect(item).toHaveProperty("title");
+			expect(item).toHaveProperty("retrieval");
+			expect(item).toHaveProperty("score");
+
+			const retrieval = item.retrieval as Record<string, unknown>;
+			expect(retrieval.source).toBe("query");
+			expect(typeof retrieval.rank).toBe("number");
+
+			const score = item.score as Record<string, unknown>;
+			expect(typeof score.total).toBe("number");
+			expect(score.total as number).toBeGreaterThanOrEqual(0);
+
+			const components = score.components as Record<string, unknown>;
+			expect(typeof components.base).toBe("number");
+			expect(typeof components.recency).toBe("number");
+			expect(typeof components.kind_bonus).toBe("number");
+		}
+	});
+
+	it("returns items by id lookup", () => {
+		const { id1, id2 } = seedMemories();
+		const result = store.explain(null, [id1, id2]) as Record<string, unknown>;
+		const items = result.items as Record<string, unknown>[];
+		expect(items).toHaveLength(2);
+
+		for (const item of items) {
+			const retrieval = item.retrieval as Record<string, unknown>;
+			expect(retrieval.source).toBe("id_lookup");
+			expect(retrieval.rank).toBeNull();
+
+			// id_lookup items have null base score and null total
+			const score = item.score as Record<string, unknown>;
+			expect(score.total).toBeNull();
+			expect((score.components as Record<string, unknown>).base).toBeNull();
+		}
+	});
+
+	it("merges query and id results", () => {
+		const { id1, id2 } = seedMemories();
+		// id1 is "Database migration guide" — should match the query
+		// id2 is "Authentication system" — should only appear via id_lookup
+		const result = store.explain("database", [id1, id2]) as Record<string, unknown>;
+		const items = result.items as Record<string, unknown>[];
+		expect(items.length).toBeGreaterThanOrEqual(2);
+
+		const sources = items.map((i) => (i.retrieval as Record<string, unknown>).source);
+		// id1 should appear as query+id_lookup (found by both query and id)
+		expect(sources).toContain("query+id_lookup");
+		// id2 should appear as id_lookup (not matched by "database" query)
+		expect(sources).toContain("id_lookup");
+
+		// No duplicates
+		const ids = items.map((i) => i.id);
+		expect(new Set(ids).size).toBe(ids.length);
+	});
+
+	it("reports missing ids", () => {
+		seedMemories();
+		const result = store.explain(null, [99999, 88888]) as Record<string, unknown>;
+		const missingIds = result.missing_ids as number[];
+		expect(missingIds).toContain(99999);
+		expect(missingIds).toContain(88888);
+
+		const errors = result.errors as Record<string, unknown>[];
+		const notFoundError = errors.find((e) => e.code === "NOT_FOUND");
+		expect(notFoundError).toBeDefined();
+	});
+
+	it("returns error when neither query nor ids provided", () => {
+		seedMemories();
+		const result = store.explain() as Record<string, unknown>;
+		expect(result.items).toEqual([]);
+		const errors = result.errors as Record<string, unknown>[];
+		expect(errors.length).toBeGreaterThan(0);
+		expect(errors[0]).toHaveProperty("code", "INVALID_ARGUMENT");
+	});
+
+	it("returns expected metadata shape", () => {
+		seedMemories();
+		const result = store.explain("database") as Record<string, unknown>;
+		const metadata = result.metadata as Record<string, unknown>;
+		expect(metadata).toHaveProperty("query", "database");
+		expect(metadata).toHaveProperty("requested_ids_count", 0);
+		expect(typeof metadata.returned_items_count).toBe("number");
+	});
+});

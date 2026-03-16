@@ -8,8 +8,8 @@
  * Methods ported: get, remember, forget, recent, recentByKinds, stats,
  * updateMemoryVisibility, close.
  *
- * NOT ported yet: search, timeline, explain, pack, usage tracking, vectors,
- * provenance resolution, memory_owned_by_self check.
+ * NOT ported yet: pack, usage tracking, vectors, provenance resolution,
+ * memory_owned_by_self check.
  */
 
 import { randomUUID } from "node:crypto";
@@ -25,7 +25,7 @@ import {
 	toJson,
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
-import { search as searchFn } from "./search.js";
+import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
 import type { MemoryFilters, MemoryItem, MemoryResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -384,6 +384,45 @@ export class MemoryStore {
 	 */
 	search(query: string, limit = 10, filters?: MemoryFilters): MemoryResult[] {
 		return searchFn(this, query, limit, filters);
+	}
+
+	// -----------------------------------------------------------------------
+	// timeline
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Return a chronological window of memories around an anchor.
+	 *
+	 * Finds an anchor by memoryId or query, then fetches neighbors
+	 * in the same session. Delegates to search.ts.
+	 */
+	timeline(
+		query?: string | null,
+		memoryId?: number | null,
+		depthBefore = 3,
+		depthAfter = 3,
+		filters?: MemoryFilters | null,
+	): Record<string, unknown>[] {
+		return timelineFn(this, query, memoryId, depthBefore, depthAfter, filters);
+	}
+
+	// -----------------------------------------------------------------------
+	// explain
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Explain search results with scoring breakdown.
+	 *
+	 * Returns detailed scoring components for each result, merging
+	 * query-based and ID-based lookups. Delegates to search.ts.
+	 */
+	explain(
+		query?: string | null,
+		ids?: unknown[] | null,
+		limit = 10,
+		filters?: MemoryFilters | null,
+	): Record<string, unknown> {
+		return explainFn(this, query, ids, limit, filters);
 	}
 
 	// -----------------------------------------------------------------------
