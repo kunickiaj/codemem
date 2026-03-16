@@ -39,6 +39,8 @@ export {
 	resolveOAuthProvider,
 	runAuthCommand,
 } from "./observer-auth.js";
+export type { ObserverConfig, ObserverResponse, ObserverStatus } from "./observer-client.js";
+export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
 export {
 	getOpenCodeProviderConfig,
 	getProviderApiKey,
