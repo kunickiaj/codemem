@@ -21,8 +21,8 @@ importers:
   .:
     dependencies:
       '@opencode-ai/plugin':
-        specifier: 1.2.25
-        version: 1.2.25
+        specifier: 1.2.27
+        version: 1.2.27
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.0.6
@@ -339,11 +339,11 @@ packages:
   '@napi-rs/wasm-runtime@1.1.1':
     resolution: {integrity: sha512-p64ah1M1ld8xjWv3qbvFwHiFVWrq1yFvV4f7w+mzaqiR4IlSgkqhcRdHwsGgomwzBH51sRY4NEowLxnaBjcW/A==}
 
-  '@opencode-ai/plugin@1.2.25':
-    resolution: {integrity: sha512-IQnjkcN7cvI/zoiDNx1d2qnGzn5BR/Bu95Kq05/vdd8oX4ARgYkqfaJgKkNSpjUVoNBKHTd8m9q1TtzuKlyGUg==}
+  '@opencode-ai/plugin@1.2.27':
+    resolution: {integrity: sha512-h+8Bw9v9nghMg7T+SUCTzxlIhOrsTqXW7U0HVLGQST5DjbN7uyCUM51roZWZ8LRjGxzbzFhvPnY1bj8i+ioZyw==}
 
-  '@opencode-ai/sdk@1.2.25':
-    resolution: {integrity: sha512-ikuGWob48OM7LTgfXFqGOZKVOqh50FEjvtIBhXGhGowJhifmjZ+xuq/ypP8nPjTwUX73pbu1C3X9ZBWVkCN9mA==}
+  '@opencode-ai/sdk@1.2.27':
+    resolution: {integrity: sha512-Wk0o/I+Fo+wE3zgvlJDs8Fb67KlKqX0PrV8dK5adSDkANq6r4Z25zXJg2iOir+a8ntg3rAcpel1OY4FV/TwRUA==}
 
   '@oxc-project/runtime@0.115.0':
     resolution: {integrity: sha512-Rg8Wlt5dCbXhQnsXPrkOjL1DTSvXLgb2R/KYfnf1/K+R0k6UMLEmbQXPM+kwrWqSmWA2t0B1EtHy2/3zikQpvQ==}
@@ -1260,12 +1260,12 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
-  '@opencode-ai/plugin@1.2.25':
+  '@opencode-ai/plugin@1.2.27':
     dependencies:
-      '@opencode-ai/sdk': 1.2.25
+      '@opencode-ai/sdk': 1.2.27
       zod: 4.1.8
 
-  '@opencode-ai/sdk@1.2.25': {}
+  '@opencode-ai/sdk@1.2.27': {}
 
   '@oxc-project/runtime@0.115.0': {}
 
