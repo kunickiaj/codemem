@@ -118,6 +118,13 @@ export function initTestSchema(db: Database): void {
 			created_at TEXT NOT NULL
 		);
 
+		CREATE TABLE IF NOT EXISTS replication_cursors (
+			peer_device_id TEXT PRIMARY KEY,
+			last_applied_cursor TEXT,
+			last_acked_cursor TEXT,
+			updated_at TEXT NOT NULL
+		);
+
 		-- FTS5 full-text index on memory_items
 		CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 			title, body_text, tags_text,

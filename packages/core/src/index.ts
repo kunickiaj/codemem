@@ -127,6 +127,8 @@ export {
 	signRequest,
 	verifySignature,
 } from "./sync-auth.js";
+export type { RequestJsonOptions } from "./sync-http-client.js";
+export { buildBaseUrl, requestJson } from "./sync-http-client.js";
 export type { EnsureDeviceIdentityOptions } from "./sync-identity.js";
 export {
 	ensureDeviceIdentity,
@@ -139,6 +141,12 @@ export {
 	storePrivateKeyKeychain,
 	validateExistingKeypair,
 } from "./sync-identity.js";
+export {
+	chunkOpsBySize,
+	extractReplicationOps,
+	getReplicationCursor,
+	setReplicationCursor,
+} from "./sync-replication.js";
 
 export type {
 	Actor,
