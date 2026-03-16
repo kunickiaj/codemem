@@ -4,11 +4,12 @@ import json
 import os
 from typing import Any
 
+from . import __version__
 from . import observer_auth as _observer_auth
 
 ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20"
-ANTHROPIC_OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)"
+ANTHROPIC_OAUTH_USER_AGENT = f"codemem/{__version__}"
 
 _ANTHROPIC_MODEL_ALIASES = {
     "claude-4.5-haiku": "claude-haiku-4-5",

@@ -71,16 +71,16 @@ def _make_openai_backend(behavior: str, attempts: list[str]) -> SimpleNamespace:
 
 
 def _make_anthropic_backend(behavior: str, attempts: list[str]) -> SimpleNamespace:
-    class AnthropicCompletions:
+    class AnthropicMessages:
         def create(self, **_kwargs):
             attempts.append("attempt")
             if behavior == "raises":
                 raise RuntimeError("anthropic failed")
             if behavior == "malformed":
-                return SimpleNamespace()
-            return SimpleNamespace(completion="hello from adapter")
+                return SimpleNamespace(content=[])
+            return SimpleNamespace(content=[SimpleNamespace(text="hello from adapter")])
 
-    return SimpleNamespace(completions=AnthropicCompletions())
+    return SimpleNamespace(messages=AnthropicMessages())
 
 
 def _run_scenario(provider: str, scenario: Scenario) -> dict[str, object]:
@@ -102,7 +102,7 @@ def _run_scenario(provider: str, scenario: Scenario) -> dict[str, object]:
 
         class AnthropicStub:
             def __init__(self, **_kwargs: object) -> None:
-                self.completions = _make_anthropic_backend(scenario.behavior, attempts).completions
+                self.messages = _make_anthropic_backend(scenario.behavior, attempts).messages
 
         module_map = {"anthropic": SimpleNamespace(Anthropic=AnthropicStub)}
         cfg = OpencodeMemConfig(
