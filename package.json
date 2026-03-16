@@ -25,7 +25,7 @@
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.2.25"
+    "@opencode-ai/plugin": "1.2.27"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.6",
