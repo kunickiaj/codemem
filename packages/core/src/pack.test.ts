@@ -144,6 +144,26 @@ describe("buildMemoryPack", () => {
 		expect(pack.context).toBe("my test context");
 	});
 
+	it("with tokenBudget=0 skips budget enforcement (treats as no budget)", () => {
+		store.remember(sessionId, "discovery", "Found database issue", "The DB was slow", 0.8);
+		store.remember(sessionId, "bugfix", "Fixed database query", "Optimized the join", 0.9);
+
+		// tokenBudget=0 — the code checks `tokenBudget > 0`, so 0 means no budgeting
+		const pack = buildMemoryPack(store, "database", 10, 0);
+		const metrics = pack.metrics as Record<string, unknown>;
+
+		// Should still return a valid structure
+		expect(metrics).toHaveProperty("total_items");
+		expect(metrics).toHaveProperty("pack_tokens");
+		expect(metrics).toHaveProperty("fallback_used");
+		expect(typeof metrics.total_items).toBe("number");
+		expect(typeof metrics.pack_tokens).toBe("number");
+
+		// Items should be present (budget not enforced since 0 > 0 is false)
+		expect((pack.items as unknown[]).length).toBeGreaterThanOrEqual(1);
+		expect(pack.pack_text).toBeTruthy();
+	});
+
 	it("pack items have expected fields", () => {
 		store.remember(sessionId, "bugfix", "Fix crash", "Null pointer fix", 0.9, ["crash", "fix"]);
 
