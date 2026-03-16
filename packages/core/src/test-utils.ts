@@ -165,6 +165,14 @@ export function initTestSchema(db: Database): void {
 			created_at TEXT NOT NULL
 		);
 
+		CREATE TABLE IF NOT EXISTS sync_daemon_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			last_error TEXT,
+			last_traceback TEXT,
+			last_error_at TEXT,
+			last_ok_at TEXT
+		);
+
 		-- FTS5 full-text index on memory_items
 		CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 			title, body_text, tags_text,

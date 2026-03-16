@@ -7,7 +7,6 @@
 
 export const VERSION = "0.0.1";
 
-export { addressDedupeKey, mergeAddresses, normalizeAddress } from "./address-utils.js";
 export * as Api from "./api-types.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
@@ -140,6 +139,31 @@ export {
 	signRequest,
 	verifySignature,
 } from "./sync-auth.js";
+export type { SyncDaemonOptions, SyncTickResult } from "./sync-daemon.js";
+export {
+	runSyncDaemon,
+	setSyncDaemonError,
+	setSyncDaemonOk,
+	syncDaemonTick,
+} from "./sync-daemon.js";
+export type { MdnsEntry } from "./sync-discovery.js";
+export {
+	addressDedupeKey,
+	advertiseMdns,
+	DEFAULT_SERVICE_TYPE,
+	discoverPeersViaMdns,
+	loadPeerAddresses,
+	mdnsAddressesForPeer,
+	mdnsEnabled,
+	mergeAddresses,
+	normalizeAddress,
+	recordPeerSuccess,
+	recordSyncAttempt,
+	selectDialAddresses,
+	setPeerLocalActorClaim,
+	setPeerProjectFilter,
+	updatePeerAddresses,
+} from "./sync-discovery.js";
 export type { RequestJsonOptions } from "./sync-http-client.js";
 export { buildBaseUrl, requestJson } from "./sync-http-client.js";
 export type { EnsureDeviceIdentityOptions } from "./sync-identity.js";

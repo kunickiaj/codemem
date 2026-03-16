@@ -16,9 +16,65 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
-import { mergeAddresses } from "./address-utils.js";
 
 export const DEFAULT_COORDINATOR_DB_PATH = join(homedir(), ".codemem", "coordinator.sqlite");
+
+// ---------------------------------------------------------------------------
+// Address helpers (subset of sync/discovery.py, inlined to avoid circular deps)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize an address using the URL constructor.
+ * Duplicated from sync-discovery.ts to avoid circular deps
+ * (coordinator-store loads before sync-discovery in the stack).
+ * TODO: extract to shared address-utils.ts module.
+ */
+function normalizeAddress(address: string): string {
+	const value = address.trim();
+	if (!value) return "";
+	const withScheme = value.includes("://") ? value : `http://${value}`;
+	try {
+		const url = new URL(withScheme);
+		if (!url.hostname) return "";
+		if (url.port && (Number(url.port) <= 0 || Number(url.port) > 65535)) return "";
+		return url.origin + url.pathname.replace(/\/+$/, "");
+	} catch {
+		return "";
+	}
+}
+
+function addressDedupeKey(address: string): string {
+	if (!address) return "";
+	try {
+		const parsed = new URL(address);
+		const host = parsed.hostname.toLowerCase();
+		if (
+			(parsed.protocol === "http:" || parsed.protocol === "") &&
+			host &&
+			parsed.port &&
+			parsed.pathname === "/"
+		) {
+			return `${host}:${parsed.port}`;
+		}
+	} catch {
+		// Not parseable
+	}
+	return address;
+}
+
+function mergeAddresses(existing: string[], candidates: string[]): string[] {
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const address of [...existing, ...candidates]) {
+		const cleaned = normalizeAddress(address);
+		const key = addressDedupeKey(cleaned);
+		if (!cleaned || seen.has(key)) continue;
+		seen.add(key);
+		normalized.push(cleaned);
+	}
+	return normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
