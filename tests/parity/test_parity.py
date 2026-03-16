@@ -338,3 +338,49 @@ class TestUpdateVisibility:
         updated = seed_store.update_memory_visibility(target_id, visibility=inp["visibility"])
         assert updated.get("visibility") == expected["after_visibility"]
         assert updated.get("workspace_kind") == expected["after_workspace_kind"]
+
+
+# ---------------------------------------------------------------------------
+# Pack tests
+# ---------------------------------------------------------------------------
+
+
+class TestPack:
+    def test_pack_memory_layer(self, seed_store: MemoryStore) -> None:
+        fixture = _load_fixture("pack_memory_layer")
+        inp = fixture["input"]
+        pack = seed_store.build_memory_pack(inp["context"], limit=inp["limit"], log_usage=False)
+
+        expected = fixture["expected_output"]
+        assert pack["context"] == expected["context"]
+        assert expected["has_items"] is True
+        assert len(pack.get("items", [])) >= expected["item_count_gte"]
+        assert bool(pack.get("pack_text")) == expected["has_pack_text"]
+        assert bool(pack.get("metrics")) == expected["has_metrics"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-filter tests
+# ---------------------------------------------------------------------------
+
+
+class TestMultiFilter:
+    def test_search_visibility_kind_filter(self, seed_store: MemoryStore) -> None:
+        fixture = _load_fixture("search_visibility_kind_filter")
+        inp = fixture["input"]
+        results = list(seed_store.search(inp["query"], limit=inp["limit"], filters=inp["filters"]))
+
+        expected = fixture["expected_output"]
+        assert len(results) == expected["count"]
+        if results:
+            assert all(r.kind == "discovery" for r in results)
+
+    def test_recent_kind_change_filter(self, seed_store: MemoryStore) -> None:
+        fixture = _load_fixture("recent_kind_change_filter")
+        inp = fixture["input"]
+        results = seed_store.recent(limit=inp["limit"], filters=inp["filters"])
+
+        expected = fixture["expected_output"]
+        assert len(results) == expected["count"]
+        if results:
+            assert all(r.get("kind") == "change" for r in results)
