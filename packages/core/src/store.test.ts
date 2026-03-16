@@ -138,8 +138,7 @@ describe("MemoryStore", () => {
 			const sessionId = insertTestSession(store.db);
 			const memId = store.remember(sessionId, "discovery", "Title", "Body");
 			const row = store.get(memId);
-			const meta = row?.metadata_json as Record<string, unknown>;
-			expect(meta.clock_device_id).toBe(store.deviceId);
+			expect(row?.metadata_json.clock_device_id).toBe(store.deviceId);
 		});
 
 		it("sets origin_device_id", () => {
@@ -184,8 +183,7 @@ describe("MemoryStore", () => {
 			store.forget(memId);
 
 			const row = store.get(memId);
-			const meta = row?.metadata_json as Record<string, unknown>;
-			expect(meta.clock_device_id).toBe(store.deviceId);
+			expect(row?.metadata_json.clock_device_id).toBe(store.deviceId);
 		});
 
 		it("is a no-op for non-existent memory", () => {
@@ -288,15 +286,13 @@ describe("MemoryStore", () => {
 
 			const result = store.stats();
 			expect(result.database).toBeDefined();
-
-			const dbStats = result.database as Record<string, unknown>;
-			expect(dbStats.path).toBe(dbPath);
-			expect(dbStats.size_bytes).toBeGreaterThan(0);
-			expect(dbStats.sessions).toBe(1);
-			expect(dbStats.memory_items).toBe(1);
-			expect(dbStats.active_memory_items).toBe(1);
-			expect(dbStats.artifacts).toBe(0);
-			expect(dbStats.raw_events).toBe(0);
+			expect(result.database.path).toBe(dbPath);
+			expect(result.database.size_bytes).toBeGreaterThan(0);
+			expect(result.database.sessions).toBe(1);
+			expect(result.database.memory_items).toBe(1);
+			expect(result.database.active_memory_items).toBe(1);
+			expect(result.database.artifacts).toBe(0);
+			expect(result.database.raw_events).toBe(0);
 		});
 
 		it("counts inactive memories in total but not active", () => {
@@ -306,9 +302,8 @@ describe("MemoryStore", () => {
 			store.forget(id2);
 
 			const result = store.stats();
-			const dbStats = result.database as Record<string, unknown>;
-			expect(dbStats.memory_items).toBe(2);
-			expect(dbStats.active_memory_items).toBe(1);
+			expect(result.database.memory_items).toBe(2);
+			expect(result.database.active_memory_items).toBe(1);
 		});
 	});
 
@@ -330,9 +325,8 @@ describe("MemoryStore", () => {
 			const memId = store.remember(sessionId, "discovery", "Title", "Body");
 
 			const updated = store.updateMemoryVisibility(memId, "shared");
-			const meta = updated.metadata_json as Record<string, unknown>;
-			expect(meta.clock_device_id).toBe(store.deviceId);
-			expect(meta.visibility).toBe("shared");
+			expect(updated.metadata_json.clock_device_id).toBe(store.deviceId);
+			expect(updated.metadata_json.visibility).toBe("shared");
 		});
 
 		it("updates visibility to shared", () => {

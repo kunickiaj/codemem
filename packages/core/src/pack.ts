@@ -10,7 +10,7 @@
 
 import type { StoreHandle } from "./search.js";
 import { search } from "./search.js";
-import type { MemoryFilters, MemoryResult } from "./types.js";
+import type { MemoryFilters, MemoryResult, PackItem, PackResponse } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,16 +57,6 @@ function formatSection(header: string, items: MemoryResult[]): string {
 // Pack item shape (what goes into items array)
 // ---------------------------------------------------------------------------
 
-interface PackItem {
-	id: number;
-	kind: string;
-	title: string;
-	body: string;
-	confidence: number;
-	tags: string;
-	metadata: Record<string, unknown>;
-}
-
 function toPackItem(result: MemoryResult): PackItem {
 	return {
 		id: result.id,
@@ -100,7 +90,7 @@ export function buildMemoryPack(
 	limit = 10,
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
-): Record<string, unknown> {
+): PackResponse {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
 	let fallbackUsed = false;
 	let ftsCount = 0;
@@ -114,20 +104,17 @@ export function buildMemoryPack(
 		fallbackUsed = true;
 		const recentRows = store.recent(effectiveLimit, filters ?? null);
 		results = recentRows.map((row) => ({
-			id: row.id as number,
-			kind: row.kind as string,
-			title: row.title as string,
-			body_text: row.body_text as string,
-			confidence: (row.confidence as number) ?? 0,
-			created_at: row.created_at as string,
-			updated_at: row.updated_at as string,
-			tags_text: (row.tags_text as string) ?? "",
+			id: row.id,
+			kind: row.kind,
+			title: row.title,
+			body_text: row.body_text,
+			confidence: row.confidence ?? 0,
+			created_at: row.created_at,
+			updated_at: row.updated_at,
+			tags_text: row.tags_text ?? "",
 			score: 0,
-			session_id: row.session_id as number,
-			metadata:
-				typeof row.metadata_json === "object" && row.metadata_json != null
-					? (row.metadata_json as Record<string, unknown>)
-					: {},
+			session_id: row.session_id,
+			metadata: row.metadata_json,
 		}));
 	}
 
