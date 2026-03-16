@@ -6,3 +6,43 @@
  */
 
 export const VERSION = "0.0.1";
+
+export type { Database } from "./db.js";
+export {
+	assertSchemaReady,
+	connect,
+	DEFAULT_DB_PATH,
+	fromJson,
+	getSchemaVersion,
+	isEmbeddingDisabled,
+	loadSqliteVec,
+	SCHEMA_VERSION,
+	tableExists,
+	toJson,
+} from "./db.js";
+
+export type {
+	Actor,
+	Artifact,
+	MemoryFilters,
+	MemoryItem,
+	MemoryResult,
+	OpenCodeSession,
+	RawEvent,
+	RawEventFlushBatch,
+	RawEventIngestSample,
+	RawEventIngestStats,
+	RawEventSession,
+	ReplicationClock,
+	ReplicationCursor,
+	ReplicationOp,
+	Session,
+	SessionSummary,
+	SyncAttempt,
+	SyncDaemonState,
+	SyncDevice,
+	SyncNonce,
+	SyncPeer,
+	UsageEvent,
+	UserPrompt,
+} from "./types.js";

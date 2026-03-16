@@ -19,6 +19,13 @@ viewer_ui/node_modules/
 viewer_ui/.vite/
 codemem/viewer_static/app.js.map
 
+# Agent skills (project-local installs, regenerate with: npx skills add)
+# Ignores canonical .agents/skills/, per-agent symlink dirs, and lockfile
+.agents/skills/
+.*/skills/
+/skills/
+/skills-lock.json
+
 # TypeScript build artifacts
 packages/*/dist/
 *.tsbuildinfo
