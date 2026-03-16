@@ -25,6 +25,50 @@ export {
 	toJson,
 } from "./db.js";
 export { buildFilterClauses } from "./filters.js";
+// Ingest pipeline
+export {
+	budgetToolEvents,
+	eventToToolEvent,
+	extractAdapterEvent,
+	extractToolEvents,
+	isInternalMemoryTool,
+	LOW_SIGNAL_TOOLS,
+	normalizeToolName,
+	projectAdapterToolEvent,
+} from "./ingest-events.js";
+export { isLowSignalObservation, normalizeObservation } from "./ingest-filters.js";
+export type { IngestOptions } from "./ingest-pipeline.js";
+export { cleanOrphanSessions, ingest, main as ingestMain } from "./ingest-pipeline.js";
+export { buildObserverPrompt } from "./ingest-prompts.js";
+export {
+	isSensitiveFieldName,
+	sanitizePayload,
+	sanitizeToolOutput,
+	stripPrivate,
+	stripPrivateObj,
+} from "./ingest-sanitize.js";
+export {
+	buildTranscript,
+	deriveRequest,
+	extractAssistantMessages,
+	extractAssistantUsage,
+	extractPrompts,
+	firstSentence,
+	isTrivialRequest,
+	normalizeAdapterEvents,
+	normalizeRequestText,
+	TRIVIAL_REQUESTS,
+} from "./ingest-transcript.js";
+export type {
+	IngestPayload,
+	ObserverContext,
+	ParsedObservation,
+	ParsedOutput,
+	ParsedSummary,
+	SessionContext,
+	ToolEvent,
+} from "./ingest-types.js";
+export { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,

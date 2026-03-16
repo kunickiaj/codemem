@@ -148,10 +148,11 @@ export function buildCodexHeaders(
 export function runAuthCommand(command: string[], timeoutMs: number): string | null {
 	const cmd = command[0];
 	if (!cmd) return null;
-	const timeoutS = Math.max(100, timeoutMs);
+	// execFileSync timeout is in milliseconds
+	const effectiveTimeoutMs = Math.max(100, timeoutMs);
 	try {
 		const stdout = execFileSync(cmd, command.slice(1), {
-			timeout: timeoutS,
+			timeout: effectiveTimeoutMs,
 			encoding: "utf-8",
 			stdio: ["ignore", "pipe", "pipe"],
 		});
