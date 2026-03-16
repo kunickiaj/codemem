@@ -543,13 +543,15 @@ class ObserverClient:
                 return None
         try:
             if self.provider == "anthropic":
-                resp = self.client.completions.create(  # type: ignore[union-attr]
+                resp = self.client.messages.create(  # type: ignore[union-attr]
                     model=self.model,
-                    prompt=f"\nHuman: {prompt}\nAssistant:",
-                    temperature=0,
-                    max_tokens_to_sample=self.max_tokens,
+                    system="You are a memory observer.",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=self.max_tokens,
                 )
-                return resp.completion
+                # Concatenate all text content blocks (Anthropic may split across multiple)
+                text_blocks = [b.text for b in resp.content if hasattr(b, "text")]
+                return "".join(text_blocks) if text_blocks else None
             resp = self.client.chat.completions.create(  # type: ignore[union-attr]
                 model=self.model,
                 messages=[
