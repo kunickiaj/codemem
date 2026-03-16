@@ -54,6 +54,6 @@
     "codemem"
   ],
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "@biomejs/biome"]
+    "onlyBuiltDependencies": ["esbuild", "@biomejs/biome", "better-sqlite3"]
   }
 }
