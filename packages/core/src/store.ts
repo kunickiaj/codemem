@@ -25,6 +25,7 @@ import {
 	toJson,
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
+import { buildMemoryPack } from "./pack.js";
 import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
 import type { MemoryFilters, MemoryItem, MemoryResult } from "./types.js";
 
@@ -423,6 +424,25 @@ export class MemoryStore {
 		filters?: MemoryFilters | null,
 	): Record<string, unknown> {
 		return explainFn(this, query, ids, limit, filters);
+	}
+
+	// -----------------------------------------------------------------------
+	// buildMemoryPack
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Build a formatted memory pack from search results.
+	 *
+	 * Categorizes memories into summary/timeline/observations sections,
+	 * with optional token budgeting. Delegates to pack.ts.
+	 */
+	buildMemoryPack(
+		context: string,
+		limit?: number,
+		tokenBudget?: number | null,
+		filters?: MemoryFilters,
+	): Record<string, unknown> {
+		return buildMemoryPack(this, context, limit, tokenBudget ?? null, filters);
 	}
 
 	// -----------------------------------------------------------------------
