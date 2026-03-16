@@ -21,6 +21,13 @@ export {
 	toJson,
 } from "./db.js";
 export { buildFilterClauses } from "./filters.js";
+export {
+	expandQuery,
+	kindBonus,
+	recencyScore,
+	rerankResults,
+	search,
+} from "./search.js";
 
 export { MemoryStore } from "./store.js";
 export type {

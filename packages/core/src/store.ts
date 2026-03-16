@@ -25,7 +25,8 @@ import {
 	toJson,
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
-import type { MemoryFilters, MemoryItem } from "./types.js";
+import { search as searchFn } from "./search.js";
+import type { MemoryFilters, MemoryItem, MemoryResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Memory kind validation (mirrors codemem/memory_kinds.py)
@@ -369,6 +370,20 @@ export class MemoryStore {
 			throw new Error("memory not found after update");
 		}
 		return updated;
+	}
+
+	// -----------------------------------------------------------------------
+	// search
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Full-text search for memories using FTS5.
+	 *
+	 * Delegates to search.ts to keep the search logic decoupled.
+	 * Results are ranked by BM25 score, recency, and kind bonus.
+	 */
+	search(query: string, limit = 10, filters?: MemoryFilters): MemoryResult[] {
+		return searchFn(this, query, limit, filters);
 	}
 
 	// -----------------------------------------------------------------------
