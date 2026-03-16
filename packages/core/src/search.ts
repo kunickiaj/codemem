@@ -22,6 +22,17 @@ import type { MemoryFilters, MemoryResult } from "./types.js";
 export interface StoreHandle {
 	readonly db: import("better-sqlite3").Database;
 	get(memoryId: number): Record<string, unknown> | null;
+	recent(
+		limit?: number,
+		filters?: MemoryFilters | null,
+		offset?: number,
+	): Record<string, unknown>[];
+	recentByKinds(
+		kinds: string[],
+		limit?: number,
+		filters?: MemoryFilters | null,
+		offset?: number,
+	): Record<string, unknown>[];
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +450,16 @@ function rowMatchesFilters(row: Record<string, unknown>, filters: MemoryFilters)
 	}
 	if (filters.exclude_actor_ids?.length) {
 		if (row.actor_id != null && filters.exclude_actor_ids.includes(row.actor_id as string))
+			return false;
+	}
+	if (filters.include_workspace_ids?.length) {
+		if (!filters.include_workspace_ids.includes(row.workspace_id as string)) return false;
+	}
+	if (filters.exclude_workspace_ids?.length) {
+		if (
+			row.workspace_id != null &&
+			filters.exclude_workspace_ids.includes(row.workspace_id as string)
+		)
 			return false;
 	}
 	if (filters.include_workspace_kinds?.length) {
