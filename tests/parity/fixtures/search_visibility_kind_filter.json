@@ -1,0 +1,22 @@
+{
+  "method": "search",
+  "description": "Search with include_visibility=shared AND kind=discovery filters combined",
+  "seed_db": "seed_v1",
+  "input": {
+    "query": "memory",
+    "limit": 10,
+    "filters": {
+      "kind": "discovery",
+      "include_visibility": [
+        "shared"
+      ]
+    }
+  },
+  "expected_output": {
+    "count": 1,
+    "all_discovery": true,
+    "ordered_ids": [
+      1
+    ]
+  }
+}

@@ -753,6 +753,67 @@ def generate_update_visibility_fixture(store: MemoryStore, memory_ids: list[int]
     )
 
 
+def generate_pack_fixture(store: MemoryStore) -> None:
+    """Capture build_memory_pack behavior."""
+    pack = store.build_memory_pack("memory layer coding", limit=5, log_usage=False)
+    _write_fixture(
+        "pack_memory_layer",
+        {
+            "method": "build_memory_pack",
+            "description": "Pack assembly for 'memory layer coding' — exercises search, dedup, section formatting",
+            "seed_db": SEED_VERSION,
+            "input": {"context": "memory layer coding", "limit": 5},
+            "expected_output": {
+                "context": pack["context"],
+                "has_items": len(pack.get("items", [])) > 0,
+                "item_count_gte": 1,
+                "has_pack_text": bool(pack.get("pack_text")),
+                "has_metrics": bool(pack.get("metrics")),
+                "item_ids": [it["id"] for it in pack.get("items", []) if "id" in it],
+            },
+        },
+    )
+
+
+def generate_multi_filter_fixtures(store: MemoryStore) -> None:
+    """Capture search/recent with multiple filters combined."""
+    # visibility + kind filter
+    filters_vk: dict[str, Any] = {"kind": "discovery", "include_visibility": ["shared"]}
+    results_vk = list(store.search("memory", limit=10, filters=filters_vk))
+    _write_fixture(
+        "search_visibility_kind_filter",
+        {
+            "method": "search",
+            "description": "Search with include_visibility=shared AND kind=discovery filters combined",
+            "seed_db": SEED_VERSION,
+            "input": {"query": "memory", "limit": 10, "filters": filters_vk},
+            "expected_output": {
+                "count": len(results_vk),
+                "all_discovery": all(r.kind == "discovery" for r in results_vk),
+                "ordered_ids": [r.id for r in results_vk],
+            },
+        },
+    )
+
+    # recent with kind filter
+    filters_rk: dict[str, Any] = {"kind": "change"}
+    recent_vk = store.recent(limit=10, filters=filters_rk)
+    _write_fixture(
+        "recent_kind_change_filter",
+        {
+            "method": "recent",
+            "description": "Recent with kind=change filter",
+            "seed_db": SEED_VERSION,
+            "input": {"limit": 10, "filters": filters_rk},
+            "expected_output": {
+                "count": len(recent_vk),
+                "all_change": all(r.get("kind") == "change" for r in recent_vk),
+                "ordered_ids": [r["id"] for r in recent_vk],
+            },
+        },
+    )
+
+
 def main() -> None:
     import tempfile
 
@@ -774,6 +835,8 @@ def main() -> None:
         generate_recent_by_kinds_fixture(store)
         generate_stats_fixture(store)
         generate_update_visibility_fixture(store, memory_ids)
+        generate_pack_fixture(store)
+        generate_multi_filter_fixtures(store)
 
         store.close()
 
