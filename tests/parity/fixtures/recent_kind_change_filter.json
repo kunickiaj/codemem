@@ -1,0 +1,19 @@
+{
+  "method": "recent",
+  "description": "Recent with kind=change filter",
+  "seed_db": "seed_v1",
+  "input": {
+    "limit": 10,
+    "filters": {
+      "kind": "change"
+    }
+  },
+  "expected_output": {
+    "count": 2,
+    "all_change": true,
+    "ordered_ids": [
+      9,
+      2
+    ]
+  }
+}

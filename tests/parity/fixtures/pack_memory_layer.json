@@ -1,0 +1,23 @@
+{
+  "method": "build_memory_pack",
+  "description": "Pack assembly for 'memory layer coding' — exercises search, dedup, section formatting",
+  "seed_db": "seed_v1",
+  "input": {
+    "context": "memory layer coding",
+    "limit": 5
+  },
+  "expected_output": {
+    "context": "memory layer coding",
+    "has_items": true,
+    "item_count_gte": 1,
+    "has_pack_text": true,
+    "has_metrics": true,
+    "item_ids": [
+      13,
+      1,
+      4,
+      8,
+      10
+    ]
+  }
+}
