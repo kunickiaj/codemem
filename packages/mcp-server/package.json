@@ -9,15 +9,21 @@
 			"types": "./dist/index.d.ts"
 		}
 	},
+	"bin": {
+		"codemem-mcp-ts": "./dist/index.js"
+	},
 	"scripts": {
 		"clean": "rm -rf dist",
-		"build": "pnpm exec vite build",
+		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist",
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
-		"@codemem/core": "workspace:*"
+		"@codemem/core": "workspace:*",
+		"@modelcontextprotocol/sdk": "^1.27.1",
+		"zod": "^4.3.6"
 	},
 	"devDependencies": {
+		"@types/node": "^25.5.0",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
