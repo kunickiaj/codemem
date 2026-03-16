@@ -105,6 +105,29 @@ export function initTestSchema(db: Database): void {
 			UNIQUE(source, stream_id, event_id)
 		);
 
+		-- FTS5 full-text index on memory_items
+		CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+			title, body_text, tags_text,
+			content='memory_items', content_rowid='id'
+		);
+
+		CREATE TRIGGER IF NOT EXISTS memory_items_ai AFTER INSERT ON memory_items BEGIN
+			INSERT INTO memory_fts(rowid, title, body_text, tags_text)
+			VALUES (new.id, new.title, new.body_text, new.tags_text);
+		END;
+
+		CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items BEGIN
+			INSERT INTO memory_fts(memory_fts, rowid, title, body_text, tags_text)
+			VALUES('delete', old.id, old.title, old.body_text, old.tags_text);
+			INSERT INTO memory_fts(rowid, title, body_text, tags_text)
+			VALUES (new.id, new.title, new.body_text, new.tags_text);
+		END;
+
+		CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items BEGIN
+			INSERT INTO memory_fts(memory_fts, rowid, title, body_text, tags_text)
+			VALUES('delete', old.id, old.title, old.body_text, old.tags_text);
+		END;
+
 		PRAGMA user_version = ${SCHEMA_VERSION};
 	`);
 }
