@@ -139,19 +139,34 @@ describe("assertSchemaReady", () => {
 		expect(() => assertSchemaReady(db)).toThrow(/not initialized/);
 	});
 
-	it("passes for the current schema version", () => {
+	it("passes for the current schema version with required tables", () => {
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
+		// Create the required tables
+		db.exec("CREATE TABLE memory_items (id INTEGER PRIMARY KEY)");
+		db.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY)");
+		db.exec("CREATE TABLE artifacts (id INTEGER PRIMARY KEY)");
+		db.exec("CREATE TABLE raw_events (id INTEGER PRIMARY KEY)");
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
 	it("throws for a stale schema version", () => {
 		db.pragma("user_version = 3");
-		expect(() => assertSchemaReady(db)).toThrow(/older than expected/);
+		expect(() => assertSchemaReady(db)).toThrow(/older than minimum compatible/);
 	});
 
-	it("throws for a schema version newer than supported", () => {
+	it("warns but continues for a newer schema version", () => {
 		db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
-		expect(() => assertSchemaReady(db)).toThrow(/newer than this TS runtime/);
+		// Create required tables — newer version should warn, not throw
+		db.exec("CREATE TABLE memory_items (id INTEGER PRIMARY KEY)");
+		db.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY)");
+		db.exec("CREATE TABLE artifacts (id INTEGER PRIMARY KEY)");
+		db.exec("CREATE TABLE raw_events (id INTEGER PRIMARY KEY)");
+		expect(() => assertSchemaReady(db)).not.toThrow();
+	});
+
+	it("throws when required tables are missing", () => {
+		db.pragma(`user_version = ${SCHEMA_VERSION}`);
+		expect(() => assertSchemaReady(db)).toThrow(/Required tables missing/);
 	});
 });
 

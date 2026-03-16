@@ -65,6 +65,13 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 		params.push(filters.kind);
 	}
 
+	// Project scoping — requires sessions JOIN
+	if (filters.project) {
+		clauses.push("sessions.project = ?");
+		params.push(filters.project);
+		result.joinSessions = true;
+	}
+
 	// Visibility
 	addMultiValueFilter(
 		clauses,

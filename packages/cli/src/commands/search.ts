@@ -1,16 +1,16 @@
-import { MemoryStore } from "@codemem/core";
+import { MemoryStore, resolveDbPath } from "@codemem/core";
 import chalk from "chalk";
 import { Command } from "commander";
 
 export const searchCommand = new Command("search")
 	.description("Search memories by query")
 	.argument("<query>", "search query")
-	.option("--db <path>", "database path")
+	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("-n, --limit <n>", "max results", "10")
 	.option("--kind <kind>", "filter by memory kind")
 	.option("--json", "output as JSON")
 	.action((query: string, opts: { db?: string; limit: string; kind?: string; json?: boolean }) => {
-		const store = new MemoryStore(opts.db);
+		const store = new MemoryStore(resolveDbPath(opts.db));
 		try {
 			const limit = Number.parseInt(opts.limit, 10) || 10;
 			const filters = opts.kind ? { kind: opts.kind } : undefined;
