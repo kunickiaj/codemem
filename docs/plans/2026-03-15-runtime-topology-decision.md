@@ -157,8 +157,18 @@ const syncTick = async () => {
   }
 };
 
-setInterval(syncTick, config.syncIntervalMs);
+// Use setTimeout chain (not setInterval) to prevent overlapping ticks.
+// setInterval would start a new tick before the previous one finishes
+// if a sync pass exceeds the interval (slow peer/network), creating
+// concurrent sync passes against the same store.
+const scheduleNext = () => setTimeout(async () => {
+  await syncTick();
+  scheduleNext();
+}, config.syncIntervalMs);
+scheduleNext();
 ```
+
+**Important:** Do NOT use `setInterval` with async tick functions — it does not await the returned promise, so overlapping ticks can occur. The `setTimeout` chain matches the Python daemon's serialized loop (`while ...: _run_tick_once()`).
 
 The sync daemon also hosts HTTP routes for peer-to-peer sync API (push/pull). These are served by the same HTTP server as the viewer — they're just additional route handlers under `/api/sync/`.
 
