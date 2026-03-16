@@ -84,8 +84,13 @@ export class MemoryStore {
 	constructor(dbPath: string = DEFAULT_DB_PATH) {
 		this.dbPath = dbPath;
 		this.db = connect(dbPath);
-		loadSqliteVec(this.db);
-		assertSchemaReady(this.db);
+		try {
+			loadSqliteVec(this.db);
+			assertSchemaReady(this.db);
+		} catch (err) {
+			this.db.close();
+			throw err;
+		}
 
 		const envDeviceId = process.env.CODEMEM_DEVICE_ID?.trim();
 		this.deviceId = envDeviceId || randomUUID();

@@ -130,7 +130,8 @@ export function fromJson(text: string | null | undefined): Record<string, unknow
 	if (!text) return {};
 	try {
 		return JSON.parse(text) as Record<string, unknown>;
-	} catch {
+	} catch (err) {
+		console.warn("fromJson: failed to parse metadata_json", err);
 		return {};
 	}
 }
