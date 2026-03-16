@@ -20,7 +20,9 @@ export {
 	tableExists,
 	toJson,
 } from "./db.js";
+export { buildFilterClauses } from "./filters.js";
 
+export { MemoryStore } from "./store.js";
 export type {
 	Actor,
 	Artifact,
