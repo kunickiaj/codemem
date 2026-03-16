@@ -7,7 +7,20 @@
 
 export const VERSION = "0.0.1";
 
+export { addressDedupeKey, mergeAddresses, normalizeAddress } from "./address-utils.js";
 export * as Api from "./api-types.js";
+export type { InvitePayload } from "./coordinator-invites.js";
+export {
+	decodeInvitePayload,
+	encodeInvitePayload,
+	extractInvitePayload,
+	inviteLink,
+} from "./coordinator-invites.js";
+export {
+	CoordinatorStore,
+	connectCoordinator,
+	DEFAULT_COORDINATOR_DB_PATH,
+} from "./coordinator-store.js";
 export type { Database } from "./db.js";
 export {
 	assertSchemaReady,
