@@ -154,6 +154,17 @@ export {
 	storePrivateKeyKeychain,
 	validateExistingKeypair,
 } from "./sync-identity.js";
+export type { SyncPassOptions, SyncResult } from "./sync-pass.js";
+export {
+	consecutiveConnectivityFailures,
+	cursorAdvances,
+	isConnectivityError,
+	peerBackoffSeconds,
+	runSyncPass,
+	shouldSkipOfflinePeer,
+	syncOnce,
+	syncPassPreflight,
+} from "./sync-pass.js";
 export {
 	chunkOpsBySize,
 	extractReplicationOps,
