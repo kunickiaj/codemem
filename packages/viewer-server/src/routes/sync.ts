@@ -61,7 +61,9 @@ function mapPeerRow(row: Record<string, unknown>, showDiag: boolean): Record<str
 function isRecentIso(value: unknown, windowS = SYNC_STALE_AFTER_SECONDS): boolean {
 	const raw = String(value ?? "").trim();
 	if (!raw) return false;
-	const ts = new Date(raw.replace("Z", "+00:00"));
+	const normalized = raw.replace("Z", "+00:00");
+	const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+	const ts = new Date(hasOffset ? normalized : `${normalized}+00:00`);
 	if (Number.isNaN(ts.getTime())) return false;
 	const ageS = (Date.now() - ts.getTime()) / 1000;
 	return ageS >= 0 && ageS <= windowS;
