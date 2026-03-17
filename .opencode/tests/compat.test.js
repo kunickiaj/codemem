@@ -64,8 +64,8 @@ describe("resolveUpgradeGuidance", () => {
       runner: "node",
       runnerFrom: "",
     });
-    expect(guidance.mode).toBe("generic");
-    expect(guidance.action).toContain("uv tool install --upgrade codemem");
+    expect(guidance.mode).toBe("node-dev");
+    expect(guidance.action).toContain("pnpm build");
   });
 });
 

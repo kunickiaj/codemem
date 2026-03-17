@@ -5,7 +5,7 @@
  */
 
 import type { MemoryStore } from "@codemem/core";
-import { fromJson, parsePositiveMemoryId, parseStrictInteger } from "@codemem/core";
+import { fromJson, parseStrictInteger } from "@codemem/core";
 import { Hono } from "hono";
 import { queryInt } from "../helpers.js";
 
@@ -278,8 +278,10 @@ export function memoryRoutes(getStore: StoreFactory) {
 	app.post("/api/memories/visibility", async (c) => {
 		const store = getStore();
 		const body = await c.req.json<Record<string, unknown>>();
-		const memoryId = parsePositiveMemoryId(body.memory_id);
-		if (memoryId == null) {
+		const memoryId = parseStrictInteger(
+			typeof body.memory_id === "string" ? body.memory_id : String(body.memory_id ?? ""),
+		);
+		if (memoryId == null || memoryId <= 0) {
 			return c.json({ error: "memory_id must be int" }, 400);
 		}
 		const visibility = String(body.visibility ?? "").trim();

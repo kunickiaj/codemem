@@ -136,11 +136,14 @@ export class MemoryStore {
 		// Resolve actor identity — matches Python load_config() precedence:
 		// config file, then env override, then local fallbacks.
 		const config = readCodememConfigFile();
-		const configActorId = process.env.CODEMEM_ACTOR_ID?.trim() || cleanStr(config.actor_id) || null;
+		const configActorId = Object.hasOwn(process.env, "CODEMEM_ACTOR_ID")
+			? cleanStr(process.env.CODEMEM_ACTOR_ID)
+			: (cleanStr(config.actor_id) ?? null);
 		this.actorId = configActorId || `local:${this.deviceId}`;
 
-		const configDisplayName =
-			process.env.CODEMEM_ACTOR_DISPLAY_NAME?.trim() || cleanStr(config.actor_display_name) || null;
+		const configDisplayName = Object.hasOwn(process.env, "CODEMEM_ACTOR_DISPLAY_NAME")
+			? cleanStr(process.env.CODEMEM_ACTOR_DISPLAY_NAME)
+			: (cleanStr(config.actor_display_name) ?? null);
 		this.actorDisplayName =
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 	}
@@ -317,11 +320,15 @@ export class MemoryStore {
 	 */
 	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean {
 		const rec = item as Record<string, unknown>;
-		const itemActorId = cleanStr(rec.actor_id);
-		if (itemActorId === this.actorId) return true;
+		// Check top-level columns first (MemoryItem / DB row),
+		// then metadata dict (MemoryResult from search populates provenance there).
+		const meta = (rec.metadata ?? {}) as Record<string, unknown>;
 
-		const itemOriginDeviceId = cleanStr(rec.origin_device_id);
-		if (itemOriginDeviceId === this.deviceId) return true;
+		const actorId = cleanStr(rec.actor_id) ?? cleanStr(meta.actor_id);
+		if (actorId === this.actorId) return true;
+
+		const deviceId = cleanStr(rec.origin_device_id) ?? cleanStr(meta.origin_device_id);
+		if (deviceId === this.deviceId) return true;
 
 		return false;
 	}
