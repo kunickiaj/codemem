@@ -17,6 +17,7 @@ import { statSync } from "node:fs";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
+	backupOnFirstAccess,
 	connect,
 	DEFAULT_DB_PATH,
 	fromJson,
@@ -101,6 +102,7 @@ export class MemoryStore {
 
 	constructor(dbPath: string = DEFAULT_DB_PATH) {
 		this.dbPath = dbPath;
+		backupOnFirstAccess(dbPath);
 		this.db = connect(dbPath);
 		try {
 			loadSqliteVec(this.db);
