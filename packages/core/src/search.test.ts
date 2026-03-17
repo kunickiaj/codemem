@@ -651,6 +651,26 @@ describe("MemoryStore.explain", () => {
 		expect(invalidIds).toContain("3.14");
 	});
 
+	it("rejects non-digit strings, scientific notation, and unsafe ints in ids", () => {
+		const { id1 } = seedMemories();
+		const result = store.explain(null, [
+			"1e2",
+			"1.0",
+			" 7 ",
+			`${Number.MAX_SAFE_INTEGER + 1}`,
+			id1,
+		]);
+		expect(result.items).toHaveLength(1);
+		expect(result.items[0]?.id).toBe(id1);
+		const invalidArgError = result.errors.find((e) => e.code === "INVALID_ARGUMENT");
+		expect(invalidArgError).toBeDefined();
+		const invalidIds = invalidArgError?.ids as (string | number)[];
+		expect(invalidIds).toContain("1e2");
+		expect(invalidIds).toContain("1.0");
+		expect(invalidIds).toContain(" 7 ");
+		expect(invalidIds).toContain(`${Number.MAX_SAFE_INTEGER + 1}`);
+	});
+
 	it("excludes id-lookup memories that fail workspace_id filter (rowMatchesFilters)", () => {
 		const sessionId = insertTestSession(store.db);
 		// Insert a memory with a specific workspace_id
