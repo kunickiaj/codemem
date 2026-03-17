@@ -100,6 +100,13 @@ export type {
 } from "./ingest-types.js";
 export { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
 export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
+export type { RawEventStatusItem, RawEventStatusResult } from "./maintenance.js";
+export {
+	getRawEventStatus,
+	initDatabase,
+	retryRawEventFailures,
+	vacuumDatabase,
+} from "./maintenance.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,

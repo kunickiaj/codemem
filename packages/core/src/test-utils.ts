@@ -152,16 +152,19 @@ export function initTestSchema(db: Database): void {
 		);
 
 		CREATE TABLE IF NOT EXISTS raw_event_flush_batches (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			source TEXT NOT NULL,
-			stream_id TEXT NOT NULL,
-			opencode_session_id TEXT,
+			id INTEGER PRIMARY KEY,
+			source TEXT NOT NULL DEFAULT 'opencode',
+			stream_id TEXT NOT NULL DEFAULT '',
+			opencode_session_id TEXT NOT NULL,
 			start_event_seq INTEGER NOT NULL,
 			end_event_seq INTEGER NOT NULL,
-			extractor_version TEXT,
-			status TEXT NOT NULL DEFAULT 'pending',
+			extractor_version TEXT NOT NULL,
+			status TEXT NOT NULL,
 			error_message TEXT,
-			error_category TEXT,
+			error_type TEXT,
+			observer_provider TEXT,
+			observer_model TEXT,
+			observer_runtime TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)
