@@ -405,6 +405,18 @@ const detectRunner = ({ cwd, envRunner }) => {
   return "uvx";
 };
 
+/**
+ * Check if the TS CLI is available at the given path.
+ * Used by the "node" runner to verify the built CLI exists.
+ */
+const tsCliAvailable = (cliPath) => {
+  try {
+    return require("fs").existsSync(cliPath);
+  } catch {
+    return false;
+  }
+};
+
 const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
   if (runner === "uvx") {
     if (runnerFromExplicit) {
@@ -414,6 +426,18 @@ const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
   }
   if (runner === "uv") {
     return ["run", "--directory", runnerFrom, "codemem"];
+  }
+  if (runner === "node") {
+    // TS CLI — runnerFrom points to the built CLI entry or repo root.
+    // Default: packages/cli/dist/index.js relative to repo root.
+    const cliPath = runnerFromExplicit
+      ? runnerFrom
+      : require("path").join(runnerFrom, "packages/cli/dist/index.js");
+    return [cliPath];
+  }
+  if (runner === "npx") {
+    const pkg = runnerFromExplicit ? runnerFrom : "@codemem/cli";
+    return ["-y", pkg, "codemem"];
   }
   return [];
 };
@@ -458,7 +482,7 @@ export const OpencodeMemPlugin = async ({
   }
 
   // Determine runner mode:
-  // - If CODEMEM_RUNNER is set, use that
+  // - If CODEMEM_RUNNER is set, use that ("uvx", "uv", "node", "npx")
   // - If we're in a directory with pyproject.toml containing codemem, use "uv" (dev mode)
   // - Otherwise, use "uvx" with a package source pinned to plugin version
   const runner = detectRunner({
