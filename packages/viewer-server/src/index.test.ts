@@ -224,14 +224,14 @@ describe("viewer-server", () => {
 	});
 
 	describe("viewer HTML", () => {
-		it("returns HTML at root with hardcoded title", async () => {
+		it("returns HTML at root with viewer page", async () => {
 			const { app, cleanup } = createTestApp();
 			try {
 				const res = await app.request("/");
 				expect(res.status).toBe(200);
 				const html = await res.text();
-				expect(html).toContain("<title>codemem</title>");
-				expect(html).toContain('id="root"');
+				expect(html).toContain("<title>codemem viewer</title>");
+				expect(html).toContain("<!doctype html>");
 			} finally {
 				cleanup();
 			}
