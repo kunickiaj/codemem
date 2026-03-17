@@ -105,6 +105,55 @@ export function initTestSchema(db: Database): void {
 			UNIQUE(source, stream_id, event_id)
 		);
 
+		CREATE TABLE IF NOT EXISTS raw_event_sessions (
+			source TEXT NOT NULL DEFAULT 'opencode',
+			stream_id TEXT NOT NULL DEFAULT '',
+			opencode_session_id TEXT,
+			cwd TEXT,
+			project TEXT,
+			started_at TEXT,
+			last_seen_ts_wall_ms INTEGER,
+			last_received_event_seq INTEGER NOT NULL DEFAULT -1,
+			last_flushed_event_seq INTEGER NOT NULL DEFAULT -1,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			PRIMARY KEY (source, stream_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS raw_event_flush_batches (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			source TEXT NOT NULL,
+			stream_id TEXT NOT NULL,
+			opencode_session_id TEXT,
+			start_event_seq INTEGER NOT NULL,
+			end_event_seq INTEGER NOT NULL,
+			extractor_version TEXT,
+			status TEXT NOT NULL DEFAULT 'pending',
+			error_message TEXT,
+			error_category TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)
+		);
+
+		CREATE TABLE IF NOT EXISTS raw_event_ingest_samples (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			source TEXT NOT NULL,
+			stream_id TEXT NOT NULL,
+			event_type TEXT,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS raw_event_ingest_totals (
+			source TEXT NOT NULL,
+			stream_id TEXT NOT NULL,
+			total_events INTEGER NOT NULL DEFAULT 0,
+			total_bytes INTEGER NOT NULL DEFAULT 0,
+			last_event_type TEXT,
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			PRIMARY KEY (source, stream_id)
+		);
+
 		CREATE TABLE IF NOT EXISTS sync_device (
 			device_id TEXT PRIMARY KEY,
 			public_key TEXT NOT NULL,

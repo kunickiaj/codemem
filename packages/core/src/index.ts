@@ -23,6 +23,7 @@ export {
 export type { Database } from "./db.js";
 export {
 	assertSchemaReady,
+	backupOnFirstAccess,
 	connect,
 	DEFAULT_DB_PATH,
 	fromJson,

@@ -6,7 +6,14 @@
  * The TS runtime validates the schema version but does NOT run migrations.
  */
 
-import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
@@ -28,7 +35,17 @@ export const SCHEMA_VERSION = 6;
 export const MIN_COMPATIBLE_SCHEMA = 6;
 
 /** Required tables the TS runtime needs to function. */
-const REQUIRED_TABLES = ["memory_items", "sessions", "artifacts", "raw_events"] as const;
+const REQUIRED_TABLES = [
+	"memory_items",
+	"sessions",
+	"artifacts",
+	"raw_events",
+	"raw_event_sessions",
+	"usage_events",
+] as const;
+
+/** Marker file written after the first successful TS access to a DB. */
+const TS_MARKER = ".codemem-ts-accessed";
 
 /** Default database path — matches Python's DEFAULT_DB_PATH. */
 export const DEFAULT_DB_PATH = join(homedir(), ".codemem", "mem.sqlite");
@@ -167,6 +184,43 @@ export function getSchemaVersion(db: DatabaseType): number {
 }
 
 /**
+ * Create a timestamped backup of the database on first TS access.
+ *
+ * The backup file is named `mem.sqlite.pre-ts-YYYYMMDDTHHMMSS.bak` and placed
+ * next to the original. A marker file prevents repeated backups. This ensures
+ * users can recover if the TS runtime introduces bugs that corrupt the DB
+ * during the migration period.
+ */
+export function backupOnFirstAccess(dbPath: string): void {
+	const markerPath = join(dirname(dbPath), TS_MARKER);
+	if (existsSync(markerPath)) return;
+	if (!existsSync(dbPath)) return; // Fresh DB, nothing to back up
+
+	const ts = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
+	const backupPath = `${dbPath}.pre-ts-${ts}.bak`;
+	try {
+		copyFileSync(dbPath, backupPath);
+		// Also back up WAL/SHM if present (they contain uncommitted data)
+		const walPath = `${dbPath}-wal`;
+		const shmPath = `${dbPath}-shm`;
+		if (existsSync(walPath)) copyFileSync(walPath, `${backupPath}-wal`);
+		if (existsSync(shmPath)) copyFileSync(shmPath, `${backupPath}-shm`);
+		console.error(`[codemem] First TS access — backed up database to ${backupPath}`);
+	} catch (err) {
+		console.error(`[codemem] Warning: failed to create backup at ${backupPath}:`, err);
+		// Continue — backup failure shouldn't prevent operation
+	}
+
+	// Write marker so we don't back up again
+	try {
+		mkdirSync(dirname(markerPath), { recursive: true });
+		writeFileSync(markerPath, new Date().toISOString(), "utf-8");
+	} catch {
+		// Non-fatal — worst case we back up again next time
+	}
+}
+
+/**
  * Verify the database schema is initialized and compatible.
  *
  * Per the coexistence contract: TS tolerates additive newer schemas (Python may
@@ -175,6 +229,7 @@ export function getSchemaVersion(db: DatabaseType): number {
  *   - Schema is uninitialized (version 0)
  *   - Schema is too old (below MIN_COMPATIBLE_SCHEMA)
  *   - Required tables are missing
+ *   - FTS5 index is missing (needed for search)
  *
  * Warns (but continues) if schema is newer than SCHEMA_VERSION — the additive
  * changes are assumed safe per the coexistence contract.
@@ -184,8 +239,7 @@ export function assertSchemaReady(db: DatabaseType): void {
 	if (version === 0) {
 		throw new Error(
 			"Database schema is not initialized. " +
-				"During Phase 1, the Python runtime must initialize the database first. " +
-				"Run: uv run codemem stats",
+				"Run the Python runtime to initialize: uv run codemem stats",
 		);
 	}
 	if (version < MIN_COMPATIBLE_SCHEMA) {
@@ -207,6 +261,14 @@ export function assertSchemaReady(db: DatabaseType): void {
 		throw new Error(
 			`Required tables missing: ${missing.join(", ")}. ` +
 				"The database may be corrupt or from an incompatible version.",
+		);
+	}
+
+	// FTS5 index is required for search
+	if (!tableExists(db, "memory_fts")) {
+		throw new Error(
+			"FTS5 index (memory_fts) is missing. " +
+				"Run the Python runtime to rebuild: uv run codemem stats",
 		);
 	}
 }
