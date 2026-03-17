@@ -264,6 +264,33 @@ describe("MemoryStore.search", () => {
 		}
 	});
 
+	it("matches project filters by basename and suffix like Python", () => {
+		const now = new Date().toISOString();
+		const matchingSessionId = Number(
+			store.db
+				.prepare(
+					`INSERT INTO sessions (started_at, cwd, user, tool_version, project)
+					 VALUES (?, ?, ?, ?, ?)`,
+				)
+				.run(now, "/tmp/codemem", "testuser", "test-1.0", "workspace/codemem").lastInsertRowid,
+		);
+		const otherSessionId = Number(
+			store.db
+				.prepare(
+					`INSERT INTO sessions (started_at, cwd, user, tool_version, project)
+					 VALUES (?, ?, ?, ?, ?)`,
+				)
+				.run(now, "/tmp/other", "testuser", "test-1.0", "workspace/other").lastInsertRowid,
+		);
+
+		store.remember(matchingSessionId, "discovery", "Database guide", "database details");
+		store.remember(otherSessionId, "discovery", "Database elsewhere", "database details");
+
+		const results = store.search("database", 10, { project: "/Users/adam/workspace/codemem" });
+		expect(results).toHaveLength(1);
+		expect(results[0]?.session_id).toBe(matchingSessionId);
+	});
+
 	it("returns empty array when query becomes empty after operator filtering", () => {
 		seedMemories();
 		const results = store.search("AND OR NOT");
@@ -650,5 +677,59 @@ describe("MemoryStore.explain", () => {
 		const mismatch = result.errors.find((e) => e.code === "FILTER_MISMATCH");
 		expect(mismatch).toBeDefined();
 		expect(mismatch?.ids ?? []).toContain(memId);
+	});
+
+	it("reports PROJECT_MISMATCH for ids outside requested project scope", () => {
+		const now = new Date().toISOString();
+		const matchingSessionId = Number(
+			store.db
+				.prepare(
+					`INSERT INTO sessions (started_at, cwd, user, tool_version, project)
+					 VALUES (?, ?, ?, ?, ?)`,
+				)
+				.run(now, "/tmp/codemem", "testuser", "test-1.0", "codemem").lastInsertRowid,
+		);
+		const otherSessionId = Number(
+			store.db
+				.prepare(
+					`INSERT INTO sessions (started_at, cwd, user, tool_version, project)
+					 VALUES (?, ?, ?, ?, ?)`,
+				)
+				.run(now, "/tmp/other", "testuser", "test-1.0", "workspace/other").lastInsertRowid,
+		);
+		const matchingId = store.remember(
+			matchingSessionId,
+			"discovery",
+			"In scope",
+			"project scoped memory",
+		);
+		const otherId = store.remember(
+			otherSessionId,
+			"discovery",
+			"Out of scope",
+			"project scoped memory",
+		);
+
+		const result = store.explain(null, [matchingId, otherId], 10, {
+			project: "/Users/adam/workspace/codemem",
+		});
+
+		expect(result.items).toHaveLength(1);
+		expect(result.items[0]?.id).toBe(matchingId);
+		expect(result.metadata.project).toBe("/Users/adam/workspace/codemem");
+		expect(result.items[0]?.project).toBe("codemem");
+		expect(result.items[0]?.matches.project_match).toBe(true);
+
+		const mismatch = result.errors.find((e) => e.code === "PROJECT_MISMATCH");
+		expect(mismatch).toBeDefined();
+		expect(mismatch?.ids ?? []).toContain(otherId);
+		expect(result.missing_ids).toContain(otherId);
+	});
+
+	it("treats whitespace-only project filters as no project scope", () => {
+		const { id1, id2 } = seedMemories();
+		const result = store.explain(null, [id1, id2], 10, { project: "   " });
+		expect(result.items).toHaveLength(2);
+		expect(result.errors.find((e) => e.code === "PROJECT_MISMATCH")).toBeUndefined();
 	});
 });

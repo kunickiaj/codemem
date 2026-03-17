@@ -5,6 +5,7 @@
  * Builds WHERE clause fragments and parameter arrays from a MemoryFilters object.
  */
 
+import { projectClause } from "./project.js";
 import type { MemoryFilters } from "./types.js";
 
 export interface FilterResult {
@@ -67,9 +68,12 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 
 	// Project scoping — requires sessions JOIN
 	if (filters.project) {
-		clauses.push("sessions.project = ?");
-		params.push(filters.project);
-		result.joinSessions = true;
+		const { clause, params: projectParams } = projectClause(filters.project);
+		if (clause) {
+			clauses.push(clause);
+			params.push(...projectParams);
+			result.joinSessions = true;
+		}
 	}
 
 	// Visibility
