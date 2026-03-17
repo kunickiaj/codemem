@@ -406,6 +406,10 @@ export interface PackItem {
 	confidence: number;
 	tags: string;
 	metadata: Record<string, unknown>;
+	/** Number of exact duplicates collapsed into this item (1 = no dupes). */
+	support_count?: number;
+	/** IDs of duplicates that were collapsed into this canonical item. */
+	duplicate_ids?: number[];
 }
 
 /** Pack response from buildMemoryPack() */

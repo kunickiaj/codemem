@@ -4,11 +4,14 @@
  * Builds a formatted "memory pack" from search results, organized into
  * sections (summary, timeline, observations) with token budgeting.
  *
+ * Ported: exact dedup, tag-overlap sorting, summary/observation fallback,
+ *         support_count, separate section dedup, semantic candidate merging.
+ *
  * Semantic candidate merging is supported via `buildMemoryPackAsync` or
  * by passing pre-computed semantic results to `buildMemoryPack`.
  *
- * NOT ported: fuzzy search, task/recall mode detection, exact dedup,
- * pack delta tracking.
+ * NOT ported: fuzzy search, task/recall mode detection, pack delta
+ * tracking, discovery-token work estimation.
  */
 
 import type { Database } from "./db.js";
@@ -62,8 +65,9 @@ function formatSection(header: string, items: MemoryResult[]): string {
 // Pack item shape (what goes into items array)
 // ---------------------------------------------------------------------------
 
-function toPackItem(result: MemoryResult): PackItem {
-	return {
+function toPackItem(result: MemoryResult, dedupeState?: DedupeState): PackItem {
+	const dupes = dedupeState?.duplicateIds.get(result.id);
+	const item: PackItem = {
 		id: result.id,
 		kind: result.kind,
 		title: result.title,
@@ -72,6 +76,95 @@ function toPackItem(result: MemoryResult): PackItem {
 		tags: result.tags_text,
 		metadata: result.metadata,
 	};
+	if (dupes && dupes.size > 0) {
+		item.support_count = 1 + dupes.size;
+		item.duplicate_ids = [...dupes].sort((a, b) => a - b);
+	}
+	return item;
+}
+
+// ---------------------------------------------------------------------------
+// Exact dedup (ports Python's _collapse_exact_duplicates)
+// ---------------------------------------------------------------------------
+
+/** Normalize text for dedup comparison: lowercase, trim, collapse whitespace. */
+function normalizeDedupe(text: string): string {
+	return text.trim().toLowerCase().split(/\s+/).join(" ");
+}
+
+/**
+ * Build a collision-free dedup key for non-summary items.
+ * Uses length-prefixed fields so pipe characters in content can't
+ * cause collisions between distinct (kind, title, body) tuples.
+ */
+function exactDedupeKey(item: MemoryResult): string | null {
+	if (item.kind === "session_summary") return null;
+	const title = normalizeDedupe(item.title);
+	const body = normalizeDedupe(item.body_text);
+	if (!title && !body) return null;
+	return `${item.kind.length}:${item.kind}|${title.length}:${title}|${body.length}:${body}`;
+}
+
+interface DedupeState {
+	canonicalByKey: Map<string, number>;
+	duplicateIds: Map<number, Set<number>>;
+}
+
+/**
+ * Collapse exact duplicates: same kind+title+body → keep first (canonical).
+ * Tracks duplicate IDs so support_count can report how many were collapsed.
+ */
+function collapseExactDuplicates(items: MemoryResult[], state: DedupeState): MemoryResult[] {
+	const collapsed: MemoryResult[] = [];
+	for (const item of items) {
+		const key = exactDedupeKey(item);
+		if (key === null) {
+			collapsed.push(item);
+			continue;
+		}
+		const canonicalId = state.canonicalByKey.get(key);
+		if (canonicalId === undefined) {
+			state.canonicalByKey.set(key, item.id);
+			collapsed.push(item);
+			continue;
+		}
+		if (canonicalId === item.id) {
+			collapsed.push(item);
+			continue;
+		}
+		// Track as duplicate of the canonical
+		const existing = state.duplicateIds.get(canonicalId);
+		if (existing) existing.add(item.id);
+		else state.duplicateIds.set(canonicalId, new Set([item.id]));
+	}
+	return collapsed;
+}
+
+// ---------------------------------------------------------------------------
+// Tag-overlap sorting (ports Python's _sort_by_tag_overlap)
+// ---------------------------------------------------------------------------
+
+/** Sort items by tag overlap with the query, then by recency. */
+function sortByTagOverlap(items: MemoryResult[], query: string): MemoryResult[] {
+	const queryTokens = new Set((query.toLowerCase().match(/[a-z0-9_]+/g) ?? []).filter(Boolean));
+	if (queryTokens.size === 0) return items;
+
+	return [...items].sort((a, b) => {
+		const aOverlap = countOverlap(a.tags_text, queryTokens);
+		const bOverlap = countOverlap(b.tags_text, queryTokens);
+		if (bOverlap !== aOverlap) return bOverlap - aOverlap;
+		// Tiebreak by recency (newest first)
+		return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+	});
+}
+
+function countOverlap(tags: string, tokens: Set<string>): number {
+	const tagSet = new Set(tags.split(/\s+/).filter(Boolean));
+	let count = 0;
+	for (const t of tokens) {
+		if (tagSet.has(t)) count++;
+	}
+	return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,16 +255,76 @@ export function buildMemoryPack(
 	}
 
 	// Step 2: categorize results
-	const summaryItems = results.filter((r) => r.kind === "session_summary").slice(0, 1);
-	const timelineItems = results.filter((r) => r.kind !== "session_summary").slice(0, 3);
+
+	// Summary: prefer search match, fall back to most recent session_summary
+	let summaryItems = results.filter((r) => r.kind === "session_summary").slice(0, 1);
+	if (summaryItems.length === 0) {
+		const recentSummary = store.recent(1, { ...(filters ?? {}), kind: "session_summary" });
+		if (recentSummary.length > 0) {
+			const s = recentSummary[0]!;
+			summaryItems = [
+				{
+					id: s.id,
+					kind: s.kind,
+					title: s.title,
+					body_text: s.body_text,
+					confidence: s.confidence ?? 0,
+					created_at: s.created_at,
+					updated_at: s.updated_at,
+					tags_text: s.tags_text ?? "",
+					score: 0,
+					session_id: s.session_id,
+					metadata: s.metadata_json,
+				},
+			];
+		}
+	}
+
+	let timelineItems = results.filter((r) => r.kind !== "session_summary").slice(0, 3);
 	const timelineIds = new Set(timelineItems.map((r) => r.id));
-	const observationItems = [...results]
+
+	// Observations: from search results, then fall back to recent by observation kinds
+	const OBSERVATION_KINDS = Object.keys(OBSERVATION_KIND_PRIORITY);
+	let observationItems = [...results]
 		.filter((r) => r.kind !== "session_summary" && !timelineIds.has(r.id))
 		.sort((a, b) => {
 			const pa = OBSERVATION_KIND_PRIORITY[a.kind] ?? 99;
 			const pb = OBSERVATION_KIND_PRIORITY[b.kind] ?? 99;
 			return pa - pb;
 		});
+
+	if (observationItems.length === 0) {
+		const recentObs = store.recentByKinds(
+			OBSERVATION_KINDS,
+			Math.max(effectiveLimit * 3, 10),
+			filters ?? null,
+		);
+		observationItems = recentObs.map((row) => ({
+			id: row.id,
+			kind: row.kind,
+			title: row.title,
+			body_text: row.body_text,
+			confidence: row.confidence ?? 0,
+			created_at: row.created_at,
+			updated_at: row.updated_at,
+			tags_text: row.tags_text ?? "",
+			score: 0,
+			session_id: row.session_id,
+			metadata: row.metadata_json,
+		}));
+	}
+
+	// Sort observations by tag overlap with context, then by kind priority
+	observationItems = sortByTagOverlap(observationItems, context);
+
+	// Exact dedup across all sections
+	const dedupeState: DedupeState = {
+		canonicalByKey: new Map(),
+		duplicateIds: new Map(),
+	};
+	summaryItems = collapseExactDuplicates(summaryItems, dedupeState);
+	timelineItems = collapseExactDuplicates(timelineItems, dedupeState);
+	observationItems = collapseExactDuplicates(observationItems, dedupeState);
 
 	// Step 4: apply token budget
 	let budgetedSummary = summaryItems;
@@ -222,7 +375,7 @@ export function buildMemoryPack(
 	for (const item of [...budgetedSummary, ...budgetedTimeline, ...budgetedObservations]) {
 		if (seenIds.has(item.id)) continue;
 		seenIds.add(item.id);
-		allItems.push(toPackItem(item));
+		allItems.push(toPackItem(item, dedupeState));
 		allItemIds.push(item.id);
 	}
 
