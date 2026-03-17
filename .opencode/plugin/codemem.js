@@ -437,7 +437,7 @@ const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
   }
   if (runner === "npx") {
     const pkg = runnerFromExplicit ? runnerFrom : "@codemem/cli";
-    return ["-y", pkg, "codemem"];
+    return ["-y", pkg];
   }
   return [];
 };

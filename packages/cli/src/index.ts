@@ -14,17 +14,32 @@
 import { VERSION } from "@codemem/core";
 import { Command } from "commander";
 import omelette from "omelette";
+import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
 import { mcpCommand } from "./commands/mcp.js";
 import { packCommand } from "./commands/pack.js";
+import { recentCommand } from "./commands/recent.js";
 import { searchCommand } from "./commands/search.js";
 import { serveCommand } from "./commands/serve.js";
 import { statsCommand } from "./commands/stats.js";
+import { versionCommand } from "./commands/version.js";
 import { helpStyle } from "./help-style.js";
 
 // Shell completion (bash/zsh/fish)
 const completion = omelette("codemem <command>");
 completion.on("command", ({ reply }) => {
-	reply(["stats", "search", "pack", "serve", "mcp", "help", "--help", "--version"]);
+	reply([
+		"stats",
+		"recent",
+		"search",
+		"pack",
+		"serve",
+		"mcp",
+		"enqueue-raw-event",
+		"version",
+		"help",
+		"--help",
+		"--version",
+	]);
 });
 completion.init();
 
@@ -50,7 +65,10 @@ program
 program.addCommand(serveCommand);
 program.addCommand(mcpCommand);
 program.addCommand(statsCommand);
+program.addCommand(recentCommand);
 program.addCommand(searchCommand);
 program.addCommand(packCommand);
+program.addCommand(enqueueRawEventCommand);
+program.addCommand(versionCommand);
 
 program.parse();

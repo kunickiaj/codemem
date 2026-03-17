@@ -340,11 +340,13 @@ export function search(
 	);
 	const seen = new Set(primary.map((item) => item.id));
 	const combined = [...primary];
+	let addedShared = 0;
 	for (const item of shared) {
 		if (seen.has(item.id)) continue;
 		seen.add(item.id);
 		combined.push(item);
-		if (combined.length >= Math.max(1, Math.trunc(limit))) break;
+		addedShared += 1;
+		if (addedShared >= WIDEN_SHARED_MAX_SHARED_RESULTS) break;
 	}
 	return combined;
 }
@@ -397,6 +399,19 @@ function searchOnce(
 		const metadata: Record<string, unknown> = {
 			...fromJson(row.metadata_json as string | null),
 		};
+		for (const key of [
+			"actor_id",
+			"actor_display_name",
+			"visibility",
+			"workspace_id",
+			"workspace_kind",
+			"origin_device_id",
+			"origin_source",
+			"trust_state",
+		] as const) {
+			const value = row[key];
+			if (value != null) metadata[key] = value;
+		}
 
 		// Propagate files_modified into metadata when stored as a JSON array
 		if (row.files_modified && typeof row.files_modified === "string") {

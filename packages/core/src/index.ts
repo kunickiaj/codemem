@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.0.1";
+export const VERSION = "0.19.0";
 
 export * as Api from "./api-types.js";
 export type { InvitePayload } from "./coordinator-invites.js";
