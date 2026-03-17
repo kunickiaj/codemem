@@ -318,6 +318,8 @@ export interface UsageEventRow {
 export interface StoreStats {
 	identity: {
 		device_id: string;
+		actor_id: string;
+		actor_display_name: string;
 	};
 	database: {
 		path: string;
