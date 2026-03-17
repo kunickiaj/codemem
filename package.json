@@ -22,7 +22,8 @@
     "lint": "pnpm exec biome check packages/",
     "format": "pnpm exec biome check --write packages/",
     "typecheck": "pnpm exec tsc --build",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
+    "codemem-ts": "node packages/cli/dist/index.js"
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.2.27"

@@ -12,7 +12,7 @@ export default defineConfig({
 			fileName: "index",
 		},
 		rollupOptions: {
-			external: [/^@codemem\//, /^node:/, "commander", "chalk"],
+			external: [/^@codemem\//, /^@hono\//, /^node:/, "commander", "chalk", "hono"],
 		},
 		outDir: "dist",
 		sourcemap: true,

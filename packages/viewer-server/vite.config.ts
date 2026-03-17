@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
-// Library mode for now. Will switch to full app mode with dev server
-// when we build out the viewer UI integration and sync daemon.
+// Library mode — SSR/Node target.
+// Externalizes @codemem/core, hono, and node: built-ins.
 export default defineConfig({
 	build: {
 		lib: {
@@ -11,7 +11,7 @@ export default defineConfig({
 			fileName: "index",
 		},
 		rollupOptions: {
-			external: [/^@codemem\//, /^node:/],
+			external: [/^@codemem\//, /^node:/, /^hono/, /^better-sqlite3/],
 		},
 		outDir: "dist",
 		sourcemap: true,
