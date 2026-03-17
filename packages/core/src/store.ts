@@ -315,7 +315,7 @@ export class MemoryStore {
 	 * Simplified: check actor_id first, then origin_device_id.
 	 * Peer claim/legacy checks deferred until sync parity is needed.
 	 */
-	memoryOwnedBySelf(item: MemoryItem | Record<string, unknown>): boolean {
+	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean {
 		const rec = item as Record<string, unknown>;
 		const itemActorId = cleanStr(rec.actor_id);
 		if (itemActorId === this.actorId) return true;

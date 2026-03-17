@@ -21,6 +21,7 @@ export function buildFilters(
 
 	for (const key of [
 		"kind",
+		"visibility",
 		"include_visibility",
 		"exclude_visibility",
 		"include_workspace_ids",
@@ -31,6 +32,12 @@ export function buildFilters(
 		"exclude_actor_ids",
 		"include_trust_states",
 		"exclude_trust_states",
+		"ownership_scope",
+		"personal_first",
+		"trust_bias",
+		"widen_shared_when_weak",
+		"widen_shared_min_personal_results",
+		"widen_shared_min_personal_score",
 	] as const) {
 		const val = raw[key];
 		if (val !== undefined && val !== null) {

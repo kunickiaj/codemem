@@ -446,8 +446,11 @@ export interface MemoryResult {
 
 export interface MemoryFilters {
 	kind?: string;
+	session_id?: number;
+	since?: string;
 	/** Project scope — matches sessions.project. Triggers session JOIN. */
 	project?: string;
+	visibility?: string | string[];
 	include_visibility?: string[];
 	exclude_visibility?: string[];
 	include_workspace_ids?: string[];
@@ -458,4 +461,10 @@ export interface MemoryFilters {
 	exclude_actor_ids?: string[];
 	include_trust_states?: string[];
 	exclude_trust_states?: string[];
+	ownership_scope?: "mine" | "theirs" | string;
+	personal_first?: boolean | string;
+	trust_bias?: "off" | "soft" | string;
+	widen_shared_when_weak?: boolean | string;
+	widen_shared_min_personal_results?: number;
+	widen_shared_min_personal_score?: number;
 }
