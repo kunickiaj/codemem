@@ -1,7 +1,13 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
-import { ObserverClient, RawEventSweeper, resolveDbPath } from "@codemem/core";
+import {
+	ObserverClient,
+	RawEventSweeper,
+	readCodememConfigFile,
+	resolveDbPath,
+	runSyncDaemon,
+} from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 
@@ -118,6 +124,37 @@ export const serveCommand = new Command("serve")
 			const sweeper = new RawEventSweeper(getStore(), { observer });
 			sweeper.start();
 
+			// Start the sync daemon if enabled — shares the same DB path.
+			// Uses an AbortController so serve shutdown cleanly stops sync.
+			const syncAbort = new AbortController();
+			let syncRunning = false;
+			const config = readCodememConfigFile();
+			const syncEnabled =
+				config.sync_enabled === true ||
+				process.env.CODEMEM_SYNC_ENABLED?.toLowerCase() === "true" ||
+				process.env.CODEMEM_SYNC_ENABLED === "1";
+
+			if (syncEnabled) {
+				syncRunning = true;
+				const syncIntervalS =
+					typeof config.sync_interval_s === "number" ? config.sync_interval_s : 120;
+				runSyncDaemon({
+					dbPath,
+					intervalS: syncIntervalS,
+					host: opts.host,
+					port,
+					signal: syncAbort.signal,
+				})
+					.catch((err: unknown) => {
+						const msg = err instanceof Error ? err.message : String(err);
+						p.log.error(`Sync daemon failed: ${msg}`);
+						// Non-fatal — viewer continues without sync
+					})
+					.finally(() => {
+						syncRunning = false;
+					});
+			}
+
 			const app = createApp({ storeFactory: getStore, sweeper });
 			const pidPath = pidFilePath(dbPath);
 
@@ -131,10 +168,13 @@ export const serveCommand = new Command("serve")
 				p.log.success(`Listening on http://${info.address}:${info.port}`);
 				p.log.info(`Database: ${dbPath}`);
 				p.log.step("Raw event sweeper started");
+				if (syncRunning) p.log.step("Sync daemon started");
 			});
 
 			const shutdown = async () => {
 				p.outro("shutting down");
+				// Stop sync daemon via abort signal
+				syncAbort.abort();
 				// Stop sweeper first and wait for any in-flight tick to drain.
 				await sweeper.stop();
 				// Close HTTP server, wait for in-flight requests to drain
