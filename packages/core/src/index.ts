@@ -46,6 +46,15 @@ export {
 	tableExists,
 	toJson,
 } from "./db.js";
+export type { EmbeddingClient } from "./embeddings.js";
+export {
+	_resetEmbeddingClient,
+	chunkText,
+	embedTexts,
+	getEmbeddingClient,
+	hashText,
+	serializeFloat32,
+} from "./embeddings.js";
 export type { ExportOptions, ExportPayload, ImportOptions, ImportResult } from "./export-import.js";
 export {
 	buildImportKey,
@@ -239,7 +248,6 @@ export {
 } from "./sync-replication.js";
 // Test utilities (exported for consumer packages like viewer-server)
 export { initTestSchema, insertTestSession } from "./test-utils.js";
-
 export type {
 	Actor,
 	Artifact,
@@ -274,3 +282,9 @@ export type {
 	UsageEvent,
 	UserPrompt,
 } from "./types.js";
+export type {
+	BackfillVectorsOptions,
+	BackfillVectorsResult,
+	SemanticSearchResult,
+} from "./vectors.js";
+export { backfillVectors, semanticSearch, storeVectors } from "./vectors.js";

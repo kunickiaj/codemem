@@ -9,7 +9,7 @@ export default defineConfig({
 			fileName: "index",
 		},
 		rollupOptions: {
-			external: ["better-sqlite3", "sqlite-vec", /^node:/],
+			external: ["better-sqlite3", "sqlite-vec", "@xenova/transformers", /^node:/],
 		},
 		outDir: "dist",
 		sourcemap: true,
