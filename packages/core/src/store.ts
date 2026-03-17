@@ -1048,6 +1048,379 @@ export class MemoryStore {
 	}
 
 	// -----------------------------------------------------------------------
+	// Raw event ingestion methods (ports for POST /api/raw-events)
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Update ingest stats counters (sample + running totals).
+	 * Port of _update_raw_event_ingest_stats().
+	 */
+	private updateRawEventIngestStats(
+		inserted: number,
+		skippedInvalid: number,
+		skippedDuplicate: number,
+		skippedConflict: number,
+	): void {
+		const now = nowIso();
+		const skippedEvents = skippedInvalid + skippedDuplicate + skippedConflict;
+		this.db
+			.prepare(
+				`INSERT INTO raw_event_ingest_samples(
+					created_at, inserted_events, skipped_invalid, skipped_duplicate, skipped_conflict
+				) VALUES (?, ?, ?, ?, ?)`,
+			)
+			.run(now, inserted, skippedInvalid, skippedDuplicate, skippedConflict);
+		this.db
+			.prepare(
+				`INSERT INTO raw_event_ingest_stats(
+					id, inserted_events, skipped_events, skipped_invalid,
+					skipped_duplicate, skipped_conflict, updated_at
+				) VALUES (1, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET
+					inserted_events = inserted_events + excluded.inserted_events,
+					skipped_events = skipped_events + excluded.skipped_events,
+					skipped_invalid = skipped_invalid + excluded.skipped_invalid,
+					skipped_duplicate = skipped_duplicate + excluded.skipped_duplicate,
+					skipped_conflict = skipped_conflict + excluded.skipped_conflict,
+					updated_at = excluded.updated_at`,
+			)
+			.run(inserted, skippedEvents, skippedInvalid, skippedDuplicate, skippedConflict, now);
+	}
+
+	/**
+	 * Record a single raw event. Returns true if inserted, false if duplicate.
+	 * Port of record_raw_event().
+	 */
+	recordRawEvent(opts: {
+		opencodeSessionId: string;
+		source?: string;
+		eventId: string;
+		eventType: string;
+		payload: Record<string, unknown>;
+		tsWallMs?: number | null;
+		tsMonoMs?: number | null;
+	}): boolean {
+		if (!opts.opencodeSessionId.trim()) throw new Error("opencode_session_id is required");
+		if (!opts.eventId.trim()) throw new Error("event_id is required");
+		if (!opts.eventType.trim()) throw new Error("event_type is required");
+
+		const [source, streamId] = this.normalizeStreamIdentity(
+			opts.source ?? "opencode",
+			opts.opencodeSessionId,
+		);
+
+		// Check for duplicate
+		const existing = this.db
+			.prepare("SELECT 1 FROM raw_events WHERE source = ? AND stream_id = ? AND event_id = ?")
+			.get(source, streamId, opts.eventId);
+		if (existing != null) {
+			this.updateRawEventIngestStats(0, 0, 1, 0);
+			return false;
+		}
+
+		// Ensure session row exists
+		const sessionRow = this.db
+			.prepare("SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?")
+			.get(source, streamId);
+		if (sessionRow == null) {
+			const now = nowIso();
+			this.db
+				.prepare(
+					"INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at) VALUES (?, ?, ?, ?)",
+				)
+				.run(streamId, source, streamId, now);
+		}
+
+		// Allocate event_seq
+		const seqRow = this.db
+			.prepare(
+				`UPDATE raw_event_sessions
+				 SET last_received_event_seq = last_received_event_seq + 1, updated_at = ?
+				 WHERE source = ? AND stream_id = ?
+				 RETURNING last_received_event_seq`,
+			)
+			.get(nowIso(), source, streamId) as { last_received_event_seq: number } | undefined;
+		if (!seqRow) throw new Error("Failed to allocate raw event seq");
+		const eventSeq = Number(seqRow.last_received_event_seq);
+
+		const createdAt = nowIso();
+		this.db
+			.prepare(
+				`INSERT INTO raw_events(
+					source, stream_id, opencode_session_id, event_id, event_seq,
+					event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				source,
+				streamId,
+				streamId,
+				opts.eventId,
+				eventSeq,
+				opts.eventType,
+				opts.tsWallMs ?? null,
+				opts.tsMonoMs ?? null,
+				toJson(opts.payload),
+				createdAt,
+			);
+		this.updateRawEventIngestStats(1, 0, 0, 0);
+		return true;
+	}
+
+	/**
+	 * Record a batch of raw events for a single session. Returns { inserted, skipped }.
+	 * Port of record_raw_events_batch().
+	 */
+	recordRawEventsBatch(
+		opencodeSessionId: string,
+		events: Record<string, unknown>[],
+	): { inserted: number; skipped: number } {
+		if (!opencodeSessionId.trim()) throw new Error("opencode_session_id is required");
+		const [source, streamId] = this.normalizeStreamIdentity("opencode", opencodeSessionId);
+
+		return this.db.transaction(() => {
+			const now = nowIso();
+
+			// Ensure session row exists
+			const sessionRow = this.db
+				.prepare("SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?")
+				.get(source, streamId);
+			if (sessionRow == null) {
+				this.db
+					.prepare(
+						"INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at) VALUES (?, ?, ?, ?)",
+					)
+					.run(streamId, source, streamId, now);
+			}
+
+			// Normalize and validate events
+			let skippedInvalid = 0;
+			let skippedDuplicate = 0;
+			let skippedConflict = 0;
+
+			interface NormalizedEvent {
+				eventId: string;
+				eventType: string;
+				payload: Record<string, unknown>;
+				tsWallMs: unknown;
+				tsMonoMs: unknown;
+			}
+			const normalized: NormalizedEvent[] = [];
+			const seenIds = new Set<string>();
+
+			for (const event of events) {
+				const eventId = String(event.event_id ?? "");
+				const eventType = String(event.event_type ?? "");
+				let payload = event.payload;
+				if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
+					payload = {};
+				}
+				const tsWallMs = event.ts_wall_ms;
+				const tsMonoMs = event.ts_mono_ms;
+
+				if (!eventId || !eventType) {
+					skippedInvalid++;
+					continue;
+				}
+				if (seenIds.has(eventId)) {
+					skippedDuplicate++;
+					continue;
+				}
+				seenIds.add(eventId);
+				normalized.push({
+					eventId,
+					eventType,
+					payload: payload as Record<string, unknown>,
+					tsWallMs,
+					tsMonoMs,
+				});
+			}
+
+			if (normalized.length === 0) {
+				this.updateRawEventIngestStats(0, skippedInvalid, skippedDuplicate, skippedConflict);
+				return { inserted: 0, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
+			}
+
+			// Check for existing event_ids in chunks
+			const existingIds = new Set<string>();
+			const chunkSize = 500;
+			for (let i = 0; i < normalized.length; i += chunkSize) {
+				const chunk = normalized.slice(i, i + chunkSize);
+				const placeholders = chunk.map(() => "?").join(",");
+				const rows = this.db
+					.prepare(
+						`SELECT event_id FROM raw_events WHERE source = ? AND stream_id = ? AND event_id IN (${placeholders})`,
+					)
+					.all(source, streamId, ...chunk.map((e) => e.eventId)) as {
+					event_id: string;
+				}[];
+				for (const row of rows) {
+					existingIds.add(String(row.event_id));
+				}
+			}
+
+			const newEvents = normalized.filter((e) => !existingIds.has(e.eventId));
+			skippedDuplicate += normalized.length - newEvents.length;
+
+			if (newEvents.length === 0) {
+				this.updateRawEventIngestStats(0, skippedInvalid, skippedDuplicate, skippedConflict);
+				return { inserted: 0, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
+			}
+
+			// Allocate seq range
+			const seqRow = this.db
+				.prepare(
+					`UPDATE raw_event_sessions
+					 SET last_received_event_seq = last_received_event_seq + ?, updated_at = ?
+					 WHERE source = ? AND stream_id = ?
+					 RETURNING last_received_event_seq`,
+				)
+				.get(newEvents.length, now, source, streamId) as
+				| { last_received_event_seq: number }
+				| undefined;
+			if (!seqRow) throw new Error("Failed to allocate raw event seq");
+			const endSeq = Number(seqRow.last_received_event_seq);
+			const startSeq = endSeq - newEvents.length + 1;
+
+			let inserted = 0;
+			const insertStmt = this.db.prepare(
+				`INSERT INTO raw_events(
+					source, stream_id, opencode_session_id, event_id, event_seq,
+					event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			);
+
+			for (let offset = 0; offset < newEvents.length; offset++) {
+				const event = newEvents[offset]!;
+				try {
+					insertStmt.run(
+						source,
+						streamId,
+						streamId,
+						event.eventId,
+						startSeq + offset,
+						event.eventType,
+						event.tsWallMs ?? null,
+						event.tsMonoMs ?? null,
+						toJson(event.payload),
+						now,
+					);
+					inserted++;
+				} catch (err: unknown) {
+					// SQLite UNIQUE constraint → skip conflict
+					if (err instanceof Error && err.message.includes("UNIQUE constraint")) {
+						skippedConflict++;
+					} else {
+						throw err;
+					}
+				}
+			}
+
+			this.updateRawEventIngestStats(inserted, skippedInvalid, skippedDuplicate, skippedConflict);
+			return { inserted, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
+		})();
+	}
+
+	/**
+	 * UPSERT session metadata (cwd, project, started_at, last_seen_ts_wall_ms).
+	 * Port of update_raw_event_session_meta().
+	 */
+	updateRawEventSessionMeta(opts: {
+		opencodeSessionId: string;
+		source?: string;
+		cwd?: string | null;
+		project?: string | null;
+		startedAt?: string | null;
+		lastSeenTsWallMs?: number | null;
+	}): void {
+		const [source, streamId] = this.normalizeStreamIdentity(
+			opts.source ?? "opencode",
+			opts.opencodeSessionId,
+		);
+		const now = nowIso();
+		this.db
+			.prepare(
+				`INSERT INTO raw_event_sessions(
+					opencode_session_id, source, stream_id, cwd, project,
+					started_at, last_seen_ts_wall_ms, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(source, stream_id) DO UPDATE SET
+					opencode_session_id = excluded.opencode_session_id,
+					cwd = COALESCE(excluded.cwd, raw_event_sessions.cwd),
+					project = COALESCE(excluded.project, raw_event_sessions.project),
+					started_at = COALESCE(excluded.started_at, raw_event_sessions.started_at),
+					last_seen_ts_wall_ms = CASE
+						WHEN excluded.last_seen_ts_wall_ms IS NULL THEN raw_event_sessions.last_seen_ts_wall_ms
+						WHEN raw_event_sessions.last_seen_ts_wall_ms IS NULL THEN excluded.last_seen_ts_wall_ms
+						WHEN excluded.last_seen_ts_wall_ms > raw_event_sessions.last_seen_ts_wall_ms THEN excluded.last_seen_ts_wall_ms
+						ELSE raw_event_sessions.last_seen_ts_wall_ms
+					END,
+					updated_at = excluded.updated_at`,
+			)
+			.run(
+				streamId,
+				source,
+				streamId,
+				opts.cwd ?? null,
+				opts.project ?? null,
+				opts.startedAt ?? null,
+				opts.lastSeenTsWallMs ?? null,
+				now,
+			);
+	}
+
+	/**
+	 * Get totals of pending (unflushed) raw events.
+	 * Port of raw_event_backlog_totals().
+	 */
+	rawEventBacklogTotals(): { pending: number; sessions: number } {
+		const row = this.db
+			.prepare(
+				`WITH max_events AS (
+					SELECT source, stream_id, MAX(event_seq) AS max_seq
+					FROM raw_events
+					GROUP BY source, stream_id
+				)
+				SELECT
+					COUNT(1) AS sessions,
+					SUM(e.max_seq - s.last_flushed_event_seq) AS pending
+				FROM raw_event_sessions s
+				JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
+				WHERE e.max_seq > s.last_flushed_event_seq`,
+			)
+			.get() as { sessions: number | null; pending: number | null } | undefined;
+		if (!row) return { sessions: 0, pending: 0 };
+		return {
+			sessions: Number(row.sessions ?? 0),
+			pending: Number(row.pending ?? 0),
+		};
+	}
+
+	/**
+	 * Get the latest failed flush batch, or null if none.
+	 * Port of latest_raw_event_flush_failure().
+	 */
+	latestRawEventFlushFailure(source?: string | null): Record<string, unknown> | null {
+		let query = `SELECT
+			id, source, stream_id, opencode_session_id,
+			start_event_seq, end_event_seq, extractor_version,
+			status, updated_at, attempt_count,
+			error_message, error_type,
+			observer_provider, observer_model, observer_runtime
+		FROM raw_event_flush_batches
+		WHERE status IN ('error', 'failed')`;
+		const params: unknown[] = [];
+		if (source != null) {
+			query += " AND source = ?";
+			params.push(source.trim().toLowerCase() || "opencode");
+		}
+		query += " ORDER BY updated_at DESC LIMIT 1";
+		const row = this.db.prepare(query).get(...params) as Record<string, unknown> | undefined;
+		if (!row) return null;
+		return { ...row, status: "error" };
+	}
+
+	// -----------------------------------------------------------------------
 	// close
 	// -----------------------------------------------------------------------
 
