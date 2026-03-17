@@ -1,8 +1,10 @@
+import * as p from "@clack/prompts";
 import { MemoryStore, resolveDbPath } from "@codemem/core";
-import chalk from "chalk";
 import { Command } from "commander";
+import { helpStyle } from "../help-style.js";
 
 export const searchCommand = new Command("search")
+	.configureHelp(helpStyle)
 	.description("Search memories by query")
 	.argument("<query>", "search query")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
@@ -22,24 +24,24 @@ export const searchCommand = new Command("search")
 			}
 
 			if (results.length === 0) {
-				console.log(chalk.dim("No results found."));
+				p.log.warn("No results found.");
 				return;
 			}
 
-			console.log(chalk.bold(`${results.length} result(s) for "${query}"\n`));
+			p.intro(`${results.length} result(s) for "${query}"`);
+
 			for (const item of results) {
 				const score = item.score.toFixed(3);
-				const kind = chalk.dim(`(${item.kind})`);
 				const age = timeSince(item.created_at);
-				console.log(
-					`  ${chalk.cyan(`#${item.id}`)} ${kind} ${item.title} ${chalk.dim(`[${score}] ${age}`)}`,
+				const preview =
+					item.body_text.length > 120 ? `${item.body_text.slice(0, 120)}…` : item.body_text;
+
+				p.log.message(
+					[`#${item.id}  ${item.kind}  ${age}  [${score}]`, item.title, preview].join("\n"),
 				);
-				if (item.body_text.length > 120) {
-					console.log(`    ${chalk.dim(item.body_text.slice(0, 120))}…`);
-				} else {
-					console.log(`    ${chalk.dim(item.body_text)}`);
-				}
 			}
+
+			p.outro("done");
 		} finally {
 			store.close();
 		}

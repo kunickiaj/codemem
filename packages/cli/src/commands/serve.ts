@@ -1,7 +1,10 @@
+import * as p from "@clack/prompts";
 import { resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
+import { helpStyle } from "../help-style.js";
 
 export const serveCommand = new Command("serve")
+	.configureHelp(helpStyle)
 	.description("Start the viewer server")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--host <host>", "bind host", "127.0.0.1")
@@ -18,12 +21,13 @@ export const serveCommand = new Command("serve")
 		const app = createApp();
 
 		const server = serve({ fetch: app.fetch, hostname: opts.host, port }, (info) => {
-			console.log(`codemem viewer listening on http://${info.address}:${info.port}`);
-			console.log(`  database: ${dbPath}`);
+			p.intro("codemem viewer");
+			p.log.success(`Listening on http://${info.address}:${info.port}`);
+			p.log.info(`Database: ${dbPath}`);
 		});
 
 		const shutdown = () => {
-			console.log("\nShutting down...");
+			p.outro("shutting down");
 			closeStore();
 			server.close();
 			process.exit(0);

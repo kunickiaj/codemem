@@ -1,8 +1,10 @@
+import * as p from "@clack/prompts";
 import { MemoryStore, resolveDbPath } from "@codemem/core";
-import chalk from "chalk";
 import { Command } from "commander";
+import { helpStyle } from "../help-style.js";
 
 export const packCommand = new Command("pack")
+	.configureHelp(helpStyle)
 	.description("Build a context-aware memory pack")
 	.argument("<context>", "context string to search for")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
@@ -22,30 +24,28 @@ export const packCommand = new Command("pack")
 					return;
 				}
 
-				console.log(chalk.bold(`Memory pack for "${context}"\n`));
+				p.intro(`Memory pack for "${context}"`);
 
 				if (result.items.length === 0) {
-					console.log(chalk.dim("No relevant memories found."));
+					p.log.warn("No relevant memories found.");
+					p.outro("done");
 					return;
 				}
 
 				const m = result.metrics;
-				console.log(
-					chalk.dim(
-						`  ${m.total_items} items, ~${m.pack_tokens} tokens` +
-							(m.fallback_used ? " (fallback)" : "") +
-							` [fts:${m.sources.fts} sem:${m.sources.semantic} fuzzy:${m.sources.fuzzy}]`,
-					),
+				p.log.info(
+					`${m.total_items} items, ~${m.pack_tokens} tokens` +
+						(m.fallback_used ? " (fallback)" : "") +
+						`  [fts:${m.sources.fts} sem:${m.sources.semantic} fuzzy:${m.sources.fuzzy}]`,
 				);
-				console.log();
 
 				for (const item of result.items) {
-					const kind = chalk.dim(`(${item.kind})`);
-					console.log(`  ${chalk.cyan(`#${item.id}`)} ${kind} ${item.title}`);
+					p.log.step(`#${item.id}  ${item.kind}  ${item.title}`);
 				}
 
-				console.log(chalk.dim("\n--- pack_text ---\n"));
-				console.log(result.pack_text);
+				p.note(result.pack_text, "pack_text");
+
+				p.outro("done");
 			} finally {
 				store.close();
 			}

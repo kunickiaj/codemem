@@ -23,13 +23,14 @@
     "format": "pnpm exec biome check --write packages/",
     "typecheck": "pnpm exec tsc --build",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
-    "codemem-ts": "node packages/cli/dist/index.js"
+    "codemem": "tsx --conditions source packages/cli/src/index.ts"
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.2.27"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.6",
+    "tsx": "^4.21.0",
     "typescript": "^5.8.2",
     "vite": "^8.0.0",
     "vitest": "^3.1.4"
