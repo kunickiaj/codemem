@@ -127,6 +127,19 @@ describe("kindBonus", () => {
 // ---------------------------------------------------------------------------
 
 describe("rerankResults", () => {
+	const mockStore = {
+		db: {} as never,
+		actorId: "local:test-device",
+		deviceId: "test-device",
+		get: () => null,
+		recent: () => [],
+		recentByKinds: () => [],
+		memoryOwnedBySelf: (item: MemoryResult | Record<string, unknown>) => {
+			const metadata = (item as MemoryResult).metadata as Record<string, unknown> | undefined;
+			return metadata?.actor_id === "local:test-device";
+		},
+	};
+
 	function makeResult(overrides: Partial<MemoryResult>): MemoryResult {
 		return {
 			id: 1,
@@ -150,7 +163,7 @@ describe("rerankResults", () => {
 			makeResult({ id: 2, score: 2.0 }),
 			makeResult({ id: 3, score: 1.0 }),
 		];
-		const reranked = rerankResults(results, 2);
+		const reranked = rerankResults(mockStore, results, 2);
 		expect(reranked).toHaveLength(2);
 	});
 
@@ -159,13 +172,29 @@ describe("rerankResults", () => {
 			makeResult({ id: 1, score: 1.0, kind: "exploration" }),
 			makeResult({ id: 2, score: 3.0, kind: "decision" }),
 		];
-		const reranked = rerankResults(results, 10);
+		const reranked = rerankResults(mockStore, results, 10);
 		expect(reranked[0]?.id).toBe(2);
 		expect(reranked[1]?.id).toBe(1);
 	});
 
+	it("applies personal_first and trust_bias adjustments", () => {
+		const results = [
+			makeResult({ id: 1, score: 1.0, metadata: { actor_id: "local:test-device" } }),
+			makeResult({
+				id: 2,
+				score: 1.0,
+				metadata: { visibility: "shared", workspace_kind: "shared", trust_state: "unreviewed" },
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, {
+			personal_first: true,
+			trust_bias: "soft",
+		});
+		expect(reranked[0]?.id).toBe(1);
+	});
+
 	it("returns empty array for empty input", () => {
-		expect(rerankResults([], 10)).toEqual([]);
+		expect(rerankResults(mockStore, [], 10)).toEqual([]);
 	});
 });
 

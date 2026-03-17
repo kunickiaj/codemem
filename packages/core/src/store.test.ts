@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
-import { buildFilterClauses } from "./filters.js";
+import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 
@@ -477,6 +477,22 @@ describe("buildFilterClauses", () => {
 		expect(result.params).toEqual(["private", "shared"]);
 	});
 
+	it("normalizes visibility/workspace/trust values like Python", () => {
+		const result = buildFilterClauses({
+			visibility: [" Shared ", "INVALID", "private"],
+			include_workspace_kinds: ["PERSONAL", "nope", "shared"],
+			include_trust_states: ["Unreviewed", "bogus", "trusted"],
+		});
+		expect(result.params).toEqual([
+			"shared",
+			"private",
+			"personal",
+			"shared",
+			"unreviewed",
+			"trusted",
+		]);
+	});
+
 	it("builds exclude_actor_ids filter", () => {
 		const result = buildFilterClauses({ exclude_actor_ids: ["actor:123"] });
 		expect(result.clauses).toHaveLength(1);
@@ -492,5 +508,16 @@ describe("buildFilterClauses", () => {
 		});
 		expect(result.clauses).toHaveLength(3);
 		expect(result.params).toEqual(["feature", "shared", "personal"]);
+	});
+
+	it("builds ownership_scope mine clause with actor/device context", () => {
+		const result = buildFilterClausesWithContext(
+			{ ownership_scope: "mine" },
+			{ actorId: "local:device-1", deviceId: "device-1" },
+		);
+		expect(result.clauses).toEqual([
+			"(memory_items.actor_id = ? OR memory_items.origin_device_id = ?)",
+		]);
+		expect(result.params).toEqual(["local:device-1", "device-1"]);
 	});
 });
