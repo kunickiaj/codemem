@@ -63,7 +63,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", memoryRoutes(storeFactory));
 	app.route("/", observerStatusRoutes({ getStore: storeFactory, getSweeper: () => sweeper }));
 	app.route("/", configRoutes());
-	app.route("/", rawEventsRoutes(storeFactory));
+	app.route("/", rawEventsRoutes(storeFactory, sweeper));
 	app.route("/", syncRoutes(storeFactory));
 
 	// Static assets — serve viewer_static/ under /assets/*

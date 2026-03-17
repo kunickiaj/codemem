@@ -173,6 +173,16 @@ export class RawEventSweeper {
 		this.wake();
 	}
 
+	/**
+	 * Notify the sweeper that new events arrived (nudge it to flush soon).
+	 * Mirrors Python's RawEventFlusher.note_activity() — schedules a near-
+	 * immediate extra tick so events are processed without waiting for the
+	 * full interval.
+	 */
+	nudge(): void {
+		this.wake();
+	}
+
 	/** Schedule the next tick after the configured interval. */
 	private scheduleNext(): void {
 		if (!this.active) return;

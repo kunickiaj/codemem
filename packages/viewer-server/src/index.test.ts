@@ -163,12 +163,32 @@ describe("viewer-server", () => {
 	});
 
 	describe("CORS middleware", () => {
-		it("rejects POST without Origin header", async () => {
+		it("allows POST without Origin header (CLI/programmatic callers)", async () => {
+			// Matches Python's reject_if_unsafe policy — no Origin + no suspicious
+			// browser signals = CLI caller, allowed through.
 			const { app, cleanup } = createTestApp();
 			try {
 				const res = await app.request("/api/memories/visibility", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ memory_id: 1, visibility: "shared" }),
+				});
+				// Should NOT be 403 — CLI callers don't send Origin
+				expect(res.status).not.toBe(403);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects POST without Origin but with cross-site Sec-Fetch-Site", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/memories/visibility", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"Sec-Fetch-Site": "cross-site",
+					},
 					body: JSON.stringify({ memory_id: 1, visibility: "shared" }),
 				});
 				expect(res.status).toBe(403);
