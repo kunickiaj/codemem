@@ -45,6 +45,7 @@
   "bugs": {
     "url": "https://github.com/kunickiaj/codemem/issues"
   },
+  "packageManager": "pnpm@10.26.1",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
