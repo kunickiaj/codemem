@@ -401,6 +401,12 @@ export class MemoryStore {
 		if (tableExists(this.db, "memory_vectors")) {
 			vectorCount = count("SELECT COUNT(*) AS c FROM memory_vectors");
 		}
+		const vectorCoverage = activeMemories > 0 ? Math.min(1, vectorCount / activeMemories) : 0;
+
+		const tagsFilled = count(
+			"SELECT COUNT(*) AS c FROM memory_items WHERE active = 1 AND TRIM(tags_text) != ''",
+		);
+		const tagsCoverage = activeMemories > 0 ? Math.min(1, tagsFilled / activeMemories) : 0;
 
 		let sizeBytes = 0;
 		try {
@@ -409,7 +415,42 @@ export class MemoryStore {
 			// File may not exist yet or be inaccessible
 		}
 
+		// Usage stats
+		const usageRows = this.db
+			.prepare(
+				`SELECT event, COUNT(*) AS count,
+				        SUM(tokens_read) AS tokens_read,
+				        SUM(tokens_written) AS tokens_written,
+				        SUM(COALESCE(tokens_saved, 0)) AS tokens_saved
+				 FROM usage_events
+				 GROUP BY event
+				 ORDER BY count DESC`,
+			)
+			.all() as {
+			event: string;
+			count: number;
+			tokens_read: number | null;
+			tokens_written: number | null;
+			tokens_saved: number | null;
+		}[];
+
+		const usageEvents = usageRows.map((r) => ({
+			event: r.event,
+			count: r.count,
+			tokens_read: r.tokens_read ?? 0,
+			tokens_written: r.tokens_written ?? 0,
+			tokens_saved: r.tokens_saved ?? 0,
+		}));
+
+		const totalEvents = usageEvents.reduce((s, e) => s + e.count, 0);
+		const totalTokensRead = usageEvents.reduce((s, e) => s + e.tokens_read, 0);
+		const totalTokensWritten = usageEvents.reduce((s, e) => s + e.tokens_written, 0);
+		const totalTokensSaved = usageEvents.reduce((s, e) => s + e.tokens_saved, 0);
+
 		return {
+			identity: {
+				device_id: this.deviceId,
+			},
 			database: {
 				path: this.dbPath,
 				size_bytes: sizeBytes,
@@ -418,7 +459,19 @@ export class MemoryStore {
 				active_memory_items: activeMemories,
 				artifacts,
 				vector_rows: vectorCount,
+				vector_coverage: vectorCoverage,
+				tags_filled: tagsFilled,
+				tags_coverage: tagsCoverage,
 				raw_events: rawEvents,
+			},
+			usage: {
+				events: usageEvents,
+				totals: {
+					events: totalEvents,
+					tokens_read: totalTokensRead,
+					tokens_written: totalTokensWritten,
+					tokens_saved: totalTokensSaved,
+				},
 			},
 		};
 	}
