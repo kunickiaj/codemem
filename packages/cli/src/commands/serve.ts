@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import { resolveDbPath } from "@codemem/core";
+import { ObserverClient, RawEventSweeper, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 
@@ -11,7 +11,7 @@ export const serveCommand = new Command("serve")
 	.option("--port <port>", "bind port", "38888")
 	.action(async (opts: { db?: string; host: string; port: string }) => {
 		// Dynamic import to avoid loading hono/server deps for non-serve commands
-		const { createApp, closeStore } = await import("@codemem/viewer-server");
+		const { createApp, closeStore, getStore } = await import("@codemem/viewer-server");
 		const { serve } = await import("@hono/node-server");
 
 		const dbPath = resolveDbPath(opts.db);
@@ -20,18 +20,37 @@ export const serveCommand = new Command("serve")
 		const port = Number.parseInt(opts.port, 10);
 		const app = createApp();
 
+		// Start the raw event sweeper — shares the same store as the viewer
+		const observer = new ObserverClient();
+		const sweeper = new RawEventSweeper(getStore(), { observer });
+		sweeper.start();
+
 		const server = serve({ fetch: app.fetch, hostname: opts.host, port }, (info) => {
 			p.intro("codemem viewer");
 			p.log.success(`Listening on http://${info.address}:${info.port}`);
 			p.log.info(`Database: ${dbPath}`);
+			p.log.step("Raw event sweeper started");
 		});
 
-		const shutdown = () => {
+		const shutdown = async () => {
 			p.outro("shutting down");
-			closeStore();
-			server.close();
-			process.exit(0);
+			// Stop sweeper first and wait for any in-flight tick to drain.
+			await sweeper.stop();
+			// Close HTTP server, wait for in-flight requests to drain
+			server.close(() => {
+				closeStore();
+				process.exit(0);
+			});
+			// Force exit after 5s if graceful shutdown stalls
+			setTimeout(() => {
+				closeStore();
+				process.exit(1);
+			}, 5000).unref();
 		};
-		process.on("SIGINT", shutdown);
-		process.on("SIGTERM", shutdown);
+		process.on("SIGINT", () => {
+			void shutdown();
+		});
+		process.on("SIGTERM", () => {
+			void shutdown();
+		});
 	});

@@ -26,7 +26,8 @@ export { VERSION };
 /** Shared store instance — SQLite WAL mode handles concurrent reads safely. */
 let sharedStore: MemoryStore | null = null;
 
-function defaultGetStore(): MemoryStore {
+/** Get (or create) the shared store instance. Exported so the sweeper can share it. */
+export function getStore(): MemoryStore {
 	if (!sharedStore) {
 		sharedStore = new MemoryStore(resolveDbPath());
 	}
@@ -43,7 +44,7 @@ export function closeStore(): void {
  * Create the Hono app with all viewer routes.
  * Exported for testing — pass a custom store factory to inject test DBs.
  */
-export function createApp(getStore: () => MemoryStore = defaultGetStore) {
+export function createApp(storeFactory: () => MemoryStore = getStore) {
 	const app = new Hono();
 
 	// CORS / origin guard
@@ -51,12 +52,12 @@ export function createApp(getStore: () => MemoryStore = defaultGetStore) {
 	app.use("*", originGuard());
 
 	// API routes
-	app.route("/", statsRoutes(getStore));
-	app.route("/", memoryRoutes(getStore));
+	app.route("/", statsRoutes(storeFactory));
+	app.route("/", memoryRoutes(storeFactory));
 	app.route("/", observerStatusRoutes());
 	app.route("/", configRoutes());
-	app.route("/", rawEventsRoutes(getStore));
-	app.route("/", syncRoutes(getStore));
+	app.route("/", rawEventsRoutes(storeFactory));
+	app.route("/", syncRoutes(storeFactory));
 
 	// Static assets — serve viewer_static/ under /assets/*
 	const staticRoot =
