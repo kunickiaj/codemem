@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
+import { expandUserPath } from "./observer-config.js";
 
 // Re-export the Database type for consumers
 export type { DatabaseType as Database };
@@ -55,9 +56,9 @@ export const DEFAULT_DB_PATH = join(homedir(), ".codemem", "mem.sqlite");
  * All TS entry points should use this instead of hardcoding fallback logic.
  */
 export function resolveDbPath(explicit?: string): string {
-	if (explicit) return explicit;
+	if (explicit) return expandUserPath(explicit);
 	const envPath = process.env.CODEMEM_DB;
-	if (envPath) return envPath;
+	if (envPath) return expandUserPath(envPath);
 	return DEFAULT_DB_PATH;
 }
 

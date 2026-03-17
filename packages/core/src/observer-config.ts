@@ -133,6 +133,54 @@ export function loadOpenCodeConfig(): Record<string, unknown> {
 	}
 }
 
+/** Expand `~/...` paths like Python's `Path(...).expanduser()`. */
+export function expandUserPath(value: string): string {
+	return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
+}
+
+/** Resolve codemem config path with CODEMEM_CONFIG override. */
+export function getCodememConfigPath(): string {
+	const envPath = process.env.CODEMEM_CONFIG?.trim();
+	if (envPath) return expandUserPath(envPath);
+	const configDir = join(homedir(), ".config", "codemem");
+	const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
+	return candidates.find((p) => existsSync(p)) ?? join(configDir, "config.json");
+}
+
+/** Read codemem config file with the same JSON/JSONC behavior as Python. */
+export function readCodememConfigFile(): Record<string, unknown> {
+	const configPath = getCodememConfigPath();
+	if (!existsSync(configPath)) return {};
+
+	let text: string;
+	try {
+		text = readFileSync(configPath, "utf-8");
+	} catch {
+		return {};
+	}
+
+	if (!text.trim()) return {};
+
+	try {
+		const parsed = JSON.parse(text) as unknown;
+		return parsed != null && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: {};
+	} catch {
+		// fall through to JSONC
+	}
+
+	try {
+		const cleaned = stripTrailingCommas(stripJsonComments(text));
+		const parsed = JSON.parse(cleaned) as unknown;
+		return parsed != null && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: {};
+	} catch {
+		return {};
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Provider helpers
 // ---------------------------------------------------------------------------
