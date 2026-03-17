@@ -142,11 +142,20 @@ describe("assertSchemaReady", () => {
 
 	it("passes for the current schema version with required tables", () => {
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
-		// Create the required tables
-		db.exec("CREATE TABLE memory_items (id INTEGER PRIMARY KEY)");
+		// Create all required tables + FTS5 index
+		db.exec(
+			"CREATE TABLE memory_items (id INTEGER PRIMARY KEY, title TEXT, body_text TEXT, tags_text TEXT)",
+		);
 		db.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY)");
 		db.exec("CREATE TABLE artifacts (id INTEGER PRIMARY KEY)");
 		db.exec("CREATE TABLE raw_events (id INTEGER PRIMARY KEY)");
+		db.exec(
+			"CREATE TABLE raw_event_sessions (source TEXT, stream_id TEXT, PRIMARY KEY (source, stream_id))",
+		);
+		db.exec("CREATE TABLE usage_events (id INTEGER PRIMARY KEY)");
+		db.exec(
+			"CREATE VIRTUAL TABLE memory_fts USING fts5(title, body_text, tags_text, content='memory_items', content_rowid='id')",
+		);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
@@ -157,11 +166,20 @@ describe("assertSchemaReady", () => {
 
 	it("warns but continues for a newer schema version", () => {
 		db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
-		// Create required tables — newer version should warn, not throw
-		db.exec("CREATE TABLE memory_items (id INTEGER PRIMARY KEY)");
+		// Create all required tables + FTS5 index
+		db.exec(
+			"CREATE TABLE memory_items (id INTEGER PRIMARY KEY, title TEXT, body_text TEXT, tags_text TEXT)",
+		);
 		db.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY)");
 		db.exec("CREATE TABLE artifacts (id INTEGER PRIMARY KEY)");
 		db.exec("CREATE TABLE raw_events (id INTEGER PRIMARY KEY)");
+		db.exec(
+			"CREATE TABLE raw_event_sessions (source TEXT, stream_id TEXT, PRIMARY KEY (source, stream_id))",
+		);
+		db.exec("CREATE TABLE usage_events (id INTEGER PRIMARY KEY)");
+		db.exec(
+			"CREATE VIRTUAL TABLE memory_fts USING fts5(title, body_text, tags_text, content='memory_items', content_rowid='id')",
+		);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
