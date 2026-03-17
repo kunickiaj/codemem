@@ -113,6 +113,13 @@ export {
 	stripTrailingCommas,
 } from "./observer-config.js";
 export { buildMemoryPack, estimateTokens } from "./pack.js";
+export {
+	projectBasename,
+	projectClause,
+	projectColumnClause,
+	projectMatchesFilter,
+	resolveProject,
+} from "./project.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";

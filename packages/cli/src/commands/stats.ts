@@ -47,7 +47,7 @@ export const statsCommand = new Command("stats")
 			);
 
 			if (result.usage.events.length > 0) {
-				const lines = result.usage.events.map((e) => {
+				const lines = result.usage.events.map((e: (typeof result.usage.events)[number]) => {
 					const parts = [`${e.event}: ${e.count.toLocaleString()}`];
 					if (e.tokens_read > 0) parts.push(`read ${fmtTokens(e.tokens_read)} tokens`);
 					if (e.tokens_saved > 0) parts.push(`est. saved ${fmtTokens(e.tokens_saved)} tokens`);
