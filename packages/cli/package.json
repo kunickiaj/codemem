@@ -4,7 +4,7 @@
 	"private": true,
 	"type": "module",
 	"bin": {
-		"codemem-ts": "./dist/index.js"
+		"codemem": "./dist/index.js"
 	},
 	"scripts": {
 		"clean": "rm -rf dist",
@@ -12,15 +12,18 @@
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
+		"@clack/prompts": "^1.1.0",
 		"@codemem/core": "workspace:*",
 		"@codemem/mcp-server": "workspace:*",
 		"@codemem/viewer-server": "workspace:*",
 		"@hono/node-server": "^1.14.3",
-		"chalk": "^5.6.2",
-		"commander": "^14.0.3"
+		"commander": "^14.0.3",
+		"omelette": "^0.4.17"
 	},
 	"devDependencies": {
 		"@types/node": "^25.5.0",
+		"@types/omelette": "^0.4.5",
+		"tsx": "^4.21.0",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
