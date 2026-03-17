@@ -19,6 +19,7 @@ import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
 import { exportMemoriesCommand } from "./commands/export-memories.js";
 import { importMemoriesCommand } from "./commands/import-memories.js";
 import { mcpCommand } from "./commands/mcp.js";
+import { memoryCommand } from "./commands/memory.js";
 import { packCommand } from "./commands/pack.js";
 import { recentCommand } from "./commands/recent.js";
 import { searchCommand } from "./commands/search.js";
@@ -33,6 +34,7 @@ completion.on("command", ({ reply }) => {
 	reply([
 		"db",
 		"export-memories",
+		"memory",
 		"import-memories",
 		"stats",
 		"recent",
@@ -77,6 +79,7 @@ program.addCommand(statsCommand);
 program.addCommand(recentCommand);
 program.addCommand(searchCommand);
 program.addCommand(packCommand);
+program.addCommand(memoryCommand);
 program.addCommand(enqueueRawEventCommand);
 program.addCommand(versionCommand);
 

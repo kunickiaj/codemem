@@ -165,6 +165,56 @@ export class MemoryStore {
 	}
 
 	// -----------------------------------------------------------------------
+	// startSession / endSession
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Create a new session row. Returns the session ID.
+	 * Matches Python's store.start_session().
+	 */
+	startSession(opts: {
+		cwd?: string;
+		project?: string | null;
+		gitRemote?: string | null;
+		gitBranch?: string | null;
+		user?: string;
+		toolVersion?: string;
+		metadata?: Record<string, unknown>;
+	}): number {
+		const now = nowIso();
+		const info = this.db
+			.prepare(
+				`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version, metadata_json)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				now,
+				opts.cwd ?? process.cwd(),
+				opts.project ?? null,
+				opts.gitRemote ?? null,
+				opts.gitBranch ?? null,
+				opts.user ?? process.env.USER ?? "unknown",
+				opts.toolVersion ?? "manual",
+				toJson(opts.metadata ?? {}),
+			);
+		return Number(info.lastInsertRowid);
+	}
+
+	/**
+	 * End a session by recording ended_at. No-op if session doesn't exist.
+	 */
+	endSession(sessionId: number, metadata?: Record<string, unknown>): void {
+		const now = nowIso();
+		if (metadata) {
+			this.db
+				.prepare("UPDATE sessions SET ended_at = ?, metadata_json = ? WHERE id = ?")
+				.run(now, toJson(metadata), sessionId);
+		} else {
+			this.db.prepare("UPDATE sessions SET ended_at = ? WHERE id = ?").run(now, sessionId);
+		}
+	}
+
+	// -----------------------------------------------------------------------
 	// remember
 	// -----------------------------------------------------------------------
 
