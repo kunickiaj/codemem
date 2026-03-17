@@ -5,7 +5,7 @@
  */
 
 import type { MemoryStore } from "@codemem/core";
-import { fromJson } from "@codemem/core";
+import { fromJson, parsePositiveMemoryId, parseStrictInteger } from "@codemem/core";
 import { Hono } from "hono";
 import { queryInt } from "../helpers.js";
 
@@ -225,8 +225,8 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const tokenBudgetStr = c.req.query("token_budget");
 			let tokenBudget: number | undefined;
 			if (tokenBudgetStr) {
-				tokenBudget = Number.parseInt(tokenBudgetStr, 10);
-				if (Number.isNaN(tokenBudget)) {
+				tokenBudget = parseStrictInteger(tokenBudgetStr) ?? undefined;
+				if (tokenBudget === undefined) {
 					return c.json({ error: "token_budget must be int" }, 400);
 				}
 			}
@@ -263,8 +263,8 @@ export function memoryRoutes(getStore: StoreFactory) {
 			if (!sessionIdStr) {
 				return c.json({ error: "session_id required" }, 400);
 			}
-			const sessionId = Number.parseInt(sessionIdStr, 10);
-			if (Number.isNaN(sessionId)) {
+			const sessionId = parseStrictInteger(sessionIdStr);
+			if (sessionId == null) {
 				return c.json({ error: "session_id must be int" }, 400);
 			}
 			const rows = store.db
@@ -278,8 +278,8 @@ export function memoryRoutes(getStore: StoreFactory) {
 	app.post("/api/memories/visibility", async (c) => {
 		const store = getStore();
 		const body = await c.req.json<Record<string, unknown>>();
-		const memoryId = Number(body.memory_id);
-		if (Number.isNaN(memoryId)) {
+		const memoryId = parsePositiveMemoryId(body.memory_id);
+		if (memoryId == null) {
 			return c.json({ error: "memory_id must be int" }, 400);
 		}
 		const visibility = String(body.visibility ?? "").trim();
