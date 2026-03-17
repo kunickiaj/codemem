@@ -117,6 +117,9 @@ export {
 export type { ObserverConfig, ObserverResponse, ObserverStatus } from "./observer-client.js";
 export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
 export {
+	CODEMEM_CONFIG_ENV_OVERRIDES,
+	getCodememConfigPath,
+	getCodememEnvOverrides,
 	getOpenCodeProviderConfig,
 	getProviderApiKey,
 	getProviderBaseUrl,
@@ -124,12 +127,14 @@ export {
 	getProviderOptions,
 	listCustomProviders,
 	loadOpenCodeConfig,
+	readCodememConfigFile,
 	resolveCustomProviderDefaultModel,
 	resolveCustomProviderFromModel,
 	resolveCustomProviderModel,
 	resolvePlaceholder,
 	stripJsonComments,
 	stripTrailingCommas,
+	writeCodememConfigFile,
 } from "./observer-config.js";
 export { buildMemoryPack, estimateTokens } from "./pack.js";
 export {

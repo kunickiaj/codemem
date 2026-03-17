@@ -18,6 +18,7 @@
 
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { ObserverAuthError } from "./observer-client.js";
+import { readCodememConfigFile } from "./observer-config.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import type { MemoryStore } from "./store.js";
 
@@ -69,7 +70,22 @@ export class RawEventSweeper {
 	}
 
 	private intervalMs(): number {
-		return Math.max(1000, envInt("CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS", 30_000));
+		const envValue = process.env.CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS;
+		if (envValue != null) {
+			const parsed = Number.parseInt(envValue, 10);
+			return Number.isFinite(parsed) ? Math.max(1000, parsed) : 30_000;
+		}
+		const configValue = readCodememConfigFile().raw_events_sweeper_interval_s;
+		const configSeconds =
+			typeof configValue === "number"
+				? configValue
+				: typeof configValue === "string"
+					? Number.parseInt(configValue, 10)
+					: Number.NaN;
+		if (Number.isFinite(configSeconds) && configSeconds > 0) {
+			return Math.max(1000, configSeconds * 1000);
+		}
+		return 30_000;
 	}
 
 	private idleMs(): number {
