@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,9 +18,18 @@ describe("MemoryStore", () => {
 	let tmpDir: string;
 	let dbPath: string;
 	let store: MemoryStore;
+	let prevCodememConfig: string | undefined;
+	let prevActorId: string | undefined;
+	let prevActorDisplayName: string | undefined;
 
 	beforeEach(() => {
+		prevCodememConfig = process.env.CODEMEM_CONFIG;
+		prevActorId = process.env.CODEMEM_ACTOR_ID;
+		prevActorDisplayName = process.env.CODEMEM_ACTOR_DISPLAY_NAME;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-store-test-"));
+		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
+		delete process.env.CODEMEM_ACTOR_ID;
+		delete process.env.CODEMEM_ACTOR_DISPLAY_NAME;
 		dbPath = join(tmpDir, "test.sqlite");
 		// Pre-create the schema so MemoryStore constructor's assertSchemaReady passes
 		const setupDb = connect(dbPath);
@@ -32,6 +41,12 @@ describe("MemoryStore", () => {
 
 	afterEach(() => {
 		store?.close();
+		if (prevCodememConfig === undefined) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = prevCodememConfig;
+		if (prevActorId === undefined) delete process.env.CODEMEM_ACTOR_ID;
+		else process.env.CODEMEM_ACTOR_ID = prevActorId;
+		if (prevActorDisplayName === undefined) delete process.env.CODEMEM_ACTOR_DISPLAY_NAME;
+		else process.env.CODEMEM_ACTOR_DISPLAY_NAME = prevActorDisplayName;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -60,6 +75,37 @@ describe("MemoryStore", () => {
 	// -- remember -----------------------------------------------------------
 
 	describe("remember", () => {
+		it("defaults deviceId to stable 'local' when sync_device is empty", () => {
+			expect(store.deviceId).toBe("local");
+			expect(store.actorId).toBe("local:local");
+		});
+
+		it("loads actor identity defaults from codemem config file", () => {
+			store.close();
+			writeFileSync(
+				process.env.CODEMEM_CONFIG as string,
+				JSON.stringify({ actor_id: "actor:config", actor_display_name: "Config User" }),
+			);
+			store = new MemoryStore(dbPath);
+
+			expect(store.actorId).toBe("actor:config");
+			expect(store.actorDisplayName).toBe("Config User");
+		});
+
+		it("lets env overrides win over config-backed actor identity", () => {
+			store.close();
+			writeFileSync(
+				process.env.CODEMEM_CONFIG as string,
+				JSON.stringify({ actor_id: "actor:config", actor_display_name: "Config User" }),
+			);
+			process.env.CODEMEM_ACTOR_ID = "actor:env";
+			process.env.CODEMEM_ACTOR_DISPLAY_NAME = "Env User";
+			store = new MemoryStore(dbPath);
+
+			expect(store.actorId).toBe("actor:env");
+			expect(store.actorDisplayName).toBe("Env User");
+		});
+
 		it("inserts a memory item and returns the ID", () => {
 			const sessionId = insertTestSession(store.db);
 			const memId = store.remember(sessionId, "feature", "My Feature", "Feature body", 0.8);
