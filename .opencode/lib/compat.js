@@ -19,6 +19,22 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
   const normalizedRunner = String(runner || "").trim();
   const normalizedFrom = String(runnerFrom || "").trim();
 
+  if (normalizedRunner === "node") {
+    return {
+      mode: "node-dev",
+      action: "In your codemem repo, pull latest changes and run `pnpm build`, then restart OpenCode.",
+      note: "detected TS dev mode",
+    };
+  }
+
+  if (normalizedRunner === "npx") {
+    return {
+      mode: "npx",
+      action: "Run `npm install -g @codemem/cli` to update, then restart OpenCode.",
+      note: "detected npx runner mode",
+    };
+  }
+
   if (normalizedRunner === "uv") {
     return {
       mode: "uv-dev",
@@ -93,6 +109,24 @@ const isPinnedGitSource = (runnerFrom) => {
 export const resolveAutoUpdatePlan = ({ runner, runnerFrom }) => {
   const normalizedRunner = String(runner || "").trim();
   const source = String(runnerFrom || "").trim();
+
+  if (normalizedRunner === "node") {
+    return {
+      allowed: false,
+      reason: "dev-runner",
+      command: null,
+      commandText: null,
+    };
+  }
+
+  if (normalizedRunner === "npx") {
+    return {
+      allowed: true,
+      reason: null,
+      command: ["npm", "install", "-g", "@codemem/cli@latest"],
+      commandText: "npm install -g @codemem/cli@latest",
+    };
+  }
 
   if (normalizedRunner === "uv") {
     return {
