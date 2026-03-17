@@ -10,7 +10,12 @@
  */
 
 import { fromJson } from "./db.js";
-import { buildFilterClauses } from "./filters.js";
+import {
+	buildFilterClausesWithContext,
+	normalizeFilterStrings,
+	normalizeVisibilityValues,
+	normalizeWorkspaceKinds,
+} from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
 import { projectMatchesFilter } from "./project.js";
 import type {
@@ -32,7 +37,10 @@ import type {
 /** Structural type for the store parameter (avoids circular import). */
 export interface StoreHandle {
 	readonly db: import("better-sqlite3").Database;
+	readonly actorId: string;
+	readonly deviceId: string;
 	get(memoryId: number): MemoryItemResponse | null;
+	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean;
 	recent(limit?: number, filters?: MemoryFilters | null, offset?: number): MemoryItemResponse[];
 	recentByKinds(
 		kinds: string[],
@@ -59,6 +67,19 @@ const MEMORY_KIND_BONUS: Record<string, number> = {
 	exploration: 0.1,
 	entities: 0.05,
 };
+
+const PERSONAL_FIRST_BONUS = 0.45;
+const TRUST_BIAS_LEGACY_UNKNOWN_PENALTY = 0.18;
+const TRUST_BIAS_UNREVIEWED_PENALTY = 0.12;
+const WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS = 3;
+const WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE = 0.0;
+const WIDEN_SHARED_MAX_SHARED_RESULTS = 2;
+const PERSONAL_QUERY_PATTERNS = [
+	/\bwhat did i\b/i,
+	/\bmy notes\b/i,
+	/\bmy last session\b/i,
+	/\bmy machine\b/i,
+];
 
 /** FTS5 operators that must be stripped from user queries. */
 const FTS5_OPERATORS = new Set(["or", "and", "not", "near", "phrase"]);
@@ -117,6 +138,131 @@ export function kindBonus(kind: string | null): number {
 	return MEMORY_KIND_BONUS[kind.trim().toLowerCase()] ?? 0.0;
 }
 
+function personalFirstEnabled(filters: MemoryFilters | undefined): boolean {
+	if (!filters || filters.personal_first === undefined) return true;
+	const value = filters.personal_first;
+	if (typeof value === "string") {
+		const lowered = value.trim().toLowerCase();
+		if (["0", "false", "no", "off"].includes(lowered)) return false;
+		if (["1", "true", "yes", "on"].includes(lowered)) return true;
+	}
+	return Boolean(value);
+}
+
+function trustBiasMode(filters: MemoryFilters | undefined): "off" | "soft" {
+	const value = String(filters?.trust_bias ?? "off")
+		.trim()
+		.toLowerCase();
+	return value === "soft" ? "soft" : "off";
+}
+
+function widenSharedWhenWeakEnabled(filters: MemoryFilters | undefined): boolean {
+	if (!filters || filters.widen_shared_when_weak === undefined) return false;
+	const value = filters.widen_shared_when_weak;
+	if (typeof value === "string") {
+		const lowered = value.trim().toLowerCase();
+		if (["0", "false", "no", "off"].includes(lowered)) return false;
+		if (["1", "true", "yes", "on"].includes(lowered)) return true;
+	}
+	return Boolean(value);
+}
+
+function widenSharedMinPersonalResults(filters: MemoryFilters | undefined): number {
+	const value = filters?.widen_shared_min_personal_results;
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS;
+	}
+	return Math.max(1, Math.trunc(value));
+}
+
+function widenSharedMinPersonalScore(filters: MemoryFilters | undefined): number {
+	const value = filters?.widen_shared_min_personal_score;
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE;
+	}
+	return Math.max(0, value);
+}
+
+function queryBlocksSharedWidening(query: string): boolean {
+	return PERSONAL_QUERY_PATTERNS.some((pattern) => pattern.test(query));
+}
+
+function filtersBlockSharedWidening(filters: MemoryFilters | undefined): boolean {
+	if (!filters) return false;
+	const ownershipScope = String(filters.ownership_scope ?? "")
+		.trim()
+		.toLowerCase();
+	if (ownershipScope === "mine" || ownershipScope === "theirs") return true;
+	const includeVisibility = normalizeVisibilityValues(
+		filters.include_visibility ?? filters.visibility,
+	);
+	const excludeVisibility = normalizeVisibilityValues(filters.exclude_visibility);
+	const includeWorkspaceIds = normalizeFilterStrings(filters.include_workspace_ids);
+	const excludeWorkspaceIds = normalizeFilterStrings(filters.exclude_workspace_ids);
+	const includeWorkspaceKinds = normalizeWorkspaceKinds(filters.include_workspace_kinds);
+	const excludeWorkspaceKinds = normalizeWorkspaceKinds(filters.exclude_workspace_kinds);
+	if (includeVisibility.length || includeWorkspaceIds.length || includeWorkspaceKinds.length)
+		return true;
+	if (excludeVisibility.includes("private") || excludeVisibility.includes("shared")) return true;
+	if (excludeWorkspaceKinds.includes("shared") || excludeWorkspaceKinds.includes("personal")) {
+		return true;
+	}
+	return excludeWorkspaceIds.some(
+		(value) => value.startsWith("personal:") || value.startsWith("shared:"),
+	);
+}
+
+function sharedWideningFilters(filters: MemoryFilters | undefined): MemoryFilters {
+	return {
+		...(filters ?? {}),
+		visibility: undefined,
+		ownership_scope: undefined,
+		include_visibility: ["shared"],
+		include_workspace_kinds: ["shared"],
+		personal_first: false,
+		widen_shared_when_weak: false,
+	};
+}
+
+function markWideningMetadata(items: MemoryResult[]): MemoryResult[] {
+	return items.map((item) => ({
+		...item,
+		metadata: { ...(item.metadata ?? {}), widened_from_shared: true },
+	}));
+}
+
+function personalBias(
+	store: StoreHandle,
+	item: MemoryResult,
+	filters: MemoryFilters | undefined,
+): number {
+	if (!personalFirstEnabled(filters)) return 0.0;
+	return store.memoryOwnedBySelf(item) ? PERSONAL_FIRST_BONUS : 0.0;
+}
+
+function sharedTrustPenalty(
+	store: StoreHandle,
+	item: MemoryResult,
+	filters: MemoryFilters | undefined,
+): number {
+	if (trustBiasMode(filters) !== "soft") return 0.0;
+	if (store.memoryOwnedBySelf(item)) return 0.0;
+	const metadata = item.metadata ?? {};
+	const visibility = String(metadata.visibility ?? "")
+		.trim()
+		.toLowerCase();
+	const workspaceKind = String(metadata.workspace_kind ?? "")
+		.trim()
+		.toLowerCase();
+	if (visibility !== "shared" && workspaceKind !== "shared") return 0.0;
+	const trustState = String(metadata.trust_state ?? "trusted")
+		.trim()
+		.toLowerCase();
+	if (trustState === "legacy_unknown") return TRUST_BIAS_LEGACY_UNKNOWN_PENALTY;
+	if (trustState === "unreviewed") return TRUST_BIAS_UNREVIEWED_PENALTY;
+	return 0.0;
+}
+
 // ---------------------------------------------------------------------------
 // rerankResults
 // ---------------------------------------------------------------------------
@@ -127,13 +273,22 @@ export function kindBonus(kind: string | null): number {
  * Simplified version: does not apply personal_bias or trust_penalty
  * (those require actor resolution, deferred to a follow-up).
  */
-export function rerankResults(results: MemoryResult[], limit: number): MemoryResult[] {
+export function rerankResults(
+	store: StoreHandle,
+	results: MemoryResult[],
+	limit: number,
+	filters?: MemoryFilters,
+): MemoryResult[] {
 	const referenceNow = new Date();
 
 	const scored = results.map((item) => ({
 		item,
 		combinedScore:
-			item.score * 1.5 + recencyScore(item.created_at, referenceNow) + kindBonus(item.kind),
+			item.score * 1.5 +
+			recencyScore(item.created_at, referenceNow) +
+			kindBonus(item.kind) +
+			personalBias(store, item, filters) -
+			sharedTrustPenalty(store, item, filters),
 	}));
 
 	scored.sort((a, b) => b.combinedScore - a.combinedScore);
@@ -158,6 +313,48 @@ export function search(
 	limit = 10,
 	filters?: MemoryFilters,
 ): MemoryResult[] {
+	const primary = searchOnce(store, query, limit, filters);
+	if (
+		!widenSharedWhenWeakEnabled(filters) ||
+		!query ||
+		queryBlocksSharedWidening(query) ||
+		filtersBlockSharedWidening(filters)
+	) {
+		return primary;
+	}
+
+	const personalResults = primary.filter((item) => store.memoryOwnedBySelf(item));
+	const strongestPersonalScore = personalResults[0]?.score ?? -Infinity;
+	const personalStrongEnough =
+		personalResults.length >= widenSharedMinPersonalResults(filters) &&
+		strongestPersonalScore >= widenSharedMinPersonalScore(filters);
+	if (personalStrongEnough) return primary;
+
+	const shared = markWideningMetadata(
+		searchOnce(
+			store,
+			query,
+			WIDEN_SHARED_MAX_SHARED_RESULTS,
+			sharedWideningFilters(filters),
+		).filter((item) => !store.memoryOwnedBySelf(item)),
+	);
+	const seen = new Set(primary.map((item) => item.id));
+	const combined = [...primary];
+	for (const item of shared) {
+		if (seen.has(item.id)) continue;
+		seen.add(item.id);
+		combined.push(item);
+		if (combined.length >= Math.max(1, Math.trunc(limit))) break;
+	}
+	return combined;
+}
+
+function searchOnce(
+	store: StoreHandle,
+	query: string,
+	limit = 10,
+	filters?: MemoryFilters,
+): MemoryResult[] {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
 	const expanded = expandQuery(query);
 	if (!expanded) return [];
@@ -169,7 +366,10 @@ export function search(
 	const params: unknown[] = [expanded];
 	const whereClauses = ["memory_items.active = 1", "memory_fts MATCH ?"];
 
-	const filterResult = buildFilterClauses(filters);
+	const filterResult = buildFilterClausesWithContext(filters, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+	});
 	whereClauses.push(...filterResult.clauses);
 	params.push(...filterResult.params);
 
@@ -225,7 +425,7 @@ export function search(
 		};
 	});
 
-	return rerankResults(results, effectiveLimit);
+	return rerankResults(store, results, effectiveLimit, filters);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +495,10 @@ function timelineAround(
 		return [];
 	}
 
-	const filterResult = buildFilterClauses(filters);
+	const filterResult = buildFilterClausesWithContext(filters, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+	});
 	const whereParts = ["memory_items.active = 1", ...filterResult.clauses];
 	const baseParams = [...filterResult.params];
 
@@ -470,7 +673,10 @@ function loadItemsByIdsForExplain(
 	let projectScopedIds = new Set(allFoundIds);
 	if (filters.project) {
 		const projectFiltersOnly: MemoryFilters = { project: filters.project };
-		const projectFilterResult = buildFilterClauses(projectFiltersOnly);
+		const projectFilterResult = buildFilterClausesWithContext(projectFiltersOnly, {
+			actorId: store.actorId,
+			deviceId: store.deviceId,
+		});
 		if (projectFilterResult.clauses.length > 0) {
 			const projectJoin = projectFilterResult.joinSessions
 				? "JOIN sessions ON sessions.id = memory_items.session_id"
@@ -489,7 +695,10 @@ function loadItemsByIdsForExplain(
 		}
 	}
 
-	const filterResult = buildFilterClauses(filters);
+	const filterResult = buildFilterClausesWithContext(filters, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+	});
 	const joinClause = filterResult.joinSessions
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
 		: "";

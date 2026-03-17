@@ -8,6 +8,11 @@
 import { projectClause } from "./project.js";
 import type { MemoryFilters } from "./types.js";
 
+export interface OwnershipFilterContext {
+	actorId: string;
+	deviceId: string;
+}
+
 export interface FilterResult {
 	clauses: string[];
 	params: unknown[];
@@ -18,10 +23,42 @@ export interface FilterResult {
  * Normalize a filter value that may be a single string or an array of strings
  * into a clean, non-empty array of trimmed strings.
  */
-function normalizeStringArray(value: string | string[] | undefined | null): string[] {
+export function normalizeFilterStrings(value: string | string[] | undefined | null): string[] {
 	if (value == null) return [];
 	const items = Array.isArray(value) ? value : [value];
-	return items.map((s) => String(s).trim()).filter((s) => s.length > 0);
+	const seen = new Set<string>();
+	const normalized: string[] = [];
+	for (const item of items) {
+		const candidate = String(item).trim();
+		if (!candidate || seen.has(candidate)) continue;
+		seen.add(candidate);
+		normalized.push(candidate);
+	}
+	return normalized;
+}
+
+export function normalizeWorkspaceKinds(value: string | string[] | undefined | null): string[] {
+	return normalizeFilterStrings(value)
+		.map((raw) => raw.toLowerCase())
+		.filter(
+			(raw, idx, arr) => (raw === "personal" || raw === "shared") && arr.indexOf(raw) === idx,
+		);
+}
+
+export function normalizeVisibilityValues(value: string | string[] | undefined | null): string[] {
+	return normalizeFilterStrings(value)
+		.map((raw) => raw.toLowerCase())
+		.filter((raw, idx, arr) => (raw === "private" || raw === "shared") && arr.indexOf(raw) === idx);
+}
+
+export function normalizeTrustStates(value: string | string[] | undefined | null): string[] {
+	return normalizeFilterStrings(value)
+		.map((raw) => raw.toLowerCase())
+		.filter(
+			(raw, idx, arr) =>
+				(raw === "trusted" || raw === "legacy_unknown" || raw === "unreviewed") &&
+				arr.indexOf(raw) === idx,
+		);
 }
 
 /**
@@ -55,6 +92,13 @@ function addMultiValueFilter(
  * similar base conditions — this function only appends filter-specific clauses.
  */
 export function buildFilterClauses(filters: MemoryFilters | undefined | null): FilterResult {
+	return buildFilterClausesWithContext(filters);
+}
+
+export function buildFilterClausesWithContext(
+	filters: MemoryFilters | undefined | null,
+	ownership?: OwnershipFilterContext,
+): FilterResult {
 	const result: FilterResult = { clauses: [], params: [], joinSessions: false };
 	if (!filters) return result;
 
@@ -64,6 +108,27 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 	if (filters.kind) {
 		clauses.push("memory_items.kind = ?");
 		params.push(filters.kind);
+	}
+	if (filters.session_id) {
+		clauses.push("memory_items.session_id = ?");
+		params.push(filters.session_id);
+	}
+	if (filters.since) {
+		clauses.push("memory_items.created_at >= ?");
+		params.push(filters.since);
+	}
+
+	const ownershipScope = String(filters.ownership_scope ?? "")
+		.trim()
+		.toLowerCase();
+	if (ownership && (ownershipScope === "mine" || ownershipScope === "theirs")) {
+		const ownedClause = "(memory_items.actor_id = ? OR memory_items.origin_device_id = ?)";
+		if (ownershipScope === "mine") {
+			clauses.push(ownedClause);
+		} else {
+			clauses.push(`NOT ${ownedClause}`);
+		}
+		params.push(ownership.actorId, ownership.deviceId);
 	}
 
 	// Project scoping — requires sessions JOIN
@@ -81,8 +146,8 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 		clauses,
 		params,
 		"memory_items.visibility",
-		normalizeStringArray(filters.include_visibility),
-		normalizeStringArray(filters.exclude_visibility),
+		normalizeVisibilityValues(filters.include_visibility ?? filters.visibility),
+		normalizeVisibilityValues(filters.exclude_visibility),
 	);
 
 	// Workspace IDs
@@ -90,8 +155,8 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 		clauses,
 		params,
 		"memory_items.workspace_id",
-		normalizeStringArray(filters.include_workspace_ids),
-		normalizeStringArray(filters.exclude_workspace_ids),
+		normalizeFilterStrings(filters.include_workspace_ids),
+		normalizeFilterStrings(filters.exclude_workspace_ids),
 	);
 
 	// Workspace kinds
@@ -99,8 +164,8 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 		clauses,
 		params,
 		"memory_items.workspace_kind",
-		normalizeStringArray(filters.include_workspace_kinds),
-		normalizeStringArray(filters.exclude_workspace_kinds),
+		normalizeWorkspaceKinds(filters.include_workspace_kinds),
+		normalizeWorkspaceKinds(filters.exclude_workspace_kinds),
 	);
 
 	// Actor IDs
@@ -108,8 +173,8 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 		clauses,
 		params,
 		"memory_items.actor_id",
-		normalizeStringArray(filters.include_actor_ids),
-		normalizeStringArray(filters.exclude_actor_ids),
+		normalizeFilterStrings(filters.include_actor_ids),
+		normalizeFilterStrings(filters.exclude_actor_ids),
 	);
 
 	// Trust states
@@ -117,8 +182,8 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 		clauses,
 		params,
 		"memory_items.trust_state",
-		normalizeStringArray(filters.include_trust_states),
-		normalizeStringArray(filters.exclude_trust_states),
+		normalizeTrustStates(filters.include_trust_states),
+		normalizeTrustStates(filters.exclude_trust_states),
 	);
 
 	return result;

@@ -45,6 +45,7 @@ const MEMORY_KINDS: Record<string, string> = {
 const filterSchema = {
 	kind: z.string().optional().describe("Filter by memory kind"),
 	project: z.string().optional().describe("Filter by project scope (matches sessions.project)"),
+	visibility: z.array(z.string()).optional(),
 	include_visibility: z.array(z.string()).optional(),
 	exclude_visibility: z.array(z.string()).optional(),
 	include_workspace_ids: z.array(z.string()).optional(),
@@ -55,6 +56,12 @@ const filterSchema = {
 	exclude_actor_ids: z.array(z.string()).optional(),
 	include_trust_states: z.array(z.string()).optional(),
 	exclude_trust_states: z.array(z.string()).optional(),
+	ownership_scope: z.string().optional(),
+	personal_first: z.union([z.boolean(), z.string()]).optional(),
+	trust_bias: z.string().optional(),
+	widen_shared_when_weak: z.union([z.boolean(), z.string()]).optional(),
+	widen_shared_min_personal_results: z.number().int().optional(),
+	widen_shared_min_personal_score: z.number().optional(),
 };
 
 // ---------------------------------------------------------------------------
