@@ -1,12 +1,13 @@
 /**
- * Raw events routes — GET & POST /api/raw-events, GET /api/raw-events/status.
+ * Raw events routes — GET & POST /api/raw-events, GET /api/raw-events/status,
+ * POST /api/claude-hooks.
  *
- * Ports Python's viewer_routes/raw_events.py.
+ * Ports Python's viewer_routes/raw_events.py + claude_hooks.py.
  */
 
 import { createHash } from "node:crypto";
-import type { MemoryStore } from "@codemem/core";
-import { stripPrivateObj } from "@codemem/core";
+import type { MemoryStore, RawEventSweeper } from "@codemem/core";
+import { buildRawEventEnvelopeFromHook, stripPrivateObj } from "@codemem/core";
 import { Hono } from "hono";
 import { queryInt } from "../helpers.js";
 
@@ -47,7 +48,55 @@ function resolveSessionStreamId(payload: Record<string, unknown>): string | null
 	return null;
 }
 
-export function rawEventsRoutes(getStore: StoreFactory) {
+/**
+ * Parse and validate a JSON object body, enforcing size limits.
+ * Returns the parsed payload or a Hono Response on error.
+ */
+async function parseJsonObjectBody(
+	c: {
+		req: { header: (name: string) => string | undefined; text: () => Promise<string> };
+		json: (data: unknown, status?: number) => Response;
+	},
+	maxBytes: number,
+): Promise<Record<string, unknown> | Response> {
+	const contentLength = Number.parseInt(c.req.header("content-length") ?? "0", 10);
+	if (Number.isNaN(contentLength) || contentLength < 0) {
+		return c.json({ error: "invalid content-length" }, 400);
+	}
+	if (contentLength > maxBytes) {
+		return c.json({ error: "payload too large", max_bytes: maxBytes }, 413);
+	}
+	let raw: string;
+	try {
+		raw = await c.req.text();
+	} catch {
+		return c.json({ error: "invalid json" }, 400);
+	}
+	if (Buffer.byteLength(raw, "utf-8") > maxBytes) {
+		return c.json({ error: "payload too large", max_bytes: maxBytes }, 413);
+	}
+	let parsed: unknown;
+	try {
+		parsed = raw ? JSON.parse(raw) : {};
+	} catch {
+		return c.json({ error: "invalid json" }, 400);
+	}
+	if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return c.json({ error: "payload must be an object" }, 400);
+	}
+	return parsed as Record<string, unknown>;
+}
+
+/** Nudge the sweeper safely — never crashes the caller. */
+function nudgeSweeper(sweeper: RawEventSweeper | null | undefined): void {
+	try {
+		sweeper?.nudge();
+	} catch {
+		// never crash the request if sweeper nudge fails
+	}
+}
+
+export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweeper | null) {
 	const app = new Hono();
 
 	// GET /api/raw-events (compat endpoint for stats panel)
@@ -93,32 +142,9 @@ export function rawEventsRoutes(getStore: StoreFactory) {
 
 	// POST /api/raw-events — ingest raw events from plugin
 	app.post("/api/raw-events", async (c) => {
-		// Enforce body size — check Content-Length header first, then verify actual bytes read.
-		// This guards against both honest clients and chunked/missing-header scenarios.
-		const contentLength = Number.parseInt(c.req.header("content-length") ?? "0", 10);
-		if (Number.isNaN(contentLength) || contentLength < 0) {
-			return c.json({ error: "invalid content-length" }, 400);
-		}
-		if (contentLength > MAX_RAW_EVENTS_BODY_BYTES) {
-			return c.json({ error: "payload too large", max_bytes: MAX_RAW_EVENTS_BODY_BYTES }, 413);
-		}
-
-		// Parse JSON body
-		let payload: Record<string, unknown>;
-		try {
-			const raw = await c.req.text();
-			// Enforce actual byte length regardless of Content-Length header
-			if (Buffer.byteLength(raw, "utf-8") > MAX_RAW_EVENTS_BODY_BYTES) {
-				return c.json({ error: "payload too large", max_bytes: MAX_RAW_EVENTS_BODY_BYTES }, 413);
-			}
-			const parsed: unknown = raw ? JSON.parse(raw) : {};
-			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				return c.json({ error: "payload must be an object" }, 400);
-			}
-			payload = parsed as Record<string, unknown>;
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
+		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+		if (result instanceof Response) return result;
+		const payload = result;
 
 		const store = getStore();
 		try {
@@ -328,7 +354,60 @@ export function rawEventsRoutes(getStore: StoreFactory) {
 				});
 			}
 
+			// Nudge sweeper once after all metadata updates (mirrors Python note_activity)
+			nudgeSweeper(sweeper);
+
 			return c.json({ inserted, received: (items as unknown[]).length });
+		} catch (err) {
+			const response: Record<string, unknown> = { error: "internal server error" };
+			if (process.env.CODEMEM_VIEWER_DEBUG === "1") {
+				response.detail = (err as Error).message;
+			}
+			return c.json(response, 500);
+		}
+	});
+
+	// POST /api/claude-hooks — ingest Claude Code hook events
+	app.post("/api/claude-hooks", async (c) => {
+		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+		if (result instanceof Response) return result;
+		const payload = result;
+
+		// Map hook payload → raw event envelope
+		const envelope = buildRawEventEnvelopeFromHook(payload);
+		if (envelope === null) {
+			// Unsupported event type or missing required fields — skip gracefully
+			return c.json({ inserted: 0, skipped: 1 });
+		}
+
+		const store = getStore();
+		try {
+			const opencodeSessionId = envelope.opencode_session_id;
+			const source = envelope.source;
+			const strippedPayload = stripPrivateObj(envelope.payload) as Record<string, unknown>;
+
+			const inserted = store.recordRawEvent({
+				opencodeSessionId,
+				source,
+				eventId: envelope.event_id,
+				eventType: "claude.hook",
+				payload: strippedPayload,
+				tsWallMs: envelope.ts_wall_ms,
+			});
+
+			store.updateRawEventSessionMeta({
+				opencodeSessionId,
+				source,
+				cwd: envelope.cwd,
+				project: envelope.project,
+				startedAt: envelope.started_at,
+				lastSeenTsWallMs: envelope.ts_wall_ms,
+			});
+
+			// Nudge sweeper to process promptly
+			nudgeSweeper(sweeper);
+
+			return c.json({ inserted: inserted ? 1 : 0, skipped: 0 });
 		} catch (err) {
 			const response: Record<string, unknown> = { error: "internal server error" };
 			if (process.env.CODEMEM_VIEWER_DEBUG === "1") {

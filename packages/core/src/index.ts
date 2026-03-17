@@ -8,6 +8,15 @@
 export const VERSION = "0.19.0";
 
 export * as Api from "./api-types.js";
+export type { ClaudeHookAdapterEvent, ClaudeHookRawEventEnvelope } from "./claude-hooks.js";
+export {
+	buildIngestPayloadFromHook,
+	buildRawEventEnvelopeFromHook,
+	MAPPABLE_CLAUDE_HOOK_EVENTS,
+	mapClaudeHookPayload,
+	normalizeProjectLabel,
+	resolveHookProject,
+} from "./claude-hooks.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
 	decodeInvitePayload,
