@@ -10,7 +10,7 @@
 // ---------------------------------------------------------------------------
 
 const PRIVATE_BLOCK_RE = /<private>.*?<\/private>/gis;
-const PRIVATE_OPEN_RE = /<private>/gi;
+const PRIVATE_OPEN_RE = /<private>/i;
 const PRIVATE_CLOSE_RE = /<\/private>/gi;
 
 /**

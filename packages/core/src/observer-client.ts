@@ -590,11 +590,13 @@ export class ObserverClient {
 	async observe(systemPrompt: string, userPrompt: string): Promise<ObserverResponse> {
 		// Enforce configured prompt-length cap (matches Python behavior)
 		const maxChars = this.maxChars;
+		const minUserBudget = Math.floor(maxChars * 0.25);
+		const systemBudget = Math.max(0, maxChars - minUserBudget);
 		const clippedSystem =
-			systemPrompt.length > maxChars ? systemPrompt.slice(0, maxChars) : systemPrompt;
-		const remainingBudget = Math.max(0, maxChars - clippedSystem.length);
+			systemPrompt.length > systemBudget ? systemPrompt.slice(0, systemBudget) : systemPrompt;
+		const userBudget = Math.max(minUserBudget, maxChars - clippedSystem.length);
 		const clippedUser =
-			userPrompt.length > remainingBudget ? userPrompt.slice(0, remainingBudget) : userPrompt;
+			userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt;
 
 		try {
 			const raw = await this._callOnce(clippedSystem, clippedUser);

@@ -322,103 +322,118 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		// Parse response
 		// ------------------------------------------------------------------
-		const parsed = parseObserverResponse(response.raw);
+		const rawText = response.raw;
+		const parsed = parseObserverResponse(rawText);
 
-		// ------------------------------------------------------------------
-		// Filter and persist observations
-		// ------------------------------------------------------------------
-		if (storeTyped && hasMeaningfulObservation(parsed.observations)) {
-			for (const obs of parsed.observations) {
-				const kind = obs.kind.trim().toLowerCase();
-				if (!ALLOWED_KINDS.has(kind)) continue;
-				if (!obs.title && !obs.narrative) continue;
-				if (isLowSignalObservation(obs.title) || isLowSignalObservation(obs.narrative)) {
-					continue;
-				}
+		// Persist all observations, summary, and usage atomically
+		store.db.transaction(() => {
+			// ------------------------------------------------------------------
+			// Filter and persist observations
+			// ------------------------------------------------------------------
+			if (storeTyped && hasMeaningfulObservation(parsed.observations)) {
+				for (const obs of parsed.observations) {
+					const kind = obs.kind.trim().toLowerCase();
+					if (!ALLOWED_KINDS.has(kind)) continue;
+					if (!obs.title && !obs.narrative) continue;
+					if (isLowSignalObservation(obs.title) || isLowSignalObservation(obs.narrative)) {
+						continue;
+					}
 
-				const filesRead = normalizePaths(obs.filesRead, cwd);
-				const filesModified = normalizePaths(obs.filesModified, cwd);
+					const filesRead = normalizePaths(obs.filesRead, cwd);
+					const filesModified = normalizePaths(obs.filesModified, cwd);
 
-				// Build body text from narrative
-				const bodyParts: string[] = [];
-				if (obs.narrative) bodyParts.push(obs.narrative);
-				if (obs.facts.length > 0) {
-					bodyParts.push(obs.facts.map((f) => `- ${f}`).join("\n"));
-				}
-				const bodyText = bodyParts.join("\n\n");
+					// Build body text from narrative
+					const bodyParts: string[] = [];
+					if (obs.narrative) bodyParts.push(obs.narrative);
+					if (obs.facts.length > 0) {
+						bodyParts.push(obs.facts.map((f) => `- ${f}`).join("\n"));
+					}
+					const bodyText = bodyParts.join("\n\n");
 
-				store.remember(sessionId, kind, obs.title || obs.narrative, bodyText, 0.5, undefined, {
-					subtitle: obs.subtitle,
-					facts: obs.facts,
-					concepts: obs.concepts,
-					files_read: filesRead,
-					files_modified: filesModified,
-					prompt_number: promptNumber,
-					source: "observer",
-				});
-			}
-		}
-
-		// ------------------------------------------------------------------
-		// Persist session summary
-		// ------------------------------------------------------------------
-		if (storeSummary && parsed.summary && !parsed.skipSummaryReason) {
-			const summary = parsed.summary;
-			if (
-				summary.request ||
-				summary.investigated ||
-				summary.learned ||
-				summary.completed ||
-				summary.nextSteps ||
-				summary.notes
-			) {
-				summary.filesRead = normalizePaths(summary.filesRead, cwd);
-				summary.filesModified = normalizePaths(summary.filesModified, cwd);
-
-				// Derive meaningful request if trivial
-				let request = summary.request;
-				if (isTrivialRequest(request)) {
-					const derived = deriveRequest(summary);
-					if (derived) request = derived;
-				}
-
-				const body = summaryBody(summary);
-				if (body && !isLowSignalObservation(firstSentence(body))) {
-					store.remember(sessionId, "change", request || "Session summary", body, 0.3, undefined, {
-						is_summary: true,
+					store.remember(sessionId, kind, obs.title || obs.narrative, bodyText, 0.5, undefined, {
+						subtitle: obs.subtitle,
+						facts: obs.facts,
+						concepts: obs.concepts,
+						files_read: filesRead,
+						files_modified: filesModified,
 						prompt_number: promptNumber,
-						files_read: summary.filesRead,
-						files_modified: summary.filesModified,
-						source: "observer_summary",
+						source: "observer",
 					});
 				}
 			}
-		}
 
-		// ------------------------------------------------------------------
-		// Record observer usage
-		// ------------------------------------------------------------------
-		const usageTokenTotal = assistantUsageEvents.reduce((sum, e) => sum + (e.total_tokens ?? 0), 0);
-		store.db
-			.prepare(
-				`INSERT INTO usage_events (session_id, event, tokens_read, tokens_written, created_at, metadata_json)
-				 VALUES (?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				sessionId,
-				"observer_call",
-				response.raw.length,
-				transcript.length,
-				new Date().toISOString(),
-				toJson({
-					project,
-					observation_count: parsed.observations.length,
-					has_summary: parsed.summary != null,
-					provider: response.provider,
-					model: response.model,
-					session_usage_tokens: usageTokenTotal,
-				}),
+			// ------------------------------------------------------------------
+			// Persist session summary
+			// ------------------------------------------------------------------
+			if (storeSummary && parsed.summary && !parsed.skipSummaryReason) {
+				const summary = parsed.summary;
+				if (
+					summary.request ||
+					summary.investigated ||
+					summary.learned ||
+					summary.completed ||
+					summary.nextSteps ||
+					summary.notes
+				) {
+					summary.filesRead = normalizePaths(summary.filesRead, cwd);
+					summary.filesModified = normalizePaths(summary.filesModified, cwd);
+
+					// Derive meaningful request if trivial
+					let request = summary.request;
+					if (isTrivialRequest(request)) {
+						const derived = deriveRequest(summary);
+						if (derived) request = derived;
+					}
+
+					const body = summaryBody(summary);
+					if (body && !isLowSignalObservation(firstSentence(body))) {
+						store.remember(
+							sessionId,
+							"change",
+							request || "Session summary",
+							body,
+							0.3,
+							undefined,
+							{
+								is_summary: true,
+								prompt_number: promptNumber,
+								files_read: summary.filesRead,
+								files_modified: summary.filesModified,
+								source: "observer_summary",
+							},
+						);
+					}
+				}
+			}
+
+			// ------------------------------------------------------------------
+			// Record observer usage
+			// ------------------------------------------------------------------
+			const usageTokenTotal = assistantUsageEvents.reduce(
+				(sum, e) => sum + (e.total_tokens ?? 0),
+				0,
 			);
+			store.db
+				.prepare(
+					`INSERT INTO usage_events (session_id, event, tokens_read, tokens_written, created_at, metadata_json)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					sessionId,
+					"observer_call",
+					rawText.length,
+					transcript.length,
+					new Date().toISOString(),
+					toJson({
+						project,
+						observation_count: parsed.observations.length,
+						has_summary: parsed.summary != null,
+						provider: response.provider,
+						model: response.model,
+						session_usage_tokens: usageTokenTotal,
+					}),
+				);
+		})();
 
 		// ------------------------------------------------------------------
 		// End session
