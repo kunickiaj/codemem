@@ -240,10 +240,16 @@ export {
 	syncOnce,
 	syncPassPreflight,
 } from "./sync-pass.js";
+export type { ApplyResult } from "./sync-replication.js";
 export {
+	applyReplicationOps,
 	chunkOpsBySize,
+	clockTuple,
 	extractReplicationOps,
 	getReplicationCursor,
+	isNewerClock,
+	loadReplicationOpsSince,
+	recordReplicationOp,
 	setReplicationCursor,
 } from "./sync-replication.js";
 // Test utilities (exported for consumer packages like viewer-server)
