@@ -6,9 +6,9 @@
  * environment variable / file placeholders in config values.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // JSONC helpers
@@ -138,6 +138,36 @@ export function expandUserPath(value: string): string {
 	return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
 }
 
+/** Env var overrides matching Python's CONFIG_ENV_OVERRIDES. */
+export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
+	actor_id: "CODEMEM_ACTOR_ID",
+	actor_display_name: "CODEMEM_ACTOR_DISPLAY_NAME",
+	claude_command: "CODEMEM_CLAUDE_COMMAND",
+	observer_provider: "CODEMEM_OBSERVER_PROVIDER",
+	observer_model: "CODEMEM_OBSERVER_MODEL",
+	observer_base_url: "CODEMEM_OBSERVER_BASE_URL",
+	observer_runtime: "CODEMEM_OBSERVER_RUNTIME",
+	observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE",
+	observer_auth_file: "CODEMEM_OBSERVER_AUTH_FILE",
+	observer_auth_command: "CODEMEM_OBSERVER_AUTH_COMMAND",
+	observer_auth_timeout_ms: "CODEMEM_OBSERVER_AUTH_TIMEOUT_MS",
+	observer_auth_cache_ttl_s: "CODEMEM_OBSERVER_AUTH_CACHE_TTL_S",
+	observer_headers: "CODEMEM_OBSERVER_HEADERS",
+	observer_max_chars: "CODEMEM_OBSERVER_MAX_CHARS",
+	pack_observation_limit: "CODEMEM_PACK_OBSERVATION_LIMIT",
+	pack_session_limit: "CODEMEM_PACK_SESSION_LIMIT",
+	sync_enabled: "CODEMEM_SYNC_ENABLED",
+	sync_host: "CODEMEM_SYNC_HOST",
+	sync_port: "CODEMEM_SYNC_PORT",
+	sync_interval_s: "CODEMEM_SYNC_INTERVAL_S",
+	sync_mdns: "CODEMEM_SYNC_MDNS",
+	sync_coordinator_url: "CODEMEM_SYNC_COORDINATOR_URL",
+	sync_coordinator_group: "CODEMEM_SYNC_COORDINATOR_GROUP",
+	sync_coordinator_timeout_s: "CODEMEM_SYNC_COORDINATOR_TIMEOUT_S",
+	sync_coordinator_presence_ttl_s: "CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S",
+	raw_events_sweeper_interval_s: "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
+};
+
 /** Resolve codemem config path with CODEMEM_CONFIG override. */
 export function getCodememConfigPath(): string {
 	const envPath = process.env.CODEMEM_CONFIG?.trim();
@@ -179,6 +209,24 @@ export function readCodememConfigFile(): Record<string, unknown> {
 	} catch {
 		return {};
 	}
+}
+
+/** Persist the codemem config file as normalized JSON. */
+export function writeCodememConfigFile(data: Record<string, unknown>, configPath?: string): string {
+	const targetPath = configPath ? expandUserPath(configPath) : getCodememConfigPath();
+	mkdirSync(dirname(targetPath), { recursive: true });
+	writeFileSync(targetPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+	return targetPath;
+}
+
+/** Return active env overrides for codemem config keys. */
+export function getCodememEnvOverrides(): Record<string, string> {
+	const overrides: Record<string, string> = {};
+	for (const [key, envVar] of Object.entries(CODEMEM_CONFIG_ENV_OVERRIDES)) {
+		const val = process.env[envVar];
+		if (val != null && val !== "") overrides[key] = envVar;
+	}
+	return overrides;
 }
 
 // ---------------------------------------------------------------------------

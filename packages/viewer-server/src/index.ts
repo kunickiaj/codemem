@@ -62,7 +62,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
 	app.route("/", observerStatusRoutes({ getStore: storeFactory, getSweeper: () => sweeper }));
-	app.route("/", configRoutes());
+	app.route("/", configRoutes({ getSweeper: () => sweeper }));
 	app.route("/", rawEventsRoutes(storeFactory, sweeper));
 	app.route("/", syncRoutes(storeFactory));
 
