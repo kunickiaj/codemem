@@ -11,13 +11,18 @@
 	},
 	"scripts": {
 		"clean": "rm -rf dist",
-		"build": "pnpm exec vite build",
+		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist",
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
-		"@codemem/core": "workspace:*"
+		"@codemem/core": "workspace:*",
+		"@hono/node-server": "^1.14.3",
+		"hono": "^4.7.10"
 	},
 	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
+		"@types/node": "^22.15.21",
+		"better-sqlite3": "^12.8.0",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"

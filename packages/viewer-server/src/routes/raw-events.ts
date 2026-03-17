@@ -18,11 +18,14 @@ export function rawEventsRoutes(getStore: StoreFactory) {
 	app.get("/api/raw-events", (c) => {
 		const store = getStore();
 		{
+			// Pending = events received but not yet flushed to the observer.
+			// Matches Python's raw_event_backlog calculation.
 			const row = store.db
 				.prepare(
-					`SELECT COUNT(*) AS pending,
-						COUNT(DISTINCT opencode_session_id) AS sessions
-					 FROM raw_events`,
+					`SELECT COALESCE(SUM(last_received_event_seq - last_flushed_event_seq), 0) AS pending,
+						COUNT(*) AS sessions
+					 FROM raw_event_sessions
+					 WHERE last_received_event_seq > last_flushed_event_seq`,
 				)
 				.get() as Record<string, unknown>;
 			return c.json({
@@ -69,9 +72,9 @@ export function rawEventsRoutes(getStore: StoreFactory) {
 					sessions: Number(totals.sessions ?? 0),
 				},
 				ingest: {
-					available: true,
-					mode: "stream_queue",
-					max_body_bytes: 1048576,
+					available: false,
+					mode: "not_implemented",
+					reason: "POST /api/raw-events not yet ported to TS viewer-server",
 				},
 			});
 		}

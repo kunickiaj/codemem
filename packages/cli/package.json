@@ -13,6 +13,9 @@
 	},
 	"dependencies": {
 		"@codemem/core": "workspace:*",
+		"@codemem/mcp-server": "workspace:*",
+		"@codemem/viewer-server": "workspace:*",
+		"@hono/node-server": "^1.14.3",
 		"chalk": "^5.6.2",
 		"commander": "^14.0.3"
 	},

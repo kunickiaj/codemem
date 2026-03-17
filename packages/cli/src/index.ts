@@ -11,17 +11,18 @@
 
 import { VERSION } from "@codemem/core";
 import { Command } from "commander";
+import { mcpCommand } from "./commands/mcp.js";
 import { packCommand } from "./commands/pack.js";
 import { searchCommand } from "./commands/search.js";
+import { serveCommand } from "./commands/serve.js";
 import { statsCommand } from "./commands/stats.js";
 
 const program = new Command();
 
-program
-	.name("codemem-ts")
-	.description("codemem TypeScript backend CLI (Phase 1 prototype)")
-	.version(VERSION);
+program.name("codemem-ts").description("codemem TypeScript backend CLI").version(VERSION);
 
+program.addCommand(serveCommand);
+program.addCommand(mcpCommand);
 program.addCommand(statsCommand);
 program.addCommand(searchCommand);
 program.addCommand(packCommand);

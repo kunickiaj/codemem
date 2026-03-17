@@ -303,6 +303,11 @@ export function syncRoutes(getStore: StoreFactory) {
 					const [id, fp] = ensureDeviceIdentity(store.db);
 					deviceId = id;
 					fingerprint = fp;
+					// Read the newly created public key
+					const newRow = store.db
+						.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
+						.get(id) as { public_key: string } | undefined;
+					publicKey = newRow?.public_key ?? "";
 				} catch {
 					return c.json({ error: "device identity unavailable" }, 500);
 				}
