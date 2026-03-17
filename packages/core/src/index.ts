@@ -152,7 +152,7 @@ export {
 	stripTrailingCommas,
 	writeCodememConfigFile,
 } from "./observer-config.js";
-export { buildMemoryPack, estimateTokens } from "./pack.js";
+export { buildMemoryPack, buildMemoryPackAsync, estimateTokens } from "./pack.js";
 export {
 	projectBasename,
 	projectClause,
