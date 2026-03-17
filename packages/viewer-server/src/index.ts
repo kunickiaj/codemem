@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryStore, resolveDbPath, VERSION } from "@codemem/core";
+import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@codemem/core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { originGuard, preflightHandler } from "./middleware.js";
@@ -44,7 +44,14 @@ export function closeStore(): void {
  * Create the Hono app with all viewer routes.
  * Exported for testing — pass a custom store factory to inject test DBs.
  */
-export function createApp(storeFactory: () => MemoryStore = getStore) {
+export interface AppOptions {
+	storeFactory?: () => MemoryStore;
+	sweeper?: RawEventSweeper | null;
+}
+
+export function createApp(opts?: AppOptions) {
+	const storeFactory = opts?.storeFactory ?? getStore;
+	const sweeper = opts?.sweeper ?? null;
 	const app = new Hono();
 
 	// CORS / origin guard
@@ -54,7 +61,7 @@ export function createApp(storeFactory: () => MemoryStore = getStore) {
 	// API routes
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
-	app.route("/", observerStatusRoutes());
+	app.route("/", observerStatusRoutes({ getStore: storeFactory, getSweeper: () => sweeper }));
 	app.route("/", configRoutes());
 	app.route("/", rawEventsRoutes(storeFactory));
 	app.route("/", syncRoutes(storeFactory));

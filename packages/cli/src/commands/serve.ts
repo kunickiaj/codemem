@@ -18,12 +18,12 @@ export const serveCommand = new Command("serve")
 		process.env.CODEMEM_DB = dbPath;
 
 		const port = Number.parseInt(opts.port, 10);
-		const app = createApp();
-
 		// Start the raw event sweeper — shares the same store as the viewer
 		const observer = new ObserverClient();
 		const sweeper = new RawEventSweeper(getStore(), { observer });
 		sweeper.start();
+
+		const app = createApp({ storeFactory: getStore, sweeper });
 
 		const server = serve({ fetch: app.fetch, hostname: opts.host, port }, (info) => {
 			p.intro("codemem viewer");
