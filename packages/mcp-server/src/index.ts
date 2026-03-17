@@ -264,7 +264,10 @@ async function main() {
 		},
 		async (args) => {
 			try {
-				const resolvedProject = args.project?.trim() || defaultProject || null;
+				// Python: project if project is not None else default_project
+				// Explicit "" clears project scoping; only fall back to default when undefined.
+				const resolvedProject =
+					args.project !== undefined ? args.project.trim() || null : defaultProject || null;
 				const filters = resolvedProject ? { project: resolvedProject } : undefined;
 				const { clause: projectFilterClause, params: projectFilterParams } = resolvedProject
 					? projectClause(resolvedProject)

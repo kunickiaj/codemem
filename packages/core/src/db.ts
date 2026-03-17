@@ -194,29 +194,51 @@ export function getSchemaVersion(db: DatabaseType): number {
 export function backupOnFirstAccess(dbPath: string): void {
 	const markerPath = join(dirname(dbPath), TS_MARKER);
 	if (existsSync(markerPath)) return;
-	if (!existsSync(dbPath)) return; // Fresh DB, nothing to back up
+
+	// Find the actual DB file to back up. It may be at the target path already,
+	// or at a legacy location that migrateLegacyDbPath() will move later.
+	// Back up whichever exists BEFORE migration runs.
+	let sourceDbPath = dbPath;
+	if (!existsSync(dbPath)) {
+		// Check legacy locations — same order as migrateLegacyDbPath()
+		const legacyPaths = [
+			join(dirname(dbPath), "..", ".codemem.sqlite"),
+			join(dirname(dbPath), "..", ".opencode-mem.sqlite"),
+		];
+		const legacyPath = legacyPaths.find((p) => existsSync(p));
+		if (legacyPath) {
+			sourceDbPath = legacyPath;
+		} else {
+			return; // Fresh DB, nothing to back up
+		}
+	}
 
 	const ts = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
-	const backupPath = `${dbPath}.pre-ts-${ts}.bak`;
+	const backupPath = `${sourceDbPath}.pre-ts-${ts}.bak`;
+	let backupSucceeded = false;
 	try {
-		copyFileSync(dbPath, backupPath);
+		copyFileSync(sourceDbPath, backupPath);
 		// Also back up WAL/SHM if present (they contain uncommitted data)
-		const walPath = `${dbPath}-wal`;
-		const shmPath = `${dbPath}-shm`;
+		const walPath = `${sourceDbPath}-wal`;
+		const shmPath = `${sourceDbPath}-shm`;
 		if (existsSync(walPath)) copyFileSync(walPath, `${backupPath}-wal`);
 		if (existsSync(shmPath)) copyFileSync(shmPath, `${backupPath}-shm`);
 		console.error(`[codemem] First TS access — backed up database to ${backupPath}`);
+		backupSucceeded = true;
 	} catch (err) {
 		console.error(`[codemem] Warning: failed to create backup at ${backupPath}:`, err);
-		// Continue — backup failure shouldn't prevent operation
+		// Continue — backup failure shouldn't prevent operation, but don't write marker
 	}
 
-	// Write marker so we don't back up again
-	try {
-		mkdirSync(dirname(markerPath), { recursive: true });
-		writeFileSync(markerPath, new Date().toISOString(), "utf-8");
-	} catch {
-		// Non-fatal — worst case we back up again next time
+	// Only write marker after backup succeeds — a transient failure should
+	// retry on next access, not permanently suppress the safety net.
+	if (backupSucceeded) {
+		try {
+			mkdirSync(dirname(markerPath), { recursive: true });
+			writeFileSync(markerPath, new Date().toISOString(), "utf-8");
+		} catch {
+			// Non-fatal — worst case we back up again next time
+		}
 	}
 }
 

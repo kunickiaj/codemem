@@ -93,7 +93,8 @@ export function rawEventsRoutes(getStore: StoreFactory) {
 
 	// POST /api/raw-events — ingest raw events from plugin
 	app.post("/api/raw-events", async (c) => {
-		// Enforce body size via Content-Length
+		// Enforce body size — check Content-Length header first, then verify actual bytes read.
+		// This guards against both honest clients and chunked/missing-header scenarios.
 		const contentLength = Number.parseInt(c.req.header("content-length") ?? "0", 10);
 		if (Number.isNaN(contentLength) || contentLength < 0) {
 			return c.json({ error: "invalid content-length" }, 400);
@@ -106,6 +107,10 @@ export function rawEventsRoutes(getStore: StoreFactory) {
 		let payload: Record<string, unknown>;
 		try {
 			const raw = await c.req.text();
+			// Enforce actual byte length regardless of Content-Length header
+			if (Buffer.byteLength(raw, "utf-8") > MAX_RAW_EVENTS_BODY_BYTES) {
+				return c.json({ error: "payload too large", max_bytes: MAX_RAW_EVENTS_BODY_BYTES }, 413);
+			}
 			const parsed: unknown = raw ? JSON.parse(raw) : {};
 			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
 				return c.json({ error: "payload must be an object" }, 400);
@@ -234,25 +239,36 @@ export function rawEventsRoutes(getStore: StoreFactory) {
 				// Sanitize payload
 				eventPayload = stripPrivateObj(eventPayload) as Record<string, unknown>;
 
-				// Generate stable event_id for legacy senders
+				// Generate stable event_id for legacy senders.
+				// Python uses json.dumps(sort_keys=True) which recursively sorts all keys.
+				// We replicate with a recursive key-sorting replacer.
 				if (!eventId) {
+					const sortedStringify = (obj: unknown): string =>
+						JSON.stringify(obj, (_key, value) => {
+							if (value != null && typeof value === "object" && !Array.isArray(value)) {
+								const sorted: Record<string, unknown> = {};
+								for (const k of Object.keys(value as Record<string, unknown>).sort()) {
+									sorted[k] = (value as Record<string, unknown>)[k];
+								}
+								return sorted;
+							}
+							return value;
+						});
 					if (eventSeqValue != null) {
-						const rawId = JSON.stringify(
-							{ s: eventSeqValue, t: eventType, p: eventPayload },
-							Object.keys({ s: eventSeqValue, t: eventType, p: eventPayload }).sort(),
-						);
+						const rawId = sortedStringify({
+							s: eventSeqValue,
+							t: eventType,
+							p: eventPayload,
+						});
 						const hash = createHash("sha256").update(rawId, "utf-8").digest("hex").slice(0, 16);
 						eventId = `legacy-seq-${eventSeqValue}-${hash}`;
 					} else {
-						const rawId = JSON.stringify(
-							{
-								m: tsMonoMs ?? null,
-								p: eventPayload,
-								t: eventType,
-								w: tsWallMs ?? null,
-							},
-							// sort_keys=True in Python → keys already alphabetical above
-						);
+						const rawId = sortedStringify({
+							m: tsMonoMs ?? null,
+							p: eventPayload,
+							t: eventType,
+							w: tsWallMs ?? null,
+						});
 						eventId = `legacy-${createHash("sha256").update(rawId, "utf-8").digest("hex").slice(0, 16)}`;
 					}
 				}
