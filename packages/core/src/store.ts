@@ -72,6 +72,13 @@ function nowIso(): string {
 	return new Date().toISOString();
 }
 
+/** Trim a string value, returning null for empty/non-string. Matches Python's _clean_optional_str. */
+function cleanStr(value: unknown): string | null {
+	if (value == null || typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
 /**
  * Parse a row's metadata_json string into a plain object.
  * Returns a new MemoryItemResponse with metadata_json as a parsed object.
@@ -89,6 +96,8 @@ export class MemoryStore {
 	readonly db: Database;
 	readonly dbPath: string;
 	readonly deviceId: string;
+	readonly actorId: string;
+	readonly actorDisplayName: string;
 
 	constructor(dbPath: string = DEFAULT_DB_PATH) {
 		this.dbPath = dbPath;
@@ -120,6 +129,16 @@ export class MemoryStore {
 			}
 			this.deviceId = dbDeviceId ?? randomUUID();
 		}
+
+		// Resolve actor identity — matches Python's _resolve_actor_id / _resolve_actor_display_name.
+		// Python: actor_id = config.actor_id OR f"local:{device_id}"
+		// Python: actor_display_name = config.actor_display_name OR $USER OR actor_id
+		const configActorId = process.env.CODEMEM_ACTOR_ID?.trim();
+		this.actorId = configActorId || `local:${this.deviceId}`;
+
+		const configDisplayName = process.env.CODEMEM_ACTOR_DISPLAY_NAME?.trim();
+		this.actorDisplayName =
+			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 	}
 
 	// -----------------------------------------------------------------------
@@ -229,8 +248,8 @@ export class MemoryStore {
 			return s.length > 0 ? s : null;
 		};
 
-		const actorId = clean(metadata.actor_id) ?? this.deviceId;
-		const actorDisplayName = clean(metadata.actor_display_name) ?? null;
+		const actorId = clean(metadata.actor_id) ?? this.actorId;
+		const actorDisplayName = clean(metadata.actor_display_name) ?? this.actorDisplayName;
 
 		const explicitWorkspaceKind = clean(metadata.workspace_kind);
 		const explicitWorkspaceId = clean(metadata.workspace_id);
@@ -255,10 +274,10 @@ export class MemoryStore {
 			workspaceKind = "personal";
 		}
 
-		// Workspace ID with fallback
+		// Workspace ID with fallback — matches Python's _default_workspace_id
 		const workspaceId =
 			explicitWorkspaceId ??
-			(workspaceKind === "personal" ? `personal:${actorId}` : `shared:${actorId}`);
+			(workspaceKind === "personal" ? `personal:${actorId}` : "shared:default");
 
 		const originDeviceId = clean(metadata.origin_device_id) ?? this.deviceId;
 		const originSource = clean(metadata.origin_source) ?? clean(metadata.source) ?? null;
@@ -274,6 +293,36 @@ export class MemoryStore {
 			origin_source: originSource,
 			trust_state: trustState,
 		};
+	}
+
+	// -----------------------------------------------------------------------
+	// ownership check
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Check if a memory item is owned by this actor/device.
+	 * Port of Python's memory_owned_by_self().
+	 *
+	 * Python checks:
+	 * 1. actor_id == self.actor_id → owned
+	 * 2. origin_device_id in claimed_same_actor_peers → owned
+	 * 3. actor_id in legacy sync actor ids → owned
+	 *
+	 * Simplified: check actor_id first, then origin_device_id.
+	 * Peer claim/legacy checks deferred until sync parity is needed.
+	 */
+	memoryOwnedBySelf(item: MemoryItem | Record<string, unknown>): boolean {
+		const itemActorId = cleanStr(
+			(item as Record<string, unknown>).actor_id ?? (item as MemoryItem).actor_id,
+		);
+		if (itemActorId === this.actorId) return true;
+
+		const itemOriginDeviceId = cleanStr(
+			(item as Record<string, unknown>).origin_device_id ?? (item as MemoryItem).origin_device_id,
+		);
+		if (itemOriginDeviceId === this.deviceId) return true;
+
+		return false;
 	}
 
 	// -----------------------------------------------------------------------
@@ -450,6 +499,8 @@ export class MemoryStore {
 		return {
 			identity: {
 				device_id: this.deviceId,
+				actor_id: this.actorId,
+				actor_display_name: this.actorDisplayName,
 			},
 			database: {
 				path: this.dbPath,
@@ -498,19 +549,20 @@ export class MemoryStore {
 			throw new Error("memory not found");
 		}
 
-		// Ownership check: only the originating device/actor can change visibility.
-		// Matches Python's memory_owned_by_self() — checks origin_device_id.
-		// When actor resolution is fully ported, this should also check actor_id.
-		if (row.origin_device_id && row.origin_device_id !== this.deviceId) {
+		// Ownership check — matches Python's memory_owned_by_self().
+		// Python checks: actor_id == self.actor_id, then origin_device_id in claimed peers.
+		// Simplified: check actor_id first, then fall back to origin_device_id.
+		if (!this.memoryOwnedBySelf(row)) {
 			throw new Error("memory not owned by this device");
 		}
 
+		const rowActorId = cleanStr(row.actor_id) ?? this.actorId;
 		const workspaceKind = cleaned === "shared" ? "shared" : "personal";
 		const workspaceId =
 			cleaned === "shared" && row.workspace_id?.startsWith("shared:")
 				? row.workspace_id
 				: workspaceKind === "personal"
-					? `personal:${this.deviceId}`
+					? `personal:${rowActorId}`
 					: "shared:default";
 
 		// Update metadata with visibility change + clock stamp

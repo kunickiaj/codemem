@@ -310,14 +310,15 @@ describe("MemoryStore", () => {
 	// -- updateMemoryVisibility ----------------------------------------------
 
 	describe("updateMemoryVisibility", () => {
-		it("updates visibility to private with device-scoped workspace_id", () => {
+		it("updates visibility to private with actor-scoped workspace_id", () => {
 			const sessionId = insertTestSession(store.db);
 			const memId = store.remember(sessionId, "discovery", "Title", "Body");
 
 			const updated = store.updateMemoryVisibility(memId, "private");
 			expect(updated.visibility).toBe("private");
 			expect(updated.workspace_kind).toBe("personal");
-			expect(updated.workspace_id).toBe(`personal:${store.deviceId}`);
+			// Python uses personal:${actor_id} where actor_id = local:${device_id}
+			expect(updated.workspace_id).toBe(`personal:${store.actorId}`);
 		});
 
 		it("updates metadata_json with clock_device_id on visibility change", () => {
