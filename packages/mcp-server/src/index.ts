@@ -10,6 +10,7 @@
  */
 
 import {
+	dedupeOrderedIds,
 	type MemoryItemResponse,
 	type MemoryResult,
 	MemoryStore,
@@ -75,32 +76,6 @@ function errorContent(message: string) {
 /** ISO timestamp. */
 function nowIso(): string {
 	return new Date().toISOString();
-}
-
-/**
- * Deduplicate and validate an array of IDs.
- * Returns [validIds, invalidIdStrings] — mirrors Python _dedupe_ordered_ids.
- */
-function dedupeOrderedIds(ids: unknown[]): [number[], string[]] {
-	const deduped: number[] = [];
-	const seen = new Set<number>();
-	const invalid: string[] = [];
-
-	for (const raw of ids) {
-		if (typeof raw === "boolean" || typeof raw === "object") {
-			invalid.push(String(raw));
-			continue;
-		}
-		const parsed = typeof raw === "number" ? raw : Number(raw);
-		if (!Number.isInteger(parsed) || parsed <= 0) {
-			invalid.push(String(raw));
-			continue;
-		}
-		if (seen.has(parsed)) continue;
-		seen.add(parsed);
-		deduped.push(parsed);
-	}
-	return [deduped, invalid];
 }
 
 /**
@@ -272,7 +247,7 @@ async function main() {
 				const { clause: projectFilterClause, params: projectFilterParams } = resolvedProject
 					? projectClause(resolvedProject)
 					: { clause: "", params: [] as string[] };
-				const [orderedIds, invalidIds] = dedupeOrderedIds(args.ids);
+				const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(args.ids);
 				const errors: Array<Record<string, unknown>> = [];
 
 				if (invalidIds.length > 0) {

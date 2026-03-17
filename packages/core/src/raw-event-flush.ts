@@ -83,7 +83,14 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 	}
 	let durationMs = 0;
 	if (tsValues.length > 0) {
-		durationMs = Math.max(0, Math.max(...tsValues) - Math.min(...tsValues));
+		let minTs = tsValues[0]!;
+		let maxTs = tsValues[0]!;
+		for (let i = 1; i < tsValues.length; i++) {
+			const v = tsValues[i]!;
+			if (v < minTs) minTs = v;
+			if (v > maxTs) maxTs = v;
+		}
+		durationMs = Math.max(0, maxTs - minTs);
 	}
 
 	const filesModified = new Set<string>();
@@ -179,8 +186,13 @@ export async function flushRawEvents(
 		return { flushed: 0, updatedState: 0 };
 	}
 
-	const startEventSeq = Math.min(...eventSeqs);
-	const lastEventSeq = Math.max(...eventSeqs);
+	let startEventSeq = eventSeqs[0]!;
+	let lastEventSeq = eventSeqs[0]!;
+	for (let i = 1; i < eventSeqs.length; i++) {
+		const v = eventSeqs[i]!;
+		if (v < startEventSeq) startEventSeq = v;
+		if (v > lastEventSeq) lastEventSeq = v;
+	}
 	if (lastEventSeq < startEventSeq) {
 		return { flushed: 0, updatedState: 0 };
 	}

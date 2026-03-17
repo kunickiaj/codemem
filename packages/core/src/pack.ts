@@ -121,8 +121,9 @@ export function buildMemoryPack(
 	// Step 2: categorize results
 	const summaryItems = results.filter((r) => r.kind === "session_summary").slice(0, 1);
 	const timelineItems = results.filter((r) => r.kind !== "session_summary").slice(0, 3);
+	const timelineIds = new Set(timelineItems.map((r) => r.id));
 	const observationItems = [...results]
-		.filter((r) => r.kind !== "session_summary")
+		.filter((r) => r.kind !== "session_summary" && !timelineIds.has(r.id))
 		.sort((a, b) => {
 			const pa = OBSERVATION_KIND_PRIORITY[a.kind] ?? 99;
 			const pb = OBSERVATION_KIND_PRIORITY[b.kind] ?? 99;
