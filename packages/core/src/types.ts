@@ -369,7 +369,7 @@ export interface ExplainItem {
 	};
 	matches: {
 		query_terms: string[];
-		project_match: string | null;
+		project_match: boolean | null;
 	};
 	pack_context: string | null;
 }

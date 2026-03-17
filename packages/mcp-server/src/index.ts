@@ -10,9 +10,10 @@
  */
 
 import {
-	type MemoryFilters,
 	type MemoryItemResponse,
+	type MemoryResult,
 	MemoryStore,
+	projectClause,
 	resolveDbPath,
 	toJson,
 	VERSION,
@@ -20,6 +21,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { buildFilters, resolveDefaultProject } from "./project-scope.js";
 
 // ---------------------------------------------------------------------------
 // Static data
@@ -58,34 +60,7 @@ const filterSchema = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Default project scope — resolved from CODEMEM_PROJECT env var or cwd.
- * Matches Python's `default_project = os.environ.get("CODEMEM_PROJECT") or resolve_project(os.getcwd())`.
- */
-const defaultProject = process.env.CODEMEM_PROJECT || null;
-
-/** Build a MemoryFilters object from raw tool params, dropping undefined keys. */
-function buildFilters(raw: Record<string, unknown>): MemoryFilters | undefined {
-	const filters: MemoryFilters = {};
-	let hasAny = false;
-
-	// Apply default project scope if not explicitly provided
-	const resolvedProject = (raw.project as string | undefined) ?? defaultProject;
-	if (resolvedProject) {
-		filters.project = resolvedProject;
-		hasAny = true;
-	}
-
-	for (const key of Object.keys(filterSchema)) {
-		if (key === "project") continue; // handled above
-		const val = raw[key];
-		if (val !== undefined && val !== null) {
-			(filters as Record<string, unknown>)[key] = val;
-			hasAny = true;
-		}
-	}
-	return hasAny ? filters : undefined;
-}
+const defaultProject = resolveDefaultProject();
 
 /** Wrap a JSON result into the MCP text content envelope. */
 function jsonContent(data: unknown) {
@@ -168,7 +143,7 @@ async function main() {
 				const filters = buildFilters(args);
 				const items = store.search(args.query, args.limit, filters);
 				return jsonContent({
-					items: items.map((m) => ({
+					items: items.map((m: MemoryResult) => ({
 						id: m.id,
 						title: m.title,
 						kind: m.kind,
@@ -201,7 +176,7 @@ async function main() {
 				const filters = buildFilters(args);
 				const items = store.search(args.query, args.limit, filters);
 				return jsonContent({
-					items: items.map((m) => ({
+					items: items.map((m: MemoryResult) => ({
 						id: m.id,
 						kind: m.kind,
 						title: m.title,
@@ -285,10 +260,15 @@ async function main() {
 			depth_before: z.number().int().min(0).default(3).describe("Timeline items before"),
 			depth_after: z.number().int().min(0).default(3).describe("Timeline items after"),
 			include_observations: z.boolean().default(false).describe("Include full observation details"),
-			project: z.string().optional().describe("Project scope (not yet implemented in TS)"),
+			project: z.string().optional().describe("Project scope filter"),
 		},
 		async (args) => {
 			try {
+				const resolvedProject = args.project?.trim() || defaultProject || null;
+				const filters = resolvedProject ? { project: resolvedProject } : undefined;
+				const { clause: projectFilterClause, params: projectFilterParams } = resolvedProject
+					? projectClause(resolvedProject)
+					: { clause: "", params: [] as string[] };
 				const [orderedIds, invalidIds] = dedupeOrderedIds(args.ids);
 				const errors: Array<Record<string, unknown>> = [];
 
@@ -302,9 +282,11 @@ async function main() {
 				}
 
 				const missingNotFound: number[] = [];
+				const missingProjectMismatch: number[] = [];
 				const anchors: MemoryItemResponse[] = [];
 				const timelineItems: MemoryItemResponse[] = [];
 				const timelineSeen = new Set<number>();
+				const sessionScopeMatches = new Map<number, boolean>();
 
 				for (const memoryId of orderedIds) {
 					const item = store.get(memoryId);
@@ -313,9 +295,32 @@ async function main() {
 						continue;
 					}
 
+					const sessionId = item.session_id;
+					if (resolvedProject && projectFilterClause && sessionId > 0) {
+						if (!sessionScopeMatches.has(sessionId)) {
+							const row = store.db
+								.prepare(`SELECT 1 FROM sessions WHERE id = ? AND ${projectFilterClause}`)
+								.get(sessionId, ...projectFilterParams);
+							sessionScopeMatches.set(sessionId, row != null);
+						}
+						if (!sessionScopeMatches.get(sessionId)) {
+							missingProjectMismatch.push(memoryId);
+							continue;
+						}
+					} else if (resolvedProject && projectFilterClause && sessionId <= 0) {
+						missingProjectMismatch.push(memoryId);
+						continue;
+					}
+
 					anchors.push(item);
 
-					const expanded = store.timeline(null, memoryId, args.depth_before, args.depth_after);
+					const expanded = store.timeline(
+						null,
+						memoryId,
+						args.depth_before,
+						args.depth_after,
+						filters,
+					);
 					for (const expandedItem of expanded) {
 						const expandedId = expandedItem.id;
 						if (expandedId <= 0 || timelineSeen.has(expandedId)) continue;
@@ -330,6 +335,14 @@ async function main() {
 						field: "ids",
 						message: "some requested ids were not found",
 						ids: missingNotFound,
+					});
+				}
+				if (missingProjectMismatch.length > 0) {
+					errors.push({
+						code: "PROJECT_MISMATCH",
+						field: "project",
+						message: "some requested ids are outside the requested project scope",
+						ids: missingProjectMismatch,
 					});
 				}
 
@@ -351,10 +364,13 @@ async function main() {
 					anchors,
 					timeline: timelineItems,
 					observations,
-					missing_ids: missingNotFound,
+					missing_ids: orderedIds.filter(
+						(memoryId) =>
+							missingNotFound.includes(memoryId) || missingProjectMismatch.includes(memoryId),
+					),
 					errors,
 					metadata: {
-						project: args.project ?? null,
+						project: resolvedProject,
 						requested_ids_count: orderedIds.length,
 						returned_anchor_count: anchors.length,
 						timeline_count: timelineItems.length,

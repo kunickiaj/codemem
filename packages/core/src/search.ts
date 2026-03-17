@@ -11,6 +11,7 @@
 
 import { fromJson } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
+import { projectMatchesFilter } from "./project.js";
 import type {
 	ExplainError,
 	ExplainItem,
@@ -394,6 +395,8 @@ function explainItem(
 	source: string,
 	rank: number | null,
 	queryTokens: string[],
+	projectFilter: string | null | undefined,
+	projectValue: string | null | undefined,
 	referenceNow: Date,
 ): ExplainItem {
 	const text = `${item.title} ${item.body_text} ${item.tags_text}`.toLowerCase();
@@ -414,7 +417,7 @@ function explainItem(
 		kind: item.kind,
 		title: item.title,
 		created_at: item.created_at,
-		project: null, // TODO: port project lookup via session
+		project: projectValue ?? null,
 		retrieval: {
 			source,
 			rank,
@@ -431,60 +434,115 @@ function explainItem(
 		},
 		matches: {
 			query_terms: matchedTerms,
-			project_match: null, // TODO: port _project_matches_filter
+			project_match: projectMatchesFilter(projectFilter, projectValue),
 		},
 		pack_context: null, // TODO: port include_pack_context
 	};
 }
 
-/**
- * Check whether a row matches the given filters (client-side enforcement).
- * Used for ID-based lookups in explain() to enforce the same scope as query results.
- */
-function rowMatchesFilters(row: MemoryItemResponse, filters: MemoryFilters): boolean {
-	if (filters.kind && row.kind !== filters.kind) return false;
-	if (filters.include_visibility?.length) {
-		if (!filters.include_visibility.includes(row.visibility as string)) return false;
+function loadItemsByIdsForExplain(
+	store: StoreHandle,
+	ids: number[],
+	filters: MemoryFilters,
+): {
+	items: MemoryResult[];
+	missingNotFound: number[];
+	missingProjectMismatch: number[];
+	missingFilterMismatch: number[];
+} {
+	if (ids.length === 0) {
+		return {
+			items: [],
+			missingNotFound: [],
+			missingProjectMismatch: [],
+			missingFilterMismatch: [],
+		};
 	}
-	if (filters.exclude_visibility?.length) {
-		if (row.visibility != null && filters.exclude_visibility.includes(row.visibility as string))
-			return false;
-	}
-	if (filters.include_actor_ids?.length) {
-		if (!filters.include_actor_ids.includes(row.actor_id as string)) return false;
-	}
-	if (filters.exclude_actor_ids?.length) {
-		if (row.actor_id != null && filters.exclude_actor_ids.includes(row.actor_id as string))
-			return false;
-	}
-	if (filters.include_workspace_ids?.length) {
-		if (!filters.include_workspace_ids.includes(row.workspace_id as string)) return false;
-	}
-	if (filters.exclude_workspace_ids?.length) {
-		if (
-			row.workspace_id != null &&
-			filters.exclude_workspace_ids.includes(row.workspace_id as string)
+
+	const placeholders = ids.map(() => "?").join(", ");
+	const allRows = store.db
+		.prepare(
+			`SELECT memory_items.*
+		 FROM memory_items
+		 WHERE memory_items.active = 1
+		   AND memory_items.id IN (${placeholders})`,
 		)
-			return false;
+		.all(...ids) as MemoryItem[];
+	const allFoundIds = new Set(allRows.map((item) => item.id));
+
+	let projectScopedRows = allRows;
+	let projectScopedIds = new Set(allFoundIds);
+	if (filters.project) {
+		const projectFiltersOnly: MemoryFilters = { project: filters.project };
+		const projectFilterResult = buildFilterClauses(projectFiltersOnly);
+		if (projectFilterResult.clauses.length > 0) {
+			const projectJoin = projectFilterResult.joinSessions
+				? "JOIN sessions ON sessions.id = memory_items.session_id"
+				: "";
+			projectScopedRows = store.db
+				.prepare(
+					`SELECT memory_items.*
+				 FROM memory_items
+				 ${projectJoin}
+				 WHERE memory_items.active = 1
+				   AND memory_items.id IN (${placeholders})
+				   AND ${projectFilterResult.clauses.join(" AND ")}`,
+				)
+				.all(...ids, ...projectFilterResult.params) as MemoryItem[];
+			projectScopedIds = new Set(projectScopedRows.map((item) => item.id));
+		}
 	}
-	if (filters.include_workspace_kinds?.length) {
-		if (!filters.include_workspace_kinds.includes(row.workspace_kind as string)) return false;
-	}
-	if (filters.exclude_workspace_kinds?.length) {
-		if (
-			row.workspace_kind != null &&
-			filters.exclude_workspace_kinds.includes(row.workspace_kind as string)
+
+	const filterResult = buildFilterClauses(filters);
+	const joinClause = filterResult.joinSessions
+		? "JOIN sessions ON sessions.id = memory_items.session_id"
+		: "";
+	const scopedRows = store.db
+		.prepare(
+			`SELECT memory_items.*
+		 FROM memory_items
+		 ${joinClause}
+		 WHERE ${["memory_items.active = 1", `memory_items.id IN (${placeholders})`, ...filterResult.clauses].join(" AND ")}`,
 		)
-			return false;
-	}
-	if (filters.include_trust_states?.length) {
-		if (!filters.include_trust_states.includes(row.trust_state as string)) return false;
-	}
-	if (filters.exclude_trust_states?.length) {
-		if (row.trust_state != null && filters.exclude_trust_states.includes(row.trust_state as string))
-			return false;
-	}
-	return true;
+		.all(...ids, ...filterResult.params) as MemoryItem[];
+	const scopedIds = new Set(scopedRows.map((item) => item.id));
+
+	const missingNotFound = ids.filter((memoryId) => !allFoundIds.has(memoryId));
+	const missingProjectMismatch = ids.filter(
+		(memoryId) => allFoundIds.has(memoryId) && !projectScopedIds.has(memoryId),
+	);
+	const missingFilterMismatch = ids.filter(
+		(memoryId) => projectScopedIds.has(memoryId) && !scopedIds.has(memoryId),
+	);
+
+	const items = scopedRows.map((row) => ({
+		id: row.id,
+		kind: row.kind,
+		title: row.title,
+		body_text: row.body_text,
+		confidence: row.confidence ?? 0,
+		created_at: row.created_at,
+		updated_at: row.updated_at,
+		tags_text: row.tags_text ?? "",
+		score: 0,
+		session_id: row.session_id,
+		metadata: fromJson(row.metadata_json),
+	}));
+
+	return { items, missingNotFound, missingProjectMismatch, missingFilterMismatch };
+}
+
+function loadSessionProjects(
+	store: StoreHandle,
+	sessionIds: Set<number>,
+): Map<number, string | null> {
+	if (sessionIds.size === 0) return new Map();
+	const orderedIds = [...sessionIds].sort((a, b) => a - b);
+	const placeholders = orderedIds.map(() => "?").join(", ");
+	const rows = store.db
+		.prepare(`SELECT id, project FROM sessions WHERE id IN (${placeholders})`)
+		.all(...orderedIds) as { id: number; project: string | null }[];
+	return new Map(rows.map((row) => [row.id, row.project]));
 }
 
 /**
@@ -555,35 +613,13 @@ export function explain(
 		queryRank.set((queryResults[i] as MemoryResult).id, i + 1);
 	}
 
-	// Load items by explicit IDs, enforcing the same filters as query-based results.
-	const idLookup = new Map<number, MemoryResult>();
-	const missingNotFound: number[] = [];
-	const missingFilterMismatch: number[] = [];
-	for (const memId of orderedIds) {
-		const row = store.get(memId);
-		if (!row || (row.active as number) === 0) {
-			missingNotFound.push(memId);
-			continue;
-		}
-		// Check that the row passes the same filters applied to query results.
-		if (filters && !rowMatchesFilters(row, filters)) {
-			missingFilterMismatch.push(memId);
-			continue;
-		}
-		idLookup.set(memId, {
-			id: row.id,
-			kind: row.kind,
-			title: row.title,
-			body_text: row.body_text,
-			confidence: row.confidence ?? 0,
-			created_at: row.created_at,
-			updated_at: row.updated_at,
-			tags_text: row.tags_text ?? "",
-			score: 0,
-			session_id: row.session_id,
-			metadata: row.metadata_json,
-		});
-	}
+	const {
+		items: idRows,
+		missingNotFound,
+		missingProjectMismatch,
+		missingFilterMismatch,
+	} = loadItemsByIdsForExplain(store, orderedIds, filters ?? {});
+	const idLookup = new Map(idRows.map((item) => [item.id, item]));
 
 	// Merge: query results first, then id-lookup results not already seen
 	const explicitIdSet = new Set(orderedIds);
@@ -609,9 +645,21 @@ export function explain(
 		? (normalizedQuery.match(/[A-Za-z0-9_]+/g) ?? []).map((t) => t.toLowerCase())
 		: [];
 
+	const sessionProjects = loadSessionProjects(
+		store,
+		new Set(orderedItems.map(({ item }) => item.session_id).filter((sessionId) => sessionId > 0)),
+	);
 	const referenceNow = new Date();
 	const itemsPayload = orderedItems.map(({ item, source, rank }) =>
-		explainItem(item, source, rank, queryTokens, referenceNow),
+		explainItem(
+			item,
+			source,
+			rank,
+			queryTokens,
+			filters?.project ?? null,
+			sessionProjects.get(item.session_id) ?? null,
+			referenceNow,
+		),
 	);
 
 	// Collect all missing IDs (requested but not returned)
@@ -623,6 +671,14 @@ export function explain(
 			field: "ids",
 			message: "some requested ids were not found",
 			ids: missingNotFound,
+		});
+	}
+	if (missingProjectMismatch.length > 0) {
+		errors.push({
+			code: "PROJECT_MISMATCH",
+			field: "project",
+			message: "some requested ids are outside the requested project scope",
+			ids: missingProjectMismatch,
 		});
 	}
 	if (missingFilterMismatch.length > 0) {
@@ -640,7 +696,7 @@ export function explain(
 		errors,
 		metadata: {
 			query: normalizedQuery || null,
-			project: null, // TODO: port project filter
+			project: filters?.project ?? null,
 			requested_ids_count: orderedIds.length,
 			returned_items_count: itemsPayload.length,
 			include_pack_context: false,
