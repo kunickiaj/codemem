@@ -360,7 +360,7 @@ function timelineAround(
  * Deduplicate an array of IDs, preserving order. Returns valid int IDs
  * and a list of values that could not be parsed as integers.
  */
-function dedupeOrderedIds(ids: unknown[]): { ordered: number[]; invalid: string[] } {
+export function dedupeOrderedIds(ids: unknown[]): { ordered: number[]; invalid: string[] } {
 	const seen = new Set<number>();
 	const ordered: number[] = [];
 	const invalid: string[] = [];

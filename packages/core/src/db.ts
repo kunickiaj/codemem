@@ -307,9 +307,13 @@ export function tableExists(db: DatabaseType, table: string): boolean {
 export function fromJson(text: string | null | undefined): Record<string, unknown> {
 	if (!text) return {};
 	try {
-		return JSON.parse(text) as Record<string, unknown>;
-	} catch (err) {
-		console.warn("fromJson: failed to parse metadata_json", err);
+		const parsed = JSON.parse(text);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			return {};
+		}
+		return parsed as Record<string, unknown>;
+	} catch {
+		console.warn(`[codemem] fromJson: invalid JSON (${text.slice(0, 80)}...)`);
 		return {};
 	}
 }

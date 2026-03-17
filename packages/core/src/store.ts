@@ -12,7 +12,7 @@
  * memory_owned_by_self check.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { Database } from "./db.js";
 import {
@@ -129,7 +129,9 @@ export class MemoryStore {
 			} catch {
 				// Table doesn't exist — fall through to UUID
 			}
-			this.deviceId = dbDeviceId ?? randomUUID();
+			this.deviceId =
+				dbDeviceId ??
+				`fallback:${createHash("sha256").update(this.dbPath).digest("hex").slice(0, 32)}`;
 		}
 
 		// Resolve actor identity — matches Python's _resolve_actor_id / _resolve_actor_display_name.
@@ -314,14 +316,11 @@ export class MemoryStore {
 	 * Peer claim/legacy checks deferred until sync parity is needed.
 	 */
 	memoryOwnedBySelf(item: MemoryItem | Record<string, unknown>): boolean {
-		const itemActorId = cleanStr(
-			(item as Record<string, unknown>).actor_id ?? (item as MemoryItem).actor_id,
-		);
+		const rec = item as Record<string, unknown>;
+		const itemActorId = cleanStr(rec.actor_id);
 		if (itemActorId === this.actorId) return true;
 
-		const itemOriginDeviceId = cleanStr(
-			(item as Record<string, unknown>).origin_device_id ?? (item as MemoryItem).origin_device_id,
-		);
+		const itemOriginDeviceId = cleanStr(rec.origin_device_id);
 		if (itemOriginDeviceId === this.deviceId) return true;
 
 		return false;
@@ -973,19 +972,27 @@ export class MemoryStore {
 	 */
 	updateRawEventFlushBatchStatus(batchId: number, status: string): void {
 		const now = new Date().toISOString();
-		this.db
-			.prepare(
-				`UPDATE raw_event_flush_batches
-				 SET status = ?,
-				     updated_at = ?,
-				     error_message = CASE WHEN ? = 'failed' THEN error_message ELSE NULL END,
-				     error_type = CASE WHEN ? = 'failed' THEN error_type ELSE NULL END,
-				     observer_provider = CASE WHEN ? = 'failed' THEN observer_provider ELSE NULL END,
-				     observer_model = CASE WHEN ? = 'failed' THEN observer_model ELSE NULL END,
-				     observer_runtime = CASE WHEN ? = 'failed' THEN observer_runtime ELSE NULL END
-				 WHERE id = ?`,
-			)
-			.run(status, now, status, status, status, status, status, batchId);
+		if (status === "failed") {
+			// Preserve existing error details when marking as failed
+			this.db
+				.prepare(
+					`UPDATE raw_event_flush_batches
+					 SET status = ?, updated_at = ?
+					 WHERE id = ?`,
+				)
+				.run(status, now, batchId);
+		} else {
+			// Clear error details for non-failure statuses
+			this.db
+				.prepare(
+					`UPDATE raw_event_flush_batches
+					 SET status = ?, updated_at = ?,
+					     error_message = NULL, error_type = NULL,
+					     observer_provider = NULL, observer_model = NULL, observer_runtime = NULL
+					 WHERE id = ?`,
+				)
+				.run(status, now, batchId);
+		}
 	}
 
 	/**
@@ -1111,62 +1118,64 @@ export class MemoryStore {
 			opts.opencodeSessionId,
 		);
 
-		// Check for duplicate
-		const existing = this.db
-			.prepare("SELECT 1 FROM raw_events WHERE source = ? AND stream_id = ? AND event_id = ?")
-			.get(source, streamId, opts.eventId);
-		if (existing != null) {
-			this.updateRawEventIngestStats(0, 0, 1, 0);
-			return false;
-		}
-
-		// Ensure session row exists
-		const sessionRow = this.db
-			.prepare("SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?")
-			.get(source, streamId);
-		if (sessionRow == null) {
+		return this.db.transaction(() => {
 			const now = nowIso();
+
+			// Check for duplicate
+			const existing = this.db
+				.prepare("SELECT 1 FROM raw_events WHERE source = ? AND stream_id = ? AND event_id = ?")
+				.get(source, streamId, opts.eventId);
+			if (existing != null) {
+				this.updateRawEventIngestStats(0, 0, 1, 0);
+				return false;
+			}
+
+			// Ensure session row exists
+			const sessionRow = this.db
+				.prepare("SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?")
+				.get(source, streamId);
+			if (sessionRow == null) {
+				this.db
+					.prepare(
+						"INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at) VALUES (?, ?, ?, ?)",
+					)
+					.run(streamId, source, streamId, now);
+			}
+
+			// Allocate event_seq
+			const seqRow = this.db
+				.prepare(
+					`UPDATE raw_event_sessions
+					 SET last_received_event_seq = last_received_event_seq + 1, updated_at = ?
+					 WHERE source = ? AND stream_id = ?
+					 RETURNING last_received_event_seq`,
+				)
+				.get(now, source, streamId) as { last_received_event_seq: number } | undefined;
+			if (!seqRow) throw new Error("Failed to allocate raw event seq");
+			const eventSeq = Number(seqRow.last_received_event_seq);
+
 			this.db
 				.prepare(
-					"INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at) VALUES (?, ?, ?, ?)",
+					`INSERT INTO raw_events(
+						source, stream_id, opencode_session_id, event_id, event_seq,
+						event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
-				.run(streamId, source, streamId, now);
-		}
-
-		// Allocate event_seq
-		const seqRow = this.db
-			.prepare(
-				`UPDATE raw_event_sessions
-				 SET last_received_event_seq = last_received_event_seq + 1, updated_at = ?
-				 WHERE source = ? AND stream_id = ?
-				 RETURNING last_received_event_seq`,
-			)
-			.get(nowIso(), source, streamId) as { last_received_event_seq: number } | undefined;
-		if (!seqRow) throw new Error("Failed to allocate raw event seq");
-		const eventSeq = Number(seqRow.last_received_event_seq);
-
-		const createdAt = nowIso();
-		this.db
-			.prepare(
-				`INSERT INTO raw_events(
-					source, stream_id, opencode_session_id, event_id, event_seq,
-					event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				source,
-				streamId,
-				streamId,
-				opts.eventId,
-				eventSeq,
-				opts.eventType,
-				opts.tsWallMs ?? null,
-				opts.tsMonoMs ?? null,
-				toJson(opts.payload),
-				createdAt,
-			);
-		this.updateRawEventIngestStats(1, 0, 0, 0);
-		return true;
+				.run(
+					source,
+					streamId,
+					streamId,
+					opts.eventId,
+					eventSeq,
+					opts.eventType,
+					opts.tsWallMs ?? null,
+					opts.tsMonoMs ?? null,
+					toJson(opts.payload),
+					now,
+				);
+			this.updateRawEventIngestStats(1, 0, 0, 0);
+			return true;
+		})();
 	}
 
 	/**

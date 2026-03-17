@@ -126,6 +126,7 @@ export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
 export type { StoreHandle } from "./search.js";
 export {
+	dedupeOrderedIds,
 	expandQuery,
 	explain,
 	kindBonus,
