@@ -5,9 +5,12 @@
  * Uses Record<string, unknown> instead of Record<string, any> (fix #6).
  */
 
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initTestSchema, insertTestSession, type MemoryStore } from "@codemem/core";
 import Database from "better-sqlite3";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -63,10 +66,11 @@ function createTestStore(): MemoryStore {
 }
 
 /** Create a test Hono app backed by a fresh in-memory DB. */
-function createTestApp() {
+function createTestApp(opts?: { sweeper?: unknown }) {
 	let store: MemoryStore | null = null;
 
 	const app = createApp({
+		sweeper: (opts?.sweeper ?? null) as never,
 		storeFactory: () => {
 			// Reuse the same store for the lifetime of the test
 			if (!store) {
@@ -156,6 +160,158 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.active).toBeNull();
 				expect(body).toHaveProperty("queue");
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("POST /api/config", () => {
+		it("writes config and returns effects", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const notifyConfigChanged = vi.fn();
+			const previous = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			const { app, cleanup } = createTestApp({ sweeper: { notifyConfigChanged } });
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({
+						config: { observer_model: "gpt-4.1-mini", raw_events_sweeper_interval_s: 12 },
+					}),
+				});
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect((body.config as Record<string, unknown>).observer_model).toBe("gpt-4.1-mini");
+				expect((body.effects as Record<string, unknown>).hot_reloaded_keys).toEqual([
+					"raw_events_sweeper_interval_s",
+				]);
+				expect(notifyConfigChanged).toHaveBeenCalledTimes(1);
+				expect(readFileSync(configPath, "utf8")).toContain('"observer_model": "gpt-4.1-mini"');
+			} finally {
+				cleanup();
+				if (previous == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previous;
+			}
+		});
+
+		it("clears hot-reload env override when interval key is removed", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevInterval = process.env.CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS = "12000";
+			const notifyConfigChanged = vi.fn();
+			const { app, cleanup } = createTestApp({ sweeper: { notifyConfigChanged } });
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: { raw_events_sweeper_interval_s: null } }),
+				});
+				expect(res.status).toBe(200);
+				expect(process.env.CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS).toBeUndefined();
+				expect(notifyConfigChanged).toHaveBeenCalledTimes(1);
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevInterval == null) delete process.env.CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS;
+				else process.env.CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS = prevInterval;
+			}
+		});
+
+		it("returns warnings for env-overridden keys", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevModel = process.env.CODEMEM_OBSERVER_MODEL;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_OBSERVER_MODEL = "env-model";
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: { observer_model: "saved-model" } }),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect((body.effective as Record<string, unknown>).observer_model).toBe("env-model");
+				expect((body.effects as Record<string, unknown>).ignored_by_env_keys).toEqual([
+					"observer_model",
+				]);
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevModel == null) delete process.env.CODEMEM_OBSERVER_MODEL;
+				else process.env.CODEMEM_OBSERVER_MODEL = prevModel;
+			}
+		});
+
+		it("validates payload types", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: { observer_headers: { Authorization: 123 } } }),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("observer_headers must be object of string values");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects non-object config wrapper payloads", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: "bad" }),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("config must be an object");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("parses integer fields strictly", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: { observer_max_chars: "123abc" } }),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("observer_max_chars must be int");
 			} finally {
 				cleanup();
 			}
