@@ -307,7 +307,18 @@ export interface TimelineItemResponse extends MemoryItemResponse {
 }
 
 /** Stats response from store.stats() */
+export interface UsageEventRow {
+	event: string;
+	count: number;
+	tokens_read: number;
+	tokens_written: number;
+	tokens_saved: number;
+}
+
 export interface StoreStats {
+	identity: {
+		device_id: string;
+	};
 	database: {
 		path: string;
 		size_bytes: number;
@@ -316,7 +327,19 @@ export interface StoreStats {
 		active_memory_items: number;
 		artifacts: number;
 		vector_rows: number;
+		vector_coverage: number;
+		tags_filled: number;
+		tags_coverage: number;
 		raw_events: number;
+	};
+	usage: {
+		events: UsageEventRow[];
+		totals: {
+			events: number;
+			tokens_read: number;
+			tokens_written: number;
+			tokens_saved: number;
+		};
 	};
 }
 
