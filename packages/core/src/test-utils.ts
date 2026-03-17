@@ -18,8 +18,8 @@ import { SCHEMA_VERSION } from "./db.js";
  */
 export function initTestSchema(db: Database): void {
 	db.exec(`
-		CREATE TABLE IF NOT EXISTS sessions (
-			id INTEGER PRIMARY KEY,
+			CREATE TABLE IF NOT EXISTS sessions (
+				id INTEGER PRIMARY KEY,
 			started_at TEXT NOT NULL,
 			ended_at TEXT,
 			cwd TEXT,
@@ -29,10 +29,41 @@ export function initTestSchema(db: Database): void {
 			user TEXT,
 			tool_version TEXT,
 			metadata_json TEXT,
-			import_key TEXT
-		);
+				import_key TEXT
+			);
 
-		CREATE TABLE IF NOT EXISTS memory_items (
+			CREATE TABLE IF NOT EXISTS user_prompts (
+				id INTEGER PRIMARY KEY,
+				session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+				project TEXT,
+				prompt_text TEXT NOT NULL,
+				prompt_number INTEGER,
+				created_at TEXT NOT NULL,
+				created_at_epoch INTEGER NOT NULL,
+				metadata_json TEXT,
+				import_key TEXT
+			);
+
+			CREATE TABLE IF NOT EXISTS session_summaries (
+				id INTEGER PRIMARY KEY,
+				session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+				project TEXT,
+				request TEXT,
+				investigated TEXT,
+				learned TEXT,
+				completed TEXT,
+				next_steps TEXT,
+				notes TEXT,
+				files_read TEXT,
+				files_edited TEXT,
+				prompt_number INTEGER,
+				created_at TEXT NOT NULL,
+				created_at_epoch INTEGER NOT NULL,
+				metadata_json TEXT,
+				import_key TEXT
+			);
+
+			CREATE TABLE IF NOT EXISTS memory_items (
 			id INTEGER PRIMARY KEY,
 			session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 			kind TEXT NOT NULL,

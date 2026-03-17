@@ -46,6 +46,14 @@ export {
 	tableExists,
 	toJson,
 } from "./db.js";
+export type { ExportOptions, ExportPayload, ImportOptions, ImportResult } from "./export-import.js";
+export {
+	buildImportKey,
+	exportMemories,
+	importMemories,
+	mergeSummaryMetadata,
+	readImportPayload,
+} from "./export-import.js";
 export { buildFilterClauses } from "./filters.js";
 // Ingest pipeline
 export {
