@@ -14,6 +14,7 @@
 import { VERSION } from "@codemem/core";
 import { Command } from "commander";
 import omelette from "omelette";
+import { dbCommand } from "./commands/db.js";
 import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
 import { exportMemoriesCommand } from "./commands/export-memories.js";
 import { importMemoriesCommand } from "./commands/import-memories.js";
@@ -30,6 +31,7 @@ import { helpStyle } from "./help-style.js";
 const completion = omelette("codemem <command>");
 completion.on("command", ({ reply }) => {
 	reply([
+		"db",
 		"export-memories",
 		"import-memories",
 		"stats",
@@ -68,6 +70,7 @@ program
 
 program.addCommand(serveCommand);
 program.addCommand(mcpCommand);
+program.addCommand(dbCommand);
 program.addCommand(exportMemoriesCommand);
 program.addCommand(importMemoriesCommand);
 program.addCommand(statsCommand);
