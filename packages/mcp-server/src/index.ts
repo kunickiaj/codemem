@@ -442,7 +442,12 @@ async function main() {
 		async (args) => {
 			try {
 				const filters = buildFilters(args);
-				const result = store.buildMemoryPack(args.context, args.limit ?? undefined, null, filters);
+				const result = await store.buildMemoryPackAsync(
+					args.context,
+					args.limit ?? undefined,
+					null,
+					filters,
+				);
 				return jsonContent(result);
 			} catch (err) {
 				return errorContent(err instanceof Error ? err.message : String(err));

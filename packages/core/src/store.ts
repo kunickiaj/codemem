@@ -28,7 +28,7 @@ import {
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
 import { readCodememConfigFile } from "./observer-config.js";
-import { buildMemoryPack } from "./pack.js";
+import { buildMemoryPack, buildMemoryPackAsync } from "./pack.js";
 import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
 import type {
 	ExplainResponse,
@@ -669,6 +669,22 @@ export class MemoryStore {
 		filters?: MemoryFilters,
 	): PackResponse {
 		return buildMemoryPack(this, context, limit, tokenBudget ?? null, filters);
+	}
+
+	/**
+	 * Build a memory pack with semantic candidate merging.
+	 *
+	 * Async version that runs vector KNN search via sqlite-vec and merges
+	 * semantic candidates with FTS results.  Falls back to FTS-only when
+	 * embeddings are disabled or unavailable.
+	 */
+	async buildMemoryPackAsync(
+		context: string,
+		limit?: number,
+		tokenBudget?: number | null,
+		filters?: MemoryFilters,
+	): Promise<PackResponse> {
+		return buildMemoryPackAsync(this, context, limit, tokenBudget ?? null, filters);
 	}
 
 	// -----------------------------------------------------------------------
