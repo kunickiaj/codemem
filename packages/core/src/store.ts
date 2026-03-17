@@ -12,7 +12,7 @@
  * memory_owned_by_self check.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { Database } from "./db.js";
 import {
@@ -22,10 +22,12 @@ import {
 	DEFAULT_DB_PATH,
 	fromJson,
 	loadSqliteVec,
+	resolveDbPath,
 	tableExists,
 	toJson,
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
+import { readCodememConfigFile } from "./observer-config.js";
 import { buildMemoryPack } from "./pack.js";
 import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
 import type {
@@ -101,9 +103,9 @@ export class MemoryStore {
 	readonly actorDisplayName: string;
 
 	constructor(dbPath: string = DEFAULT_DB_PATH) {
-		this.dbPath = dbPath;
-		backupOnFirstAccess(dbPath);
-		this.db = connect(dbPath);
+		this.dbPath = resolveDbPath(dbPath);
+		backupOnFirstAccess(this.dbPath);
+		this.db = connect(this.dbPath);
 		try {
 			loadSqliteVec(this.db);
 			assertSchemaReady(this.db);
@@ -112,9 +114,8 @@ export class MemoryStore {
 			throw err;
 		}
 
-		// Resolve device ID: env var → sync_device table → random UUID fallback.
-		// Python reads from sync_device; randomUUID would break ownership checks
-		// (every request gets a different ID, so nothing is "owned by self").
+		// Resolve device ID: env var → sync_device table → stable "local" fallback.
+		// Python uses exactly this order and fallback.
 		const envDeviceId = process.env.CODEMEM_DEVICE_ID?.trim();
 		if (envDeviceId) {
 			this.deviceId = envDeviceId;
@@ -127,20 +128,19 @@ export class MemoryStore {
 					| undefined;
 				dbDeviceId = row?.device_id;
 			} catch {
-				// Table doesn't exist — fall through to UUID
+				// Table doesn't exist — fall through to stable default
 			}
-			this.deviceId =
-				dbDeviceId ??
-				`fallback:${createHash("sha256").update(this.dbPath).digest("hex").slice(0, 32)}`;
+			this.deviceId = dbDeviceId ?? "local";
 		}
 
-		// Resolve actor identity — matches Python's _resolve_actor_id / _resolve_actor_display_name.
-		// Python: actor_id = config.actor_id OR f"local:{device_id}"
-		// Python: actor_display_name = config.actor_display_name OR $USER OR actor_id
-		const configActorId = process.env.CODEMEM_ACTOR_ID?.trim();
+		// Resolve actor identity — matches Python load_config() precedence:
+		// config file, then env override, then local fallbacks.
+		const config = readCodememConfigFile();
+		const configActorId = process.env.CODEMEM_ACTOR_ID?.trim() || cleanStr(config.actor_id) || null;
 		this.actorId = configActorId || `local:${this.deviceId}`;
 
-		const configDisplayName = process.env.CODEMEM_ACTOR_DISPLAY_NAME?.trim();
+		const configDisplayName =
+			process.env.CODEMEM_ACTOR_DISPLAY_NAME?.trim() || cleanStr(config.actor_display_name) || null;
 		this.actorDisplayName =
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 	}

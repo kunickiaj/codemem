@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "./db.js";
@@ -11,6 +11,7 @@ import {
 	isEmbeddingDisabled,
 	loadSqliteVec,
 	migrateLegacyDbPath,
+	resolveDbPath,
 	SCHEMA_VERSION,
 	tableExists,
 	toJson,
@@ -58,6 +59,10 @@ describe("connect", () => {
 		const nested = join(tmpDir, "deep", "nested", "dir", "test.sqlite");
 		db = connect(nested);
 		expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
+	});
+
+	it("expands ~/ paths like Python", () => {
+		expect(resolveDbPath("~/codemem-test.sqlite")).toBe(join(homedir(), "codemem-test.sqlite"));
 	});
 });
 
