@@ -101,8 +101,25 @@ export class MemoryStore {
 			throw err;
 		}
 
+		// Resolve device ID: env var → sync_device table → random UUID fallback.
+		// Python reads from sync_device; randomUUID would break ownership checks
+		// (every request gets a different ID, so nothing is "owned by self").
 		const envDeviceId = process.env.CODEMEM_DEVICE_ID?.trim();
-		this.deviceId = envDeviceId || randomUUID();
+		if (envDeviceId) {
+			this.deviceId = envDeviceId;
+		} else {
+			// Guard: sync_device may not exist in older/minimal schemas
+			let dbDeviceId: string | undefined;
+			try {
+				const row = this.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
+					| { device_id: string }
+					| undefined;
+				dbDeviceId = row?.device_id;
+			} catch {
+				// Table doesn't exist — fall through to UUID
+			}
+			this.deviceId = dbDeviceId ?? randomUUID();
+		}
 	}
 
 	// -----------------------------------------------------------------------

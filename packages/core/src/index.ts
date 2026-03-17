@@ -195,6 +195,8 @@ export {
 	getReplicationCursor,
 	setReplicationCursor,
 } from "./sync-replication.js";
+// Test utilities (exported for consumer packages like viewer-server)
+export { initTestSchema, insertTestSession } from "./test-utils.js";
 
 export type {
 	Actor,
