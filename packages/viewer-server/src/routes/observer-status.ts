@@ -3,29 +3,71 @@
  *
  * Ports Python's viewer_routes/observer_status.py.
  * Returns observer runtime info, credential availability, and queue status.
- *
- * NOTE: The Python observer runtime (probe_available_credentials, OBSERVER
- * singleton, RAW_EVENT_SWEEPER) is not yet available in TS. This route
- * returns stub data until those subsystems are ported.
  */
 
+import type { MemoryStore, RawEventSweeper } from "@codemem/core";
 import { Hono } from "hono";
 
-export function observerStatusRoutes() {
+type StoreFactory = () => MemoryStore;
+
+export interface ObserverStatusDeps {
+	getStore: StoreFactory;
+	getSweeper: () => RawEventSweeper | null;
+}
+
+function buildFailureImpact(
+	latestFailure: Record<string, unknown> | null,
+	queueTotals: { pending: number; sessions: number },
+	authBackoff: { active: boolean; remainingS: number },
+): string | null {
+	if (!latestFailure) return null;
+	if (authBackoff.active) {
+		return `Queue retries paused for ~${authBackoff.remainingS}s after an observer auth failure.`;
+	}
+	if (queueTotals.pending > 0) {
+		return `${queueTotals.pending} queued raw events across ${queueTotals.sessions} session(s) are waiting on a successful flush.`;
+	}
+	return "Failed flush batches are pending retry.";
+}
+
+export function observerStatusRoutes(deps?: ObserverStatusDeps) {
 	const app = new Hono();
 
 	app.get("/api/observer-status", (c) => {
-		// Stub: return minimal structure matching Python's response shape.
-		// Real implementation requires porting the observer runtime.
+		const store = deps?.getStore();
+		const sweeper = deps?.getSweeper();
+
+		// Stub fallback when store doesn't have the required methods (e.g. tests with mock store)
+		if (!store || typeof store.rawEventBacklogTotals !== "function") {
+			return c.json({
+				active: null,
+				available_credentials: {},
+				latest_failure: null,
+				queue: {
+					pending: 0,
+					sessions: 0,
+					auth_backoff_active: false,
+					auth_backoff_remaining_s: 0,
+				},
+			});
+		}
+
+		const queueTotals = store.rawEventBacklogTotals();
+		const authBackoff = sweeper?.authBackoffStatus() ?? { active: false, remainingS: 0 };
+		const latestFailure = store.latestRawEventFlushFailure();
+
+		const failureWithImpact = latestFailure
+			? { ...latestFailure, impact: buildFailureImpact(latestFailure, queueTotals, authBackoff) }
+			: null;
+
 		return c.json({
-			active: null,
-			available_credentials: {},
-			latest_failure: null,
+			active: null, // TODO: wire observer singleton status when available
+			available_credentials: {}, // TODO: port probe_available_credentials
+			latest_failure: failureWithImpact,
 			queue: {
-				pending: 0,
-				sessions: 0,
-				auth_backoff_active: false,
-				auth_backoff_remaining_s: 0,
+				...queueTotals,
+				auth_backoff_active: authBackoff.active,
+				auth_backoff_remaining_s: authBackoff.remainingS,
 			},
 		});
 	});

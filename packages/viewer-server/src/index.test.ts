@@ -66,12 +66,14 @@ function createTestStore(): MemoryStore {
 function createTestApp() {
 	let store: MemoryStore | null = null;
 
-	const app = createApp(() => {
-		// Reuse the same store for the lifetime of the test
-		if (!store) {
-			store = createTestStore();
-		}
-		return store;
+	const app = createApp({
+		storeFactory: () => {
+			// Reuse the same store for the lifetime of the test
+			if (!store) {
+				store = createTestStore();
+			}
+			return store;
+		},
 	});
 
 	return {
