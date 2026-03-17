@@ -25,6 +25,7 @@ import { packCommand } from "./commands/pack.js";
 import { recentCommand } from "./commands/recent.js";
 import { searchCommand } from "./commands/search.js";
 import { serveCommand } from "./commands/serve.js";
+import { setupCommand } from "./commands/setup.js";
 import { statsCommand } from "./commands/stats.js";
 import { versionCommand } from "./commands/version.js";
 import { helpStyle } from "./help-style.js";
@@ -38,6 +39,7 @@ completion.on("command", ({ reply }) => {
 		"export-memories",
 		"memory",
 		"import-memories",
+		"setup",
 		"stats",
 		"recent",
 		"search",
@@ -83,6 +85,7 @@ program.addCommand(recentCommand);
 program.addCommand(searchCommand);
 program.addCommand(packCommand);
 program.addCommand(memoryCommand);
+program.addCommand(setupCommand);
 program.addCommand(enqueueRawEventCommand);
 program.addCommand(versionCommand);
 
