@@ -303,7 +303,13 @@ export async function ingest(
 		const response = await options.observer.observe(system, user);
 
 		if (!response.raw) {
-			// Surface the failure — silent memory loss is unacceptable
+			// Raw-event flushes must be lossless: if the observer returns no output,
+			// fail the flush so we do NOT advance last_flushed_event_seq.
+			if (sessionContext?.flusher === "raw_events") {
+				throw new Error("observer failed during raw-event flush");
+			}
+
+			// Surface the failure for normal ingest paths.
 			const status = options.observer.getStatus();
 			console.warn(
 				`[codemem] Observer returned no output (provider=${response.provider}, model=${response.model}` +

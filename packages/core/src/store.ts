@@ -559,6 +559,390 @@ export class MemoryStore {
 	}
 
 	// -----------------------------------------------------------------------
+	// Raw event helpers
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Normalize source/streamId to match Python's _normalize_stream_identity().
+	 * Trims whitespace, lowercases source, defaults to "opencode".
+	 */
+	private normalizeStreamIdentity(source: string, streamId: string): [string, string] {
+		const s = source.trim().toLowerCase() || "opencode";
+		const sid = streamId.trim();
+		if (!sid) throw new Error("stream_id is required");
+		return [s, sid];
+	}
+
+	// -----------------------------------------------------------------------
+	// Raw event query methods (ports from codemem/store/raw_events.py)
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Find sessions that have unflushed events and have been idle long enough.
+	 * Port of raw_event_sessions_pending_idle_flush().
+	 */
+	rawEventSessionsPendingIdleFlush(
+		idleBeforeTsWallMs: number,
+		limit = 25,
+	): { source: string; streamId: string }[] {
+		const rows = this.db
+			.prepare(
+				`WITH max_events AS (
+            SELECT source, stream_id, MAX(event_seq) AS max_seq
+            FROM raw_events
+            GROUP BY source, stream_id
+        )
+        SELECT s.source, s.stream_id
+        FROM raw_event_sessions s
+        JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
+        WHERE s.last_seen_ts_wall_ms IS NOT NULL
+          AND s.last_seen_ts_wall_ms <= ?
+          AND e.max_seq > s.last_flushed_event_seq
+        ORDER BY s.last_seen_ts_wall_ms ASC
+        LIMIT ?`,
+			)
+			.all(idleBeforeTsWallMs, limit) as { source: string | null; stream_id: string | null }[];
+
+		return rows
+			.filter((row) => row.stream_id)
+			.map((row) => ({
+				source: String(row.source ?? "opencode"),
+				streamId: String(row.stream_id ?? ""),
+			}));
+	}
+
+	/**
+	 * Find sessions that have pending/failed flush batches with unflushed events.
+	 * Port of raw_event_sessions_with_pending_queue().
+	 */
+	rawEventSessionsWithPendingQueue(limit = 25): { source: string; streamId: string }[] {
+		const rows = this.db
+			.prepare(
+				`WITH pending_batches AS (
+            SELECT b.source, b.stream_id, MIN(b.updated_at) AS oldest_pending_update
+            FROM raw_event_flush_batches b
+            WHERE b.status IN ('pending', 'failed', 'started', 'error')
+            GROUP BY b.source, b.stream_id
+        ),
+        max_events AS (
+            SELECT source, stream_id, MAX(event_seq) AS max_seq
+            FROM raw_events
+            GROUP BY source, stream_id
+        )
+        SELECT b.source, b.stream_id
+        FROM pending_batches b
+        JOIN max_events e ON e.source = b.source AND e.stream_id = b.stream_id
+        LEFT JOIN raw_event_sessions s ON s.source = b.source AND s.stream_id = b.stream_id
+        WHERE e.max_seq > COALESCE(s.last_flushed_event_seq, -1)
+        ORDER BY b.oldest_pending_update ASC
+        LIMIT ?`,
+			)
+			.all(limit) as { source: string | null; stream_id: string | null }[];
+
+		return rows
+			.filter((row) => row.stream_id)
+			.map((row) => ({
+				source: String(row.source ?? "opencode"),
+				streamId: String(row.stream_id ?? ""),
+			}));
+	}
+
+	/**
+	 * Delete raw events older than max_age_ms. Returns count of deleted raw_events rows.
+	 * Port of purge_raw_events() + purge_raw_events_before().
+	 */
+	purgeRawEvents(maxAgeMs: number): number {
+		if (maxAgeMs <= 0) return 0;
+		const nowMs = Date.now();
+		const cutoffTsWallMs = nowMs - maxAgeMs;
+		const cutoffIso = new Date(cutoffTsWallMs).toISOString();
+
+		return this.db.transaction(() => {
+			this.db.prepare("DELETE FROM raw_event_ingest_samples WHERE created_at < ?").run(cutoffIso);
+			const result = this.db
+				.prepare("DELETE FROM raw_events WHERE ts_wall_ms IS NOT NULL AND ts_wall_ms < ?")
+				.run(cutoffTsWallMs);
+			return result.changes;
+		})();
+	}
+
+	/**
+	 * Mark stuck flush batches (started/running/pending/claimed) as failed.
+	 * Port of mark_stuck_raw_event_batches_as_error().
+	 */
+	markStuckRawEventBatchesAsError(olderThanIso: string, limit = 100): number {
+		const now = new Date().toISOString();
+		const result = this.db
+			.prepare(
+				`WITH candidates AS (
+            SELECT id
+            FROM raw_event_flush_batches
+            WHERE status IN ('started', 'running', ?, ?) AND updated_at < ?
+            ORDER BY updated_at
+            LIMIT ?
+        )
+        UPDATE raw_event_flush_batches
+        SET status = ?,
+            updated_at = ?,
+            error_message = 'Flush retry timed out.',
+            error_type = 'RawEventBatchStuck',
+            observer_provider = NULL,
+            observer_model = NULL,
+            observer_runtime = NULL
+        WHERE id IN (SELECT id FROM candidates)`,
+			)
+			.run(
+				"pending", // RAW_EVENT_QUEUE_PENDING
+				"claimed", // RAW_EVENT_QUEUE_CLAIMED
+				olderThanIso,
+				limit,
+				"failed", // RAW_EVENT_QUEUE_FAILED
+				now,
+			);
+
+		return result.changes;
+	}
+
+	// -----------------------------------------------------------------------
+	// Raw event per-session methods (ports for flush pipeline)
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Get session metadata (cwd, project, started_at, etc.) for a raw event stream.
+	 * Port of raw_event_session_meta().
+	 */
+	rawEventSessionMeta(opencodeSessionId: string, source = "opencode"): Record<string, unknown> {
+		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
+		const row = this.db
+			.prepare(
+				`SELECT cwd, project, started_at, last_seen_ts_wall_ms, last_flushed_event_seq
+				 FROM raw_event_sessions
+				 WHERE source = ? AND stream_id = ?`,
+			)
+			.get(s, sid) as Record<string, unknown> | undefined;
+		if (!row) return {};
+		return {
+			cwd: row.cwd,
+			project: row.project,
+			started_at: row.started_at,
+			last_seen_ts_wall_ms: row.last_seen_ts_wall_ms,
+			last_flushed_event_seq: row.last_flushed_event_seq,
+		};
+	}
+
+	/**
+	 * Get the last flushed event_seq for a session. Returns -1 if no state.
+	 * Port of raw_event_flush_state().
+	 */
+	rawEventFlushState(opencodeSessionId: string, source = "opencode"): number {
+		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
+		const row = this.db
+			.prepare(
+				"SELECT last_flushed_event_seq FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
+			)
+			.get(s, sid) as { last_flushed_event_seq: number } | undefined;
+		if (!row) return -1;
+		return Number(row.last_flushed_event_seq);
+	}
+
+	/**
+	 * Get raw events after a given event_seq, ordered by event_seq ASC.
+	 * Returns enriched event objects with type, timestamps, event_seq, event_id.
+	 * Port of raw_events_since_by_seq().
+	 */
+	rawEventsSinceBySeq(
+		opencodeSessionId: string,
+		source = "opencode",
+		afterEventSeq = -1,
+		limit?: number | null,
+	): Record<string, unknown>[] {
+		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
+		const limitClause = limit != null && limit > 0 ? "LIMIT ?" : "";
+		const params: unknown[] = [s, sid, afterEventSeq];
+		if (limit != null && limit > 0) params.push(limit);
+
+		const rows = this.db
+			.prepare(
+				`SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
+				 FROM raw_events
+				 WHERE source = ? AND stream_id = ? AND event_seq > ?
+				 ORDER BY event_seq ASC
+				 ${limitClause}`,
+			)
+			.all(...params) as {
+			event_seq: number;
+			event_type: string;
+			ts_wall_ms: number | null;
+			ts_mono_ms: number | null;
+			payload_json: string | null;
+			event_id: string | null;
+		}[];
+
+		return rows.map((row) => {
+			const payload = fromJson(row.payload_json) as Record<string, unknown>;
+			// Use || (not ??) to match Python's `or` semantics — empty string falls through
+			payload.type = payload.type || row.event_type;
+			payload.timestamp_wall_ms = row.ts_wall_ms;
+			payload.timestamp_mono_ms = row.ts_mono_ms;
+			payload.event_seq = row.event_seq;
+			payload.event_id = row.event_id;
+			return payload;
+		});
+	}
+
+	/**
+	 * Get or create a flush batch record. Returns [batchId, status].
+	 * Port of get_or_create_raw_event_flush_batch().
+	 */
+	getOrCreateRawEventFlushBatch(
+		opencodeSessionId: string,
+		source: string,
+		startEventSeq: number,
+		endEventSeq: number,
+		extractorVersion: string,
+	): { batchId: number; status: string } {
+		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
+		const now = new Date().toISOString();
+
+		// Atomic UPSERT to avoid SELECT+INSERT races. We intentionally do NOT
+		// heartbeat claimed/running batches: their updated_at stays unchanged so
+		// stuck-batch recovery can still age them out.
+		const row = this.db
+			.prepare(
+				`INSERT INTO raw_event_flush_batches(
+					source, stream_id, opencode_session_id,
+					start_event_seq, end_event_seq, extractor_version,
+					status, created_at, updated_at
+				)
+				VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+				ON CONFLICT(source, stream_id, start_event_seq, end_event_seq, extractor_version)
+				DO UPDATE SET
+					updated_at = CASE
+						WHEN raw_event_flush_batches.status IN ('claimed', 'running')
+						THEN raw_event_flush_batches.updated_at
+						ELSE excluded.updated_at
+					END
+				RETURNING id, status`,
+			)
+			.get(s, sid, sid, startEventSeq, endEventSeq, extractorVersion, now, now) as
+			| { id: number; status: string }
+			| undefined;
+
+		if (!row) throw new Error("Failed to create flush batch");
+		// Canonicalize legacy DB statuses to match Python's _RAW_EVENT_QUEUE_DB_TO_CANONICAL
+		const rawStatus = String(row.status);
+		const canonicalStatus =
+			rawStatus === "started"
+				? "pending"
+				: rawStatus === "running"
+					? "claimed"
+					: rawStatus === "error"
+						? "failed"
+						: rawStatus;
+		return { batchId: Number(row.id), status: canonicalStatus };
+	}
+
+	/**
+	 * Attempt to claim a flush batch for processing.
+	 * Returns true if successfully claimed, false if already claimed/completed.
+	 * Port of claim_raw_event_flush_batch().
+	 */
+	claimRawEventFlushBatch(batchId: number): boolean {
+		const now = new Date().toISOString();
+		const row = this.db
+			.prepare(
+				`UPDATE raw_event_flush_batches
+				 SET status = 'claimed', updated_at = ?, attempt_count = attempt_count + 1
+				 WHERE id = ? AND status IN ('pending', 'failed', 'started', 'error')
+				 RETURNING id`,
+			)
+			.get(now, batchId) as { id: number } | undefined;
+		return row != null;
+	}
+
+	/**
+	 * Update the status of a flush batch.
+	 * Port of update_raw_event_flush_batch_status().
+	 */
+	updateRawEventFlushBatchStatus(batchId: number, status: string): void {
+		const now = new Date().toISOString();
+		this.db
+			.prepare(
+				`UPDATE raw_event_flush_batches
+				 SET status = ?,
+				     updated_at = ?,
+				     error_message = CASE WHEN ? = 'failed' THEN error_message ELSE NULL END,
+				     error_type = CASE WHEN ? = 'failed' THEN error_type ELSE NULL END,
+				     observer_provider = CASE WHEN ? = 'failed' THEN observer_provider ELSE NULL END,
+				     observer_model = CASE WHEN ? = 'failed' THEN observer_model ELSE NULL END,
+				     observer_runtime = CASE WHEN ? = 'failed' THEN observer_runtime ELSE NULL END
+				 WHERE id = ?`,
+			)
+			.run(status, now, status, status, status, status, status, batchId);
+	}
+
+	/**
+	 * Record a flush batch failure with error details.
+	 * Port of record_raw_event_flush_batch_failure().
+	 */
+	recordRawEventFlushBatchFailure(
+		batchId: number,
+		opts: {
+			message: string;
+			errorType: string;
+			observerProvider?: string | null;
+			observerModel?: string | null;
+			observerRuntime?: string | null;
+		},
+	): void {
+		const now = new Date().toISOString();
+		this.db
+			.prepare(
+				`UPDATE raw_event_flush_batches
+				 SET status = 'failed',
+				     updated_at = ?,
+				     error_message = ?,
+				     error_type = ?,
+				     observer_provider = ?,
+				     observer_model = ?,
+				     observer_runtime = ?
+				 WHERE id = ?`,
+			)
+			.run(
+				now,
+				opts.message,
+				opts.errorType,
+				opts.observerProvider ?? null,
+				opts.observerModel ?? null,
+				opts.observerRuntime ?? null,
+				batchId,
+			);
+	}
+
+	/**
+	 * Update the last flushed event_seq for a session.
+	 * Port of update_raw_event_flush_state().
+	 */
+	updateRawEventFlushState(
+		opencodeSessionId: string,
+		lastFlushed: number,
+		source = "opencode",
+	): void {
+		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
+		const now = new Date().toISOString();
+		this.db
+			.prepare(
+				`INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, last_flushed_event_seq, updated_at)
+				 VALUES (?, ?, ?, ?, ?)
+				 ON CONFLICT(source, stream_id) DO UPDATE SET
+				     opencode_session_id = excluded.opencode_session_id,
+				     last_flushed_event_seq = excluded.last_flushed_event_seq,
+				     updated_at = excluded.updated_at`,
+			)
+			.run(sid, s, sid, lastFlushed, now);
+	}
+
+	// -----------------------------------------------------------------------
 	// close
 	// -----------------------------------------------------------------------
 
