@@ -1,3 +1,5 @@
+import { parseStrictInteger } from "@codemem/core";
+
 /**
  * Shared helpers for viewer-server routes.
  */
@@ -23,8 +25,8 @@ export function safeJsonList(raw: string | null | undefined): string[] {
  */
 export function queryInt(value: string | undefined, defaultValue: number): number {
 	if (value == null) return defaultValue;
-	const parsed = Number.parseInt(value, 10);
-	return Number.isNaN(parsed) ? defaultValue : parsed;
+	const parsed = parseStrictInteger(value);
+	return parsed == null ? defaultValue : parsed;
 }
 
 /**

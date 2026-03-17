@@ -11,6 +11,7 @@
 
 import { fromJson } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
+import { parsePositiveMemoryId } from "./integers.js";
 import { projectMatchesFilter } from "./project.js";
 import type {
 	ExplainError,
@@ -366,13 +367,8 @@ export function dedupeOrderedIds(ids: unknown[]): { ordered: number[]; invalid: 
 	const invalid: string[] = [];
 
 	for (const rawId of ids) {
-		// Reject booleans and floats explicitly (matches Python behavior)
-		if (typeof rawId === "boolean" || (typeof rawId === "number" && !Number.isInteger(rawId))) {
-			invalid.push(String(rawId));
-			continue;
-		}
-		const parsed = Number(rawId);
-		if (!Number.isInteger(parsed) || parsed <= 0) {
+		const parsed = parsePositiveMemoryId(rawId);
+		if (parsed == null) {
 			invalid.push(String(rawId));
 			continue;
 		}

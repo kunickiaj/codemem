@@ -82,6 +82,7 @@ export type {
 	ToolEvent,
 } from "./ingest-types.js";
 export { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
+export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,
