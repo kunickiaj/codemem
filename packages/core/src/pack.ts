@@ -1,16 +1,21 @@
 /**
- * Memory pack builder — simplified port of codemem/store/packs.py.
+ * Memory pack builder — port of codemem/store/packs.py.
  *
  * Builds a formatted "memory pack" from search results, organized into
  * sections (summary, timeline, observations) with token budgeting.
  *
- * NOT ported: semantic search, fuzzy search, task/recall mode detection,
- * _merge_ranked_results, exact dedup, pack delta tracking.
+ * Semantic candidate merging is supported via `buildMemoryPackAsync` or
+ * by passing pre-computed semantic results to `buildMemoryPack`.
+ *
+ * NOT ported: fuzzy search, task/recall mode detection, exact dedup,
+ * pack delta tracking.
  */
 
+import type { Database } from "./db.js";
 import type { StoreHandle } from "./search.js";
 import { search } from "./search.js";
 import type { MemoryFilters, MemoryResult, PackItem, PackResponse } from "./types.js";
+import { semanticSearch } from "./vectors.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -84,20 +89,58 @@ function toPackItem(result: MemoryResult): PackItem {
  * 4. Apply token budget (truncate items if budget exceeded)
  * 5. Format sections into pack_text
  */
+/**
+ * Merge FTS and semantic results by ID, keeping the higher score for dupes.
+ * Matches Python's always-merge behavior when semantic results are available.
+ */
+function mergeResults(
+	ftsResults: MemoryResult[],
+	semanticResults: MemoryResult[],
+	limit: number,
+): { merged: MemoryResult[]; ftsCount: number; semanticCount: number } {
+	const seen = new Map<number, MemoryResult>();
+	for (const r of ftsResults) {
+		const existing = seen.get(r.id);
+		if (!existing || r.score > existing.score) seen.set(r.id, r);
+	}
+	let semanticCount = 0;
+	for (const r of semanticResults) {
+		if (!seen.has(r.id)) semanticCount++;
+		const existing = seen.get(r.id);
+		if (!existing || r.score > existing.score) seen.set(r.id, r);
+	}
+	// Sort by score descending, then truncate to limit
+	const merged = [...seen.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+	return { merged, ftsCount: ftsResults.length, semanticCount };
+}
+
 export function buildMemoryPack(
 	store: StoreHandle,
 	context: string,
 	limit = 10,
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
+	semanticResults?: MemoryResult[],
 ): PackResponse {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
 	let fallbackUsed = false;
 	let ftsCount = 0;
+	let semanticCount = 0;
 
-	// Step 1: search for matching memories
-	let results = search(store, context, effectiveLimit, filters);
-	ftsCount = results.length;
+	// Step 1: search for matching memories (FTS)
+	const ftsResults = search(store, context, effectiveLimit, filters);
+
+	// Step 1b: merge semantic candidates when provided
+	let results: MemoryResult[];
+	if (semanticResults && semanticResults.length > 0) {
+		const merge = mergeResults(ftsResults, semanticResults, effectiveLimit);
+		results = merge.merged;
+		ftsCount = merge.ftsCount;
+		semanticCount = merge.semanticCount;
+	} else {
+		results = ftsResults;
+		ftsCount = results.length;
+	}
 
 	// Step 3: fall back to recent if no search results
 	if (results.length === 0) {
@@ -192,7 +235,69 @@ export function buildMemoryPack(
 			total_items: allItems.length,
 			pack_tokens: estimateTokens(packText),
 			fallback_used: fallbackUsed,
-			sources: { fts: ftsCount, semantic: 0, fuzzy: 0 },
+			sources: { fts: ftsCount, semantic: semanticCount, fuzzy: 0 },
 		},
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Async pack builder (with semantic search)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a memory pack with semantic candidate merging.
+ *
+ * This is the async version that runs `semanticSearch` against the
+ * sqlite-vec `memory_vectors` table, then merges those candidates
+ * with FTS results via the sync `buildMemoryPack`.
+ *
+ * Callers that don't want/need async can still use the sync
+ * `buildMemoryPack` directly — semantic candidates simply won't
+ * be included.
+ */
+export async function buildMemoryPackAsync(
+	store: StoreHandle & { db: Database },
+	context: string,
+	limit = 10,
+	tokenBudget: number | null = null,
+	filters?: MemoryFilters,
+): Promise<PackResponse> {
+	// Run semantic search (returns [] when embeddings unavailable)
+	let semResults: MemoryResult[] = [];
+	try {
+		const raw = await semanticSearch(store.db, context, limit, {
+			project: filters?.project,
+		});
+		semResults = raw.map((r) => {
+			// Parse metadata_json if present, matching FTS result shape
+			let metadata: Record<string, unknown> = {};
+			if (r.metadata_json) {
+				try {
+					const parsed = JSON.parse(r.metadata_json) as unknown;
+					if (parsed != null && typeof parsed === "object" && !Array.isArray(parsed)) {
+						metadata = parsed as Record<string, unknown>;
+					}
+				} catch {
+					// Invalid JSON metadata — use empty object
+				}
+			}
+			return {
+				id: r.id,
+				kind: r.kind,
+				title: r.title,
+				body_text: r.body_text,
+				confidence: r.confidence,
+				created_at: r.created_at,
+				updated_at: r.updated_at,
+				tags_text: r.tags_text,
+				score: r.score,
+				session_id: r.session_id,
+				metadata,
+			};
+		});
+	} catch {
+		// Semantic search failure is non-fatal — fall through to FTS-only
+	}
+
+	return buildMemoryPack(store, context, limit, tokenBudget, filters, semResults);
 }
