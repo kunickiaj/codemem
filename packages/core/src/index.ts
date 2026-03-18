@@ -171,6 +171,7 @@ export {
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
+export * as schema from "./schema.js";
 export type { StoreHandle } from "./search.js";
 export {
 	dedupeOrderedIds,

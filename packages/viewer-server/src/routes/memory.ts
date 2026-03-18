@@ -1,11 +1,11 @@
 /**
  * Memory routes — observations, summaries, sessions, projects, pack, artifacts.
- *
- * Ports Python's viewer_routes/memory.py.
  */
 
 import type { MemoryStore } from "@codemem/core";
-import { fromJson, parseStrictInteger } from "@codemem/core";
+import { fromJson, parseStrictInteger, schema } from "@codemem/core";
+import { desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
 import { queryInt } from "../helpers.js";
 
@@ -13,7 +13,6 @@ type StoreFactory = () => MemoryStore;
 
 /**
  * Attach session project/cwd fields to memory items.
- * Mirrors Python's _attach_session_fields().
  */
 function attachSessionFields(store: MemoryStore, items: Record<string, unknown>[]): void {
 	const sessionIds: number[] = [];
@@ -28,18 +27,23 @@ function attachSessionFields(store: MemoryStore, items: Record<string, unknown>[
 	}
 	if (sessionIds.length === 0) return;
 
-	const placeholders = sessionIds.map(() => "?").join(", ");
-	const rows = store.db
-		.prepare(`SELECT id, project, cwd FROM sessions WHERE id IN (${placeholders})`)
-		.all(...sessionIds) as Record<string, unknown>[];
+	const d = drizzle(store.db, { schema });
+	const rows = d
+		.select({
+			id: schema.sessions.id,
+			project: schema.sessions.project,
+			cwd: schema.sessions.cwd,
+		})
+		.from(schema.sessions)
+		.where(inArray(schema.sessions.id, sessionIds))
+		.all();
 
 	const bySession = new Map<number, { project: string; cwd: string }>();
 	for (const row of rows) {
-		const sid = Number(row.id);
 		const projectRaw = String(row.project ?? "").trim();
 		const project = projectRaw ? projectBasename(projectRaw) : "";
 		const cwd = String(row.cwd ?? "");
-		bySession.set(sid, { project, cwd });
+		bySession.set(row.id, { project, cwd });
 	}
 
 	for (const item of items) {
@@ -70,12 +74,16 @@ export function memoryRoutes(getStore: StoreFactory) {
 		const store = getStore();
 		{
 			const limit = queryInt(c.req.query("limit"), 20);
-			const rows = store.db
-				.prepare("SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?")
-				.all(limit) as Record<string, unknown>[];
+			const d = drizzle(store.db, { schema });
+			const rows = d
+				.select()
+				.from(schema.sessions)
+				.orderBy(desc(schema.sessions.started_at))
+				.limit(limit)
+				.all();
 			const items = rows.map((row) => ({
 				...row,
-				metadata_json: fromJson(row.metadata_json as string | null),
+				metadata_json: fromJson(row.metadata_json),
 			}));
 			return c.json({ items });
 		}
@@ -85,9 +93,12 @@ export function memoryRoutes(getStore: StoreFactory) {
 	app.get("/api/projects", (c) => {
 		const store = getStore();
 		{
-			const rows = store.db
-				.prepare("SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL")
-				.all() as Record<string, unknown>[];
+			const d = drizzle(store.db, { schema });
+			const rows = d
+				.selectDistinct({ project: schema.sessions.project })
+				.from(schema.sessions)
+				.where(isNotNull(schema.sessions.project))
+				.all();
 			const projects = [
 				...new Set(
 					rows
@@ -267,9 +278,12 @@ export function memoryRoutes(getStore: StoreFactory) {
 			if (sessionId == null) {
 				return c.json({ error: "session_id must be int" }, 400);
 			}
-			const rows = store.db
-				.prepare("SELECT * FROM artifacts WHERE session_id = ?")
-				.all(sessionId) as Record<string, unknown>[];
+			const d = drizzle(store.db, { schema });
+			const rows = d
+				.select()
+				.from(schema.artifacts)
+				.where(eq(schema.artifacts.session_id, sessionId))
+				.all();
 			return c.json({ items: rows });
 		}
 	});

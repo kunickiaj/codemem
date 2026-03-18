@@ -1,14 +1,11 @@
 /**
  * Sync routes — status, peers, actors, attempts, pairing, mutations.
- *
- * Ports Python's viewer_routes/sync.py with fixes:
- * - addresses: parsed from addresses_json via safeJsonList() (not hardcoded [])
- * - peer mapping: deduplicated into mapPeerRow() helper
- * - ensureDeviceIdentity: reads from sync_device table
  */
 
 import type { MemoryStore } from "@codemem/core";
-import { ensureDeviceIdentity } from "@codemem/core";
+import { ensureDeviceIdentity, schema } from "@codemem/core";
+import { count, desc, eq, max, ne } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 
@@ -127,21 +124,29 @@ export function syncRoutes(getStore: StoreFactory) {
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
 			const _project = c.req.query("project") || null;
 
-			const deviceRow = store.db
-				.prepare("SELECT device_id, fingerprint FROM sync_device LIMIT 1")
-				.get() as Record<string, unknown> | undefined;
+			const d = drizzle(store.db, { schema });
 
-			const daemonState = store.db.prepare("SELECT * FROM sync_daemon_state WHERE id = 1").get() as
-				| Record<string, unknown>
-				| undefined;
+			const deviceRow = d
+				.select({
+					device_id: schema.syncDevice.device_id,
+					fingerprint: schema.syncDevice.fingerprint,
+				})
+				.from(schema.syncDevice)
+				.limit(1)
+				.get();
 
-			const peerCountRow = store.db.prepare("SELECT COUNT(1) AS total FROM sync_peers").get() as
-				| Record<string, unknown>
-				| undefined;
+			const daemonState = d
+				.select()
+				.from(schema.syncDaemonState)
+				.where(eq(schema.syncDaemonState.id, 1))
+				.get();
 
-			const lastSyncRow = store.db
-				.prepare("SELECT MAX(last_sync_at) AS last_sync_at FROM sync_peers")
-				.get() as Record<string, unknown> | undefined;
+			const peerCountRow = d.select({ total: count() }).from(schema.syncPeers).get();
+
+			const lastSyncRow = d
+				.select({ last_sync_at: max(schema.syncPeers.last_sync_at) })
+				.from(schema.syncPeers)
+				.get();
 
 			const lastError = daemonState?.last_error as string | null;
 			const lastErrorAt = daemonState?.last_error_at as string | null;
@@ -189,14 +194,20 @@ export function syncRoutes(getStore: StoreFactory) {
 			}
 
 			// Attempts
-			const attemptRows = store.db
-				.prepare(
-					`SELECT peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out
-					 FROM sync_attempts
-					 ORDER BY finished_at DESC
-					 LIMIT ?`,
-				)
-				.all(25) as Record<string, unknown>[];
+			const attemptRows = d
+				.select({
+					peer_device_id: schema.syncAttempts.peer_device_id,
+					ok: schema.syncAttempts.ok,
+					error: schema.syncAttempts.error,
+					started_at: schema.syncAttempts.started_at,
+					finished_at: schema.syncAttempts.finished_at,
+					ops_in: schema.syncAttempts.ops_in,
+					ops_out: schema.syncAttempts.ops_out,
+				})
+				.from(schema.syncAttempts)
+				.orderBy(desc(schema.syncAttempts.finished_at))
+				.limit(25)
+				.all();
 			const attemptsItems = attemptRows.map((row) => ({
 				...row,
 				status: attemptStatus(row),
@@ -240,18 +251,12 @@ export function syncRoutes(getStore: StoreFactory) {
 	app.get("/api/sync/actors", (c) => {
 		const store = getStore();
 		{
+			const d = drizzle(store.db, { schema });
 			const includeMerged = queryBool(c.req.query("includeMerged"));
-			let rows: Record<string, unknown>[];
-			if (includeMerged) {
-				rows = store.db.prepare("SELECT * FROM actors ORDER BY display_name").all() as Record<
-					string,
-					unknown
-				>[];
-			} else {
-				rows = store.db
-					.prepare("SELECT * FROM actors WHERE status != 'merged' ORDER BY display_name")
-					.all() as Record<string, unknown>[];
-			}
+			const query = d.select().from(schema.actors);
+			const rows = includeMerged
+				? query.orderBy(schema.actors.display_name).all()
+				: query.where(ne(schema.actors.status, "merged")).orderBy(schema.actors.display_name).all();
 			return c.json({ items: rows });
 		}
 	});
@@ -260,17 +265,24 @@ export function syncRoutes(getStore: StoreFactory) {
 	app.get("/api/sync/attempts", (c) => {
 		const store = getStore();
 		{
+			const d = drizzle(store.db, { schema });
 			let limit = queryInt(c.req.query("limit"), 25);
 			if (limit <= 0) return c.json({ error: "invalid_limit" }, 400);
 			limit = Math.min(limit, 500);
-			const rows = store.db
-				.prepare(
-					`SELECT peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out
-					 FROM sync_attempts
-					 ORDER BY finished_at DESC
-					 LIMIT ?`,
-				)
-				.all(limit) as Record<string, unknown>[];
+			const rows = d
+				.select({
+					peer_device_id: schema.syncAttempts.peer_device_id,
+					ok: schema.syncAttempts.ok,
+					error: schema.syncAttempts.error,
+					started_at: schema.syncAttempts.started_at,
+					finished_at: schema.syncAttempts.finished_at,
+					ops_in: schema.syncAttempts.ops_in,
+					ops_out: schema.syncAttempts.ops_out,
+				})
+				.from(schema.syncAttempts)
+				.orderBy(desc(schema.syncAttempts.finished_at))
+				.limit(limit)
+				.all();
 			return c.json({ items: rows });
 		}
 	});
@@ -286,10 +298,16 @@ export function syncRoutes(getStore: StoreFactory) {
 					pairing_filter_hint: PAIRING_FILTER_HINT,
 				});
 			}
-			// Read device identity from sync_device table (fix from core)
-			const deviceRow = store.db
-				.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1")
-				.get() as Record<string, unknown> | undefined;
+			const d = drizzle(store.db, { schema });
+			const deviceRow = d
+				.select({
+					device_id: schema.syncDevice.device_id,
+					public_key: schema.syncDevice.public_key,
+					fingerprint: schema.syncDevice.fingerprint,
+				})
+				.from(schema.syncDevice)
+				.limit(1)
+				.get();
 
 			let deviceId: string | undefined;
 			let publicKey: string | undefined;
@@ -305,10 +323,11 @@ export function syncRoutes(getStore: StoreFactory) {
 					const [id, fp] = ensureDeviceIdentity(store.db);
 					deviceId = id;
 					fingerprint = fp;
-					// Read the newly created public key
-					const newRow = store.db
-						.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
-						.get(id) as { public_key: string } | undefined;
+					const newRow = d
+						.select({ public_key: schema.syncDevice.public_key })
+						.from(schema.syncDevice)
+						.where(eq(schema.syncDevice.device_id, id))
+						.get();
 					publicKey = newRow?.public_key ?? "";
 				} catch {
 					return c.json({ error: "device identity unavailable" }, 500);
@@ -337,18 +356,22 @@ export function syncRoutes(getStore: StoreFactory) {
 	app.post("/api/sync/peers/rename", async (c) => {
 		const store = getStore();
 		{
+			const d = drizzle(store.db, { schema });
 			const body = await c.req.json<Record<string, unknown>>();
 			const peerDeviceId = String(body.peer_device_id ?? "").trim();
 			const name = String(body.name ?? "").trim();
 			if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
 			if (!name) return c.json({ error: "name required" }, 400);
-			const exists = store.db
-				.prepare("SELECT 1 FROM sync_peers WHERE peer_device_id = ?")
-				.get(peerDeviceId);
+			const exists = d
+				.select({ peer_device_id: schema.syncPeers.peer_device_id })
+				.from(schema.syncPeers)
+				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+				.get();
 			if (!exists) return c.json({ error: "peer not found" }, 404);
-			store.db
-				.prepare("UPDATE sync_peers SET name = ? WHERE peer_device_id = ?")
-				.run(name, peerDeviceId);
+			d.update(schema.syncPeers)
+				.set({ name })
+				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+				.run();
 			return c.json({ ok: true });
 		}
 	});
@@ -357,13 +380,16 @@ export function syncRoutes(getStore: StoreFactory) {
 	app.delete("/api/sync/peers/:peer_device_id", (c) => {
 		const store = getStore();
 		{
+			const d = drizzle(store.db, { schema });
 			const peerDeviceId = c.req.param("peer_device_id")?.trim();
 			if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
-			const exists = store.db
-				.prepare("SELECT 1 FROM sync_peers WHERE peer_device_id = ?")
-				.get(peerDeviceId);
+			const exists = d
+				.select({ peer_device_id: schema.syncPeers.peer_device_id })
+				.from(schema.syncPeers)
+				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+				.get();
 			if (!exists) return c.json({ error: "peer not found" }, 404);
-			store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peerDeviceId);
+			d.delete(schema.syncPeers).where(eq(schema.syncPeers.peer_device_id, peerDeviceId)).run();
 			return c.json({ ok: true });
 		}
 	});

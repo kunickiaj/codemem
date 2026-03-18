@@ -18,6 +18,7 @@
 		"@codemem/viewer-server": "workspace:*",
 		"@hono/node-server": "^1.14.3",
 		"commander": "^14.0.3",
+		"drizzle-orm": "^0.45.1",
 		"omelette": "^0.4.17"
 	},
 	"devDependencies": {

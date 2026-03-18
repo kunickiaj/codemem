@@ -18,6 +18,7 @@
 	"dependencies": {
 		"@codemem/core": "workspace:*",
 		"@hono/node-server": "^1.14.3",
+		"drizzle-orm": "^0.45.1",
 		"hono": "^4.7.10"
 	},
 	"devDependencies": {
