@@ -1,7 +1,6 @@
 {
-	"name": "@codemem/mcp-server",
-	"version": "0.0.1",
-	"private": true,
+	"name": "@codemem/mcp",
+	"version": "0.20.0-alpha.1",
 	"type": "module",
 	"exports": {
 		".": {
@@ -13,6 +12,9 @@
 	"bin": {
 		"codemem-mcp-ts": "./dist/index.js"
 	},
+	"files": [
+		"dist/"
+	],
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist",
@@ -28,5 +30,14 @@
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/mcp-server"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
 	}
 }

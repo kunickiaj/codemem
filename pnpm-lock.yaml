@@ -47,10 +47,10 @@ importers:
       '@codemem/core':
         specifier: workspace:*
         version: link:../core
-      '@codemem/mcp-server':
+      '@codemem/mcp':
         specifier: workspace:*
         version: link:../mcp-server
-      '@codemem/viewer-server':
+      '@codemem/server':
         specifier: workspace:*
         version: link:../viewer-server
       '@hono/node-server':

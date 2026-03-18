@@ -1,7 +1,6 @@
 {
 	"name": "@codemem/core",
-	"version": "0.0.1",
-	"private": true,
+	"version": "0.20.0-alpha.1",
 	"type": "module",
 	"exports": {
 		".": {
@@ -10,6 +9,9 @@
 			"types": "./dist/index.d.ts"
 		}
 	},
+	"files": [
+		"dist/"
+	],
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "pnpm exec vite build && pnpm exec tsc --emitDeclarationOnly",
@@ -26,5 +28,14 @@
 		"drizzle-orm": "^0.45.1",
 		"hono": "^4.7.10",
 		"sqlite-vec": "0.1.7-alpha.2"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/core"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
 	}
 }

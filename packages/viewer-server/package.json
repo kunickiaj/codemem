@@ -1,7 +1,6 @@
 {
-	"name": "@codemem/viewer-server",
-	"version": "0.0.1",
-	"private": true,
+	"name": "@codemem/server",
+	"version": "0.20.0-alpha.1",
 	"type": "module",
 	"exports": {
 		".": {
@@ -10,6 +9,9 @@
 			"types": "./dist/index.d.ts"
 		}
 	},
+	"files": [
+		"dist/"
+	],
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist",
@@ -29,5 +31,14 @@
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/viewer-server"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
 	}
 }
