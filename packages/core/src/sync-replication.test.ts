@@ -235,6 +235,145 @@ describe("recordReplicationOp", () => {
 		expect(row.clock_device_id).toBe("dev-a");
 	});
 
+	it("includes full memory payload in upsert ops and round-trips all columns", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		const meta = { clock_device_id: "dev-a", custom_field: "preserved" };
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, subtitle, body_text, confidence, tags_text,
+				created_at, updated_at, import_key, rev, metadata_json, active,
+				actor_id, actor_display_name, visibility, workspace_id, workspace_kind,
+				origin_device_id, origin_source, trust_state, narrative,
+				facts, concepts, files_read, files_modified
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"feature",
+			"Ship TS port",
+			"The big one",
+			"Ported all the things",
+			0.95,
+			"ts port",
+			now,
+			now,
+			"key:payload",
+			2,
+			toJson(meta),
+			1,
+			"actor-1",
+			"Adam",
+			"shared",
+			"shared:team",
+			"shared",
+			"dev-a",
+			"manual",
+			"verified",
+			"Full narrative text",
+			toJson(["fact-1"]),
+			toJson(["concept-1"]),
+			toJson(["src/a.ts"]),
+			toJson(["src/b.ts"]),
+		);
+
+		const memId = (
+			db.prepare("SELECT id FROM memory_items WHERE import_key = ?").get("key:payload") as {
+				id: number;
+			}
+		).id;
+
+		const opId = recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
+		const row = db
+			.prepare("SELECT payload_json FROM replication_ops WHERE op_id = ?")
+			.get(opId) as { payload_json: string | null };
+
+		expect(row.payload_json).not.toBeNull();
+		const payload = JSON.parse(row.payload_json!) as Record<string, unknown>;
+		// Core fields
+		expect(payload.kind).toBe("feature");
+		expect(payload.title).toBe("Ship TS port");
+		expect(payload.subtitle).toBe("The big one");
+		expect(payload.body_text).toBe("Ported all the things");
+		expect(payload.confidence).toBe(0.95);
+		expect(payload.tags_text).toBe("ts port");
+		// Provenance fields
+		expect(payload.actor_id).toBe("actor-1");
+		expect(payload.visibility).toBe("shared");
+		expect(payload.workspace_id).toBe("shared:team");
+		expect(payload.origin_device_id).toBe("dev-a");
+		expect(payload.trust_state).toBe("verified");
+		// metadata_json should be an object, not a double-encoded string
+		expect(payload.metadata_json).toEqual({ clock_device_id: "dev-a", custom_field: "preserved" });
+		// JSON array fields should be arrays, not strings
+		expect(payload.facts).toEqual(["fact-1"]);
+		expect(payload.files_read).toEqual(["src/a.ts"]);
+
+		// Full round-trip: load op → apply to a second DB → verify all columns
+		const [ops] = loadReplicationOpsSince(db, null);
+		const op = ops.find((o) => o.op_id === opId);
+		expect(op).toBeDefined();
+
+		const db2 = new Database(":memory:");
+		initTestSchema(db2);
+		try {
+			const result = applyReplicationOps(db2, [op!], "dev-local");
+			expect(result.applied).toBe(1);
+
+			const applied = db2
+				.prepare("SELECT * FROM memory_items WHERE import_key = ?")
+				.get("key:payload") as Record<string, unknown>;
+			// Core fields
+			expect(applied.kind).toBe("feature");
+			expect(applied.title).toBe("Ship TS port");
+			expect(applied.subtitle).toBe("The big one");
+			expect(applied.body_text).toBe("Ported all the things");
+			expect(applied.confidence).toBe(0.95);
+			expect(applied.tags_text).toBe("ts port");
+			// Provenance fields survive
+			expect(applied.actor_id).toBe("actor-1");
+			expect(applied.actor_display_name).toBe("Adam");
+			expect(applied.visibility).toBe("shared");
+			expect(applied.workspace_id).toBe("shared:team");
+			expect(applied.workspace_kind).toBe("shared");
+			expect(applied.origin_device_id).toBe("dev-a");
+			expect(applied.origin_source).toBe("manual");
+			expect(applied.trust_state).toBe("verified");
+			expect(applied.narrative).toBe("Full narrative text");
+			// metadata_json round-trips as proper JSON with clock_device_id added
+			const appliedMeta = JSON.parse(applied.metadata_json as string);
+			expect(appliedMeta.custom_field).toBe("preserved");
+			expect(appliedMeta.clock_device_id).toBe("dev-a");
+			// JSON array columns round-trip
+			expect(JSON.parse(applied.facts as string)).toEqual(["fact-1"]);
+			expect(JSON.parse(applied.concepts as string)).toEqual(["concept-1"]);
+			expect(JSON.parse(applied.files_read as string)).toEqual(["src/a.ts"]);
+			expect(JSON.parse(applied.files_modified as string)).toEqual(["src/b.ts"]);
+		} finally {
+			db2.close();
+		}
+	});
+
+	it("stores null payload for delete ops", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(sessionId, "discovery", "Will delete", "gone", now, now, "key:del", 1);
+
+		const memId = (
+			db.prepare("SELECT id FROM memory_items WHERE import_key = ?").get("key:del") as {
+				id: number;
+			}
+		).id;
+
+		const opId = recordReplicationOp(db, { memoryId: memId, opType: "delete", deviceId: "dev-a" });
+		const row = db
+			.prepare("SELECT payload_json FROM replication_ops WHERE op_id = ?")
+			.get(opId) as { payload_json: string | null };
+		expect(row.payload_json).toBeNull();
+	});
+
 	it("falls back to memoryId as entity_id when import_key is null", () => {
 		const sessionId = insertTestSession(db);
 		const now = new Date().toISOString();
