@@ -136,23 +136,27 @@ function applyOpsPlaceholder(
 	const d = drizzle(db, { schema });
 	let inserted = 0;
 	for (const op of ops) {
-		const result = d
-			.insert(schema.replicationOps)
-			.values({
-				op_id: op.op_id,
-				entity_type: op.entity_type,
-				entity_id: op.entity_id,
-				op_type: op.op_type,
-				payload_json: op.payload_json ?? null,
-				clock_rev: op.clock_rev,
-				clock_updated_at: op.clock_updated_at,
-				clock_device_id: op.clock_device_id,
-				device_id: op.device_id,
-				created_at: op.created_at,
-			})
-			.onConflictDoNothing()
-			.run();
-		if (result.changes > 0) inserted++;
+		try {
+			const result = d
+				.insert(schema.replicationOps)
+				.values({
+					op_id: op.op_id,
+					entity_type: op.entity_type,
+					entity_id: op.entity_id,
+					op_type: op.op_type,
+					payload_json: op.payload_json ?? null,
+					clock_rev: op.clock_rev,
+					clock_updated_at: op.clock_updated_at,
+					clock_device_id: op.clock_device_id,
+					device_id: op.device_id,
+					created_at: op.created_at,
+				})
+				.onConflictDoNothing()
+				.run();
+			if (result.changes > 0) inserted++;
+		} catch {
+			// Skip malformed ops (missing NOT NULL fields) — matches INSERT OR IGNORE
+		}
 	}
 	return { inserted, skipped: ops.length - inserted };
 }
