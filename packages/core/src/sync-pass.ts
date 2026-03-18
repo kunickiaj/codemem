@@ -6,7 +6,10 @@
  * Ported from codemem/sync/sync_pass.py.
  */
 
+import { and, desc, eq, gt, or } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
+import * as schema from "./schema.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
@@ -90,29 +93,31 @@ function recordSyncAttempt(
 	peerDeviceId: string,
 	options: { ok: boolean; opsIn?: number; opsOut?: number; error?: string },
 ): void {
+	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
-	db.prepare(
-		`INSERT INTO sync_attempts (peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		peerDeviceId,
-		now,
-		now,
-		options.ok ? 1 : 0,
-		options.opsIn ?? 0,
-		options.opsOut ?? 0,
-		options.error ?? null,
-	);
+	d.insert(schema.syncAttempts)
+		.values({
+			peer_device_id: peerDeviceId,
+			started_at: now,
+			finished_at: now,
+			ok: options.ok ? 1 : 0,
+			ops_in: options.opsIn ?? 0,
+			ops_out: options.opsOut ?? 0,
+			error: options.error ?? null,
+		})
+		.run();
 }
 
 /**
  * Update last_sync_at and clear last_error on successful sync.
  */
 function recordPeerSuccess(db: Database, peerDeviceId: string): void {
+	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
-	db.prepare(
-		"UPDATE sync_peers SET last_sync_at = ?, last_seen_at = ?, last_error = NULL WHERE peer_device_id = ?",
-	).run(now, now, peerDeviceId);
+	d.update(schema.syncPeers)
+		.set({ last_sync_at: now, last_seen_at: now, last_error: null })
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.run();
 }
 
 /**
@@ -128,28 +133,26 @@ function applyOpsPlaceholder(
 ): { inserted: number; skipped: number } {
 	if (ops.length === 0) return { inserted: 0, skipped: 0 };
 
-	const stmt = db.prepare(
-		`INSERT OR IGNORE INTO replication_ops
-		 (op_id, entity_type, entity_id, op_type, payload_json,
-		  clock_rev, clock_updated_at, clock_device_id, device_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	);
-
+	const d = drizzle(db, { schema });
 	let inserted = 0;
 	for (const op of ops) {
-		const info = stmt.run(
-			op.op_id,
-			op.entity_type,
-			op.entity_id,
-			op.op_type,
-			op.payload_json ?? null,
-			op.clock_rev,
-			op.clock_updated_at,
-			op.clock_device_id,
-			op.device_id,
-			op.created_at,
-		);
-		if (info.changes > 0) inserted++;
+		const result = d
+			.insert(schema.replicationOps)
+			.values({
+				op_id: op.op_id,
+				entity_type: op.entity_type,
+				entity_id: op.entity_id,
+				op_type: op.op_type,
+				payload_json: op.payload_json ?? null,
+				clock_rev: op.clock_rev,
+				clock_updated_at: op.clock_updated_at,
+				clock_device_id: op.clock_device_id,
+				device_id: op.device_id,
+				created_at: op.created_at,
+			})
+			.onConflictDoNothing()
+			.run();
+		if (result.changes > 0) inserted++;
 	}
 	return { inserted, skipped: ops.length - inserted };
 }
@@ -165,34 +168,41 @@ function loadLocalOpsSince(
 	deviceId: string,
 	limit: number,
 ): [ReplicationOp[], string | null] {
+	const d = drizzle(db, { schema });
+	const { replicationOps: ops } = schema;
 	let rows: ReplicationOp[];
 	if (cursor) {
-		// Parse cursor: "created_at|op_id"
 		const sepIdx = cursor.indexOf("|");
 		const cursorTs = sepIdx >= 0 ? cursor.slice(0, sepIdx) : cursor;
 		const cursorOpId = sepIdx >= 0 ? cursor.slice(sepIdx + 1) : "";
-		rows = db
-			.prepare(
-				`SELECT * FROM replication_ops
-				 WHERE device_id = ?
-				   AND (created_at > ? OR (created_at = ? AND op_id > ?))
-				 ORDER BY created_at, op_id
-				 LIMIT ?`,
+		rows = d
+			.select()
+			.from(ops)
+			.where(
+				and(
+					eq(ops.device_id, deviceId),
+					or(
+						gt(ops.created_at, cursorTs),
+						and(eq(ops.created_at, cursorTs), gt(ops.op_id, cursorOpId)),
+					),
+				),
 			)
-			.all(deviceId, cursorTs, cursorTs, cursorOpId, limit) as ReplicationOp[];
+			.orderBy(ops.created_at, ops.op_id)
+			.limit(limit)
+			.all() as ReplicationOp[];
 	} else {
-		rows = db
-			.prepare(
-				`SELECT * FROM replication_ops
-				 WHERE device_id = ?
-				 ORDER BY created_at, op_id
-				 LIMIT ?`,
-			)
-			.all(deviceId, limit) as ReplicationOp[];
+		rows = d
+			.select()
+			.from(ops)
+			.where(eq(ops.device_id, deviceId))
+			.orderBy(ops.created_at, ops.op_id)
+			.limit(limit)
+			.all() as ReplicationOp[];
 	}
 
 	if (rows.length === 0) return [[], null];
-	const last = rows.at(-1)!;
+	const last = rows.at(-1);
+	if (!last) return [[], null];
 	const nextCursor = `${last.created_at}|${last.op_id}`;
 	return [rows, nextCursor];
 }
@@ -293,9 +303,12 @@ export async function syncOnce(
 	const keysDir = options?.keysDir;
 
 	// Look up pinned fingerprint
-	const pinRow = db
-		.prepare("SELECT pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
-		.get(peerDeviceId) as { pinned_fingerprint: string | null } | undefined;
+	const d = drizzle(db, { schema });
+	const pinRow = d
+		.select({ pinned_fingerprint: schema.syncPeers.pinned_fingerprint })
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.get();
 	const pinnedFingerprint = pinRow?.pinned_fingerprint ?? "";
 	if (!pinnedFingerprint) {
 		return { ok: false, error: "peer not pinned", opsIn: 0, opsOut: 0, addressErrors: [] };
@@ -442,9 +455,12 @@ export async function runSyncPass(
 	options?: SyncPassOptions,
 ): Promise<SyncResult> {
 	// Load stored addresses for this peer
-	const row = db
-		.prepare("SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?")
-		.get(peerDeviceId) as { addresses_json: string | null } | undefined;
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({ addresses_json: schema.syncPeers.addresses_json })
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.get();
 
 	let addresses: string[] = [];
 	if (row?.addresses_json) {
@@ -495,14 +511,14 @@ export function consecutiveConnectivityFailures(
 	peerDeviceId: string,
 	limit = 10,
 ): number {
-	const rows = db
-		.prepare(
-			`SELECT ok, error FROM sync_attempts
-			 WHERE peer_device_id = ?
-			 ORDER BY started_at DESC
-			 LIMIT ?`,
-		)
-		.all(peerDeviceId, limit) as Array<{ ok: number; error: string | null }>;
+	const d = drizzle(db, { schema });
+	const rows = d
+		.select({ ok: schema.syncAttempts.ok, error: schema.syncAttempts.error })
+		.from(schema.syncAttempts)
+		.where(eq(schema.syncAttempts.peer_device_id, peerDeviceId))
+		.orderBy(desc(schema.syncAttempts.started_at))
+		.limit(limit)
+		.all();
 
 	let count = 0;
 	for (const row of rows) {
@@ -532,14 +548,14 @@ export function shouldSkipOfflinePeer(db: Database, peerDeviceId: string): boole
 	const backoffS = peerBackoffSeconds(failures);
 	if (backoffS <= 0) return false;
 
-	const row = db
-		.prepare(
-			`SELECT started_at FROM sync_attempts
-			 WHERE peer_device_id = ?
-			 ORDER BY started_at DESC
-			 LIMIT 1`,
-		)
-		.get(peerDeviceId) as { started_at: string } | undefined;
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({ started_at: schema.syncAttempts.started_at })
+		.from(schema.syncAttempts)
+		.where(eq(schema.syncAttempts.peer_device_id, peerDeviceId))
+		.orderBy(desc(schema.syncAttempts.started_at))
+		.limit(1)
+		.get();
 
 	if (!row?.started_at) return false;
 	try {

@@ -5,8 +5,11 @@
  * and mDNS stubs. Ported from codemem/sync/discovery.py.
  */
 
+import { eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mergeAddresses, normalizeAddress } from "./address-utils.js";
 import type { Database } from "./db.js";
+import * as schema from "./schema.js";
 
 // Re-export for consumers that import from sync-discovery
 export { addressDedupeKey, mergeAddresses, normalizeAddress } from "./address-utils.js";
@@ -41,9 +44,12 @@ export function selectDialAddresses(options: { stored: string[]; mdns: string[] 
  * Load stored addresses for a peer from the sync_peers table.
  */
 export function loadPeerAddresses(db: Database, peerDeviceId: string): string[] {
-	const row = db
-		.prepare("SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?")
-		.get(peerDeviceId) as { addresses_json: string | null } | undefined;
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({ addresses_json: schema.syncPeers.addresses_json })
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.get();
 	if (!row?.addresses_json) return [];
 	try {
 		const raw = JSON.parse(row.addresses_json);
@@ -75,26 +81,28 @@ export function updatePeerAddresses(
 	const addressesJson = JSON.stringify(merged);
 
 	// Atomic UPSERT — avoids TOCTOU race with concurrent sync workers
-	db.prepare(
-		`INSERT INTO sync_peers (
-			peer_device_id, name, pinned_fingerprint, public_key,
-			addresses_json, created_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(peer_device_id) DO UPDATE SET
-			name = COALESCE(excluded.name, name),
-			pinned_fingerprint = COALESCE(excluded.pinned_fingerprint, pinned_fingerprint),
-			public_key = COALESCE(excluded.public_key, public_key),
-			addresses_json = excluded.addresses_json,
-			last_seen_at = excluded.last_seen_at`,
-	).run(
-		peerDeviceId,
-		options?.name ?? null,
-		options?.pinnedFingerprint ?? null,
-		options?.publicKey ?? null,
-		addressesJson,
-		now,
-		now,
-	);
+	const d = drizzle(db, { schema });
+	d.insert(schema.syncPeers)
+		.values({
+			peer_device_id: peerDeviceId,
+			name: options?.name ?? null,
+			pinned_fingerprint: options?.pinnedFingerprint ?? null,
+			public_key: options?.publicKey ?? null,
+			addresses_json: addressesJson,
+			created_at: now,
+			last_seen_at: now,
+		})
+		.onConflictDoUpdate({
+			target: schema.syncPeers.peer_device_id,
+			set: {
+				name: sql`COALESCE(excluded.name, ${schema.syncPeers.name})`,
+				pinned_fingerprint: sql`COALESCE(excluded.pinned_fingerprint, ${schema.syncPeers.pinned_fingerprint})`,
+				public_key: sql`COALESCE(excluded.public_key, ${schema.syncPeers.public_key})`,
+				addresses_json: sql`excluded.addresses_json`,
+				last_seen_at: sql`excluded.last_seen_at`,
+			},
+		})
+		.run();
 
 	return merged;
 }
@@ -112,30 +120,30 @@ export function recordSyncAttempt(
 		error?: string;
 	},
 ): void {
+	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
-	db.prepare(
-		`INSERT INTO sync_attempts (
-			peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		peerDeviceId,
-		now,
-		now,
-		options.ok ? 1 : 0,
-		options.opsIn ?? 0,
-		options.opsOut ?? 0,
-		options.error ?? null,
-	);
+	d.insert(schema.syncAttempts)
+		.values({
+			peer_device_id: peerDeviceId,
+			started_at: now,
+			finished_at: now,
+			ok: options.ok ? 1 : 0,
+			ops_in: options.opsIn ?? 0,
+			ops_out: options.opsOut ?? 0,
+			error: options.error ?? null,
+		})
+		.run();
 
 	if (options.ok) {
-		db.prepare(
-			"UPDATE sync_peers SET last_sync_at = ?, last_error = NULL WHERE peer_device_id = ?",
-		).run(now, peerDeviceId);
+		d.update(schema.syncPeers)
+			.set({ last_sync_at: now, last_error: null })
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.run();
 	} else {
-		db.prepare("UPDATE sync_peers SET last_error = ? WHERE peer_device_id = ?").run(
-			options.error ?? null,
-			peerDeviceId,
-		);
+		d.update(schema.syncPeers)
+			.set({ last_error: options.error ?? null })
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.run();
 	}
 }
 
@@ -155,11 +163,15 @@ export function recordPeerSuccess(
 	if (normalized) {
 		const remaining = addresses.filter((item) => normalizeAddress(item) !== normalized);
 		ordered = [normalized, ...remaining];
-		db.prepare(
-			`UPDATE sync_peers
-			 SET addresses_json = ?, last_sync_at = ?, last_error = NULL
-			 WHERE peer_device_id = ?`,
-		).run(JSON.stringify(ordered), new Date().toISOString(), peerDeviceId);
+		const d = drizzle(db, { schema });
+		d.update(schema.syncPeers)
+			.set({
+				addresses_json: JSON.stringify(ordered),
+				last_sync_at: new Date().toISOString(),
+				last_error: null,
+			})
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.run();
 	}
 	return ordered;
 }
@@ -183,22 +195,22 @@ export function setPeerProjectFilter(
 ): void {
 	const includeJson = options.include === null ? null : JSON.stringify(options.include);
 	const excludeJson = options.exclude === null ? null : JSON.stringify(options.exclude);
-	db.prepare(
-		`UPDATE sync_peers
-		 SET projects_include_json = ?,
-		     projects_exclude_json = ?
-		 WHERE peer_device_id = ?`,
-	).run(includeJson, excludeJson, peerDeviceId);
+	const d = drizzle(db, { schema });
+	d.update(schema.syncPeers)
+		.set({ projects_include_json: includeJson, projects_exclude_json: excludeJson })
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.run();
 }
 
 /**
  * Set the claimed_local_actor flag for a peer.
  */
 export function setPeerLocalActorClaim(db: Database, peerDeviceId: string, claimed: boolean): void {
-	db.prepare("UPDATE sync_peers SET claimed_local_actor = ? WHERE peer_device_id = ?").run(
-		claimed ? 1 : 0,
-		peerDeviceId,
-	);
+	const d = drizzle(db, { schema });
+	d.update(schema.syncPeers)
+		.set({ claimed_local_actor: claimed ? 1 : 0 })
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.run();
 }
 
 // ---------------------------------------------------------------------------

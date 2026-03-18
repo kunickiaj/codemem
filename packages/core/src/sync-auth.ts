@@ -13,7 +13,10 @@ import {
 	sign,
 	verify,
 } from "node:crypto";
+import { lt } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
+import * as schema from "./schema.js";
 import { loadPrivateKey } from "./sync-identity.js";
 
 // ---------------------------------------------------------------------------
@@ -254,15 +257,11 @@ export function recordNonce(
 	nonce: string,
 	createdAt: string,
 ): boolean {
+	const d = drizzle(db, { schema });
 	try {
-		db.prepare("INSERT INTO sync_nonces(nonce, device_id, created_at) VALUES (?, ?, ?)").run(
-			nonce,
-			deviceId,
-			createdAt,
-		);
+		d.insert(schema.syncNonces).values({ nonce, device_id: deviceId, created_at: createdAt }).run();
 		return true;
 	} catch (err: unknown) {
-		// SQLite UNIQUE constraint violation
 		if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
 			return false;
 		}
@@ -274,5 +273,6 @@ export function recordNonce(
  * Remove nonces older than the given cutoff timestamp.
  */
 export function cleanupNonces(db: Database, cutoff: string): void {
-	db.prepare("DELETE FROM sync_nonces WHERE created_at < ?").run(cutoff);
+	const d = drizzle(db, { schema });
+	d.delete(schema.syncNonces).where(lt(schema.syncNonces.created_at, cutoff)).run();
 }

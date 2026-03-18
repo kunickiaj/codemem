@@ -6,8 +6,11 @@
  * to the viewer-server Hono routes.
  */
 
+import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
+import * as schema from "./schema.js";
 import { advertiseMdns, discoverPeersViaMdns, mdnsEnabled } from "./sync-discovery.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import { runSyncPass, shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
@@ -42,27 +45,39 @@ export interface SyncTickResult {
  * Record a successful daemon tick in sync_daemon_state.
  */
 export function setSyncDaemonOk(db: Database): void {
+	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
-	db.prepare(
-		`INSERT INTO sync_daemon_state (id, last_ok_at)
-		 VALUES (1, ?)
-		 ON CONFLICT(id) DO UPDATE SET last_ok_at = excluded.last_ok_at`,
-	).run(now);
+	d.insert(schema.syncDaemonState)
+		.values({ id: 1, last_ok_at: now })
+		.onConflictDoUpdate({
+			target: schema.syncDaemonState.id,
+			set: { last_ok_at: sql`excluded.last_ok_at` },
+		})
+		.run();
 }
 
 /**
  * Record a daemon tick error in sync_daemon_state.
  */
 export function setSyncDaemonError(db: Database, error: string, traceback?: string): void {
+	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
-	db.prepare(
-		`INSERT INTO sync_daemon_state (id, last_error, last_traceback, last_error_at)
-		 VALUES (1, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET
-		     last_error = excluded.last_error,
-		     last_traceback = excluded.last_traceback,
-		     last_error_at = excluded.last_error_at`,
-	).run(error, traceback ?? null, now);
+	d.insert(schema.syncDaemonState)
+		.values({
+			id: 1,
+			last_error: error,
+			last_traceback: traceback ?? null,
+			last_error_at: now,
+		})
+		.onConflictDoUpdate({
+			target: schema.syncDaemonState.id,
+			set: {
+				last_error: sql`excluded.last_error`,
+				last_traceback: sql`excluded.last_traceback`,
+				last_error_at: sql`excluded.last_error_at`,
+			},
+		})
+		.run();
 }
 
 // ---------------------------------------------------------------------------
@@ -80,9 +95,11 @@ export async function syncDaemonTick(db: Database, keysDir?: string): Promise<Sy
 	const mdnsEntries = mdnsEnabled() ? discoverPeersViaMdns() : [];
 	void mdnsEntries; // unused until mDNS is real
 
-	const rows = db.prepare("SELECT peer_device_id FROM sync_peers").all() as Array<{
-		peer_device_id: string;
-	}>;
+	const d = drizzle(db, { schema });
+	const rows = d
+		.select({ peer_device_id: schema.syncPeers.peer_device_id })
+		.from(schema.syncPeers)
+		.all();
 
 	const results: SyncTickResult[] = [];
 	for (const row of rows) {
