@@ -7,6 +7,7 @@ import {
 	fromJson,
 	resolveDbPath,
 	toJson,
+	toJsonNullable,
 } from "./db.js";
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
@@ -368,11 +369,11 @@ function insertMemory(d: DrizzleDb, row: JsonObject): number {
 			origin_device_id: row.origin_device_id == null ? null : String(row.origin_device_id),
 			origin_source: row.origin_source == null ? null : String(row.origin_source),
 			trust_state: row.trust_state == null ? null : String(row.trust_state),
-			facts: toJson(row.facts ?? null),
+			facts: toJsonNullable(row.facts),
 			narrative: row.narrative == null ? null : String(row.narrative),
-			concepts: toJson(row.concepts ?? null),
-			files_read: toJson(row.files_read ?? null),
-			files_modified: toJson(row.files_modified ?? null),
+			concepts: toJsonNullable(row.concepts),
+			files_read: toJsonNullable(row.files_read),
+			files_modified: toJsonNullable(row.files_modified),
 			user_prompt_id: row.user_prompt_id == null ? null : Number(row.user_prompt_id),
 			prompt_number: row.prompt_number == null ? null : Number(row.prompt_number),
 			deleted_at: null,
@@ -398,8 +399,8 @@ function insertSummary(d: DrizzleDb, row: JsonObject): number {
 			completed: String(row.completed ?? ""),
 			next_steps: String(row.next_steps ?? ""),
 			notes: String(row.notes ?? ""),
-			files_read: toJson(row.files_read ?? null),
-			files_edited: toJson(row.files_edited ?? null),
+			files_read: toJsonNullable(row.files_read),
+			files_edited: toJsonNullable(row.files_edited),
 			prompt_number: row.prompt_number == null ? null : Number(row.prompt_number),
 			created_at: typeof row.created_at === "string" ? row.created_at : nowIso(),
 			created_at_epoch:

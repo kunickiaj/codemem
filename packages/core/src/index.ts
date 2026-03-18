@@ -46,6 +46,7 @@ export {
 	SCHEMA_VERSION,
 	tableExists,
 	toJson,
+	toJsonNullable,
 } from "./db.js";
 export type { EmbeddingClient } from "./embeddings.js";
 export {

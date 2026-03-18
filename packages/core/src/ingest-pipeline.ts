@@ -19,7 +19,7 @@
  * 12. End session
  */
 
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { and, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { toJson } from "./db.js";
 import {
@@ -458,19 +458,14 @@ function endSession(
 	eventCount: number,
 	sessionContext: SessionContext,
 ): void {
-	const d = drizzle(store.db, { schema });
-	d.update(schema.sessions)
-		.set({
-			ended_at: new Date().toISOString(),
-			metadata_json: toJson({
-				post: {},
-				source: "plugin",
-				event_count: eventCount,
-				session_context: sessionContext,
-			}),
-		})
-		.where(eq(schema.sessions.id, sessionId))
-		.run();
+	// Use store.endSession() which merges metadata instead of replacing it,
+	// preserving fields set during session creation (startedAt, session_context, etc.)
+	store.endSession(sessionId, {
+		post: {},
+		source: "plugin",
+		event_count: eventCount,
+		session_context: sessionContext,
+	});
 }
 
 // ---------------------------------------------------------------------------

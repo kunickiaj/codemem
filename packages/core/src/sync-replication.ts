@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, gt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
-import { fromJson, toJson } from "./db.js";
+import { fromJson, toJson, toJsonNullable } from "./db.js";
 import * as schema from "./schema.js";
 import type { ReplicationOp } from "./types.js";
 
@@ -498,10 +498,10 @@ export function applyReplicationOps(
 								origin_source: sql`COALESCE(${(payload.origin_source as string) ?? null}, ${schema.memoryItems.origin_source})`,
 								trust_state: sql`COALESCE(${(payload.trust_state as string) ?? null}, ${schema.memoryItems.trust_state})`,
 								narrative: (payload.narrative as string) ?? null,
-								facts: toJson(payload.facts ?? null),
-								concepts: toJson(payload.concepts ?? null),
-								files_read: toJson(payload.files_read ?? null),
-								files_modified: toJson(payload.files_modified ?? null),
+								facts: toJsonNullable(payload.facts),
+								concepts: toJsonNullable(payload.concepts),
+								files_read: toJsonNullable(payload.files_read),
+								files_modified: toJsonNullable(payload.files_modified),
 							})
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
@@ -542,10 +542,10 @@ export function applyReplicationOps(
 								origin_source: (payload.origin_source as string) ?? null,
 								trust_state: (payload.trust_state as string) ?? null,
 								narrative: (payload.narrative as string) ?? null,
-								facts: toJson(payload.facts ?? null),
-								concepts: toJson(payload.concepts ?? null),
-								files_read: toJson(payload.files_read ?? null),
-								files_modified: toJson(payload.files_modified ?? null),
+								facts: toJsonNullable(payload.facts),
+								concepts: toJsonNullable(payload.concepts),
+								files_read: toJsonNullable(payload.files_read),
+								files_modified: toJsonNullable(payload.files_modified),
 							})
 							.run();
 					}
