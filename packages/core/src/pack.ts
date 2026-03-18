@@ -40,7 +40,7 @@ const OBSERVATION_KIND_PRIORITY: Record<string, number> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Rough token estimate: ~4 chars per token (matches Python heuristic). */
+/** Rough token estimate: ~4 chars per token. */
 export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }

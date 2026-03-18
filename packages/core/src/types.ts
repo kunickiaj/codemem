@@ -406,9 +406,9 @@ export interface PackItem {
 	confidence: number;
 	tags: string;
 	metadata: Record<string, unknown>;
-	/** Number of exact duplicates collapsed into this item (1 = no dupes). */
+	/** Number of exact duplicates collapsed into this item. Only present when > 1. */
 	support_count?: number;
-	/** IDs of duplicates that were collapsed into this canonical item. */
+	/** IDs of duplicates that were collapsed into this canonical item. Only present when non-empty. */
 	duplicate_ids?: number[];
 }
 

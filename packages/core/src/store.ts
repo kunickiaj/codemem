@@ -30,6 +30,7 @@ import { buildFilterClauses } from "./filters.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { buildMemoryPack, buildMemoryPackAsync } from "./pack.js";
 import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
+import { recordReplicationOp } from "./sync-replication.js";
 import type {
 	ExplainResponse,
 	MemoryFilters,
@@ -277,7 +278,16 @@ export class MemoryStore {
 				importKey,
 			);
 
-		return Number(info.lastInsertRowid);
+		const memoryId = Number(info.lastInsertRowid);
+
+		// Record replication op for sync propagation (matches Python)
+		try {
+			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
+		} catch {
+			// Non-fatal — don't block memory creation
+		}
+
+		return memoryId;
 	}
 
 	// -----------------------------------------------------------------------
@@ -411,6 +421,13 @@ export class MemoryStore {
 				 WHERE id = ?`,
 			)
 			.run(now, now, toJson(meta), rev, memoryId);
+
+		// Record replication op for sync propagation (matches Python)
+		try {
+			recordReplicationOp(this.db, { memoryId, opType: "delete", deviceId: this.deviceId });
+		} catch {
+			// Non-fatal
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -641,6 +658,17 @@ export class MemoryStore {
 				 WHERE id = ?`,
 			)
 			.run(cleaned, workspaceKind, workspaceId, now, toJson(meta), rev, memoryId);
+
+		// Record replication op for sync propagation (matches Python)
+		try {
+			recordReplicationOp(this.db, {
+				memoryId,
+				opType: "upsert",
+				deviceId: this.deviceId,
+			});
+		} catch {
+			// Non-fatal — replication op recording failure shouldn't block the UI
+		}
 
 		const updated = this.get(memoryId);
 		if (!updated) {
