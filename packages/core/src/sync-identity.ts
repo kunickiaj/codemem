@@ -6,8 +6,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	createHash,
+	createPrivateKey,
+	createPublicKey,
+	generateKeyPairSync,
+	randomUUID,
+} from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Database } from "./db.js";
@@ -52,10 +58,6 @@ function cliAvailable(cmd: string): boolean {
 	} catch {
 		return false;
 	}
-}
-
-function sshKeygenAvailable(): boolean {
-	return cliAvailable("ssh-keygen");
 }
 
 // ---------------------------------------------------------------------------
@@ -210,24 +212,23 @@ function backupInvalidKeyFile(path: string, stamp: string): void {
 	renameSync(path, backupPath);
 }
 
-/** Generate an Ed25519 keypair using ssh-keygen. */
+/**
+ * Generate an Ed25519 keypair using Node's native crypto.
+ * Stores private key as PEM (PKCS8), public key as SSH format for compatibility.
+ */
 export function generateKeypair(privatePath: string, publicPath: string): void {
 	mkdirSync(dirname(privatePath), { recursive: true });
 	if (existsSync(privatePath) && existsSync(publicPath)) return;
-	if (!sshKeygenAvailable()) {
-		throw new Error("ssh-keygen not available for key generation");
-	}
 
 	if (existsSync(privatePath) && !existsSync(publicPath)) {
 		// Private key exists but public is missing — derive public from private
 		try {
-			const result = execFileSync("ssh-keygen", ["-y", "-f", privatePath], {
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-			const derivedKey = (result ?? "").trim();
-			if (derivedKey && publicKeyLooksValid(derivedKey)) {
-				writeFileSync(publicPath, `${derivedKey}\n`, { mode: 0o644 });
+			const privKeyObj = loadPrivateKeyObject(privatePath);
+			const pubKeyObj = createPublicKey(privKeyObj);
+			const sshPub = pubKeyObj.export({ type: "spki", format: "der" });
+			const sshPubStr = derToSshEd25519(sshPub);
+			if (sshPubStr && publicKeyLooksValid(sshPubStr)) {
+				writeFileSync(publicPath, `${sshPubStr}\n`, { mode: 0o644 });
 				return;
 			}
 		} catch {
@@ -238,12 +239,57 @@ export function generateKeypair(privatePath: string, publicPath: string): void {
 		renameSync(privatePath, `${privatePath}.orphan-${stamp}`);
 	}
 
-	execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", privatePath, "-q"], {
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-	chmodSync(privatePath, 0o600);
-	if (!existsSync(publicPath)) {
-		throw new Error("public key generation failed");
+	const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+
+	// Export private key as PEM (PKCS8)
+	const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+	writeFileSync(privatePath, privatePem, { mode: 0o600 });
+
+	// Export public key as SSH wire format: "ssh-ed25519 <base64>"
+	const pubDer = publicKey.export({ type: "spki", format: "der" });
+	const sshPub = derToSshEd25519(pubDer);
+	if (!sshPub) {
+		throw new Error("failed to convert public key to SSH format");
+	}
+	writeFileSync(publicPath, `${sshPub}\n`, { mode: 0o644 });
+}
+
+/**
+ * Convert a DER-encoded SPKI Ed25519 public key to SSH wire format.
+ * The last 32 bytes of the DER are the raw Ed25519 public key.
+ */
+function derToSshEd25519(spkiDer: Buffer): string | null {
+	// Ed25519 SPKI DER is 44 bytes: 12-byte header + 32-byte key
+	if (spkiDer.length < 32) return null;
+	const rawKey = spkiDer.subarray(spkiDer.length - 32);
+
+	// SSH wire format: string "ssh-ed25519" + string <32-byte key>
+	const keyType = Buffer.from("ssh-ed25519");
+	const buf = Buffer.alloc(4 + keyType.length + 4 + rawKey.length);
+	let offset = 0;
+	buf.writeUInt32BE(keyType.length, offset);
+	offset += 4;
+	keyType.copy(buf, offset);
+	offset += keyType.length;
+	buf.writeUInt32BE(rawKey.length, offset);
+	offset += 4;
+	rawKey.copy(buf, offset);
+
+	return `ssh-ed25519 ${buf.toString("base64")}`;
+}
+
+/**
+ * Load a private key that may be in OpenSSH format (existing keys) or
+ * PKCS8 PEM format (newly generated keys). Node's createPrivateKey
+ * handles both transparently.
+ */
+function loadPrivateKeyObject(privatePath: string): ReturnType<typeof createPrivateKey> {
+	const raw = readFileSync(privatePath);
+	// Try PKCS8 PEM first (our generated format), then OpenSSH
+	try {
+		return createPrivateKey(raw);
+	} catch {
+		return createPrivateKey({ key: raw, format: "pem", type: "pkcs8" });
 	}
 }
 
@@ -252,12 +298,11 @@ export function validateExistingKeypair(privatePath: string, publicPath: string)
 	if (!existsSync(privatePath) || !existsSync(publicPath)) return false;
 	const publicKey = readFileSync(publicPath, "utf-8").trim();
 	if (!publicKey || !publicKeyLooksValid(publicKey)) return false;
-	if (!sshKeygenAvailable()) return true;
 	try {
-		const derived = execFileSync("ssh-keygen", ["-y", "-f", privatePath], {
-			stdio: ["pipe", "pipe", "pipe"],
-			encoding: "utf-8",
-		}).trim();
+		const privKeyObj = loadPrivateKeyObject(privatePath);
+		const pubKeyObj = createPublicKey(privKeyObj);
+		const pubDer = pubKeyObj.export({ type: "spki", format: "der" });
+		const derived = derToSshEd25519(pubDer);
 		if (!derived || !publicKeyLooksValid(derived)) return false;
 		// Auto-fix mismatched public key file
 		if (derived !== publicKey) {

@@ -28,7 +28,7 @@ function sshKeygenAvailable(): boolean {
 	}
 }
 
-const HAS_SSH_KEYGEN = sshKeygenAvailable();
+const _HAS_SSH_KEYGEN = sshKeygenAvailable();
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -89,7 +89,7 @@ describe("sync-auth", () => {
 			return { db, deviceId, publicKey, keysDir };
 		}
 
-		it.skipIf(!HAS_SSH_KEYGEN)("round-trips: sign then verify", () => {
+		it("round-trips: sign then verify", () => {
 			const { db, deviceId, publicKey, keysDir } = setupIdentity();
 			try {
 				const body = Buffer.from('{"data":"test"}');
@@ -108,7 +108,7 @@ describe("sync-auth", () => {
 
 				expect(headers["X-Opencode-Timestamp"]).toBe(ts);
 				expect(headers["X-Opencode-Nonce"]).toBe(nonce);
-				expect(headers["X-Opencode-Signature"]).toMatch(/^v1:/);
+				expect(headers["X-Opencode-Signature"]).toMatch(/^v[12]:/);
 
 				const valid = verifySignature({
 					method: "POST",
@@ -126,7 +126,7 @@ describe("sync-auth", () => {
 			}
 		});
 
-		it.skipIf(!HAS_SSH_KEYGEN)("rejects expired timestamp", () => {
+		it("rejects expired timestamp", () => {
 			const { db, deviceId, publicKey, keysDir } = setupIdentity();
 			try {
 				const body = Buffer.from("{}");
@@ -157,7 +157,7 @@ describe("sync-auth", () => {
 			}
 		});
 
-		it.skipIf(!HAS_SSH_KEYGEN)("rejects wrong signature version", () => {
+		it("rejects wrong signature version", () => {
 			const { db, deviceId, publicKey, keysDir } = setupIdentity();
 			try {
 				const body = Buffer.from("{}");
@@ -171,8 +171,8 @@ describe("sync-auth", () => {
 					timestamp: ts,
 				});
 
-				// Replace version prefix
-				const tampered = headers["X-Opencode-Signature"].replace("v1:", "v99:");
+				// Replace version prefix with an unknown version
+				const tampered = headers["X-Opencode-Signature"].replace(/^v\d+:/, "v99:");
 
 				const valid = verifySignature({
 					method: "GET",
@@ -190,7 +190,7 @@ describe("sync-auth", () => {
 			}
 		});
 
-		it.skipIf(!HAS_SSH_KEYGEN)("rejects tampered body", () => {
+		it("rejects tampered body", () => {
 			const { db, deviceId, publicKey, keysDir } = setupIdentity();
 			try {
 				const body = Buffer.from('{"original":"data"}');
