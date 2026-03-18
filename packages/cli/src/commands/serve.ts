@@ -108,7 +108,7 @@ export const serveCommand = new Command("serve")
 			restart?: boolean;
 		}) => {
 			// Dynamic import to avoid loading hono/server deps for non-serve commands
-			const { createApp, closeStore, getStore } = await import("@codemem/viewer-server");
+			const { createApp, closeStore, getStore } = await import("@codemem/server");
 			const { serve } = await import("@hono/node-server");
 
 			const dbPath = resolveDbPath(opts.db);

@@ -55,10 +55,16 @@ jobs:
             echo "tag=latest" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish codemem
+      - name: Publish packages
         env:
           NODE_AUTH_TOKEN: ""
-        run: npm publish ./packages/cli --tag ${{ steps.dist-tag.outputs.tag }} --provenance --access public
+        run: |
+          DIST_TAG="${{ steps.dist-tag.outputs.tag }}"
+          # Publish in dependency order: core → mcp, server → cli
+          npm publish ./packages/core --tag "$DIST_TAG" --provenance --access public
+          npm publish ./packages/mcp-server --tag "$DIST_TAG" --provenance --access public
+          npm publish ./packages/viewer-server --tag "$DIST_TAG" --provenance --access public
+          npm publish ./packages/cli --tag "$DIST_TAG" --provenance --access public
 
   release:
     name: Create GitHub Release

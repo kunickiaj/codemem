@@ -1,5 +1,5 @@
 /**
- * @codemem/viewer-server — unified viewer + sync process.
+ * @codemem/server — HTTP server (viewer, sync, API).
  *
  * Single HTTP server handling viewer routes and sync daemon.
  * Shares one better-sqlite3 connection between viewer and sync.
