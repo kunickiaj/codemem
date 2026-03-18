@@ -12,7 +12,7 @@
 	},
 	"scripts": {
 		"clean": "rm -rf dist",
-		"build": "pnpm exec vite build",
+		"build": "pnpm exec vite build && pnpm exec tsc --emitDeclarationOnly",
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"devDependencies": {
@@ -23,6 +23,7 @@
 	},
 	"dependencies": {
 		"better-sqlite3": "^12.8.0",
+		"drizzle-orm": "^0.45.1",
 		"hono": "^4.7.10",
 		"sqlite-vec": "0.1.7-alpha.2"
 	}

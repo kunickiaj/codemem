@@ -216,7 +216,7 @@ describe("consecutiveConnectivityFailures", () => {
 		for (let i = 0; i < 3; i++) {
 			const ts = new Date(now.getTime() + i * 1000).toISOString();
 			db.prepare(
-				"INSERT INTO sync_attempts (peer_device_id, started_at, ok, error) VALUES (?, ?, 0, ?)",
+				"INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out, error) VALUES (?, ?, 0, 0, 0, ?)",
 			).run("peer-1", ts, "Connection refused");
 		}
 		expect(consecutiveConnectivityFailures(db, "peer-1")).toBe(3);
@@ -226,16 +226,16 @@ describe("consecutiveConnectivityFailures", () => {
 		const now = new Date();
 		// Old failure
 		db.prepare(
-			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, error) VALUES (?, ?, 0, ?)",
+			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out, error) VALUES (?, ?, 0, 0, 0, ?)",
 		).run("peer-1", new Date(now.getTime()).toISOString(), "Connection refused");
 		// Success
-		db.prepare("INSERT INTO sync_attempts (peer_device_id, started_at, ok) VALUES (?, ?, 1)").run(
+		db.prepare("INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out) VALUES (?, ?, 1, 0, 0)").run(
 			"peer-1",
 			new Date(now.getTime() + 1000).toISOString(),
 		);
 		// New failure
 		db.prepare(
-			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, error) VALUES (?, ?, 0, ?)",
+			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out, error) VALUES (?, ?, 0, 0, 0, ?)",
 		).run("peer-1", new Date(now.getTime() + 2000).toISOString(), "Connection refused");
 
 		expect(consecutiveConnectivityFailures(db, "peer-1")).toBe(1);
@@ -244,10 +244,10 @@ describe("consecutiveConnectivityFailures", () => {
 	it("stops counting at a non-connectivity error", () => {
 		const now = new Date();
 		db.prepare(
-			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, error) VALUES (?, ?, 0, ?)",
+			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out, error) VALUES (?, ?, 0, 0, 0, ?)",
 		).run("peer-1", new Date(now.getTime()).toISOString(), "peer fingerprint mismatch");
 		db.prepare(
-			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, error) VALUES (?, ?, 0, ?)",
+			"INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out, error) VALUES (?, ?, 0, 0, 0, ?)",
 		).run("peer-1", new Date(now.getTime() + 1000).toISOString(), "Connection refused");
 
 		// Most recent is connectivity, but the one before is not
@@ -282,7 +282,7 @@ describe("shouldSkipOfflinePeer", () => {
 		for (let i = 0; i < 3; i++) {
 			const ts = new Date(now.getTime() - (2 - i) * 1000).toISOString();
 			db.prepare(
-				"INSERT INTO sync_attempts (peer_device_id, started_at, ok, error) VALUES (?, ?, 0, ?)",
+				"INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out, error) VALUES (?, ?, 0, 0, 0, ?)",
 			).run("peer-1", ts, "Connection refused");
 		}
 		expect(shouldSkipOfflinePeer(db, "peer-1")).toBe(true);
@@ -294,7 +294,7 @@ describe("shouldSkipOfflinePeer", () => {
 		for (let i = 0; i < 2; i++) {
 			const ts = new Date(longAgo.getTime() + i * 1000).toISOString();
 			db.prepare(
-				"INSERT INTO sync_attempts (peer_device_id, started_at, ok, error) VALUES (?, ?, 0, ?)",
+				"INSERT INTO sync_attempts (peer_device_id, started_at, ok, ops_in, ops_out, error) VALUES (?, ?, 0, 0, 0, ?)",
 			).run("peer-1", ts, "Connection refused");
 		}
 		expect(shouldSkipOfflinePeer(db, "peer-1")).toBe(false);

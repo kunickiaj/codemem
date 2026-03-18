@@ -42,8 +42,8 @@ function mapPeerRow(row: Record<string, unknown>, showDiag: boolean): Record<str
 		last_error: showDiag ? row.last_error : null,
 		has_error: Boolean(row.last_error),
 		claimed_local_actor: Boolean(row.claimed_local_actor),
-		actor_id: row.actor_id,
-		actor_display_name: row.actor_display_name,
+		actor_id: row.actor_id ?? null,
+		actor_display_name: row.actor_display_name ?? null,
 		project_scope: {
 			include: safeJsonList(row.projects_include_json as string | null),
 			exclude: safeJsonList(row.projects_exclude_json as string | null),
