@@ -27,6 +27,7 @@ import {
 	resolveDbPath,
 	tableExists,
 	toJson,
+	toJsonNullable,
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
 import { readCodememConfigFile } from "./observer-config.js";
@@ -262,7 +263,21 @@ export class MemoryStore {
 		const importKey = (metaPayload.import_key as string) || randomUUID();
 		metaPayload.import_key = importKey;
 
-		// Resolve provenance fields — mirrors Python's _resolve_memory_provenance
+		// Extract dedicated columns from metadata before they get buried in metadata_json
+		const subtitle = typeof metaPayload.subtitle === "string" ? metaPayload.subtitle : null;
+		const narrative = typeof metaPayload.narrative === "string" ? metaPayload.narrative : null;
+		const facts = Array.isArray(metaPayload.facts) ? metaPayload.facts : null;
+		const concepts = Array.isArray(metaPayload.concepts) ? metaPayload.concepts : null;
+		const filesRead = Array.isArray(metaPayload.files_read) ? metaPayload.files_read : null;
+		const filesModified = Array.isArray(metaPayload.files_modified)
+			? metaPayload.files_modified
+			: null;
+		const promptNumber =
+			typeof metaPayload.prompt_number === "number" ? metaPayload.prompt_number : null;
+		const userPromptId =
+			typeof metaPayload.user_prompt_id === "number" ? metaPayload.user_prompt_id : null;
+
+		// Resolve provenance fields
 		const provenance = this.resolveProvenance(metaPayload);
 
 		const rows = this.d
@@ -271,6 +286,7 @@ export class MemoryStore {
 				session_id: sessionId,
 				kind: validKind,
 				title,
+				subtitle,
 				body_text: bodyText,
 				confidence,
 				tags_text: tagsText,
@@ -286,6 +302,13 @@ export class MemoryStore {
 				origin_device_id: provenance.origin_device_id,
 				origin_source: provenance.origin_source,
 				trust_state: provenance.trust_state,
+				narrative,
+				facts: toJsonNullable(facts),
+				concepts: toJsonNullable(concepts),
+				files_read: toJsonNullable(filesRead),
+				files_modified: toJsonNullable(filesModified),
+				prompt_number: promptNumber,
+				user_prompt_id: userPromptId,
 				deleted_at: null,
 				rev: 1,
 				import_key: importKey,

@@ -177,6 +177,7 @@ const DDL = `
 		observer_provider TEXT,
 		observer_model TEXT,
 		observer_runtime TEXT,
+		attempt_count INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		UNIQUE(source, stream_id, start_event_seq, end_event_seq, extractor_version)

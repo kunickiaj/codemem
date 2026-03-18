@@ -324,3 +324,25 @@ export function toJson(data: unknown): string {
 	if (data == null) return "{}";
 	return JSON.stringify(data);
 }
+
+/**
+ * Serialize a value to JSON, preserving null as SQL NULL.
+ *
+ * Use this for columns that store JSON arrays (facts, concepts, files_read,
+ * files_modified) where NULL means "no data" and "{}" would be corruption.
+ * Also normalizes empty objects ({}) to null — Python's from_json returns {}
+ * for empty DB values, so imported exports carry {} instead of null.
+ * Use `toJson` for metadata_json where "{}" is the correct empty default.
+ */
+export function toJsonNullable(data: unknown): string | null {
+	if (data == null) return null;
+	// Normalize empty objects to null — these are never valid array column values
+	if (
+		typeof data === "object" &&
+		!Array.isArray(data) &&
+		Object.keys(data as object).length === 0
+	) {
+		return null;
+	}
+	return JSON.stringify(data);
+}
