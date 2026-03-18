@@ -10,7 +10,8 @@
 		}
 	},
 	"files": [
-		"dist/"
+		"dist/",
+		"static/"
 	],
 	"scripts": {
 		"clean": "rm -rf dist",
@@ -18,7 +19,7 @@
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
-		"@codemem/core": "workspace:*",
+		"@codemem/core": "workspace:^",
 		"@hono/node-server": "^1.14.3",
 		"drizzle-orm": "^0.45.1",
 		"hono": "^4.7.10"

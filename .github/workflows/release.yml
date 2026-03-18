@@ -60,11 +60,12 @@ jobs:
           NODE_AUTH_TOKEN: ""
         run: |
           DIST_TAG="${{ steps.dist-tag.outputs.tag }}"
+          # pnpm publish resolves workspace:* to actual versions.
           # Publish in dependency order: core → mcp, server → cli
-          npm publish ./packages/core --tag "$DIST_TAG" --provenance --access public
-          npm publish ./packages/mcp-server --tag "$DIST_TAG" --provenance --access public
-          npm publish ./packages/viewer-server --tag "$DIST_TAG" --provenance --access public
-          npm publish ./packages/cli --tag "$DIST_TAG" --provenance --access public
+          pnpm --filter @codemem/core publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
+          pnpm --filter @codemem/mcp publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
+          pnpm --filter @codemem/server publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
+          pnpm --filter codemem publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
 
   release:
     name: Create GitHub Release

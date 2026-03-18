@@ -1,0 +1,1860 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>codemem viewer</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+      (function() {
+        try {
+          var rawTheme = localStorage.getItem('codemem-theme') || '';
+          if (!rawTheme) return;
+          var mode = rawTheme.indexOf('dark') === 0 ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme', mode);
+          document.documentElement.setAttribute('data-color-mode', mode);
+        } catch (_e) {}
+      })();
+    </script>
+    <style>
+      /* ── Design Tokens ─────────────────────────────────────── */
+
+      :root {
+        /* Surface */
+        --surface-0: #faf8f5;
+        --surface-1: #fff9f2;
+        --surface-2: #f5efe6;
+        --surface-3: #ede5d9;
+
+        /* Text — tinted warm greys */
+        --text-primary: #1a1917;
+        --text-secondary: #5c5549;
+        --text-tertiary: #9b9285;
+        --text-inverse: #faf8f5;
+
+        /* Accent */
+        --accent: #1a6b56;
+        --accent-hover: #15574a;
+        --accent-subtle: rgba(26, 107, 86, 0.10);
+        --accent-warm: #d4642e;
+        --accent-warm-subtle: rgba(212, 100, 46, 0.12);
+        --accent-cool: #2d4a7a;
+        --accent-cool-subtle: rgba(45, 74, 122, 0.10);
+
+        /* Status */
+        --status-healthy: #1a6b56;
+        --status-degraded: #d4642e;
+        --status-attention: #b64b2f;
+
+        /* Border & chrome */
+        --border: #e8dfd3;
+        --border-hover: #d4c8b8;
+        --focus-ring: rgba(26, 107, 86, 0.14);
+        --shadow-sm: 0 1px 3px rgba(24, 23, 18, 0.06);
+        --shadow-md: 0 8px 24px rgba(24, 23, 18, 0.08);
+        --shadow-lg: 0 18px 40px rgba(24, 23, 18, 0.12);
+
+        /* Controls */
+        --control-bg: rgba(26, 107, 86, 0.08);
+        --control-border: rgba(26, 107, 86, 0.22);
+        --control-hover-bg: rgba(26, 107, 86, 0.14);
+        --control-hover-border: rgba(26, 107, 86, 0.4);
+        --control-text: var(--accent);
+
+        /* Toggles */
+        --toggle-active-bg: rgba(26, 107, 86, 0.14);
+        --toggle-active-text: var(--accent);
+        --toggle-hover-bg: rgba(0, 0, 0, 0.04);
+
+        /* Input */
+        --input-bg: rgba(255, 255, 255, 0.7);
+
+        /* Feed */
+        --item-bg: rgba(255, 255, 255, 0.6);
+        --item-hover-bg: rgba(255, 255, 255, 0.85);
+        --feed-hover-border: var(--accent);
+
+        /* Background gradients */
+        --grad-1: rgba(26, 107, 86, 0.12);
+        --grad-2: rgba(212, 100, 46, 0.14);
+        --grad-3: rgba(45, 74, 122, 0.10);
+        --body-start: #faf6ee;
+        --body-mid: #f3eadc;
+        --body-end: #efe3d2;
+        --dot-color: rgba(0, 0, 0, 0.025);
+
+        /* Spacing scale (4px base) */
+        --sp-1: 4px;
+        --sp-2: 8px;
+        --sp-3: 12px;
+        --sp-4: 16px;
+        --sp-5: 20px;
+        --sp-6: 24px;
+        --sp-8: 32px;
+        --sp-10: 40px;
+        --sp-12: 48px;
+
+        /* Radii */
+        --radius-sm: 8px;
+        --radius-md: 12px;
+        --radius-lg: 16px;
+        --radius-xl: 20px;
+        --radius-pill: 999px;
+
+        /* Typography */
+        --font-sans: "DM Sans", "Avenir Next", "Avenir", system-ui, sans-serif;
+        --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      /* ── Dark mode ─────────────────────────────────────────── */
+
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --surface-0: #161514;
+          --surface-1: #201f1d;
+          --surface-2: #2a2826;
+          --surface-3: #343230;
+
+          --text-primary: #ede8e2;
+          --text-secondary: #b5aea5;
+          --text-tertiary: #7d756b;
+          --text-inverse: #161514;
+
+          --accent: #4dd4b4;
+          --accent-hover: #3cc4a4;
+          --accent-subtle: rgba(77, 212, 180, 0.14);
+          --accent-warm: #ff9e6a;
+          --accent-warm-subtle: rgba(255, 158, 106, 0.16);
+          --accent-cool: #7eaaeb;
+          --accent-cool-subtle: rgba(126, 170, 235, 0.14);
+
+          --status-healthy: #4dd4b4;
+          --status-degraded: #ff9e6a;
+          --status-attention: #ff7a50;
+
+          --border: #3a3735;
+          --border-hover: #4a4745;
+          --focus-ring: rgba(77, 212, 180, 0.18);
+          --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+          --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.3);
+          --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.5);
+
+          --control-bg: rgba(255, 255, 255, 0.06);
+          --control-border: rgba(255, 255, 255, 0.14);
+          --control-hover-bg: rgba(255, 255, 255, 0.10);
+          --control-hover-border: rgba(255, 255, 255, 0.24);
+          --control-text: var(--accent);
+
+          --toggle-active-bg: rgba(77, 212, 180, 0.20);
+          --toggle-active-text: var(--accent);
+          --toggle-hover-bg: rgba(255, 255, 255, 0.08);
+
+          --input-bg: rgba(60, 58, 56, 1);
+          --item-bg: rgba(50, 48, 46, 1);
+          --item-hover-bg: rgba(60, 58, 56, 1);
+
+          --grad-1: rgba(77, 212, 180, 0.08);
+          --grad-2: rgba(255, 158, 106, 0.08);
+          --grad-3: rgba(126, 170, 235, 0.06);
+          --body-start: #161514;
+          --body-mid: #1b1a19;
+          --body-end: #201f1d;
+          --dot-color: rgba(255, 255, 255, 0.03);
+        }
+      }
+
+      [data-theme="dark"] {
+        --surface-0: #161514;
+        --surface-1: #201f1d;
+        --surface-2: #2a2826;
+        --surface-3: #343230;
+
+        --text-primary: #ede8e2;
+        --text-secondary: #b5aea5;
+        --text-tertiary: #7d756b;
+        --text-inverse: #161514;
+
+        --accent: #4dd4b4;
+        --accent-hover: #3cc4a4;
+        --accent-subtle: rgba(77, 212, 180, 0.14);
+        --accent-warm: #ff9e6a;
+        --accent-warm-subtle: rgba(255, 158, 106, 0.16);
+        --accent-cool: #7eaaeb;
+        --accent-cool-subtle: rgba(126, 170, 235, 0.14);
+
+        --status-healthy: #4dd4b4;
+        --status-degraded: #ff9e6a;
+        --status-attention: #ff7a50;
+
+        --border: #3a3735;
+        --border-hover: #4a4745;
+        --focus-ring: rgba(77, 212, 180, 0.18);
+        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+        --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.3);
+        --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.5);
+
+        --control-bg: rgba(255, 255, 255, 0.06);
+        --control-border: rgba(255, 255, 255, 0.14);
+        --control-hover-bg: rgba(255, 255, 255, 0.10);
+        --control-hover-border: rgba(255, 255, 255, 0.24);
+        --control-text: var(--accent);
+
+        --toggle-active-bg: rgba(77, 212, 180, 0.20);
+        --toggle-active-text: var(--accent);
+        --toggle-hover-bg: rgba(255, 255, 255, 0.08);
+
+        --input-bg: rgba(60, 58, 56, 1);
+        --item-bg: rgba(50, 48, 46, 1);
+        --item-hover-bg: rgba(60, 58, 56, 1);
+
+        --grad-1: rgba(77, 212, 180, 0.08);
+        --grad-2: rgba(255, 158, 106, 0.08);
+        --grad-3: rgba(126, 170, 235, 0.06);
+        --body-start: #161514;
+        --body-mid: #1b1a19;
+        --body-end: #201f1d;
+        --dot-color: rgba(255, 255, 255, 0.03);
+      }
+
+      /* ── Reset & base ──────────────────────────────────────── */
+
+      *, *::before, *::after { box-sizing: border-box; margin: 0; }
+
+      body {
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.55;
+        color: var(--text-primary);
+        background:
+          radial-gradient(circle at 12% 12%, var(--grad-1), transparent 45%),
+          radial-gradient(circle at 82% 18%, var(--grad-2), transparent 42%),
+          radial-gradient(circle at 70% 85%, var(--grad-3), transparent 40%),
+          linear-gradient(180deg, var(--body-start) 0%, var(--body-mid) 65%, var(--body-end) 100%);
+        min-height: 100vh;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image: radial-gradient(var(--dot-color) 1px, transparent 0);
+        background-size: 20px 20px;
+        opacity: 0.4;
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      [hidden] { display: none !important; }
+
+      /* ── Accessibility ─────────────────────────────────────── */
+
+      .sr-only {
+        position: absolute; width: 1px; height: 1px;
+        padding: 0; margin: -1px; overflow: hidden;
+        clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+      }
+
+      /* ── Header ────────────────────────────────────────────── */
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        padding: var(--sp-4) var(--sp-6);
+        border-bottom: 1px solid var(--border);
+        background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+      }
+
+      .header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-4);
+        flex-wrap: wrap;
+      }
+
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3);
+        min-width: 0;
+      }
+
+      .header-brand {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3);
+      }
+
+      .logo {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: var(--radius-sm);
+        background: var(--accent-subtle);
+        color: var(--accent);
+        flex-shrink: 0;
+      }
+      .logo svg { display: block; }
+
+      .header-title {
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+      }
+
+      .health-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .health-dot.status-healthy { background: var(--status-healthy); box-shadow: 0 0 0 3px rgba(26, 107, 86, 0.15); }
+      .health-dot.status-degraded { background: var(--status-degraded); box-shadow: 0 0 0 3px rgba(212, 100, 46, 0.15); }
+      .health-dot.status-attention { background: var(--status-attention); box-shadow: 0 0 0 3px rgba(182, 75, 47, 0.15); animation: pulse 2.4s ease infinite; }
+
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+
+      .refresh-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--text-tertiary);
+      }
+
+      .meta-line {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 300px;
+      }
+
+      /* ── Tab bar ───────────────────────────────────────────── */
+
+      .tab-bar {
+        display: flex;
+        gap: 2px;
+        padding: 0 var(--sp-6);
+        background: color-mix(in srgb, var(--surface-0) 60%, transparent);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 73px; /* header height */
+        z-index: 9;
+      }
+
+      .tab-btn {
+        position: relative;
+        padding: var(--sp-3) var(--sp-4);
+        border: none;
+        background: transparent;
+        color: var(--text-tertiary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: color 0.15s ease;
+      }
+
+      .tab-btn:hover {
+        color: var(--text-primary);
+      }
+
+      .tab-btn.active {
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .tab-btn.active::after {
+        content: "";
+        position: absolute;
+        bottom: -1px;
+        left: var(--sp-4);
+        right: var(--sp-4);
+        height: 2px;
+        background: var(--accent);
+        border-radius: 2px 2px 0 0;
+      }
+
+      /* ── Tab panels ────────────────────────────────────────── */
+
+      .tab-panel {
+        position: relative;
+        z-index: 1;
+        padding: var(--sp-6);
+        max-width: 1100px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-5);
+      }
+
+      /* ── Cards / sections ──────────────────────────────────── */
+
+      .card {
+        background: var(--surface-1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        padding: var(--sp-5);
+        box-shadow: var(--shadow-md);
+        animation: fadeUp 0.4s ease both;
+      }
+
+      .card h2 {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        margin-bottom: var(--sp-3);
+      }
+
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        margin-bottom: var(--sp-3);
+      }
+
+      .section-header h2 { margin-bottom: 0; }
+
+      .section-actions {
+        display: flex;
+        gap: var(--sp-2);
+        align-items: center;
+      }
+
+      .section-meta {
+        color: var(--text-tertiary);
+        font-size: 12px;
+        margin-bottom: var(--sp-3);
+      }
+
+      /* ── Grid ──────────────────────────────────────────────── */
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: var(--sp-3);
+      }
+
+      .summary-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: var(--sp-5);
+      }
+
+      /* ── Stat cards ────────────────────────────────────────── */
+
+      .stat {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: var(--sp-3);
+        background: var(--surface-2);
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3);
+      }
+
+      .stat-icon {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        stroke: var(--accent);
+        opacity: 0.6;
+      }
+
+      .stat-content {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      .stat .value {
+        font-weight: 600;
+        font-size: 16px;
+        color: var(--accent-cool);
+        line-height: 1.2;
+        font-feature-settings: 'tnum' 1;
+      }
+
+      .stat .label {
+        color: var(--text-tertiary);
+        font-size: 11px;
+        line-height: 1.3;
+      }
+
+      .health-primary {
+        border-width: 2px;
+      }
+      .health-primary .value { font-size: 20px; letter-spacing: 0.2px; }
+      .health-primary.status-healthy .value { color: var(--status-healthy); }
+      .health-primary.status-degraded .value { color: var(--status-degraded); }
+      .health-primary.status-attention .value { color: var(--status-attention); }
+
+      /* ── Buttons ───────────────────────────────────────────── */
+
+      .settings-button {
+        border: 1px solid var(--control-border);
+        background: var(--control-bg);
+        color: var(--control-text);
+        padding: 5px 12px;
+        border-radius: var(--radius-pill);
+        font-size: 12px;
+        font-family: var(--font-sans);
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+        white-space: nowrap;
+      }
+      .settings-button:hover {
+        background: var(--control-hover-bg);
+        border-color: var(--control-hover-border);
+      }
+      .settings-button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      /* ── Selects / inputs ──────────────────────────────────── */
+
+      .project-filter,
+      .theme-select {
+        padding: 5px 10px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        cursor: pointer;
+        transition: border-color 0.15s ease;
+      }
+      .project-filter:hover, .theme-select:hover { border-color: var(--border-hover); }
+      .project-filter:focus, .theme-select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+      .theme-select { min-width: 150px; }
+
+      /* ── Feed section ──────────────────────────────────────── */
+
+      .feed-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        flex-wrap: wrap;
+        margin-bottom: var(--sp-4);
+      }
+
+      .feed-controls-right {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3);
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .feed-search {
+        min-width: 200px;
+        flex: 1;
+        max-width: 400px;
+        padding: 8px var(--sp-3);
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .feed-search::placeholder { color: var(--text-tertiary); }
+      .feed-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+
+      .feed-toggle {
+        display: inline-flex;
+        gap: 2px;
+        padding: 3px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+      }
+
+      .toggle-button {
+        border: none;
+        background: transparent;
+        color: var(--text-tertiary);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: var(--radius-pill);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .toggle-button:hover { background: var(--toggle-hover-bg); color: var(--text-primary); }
+      .toggle-button.active { background: var(--toggle-active-bg); color: var(--toggle-active-text); font-weight: 600; }
+
+      .feed-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+      }
+
+      /* ── Feed items ────────────────────────────────────────── */
+
+      .feed-item {
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--accent);
+        border-radius: var(--radius-lg);
+        padding: var(--sp-4) var(--sp-5);
+        background: var(--surface-1);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .feed-item:hover {
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+        border-color: var(--border-hover);
+      }
+      .feed-item.new-item { animation: newPulse 420ms ease-out 1; }
+
+      /* Kind border colors */
+      .feed-item.feature { border-left-color: var(--accent); }
+      .feed-item.change { border-left-color: var(--accent-cool); }
+      .feed-item.bugfix { border-left-color: var(--accent-warm); }
+      .feed-item.refactor { border-left-color: #8b5cc6; }
+      .feed-item.discovery { border-left-color: #5e81ac; }
+      .feed-item.decision { border-left-color: #8fadbd; }
+      .feed-item.session_summary { border-left-color: #4696c8; }
+      .feed-item.exploration { border-left-color: var(--text-tertiary); }
+
+      .feed-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .feed-card-header > .feed-header { flex: 1; overflow: hidden; }
+
+      .feed-header {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        flex-wrap: wrap;
+        min-width: 0;
+      }
+
+      .feed-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        flex-shrink: 0;
+      }
+
+      .feed-title {
+        font-weight: 600;
+        font-size: 15px;
+        flex: 1;
+        min-width: 0;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .feed-meta {
+        color: var(--text-tertiary);
+        font-size: 12px;
+      }
+
+      .feed-provenance {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .provenance-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text-tertiary);
+        font-size: 11px;
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+      .provenance-chip.mine { background: var(--accent-subtle); color: var(--accent); border-color: rgba(43, 122, 176, 0.18); }
+      .provenance-chip.author { color: var(--text-secondary); }
+      .provenance-chip.private { background: rgba(140, 140, 140, 0.12); color: var(--text-secondary); }
+      .provenance-chip.shared { background: rgba(64, 125, 88, 0.12); color: #407d58; }
+      .provenance-chip.workspace { background: rgba(143, 173, 189, 0.12); color: #6b8fa3; }
+      .provenance-chip.source { background: rgba(94, 129, 172, 0.12); color: #5e81ac; }
+      .provenance-chip.device { background: rgba(128, 110, 74, 0.12); color: #806e4a; }
+      .provenance-chip.trust { background: rgba(202, 138, 4, 0.12); color: #a16207; }
+
+      .feed-body {
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--text-secondary);
+      }
+      .feed-body.clamp { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+      .feed-body.clamp-3 { -webkit-line-clamp: 3; }
+      .feed-body.clamp-5 { -webkit-line-clamp: 5; }
+      .feed-body.facts { display: flex; flex-direction: column; gap: 6px; }
+      .feed-body p { margin: 0 0 0.5em; }
+      .feed-body p:last-child { margin-bottom: 0; }
+      .feed-body ul, .feed-body ol { margin: 0.3em 0; padding-left: 1.3em; list-style: revert; }
+      .feed-body li { margin: 0.15em 0; padding: 0; border: none; border-radius: 0; background: none; font-size: inherit; }
+      .feed-body li:hover { transform: none; border-color: transparent; background: none; }
+      .feed-body code { background: var(--surface-2); padding: 0.15em 0.35em; border-radius: 4px; font-family: var(--font-mono); font-size: 0.9em; }
+      .feed-body pre { background: var(--surface-2); padding: 0.6em 0.8em; border-radius: var(--radius-sm); overflow-x: auto; margin: 0.5em 0; }
+      .feed-body pre code { background: none; padding: 0; }
+      .feed-body strong { font-weight: 600; }
+      .feed-body em { font-style: italic; }
+      .feed-body a { color: var(--accent); text-decoration: underline; }
+      .feed-body h1, .feed-body h2, .feed-body h3, .feed-body h4 { font-size: 1em; font-weight: 600; margin: 0.6em 0 0.3em; }
+      .feed-body blockquote { border-left: 3px solid var(--border); margin: 0.5em 0; padding-left: 0.8em; color: var(--text-tertiary); }
+
+      .summary-section {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .summary-section:last-child { border-bottom: none; }
+      .summary-section-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); }
+      .summary-section-content { font-size: 13px; line-height: 1.5; color: var(--text-primary); }
+
+      .feed-footer {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+      .feed-footer-left { display: flex; flex-direction: column; gap: 6px; }
+      .feed-footer-right { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
+      .feed-visibility-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      .feed-visibility-select {
+        min-width: 180px;
+        padding: 6px 10px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 12px;
+      }
+      .feed-visibility-note { width: 100%; max-width: 60ch; font-size: 12px; color: var(--text-tertiary); }
+
+      .feed-expand {
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text-tertiary);
+        border-radius: var(--radius-pill);
+        padding: 3px 10px;
+        font-family: var(--font-sans);
+        font-size: 11px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .feed-expand:hover { background: var(--accent-subtle); color: var(--accent); }
+
+      .feed-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+      .feed-files { display: flex; flex-wrap: wrap; gap: var(--sp-2); font-size: 10px; color: var(--text-tertiary); opacity: 0.85; }
+      .feed-file { white-space: nowrap; }
+      .feed-age { white-space: nowrap; }
+
+      /* ── Pills & badges ────────────────────────────────────── */
+
+      .kind-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: var(--radius-pill);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+        background: var(--accent-subtle);
+        color: var(--accent);
+      }
+      .kind-pill.feature { background: var(--accent-subtle); color: var(--accent); }
+      .kind-pill.change { background: var(--accent-cool-subtle); color: var(--accent-cool); }
+      .kind-pill.bugfix { background: var(--accent-warm-subtle); color: var(--accent-warm); }
+      .kind-pill.refactor { background: rgba(139, 92, 198, 0.12); color: #8b5cc6; }
+      .kind-pill.discovery { background: rgba(94, 129, 172, 0.12); color: #5e81ac; }
+      .kind-pill.decision { background: rgba(143, 173, 189, 0.12); color: #6b8fa3; }
+      .kind-pill.session_summary { background: rgba(70, 150, 200, 0.12); color: #4696c8; }
+      .kind-pill.exploration { background: rgba(140, 140, 140, 0.12); color: var(--text-tertiary); }
+
+      .tag-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 10px;
+        border-radius: var(--radius-pill);
+        background: var(--accent-cool-subtle);
+        color: var(--accent-cool);
+        font-size: 11px;
+        font-weight: 500;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: var(--radius-pill);
+        background: var(--accent-cool-subtle);
+        color: var(--accent-cool);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .badge-online { background: rgba(26, 107, 86, 0.12); color: var(--accent); }
+      .badge-offline { background: rgba(182, 75, 47, 0.15); color: var(--accent-warm); }
+
+      .pill {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: var(--radius-pill);
+        background: var(--accent-subtle);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 600;
+        transition: background 0.3s ease, color 0.3s ease;
+      }
+      .pill.alt { background: var(--accent-warm-subtle); color: var(--accent-warm); }
+      .pill-success { background: var(--green-bg, #16a34a22); color: var(--green-text, #16a34a); }
+      .pill-warning { background: var(--yellow-bg, #ca8a0422); color: var(--yellow-text, #ca8a04); }
+      .pill-error { background: var(--red-bg, #dc262622); color: var(--red-text, #dc2626); }
+
+      .match {
+        padding: 0 2px;
+        border-radius: 3px;
+        background: var(--accent-subtle);
+        color: inherit;
+      }
+
+      /* ── Health actions / sync actions ──────────────────────── */
+
+      .health-actions, .sync-actions {
+        display: grid;
+        gap: var(--sp-2);
+        margin: var(--sp-2) 0 var(--sp-3);
+      }
+
+      .health-action, .sync-action {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+      }
+
+      .health-action-text, .sync-action-text { font-size: 13px; color: var(--text-primary); flex: 1; min-width: 0; }
+      .health-action-command, .sync-action-command { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); }
+      .health-action-buttons { display: flex; gap: 6px; flex-shrink: 0; }
+
+      /* ── Diagnostics ───────────────────────────────────────── */
+
+      .diag-list { margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
+      .diag-line { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--sp-3); background: var(--surface-2); display: flex; justify-content: space-between; gap: var(--sp-3); }
+      .diag-line .left { min-width: 0; }
+      .diag-line .right { flex-shrink: 0; color: var(--text-tertiary); }
+
+      .diag-group { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); margin-top: var(--sp-3); background: var(--surface-2); }
+      .diag-group summary { cursor: pointer; color: var(--text-tertiary); font-size: 13px; }
+
+      /* ── Peers ─────────────────────────────────────────────── */
+
+      .peer-list { display: grid; gap: var(--sp-3); }
+      .peer-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-4); background: var(--surface-1); display: grid; gap: var(--sp-2); }
+      .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
+      .peer-title strong { font-size: 14px; font-weight: 600; }
+      .actor-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
+      .actor-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-3); background: var(--surface-1); }
+      .actor-details { min-width: 0; display: grid; gap: 6px; }
+      .actor-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .actor-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+      .actor-name-input { min-width: 220px; }
+      .actor-merge-controls { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+      .actor-merge-select { min-width: 200px; }
+      .actor-merge-note { width: 100%; }
+      .actor-create-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-3); }
+      .actor-create-row input { flex: 1 1 260px; }
+      .actor-badge.local { background: rgba(31, 111, 92, 0.12); color: var(--accent); }
+      .peer-scope { display: grid; gap: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+      .peer-scope-summary, .peer-scope-effective { font-size: 12px; color: var(--text-secondary); }
+      .peer-actor-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+      .peer-scope-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+      .peer-scope-editor { display: grid; gap: 8px; }
+      .peer-scope-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+      .peer-scope-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-pill); background: rgba(43, 122, 176, 0.12); color: var(--accent); font-size: 12px; }
+      .peer-scope-chip.empty { background: transparent; color: var(--text-tertiary); border: 1px dashed var(--border); }
+      .peer-scope-chip-remove { border: none; background: transparent; color: inherit; cursor: pointer; padding: 0; font: inherit; opacity: 0.75; }
+      .peer-scope-chip-remove:hover { opacity: 1; }
+      .peer-scope-input { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); padding: 8px 10px; font: inherit; }
+      .peer-scope-actions { display: flex; gap: var(--sp-2); }
+      .peer-actions { display: flex; gap: 6px; }
+      .peer-actions button { border: 1px solid var(--border); background: transparent; border-radius: var(--radius-pill); padding: 5px 10px; font-family: var(--font-sans); font-size: 12px; cursor: pointer; color: var(--text-secondary); }
+      .peer-actions button:hover { border-color: var(--border-hover); background: var(--surface-2); }
+      .peer-scope-editor-wrap {
+        display: grid;
+        gap: var(--sp-2);
+        overflow: hidden;
+        transition: max-height 0.25s ease, opacity 0.2s ease;
+        max-height: 400px;
+        opacity: 1;
+      }
+      .peer-scope-editor-wrap.collapsed {
+        max-height: 0;
+        opacity: 0;
+        padding: 0;
+      }
+      @keyframes sync-shimmer {
+        0% { background-position: -200px 0; }
+        100% { background-position: 200px 0; }
+      }
+      .sync-skeleton { padding: 16px 0; }
+      .sync-skeleton-line {
+        height: 12px;
+        border-radius: 6px;
+        background: linear-gradient(90deg, var(--border) 25%, var(--surface-2) 50%, var(--border) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer 1.5s ease-in-out infinite;
+        margin: 8px 0;
+      }
+      .sync-skeleton-line.short { width: 40%; }
+      .sync-skeleton-line.medium { width: 65%; }
+      .sync-skeleton-line.long { width: 85%; }
+      .sync-skeleton-block {
+        height: 56px;
+        border-radius: 8px;
+        background: linear-gradient(90deg, var(--border) 25%, var(--surface-2) 50%, var(--border) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer 1.5s ease-in-out infinite;
+        margin: 8px 0;
+      }
+      .sync-empty-state {
+        padding: 20px;
+        text-align: center;
+        color: var(--text-dim, var(--text-tertiary));
+        font-size: 0.9rem;
+        border: 1px dashed var(--border);
+        border-radius: 8px;
+        margin: 8px 0;
+      }
+      .sync-field-error {
+        outline: 1.5px solid var(--red-text, #dc2626) !important;
+        outline-offset: -1px;
+      }
+      .sync-field-hint {
+        font-size: 0.78rem;
+        color: var(--red-text, #dc2626);
+        margin: 2px 0 0 2px;
+      }
+      @keyframes sync-shake {
+        0%, 100% { transform: translateX(0); }
+        20%, 60% { transform: translateX(-4px); }
+        40%, 80% { transform: translateX(4px); }
+      }
+      .sync-shake { animation: sync-shake 0.3s ease-in-out; }
+      .settings-button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .settings-button {
+        transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+      }
+      .sync-toggle-admin {
+        background: none;
+        border: none;
+        color: var(--text-dim, var(--text-tertiary));
+        padding: 4px 0;
+        cursor: pointer;
+        text-align: left;
+        margin-top: 16px;
+        font-size: 0.8rem;
+        text-decoration: underline;
+        text-decoration-style: dashed;
+        text-underline-offset: 3px;
+      }
+      .sync-toggle-admin:hover {
+        color: var(--accent);
+      }
+      .sync-ttl-group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .sync-ttl-group label {
+        font-size: 0.8rem;
+        color: var(--text-dim, var(--text-tertiary));
+        white-space: nowrap;
+      }
+      .sync-team-summary {
+        display: grid;
+        gap: 8px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface-2);
+      }
+      .sync-team-status-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .sync-team-status-label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
+      .sync-team-metrics {
+        font-size: 13px;
+        color: var(--text-secondary);
+        font-feature-settings: 'tnum' 1;
+      }
+      .sync-legacy-claim-row { margin-top: 12px; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .sync-legacy-select {
+        min-width: 320px;
+        max-width: 100%;
+        flex: 1 1 320px;
+        padding: 8px 12px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .sync-legacy-select:hover { border-color: var(--border-hover); }
+      .sync-legacy-select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+      .sync-legacy-button {
+        border: 1px solid var(--control-border);
+        background: var(--control-bg);
+        color: var(--control-text);
+        border-radius: var(--radius-pill);
+        padding: 8px 14px;
+        font-family: var(--font-sans);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+      }
+      .sync-legacy-button:hover {
+        background: var(--control-hover-bg);
+        border-color: var(--control-hover-border);
+      }
+      .sync-legacy-button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .sync-legacy-button:disabled {
+        opacity: 0.7;
+        cursor: default;
+        transform: none;
+      }
+      .sync-actor-select {
+        min-width: 220px;
+        max-width: 100%;
+        flex: 1 1 220px;
+        padding: 8px 12px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .sync-actor-select:hover { border-color: var(--border-hover); }
+      .sync-actor-select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+      .peer-meta { font-size: 13px; color: var(--text-tertiary); }
+      .peer-addresses { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); opacity: 0.7; }
+      .attempts-list { margin-top: var(--sp-3); display: grid; gap: 6px; font-size: 13px; color: var(--text-tertiary); }
+
+      /* ── Pairing ───────────────────────────────────────────── */
+
+      .pairing-card { margin-top: var(--sp-4); border: 1px dashed var(--border); border-radius: var(--radius-lg); padding: var(--sp-4); display: grid; gap: var(--sp-3); background: var(--surface-2); }
+      .pairing-body { display: grid; gap: var(--sp-3); grid-template-columns: 1.4fr 1fr; align-items: start; }
+      .pairing-body pre { margin: 0; font-size: 12px; background: var(--surface-0); padding: var(--sp-3); border-radius: var(--radius-md); white-space: pre-wrap; word-break: break-all; }
+      @media (max-width: 900px) { .pairing-body { grid-template-columns: 1fr; } }
+
+      /* ── Modal ──────────────────────────────────────────────── */
+
+      .modal-backdrop {
+        position: fixed; inset: 0;
+        background: rgba(25, 24, 23, 0.4);
+        backdrop-filter: blur(6px);
+        z-index: 20;
+      }
+      .modal {
+        position: fixed; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        z-index: 21;
+        padding: var(--sp-6);
+      }
+      @media (max-height: 720px) { .modal { align-items: flex-start; } }
+      .modal-backdrop[hidden], .modal[hidden] { display: none; }
+
+      .modal-card {
+        width: min(520px, 100%);
+        background: var(--surface-1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-lg);
+        padding: var(--sp-5);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-4);
+        max-height: min(84vh, 720px);
+        overflow: hidden;
+      }
+      .modal-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+      .modal-header h2 { margin: 0; font-size: 18px; }
+      .modal-close { border: none; background: transparent; color: var(--text-tertiary); cursor: pointer; font-size: 12px; font-family: var(--font-sans); }
+      .modal-body { display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
+      .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+      @keyframes noticeSlideIn {
+        from { transform: translateY(-12px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      @keyframes noticeSlideOut {
+        from { transform: translateY(0); opacity: 1; }
+        to { transform: translateY(-12px); opacity: 0; }
+      }
+      .app-notice {
+        margin: var(--sp-3) var(--sp-5) 0;
+        padding: var(--sp-3) var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        box-shadow: var(--shadow-sm);
+        animation: noticeSlideIn 0.25s ease both;
+      }
+      .app-notice.hiding {
+        animation: noticeSlideOut 0.2s ease both;
+      }
+      .app-notice.success {
+        border-color: rgba(26, 107, 86, 0.24);
+        background: rgba(26, 107, 86, 0.08);
+        color: var(--accent);
+      }
+      .app-notice.warning {
+        border-color: rgba(212, 100, 46, 0.28);
+        background: rgba(212, 100, 46, 0.1);
+        color: var(--accent-warm);
+      }
+
+      .settings-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+      .settings-tab {
+        border: 1px solid var(--border);
+        background: var(--surface-0);
+        color: var(--text-secondary);
+        border-radius: var(--radius-sm);
+        padding: 7px 10px;
+        font-family: var(--font-sans);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .settings-tab:hover { border-color: var(--border-hover); }
+      .settings-tab.active {
+        border-color: var(--control-hover-border);
+        color: var(--accent);
+        background: var(--accent-subtle);
+      }
+      .settings-panel { display: none; flex-direction: column; gap: var(--sp-3); }
+      .settings-panel.active { display: flex; }
+      .observer-status-banner {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-1);
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-0);
+        font-size: 12px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+      .observer-status-banner .status-active {
+        color: var(--text-primary);
+        font-weight: 500;
+      }
+      .observer-status-banner .status-label {
+        color: var(--text-tertiary);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .observer-status-banner .status-cred {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .observer-status-banner .status-issue {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px 10px;
+        border: 1px solid rgba(248, 113, 113, 0.32);
+        border-radius: var(--radius-sm);
+        background: rgba(248, 113, 113, 0.08);
+      }
+      .observer-status-banner .status-issue-message {
+        color: var(--text-primary);
+        font-weight: 500;
+      }
+      .observer-status-banner .status-issue-meta {
+        color: var(--text-secondary);
+      }
+      .observer-status-banner .status-issue-impact {
+        color: #fbbf24;
+      }
+      .observer-status-banner .cred-ok { color: var(--semantic-success, #4ade80); }
+      .observer-status-banner .cred-none { color: var(--text-tertiary); }
+      .settings-group {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-0);
+      }
+      .settings-group-title {
+        margin: 0;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
+
+      .field-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .help-icon {
+        width: 16px;
+        height: 16px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        user-select: none;
+        background: var(--surface-0);
+        position: relative;
+        padding: 0;
+      }
+
+      .help-icon:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
+
+      .help-tooltip {
+        position: fixed;
+        min-width: 190px;
+        max-width: 280px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-1);
+        color: var(--text-secondary);
+        font-size: 12px;
+        line-height: 1.4;
+        box-shadow: var(--shadow-sm);
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(-2px);
+        transition: opacity 0.08s ease, transform 0.08s ease;
+        z-index: 1000;
+      }
+
+      .help-tooltip.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .settings-advanced-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-0);
+      }
+
+      .settings-advanced-toolbar input {
+        width: 14px;
+        height: 14px;
+      }
+
+      .settings-advanced[hidden] {
+        display: none !important;
+      }
+
+      .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+      .field input:not([type="checkbox"]), .field select, .field textarea { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .field-checkbox { flex-direction: row; align-items: center; gap: 8px; }
+      .field-checkbox input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
+      .field-checkbox label { margin: 0; }
+      .cm-checkbox {
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border: 1px solid var(--border-hover);
+        border-radius: 4px;
+        background: var(--surface-1);
+        position: relative;
+        cursor: pointer;
+      }
+      .cm-checkbox:checked {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .cm-checkbox:checked::after {
+        content: "";
+        position: absolute;
+        left: 4px;
+        top: 1px;
+        width: 4px;
+        height: 8px;
+        border: solid var(--text-inverse);
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+      .cm-checkbox:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
+      .field textarea { resize: vertical; min-height: 84px; }
+      .settings-save {
+        border: 1px solid var(--control-border);
+        background: var(--control-bg);
+        color: var(--control-text);
+        padding: var(--sp-2) var(--sp-4);
+        border-radius: var(--radius-md);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        cursor: pointer;
+        transition: background 0.15s ease;
+      }
+      .settings-save:hover { background: var(--control-hover-bg); }
+      .settings-save:disabled { opacity: 0.6; cursor: not-allowed; }
+      .settings-note { color: var(--text-tertiary); font-size: 12px; }
+
+      /* ── Utilities ─────────────────────────────────────────── */
+
+      .small { color: var(--text-tertiary); font-size: 12px; }
+      .mono { font-family: var(--font-mono); font-size: 12px; }
+
+      /* ── Animations ────────────────────────────────────────── */
+
+      @keyframes fadeUp {
+        from { transform: translateY(8px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+
+      @keyframes pulse {
+        0%, 100% { transform: scale(1); opacity: 0.9; }
+        50% { transform: scale(1.3); opacity: 0.5; }
+      }
+
+      @keyframes newPulse {
+        0% { box-shadow: 0 0 0 rgba(26, 107, 86, 0); }
+        40% { box-shadow: 0 0 0 3px var(--accent-subtle); }
+        100% { box-shadow: 0 0 0 rgba(26, 107, 86, 0); }
+      }
+
+      /* ── Responsive ────────────────────────────────────────── */
+
+      @media (max-width: 900px) {
+        .tab-panel { padding: var(--sp-4); }
+        .summary-row { grid-template-columns: 1fr; }
+        .feed-card-header { flex-wrap: wrap; }
+        .feed-actions { width: 100%; justify-content: flex-end; }
+        .actor-row { align-items: stretch; flex-direction: column; }
+        .peer-scope-row { grid-template-columns: 1fr; }
+        .feed-visibility-controls { align-items: stretch; }
+        .feed-visibility-select { width: 100%; }
+      }
+
+      @media (max-width: 520px) {
+        header { padding: var(--sp-3) var(--sp-4); }
+        .tab-bar { padding: 0 var(--sp-4); }
+        .modal { padding: var(--sp-3); }
+        .modal-card { padding: var(--sp-4); border-radius: var(--radius-lg); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ── Header ──────────────────────────────────────────── -->
+    <header>
+      <div class="header-row">
+        <div class="header-left">
+          <div class="header-brand">
+            <span class="logo" aria-hidden="true">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" shape-rendering="crispEdges" aria-hidden="true">
+                <path d="M3 8h13v13H3z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.18"/>
+                <path d="M4.5 6.5h13v13h-13z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.30"/>
+                <path d="M6 5h13v13H6z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.56"/>
+                <path d="M7.5 3.5h13v13h-13z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.82"/>
+              </svg>
+            </span>
+            <span class="header-title">codemem</span>
+            <span class="health-dot status-healthy" id="healthDot" title="Healthy"></span>
+          </div>
+          <span class="refresh-status" id="refreshStatus">refreshing…</span>
+          <span class="sr-only" id="refreshAnnouncer" aria-live="polite"></span>
+        </div>
+        <div class="header-right">
+          <span class="meta-line" id="metaLine"></span>
+          <select class="project-filter" id="projectFilter" aria-label="Project filter">
+            <option value="">All Projects</option>
+          </select>
+          <label class="sr-only" for="themeSelect">Viewer theme</label>
+          <select class="theme-select" id="themeSelect" aria-label="Viewer theme"></select>
+          <button class="settings-button" id="settingsButton">Settings</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Tab bar ─────────────────────────────────────────── -->
+    <nav class="tab-bar" aria-label="Main navigation">
+      <button class="tab-btn active" id="tabBtn-feed">Feed</button>
+      <button class="tab-btn" id="tabBtn-health">Health</button>
+      <button class="tab-btn" id="tabBtn-sync">Sync</button>
+    </nav>
+    <div class="app-notice" id="globalNotice" hidden aria-live="polite"></div>
+
+    <!-- ── Settings modal ──────────────────────────────────── -->
+    <div class="modal-backdrop" id="settingsBackdrop" hidden></div>
+    <div class="modal" id="settingsModal" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle" aria-describedby="settingsDescription" tabindex="-1">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 id="settingsTitle">Memory & model settings</h2>
+          <button class="modal-close" id="settingsClose" aria-label="Close settings">close</button>
+        </div>
+        <div class="modal-body">
+          <div class="small" id="settingsDescription">Configure connection, authentication, processing, and sync behavior.</div>
+          <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+            <button class="settings-tab active" id="settingsTabObserver" data-settings-tab="observer" role="tab" aria-selected="true">Connection</button>
+            <button class="settings-tab" id="settingsTabQueue" data-settings-tab="queue" role="tab" aria-selected="false">Processing</button>
+            <button class="settings-tab" id="settingsTabSync" data-settings-tab="sync" role="tab" aria-selected="false">Device Sync</button>
+          </div>
+          <div class="settings-advanced-toolbar field-checkbox">
+            <input class="cm-checkbox" id="settingsAdvancedToggle" type="checkbox" />
+            <label for="settingsAdvancedToggle">Show advanced controls</label>
+            <button class="help-icon" type="button" data-tooltip="Advanced controls include JSON fields, tuning values, and network overrides." aria-label="About advanced controls">?</button>
+          </div>
+
+          <div class="settings-panel active" id="settingsPanelObserver" data-settings-panel="observer">
+            <div id="observerStatusBanner" class="observer-status-banner" hidden></div>
+            <div class="settings-group">
+              <h3 class="settings-group-title">Connection</h3>
+              <div class="field">
+                <div class="field-label">
+                  <label for="observerProvider">Model provider</label>
+                  <button class="help-icon" type="button" data-tooltip="Choose where model requests are sent. Use auto for recommended defaults." aria-label="About model provider">?</button>
+                </div>
+                <select id="observerProvider"><option value="">auto (default)</option></select>
+                <div class="small">`auto` uses recommended defaults for the selected connection mode.</div>
+              </div>
+              <div class="field">
+                <div class="field-label">
+                  <label for="observerModel">Model</label>
+                  <button class="help-icon" type="button" data-tooltip="Leave blank to use a recommended model for your selected mode/provider." aria-label="About model defaults">?</button>
+                </div>
+                <input id="observerModel" placeholder="leave empty for default" />
+                <div class="small">Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.</div>
+                <div class="small" id="observerModelHint"></div>
+              </div>
+              <div class="field">
+                <div class="field-label">
+                  <label for="observerRuntime">Connection mode</label>
+                  <button class="help-icon" type="button" data-tooltip="Direct API uses provider credentials. Local Claude session uses local Claude runtime auth." aria-label="About connection mode">?</button>
+                </div>
+                <select id="observerRuntime">
+                  <option value="api_http">Direct API (default)</option>
+                  <option value="claude_sidecar">Local Claude session</option>
+                </select>
+                <div class="small">Switch between provider API credentials and local Claude session auth.</div>
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="claudeCommand">Claude command (JSON argv)</label>
+                <textarea id="claudeCommand" rows="2" placeholder='["claude"]'></textarea>
+                <div class="small">Used by `claude_sidecar` runtime. Example wrapper: `["wrapper", "claude", "--"]`.</div>
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="observerMaxChars">Request size limit (chars)</label>
+                <input id="observerMaxChars" type="number" min="1" />
+                <div class="small" id="observerMaxCharsHint"></div>
+              </div>
+            </div>
+
+            <div class="settings-group">
+              <h3 class="settings-group-title">Authentication</h3>
+              <div class="field">
+                <div class="field-label">
+                  <label for="observerAuthSource">Authentication method</label>
+                  <button class="help-icon" type="button" data-tooltip="Choose how credentials are resolved: environment, file, command, or none." aria-label="About authentication method">?</button>
+                </div>
+                <select id="observerAuthSource">
+                  <option value="auto">auto (default)</option>
+                  <option value="env">env</option>
+                  <option value="file">file</option>
+                  <option value="command">command</option>
+                  <option value="none">none</option>
+                </select>
+                <div class="small">Use `auto` unless you need a specific token source.</div>
+              </div>
+              <div class="field" id="observerAuthFileField" hidden>
+                <label for="observerAuthFile">Token file path</label>
+                <input id="observerAuthFile" placeholder="~/.codemem/work-token.txt" />
+                <div class="small">Reads token text from this file when method is `file`.</div>
+              </div>
+              <div class="field" id="observerAuthCommandField" hidden>
+                <div class="field-label">
+                  <label for="observerAuthCommand">Token command</label>
+                  <button class="help-icon" type="button" data-tooltip="Runs this command and uses stdout as the token. JSON argv only, no shell parsing." aria-label="About token command">?</button>
+                </div>
+                <textarea id="observerAuthCommand" rows="3" placeholder='["iap-auth", "--audience", "gateway"]'></textarea>
+                <div class="small">When method is `command`, command stdout is used as the token.</div>
+              </div>
+              <div class="small" id="observerAuthCommandNote" hidden>
+                Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="observerAuthTimeoutMs">Token command timeout (ms)</label>
+                <input id="observerAuthTimeoutMs" type="number" min="1" />
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="observerAuthCacheTtlS">Token cache time (s)</label>
+                <input id="observerAuthCacheTtlS" type="number" min="0" />
+              </div>
+              <div class="field settings-advanced" hidden>
+                <div class="field-label">
+                  <label for="observerHeaders">Request headers (JSON)</label>
+                  <button class="help-icon" type="button" data-tooltip="Optional extra headers. Supports templates like ${auth.token}, ${auth.type}, ${auth.source}." aria-label="About request headers">?</button>
+                </div>
+                <textarea id="observerHeaders" rows="4" placeholder='{"Authorization":"Bearer ${auth.token}"}'></textarea>
+                <div class="small">Template variables: `${auth.token}`, `${auth.type}`, `${auth.source}`.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-panel" id="settingsPanelQueue" data-settings-panel="queue">
+            <div class="settings-group">
+              <h3 class="settings-group-title">Processing</h3>
+              <div class="field">
+                <div class="field-label">
+                  <label for="rawEventsSweeperIntervalS">Background processing interval (seconds)</label>
+                  <button class="help-icon" type="button" data-tooltip="How often codemem checks for queued events to process in the background." aria-label="About background processing interval">?</button>
+                </div>
+                <input id="rawEventsSweeperIntervalS" type="number" min="1" />
+                <div class="small">How often background flush checks pending raw events.</div>
+              </div>
+            </div>
+            <div class="settings-group settings-advanced" hidden>
+              <h3 class="settings-group-title">Context Pack Limits</h3>
+              <div class="field settings-advanced" hidden>
+                <label for="packObservationLimit">Observation limit</label>
+                <input id="packObservationLimit" type="number" min="1" />
+                <div class="small">Default number of observations to include in a pack.</div>
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="packSessionLimit">Session summary limit</label>
+                <input id="packSessionLimit" type="number" min="1" />
+                <div class="small">Default number of session summaries to include in a pack.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-panel" id="settingsPanelSync" data-settings-panel="sync">
+            <div class="settings-group">
+              <h3 class="settings-group-title">Device Sync</h3>
+              <div class="field field-checkbox"><input class="cm-checkbox" id="syncEnabled" type="checkbox" /><label for="syncEnabled">Enable sync</label></div>
+              <div class="field"><label for="syncInterval">Sync interval (seconds)</label><input id="syncInterval" type="number" min="10" /></div>
+              <div class="field settings-advanced" hidden><label for="syncHost">Sync host</label><input id="syncHost" placeholder="127.0.0.1" /></div>
+              <div class="field settings-advanced" hidden><label for="syncPort">Sync port</label><input id="syncPort" type="number" min="1" /></div>
+              <div class="field field-checkbox settings-advanced" hidden><input class="cm-checkbox" id="syncMdns" type="checkbox" /><label for="syncMdns">Enable mDNS discovery</label></div>
+              <div class="field">
+                <label for="syncCoordinatorUrl">Coordinator URL</label>
+                <input id="syncCoordinatorUrl" placeholder="https://coord.example.com" />
+                <div class="small">Optional self-hosted/operator-run discovery service. Direct peer-to-peer sync remains the data path.</div>
+              </div>
+              <div class="field">
+                <label for="syncCoordinatorGroup">Coordinator group</label>
+                <input id="syncCoordinatorGroup" placeholder="nerdworld" />
+                <div class="small">Discovery namespace for peers using the same coordinator.</div>
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
+                <input id="syncCoordinatorTimeout" type="number" min="1" />
+              </div>
+              <div class="field settings-advanced" hidden>
+                <label for="syncCoordinatorPresenceTtl">Presence TTL (seconds)</label>
+                <input id="syncCoordinatorPresenceTtl" type="number" min="1" />
+              </div>
+            </div>
+          </div>
+
+          <div class="small mono" id="settingsPath"></div>
+          <div class="small" id="settingsEffective"></div>
+          <div class="settings-note" id="settingsOverrides">Some values are controlled outside this screen and take priority.</div>
+        </div>
+        <div class="modal-footer">
+          <div class="small" id="settingsStatus">Ready</div>
+          <button class="settings-save" id="settingsSave">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab: Feed ───────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-feed">
+      <div class="feed-controls">
+        <div class="section-meta" id="feedMeta">Loading memories…</div>
+        <div class="feed-controls-right">
+          <input class="feed-search" id="feedSearch" placeholder="Search title, body, tags…" />
+          <div class="feed-toggle" id="feedScopeToggle">
+            <button class="toggle-button" data-filter="all">All</button>
+            <button class="toggle-button" data-filter="mine">My memories</button>
+            <button class="toggle-button" data-filter="theirs">Other actors</button>
+          </div>
+          <div class="feed-toggle" id="feedTypeToggle">
+            <button class="toggle-button" data-filter="all">All</button>
+            <button class="toggle-button" data-filter="observations">Observations</button>
+            <button class="toggle-button" data-filter="summaries">Summaries</button>
+          </div>
+        </div>
+      </div>
+      <div class="feed-list" id="feedList"></div>
+    </div>
+
+    <!-- ── Tab: Health ─────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-health" hidden>
+      <div class="card" style="animation-delay: 0s">
+        <div class="section-header">
+          <h2>System health</h2>
+        </div>
+        <div class="section-meta" id="healthMeta">Assessing health signals…</div>
+        <div class="health-actions" id="healthActions"></div>
+        <div class="grid-2" id="healthGrid"></div>
+      </div>
+
+      <div class="summary-row">
+        <div class="card" style="animation-delay: 0.05s">
+          <h2>Stats</h2>
+          <div class="grid-2" id="statsGrid"></div>
+        </div>
+        <div class="card" style="animation-delay: 0.1s">
+          <h2>Current session</h2>
+          <div class="section-meta" id="sessionMeta">No injections yet</div>
+          <div class="grid-2" id="sessionGrid"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab: Sync ───────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-sync" hidden>
+
+      <!-- 1. Team sync — primary, always visible -->
+      <div class="card" id="syncTeamCard">
+        <div class="section-header">
+          <h2>Team sync</h2>
+          <div class="section-actions">
+            <button class="settings-button" id="syncNowButton">Sync now</button>
+          </div>
+        </div>
+        <div class="section-meta" id="syncTeamMeta"></div>
+        <div class="sync-skeleton" id="syncTeamSkeleton" role="status" aria-label="Loading team sync">
+          <div class="sync-skeleton-line medium"></div>
+          <div class="sync-skeleton-block"></div>
+          <div class="sync-skeleton-line short"></div>
+        </div>
+        <div id="syncSetupPanel">
+          <div id="syncJoinSection">
+            <h3 class="settings-group-title">Join a team</h3>
+            <div class="section-meta">Have an invite? Paste it here.</div>
+            <div class="actor-create-row" id="syncJoinPanel">
+              <label for="syncJoinInvite" class="sr-only">Team invite</label>
+              <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste team invite or codemem:// link"></textarea>
+              <button class="settings-button" id="syncJoinButton">Join team</button>
+            </div>
+          </div>
+          <div id="syncAdminSection">
+            <button class="sync-toggle-admin" id="syncToggleAdmin" aria-expanded="false" aria-controls="syncInvitePanel">Set up a new team instead…</button>
+            <div id="syncInvitePanel" hidden>
+              <h3 class="settings-group-title" style="margin-top:12px">Create a team</h3>
+              <div class="section-meta">Generate an invite to share with teammates.</div>
+              <div class="actor-create-row">
+                <label for="syncInviteGroup" class="sr-only">Team name</label>
+                <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team name (e.g. my-team)" />
+                <label for="syncInvitePolicy" class="sr-only">Join policy</label>
+                <select class="sync-actor-select" id="syncInvitePolicy">
+                  <option value="auto_admit">Auto-admit</option>
+                  <option value="approval_required">Approval required</option>
+                </select>
+                <div class="sync-ttl-group">
+                  <label for="syncInviteTtl">Expires in</label>
+                  <input class="peer-scope-input" id="syncInviteTtl" type="number" min="1" value="24" style="width:64px" />
+                  <label>hours</label>
+                </div>
+                <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
+              </div>
+              <label for="syncInviteOutput" class="sr-only">Generated invite</label>
+              <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite will appear here" readonly hidden></textarea>
+            </div>
+          </div>
+        </div>
+        <div class="actor-list" id="syncTeamStatus" aria-live="polite"></div>
+        <div class="actor-list" id="syncJoinRequests"></div>
+        <div class="sync-actions" id="syncTeamActions" hidden></div>
+      </div>
+
+      <!-- 2. People — actors, devices, sharing, legacy claims -->
+      <div class="card" style="animation-delay: 0.04s">
+        <h2>People</h2>
+
+        <h3 class="settings-group-title">Actors</h3>
+        <div class="section-meta" id="syncActorsMeta">Create and rename actors here. Assign each device below.</div>
+        <div class="actor-create-row">
+          <label for="syncActorCreateInput" class="sr-only">Actor name</label>
+          <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named actor" />
+          <button class="settings-button" id="syncActorCreateButton">Create actor</button>
+        </div>
+        <div class="actor-list" id="syncActorsList"></div>
+        <div class="sync-skeleton" id="syncActorsSkeleton" role="status" aria-label="Loading actors">
+          <div class="sync-skeleton-line long"></div>
+          <div class="sync-skeleton-line medium"></div>
+        </div>
+
+        <h3 class="settings-group-title" style="margin-top: 20px">Devices</h3>
+        <div class="peer-list" id="syncPeers"></div>
+        <div class="sync-skeleton" id="syncPeersSkeleton" role="status" aria-label="Loading devices">
+          <div class="sync-skeleton-block"></div>
+          <div class="sync-skeleton-block"></div>
+        </div>
+
+        <div id="syncSharingReview" hidden>
+          <h3 class="settings-group-title" style="margin-top: 20px">What teammates will receive</h3>
+          <div class="section-meta" id="syncSharingReviewMeta"></div>
+          <div class="actor-list" id="syncSharingReviewList"></div>
+        </div>
+
+        <div id="syncLegacyClaims" hidden>
+          <h3 class="settings-group-title" style="margin-top: 20px">Legacy device history</h3>
+          <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
+          <div class="peer-actions sync-legacy-claim-row">
+            <label for="syncLegacyDeviceSelect" class="sr-only">Legacy device</label>
+            <select class="sync-legacy-select" id="syncLegacyDeviceSelect"></select>
+            <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Diagnostics — status, pairing, attempts -->
+      <div class="card" style="animation-delay: 0.06s">
+        <div class="section-header">
+          <h2>Diagnostics</h2>
+          <div class="section-actions">
+            <button class="settings-button" id="syncPairingToggle">Show pairing</button>
+            <label class="small" style="display:inline-flex;align-items:center;gap:6px;">
+              <input id="syncRedact" type="checkbox" checked />
+              Redact
+            </label>
+          </div>
+        </div>
+        <div class="section-meta" id="syncMeta">Loading sync status…</div>
+        <div class="sync-skeleton" id="syncDiagSkeleton" role="status" aria-label="Loading diagnostics">
+          <div class="sync-skeleton-line long"></div>
+          <div class="sync-skeleton-line medium"></div>
+          <div class="sync-skeleton-line short"></div>
+        </div>
+        <div class="sync-actions" id="syncActions"></div>
+        <div class="grid-2" id="syncStatusGrid"></div>
+
+        <div class="pairing-card" id="syncPairing" hidden>
+          <div class="peer-title">
+            <strong>Pairing command</strong>
+            <div class="peer-actions"><button id="pairingCopy">Copy command</button></div>
+          </div>
+          <div class="pairing-body">
+            <pre id="pairingPayload" style="user-select:all">Loading…</pre>
+          </div>
+          <div class="peer-meta" id="pairingHint">Copy and run on the other device. Use --include/--exclude to control which projects sync.</div>
+        </div>
+
+        <h3 class="settings-group-title" style="margin-top: 20px">Recent sync attempts</h3>
+        <div class="attempts-list" id="syncAttempts"></div>
+      </div>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
