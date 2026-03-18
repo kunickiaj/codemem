@@ -20,5 +20,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "cli",
+		exclude: [".opencode/**", "node_modules/**"],
 	},
 });

@@ -1,19 +1,7 @@
 {
-  "name": "@kunickiaj/codemem",
-  "version": "0.19.0",
-  "description": "CodeMem plugin for OpenCode",
+  "name": "codemem-workspace",
+  "private": true,
   "type": "module",
-  "main": "index.js",
-  "exports": {
-    ".": "./index.js"
-  },
-  "files": [
-    "index.js",
-    "README.md",
-    "LICENSE",
-    ".opencode/plugin/codemem.js",
-    ".opencode/lib/compat.js"
-  ],
   "scripts": {
     "clean": "pnpm -r run clean && pnpm exec tsc --build --clean",
     "build": "pnpm -r run build && pnpm exec tsc --build",
@@ -24,10 +12,6 @@
     "typecheck": "pnpm exec tsc --build",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
     "codemem": "tsx --conditions source packages/cli/src/index.ts"
-  },
-  "dependencies": {
-    "@opencode-ai/plugin": "1.2.27",
-    "drizzle-orm": "^0.45.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.6",
@@ -40,25 +24,7 @@
   "engines": {
     "node": ">=22"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/kunickiaj/codemem.git"
-  },
-  "homepage": "https://github.com/kunickiaj/codemem",
-  "bugs": {
-    "url": "https://github.com/kunickiaj/codemem/issues"
-  },
   "packageManager": "pnpm@10.26.1",
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
-  "keywords": [
-    "opencode",
-    "plugin",
-    "memory",
-    "codemem"
-  ],
   "pnpm": {
     "onlyBuiltDependencies": [
       "@biomejs/biome",
