@@ -14,6 +14,8 @@
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
@@ -29,6 +31,7 @@ import {
 import { buildFilterClauses } from "./filters.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { buildMemoryPack, buildMemoryPackAsync } from "./pack.js";
+import * as schema from "./schema.js";
 import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
@@ -42,9 +45,7 @@ import type {
 	TimelineItemResponse,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
 // Memory kind validation (mirrors codemem/memory_kinds.py)
-// ---------------------------------------------------------------------------
 
 const ALLOWED_MEMORY_KINDS = new Set([
 	"discovery",
@@ -67,9 +68,7 @@ function validateMemoryKind(kind: string): string {
 	return normalized;
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /** ISO 8601 timestamp in UTC. */
 function nowIso(): string {
@@ -92,9 +91,7 @@ function parseMetadata(row: MemoryItem): MemoryItemResponse {
 	return { ...rest, metadata_json: fromJson(metadata_json) };
 }
 
-// ---------------------------------------------------------------------------
 // MemoryStore
-// ---------------------------------------------------------------------------
 
 export class MemoryStore {
 	readonly db: Database;
@@ -102,6 +99,13 @@ export class MemoryStore {
 	readonly deviceId: string;
 	readonly actorId: string;
 	readonly actorDisplayName: string;
+
+	/** Lazy Drizzle ORM wrapper — shares the same better-sqlite3 connection. */
+	private _drizzle: ReturnType<typeof drizzle> | null = null;
+	private get d() {
+		if (!this._drizzle) this._drizzle = drizzle(this.db, { schema });
+		return this._drizzle;
+	}
 
 	constructor(dbPath: string = DEFAULT_DB_PATH) {
 		this.dbPath = resolveDbPath(dbPath);
@@ -124,9 +128,11 @@ export class MemoryStore {
 			// Guard: sync_device may not exist in older/minimal schemas
 			let dbDeviceId: string | undefined;
 			try {
-				const row = this.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
-					| { device_id: string }
-					| undefined;
+				const row = this.d
+					.select({ device_id: schema.syncDevice.device_id })
+					.from(schema.syncDevice)
+					.limit(1)
+					.get();
 				dbDeviceId = row?.device_id;
 			} catch {
 				// Table doesn't exist — fall through to stable default
@@ -149,25 +155,23 @@ export class MemoryStore {
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 	}
 
-	// -----------------------------------------------------------------------
 	// get
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Fetch a single memory item by ID.
 	 * Returns null if not found (does not filter by active status).
 	 */
 	get(memoryId: number): MemoryItemResponse | null {
-		const row = this.db.prepare("SELECT * FROM memory_items WHERE id = ?").get(memoryId) as
-			| MemoryItem
-			| undefined;
+		const row = this.d
+			.select()
+			.from(schema.memoryItems)
+			.where(eq(schema.memoryItems.id, memoryId))
+			.get() as MemoryItem | undefined;
 		if (!row) return null;
 		return parseMetadata(row);
 	}
 
-	// -----------------------------------------------------------------------
 	// startSession / endSession
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Create a new session row. Returns the session ID.
@@ -183,41 +187,55 @@ export class MemoryStore {
 		metadata?: Record<string, unknown>;
 	}): number {
 		const now = nowIso();
-		const info = this.db
-			.prepare(
-				`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version, metadata_json)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				now,
-				opts.cwd ?? process.cwd(),
-				opts.project ?? null,
-				opts.gitRemote ?? null,
-				opts.gitBranch ?? null,
-				opts.user ?? process.env.USER ?? "unknown",
-				opts.toolVersion ?? "manual",
-				toJson(opts.metadata ?? {}),
-			);
-		return Number(info.lastInsertRowid);
+		const rows = this.d
+			.insert(schema.sessions)
+			.values({
+				started_at: now,
+				cwd: opts.cwd ?? process.cwd(),
+				project: opts.project ?? null,
+				git_remote: opts.gitRemote ?? null,
+				git_branch: opts.gitBranch ?? null,
+				user: opts.user ?? process.env.USER ?? "unknown",
+				tool_version: opts.toolVersion ?? "manual",
+				metadata_json: toJson(opts.metadata ?? {}),
+			})
+			.returning({ id: schema.sessions.id })
+			.all();
+		const id = rows[0]?.id;
+		if (id == null) throw new Error("session insert returned no id");
+		return id;
 	}
 
 	/**
-	 * End a session by recording ended_at. No-op if session doesn't exist.
+	 * End a session by recording ended_at.
+	 * FIX: merges incoming metadata with existing instead of replacing.
+	 * No-op if session doesn't exist.
 	 */
 	endSession(sessionId: number, metadata?: Record<string, unknown>): void {
 		const now = nowIso();
 		if (metadata) {
-			this.db
-				.prepare("UPDATE sessions SET ended_at = ?, metadata_json = ? WHERE id = ?")
-				.run(now, toJson(metadata), sessionId);
+			// Read existing metadata and merge — prevents clobbering earlier fields
+			const existing = this.d
+				.select({ metadata_json: schema.sessions.metadata_json })
+				.from(schema.sessions)
+				.where(eq(schema.sessions.id, sessionId))
+				.get();
+			const merged = { ...fromJson(existing?.metadata_json), ...metadata };
+			this.d
+				.update(schema.sessions)
+				.set({ ended_at: now, metadata_json: toJson(merged) })
+				.where(eq(schema.sessions.id, sessionId))
+				.run();
 		} else {
-			this.db.prepare("UPDATE sessions SET ended_at = ? WHERE id = ?").run(now, sessionId);
+			this.d
+				.update(schema.sessions)
+				.set({ ended_at: now })
+				.where(eq(schema.sessions.id, sessionId))
+				.run();
 		}
 	}
 
-	// -----------------------------------------------------------------------
 	// remember
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Create a new memory item. Returns the new memory ID.
@@ -247,40 +265,38 @@ export class MemoryStore {
 		// Resolve provenance fields — mirrors Python's _resolve_memory_provenance
 		const provenance = this.resolveProvenance(metaPayload);
 
-		const info = this.db
-			.prepare(
-				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text,
-					active, created_at, updated_at, metadata_json,
-					actor_id, actor_display_name, visibility, workspace_id,
-					workspace_kind, origin_device_id, origin_source, trust_state,
-					deleted_at, rev, import_key
-				) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?)`,
-			)
-			.run(
-				sessionId,
-				validKind,
+		const rows = this.d
+			.insert(schema.memoryItems)
+			.values({
+				session_id: sessionId,
+				kind: validKind,
 				title,
-				bodyText,
+				body_text: bodyText,
 				confidence,
-				tagsText,
-				now,
-				now,
-				toJson(metaPayload),
-				provenance.actor_id,
-				provenance.actor_display_name,
-				provenance.visibility,
-				provenance.workspace_id,
-				provenance.workspace_kind,
-				provenance.origin_device_id,
-				provenance.origin_source,
-				provenance.trust_state,
-				importKey,
-			);
+				tags_text: tagsText,
+				active: 1,
+				created_at: now,
+				updated_at: now,
+				metadata_json: toJson(metaPayload),
+				actor_id: provenance.actor_id,
+				actor_display_name: provenance.actor_display_name,
+				visibility: provenance.visibility,
+				workspace_id: provenance.workspace_id,
+				workspace_kind: provenance.workspace_kind,
+				origin_device_id: provenance.origin_device_id,
+				origin_source: provenance.origin_source,
+				trust_state: provenance.trust_state,
+				deleted_at: null,
+				rev: 1,
+				import_key: importKey,
+			})
+			.returning({ id: schema.memoryItems.id })
+			.all();
 
-		const memoryId = Number(info.lastInsertRowid);
+		const memoryId = rows[0]?.id;
+		if (memoryId == null) throw new Error("memory insert returned no id");
 
-		// Record replication op for sync propagation (matches Python)
+		// Record replication op for sync propagation
 		try {
 			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
 		} catch {
@@ -290,9 +306,7 @@ export class MemoryStore {
 		return memoryId;
 	}
 
-	// -----------------------------------------------------------------------
 	// provenance resolution
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Resolve provenance fields for a new memory, matching Python's
@@ -362,9 +376,7 @@ export class MemoryStore {
 		};
 	}
 
-	// -----------------------------------------------------------------------
 	// ownership check
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Check if a memory item is owned by this actor/device.
@@ -393,9 +405,7 @@ export class MemoryStore {
 		return false;
 	}
 
-	// -----------------------------------------------------------------------
 	// forget
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Soft-delete a memory item (set active = 0, record deleted_at).
@@ -403,9 +413,14 @@ export class MemoryStore {
 	 * No-op if the memory doesn't exist.
 	 */
 	forget(memoryId: number): void {
-		const row = this.db
-			.prepare("SELECT rev, metadata_json FROM memory_items WHERE id = ?")
-			.get(memoryId) as { rev: number; metadata_json: string | null } | undefined;
+		const row = this.d
+			.select({
+				rev: schema.memoryItems.rev,
+				metadata_json: schema.memoryItems.metadata_json,
+			})
+			.from(schema.memoryItems)
+			.where(eq(schema.memoryItems.id, memoryId))
+			.get();
 		if (!row) return;
 
 		const meta = fromJson(row.metadata_json);
@@ -414,13 +429,17 @@ export class MemoryStore {
 		const now = nowIso();
 		const rev = (row.rev ?? 0) + 1;
 
-		this.db
-			.prepare(
-				`UPDATE memory_items
-				 SET active = 0, deleted_at = ?, updated_at = ?, metadata_json = ?, rev = ?
-				 WHERE id = ?`,
-			)
-			.run(now, now, toJson(meta), rev, memoryId);
+		this.d
+			.update(schema.memoryItems)
+			.set({
+				active: 0,
+				deleted_at: now,
+				updated_at: now,
+				metadata_json: toJson(meta),
+				rev,
+			})
+			.where(eq(schema.memoryItems.id, memoryId))
+			.run();
 
 		// Record replication op for sync propagation (matches Python)
 		try {
@@ -430,9 +449,7 @@ export class MemoryStore {
 		}
 	}
 
-	// -----------------------------------------------------------------------
 	// recent
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Return recent active memories, newest first.
@@ -462,9 +479,7 @@ export class MemoryStore {
 		return rows.map((row) => parseMetadata(row));
 	}
 
-	// -----------------------------------------------------------------------
 	// recentByKinds
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Return recent active memories filtered to specific kinds, newest first.
@@ -502,34 +517,42 @@ export class MemoryStore {
 		return rows.map((row) => parseMetadata(row));
 	}
 
-	// -----------------------------------------------------------------------
 	// stats
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Return database statistics matching the Python stats() output shape.
 	 */
 	stats(): StoreStats {
-		const count = (sql: string): number => {
-			const row = this.db.prepare(sql).get() as { c: number } | undefined;
-			return row?.c ?? 0;
-		};
+		// biome-ignore lint/suspicious/noExplicitAny: Drizzle table union type is unwieldy
+		const countRows = (tbl: any) =>
+			this.d.select({ c: sql<number>`COUNT(*)` }).from(tbl).get()?.c ?? 0;
 
-		const totalMemories = count("SELECT COUNT(*) AS c FROM memory_items");
-		const activeMemories = count("SELECT COUNT(*) AS c FROM memory_items WHERE active = 1");
-		const sessions = count("SELECT COUNT(*) AS c FROM sessions");
-		const artifacts = count("SELECT COUNT(*) AS c FROM artifacts");
-		const rawEvents = count("SELECT COUNT(*) AS c FROM raw_events");
+		const totalMemories = countRows(schema.memoryItems);
+		const activeMemories =
+			this.d
+				.select({ c: sql<number>`COUNT(*)` })
+				.from(schema.memoryItems)
+				.where(eq(schema.memoryItems.active, 1))
+				.get()?.c ?? 0;
+		const sessions = countRows(schema.sessions);
+		const artifacts = countRows(schema.artifacts);
+		const rawEvents = countRows(schema.rawEvents);
 
 		let vectorCount = 0;
 		if (tableExists(this.db, "memory_vectors")) {
-			vectorCount = count("SELECT COUNT(*) AS c FROM memory_vectors");
+			const row = this.db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get() as
+				| { c: number }
+				| undefined;
+			vectorCount = row?.c ?? 0;
 		}
 		const vectorCoverage = activeMemories > 0 ? Math.min(1, vectorCount / activeMemories) : 0;
 
-		const tagsFilled = count(
-			"SELECT COUNT(*) AS c FROM memory_items WHERE active = 1 AND TRIM(tags_text) != ''",
-		);
+		const tagsFilled =
+			this.d
+				.select({ c: sql<number>`COUNT(*)` })
+				.from(schema.memoryItems)
+				.where(and(eq(schema.memoryItems.active, 1), sql`TRIM(tags_text) != ''`))
+				.get()?.c ?? 0;
 		const tagsCoverage = activeMemories > 0 ? Math.min(1, tagsFilled / activeMemories) : 0;
 
 		let sizeBytes = 0;
@@ -540,23 +563,18 @@ export class MemoryStore {
 		}
 
 		// Usage stats
-		const usageRows = this.db
-			.prepare(
-				`SELECT event, COUNT(*) AS count,
-				        SUM(tokens_read) AS tokens_read,
-				        SUM(tokens_written) AS tokens_written,
-				        SUM(COALESCE(tokens_saved, 0)) AS tokens_saved
-				 FROM usage_events
-				 GROUP BY event
-				 ORDER BY count DESC`,
-			)
-			.all() as {
-			event: string;
-			count: number;
-			tokens_read: number | null;
-			tokens_written: number | null;
-			tokens_saved: number | null;
-		}[];
+		const usageRows = this.d
+			.select({
+				event: schema.usageEvents.event,
+				count: sql<number>`COUNT(*)`,
+				tokens_read: sql<number | null>`SUM(tokens_read)`,
+				tokens_written: sql<number | null>`SUM(tokens_written)`,
+				tokens_saved: sql<number | null>`SUM(COALESCE(tokens_saved, 0))`,
+			})
+			.from(schema.usageEvents)
+			.groupBy(schema.usageEvents.event)
+			.orderBy(desc(sql`COUNT(*)`))
+			.all();
 
 		const usageEvents = usageRows.map((r) => ({
 			event: r.event,
@@ -602,9 +620,7 @@ export class MemoryStore {
 		};
 	}
 
-	// -----------------------------------------------------------------------
 	// updateMemoryVisibility
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Update the visibility of an active memory item.
@@ -617,9 +633,11 @@ export class MemoryStore {
 			throw new Error("visibility must be private or shared");
 		}
 
-		const row = this.db
-			.prepare("SELECT * FROM memory_items WHERE id = ? AND active = 1")
-			.get(memoryId) as MemoryItem | undefined;
+		const row = this.d
+			.select()
+			.from(schema.memoryItems)
+			.where(and(eq(schema.memoryItems.id, memoryId), eq(schema.memoryItems.active, 1)))
+			.get() as MemoryItem | undefined;
 		if (!row) {
 			throw new Error("memory not found");
 		}
@@ -650,14 +668,18 @@ export class MemoryStore {
 		const now = nowIso();
 		const rev = (row.rev ?? 0) + 1;
 
-		this.db
-			.prepare(
-				`UPDATE memory_items
-				 SET visibility = ?, workspace_kind = ?, workspace_id = ?,
-				     updated_at = ?, metadata_json = ?, rev = ?
-				 WHERE id = ?`,
-			)
-			.run(cleaned, workspaceKind, workspaceId, now, toJson(meta), rev, memoryId);
+		this.d
+			.update(schema.memoryItems)
+			.set({
+				visibility: cleaned,
+				workspace_kind: workspaceKind,
+				workspace_id: workspaceId,
+				updated_at: now,
+				metadata_json: toJson(meta),
+				rev,
+			})
+			.where(eq(schema.memoryItems.id, memoryId))
+			.run();
 
 		// Record replication op for sync propagation (matches Python)
 		try {
@@ -677,9 +699,7 @@ export class MemoryStore {
 		return updated;
 	}
 
-	// -----------------------------------------------------------------------
 	// search
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Full-text search for memories using FTS5.
@@ -691,9 +711,7 @@ export class MemoryStore {
 		return searchFn(this, query, limit, filters);
 	}
 
-	// -----------------------------------------------------------------------
 	// timeline
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Return a chronological window of memories around an anchor.
@@ -711,9 +729,7 @@ export class MemoryStore {
 		return timelineFn(this, query, memoryId, depthBefore, depthAfter, filters);
 	}
 
-	// -----------------------------------------------------------------------
 	// explain
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Explain search results with scoring breakdown.
@@ -730,9 +746,7 @@ export class MemoryStore {
 		return explainFn(this, query, ids, limit, filters);
 	}
 
-	// -----------------------------------------------------------------------
 	// buildMemoryPack
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Build a formatted memory pack from search results.
@@ -765,9 +779,7 @@ export class MemoryStore {
 		return buildMemoryPackAsync(this, context, limit, tokenBudget ?? null, filters);
 	}
 
-	// -----------------------------------------------------------------------
 	// Raw event helpers
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Normalize source/streamId to match Python's _normalize_stream_identity().
@@ -780,9 +792,7 @@ export class MemoryStore {
 		return [s, sid];
 	}
 
-	// -----------------------------------------------------------------------
 	// Raw event query methods (ports from codemem/store/raw_events.py)
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Find sessions that have unflushed events and have been idle long enough.
@@ -865,7 +875,11 @@ export class MemoryStore {
 		const cutoffIso = new Date(cutoffTsWallMs).toISOString();
 
 		return this.db.transaction(() => {
-			this.db.prepare("DELETE FROM raw_event_ingest_samples WHERE created_at < ?").run(cutoffIso);
+			this.d
+				.delete(schema.rawEventIngestSamples)
+				.where(sql`${schema.rawEventIngestSamples.created_at} < ${cutoffIso}`)
+				.run();
+			// Use raw SQL for DELETE to access result.changes
 			const result = this.db
 				.prepare("DELETE FROM raw_events WHERE ts_wall_ms IS NOT NULL AND ts_wall_ms < ?")
 				.run(cutoffTsWallMs);
@@ -910,9 +924,7 @@ export class MemoryStore {
 		return result.changes;
 	}
 
-	// -----------------------------------------------------------------------
 	// Raw event per-session methods (ports for flush pipeline)
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Get session metadata (cwd, project, started_at, etc.) for a raw event stream.
@@ -920,13 +932,17 @@ export class MemoryStore {
 	 */
 	rawEventSessionMeta(opencodeSessionId: string, source = "opencode"): Record<string, unknown> {
 		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
-		const row = this.db
-			.prepare(
-				`SELECT cwd, project, started_at, last_seen_ts_wall_ms, last_flushed_event_seq
-				 FROM raw_event_sessions
-				 WHERE source = ? AND stream_id = ?`,
-			)
-			.get(s, sid) as Record<string, unknown> | undefined;
+		const row = this.d
+			.select({
+				cwd: schema.rawEventSessions.cwd,
+				project: schema.rawEventSessions.project,
+				started_at: schema.rawEventSessions.started_at,
+				last_seen_ts_wall_ms: schema.rawEventSessions.last_seen_ts_wall_ms,
+				last_flushed_event_seq: schema.rawEventSessions.last_flushed_event_seq,
+			})
+			.from(schema.rawEventSessions)
+			.where(and(eq(schema.rawEventSessions.source, s), eq(schema.rawEventSessions.stream_id, sid)))
+			.get();
 		if (!row) return {};
 		return {
 			cwd: row.cwd,
@@ -943,11 +959,11 @@ export class MemoryStore {
 	 */
 	rawEventFlushState(opencodeSessionId: string, source = "opencode"): number {
 		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
-		const row = this.db
-			.prepare(
-				"SELECT last_flushed_event_seq FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
-			)
-			.get(s, sid) as { last_flushed_event_seq: number } | undefined;
+		const row = this.d
+			.select({ last_flushed_event_seq: schema.rawEventSessions.last_flushed_event_seq })
+			.from(schema.rawEventSessions)
+			.where(and(eq(schema.rawEventSessions.source, s), eq(schema.rawEventSessions.stream_id, sid)))
+			.get();
 		if (!row) return -1;
 		return Number(row.last_flushed_event_seq);
 	}
@@ -1075,24 +1091,26 @@ export class MemoryStore {
 		const now = new Date().toISOString();
 		if (status === "failed") {
 			// Preserve existing error details when marking as failed
-			this.db
-				.prepare(
-					`UPDATE raw_event_flush_batches
-					 SET status = ?, updated_at = ?
-					 WHERE id = ?`,
-				)
-				.run(status, now, batchId);
+			this.d
+				.update(schema.rawEventFlushBatches)
+				.set({ status, updated_at: now })
+				.where(eq(schema.rawEventFlushBatches.id, batchId))
+				.run();
 		} else {
 			// Clear error details for non-failure statuses
-			this.db
-				.prepare(
-					`UPDATE raw_event_flush_batches
-					 SET status = ?, updated_at = ?,
-					     error_message = NULL, error_type = NULL,
-					     observer_provider = NULL, observer_model = NULL, observer_runtime = NULL
-					 WHERE id = ?`,
-				)
-				.run(status, now, batchId);
+			this.d
+				.update(schema.rawEventFlushBatches)
+				.set({
+					status,
+					updated_at: now,
+					error_message: null,
+					error_type: null,
+					observer_provider: null,
+					observer_model: null,
+					observer_runtime: null,
+				})
+				.where(eq(schema.rawEventFlushBatches.id, batchId))
+				.run();
 		}
 	}
 
@@ -1111,27 +1129,19 @@ export class MemoryStore {
 		},
 	): void {
 		const now = new Date().toISOString();
-		this.db
-			.prepare(
-				`UPDATE raw_event_flush_batches
-				 SET status = 'failed',
-				     updated_at = ?,
-				     error_message = ?,
-				     error_type = ?,
-				     observer_provider = ?,
-				     observer_model = ?,
-				     observer_runtime = ?
-				 WHERE id = ?`,
-			)
-			.run(
-				now,
-				opts.message,
-				opts.errorType,
-				opts.observerProvider ?? null,
-				opts.observerModel ?? null,
-				opts.observerRuntime ?? null,
-				batchId,
-			);
+		this.d
+			.update(schema.rawEventFlushBatches)
+			.set({
+				status: "failed",
+				updated_at: now,
+				error_message: opts.message,
+				error_type: opts.errorType,
+				observer_provider: opts.observerProvider ?? null,
+				observer_model: opts.observerModel ?? null,
+				observer_runtime: opts.observerRuntime ?? null,
+			})
+			.where(eq(schema.rawEventFlushBatches.id, batchId))
+			.run();
 	}
 
 	/**
@@ -1145,21 +1155,27 @@ export class MemoryStore {
 	): void {
 		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
 		const now = new Date().toISOString();
-		this.db
-			.prepare(
-				`INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, last_flushed_event_seq, updated_at)
-				 VALUES (?, ?, ?, ?, ?)
-				 ON CONFLICT(source, stream_id) DO UPDATE SET
-				     opencode_session_id = excluded.opencode_session_id,
-				     last_flushed_event_seq = excluded.last_flushed_event_seq,
-				     updated_at = excluded.updated_at`,
-			)
-			.run(sid, s, sid, lastFlushed, now);
+		this.d
+			.insert(schema.rawEventSessions)
+			.values({
+				opencode_session_id: sid,
+				source: s,
+				stream_id: sid,
+				last_flushed_event_seq: lastFlushed,
+				updated_at: now,
+			})
+			.onConflictDoUpdate({
+				target: [schema.rawEventSessions.source, schema.rawEventSessions.stream_id],
+				set: {
+					opencode_session_id: sql`excluded.opencode_session_id`,
+					last_flushed_event_seq: sql`excluded.last_flushed_event_seq`,
+					updated_at: sql`excluded.updated_at`,
+				},
+			})
+			.run();
 	}
 
-	// -----------------------------------------------------------------------
 	// Raw event ingestion methods (ports for POST /api/raw-events)
-	// -----------------------------------------------------------------------
 
 	/**
 	 * Update ingest stats counters (sample + running totals).
@@ -1173,28 +1189,39 @@ export class MemoryStore {
 	): void {
 		const now = nowIso();
 		const skippedEvents = skippedInvalid + skippedDuplicate + skippedConflict;
-		this.db
-			.prepare(
-				`INSERT INTO raw_event_ingest_samples(
-					created_at, inserted_events, skipped_invalid, skipped_duplicate, skipped_conflict
-				) VALUES (?, ?, ?, ?, ?)`,
-			)
-			.run(now, inserted, skippedInvalid, skippedDuplicate, skippedConflict);
-		this.db
-			.prepare(
-				`INSERT INTO raw_event_ingest_stats(
-					id, inserted_events, skipped_events, skipped_invalid,
-					skipped_duplicate, skipped_conflict, updated_at
-				) VALUES (1, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(id) DO UPDATE SET
-					inserted_events = inserted_events + excluded.inserted_events,
-					skipped_events = skipped_events + excluded.skipped_events,
-					skipped_invalid = skipped_invalid + excluded.skipped_invalid,
-					skipped_duplicate = skipped_duplicate + excluded.skipped_duplicate,
-					skipped_conflict = skipped_conflict + excluded.skipped_conflict,
-					updated_at = excluded.updated_at`,
-			)
-			.run(inserted, skippedEvents, skippedInvalid, skippedDuplicate, skippedConflict, now);
+		this.d
+			.insert(schema.rawEventIngestSamples)
+			.values({
+				created_at: now,
+				inserted_events: inserted,
+				skipped_invalid: skippedInvalid,
+				skipped_duplicate: skippedDuplicate,
+				skipped_conflict: skippedConflict,
+			})
+			.run();
+		this.d
+			.insert(schema.rawEventIngestStats)
+			.values({
+				id: 1,
+				inserted_events: inserted,
+				skipped_events: skippedEvents,
+				skipped_invalid: skippedInvalid,
+				skipped_duplicate: skippedDuplicate,
+				skipped_conflict: skippedConflict,
+				updated_at: now,
+			})
+			.onConflictDoUpdate({
+				target: schema.rawEventIngestStats.id,
+				set: {
+					inserted_events: sql`${schema.rawEventIngestStats.inserted_events} + excluded.inserted_events`,
+					skipped_events: sql`${schema.rawEventIngestStats.skipped_events} + excluded.skipped_events`,
+					skipped_invalid: sql`${schema.rawEventIngestStats.skipped_invalid} + excluded.skipped_invalid`,
+					skipped_duplicate: sql`${schema.rawEventIngestStats.skipped_duplicate} + excluded.skipped_duplicate`,
+					skipped_conflict: sql`${schema.rawEventIngestStats.skipped_conflict} + excluded.skipped_conflict`,
+					updated_at: sql`excluded.updated_at`,
+				},
+			})
+			.run();
 	}
 
 	/**
@@ -1223,57 +1250,80 @@ export class MemoryStore {
 			const now = nowIso();
 
 			// Check for duplicate
-			const existing = this.db
-				.prepare("SELECT 1 FROM raw_events WHERE source = ? AND stream_id = ? AND event_id = ?")
-				.get(source, streamId, opts.eventId);
+			const existing = this.d
+				.select({ one: sql<number>`1` })
+				.from(schema.rawEvents)
+				.where(
+					and(
+						eq(schema.rawEvents.source, source),
+						eq(schema.rawEvents.stream_id, streamId),
+						eq(schema.rawEvents.event_id, opts.eventId),
+					),
+				)
+				.get();
 			if (existing != null) {
 				this.updateRawEventIngestStats(0, 0, 1, 0);
 				return false;
 			}
 
 			// Ensure session row exists
-			const sessionRow = this.db
-				.prepare("SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?")
-				.get(source, streamId);
+			const sessionRow = this.d
+				.select({ one: sql<number>`1` })
+				.from(schema.rawEventSessions)
+				.where(
+					and(
+						eq(schema.rawEventSessions.source, source),
+						eq(schema.rawEventSessions.stream_id, streamId),
+					),
+				)
+				.get();
 			if (sessionRow == null) {
-				this.db
-					.prepare(
-						"INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at) VALUES (?, ?, ?, ?)",
-					)
-					.run(streamId, source, streamId, now);
+				this.d
+					.insert(schema.rawEventSessions)
+					.values({
+						opencode_session_id: streamId,
+						source,
+						stream_id: streamId,
+						updated_at: now,
+					})
+					.run();
 			}
 
 			// Allocate event_seq
-			const seqRow = this.db
-				.prepare(
-					`UPDATE raw_event_sessions
-					 SET last_received_event_seq = last_received_event_seq + 1, updated_at = ?
-					 WHERE source = ? AND stream_id = ?
-					 RETURNING last_received_event_seq`,
+			const seqRow = this.d
+				.update(schema.rawEventSessions)
+				.set({
+					last_received_event_seq: sql`${schema.rawEventSessions.last_received_event_seq} + 1`,
+					updated_at: now,
+				})
+				.where(
+					and(
+						eq(schema.rawEventSessions.source, source),
+						eq(schema.rawEventSessions.stream_id, streamId),
+					),
 				)
-				.get(now, source, streamId) as { last_received_event_seq: number } | undefined;
+				.returning({
+					last_received_event_seq: schema.rawEventSessions.last_received_event_seq,
+				})
+				.get();
 			if (!seqRow) throw new Error("Failed to allocate raw event seq");
 			const eventSeq = Number(seqRow.last_received_event_seq);
 
-			this.db
-				.prepare(
-					`INSERT INTO raw_events(
-						source, stream_id, opencode_session_id, event_id, event_seq,
-						event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
+			this.d
+				.insert(schema.rawEvents)
+				.values({
 					source,
-					streamId,
-					streamId,
-					opts.eventId,
-					eventSeq,
-					opts.eventType,
-					opts.tsWallMs ?? null,
-					opts.tsMonoMs ?? null,
-					toJson(opts.payload),
-					now,
-				);
+					stream_id: streamId,
+					opencode_session_id: streamId,
+					event_id: opts.eventId,
+					event_seq: eventSeq,
+					event_type: opts.eventType,
+					ts_wall_ms: opts.tsWallMs ?? null,
+					ts_mono_ms: opts.tsMonoMs ?? null,
+					payload_json: toJson(opts.payload),
+					created_at: now,
+				})
+				.run();
 			this.updateRawEventIngestStats(1, 0, 0, 0);
 			return true;
 		})();
@@ -1294,15 +1344,26 @@ export class MemoryStore {
 			const now = nowIso();
 
 			// Ensure session row exists
-			const sessionRow = this.db
-				.prepare("SELECT 1 FROM raw_event_sessions WHERE source = ? AND stream_id = ?")
-				.get(source, streamId);
+			const sessionRow = this.d
+				.select({ one: sql<number>`1` })
+				.from(schema.rawEventSessions)
+				.where(
+					and(
+						eq(schema.rawEventSessions.source, source),
+						eq(schema.rawEventSessions.stream_id, streamId),
+					),
+				)
+				.get();
 			if (sessionRow == null) {
-				this.db
-					.prepare(
-						"INSERT INTO raw_event_sessions(opencode_session_id, source, stream_id, updated_at) VALUES (?, ?, ?, ?)",
-					)
-					.run(streamId, source, streamId, now);
+				this.d
+					.insert(schema.rawEventSessions)
+					.values({
+						opencode_session_id: streamId,
+						source,
+						stream_id: streamId,
+						updated_at: now,
+					})
+					.run();
 			}
 
 			// Normalize and validate events
@@ -1358,16 +1419,20 @@ export class MemoryStore {
 			const chunkSize = 500;
 			for (let i = 0; i < normalized.length; i += chunkSize) {
 				const chunk = normalized.slice(i, i + chunkSize);
-				const placeholders = chunk.map(() => "?").join(",");
-				const rows = this.db
-					.prepare(
-						`SELECT event_id FROM raw_events WHERE source = ? AND stream_id = ? AND event_id IN (${placeholders})`,
+				const chunkEventIds = chunk.map((e) => e.eventId);
+				const rows = this.d
+					.select({ event_id: schema.rawEvents.event_id })
+					.from(schema.rawEvents)
+					.where(
+						and(
+							eq(schema.rawEvents.source, source),
+							eq(schema.rawEvents.stream_id, streamId),
+							inArray(schema.rawEvents.event_id, chunkEventIds),
+						),
 					)
-					.all(source, streamId, ...chunk.map((e) => e.eventId)) as {
-					event_id: string;
-				}[];
+					.all();
 				for (const row of rows) {
-					existingIds.add(String(row.event_id));
+					if (row.event_id) existingIds.add(row.event_id);
 				}
 			}
 
@@ -1380,16 +1445,22 @@ export class MemoryStore {
 			}
 
 			// Allocate seq range
-			const seqRow = this.db
-				.prepare(
-					`UPDATE raw_event_sessions
-					 SET last_received_event_seq = last_received_event_seq + ?, updated_at = ?
-					 WHERE source = ? AND stream_id = ?
-					 RETURNING last_received_event_seq`,
+			const seqRow = this.d
+				.update(schema.rawEventSessions)
+				.set({
+					last_received_event_seq: sql`${schema.rawEventSessions.last_received_event_seq} + ${newEvents.length}`,
+					updated_at: now,
+				})
+				.where(
+					and(
+						eq(schema.rawEventSessions.source, source),
+						eq(schema.rawEventSessions.stream_id, streamId),
+					),
 				)
-				.get(newEvents.length, now, source, streamId) as
-				| { last_received_event_seq: number }
-				| undefined;
+				.returning({
+					last_received_event_seq: schema.rawEventSessions.last_received_event_seq,
+				})
+				.get();
 			if (!seqRow) throw new Error("Failed to allocate raw event seq");
 			const endSeq = Number(seqRow.last_received_event_seq);
 			const startSeq = endSeq - newEvents.length + 1;
@@ -1450,35 +1521,36 @@ export class MemoryStore {
 			opts.opencodeSessionId,
 		);
 		const now = nowIso();
-		this.db
-			.prepare(
-				`INSERT INTO raw_event_sessions(
-					opencode_session_id, source, stream_id, cwd, project,
-					started_at, last_seen_ts_wall_ms, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(source, stream_id) DO UPDATE SET
-					opencode_session_id = excluded.opencode_session_id,
-					cwd = COALESCE(excluded.cwd, raw_event_sessions.cwd),
-					project = COALESCE(excluded.project, raw_event_sessions.project),
-					started_at = COALESCE(excluded.started_at, raw_event_sessions.started_at),
-					last_seen_ts_wall_ms = CASE
-						WHEN excluded.last_seen_ts_wall_ms IS NULL THEN raw_event_sessions.last_seen_ts_wall_ms
-						WHEN raw_event_sessions.last_seen_ts_wall_ms IS NULL THEN excluded.last_seen_ts_wall_ms
-						WHEN excluded.last_seen_ts_wall_ms > raw_event_sessions.last_seen_ts_wall_ms THEN excluded.last_seen_ts_wall_ms
-						ELSE raw_event_sessions.last_seen_ts_wall_ms
-					END,
-					updated_at = excluded.updated_at`,
-			)
-			.run(
-				streamId,
+		const t = schema.rawEventSessions;
+		this.d
+			.insert(t)
+			.values({
+				opencode_session_id: streamId,
 				source,
-				streamId,
-				opts.cwd ?? null,
-				opts.project ?? null,
-				opts.startedAt ?? null,
-				opts.lastSeenTsWallMs ?? null,
-				now,
-			);
+				stream_id: streamId,
+				cwd: opts.cwd ?? null,
+				project: opts.project ?? null,
+				started_at: opts.startedAt ?? null,
+				last_seen_ts_wall_ms: opts.lastSeenTsWallMs ?? null,
+				updated_at: now,
+			})
+			.onConflictDoUpdate({
+				target: [t.source, t.stream_id],
+				set: {
+					opencode_session_id: sql`excluded.opencode_session_id`,
+					cwd: sql`COALESCE(excluded.cwd, ${t.cwd})`,
+					project: sql`COALESCE(excluded.project, ${t.project})`,
+					started_at: sql`COALESCE(excluded.started_at, ${t.started_at})`,
+					last_seen_ts_wall_ms: sql`CASE
+						WHEN excluded.last_seen_ts_wall_ms IS NULL THEN ${t.last_seen_ts_wall_ms}
+						WHEN ${t.last_seen_ts_wall_ms} IS NULL THEN excluded.last_seen_ts_wall_ms
+						WHEN excluded.last_seen_ts_wall_ms > ${t.last_seen_ts_wall_ms} THEN excluded.last_seen_ts_wall_ms
+						ELSE ${t.last_seen_ts_wall_ms}
+					END`,
+					updated_at: sql`excluded.updated_at`,
+				},
+			})
+			.run();
 	}
 
 	/**
@@ -1486,21 +1558,19 @@ export class MemoryStore {
 	 * Port of raw_event_backlog_totals().
 	 */
 	rawEventBacklogTotals(): { pending: number; sessions: number } {
-		const row = this.db
-			.prepare(
-				`WITH max_events AS (
-					SELECT source, stream_id, MAX(event_seq) AS max_seq
-					FROM raw_events
-					GROUP BY source, stream_id
-				)
-				SELECT
-					COUNT(1) AS sessions,
-					SUM(e.max_seq - s.last_flushed_event_seq) AS pending
-				FROM raw_event_sessions s
-				JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
-				WHERE e.max_seq > s.last_flushed_event_seq`,
+		const row = this.d.get<{ sessions: number | null; pending: number | null }>(sql`
+			WITH max_events AS (
+				SELECT source, stream_id, MAX(event_seq) AS max_seq
+				FROM raw_events
+				GROUP BY source, stream_id
 			)
-			.get() as { sessions: number | null; pending: number | null } | undefined;
+			SELECT
+				COUNT(1) AS sessions,
+				SUM(e.max_seq - s.last_flushed_event_seq) AS pending
+			FROM raw_event_sessions s
+			JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
+			WHERE e.max_seq > s.last_flushed_event_seq
+		`);
 		if (!row) return { sessions: 0, pending: 0 };
 		return {
 			sessions: Number(row.sessions ?? 0),
@@ -1532,9 +1602,7 @@ export class MemoryStore {
 		return { ...row, status: "error" };
 	}
 
-	// -----------------------------------------------------------------------
 	// close
-	// -----------------------------------------------------------------------
 
 	/** Close the database connection. */
 	close(): void {
