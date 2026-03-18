@@ -9,7 +9,14 @@ export default defineConfig({
 			fileName: "index",
 		},
 		rollupOptions: {
-			external: ["better-sqlite3", "sqlite-vec", "@xenova/transformers", /^node:/],
+			external: [
+				"better-sqlite3",
+				"sqlite-vec",
+				"@xenova/transformers",
+				"drizzle-orm",
+				/^drizzle-orm\//,
+				/^node:/,
+			],
 		},
 		outDir: "dist",
 		sourcemap: true,

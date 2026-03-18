@@ -422,21 +422,7 @@ describe("viewer-server", () => {
 			try {
 				// Ensure store + actors table exist
 				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (store) {
-					// Create actors table if not present
-					store.db.exec(`
-						CREATE TABLE IF NOT EXISTS actors (
-							actor_id TEXT PRIMARY KEY,
-							display_name TEXT NOT NULL,
-							is_local INTEGER NOT NULL DEFAULT 0,
-							status TEXT NOT NULL DEFAULT 'active',
-							merged_into_actor_id TEXT,
-							created_at TEXT NOT NULL,
-							updated_at TEXT NOT NULL
-						)
-					`);
-				}
+				const _store = getStore();
 				const res = await app.request("/api/sync/peers");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
@@ -453,38 +439,15 @@ describe("viewer-server", () => {
 				const _warmup = await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				store.db.exec(`
-					CREATE TABLE IF NOT EXISTS actors (
-						actor_id TEXT PRIMARY KEY,
-						display_name TEXT NOT NULL,
-						is_local INTEGER NOT NULL DEFAULT 0,
-						status TEXT NOT NULL DEFAULT 'active',
-						merged_into_actor_id TEXT,
-						created_at TEXT NOT NULL,
-						updated_at TEXT NOT NULL
-					);
-					CREATE TABLE IF NOT EXISTS sync_peers (
-						peer_device_id TEXT PRIMARY KEY,
-						name TEXT,
-						pinned_fingerprint TEXT,
-						addresses_json TEXT,
-						last_seen_at TEXT,
-						last_sync_at TEXT,
-						last_error TEXT,
-						projects_include_json TEXT,
-						projects_exclude_json TEXT,
-						claimed_local_actor INTEGER,
-						actor_id TEXT
-					)
-				`);
+				// sync_peers table already created by initTestSchema
 				const now = new Date(Date.now() - 30_000).toISOString().replace(/\.\d{3}Z$/, "");
 				store.db
 					.prepare(
 						`INSERT INTO sync_peers (
-							peer_device_id, name, last_sync_at, claimed_local_actor, actor_id, created_at
-						) VALUES (?, ?, ?, 0, ?, ?)`,
+							peer_device_id, name, last_sync_at, claimed_local_actor, created_at
+						) VALUES (?, ?, ?, 0, ?)`,
 					)
-					.run("peer-1", "Peer One", now, "actor:peer-1", now);
+					.run("peer-1", "Peer One", now, now);
 
 				const res = await app.request("/api/sync/status?diag=1");
 				expect(res.status).toBe(200);
