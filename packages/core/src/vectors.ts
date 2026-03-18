@@ -221,7 +221,9 @@ export async function semanticSearch(
 	const embeddings = await embedTexts([query]);
 	if (embeddings.length === 0) return [];
 
-	const queryEmbedding = serializeFloat32(embeddings[0]!);
+	const firstEmbedding = embeddings[0];
+	if (!firstEmbedding) return [];
+	const queryEmbedding = serializeFloat32(firstEmbedding);
 	const params: unknown[] = [queryEmbedding, limit];
 	const whereClauses: string[] = ["memory_items.active = 1"];
 	let joinSessions = false;
