@@ -38,8 +38,11 @@ function findPluginSource(): string | null {
 	for (let i = 0; i < 6; i++) {
 		const candidate = join(dir, ".opencode", "plugin", "codemem.js");
 		if (existsSync(candidate)) return candidate;
-		// Also check node_modules/@kunickiaj/codemem/.opencode/plugin/codemem.js
-		const nmCandidate = join(
+		// Check node_modules/codemem/.opencode/plugin/codemem.js (unscoped)
+		const nmCandidate = join(dir, "node_modules", "codemem", ".opencode", "plugin", "codemem.js");
+		if (existsSync(nmCandidate)) return nmCandidate;
+		// Legacy: node_modules/@kunickiaj/codemem/.opencode/plugin/codemem.js
+		const legacyCandidate = join(
 			dir,
 			"node_modules",
 			"@kunickiaj",
@@ -48,7 +51,7 @@ function findPluginSource(): string | null {
 			"plugin",
 			"codemem.js",
 		);
-		if (existsSync(nmCandidate)) return nmCandidate;
+		if (existsSync(legacyCandidate)) return legacyCandidate;
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
@@ -61,7 +64,9 @@ function findCompatSource(): string | null {
 	for (let i = 0; i < 6; i++) {
 		const candidate = join(dir, ".opencode", "lib", "compat.js");
 		if (existsSync(candidate)) return candidate;
-		const nmCandidate = join(
+		const nmCandidate = join(dir, "node_modules", "codemem", ".opencode", "lib", "compat.js");
+		if (existsSync(nmCandidate)) return nmCandidate;
+		const legacyCandidate = join(
 			dir,
 			"node_modules",
 			"@kunickiaj",
@@ -70,7 +75,7 @@ function findCompatSource(): string | null {
 			"lib",
 			"compat.js",
 		);
-		if (existsSync(nmCandidate)) return nmCandidate;
+		if (existsSync(legacyCandidate)) return legacyCandidate;
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
@@ -147,7 +152,7 @@ function installMcp(force: boolean): boolean {
 
 	mcpConfig.codemem = {
 		type: "local",
-		command: ["npx", "@codemem/cli", "mcp"],
+		command: ["npx", "codemem", "mcp"],
 		enabled: true,
 	};
 	config.mcp = mcpConfig;
@@ -186,7 +191,7 @@ function installClaudeMcp(force: boolean): boolean {
 
 	mcpServers.codemem = {
 		command: "npx",
-		args: ["@codemem/cli", "mcp"],
+		args: ["codemem", "mcp"],
 	};
 	settings.mcpServers = mcpServers;
 

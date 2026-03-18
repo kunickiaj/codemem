@@ -1,11 +1,17 @@
 {
-	"name": "@codemem/cli",
-	"version": "0.0.1",
-	"private": true,
+	"name": "codemem",
+	"version": "0.20.0-alpha.1",
+	"description": "Memory layer for AI coding agents — search, recall, and sync context across sessions",
 	"type": "module",
 	"bin": {
 		"codemem": "./dist/index.js"
 	},
+	"files": [
+		"dist/",
+		".opencode/",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist",
@@ -28,5 +34,30 @@
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
-	}
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git"
+	},
+	"homepage": "https://github.com/kunickiaj/codemem",
+	"bugs": {
+		"url": "https://github.com/kunickiaj/codemem/issues"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
+	"keywords": [
+		"codemem",
+		"memory",
+		"ai",
+		"coding",
+		"agent",
+		"mcp",
+		"opencode",
+		"claude"
+	]
 }
