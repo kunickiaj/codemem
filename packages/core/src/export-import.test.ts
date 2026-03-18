@@ -141,8 +141,9 @@ describe("export/import", () => {
 				summaries: 1,
 				project: "/tmp/remapped",
 			});
-			expect(promptEpoch).toBeGreaterThan(1_000_000_000_000);
-			expect(summaryEpoch).toBeGreaterThan(1_000_000_000_000);
+			// Original created_at_epoch values (1) from the source DB are preserved
+			expect(promptEpoch).toBe(1);
+			expect(summaryEpoch).toBe(1);
 		} finally {
 			checkDb.close();
 		}

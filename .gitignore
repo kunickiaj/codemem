@@ -29,6 +29,7 @@ codemem/viewer_static/app.js.map
 # TypeScript build artifacts
 packages/*/dist/
 *.tsbuildinfo
+*.heapsnapshot
 
 # Agent skill symlink dirs (canonical source is .agents/skills/)
 # Keep .agents/ and .claude/ — ignore other agent tool dirs
