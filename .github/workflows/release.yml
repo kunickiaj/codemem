@@ -38,6 +38,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Assemble viewer static assets
+        run: |
+          mkdir -p packages/viewer-server/static
+          cp codemem/viewer_static/index.html codemem/viewer_static/favicon.svg packages/viewer-server/static/
+          cd viewer_ui && npx vite build --mode production
+
       - name: Build
         run: pnpm run build
 
@@ -60,11 +66,12 @@ jobs:
           NODE_AUTH_TOKEN: ""
         run: |
           DIST_TAG="${{ steps.dist-tag.outputs.tag }}"
+          # pnpm publish resolves workspace:^ to actual version ranges.
           # Publish in dependency order: core → mcp, server → cli
-          npm publish ./packages/core --tag "$DIST_TAG" --provenance --access public
-          npm publish ./packages/mcp-server --tag "$DIST_TAG" --provenance --access public
-          npm publish ./packages/viewer-server --tag "$DIST_TAG" --provenance --access public
-          npm publish ./packages/cli --tag "$DIST_TAG" --provenance --access public
+          pnpm --filter @codemem/core publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
+          pnpm --filter @codemem/mcp publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
+          pnpm --filter @codemem/server publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
+          pnpm --filter codemem publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
 
   release:
     name: Create GitHub Release

@@ -66,10 +66,10 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", rawEventsRoutes(storeFactory, sweeper));
 	app.route("/", syncRoutes(storeFactory));
 
-	// Static assets — serve viewer_static/ under /assets/*
+	// Static assets — serve under /assets/*
+	// Resolves to packages/viewer-server/static/ both in dev and when installed from npm.
 	const staticRoot =
-		process.env.CODEMEM_VIEWER_STATIC_DIR ??
-		join(import.meta.dirname ?? ".", "../../../codemem/viewer_static");
+		process.env.CODEMEM_VIEWER_STATIC_DIR ?? join(import.meta.dirname ?? ".", "../static");
 
 	app.use(
 		"/assets/*",
