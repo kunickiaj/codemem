@@ -208,25 +208,65 @@ export function recordReplicationOp(
 	const opId = randomUUID();
 	const now = new Date().toISOString();
 
-	// Read clock fields from the memory item
-	const row = db
-		.prepare("SELECT rev, updated_at, import_key, metadata_json FROM memory_items WHERE id = ?")
-		.get(opts.memoryId) as
-		| {
-				rev: number | null;
-				updated_at: string | null;
-				import_key: string | null;
-				metadata_json: string | null;
-		  }
+	// Read the full memory row for clock fields and payload
+	const row = db.prepare("SELECT * FROM memory_items WHERE id = ?").get(opts.memoryId) as
+		| Record<string, unknown>
 		| undefined;
 
-	const rev = row?.rev ?? 0;
-	const updatedAt = row?.updated_at ?? now;
-	const entityId = row?.import_key ?? String(opts.memoryId);
-	const metadata = fromJson(row?.metadata_json);
+	const rev = Number(row?.rev ?? 0);
+	const updatedAt = (row?.updated_at as string) ?? now;
+	const entityId = (row?.import_key as string) ?? String(opts.memoryId);
+	const metadata = fromJson(row?.metadata_json as string | null);
 	const clockDeviceId = (metadata.clock_device_id as string) || opts.deviceId;
 
-	const payloadJson = opts.payload ? toJson(opts.payload) : null;
+	// Build payload from the memory row so peers can reconstruct the full item.
+	// Explicit payload override takes precedence (used by tests).
+	let payloadJson: string | null;
+	if (opts.payload) {
+		payloadJson = toJson(opts.payload);
+	} else if (row && opts.opType === "upsert") {
+		// Parse JSON-string columns so they round-trip as objects, not double-encoded strings
+		const parseSqliteJson = (val: unknown): unknown => {
+			if (typeof val !== "string") return val ?? null;
+			try {
+				return JSON.parse(val);
+			} catch {
+				return val;
+			}
+		};
+
+		payloadJson = toJson({
+			session_id: row.session_id,
+			kind: row.kind,
+			title: row.title,
+			subtitle: row.subtitle,
+			body_text: row.body_text,
+			confidence: row.confidence,
+			tags_text: row.tags_text,
+			active: row.active,
+			created_at: row.created_at,
+			updated_at: row.updated_at,
+			metadata_json: parseSqliteJson(row.metadata_json),
+			actor_id: row.actor_id,
+			actor_display_name: row.actor_display_name,
+			visibility: row.visibility,
+			workspace_id: row.workspace_id,
+			workspace_kind: row.workspace_kind,
+			origin_device_id: row.origin_device_id,
+			origin_source: row.origin_source,
+			trust_state: row.trust_state,
+			facts: parseSqliteJson(row.facts),
+			narrative: row.narrative,
+			concepts: parseSqliteJson(row.concepts),
+			files_read: parseSqliteJson(row.files_read),
+			files_modified: parseSqliteJson(row.files_modified),
+			user_prompt_id: row.user_prompt_id,
+			prompt_number: row.prompt_number,
+			deleted_at: row.deleted_at,
+		});
+	} else {
+		payloadJson = null;
+	}
 
 	db.prepare(
 		`INSERT INTO replication_ops(
@@ -432,20 +472,35 @@ export function applyReplicationOps(
 
 						db.prepare(
 							`UPDATE memory_items SET
-								kind = COALESCE(?, kind),
-								title = COALESCE(?, title),
-								body_text = COALESCE(?, body_text),
-								confidence = COALESCE(?, confidence),
-								tags_text = COALESCE(?, tags_text),
-								active = COALESCE(?, active),
-								updated_at = ?,
-								metadata_json = ?,
-								rev = ?,
-								deleted_at = ?
-							WHERE import_key = ?`,
+							kind = COALESCE(?, kind),
+							title = COALESCE(?, title),
+							subtitle = ?,
+							body_text = COALESCE(?, body_text),
+							confidence = COALESCE(?, confidence),
+							tags_text = COALESCE(?, tags_text),
+							active = COALESCE(?, active),
+							updated_at = ?,
+							metadata_json = ?,
+							rev = ?,
+							deleted_at = ?,
+							actor_id = COALESCE(?, actor_id),
+							actor_display_name = COALESCE(?, actor_display_name),
+							visibility = COALESCE(?, visibility),
+							workspace_id = COALESCE(?, workspace_id),
+							workspace_kind = COALESCE(?, workspace_kind),
+							origin_device_id = COALESCE(?, origin_device_id),
+							origin_source = COALESCE(?, origin_source),
+							trust_state = COALESCE(?, trust_state),
+							narrative = ?,
+							facts = ?,
+							concepts = ?,
+							files_read = ?,
+							files_modified = ?
+						WHERE import_key = ?`,
 						).run(
 							(payload.kind as string) || null,
 							(payload.title as string) || null,
+							(payload.subtitle as string) ?? null,
 							(payload.body_text as string) || null,
 							payload.confidence != null ? Number(payload.confidence) : null,
 							(payload.tags_text as string) ?? null,
@@ -454,6 +509,19 @@ export function applyReplicationOps(
 							toJson(metaObj),
 							op.clock_rev,
 							(payload.deleted_at as string) || null,
+							(payload.actor_id as string) ?? null,
+							(payload.actor_display_name as string) ?? null,
+							(payload.visibility as string) ?? null,
+							(payload.workspace_id as string) ?? null,
+							(payload.workspace_kind as string) ?? null,
+							(payload.origin_device_id as string) ?? null,
+							(payload.origin_source as string) ?? null,
+							(payload.trust_state as string) ?? null,
+							(payload.narrative as string) ?? null,
+							toJson(payload.facts ?? null),
+							toJson(payload.concepts ?? null),
+							toJson(payload.files_read ?? null),
+							toJson(payload.files_modified ?? null),
 							importKey,
 						);
 					} else {
@@ -470,14 +538,18 @@ export function applyReplicationOps(
 
 						db.prepare(
 							`INSERT INTO memory_items(
-								session_id, kind, title, body_text, confidence, tags_text,
-								active, created_at, updated_at, metadata_json, import_key,
-								deleted_at, rev
-							) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+							session_id, kind, title, subtitle, body_text, confidence, tags_text,
+							active, created_at, updated_at, metadata_json, import_key,
+							deleted_at, rev,
+							actor_id, actor_display_name, visibility, workspace_id,
+							workspace_kind, origin_device_id, origin_source, trust_state,
+							narrative, facts, concepts, files_read, files_modified
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 						).run(
 							sessionId,
 							(payload.kind as string) || "discovery",
 							(payload.title as string) || "",
+							(payload.subtitle as string) ?? null,
 							(payload.body_text as string) || "",
 							payload.confidence != null ? Number(payload.confidence) : 0.5,
 							(payload.tags_text as string) || "",
@@ -488,6 +560,19 @@ export function applyReplicationOps(
 							importKey,
 							(payload.deleted_at as string) || null,
 							op.clock_rev,
+							(payload.actor_id as string) ?? null,
+							(payload.actor_display_name as string) ?? null,
+							(payload.visibility as string) ?? null,
+							(payload.workspace_id as string) ?? null,
+							(payload.workspace_kind as string) ?? null,
+							(payload.origin_device_id as string) ?? null,
+							(payload.origin_source as string) ?? null,
+							(payload.trust_state as string) ?? null,
+							(payload.narrative as string) ?? null,
+							toJson(payload.facts ?? null),
+							toJson(payload.concepts ?? null),
+							toJson(payload.files_read ?? null),
+							toJson(payload.files_modified ?? null),
 						);
 					}
 				} else if (op.op_type === "delete") {
