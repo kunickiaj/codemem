@@ -109,10 +109,17 @@ export type {
 } from "./ingest-types.js";
 export { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
 export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
-export type { RawEventStatusItem, RawEventStatusResult } from "./maintenance.js";
+export type {
+	GateResult,
+	RawEventStatusItem,
+	RawEventStatusResult,
+	ReliabilityMetrics,
+} from "./maintenance.js";
 export {
 	getRawEventStatus,
+	getReliabilityMetrics,
 	initDatabase,
+	rawEventsGate,
 	retryRawEventFailures,
 	vacuumDatabase,
 } from "./maintenance.js";

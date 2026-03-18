@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 import {
 	getRawEventStatus,
 	initDatabase,
+	rawEventsGate,
 	retryRawEventFailures,
 	vacuumDatabase,
 } from "@codemem/core";
@@ -78,4 +79,58 @@ dbCommand
 				p.intro("codemem db raw-events-retry");
 				p.outro(`Requeued ${result.retried.toLocaleString()} failed batch(es)`);
 			}),
+	)
+	.addCommand(
+		new Command("raw-events-gate")
+			.configureHelp(helpStyle)
+			.description("Validate raw-event reliability thresholds (non-zero exit on failure)")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--min-flush-success-rate <rate>", "minimum flush success rate", "0.95")
+			.option("--max-dropped-event-rate <rate>", "maximum dropped event rate", "0.05")
+			.option("--min-session-boundary-accuracy <rate>", "minimum session boundary accuracy", "0.9")
+			.option("--window-hours <hours>", "lookback window in hours", "24")
+			.option("--json", "output as JSON")
+			.action(
+				(opts: {
+					db?: string;
+					minFlushSuccessRate: string;
+					maxDroppedEventRate: string;
+					minSessionBoundaryAccuracy: string;
+					windowHours: string;
+					json?: boolean;
+				}) => {
+					const result = rawEventsGate(opts.db, {
+						minFlushSuccessRate: Number.parseFloat(opts.minFlushSuccessRate),
+						maxDroppedEventRate: Number.parseFloat(opts.maxDroppedEventRate),
+						minSessionBoundaryAccuracy: Number.parseFloat(opts.minSessionBoundaryAccuracy),
+						windowHours: Number.parseFloat(opts.windowHours),
+					});
+
+					if (opts.json) {
+						console.log(JSON.stringify(result, null, 2));
+						if (!result.passed) process.exitCode = 1;
+						return;
+					}
+
+					p.intro("codemem db raw-events-gate");
+					p.log.info(
+						[
+							`flush_success_rate:          ${result.metrics.rates.flush_success_rate.toFixed(4)}`,
+							`dropped_event_rate:          ${result.metrics.rates.dropped_event_rate.toFixed(4)}`,
+							`session_boundary_accuracy:   ${result.metrics.rates.session_boundary_accuracy.toFixed(4)}`,
+							`window_hours:                ${result.metrics.window_hours ?? "all"}`,
+						].join("\n"),
+					);
+
+					if (result.passed) {
+						p.outro("reliability gate passed");
+					} else {
+						for (const f of result.failures) {
+							p.log.error(f);
+						}
+						p.outro("reliability gate FAILED");
+						process.exitCode = 1;
+					}
+				},
+			),
 	);
