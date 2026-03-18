@@ -16,8 +16,11 @@ import {
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
+import * as schema from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -186,9 +189,12 @@ function loadDeviceId(dbPath?: string): string | null {
 	if (!existsSync(path)) return null;
 	const conn = connectDb(path);
 	try {
-		const row = conn.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
-			| { device_id: string }
-			| undefined;
+		const d = drizzle(conn, { schema });
+		const row = d
+			.select({ device_id: schema.syncDevice.device_id })
+			.from(schema.syncDevice)
+			.limit(1)
+			.get();
 		return row?.device_id ?? null;
 	} finally {
 		conn.close();
@@ -338,9 +344,16 @@ export function ensureDeviceIdentity(
 	warnKeychainLimitations();
 
 	// Check for existing device row
-	const row = db
-		.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 1")
-		.get() as { device_id: string; public_key: string; fingerprint: string } | undefined;
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({
+			device_id: schema.syncDevice.device_id,
+			public_key: schema.syncDevice.public_key,
+			fingerprint: schema.syncDevice.fingerprint,
+		})
+		.from(schema.syncDevice)
+		.limit(1)
+		.get();
 	const existingDeviceId = row?.device_id ?? "";
 	const existingPublicKey = row?.public_key ?? "";
 	const existingFingerprint = row?.fingerprint ?? "";
@@ -370,11 +383,10 @@ export function ensureDeviceIdentity(
 	// Update existing device row if keys changed
 	if (existingDeviceId) {
 		if (existingPublicKey !== publicKey || existingFingerprint !== fingerprint) {
-			db.prepare("UPDATE sync_device SET public_key = ?, fingerprint = ? WHERE device_id = ?").run(
-				publicKey,
-				fingerprint,
-				existingDeviceId,
-			);
+			d.update(schema.syncDevice)
+				.set({ public_key: publicKey, fingerprint })
+				.where(eq(schema.syncDevice.device_id, existingDeviceId))
+				.run();
 		}
 		if (keyStoreMode() === "keychain") {
 			// Read key from file directly — don't go through loadPrivateKey
@@ -391,9 +403,9 @@ export function ensureDeviceIdentity(
 
 	// Insert new device row
 	const resolvedDeviceId = options?.deviceId ?? randomUUID();
-	db.prepare(
-		"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
-	).run(resolvedDeviceId, publicKey, fingerprint, now);
+	d.insert(schema.syncDevice)
+		.values({ device_id: resolvedDeviceId, public_key: publicKey, fingerprint, created_at: now })
+		.run();
 	if (keyStoreMode() === "keychain") {
 		const privateKey = existsSync(privatePath) ? readFileSync(privatePath) : null;
 		if (privateKey) {
