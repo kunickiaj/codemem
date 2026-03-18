@@ -19,6 +19,8 @@
  * 12. End session
  */
 
+import { and, eq, isNull, lt } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { toJson } from "./db.js";
 import {
 	budgetToolEvents,
@@ -48,6 +50,7 @@ import type {
 } from "./ingest-types.js";
 import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
 import type { ObserverClient } from "./observer-client.js";
+import * as schema from "./schema.js";
 import type { MemoryStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -175,31 +178,29 @@ export async function ingest(
 	const maxChars = options.maxChars ?? 12_000;
 	const observerMaxChars = options.observerMaxChars ?? 12_000;
 
-	// ------------------------------------------------------------------
-	// Session creation — use store.db directly (matching MCP server pattern)
-	// ------------------------------------------------------------------
+	const d = drizzle(store.db, { schema });
 	const now = new Date().toISOString();
 	const project = payload.project ?? null;
 
-	const sessionInfo = store.db
-		.prepare(
-			`INSERT INTO sessions (started_at, cwd, project, user, tool_version, metadata_json)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			now,
+	const rows = d
+		.insert(schema.sessions)
+		.values({
+			started_at: now,
 			cwd,
 			project,
-			process.env.USER ?? "unknown",
-			"plugin-ts",
-			toJson({
+			user: process.env.USER ?? "unknown",
+			tool_version: "plugin-ts",
+			metadata_json: toJson({
 				source: "plugin",
 				event_count: events.length,
 				started_at: payload.startedAt,
 				session_context: sessionContext,
 			}),
-		);
-	const sessionId = Number(sessionInfo.lastInsertRowid);
+		})
+		.returning({ id: schema.sessions.id })
+		.all();
+	const sessionId = rows[0]?.id;
+	if (sessionId == null) throw new Error("session insert returned no id");
 
 	try {
 		// ------------------------------------------------------------------
@@ -413,18 +414,14 @@ export async function ingest(
 				(sum, e) => sum + (e.total_tokens ?? 0),
 				0,
 			);
-			store.db
-				.prepare(
-					`INSERT INTO usage_events (session_id, event, tokens_read, tokens_written, created_at, metadata_json)
-					 VALUES (?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
-					sessionId,
-					"observer_call",
-					rawText.length,
-					transcript.length,
-					new Date().toISOString(),
-					toJson({
+			d.insert(schema.usageEvents)
+				.values({
+					session_id: sessionId,
+					event: "observer_call",
+					tokens_read: rawText.length,
+					tokens_written: transcript.length,
+					created_at: new Date().toISOString(),
+					metadata_json: toJson({
 						project,
 						observation_count: parsed.observations.length,
 						has_summary: parsed.summary != null,
@@ -432,7 +429,8 @@ export async function ingest(
 						model: response.model,
 						session_usage_tokens: usageTokenTotal,
 					}),
-				);
+				})
+				.run();
 		})();
 
 		// ------------------------------------------------------------------
@@ -460,16 +458,19 @@ function endSession(
 	eventCount: number,
 	sessionContext: SessionContext,
 ): void {
-	store.db.prepare("UPDATE sessions SET ended_at = ?, metadata_json = ? WHERE id = ?").run(
-		new Date().toISOString(),
-		toJson({
-			post: {},
-			source: "plugin",
-			event_count: eventCount,
-			session_context: sessionContext,
-		}),
-		sessionId,
-	);
+	const d = drizzle(store.db, { schema });
+	d.update(schema.sessions)
+		.set({
+			ended_at: new Date().toISOString(),
+			metadata_json: toJson({
+				post: {},
+				source: "plugin",
+				event_count: eventCount,
+				session_context: sessionContext,
+			}),
+		})
+		.where(eq(schema.sessions.id, sessionId))
+		.run();
 }
 
 // ---------------------------------------------------------------------------
@@ -481,10 +482,13 @@ function endSession(
  * Returns the number of sessions closed.
  */
 export function cleanOrphanSessions(store: MemoryStore, maxAgeHours = 24): number {
+	const d = drizzle(store.db, { schema });
 	const cutoff = new Date(Date.now() - maxAgeHours * 3600_000).toISOString();
-	const result = store.db
-		.prepare("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL AND started_at < ?")
-		.run(cutoff, cutoff);
+	const result = d
+		.update(schema.sessions)
+		.set({ ended_at: cutoff })
+		.where(and(isNull(schema.sessions.ended_at), lt(schema.sessions.started_at, cutoff)))
+		.run();
 	return result.changes;
 }
 

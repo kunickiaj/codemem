@@ -1,5 +1,8 @@
 import { statSync } from "node:fs";
+import { asc, inArray } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { assertSchemaReady, connect, type Database, resolveDbPath } from "./db.js";
+import * as schema from "./schema.js";
 
 export interface RawEventStatusItem {
 	source: string;
@@ -298,27 +301,34 @@ export function rawEventsGate(
 
 export function retryRawEventFailures(dbPath?: string, limit = 25): { retried: number } {
 	return withDb(dbPath, (db) => {
+		const d = drizzle(db, { schema });
 		const now = new Date().toISOString();
-		const result = db
-			.prepare(
-				`WITH candidates AS (
-					SELECT id
-					FROM raw_event_flush_batches
-					WHERE status IN ('failed', 'error')
-					ORDER BY updated_at ASC
-					LIMIT ?
-				)
-				UPDATE raw_event_flush_batches
-				SET status = 'pending',
-					updated_at = ?,
-					error_message = NULL,
-					error_type = NULL,
-					observer_provider = NULL,
-					observer_model = NULL,
-					observer_runtime = NULL
-				WHERE id IN (SELECT id FROM candidates)`,
-			)
-			.run(limit, now);
+
+		const candidates = d
+			.select({ id: schema.rawEventFlushBatches.id })
+			.from(schema.rawEventFlushBatches)
+			.where(inArray(schema.rawEventFlushBatches.status, ["failed", "error"]))
+			.orderBy(asc(schema.rawEventFlushBatches.updated_at))
+			.limit(limit)
+			.all()
+			.map((r) => r.id);
+
+		if (candidates.length === 0) return { retried: 0 };
+
+		const result = d
+			.update(schema.rawEventFlushBatches)
+			.set({
+				status: "pending",
+				updated_at: now,
+				error_message: null,
+				error_type: null,
+				observer_provider: null,
+				observer_model: null,
+				observer_runtime: null,
+			})
+			.where(inArray(schema.rawEventFlushBatches.id, candidates))
+			.run();
+
 		return { retried: result.changes };
 	});
 }
