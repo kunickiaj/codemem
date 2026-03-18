@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import {
 	assertSchemaReady,
 	connect,
@@ -9,6 +10,7 @@ import {
 } from "./db.js";
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
+import * as schema from "./schema.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -297,122 +299,119 @@ function nextUserName(): string {
 	return process.env.USER?.trim() || process.env.USERNAME?.trim() || "import";
 }
 
-function insertSession(db: Database, row: JsonObject): number {
-	const info = db
-		.prepare(
-			`INSERT INTO sessions(
-				started_at, ended_at, cwd, project, git_remote, git_branch,
-				user, tool_version, metadata_json, import_key
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			nowIso(),
-			null,
-			String(row.cwd ?? process.cwd()),
-			row.project == null ? null : String(row.project),
-			row.git_remote == null ? null : String(row.git_remote),
-			row.git_branch == null ? null : String(row.git_branch),
-			String(row.user ?? nextUserName()),
-			String(row.tool_version ?? "import"),
-			toJson(row.metadata_json ?? null),
-			String(row.import_key),
-		);
-	return Number(info.lastInsertRowid);
+type DrizzleDb = ReturnType<typeof drizzle>;
+
+function insertSession(d: DrizzleDb, row: JsonObject): number {
+	const rows = d
+		.insert(schema.sessions)
+		.values({
+			started_at: typeof row.started_at === "string" ? row.started_at : nowIso(),
+			ended_at: typeof row.ended_at === "string" ? row.ended_at : null,
+			cwd: String(row.cwd ?? process.cwd()),
+			project: row.project == null ? null : String(row.project),
+			git_remote: row.git_remote == null ? null : String(row.git_remote),
+			git_branch: row.git_branch == null ? null : String(row.git_branch),
+			user: String(row.user ?? nextUserName()),
+			tool_version: String(row.tool_version ?? "import"),
+			metadata_json: toJson(row.metadata_json ?? null),
+			import_key: String(row.import_key),
+		})
+		.returning({ id: schema.sessions.id })
+		.all();
+	const id = rows[0]?.id;
+	if (id == null) throw new Error("session insert returned no id");
+	return id;
 }
 
-function insertPrompt(db: Database, row: JsonObject): number {
-	const info = db
-		.prepare(
-			`INSERT INTO user_prompts(
-				session_id, project, prompt_text, prompt_number, created_at,
-				created_at_epoch, metadata_json, import_key
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			Number(row.session_id),
-			row.project == null ? null : String(row.project),
-			String(row.prompt_text ?? ""),
-			row.prompt_number == null ? null : Number(row.prompt_number),
-			nowIso(),
-			nowEpochMs(),
-			toJson(row.metadata_json ?? null),
-			String(row.import_key),
-		);
-	return Number(info.lastInsertRowid);
+function insertPrompt(d: DrizzleDb, row: JsonObject): number {
+	const rows = d
+		.insert(schema.userPrompts)
+		.values({
+			session_id: Number(row.session_id),
+			project: row.project == null ? null : String(row.project),
+			prompt_text: String(row.prompt_text ?? ""),
+			prompt_number: row.prompt_number == null ? null : Number(row.prompt_number),
+			created_at: typeof row.created_at === "string" ? row.created_at : nowIso(),
+			created_at_epoch:
+				typeof row.created_at_epoch === "number" ? row.created_at_epoch : nowEpochMs(),
+			metadata_json: toJson(row.metadata_json ?? null),
+			import_key: String(row.import_key),
+		})
+		.returning({ id: schema.userPrompts.id })
+		.all();
+	const id = rows[0]?.id;
+	if (id == null) throw new Error("prompt insert returned no id");
+	return id;
 }
 
-function insertMemory(db: Database, row: JsonObject): number {
-	const info = db
-		.prepare(
-			`INSERT INTO memory_items(
-				session_id, kind, title, subtitle, body_text, confidence, tags_text, active,
-				created_at, updated_at, metadata_json, actor_id, actor_display_name,
-				visibility, workspace_id, workspace_kind, origin_device_id, origin_source,
-				trust_state, facts, narrative, concepts, files_read, files_modified,
-				user_prompt_id, prompt_number, deleted_at, rev, import_key
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			Number(row.session_id),
-			String(row.kind ?? "observation"),
-			String(row.title ?? "Untitled"),
-			row.subtitle == null ? null : String(row.subtitle),
-			String(row.body_text ?? row.narrative ?? ""),
-			Number(row.confidence ?? 0.5),
-			String(row.tags_text ?? ""),
-			1,
-			nowIso(),
-			nowIso(),
-			toJson(row.metadata_json ?? null),
-			row.actor_id == null ? null : String(row.actor_id),
-			row.actor_display_name == null ? null : String(row.actor_display_name),
-			row.visibility == null ? null : String(row.visibility),
-			row.workspace_id == null ? null : String(row.workspace_id),
-			row.workspace_kind == null ? null : String(row.workspace_kind),
-			row.origin_device_id == null ? null : String(row.origin_device_id),
-			row.origin_source == null ? null : String(row.origin_source),
-			row.trust_state == null ? null : String(row.trust_state),
-			toJson(row.facts ?? null),
-			row.narrative == null ? null : String(row.narrative),
-			toJson(row.concepts ?? null),
-			toJson(row.files_read ?? null),
-			toJson(row.files_modified ?? null),
-			row.user_prompt_id == null ? null : Number(row.user_prompt_id),
-			row.prompt_number == null ? null : Number(row.prompt_number),
-			null,
-			Number(row.rev ?? 1),
-			String(row.import_key),
-		);
-	return Number(info.lastInsertRowid);
+function insertMemory(d: DrizzleDb, row: JsonObject): number {
+	const now = nowIso();
+	const rows = d
+		.insert(schema.memoryItems)
+		.values({
+			session_id: Number(row.session_id),
+			kind: String(row.kind ?? "observation"),
+			title: String(row.title ?? "Untitled"),
+			subtitle: row.subtitle == null ? null : String(row.subtitle),
+			body_text: String(row.body_text ?? row.narrative ?? ""),
+			confidence: Number(row.confidence ?? 0.5),
+			tags_text: String(row.tags_text ?? ""),
+			active: 1,
+			created_at: typeof row.created_at === "string" ? row.created_at : now,
+			updated_at: typeof row.updated_at === "string" ? row.updated_at : now,
+			metadata_json: toJson(row.metadata_json ?? null),
+			actor_id: row.actor_id == null ? null : String(row.actor_id),
+			actor_display_name: row.actor_display_name == null ? null : String(row.actor_display_name),
+			visibility: row.visibility == null ? null : String(row.visibility),
+			workspace_id: row.workspace_id == null ? null : String(row.workspace_id),
+			workspace_kind: row.workspace_kind == null ? null : String(row.workspace_kind),
+			origin_device_id: row.origin_device_id == null ? null : String(row.origin_device_id),
+			origin_source: row.origin_source == null ? null : String(row.origin_source),
+			trust_state: row.trust_state == null ? null : String(row.trust_state),
+			facts: toJson(row.facts ?? null),
+			narrative: row.narrative == null ? null : String(row.narrative),
+			concepts: toJson(row.concepts ?? null),
+			files_read: toJson(row.files_read ?? null),
+			files_modified: toJson(row.files_modified ?? null),
+			user_prompt_id: row.user_prompt_id == null ? null : Number(row.user_prompt_id),
+			prompt_number: row.prompt_number == null ? null : Number(row.prompt_number),
+			deleted_at: null,
+			rev: Number(row.rev ?? 1),
+			import_key: String(row.import_key),
+		})
+		.returning({ id: schema.memoryItems.id })
+		.all();
+	const id = rows[0]?.id;
+	if (id == null) throw new Error("memory insert returned no id");
+	return id;
 }
 
-function insertSummary(db: Database, row: JsonObject): number {
-	const info = db
-		.prepare(
-			`INSERT INTO session_summaries(
-				session_id, project, request, investigated, learned, completed,
-				next_steps, notes, files_read, files_edited, prompt_number,
-				created_at, created_at_epoch, metadata_json, import_key
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			Number(row.session_id),
-			row.project == null ? null : String(row.project),
-			String(row.request ?? ""),
-			String(row.investigated ?? ""),
-			String(row.learned ?? ""),
-			String(row.completed ?? ""),
-			String(row.next_steps ?? ""),
-			String(row.notes ?? ""),
-			toJson(row.files_read ?? null),
-			toJson(row.files_edited ?? null),
-			row.prompt_number == null ? null : Number(row.prompt_number),
-			nowIso(),
-			nowEpochMs(),
-			toJson(row.metadata_json ?? null),
-			String(row.import_key),
-		);
-	return Number(info.lastInsertRowid);
+function insertSummary(d: DrizzleDb, row: JsonObject): number {
+	const rows = d
+		.insert(schema.sessionSummaries)
+		.values({
+			session_id: Number(row.session_id),
+			project: row.project == null ? null : String(row.project),
+			request: String(row.request ?? ""),
+			investigated: String(row.investigated ?? ""),
+			learned: String(row.learned ?? ""),
+			completed: String(row.completed ?? ""),
+			next_steps: String(row.next_steps ?? ""),
+			notes: String(row.notes ?? ""),
+			files_read: toJson(row.files_read ?? null),
+			files_edited: toJson(row.files_edited ?? null),
+			prompt_number: row.prompt_number == null ? null : Number(row.prompt_number),
+			created_at: typeof row.created_at === "string" ? row.created_at : nowIso(),
+			created_at_epoch:
+				typeof row.created_at_epoch === "number" ? row.created_at_epoch : nowEpochMs(),
+			metadata_json: toJson(row.metadata_json ?? null),
+			import_key: String(row.import_key),
+		})
+		.returning({ id: schema.sessionSummaries.id })
+		.all();
+	const id = rows[0]?.id;
+	if (id == null) throw new Error("summary insert returned no id");
+	return id;
 }
 
 export function importMemories(payload: ExportPayload, opts: ImportOptions = {}): ImportResult {
@@ -434,6 +433,7 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 	const db = connect(resolveDbPath(opts.dbPath));
 	try {
 		assertSchemaReady(db);
+		const d = drizzle(db, { schema });
 		return db.transaction(() => {
 			const sessionMapping = new Map<number, number>();
 			const promptMapping = new Map<number, number>();
@@ -463,7 +463,7 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 					import_metadata: session.metadata_json ?? null,
 					import_key: importKey,
 				};
-				const newId = insertSession(db, {
+				const newId = insertSession(d, {
 					...session,
 					project,
 					metadata_json: metadata,
@@ -498,7 +498,7 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 					import_metadata: prompt.metadata_json ?? null,
 					import_key: promptImportKey,
 				};
-				const newId = insertPrompt(db, {
+				const newId = insertPrompt(d, {
 					...prompt,
 					session_id: newSessionId,
 					project,
@@ -554,7 +554,7 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 						? mergeSummaryMetadata(baseMetadata, memory.metadata_json ?? null)
 						: baseMetadata;
 
-				insertMemory(db, {
+				insertMemory(d, {
 					...memory,
 					session_id: newSessionId,
 					project,
@@ -585,7 +585,7 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 					import_metadata: summary.metadata_json ?? null,
 					import_key: summaryImportKey,
 				};
-				insertSummary(db, {
+				insertSummary(d, {
 					...summary,
 					session_id: newSessionId,
 					project,
