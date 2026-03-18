@@ -57,7 +57,7 @@ jobs:
 
       - name: Publish codemem
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ""
         run: npm publish --tag ${{ steps.dist-tag.outputs.tag }} --provenance --access public
         working-directory: packages/cli
 
