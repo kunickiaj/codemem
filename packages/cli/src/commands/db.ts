@@ -19,8 +19,9 @@ dbCommand
 			.configureHelp(helpStyle)
 			.description("Verify the SQLite database is present and schema-ready")
 			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-			.action((opts: { db?: string }) => {
-				const result = initDatabase(opts.db);
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.action((opts: { db?: string; dbPath?: string }) => {
+				const result = initDatabase(opts.db ?? opts.dbPath);
 				p.intro("codemem db init");
 				p.log.success(`Database ready: ${result.path}`);
 				p.outro(`Size: ${result.sizeBytes.toLocaleString()} bytes`);
@@ -31,8 +32,9 @@ dbCommand
 			.configureHelp(helpStyle)
 			.description("Run VACUUM on the SQLite database")
 			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-			.action((opts: { db?: string }) => {
-				const result = vacuumDatabase(opts.db);
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.action((opts: { db?: string; dbPath?: string }) => {
+				const result = vacuumDatabase(opts.db ?? opts.dbPath);
 				p.intro("codemem db vacuum");
 				p.log.success(`Vacuumed: ${result.path}`);
 				p.outro(`Size: ${result.sizeBytes.toLocaleString()} bytes`);
@@ -43,10 +45,14 @@ dbCommand
 			.configureHelp(helpStyle)
 			.description("Show pending raw-event backlog by source stream")
 			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 			.option("-n, --limit <n>", "max rows to show", "25")
 			.option("--json", "output as JSON")
-			.action((opts: { db?: string; limit: string; json?: boolean }) => {
-				const result = getRawEventStatus(opts.db, Number.parseInt(opts.limit, 10) || 25);
+			.action((opts: { db?: string; dbPath?: string; limit: string; json?: boolean }) => {
+				const result = getRawEventStatus(
+					opts.db ?? opts.dbPath,
+					Number.parseInt(opts.limit, 10) || 25,
+				);
 				if (opts.json) {
 					console.log(JSON.stringify(result, null, 2));
 					return;
@@ -73,9 +79,13 @@ dbCommand
 			.configureHelp(helpStyle)
 			.description("Requeue failed raw-event flush batches")
 			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 			.option("-n, --limit <n>", "max failed batches to requeue", "25")
-			.action((opts: { db?: string; limit: string }) => {
-				const result = retryRawEventFailures(opts.db, Number.parseInt(opts.limit, 10) || 25);
+			.action((opts: { db?: string; dbPath?: string; limit: string }) => {
+				const result = retryRawEventFailures(
+					opts.db ?? opts.dbPath,
+					Number.parseInt(opts.limit, 10) || 25,
+				);
 				p.intro("codemem db raw-events-retry");
 				p.outro(`Requeued ${result.retried.toLocaleString()} failed batch(es)`);
 			}),
@@ -85,6 +95,7 @@ dbCommand
 			.configureHelp(helpStyle)
 			.description("Validate raw-event reliability thresholds (non-zero exit on failure)")
 			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 			.option("--min-flush-success-rate <rate>", "minimum flush success rate", "0.95")
 			.option("--max-dropped-event-rate <rate>", "maximum dropped event rate", "0.05")
 			.option("--min-session-boundary-accuracy <rate>", "minimum session boundary accuracy", "0.9")
@@ -93,13 +104,14 @@ dbCommand
 			.action(
 				(opts: {
 					db?: string;
+					dbPath?: string;
 					minFlushSuccessRate: string;
 					maxDroppedEventRate: string;
 					minSessionBoundaryAccuracy: string;
 					windowHours: string;
 					json?: boolean;
 				}) => {
-					const result = rawEventsGate(opts.db, {
+					const result = rawEventsGate(opts.db ?? opts.dbPath, {
 						minFlushSuccessRate: Number.parseFloat(opts.minFlushSuccessRate),
 						maxDroppedEventRate: Number.parseFloat(opts.maxDroppedEventRate),
 						minSessionBoundaryAccuracy: Number.parseFloat(opts.minSessionBoundaryAccuracy),

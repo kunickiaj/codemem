@@ -45,7 +45,8 @@ export const enqueueRawEventCommand = new Command("enqueue-raw-event")
 	.configureHelp(helpStyle)
 	.description("Enqueue one raw event from stdin into the durable queue")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.action(async (opts: { db?: string }) => {
+	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+	.action(async (opts: { db?: string; dbPath?: string }) => {
 		const payload = await readStdinJson();
 		const sessionId = resolveSessionStreamId(payload);
 		if (!sessionId) throw new Error("session id required");
@@ -69,7 +70,7 @@ export const enqueueRawEventCommand = new Command("enqueue-raw-event")
 				? (stripPrivateObj(payload.payload) as Record<string, unknown>)
 				: {};
 
-		const store = new MemoryStore(resolveDbPath(opts.db));
+		const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 		try {
 			store.updateRawEventSessionMeta({
 				opencodeSessionId: sessionId,

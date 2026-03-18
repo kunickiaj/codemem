@@ -26,10 +26,11 @@ syncCommand.addCommand(
 		.configureHelp(helpStyle)
 		.description("Show sync configuration and peer summary")
 		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
 		.option("--json", "output as JSON")
-		.action((opts: { db?: string; json?: boolean }) => {
+		.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
 			const config = readCodememConfigFile();
-			const store = new MemoryStore(resolveDbPath(opts.db));
+			const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 			try {
 				const d = drizzle(store.db, { schema });
 				const deviceRow = d
@@ -113,35 +114,38 @@ syncCommand.addCommand(
 		.configureHelp(helpStyle)
 		.description("Enable sync and initialize device identity")
 		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
 		.option("--host <host>", "sync listen host")
 		.option("--port <port>", "sync listen port")
 		.option("--interval <seconds>", "sync interval in seconds")
-		.action((opts: { db?: string; host?: string; port?: string; interval?: string }) => {
-			const store = new MemoryStore(resolveDbPath(opts.db));
-			try {
-				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db);
-				const config = readCodememConfigFile();
-				config.sync_enabled = true;
-				if (opts.host) config.sync_host = opts.host;
-				if (opts.port) config.sync_port = Number.parseInt(opts.port, 10);
-				if (opts.interval) config.sync_interval_s = Number.parseInt(opts.interval, 10);
-				writeCodememConfigFile(config);
+		.action(
+			(opts: { db?: string; dbPath?: string; host?: string; port?: string; interval?: string }) => {
+				const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+				try {
+					const [deviceId, fingerprint] = ensureDeviceIdentity(store.db);
+					const config = readCodememConfigFile();
+					config.sync_enabled = true;
+					if (opts.host) config.sync_host = opts.host;
+					if (opts.port) config.sync_port = Number.parseInt(opts.port, 10);
+					if (opts.interval) config.sync_interval_s = Number.parseInt(opts.interval, 10);
+					writeCodememConfigFile(config);
 
-				p.intro("codemem sync enable");
-				p.log.success(
-					[
-						`Device ID:   ${deviceId}`,
-						`Fingerprint: ${fingerprint}`,
-						`Host:        ${config.sync_host ?? "0.0.0.0"}`,
-						`Port:        ${config.sync_port ?? 7337}`,
-						`Interval:    ${config.sync_interval_s ?? 120}s`,
-					].join("\n"),
-				);
-				p.outro("Sync enabled — restart `codemem serve` to activate");
-			} finally {
-				store.close();
-			}
-		}),
+					p.intro("codemem sync enable");
+					p.log.success(
+						[
+							`Device ID:   ${deviceId}`,
+							`Fingerprint: ${fingerprint}`,
+							`Host:        ${config.sync_host ?? "0.0.0.0"}`,
+							`Port:        ${config.sync_port ?? 7337}`,
+							`Interval:    ${config.sync_interval_s ?? 120}s`,
+						].join("\n"),
+					);
+					p.outro("Sync enabled — restart `codemem serve` to activate");
+				} finally {
+					store.close();
+				}
+			},
+		),
 );
 
 // codemem sync disable
@@ -164,9 +168,10 @@ syncCommand.addCommand(
 		.configureHelp(helpStyle)
 		.description("List known sync peers")
 		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
 		.option("--json", "output as JSON")
-		.action((opts: { db?: string; json?: boolean }) => {
-			const store = new MemoryStore(resolveDbPath(opts.db));
+		.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
+			const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 			try {
 				const d = drizzle(store.db, { schema });
 				const peers = d

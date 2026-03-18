@@ -5,8 +5,10 @@ export const mcpCommand = new Command("mcp")
 	.configureHelp(helpStyle)
 	.description("Start the MCP stdio server")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.action(async (opts: { db?: string }) => {
-		if (opts.db) process.env.CODEMEM_DB = opts.db;
+	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+	.action(async (opts: { db?: string; dbPath?: string }) => {
+		const dbPath = opts.db ?? opts.dbPath;
+		if (dbPath) process.env.CODEMEM_DB = dbPath;
 		// Dynamic import — MCP server is its own entry point
 		await import("@codemem/mcp");
 	});
