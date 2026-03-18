@@ -1,14 +1,14 @@
 /**
- * FTS5 full-text search for memory items.
+ * FTS5 full-text search, timeline, and explain for memory items.
  *
- * Port of codemem/store/search.py — focused subset:
- * expandQuery, search, recencyScore, kindBonus, rerankResults,
- * timeline, explain.
- *
- * NOT ported: semantic/vector search, shared widening, personal_bias,
- * trust_penalty, working_set boosting, shadow logging, pack context.
+ * FTS5 MATCH queries and BM25 scoring use raw SQL (Drizzle has no FTS5 support).
+ * Simple queries (anchor lookup, batch ID fetch, session projects) use Drizzle typed queries.
+ * Dynamic filter queries use raw SQL since the filter builder returns SQL strings.
  */
 
+import { and, eq, inArray } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { Database } from "./db.js";
 import { fromJson } from "./db.js";
 import {
 	buildFilterClausesWithContext,
@@ -18,6 +18,7 @@ import {
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
 import { projectMatchesFilter } from "./project.js";
+import * as schema from "./schema.js";
 import type {
 	ExplainError,
 	ExplainItem,
@@ -29,10 +30,10 @@ import type {
 	TimelineItemResponse,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Types — MemoryStore is referenced structurally to avoid circular imports.
-// search.ts takes a store param; store.ts imports the search function.
-// ---------------------------------------------------------------------------
+/** Lazily wrap a better-sqlite3 Database in a Drizzle ORM instance. */
+function getDrizzle(db: Database) {
+	return drizzle(db, { schema });
+}
 
 /** Structural type for the store parameter (avoids circular import). */
 export interface StoreHandle {
@@ -49,10 +50,6 @@ export interface StoreHandle {
 		offset?: number,
 	): MemoryItemResponse[];
 }
-
-// ---------------------------------------------------------------------------
-// Constants (mirrors codemem/memory_kinds.py MEMORY_KIND_BONUS)
-// ---------------------------------------------------------------------------
 
 const MEMORY_KIND_BONUS: Record<string, number> = {
 	session_summary: 0.25,
@@ -84,10 +81,6 @@ const PERSONAL_QUERY_PATTERNS = [
 /** FTS5 operators that must be stripped from user queries. */
 const FTS5_OPERATORS = new Set(["or", "and", "not", "near", "phrase"]);
 
-// ---------------------------------------------------------------------------
-// expandQuery
-// ---------------------------------------------------------------------------
-
 /**
  * Expand a user query string into an FTS5 MATCH expression.
  *
@@ -103,10 +96,6 @@ export function expandQuery(query: string): string {
 	return tokens.join(" OR ");
 }
 
-// ---------------------------------------------------------------------------
-// recencyScore
-// ---------------------------------------------------------------------------
-
 /**
  * Compute a recency score for a memory based on its creation timestamp.
  *
@@ -118,14 +107,9 @@ export function recencyScore(createdAt: string, now?: Date): number {
 	if (Number.isNaN(parsed)) return 0.0;
 
 	const referenceNow = now ?? new Date();
-	// Use Math.floor to match Python's timedelta.days (integer truncation).
 	const ageDays = Math.max(0, Math.floor((referenceNow.getTime() - parsed) / 86_400_000));
 	return 1.0 / (1.0 + ageDays / 7.0);
 }
-
-// ---------------------------------------------------------------------------
-// kindBonus
-// ---------------------------------------------------------------------------
 
 /**
  * Return a scoring bonus for a memory kind.
@@ -263,15 +247,9 @@ function sharedTrustPenalty(
 	return 0.0;
 }
 
-// ---------------------------------------------------------------------------
-// rerankResults
-// ---------------------------------------------------------------------------
-
 /**
- * Re-rank search results by combining BM25 score, recency, and kind bonus.
- *
- * Simplified version: does not apply personal_bias or trust_penalty
- * (those require actor resolution, deferred to a follow-up).
+ * Re-rank search results by combining BM25 score, recency, kind bonus,
+ * personal bias, and shared trust penalty.
  */
 export function rerankResults(
 	store: StoreHandle,
@@ -296,16 +274,12 @@ export function rerankResults(
 	return scored.slice(0, limit).map((s) => s.item);
 }
 
-// ---------------------------------------------------------------------------
-// search
-// ---------------------------------------------------------------------------
-
 /**
  * Execute an FTS5 full-text search against memory_items.
  *
- * Port of Python's _search_once — the core BM25 search path.
  * Uses expandQuery to prepare the MATCH expression, applies filters
- * via buildFilterClauses, and re-ranks results.
+ * via buildFilterClauses, and re-ranks results. Optionally widens to
+ * shared workspaces when personal results are weak.
  */
 export function search(
 	store: StoreHandle,
@@ -361,8 +335,8 @@ function searchOnce(
 	const expanded = expandQuery(query);
 	if (!expanded) return [];
 
-	// Widen the SQL candidate set before reranking (matches Python's _search_once).
-	// Reranking adds kindBonus which can promote items that SQL ordering missed.
+	// Widen the SQL candidate set before reranking — kindBonus can promote items
+	// that SQL ordering missed, so we fetch more than the final limit.
 	const queryLimit = Math.min(Math.max(effectiveLimit * 4, effectiveLimit + 8), 200);
 
 	const params: unknown[] = [expanded];
@@ -443,18 +417,11 @@ function searchOnce(
 	return rerankResults(store, results, effectiveLimit, filters);
 }
 
-// ---------------------------------------------------------------------------
-// timeline
-// ---------------------------------------------------------------------------
-
 /**
  * Return a chronological window of memories around an anchor.
  *
- * Port of Python's timeline() + _timeline_around() from search.py.
  * Finds an anchor by memoryId or query, then fetches neighbors in the
  * same session ordered by created_at.
- *
- * NOT ported: usage tracking (record_usage), _attach_prompt_links.
  */
 export function timeline(
 	store: StoreHandle,
@@ -490,11 +457,7 @@ export function timeline(
 	return timelineAround(store, anchorRef, depthBefore, depthAfter, filters);
 }
 
-/**
- * Internal: fetch memories before/after an anchor within the same session.
- *
- * Port of Python's _timeline_around().
- */
+/** Fetch memories before/after an anchor within the same session. */
 function timelineAround(
 	store: StoreHandle,
 	anchor: { id: number; session_id: number; created_at: string },
@@ -552,9 +515,12 @@ function timelineAround(
 		.all(...baseParams, anchorCreatedAt, depthAfter) as MemoryItem[];
 
 	// Re-fetch anchor row to get full columns (anchor from search may be partial)
-	const anchorRow = store.db
-		.prepare("SELECT * FROM memory_items WHERE id = ? AND active = 1")
-		.get(anchorId) as MemoryItem | undefined;
+	const d = getDrizzle(store.db);
+	const anchorRow = d
+		.select()
+		.from(schema.memoryItems)
+		.where(and(eq(schema.memoryItems.id, anchorId), eq(schema.memoryItems.active, 1)))
+		.get() as MemoryItem | undefined;
 
 	// Combine: reversed(before) + anchor + after
 	const rows: MemoryItem[] = [...beforeRows.reverse()];
@@ -563,17 +529,11 @@ function timelineAround(
 	}
 	rows.push(...afterRows);
 
-	// Parse metadata_json and add linked_prompt stub on each row.
-	// linked_prompt will be populated once _attach_prompt_links is ported.
 	return rows.map((row) => {
 		const { metadata_json, ...rest } = row;
 		return { ...rest, metadata_json: fromJson(metadata_json), linked_prompt: null };
 	});
 }
-
-// ---------------------------------------------------------------------------
-// explain
-// ---------------------------------------------------------------------------
 
 /**
  * Deduplicate an array of IDs, preserving order. Returns valid int IDs
@@ -598,12 +558,7 @@ export function dedupeOrderedIds(ids: unknown[]): { ordered: number[]; invalid: 
 	return { ordered, invalid };
 }
 
-/**
- * Build an explain payload for a single memory item.
- *
- * Port of Python's _explain_item() — simplified: no personal_bias,
- * no project matching, no pack context, no semantic_boost.
- */
+/** Build an explain payload for a single memory item. */
 function explainItem(
 	item: MemoryResult,
 	source: string,
@@ -673,16 +628,16 @@ function loadItemsByIdsForExplain(
 		};
 	}
 
-	const placeholders = ids.map(() => "?").join(", ");
-	const allRows = store.db
-		.prepare(
-			`SELECT memory_items.*
-		 FROM memory_items
-		 WHERE memory_items.active = 1
-		   AND memory_items.id IN (${placeholders})`,
-		)
-		.all(...ids) as MemoryItem[];
+	const d = getDrizzle(store.db);
+	const allRows = d
+		.select()
+		.from(schema.memoryItems)
+		.where(and(eq(schema.memoryItems.active, 1), inArray(schema.memoryItems.id, ids)))
+		.all() as MemoryItem[];
 	const allFoundIds = new Set(allRows.map((item) => item.id));
+
+	// Placeholders for the dynamic-filter raw SQL queries below
+	const placeholders = ids.map(() => "?").join(", ");
 
 	let projectScopedRows = allRows;
 	let projectScopedIds = new Set(allFoundIds);
@@ -758,22 +713,21 @@ function loadSessionProjects(
 ): Map<number, string | null> {
 	if (sessionIds.size === 0) return new Map();
 	const orderedIds = [...sessionIds].sort((a, b) => a - b);
-	const placeholders = orderedIds.map(() => "?").join(", ");
-	const rows = store.db
-		.prepare(`SELECT id, project FROM sessions WHERE id IN (${placeholders})`)
-		.all(...orderedIds) as { id: number; project: string | null }[];
+	const d = getDrizzle(store.db);
+	const rows = d
+		.select({ id: schema.sessions.id, project: schema.sessions.project })
+		.from(schema.sessions)
+		.where(inArray(schema.sessions.id, orderedIds))
+		.all();
 	return new Map(rows.map((row) => [row.id, row.project]));
 }
 
 /**
  * Explain search results with scoring breakdown.
  *
- * Port of Python's explain() from search.py. Accepts a query and/or
- * explicit IDs, merges results, and returns a detailed scoring payload
- * for each item.
- *
- * NOT ported: usage tracking, project mismatch checks, pack context,
- * _attach_prompt_links, personal_bias, semantic_boost.
+ * Accepts a query and/or explicit IDs, merges results, and returns a
+ * detailed scoring payload for each item including retrieval source,
+ * score components, and term matches.
  */
 export function explain(
 	store: StoreHandle,
