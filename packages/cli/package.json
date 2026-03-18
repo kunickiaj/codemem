@@ -8,7 +8,8 @@
 	},
 	"files": [
 		"dist/",
-		".opencode/",
+		".opencode/plugin/",
+		".opencode/lib/",
 		"README.md",
 		"LICENSE"
 	],
