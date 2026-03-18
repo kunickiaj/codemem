@@ -1,8 +1,5 @@
 /**
  * Drizzle ORM schema for the codemem SQLite database.
- *
- * Mirrors the Python DDL in codemem/db.py. TypeScript owns read/write;
- * Python still owns DDL/migrations during the transition.
  */
 
 import {
