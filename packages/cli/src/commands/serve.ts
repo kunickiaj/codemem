@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
@@ -10,15 +12,21 @@ import {
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
-
-function pidFilePath(dbPath: string): string {
-	return join(dirname(dbPath), "viewer.pid");
-}
+import {
+	type LegacyServeOptions,
+	type ResolvedServeInvocation,
+	resolveServeInvocation,
+	type ServeAction,
+} from "./serve-invocation.js";
 
 interface ViewerPidRecord {
 	pid: number;
 	host: string;
 	port: number;
+}
+
+function pidFilePath(dbPath: string): string {
+	return join(dirname(dbPath), "viewer.pid");
 }
 
 function readViewerPidRecord(dbPath: string): ViewerPidRecord | null {
@@ -43,6 +51,15 @@ function readViewerPidRecord(dbPath: string): ViewerPidRecord | null {
 	return null;
 }
 
+function isProcessRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function respondsLikeCodememViewer(record: ViewerPidRecord): Promise<boolean> {
 	try {
 		const controller = new AbortController();
@@ -57,23 +74,35 @@ async function respondsLikeCodememViewer(record: ViewerPidRecord): Promise<boole
 	}
 }
 
+async function isPortOpen(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.createConnection({ host, port });
+		const done = (open: boolean) => {
+			socket.removeAllListeners();
+			socket.destroy();
+			resolve(open);
+		};
+		socket.setTimeout(300);
+		socket.once("connect", () => done(true));
+		socket.once("timeout", () => done(false));
+		socket.once("error", () => done(false));
+	});
+}
+
 async function waitForProcessExit(pid: number, timeoutMs = 5000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		try {
-			process.kill(pid, 0);
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		} catch {
-			return;
-		}
+		if (!isProcessRunning(pid)) return;
+		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 }
 
-async function stopExistingViewer(dbPath: string): Promise<void> {
+async function stopExistingViewer(
+	dbPath: string,
+): Promise<{ stopped: boolean; pid: number | null }> {
 	const pidPath = pidFilePath(dbPath);
 	const record = readViewerPidRecord(dbPath);
-	if (!record) return;
-	// Only signal the process if the recorded endpoint still looks like codemem.
+	if (!record) return { stopped: false, pid: null };
 	if (await respondsLikeCodememViewer(record)) {
 		try {
 			process.kill(record.pid, "SIGTERM");
@@ -87,122 +116,219 @@ async function stopExistingViewer(dbPath: string): Promise<void> {
 	} catch {
 		// ignore
 	}
+	return { stopped: true, pid: record.pid };
 }
 
-export const serveCommand = new Command("serve")
-	.configureHelp(helpStyle)
-	.description("Start the viewer server")
-	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.option("--host <host>", "bind host", "127.0.0.1")
-	.option("--port <port>", "bind port", "38888")
-	.option("--background", "run under a caller-managed background process")
-	.option("--stop", "stop an existing viewer process")
-	.option("--restart", "restart an existing viewer process")
-	.action(
-		async (opts: {
-			db?: string;
-			host: string;
-			port: string;
-			background?: boolean;
-			stop?: boolean;
-			restart?: boolean;
-		}) => {
-			// Dynamic import to avoid loading hono/server deps for non-serve commands
-			const { createApp, closeStore, getStore } = await import("@codemem/server");
-			const { serve } = await import("@hono/node-server");
+export function buildForegroundRunnerArgs(
+	scriptPath: string,
+	invocation: ResolvedServeInvocation,
+	execArgv: string[] = process.execArgv,
+): string[] {
+	const args = [
+		...execArgv,
+		scriptPath,
+		"serve",
+		"start",
+		"--foreground",
+		"--host",
+		invocation.host,
+		"--port",
+		String(invocation.port),
+	];
+	if (invocation.dbPath) {
+		args.push("--db-path", invocation.dbPath);
+	}
+	return args;
+}
 
-			const dbPath = resolveDbPath(opts.db);
-			if (opts.stop || opts.restart) {
-				await stopExistingViewer(dbPath);
-				if (opts.stop && !opts.restart) return;
-			}
-			process.env.CODEMEM_DB = dbPath;
+async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
+	if (await isPortOpen(invocation.host, invocation.port)) {
+		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
+		return;
+	}
+	const scriptPath = process.argv[1];
+	if (!scriptPath) throw new Error("Unable to resolve CLI entrypoint for background launch");
+	const child = spawn(process.execPath, buildForegroundRunnerArgs(scriptPath, invocation), {
+		cwd: process.cwd(),
+		detached: true,
+		stdio: "ignore",
+		env: {
+			...process.env,
+			...(invocation.dbPath ? { CODEMEM_DB: invocation.dbPath } : {}),
+		},
+	});
+	child.unref();
+	if (invocation.dbPath) {
+		writeFileSync(
+			pidFilePath(invocation.dbPath),
+			JSON.stringify({ pid: child.pid, host: invocation.host, port: invocation.port }),
+			"utf-8",
+		);
+	}
+	p.intro("codemem viewer");
+	p.outro(
+		`Viewer started in background (pid ${child.pid}) at http://${invocation.host}:${invocation.port}`,
+	);
+}
 
-			const port = Number.parseInt(opts.port, 10);
-			// Start the raw event sweeper — shares the same store as the viewer
-			const observer = new ObserverClient();
-			const sweeper = new RawEventSweeper(getStore(), { observer });
-			sweeper.start();
+async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
+	const { createApp, closeStore, getStore } = await import("@codemem/server");
+	const { serve } = await import("@hono/node-server");
 
-			// Start the sync daemon if enabled — shares the same DB path.
-			// Uses an AbortController so serve shutdown cleanly stops sync.
-			const syncAbort = new AbortController();
-			let syncRunning = false;
-			const config = readCodememConfigFile();
-			const syncEnabled =
-				config.sync_enabled === true ||
-				process.env.CODEMEM_SYNC_ENABLED?.toLowerCase() === "true" ||
-				process.env.CODEMEM_SYNC_ENABLED === "1";
+	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
+	if (await isPortOpen(invocation.host, invocation.port)) {
+		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
+		process.exitCode = 1;
+		return;
+	}
 
-			if (syncEnabled) {
-				syncRunning = true;
-				const syncIntervalS =
-					typeof config.sync_interval_s === "number" ? config.sync_interval_s : 120;
-				runSyncDaemon({
-					dbPath,
-					intervalS: syncIntervalS,
-					host: opts.host,
-					port,
-					signal: syncAbort.signal,
-				})
-					.catch((err: unknown) => {
-						const msg = err instanceof Error ? err.message : String(err);
-						p.log.error(`Sync daemon failed: ${msg}`);
-						// Non-fatal — viewer continues without sync
-					})
-					.finally(() => {
-						syncRunning = false;
-					});
-			}
+	const observer = new ObserverClient();
+	const sweeper = new RawEventSweeper(getStore(), { observer });
+	sweeper.start();
 
-			const app = createApp({ storeFactory: getStore, sweeper });
-			const pidPath = pidFilePath(dbPath);
+	const syncAbort = new AbortController();
+	let syncRunning = false;
+	const config = readCodememConfigFile();
+	const syncEnabled =
+		config.sync_enabled === true ||
+		process.env.CODEMEM_SYNC_ENABLED?.toLowerCase() === "true" ||
+		process.env.CODEMEM_SYNC_ENABLED === "1";
 
-			const server = serve({ fetch: app.fetch, hostname: opts.host, port }, (info) => {
-				writeFileSync(
-					pidPath,
-					JSON.stringify({ pid: process.pid, host: opts.host, port }),
-					"utf-8",
-				);
-				p.intro("codemem viewer");
-				p.log.success(`Listening on http://${info.address}:${info.port}`);
-				p.log.info(`Database: ${dbPath}`);
-				p.log.step("Raw event sweeper started");
-				if (syncRunning) p.log.step("Sync daemon started");
+	if (syncEnabled) {
+		syncRunning = true;
+		const syncIntervalS = typeof config.sync_interval_s === "number" ? config.sync_interval_s : 120;
+		runSyncDaemon({
+			dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+			intervalS: syncIntervalS,
+			host: invocation.host,
+			port: invocation.port,
+			signal: syncAbort.signal,
+		})
+			.catch((err: unknown) => {
+				const msg = err instanceof Error ? err.message : String(err);
+				p.log.error(`Sync daemon failed: ${msg}`);
+			})
+			.finally(() => {
+				syncRunning = false;
 			});
+	}
 
-			const shutdown = async () => {
-				p.outro("shutting down");
-				// Stop sync daemon via abort signal
-				syncAbort.abort();
-				// Stop sweeper first and wait for any in-flight tick to drain.
-				await sweeper.stop();
-				// Close HTTP server, wait for in-flight requests to drain
-				server.close(() => {
-					try {
-						rmSync(pidPath);
-					} catch {
-						// ignore
-					}
-					closeStore();
-					process.exit(0);
-				});
-				// Force exit after 5s if graceful shutdown stalls
-				setTimeout(() => {
-					try {
-						rmSync(pidPath);
-					} catch {
-						// ignore
-					}
-					closeStore();
-					process.exit(1);
-				}, 5000).unref();
-			};
-			process.on("SIGINT", () => {
-				void shutdown();
-			});
-			process.on("SIGTERM", () => {
-				void shutdown();
-			});
+	const app = createApp({ storeFactory: getStore, sweeper });
+	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
+	const pidPath = pidFilePath(dbPath);
+
+	const server = serve(
+		{ fetch: app.fetch, hostname: invocation.host, port: invocation.port },
+		(info) => {
+			writeFileSync(
+				pidPath,
+				JSON.stringify({ pid: process.pid, host: invocation.host, port: invocation.port }),
+				"utf-8",
+			);
+			p.intro("codemem viewer");
+			p.log.success(`Listening on http://${info.address}:${info.port}`);
+			p.log.info(`Database: ${dbPath}`);
+			p.log.step("Raw event sweeper started");
+			if (syncRunning) p.log.step("Sync daemon started");
 		},
 	);
+
+	server.on("error", (err: NodeJS.ErrnoException) => {
+		if (err.code === "EADDRINUSE") {
+			p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
+		} else {
+			p.log.error(err.message);
+		}
+		process.exit(1);
+	});
+
+	const shutdown = async () => {
+		p.outro("shutting down");
+		syncAbort.abort();
+		await sweeper.stop();
+		server.close(() => {
+			try {
+				rmSync(pidPath);
+			} catch {
+				// ignore
+			}
+			closeStore();
+			process.exit(0);
+		});
+		setTimeout(() => {
+			try {
+				rmSync(pidPath);
+			} catch {
+				// ignore
+			}
+			closeStore();
+			process.exit(1);
+		}, 5000).unref();
+	};
+	process.on("SIGINT", () => {
+		void shutdown();
+	});
+	process.on("SIGTERM", () => {
+		void shutdown();
+	});
+}
+
+async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<void> {
+	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
+	if (invocation.mode === "stop" || invocation.mode === "restart") {
+		const result = await stopExistingViewer(dbPath);
+		if (result.stopped) {
+			p.intro("codemem viewer");
+			p.log.success(`Stopped viewer${result.pid ? ` (pid ${result.pid})` : ""}`);
+			if (invocation.mode === "stop") {
+				p.outro("done");
+				return;
+			}
+		} else if (invocation.mode === "stop") {
+			p.intro("codemem viewer");
+			p.outro("No background viewer found");
+			return;
+		}
+	}
+
+	if (invocation.mode === "start" || invocation.mode === "restart") {
+		if (invocation.background) {
+			await startBackgroundViewer({ ...invocation, dbPath });
+			return;
+		}
+		await startForegroundViewer({ ...invocation, dbPath });
+	}
+}
+
+function addSharedServeOptions(command: Command): Command {
+	return command
+		.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+		.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+		.option("--host <host>", "bind host", "127.0.0.1")
+		.option("--port <port>", "bind port", "38888");
+}
+
+export const serveCommand = addSharedServeOptions(
+	new Command("serve")
+		.configureHelp(helpStyle)
+		.description("Run or manage the viewer")
+		.argument("[action]", "lifecycle action (start|stop|restart)"),
+)
+	.option("--background", "run viewer in background")
+	.option("--foreground", "run viewer in foreground")
+	.option("--stop", "stop background viewer")
+	.option("--restart", "restart background viewer")
+	.action(async (action: string | undefined, opts: LegacyServeOptions) => {
+		const normalizedAction =
+			action === undefined
+				? undefined
+				: action === "start" || action === "stop" || action === "restart"
+					? (action as ServeAction)
+					: null;
+		if (normalizedAction === null) {
+			p.log.error(`Unknown serve action: ${action}`);
+			process.exitCode = 1;
+			return;
+		}
+		await runServeInvocation(resolveServeInvocation(normalizedAction, opts));
+	});

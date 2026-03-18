@@ -350,7 +350,7 @@ async function main() {
 					timeline: timelineItems,
 					observations,
 					missing_ids: orderedIds.filter(
-						(memoryId) =>
+						(memoryId: number) =>
 							missingNotFound.includes(memoryId) || missingProjectMismatch.includes(memoryId),
 					),
 					errors,
