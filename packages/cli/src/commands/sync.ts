@@ -1,10 +1,5 @@
 /**
  * Sync CLI commands — enable/disable/status/peers/connect.
- *
- * Simplified port of codemem/commands/sync_cmds.py. Since the TS
- * architecture consolidates the sync daemon into `codemem serve`
- * (PR #301), these commands manage configuration and device identity
- * rather than a separate daemon process.
  */
 
 import * as p from "@clack/prompts";
@@ -13,9 +8,12 @@ import {
 	MemoryStore,
 	readCodememConfigFile,
 	resolveDbPath,
+	schema,
 	writeCodememConfigFile,
 } from "@codemem/core";
 import { Command } from "commander";
+import { desc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { helpStyle } from "../help-style.js";
 
 export const syncCommand = new Command("sync")
@@ -33,17 +31,24 @@ syncCommand.addCommand(
 			const config = readCodememConfigFile();
 			const store = new MemoryStore(resolveDbPath(opts.db));
 			try {
-				const deviceRow = store.db
-					.prepare("SELECT device_id, fingerprint FROM sync_device LIMIT 1")
-					.get() as { device_id: string; fingerprint: string } | undefined;
-				const peers = store.db
-					.prepare("SELECT peer_device_id, name, last_sync_at, last_error FROM sync_peers")
-					.all() as Array<{
-					peer_device_id: string;
-					name: string | null;
-					last_sync_at: string | null;
-					last_error: string | null;
-				}>;
+				const d = drizzle(store.db, { schema });
+				const deviceRow = d
+					.select({
+						device_id: schema.syncDevice.device_id,
+						fingerprint: schema.syncDevice.fingerprint,
+					})
+					.from(schema.syncDevice)
+					.limit(1)
+					.get();
+				const peers = d
+					.select({
+						peer_device_id: schema.syncPeers.peer_device_id,
+						name: schema.syncPeers.name,
+						last_sync_at: schema.syncPeers.last_sync_at,
+						last_error: schema.syncPeers.last_error,
+					})
+					.from(schema.syncPeers)
+					.all();
 
 				if (opts.json) {
 					console.log(
@@ -163,17 +168,18 @@ syncCommand.addCommand(
 		.action((opts: { db?: string; json?: boolean }) => {
 			const store = new MemoryStore(resolveDbPath(opts.db));
 			try {
-				const peers = store.db
-					.prepare(
-						"SELECT peer_device_id, name, addresses, last_sync_at, last_error FROM sync_peers ORDER BY last_sync_at DESC",
-					)
-					.all() as Array<{
-					peer_device_id: string;
-					name: string | null;
-					addresses: string | null;
-					last_sync_at: string | null;
-					last_error: string | null;
-				}>;
+				const d = drizzle(store.db, { schema });
+				const peers = d
+					.select({
+						peer_device_id: schema.syncPeers.peer_device_id,
+						name: schema.syncPeers.name,
+						addresses: schema.syncPeers.addresses_json,
+						last_sync_at: schema.syncPeers.last_sync_at,
+						last_error: schema.syncPeers.last_error,
+					})
+					.from(schema.syncPeers)
+					.orderBy(desc(schema.syncPeers.last_sync_at))
+					.all();
 
 				if (opts.json) {
 					console.log(JSON.stringify(peers, null, 2));

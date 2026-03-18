@@ -1,13 +1,13 @@
 /**
  * Raw events routes — GET & POST /api/raw-events, GET /api/raw-events/status,
  * POST /api/claude-hooks.
- *
- * Ports Python's viewer_routes/raw_events.py + claude_hooks.py.
  */
 
 import { createHash } from "node:crypto";
 import type { MemoryStore, RawEventSweeper } from "@codemem/core";
-import { buildRawEventEnvelopeFromHook, stripPrivateObj } from "@codemem/core";
+import { buildRawEventEnvelopeFromHook, schema, stripPrivateObj } from "@codemem/core";
+import { desc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
 import { queryInt } from "../helpers.js";
 
@@ -110,16 +110,24 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 	app.get("/api/raw-events/status", (c) => {
 		const store = getStore();
 		const limit = queryInt(c.req.query("limit"), 25);
-		const rows = store.db
-			.prepare(
-				`SELECT source, stream_id, opencode_session_id, cwd, project,
-					started_at, last_seen_ts_wall_ms,
-					last_received_event_seq, last_flushed_event_seq, updated_at
-				 FROM raw_event_sessions
-				 ORDER BY updated_at DESC
-				 LIMIT ?`,
-			)
-			.all(limit) as Record<string, unknown>[];
+		const d = drizzle(store.db, { schema });
+		const rows = d
+			.select({
+				source: schema.rawEventSessions.source,
+				stream_id: schema.rawEventSessions.stream_id,
+				opencode_session_id: schema.rawEventSessions.opencode_session_id,
+				cwd: schema.rawEventSessions.cwd,
+				project: schema.rawEventSessions.project,
+				started_at: schema.rawEventSessions.started_at,
+				last_seen_ts_wall_ms: schema.rawEventSessions.last_seen_ts_wall_ms,
+				last_received_event_seq: schema.rawEventSessions.last_received_event_seq,
+				last_flushed_event_seq: schema.rawEventSessions.last_flushed_event_seq,
+				updated_at: schema.rawEventSessions.updated_at,
+			})
+			.from(schema.rawEventSessions)
+			.orderBy(desc(schema.rawEventSessions.updated_at))
+			.limit(limit)
+			.all();
 		const items = rows.map((row) => {
 			const streamId = String(row.stream_id ?? row.opencode_session_id ?? "");
 			return {
