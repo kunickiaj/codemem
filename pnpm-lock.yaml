@@ -88,6 +88,9 @@ importers:
       better-sqlite3:
         specifier: ^12.8.0
         version: 12.8.0
+      hono:
+        specifier: ^4.7.10
+        version: 4.12.8
       sqlite-vec:
         specifier: 0.1.7-alpha.2
         version: 0.1.7-alpha.2

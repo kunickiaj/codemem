@@ -17,6 +17,7 @@ export {
 	normalizeProjectLabel,
 	resolveHookProject,
 } from "./claude-hooks.js";
+export { createCoordinatorApp } from "./coordinator-api.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
 	decodeInvitePayload,

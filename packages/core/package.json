@@ -23,6 +23,7 @@
 	},
 	"dependencies": {
 		"better-sqlite3": "^12.8.0",
+		"hono": "^4.7.10",
 		"sqlite-vec": "0.1.7-alpha.2"
 	}
 }
