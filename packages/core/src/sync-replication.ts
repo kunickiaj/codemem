@@ -1,18 +1,22 @@
 /**
  * Sync replication: cursor tracking, op chunking, and payload extraction.
  *
+ * Uses Drizzle ORM for all SQL queries so that column mismatches are
+ * compile-time errors instead of silent data-loss bugs at runtime.
+ *
  * Keeps replication functions decoupled from MemoryStore by accepting
  * a raw Database handle. Ported from codemem/sync/replication.py.
  */
 
 import { randomUUID } from "node:crypto";
+import { and, eq, gt, or, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, toJson } from "./db.js";
+import * as schema from "./schema.js";
 import type { ReplicationOp } from "./types.js";
 
-// ---------------------------------------------------------------------------
 // Op chunking
-// ---------------------------------------------------------------------------
 
 /**
  * Split replication ops into batches that fit within a byte-size limit.
@@ -55,9 +59,7 @@ export function chunkOpsBySize(ops: ReplicationOp[], maxBytes: number): Replicat
 	return batches;
 }
 
-// ---------------------------------------------------------------------------
 // Cursor read/write
-// ---------------------------------------------------------------------------
 
 /**
  * Read the replication cursor for a peer device.
@@ -68,15 +70,15 @@ export function getReplicationCursor(
 	db: Database,
 	peerDeviceId: string,
 ): [lastApplied: string | null, lastAcked: string | null] {
-	const row = db
-		.prepare(
-			`SELECT last_applied_cursor, last_acked_cursor
-			 FROM replication_cursors
-			 WHERE peer_device_id = ?`,
-		)
-		.get(peerDeviceId) as
-		| { last_applied_cursor: string | null; last_acked_cursor: string | null }
-		| undefined;
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({
+			last_applied_cursor: schema.replicationCursors.last_applied_cursor,
+			last_acked_cursor: schema.replicationCursors.last_acked_cursor,
+		})
+		.from(schema.replicationCursors)
+		.where(eq(schema.replicationCursors.peer_device_id, peerDeviceId))
+		.get();
 
 	if (!row) return [null, null];
 	return [row.last_applied_cursor, row.last_acked_cursor];
@@ -97,20 +99,29 @@ export function setReplicationCursor(
 	const lastApplied = options.lastApplied ?? null;
 	const lastAcked = options.lastAcked ?? null;
 
-	// Atomic UPSERT — avoids TOCTOU race with concurrent sync workers
-	db.prepare(
-		`INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(peer_device_id) DO UPDATE SET
-			last_applied_cursor = COALESCE(excluded.last_applied_cursor, last_applied_cursor),
-			last_acked_cursor = COALESCE(excluded.last_acked_cursor, last_acked_cursor),
-			updated_at = excluded.updated_at`,
-	).run(peerDeviceId, lastApplied, lastAcked, now);
+	const d = drizzle(db, { schema });
+	// Atomic UPSERT — avoids TOCTOU race with concurrent sync workers.
+	// Drizzle's onConflictDoUpdate doesn't support COALESCE(excluded.col, col)
+	// natively, so we use raw SQL for the SET expressions.
+	d.insert(schema.replicationCursors)
+		.values({
+			peer_device_id: peerDeviceId,
+			last_applied_cursor: lastApplied,
+			last_acked_cursor: lastAcked,
+			updated_at: now,
+		})
+		.onConflictDoUpdate({
+			target: schema.replicationCursors.peer_device_id,
+			set: {
+				last_applied_cursor: sql`COALESCE(excluded.last_applied_cursor, ${schema.replicationCursors.last_applied_cursor})`,
+				last_acked_cursor: sql`COALESCE(excluded.last_acked_cursor, ${schema.replicationCursors.last_acked_cursor})`,
+				updated_at: sql`excluded.updated_at`,
+			},
+		})
+		.run();
 }
 
-// ---------------------------------------------------------------------------
 // Payload extraction
-// ---------------------------------------------------------------------------
 
 /**
  * Extract replication ops from a parsed JSON payload.
@@ -152,9 +163,7 @@ export function extractReplicationOps(payload: unknown): ReplicationOp[] {
 	});
 }
 
-// ---------------------------------------------------------------------------
 // Clock comparison
-// ---------------------------------------------------------------------------
 
 /**
  * Build a clock tuple from individual fields.
@@ -185,9 +194,7 @@ export function isNewerClock(
 	return candidate[2] > existing[2];
 }
 
-// ---------------------------------------------------------------------------
 // Record a replication op
-// ---------------------------------------------------------------------------
 
 /**
  * Generate and INSERT a single replication op for a memory item.
@@ -195,6 +202,9 @@ export function isNewerClock(
  * Reads the memory item's clock fields (rev, updated_at, metadata_json)
  * from the DB, builds the op row, and inserts into `replication_ops`.
  * Returns the generated op_id (UUID).
+ *
+ * Uses Drizzle's typed select so all memory_items columns are captured
+ * automatically — no hand-maintained column list to go out of sync.
  */
 export function recordReplicationOp(
 	db: Database,
@@ -205,18 +215,21 @@ export function recordReplicationOp(
 		payload?: Record<string, unknown>;
 	},
 ): string {
+	const d = drizzle(db, { schema });
 	const opId = randomUUID();
 	const now = new Date().toISOString();
 
-	// Read the full memory row for clock fields and payload
-	const row = db.prepare("SELECT * FROM memory_items WHERE id = ?").get(opts.memoryId) as
-		| Record<string, unknown>
-		| undefined;
+	// Read the full memory row — typed via Drizzle schema
+	const row = d
+		.select()
+		.from(schema.memoryItems)
+		.where(eq(schema.memoryItems.id, opts.memoryId))
+		.get();
 
 	const rev = Number(row?.rev ?? 0);
-	const updatedAt = (row?.updated_at as string) ?? now;
-	const entityId = (row?.import_key as string) ?? String(opts.memoryId);
-	const metadata = fromJson(row?.metadata_json as string | null);
+	const updatedAt = row?.updated_at ?? now;
+	const entityId = row?.import_key ?? String(opts.memoryId);
+	const metadata = fromJson(row?.metadata_json);
 	const clockDeviceId = (metadata.clock_device_id as string) || opts.deviceId;
 
 	// Build payload from the memory row so peers can reconstruct the full item.
@@ -226,7 +239,7 @@ export function recordReplicationOp(
 		payloadJson = toJson(opts.payload);
 	} else if (row && opts.opType === "upsert") {
 		// Parse JSON-string columns so they round-trip as objects, not double-encoded strings
-		const parseSqliteJson = (val: unknown): unknown => {
+		const parseSqliteJson = (val: string | null | undefined): unknown => {
 			if (typeof val !== "string") return val ?? null;
 			try {
 				return JSON.parse(val);
@@ -268,30 +281,25 @@ export function recordReplicationOp(
 		payloadJson = null;
 	}
 
-	db.prepare(
-		`INSERT INTO replication_ops(
-			op_id, entity_type, entity_id, op_type, payload_json,
-			clock_rev, clock_updated_at, clock_device_id, device_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		opId,
-		"memory_item",
-		entityId,
-		opts.opType,
-		payloadJson,
-		rev,
-		updatedAt,
-		clockDeviceId,
-		opts.deviceId,
-		now,
-	);
+	d.insert(schema.replicationOps)
+		.values({
+			op_id: opId,
+			entity_type: "memory_item",
+			entity_id: entityId,
+			op_type: opts.opType,
+			payload_json: payloadJson,
+			clock_rev: rev,
+			clock_updated_at: updatedAt,
+			clock_device_id: clockDeviceId,
+			device_id: opts.deviceId,
+			created_at: now,
+		})
+		.run();
 
 	return opId;
 }
 
-// ---------------------------------------------------------------------------
 // Load replication ops with cursor pagination
-// ---------------------------------------------------------------------------
 
 /** Parse a `created_at|op_id` cursor into its two components. */
 function parseCursor(cursor: string): [createdAt: string, opId: string] | null {
@@ -318,47 +326,33 @@ export function loadReplicationOpsSince(
 	limit = 100,
 	deviceId?: string,
 ): [ReplicationOp[], string | null] {
-	const params: (string | number)[] = [];
-	const conditions: string[] = [];
+	const d = drizzle(db, { schema });
+	const t = schema.replicationOps;
+	const conditions = [];
 
 	if (cursor) {
 		const parsed = parseCursor(cursor);
 		if (parsed) {
 			const [createdAt, opId] = parsed;
-			conditions.push("(created_at > ? OR (created_at = ? AND op_id > ?))");
-			params.push(createdAt, createdAt, opId);
+			conditions.push(
+				or(gt(t.created_at, createdAt), and(eq(t.created_at, createdAt), gt(t.op_id, opId))),
+			);
 		}
 	}
 
 	if (deviceId) {
-		conditions.push("(device_id = ? OR device_id = 'local')");
-		params.push(deviceId);
+		conditions.push(or(eq(t.device_id, deviceId), eq(t.device_id, "local")));
 	}
 
-	const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-	params.push(limit);
+	const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-	const rows = db
-		.prepare(
-			`SELECT op_id, entity_type, entity_id, op_type, payload_json,
-				clock_rev, clock_updated_at, clock_device_id, device_id, created_at
-			 FROM replication_ops
-			 ${whereClause}
-			 ORDER BY created_at ASC, op_id ASC
-			 LIMIT ?`,
-		)
-		.all(...params) as Array<{
-		op_id: string;
-		entity_type: string;
-		entity_id: string;
-		op_type: string;
-		payload_json: string | null;
-		clock_rev: number;
-		clock_updated_at: string;
-		clock_device_id: string;
-		device_id: string;
-		created_at: string;
-	}>;
+	const rows = d
+		.select()
+		.from(t)
+		.where(whereClause)
+		.orderBy(t.created_at, t.op_id)
+		.limit(limit)
+		.all();
 
 	const ops: ReplicationOp[] = rows.map((r) => ({
 		op_id: r.op_id,
@@ -384,9 +378,7 @@ export function loadReplicationOpsSince(
 	return [ops, nextCursor];
 }
 
-// ---------------------------------------------------------------------------
 // Apply inbound replication ops
-// ---------------------------------------------------------------------------
 
 export interface ApplyResult {
 	applied: number;
@@ -411,6 +403,7 @@ export function applyReplicationOps(
 	ops: ReplicationOp[],
 	localDeviceId: string,
 ): ApplyResult {
+	const d = drizzle(db, { schema });
 	const result: ApplyResult = { applied: 0, skipped: 0, conflicts: 0, errors: [] };
 
 	const applyAll = db.transaction(() => {
@@ -423,7 +416,11 @@ export function applyReplicationOps(
 				}
 
 				// Idempotent: skip if already applied
-				const existing = db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ?").get(op.op_id);
+				const existing = d
+					.select({ one: sql<number>`1` })
+					.from(schema.replicationOps)
+					.where(eq(schema.replicationOps.op_id, op.op_id))
+					.get();
 				if (existing) {
 					result.skipped++;
 					continue;
@@ -431,18 +428,27 @@ export function applyReplicationOps(
 
 				if (op.op_type === "upsert") {
 					const importKey = op.entity_id;
-					const memRow = db
-						.prepare(
-							"SELECT id, rev, updated_at, metadata_json FROM memory_items WHERE import_key = ?",
-						)
-						.get(importKey) as
-						| {
-								id: number;
-								rev: number | null;
-								updated_at: string | null;
-								metadata_json: string | null;
-						  }
-						| undefined;
+					const memRow = d
+						.select({
+							id: schema.memoryItems.id,
+							rev: schema.memoryItems.rev,
+							updated_at: schema.memoryItems.updated_at,
+							metadata_json: schema.memoryItems.metadata_json,
+						})
+						.from(schema.memoryItems)
+						.where(eq(schema.memoryItems.import_key, importKey))
+						.get();
+
+					// Parse the payload — add null/corruption guard
+					const parsePayload = (json: string | null): Record<string, unknown> => {
+						if (!json) return {};
+						const parsed = fromJson(json);
+						if (typeof parsed !== "object" || parsed === null) {
+							result.errors.push(`op ${op.op_id}: payload_json is not a valid object`);
+							return {};
+						}
+						return parsed;
+					};
 
 					if (memRow) {
 						const existingMeta = fromJson(memRow.metadata_json);
@@ -457,12 +463,12 @@ export function applyReplicationOps(
 						if (!isNewerClock(opClock, existingClock)) {
 							result.conflicts++;
 							// Still record the op so we don't re-process it
-							insertReplicationOpRow(db, op);
+							insertReplicationOpRow(d, op);
 							continue;
 						}
 
 						// Update existing row from payload
-						const payload = op.payload_json ? fromJson(op.payload_json) : {};
+						const payload = parsePayload(op.payload_json);
 						const newMeta = payload.metadata_json ?? {};
 						const metaObj =
 							typeof newMeta === "object" && newMeta !== null
@@ -470,64 +476,39 @@ export function applyReplicationOps(
 								: {};
 						metaObj.clock_device_id = op.clock_device_id;
 
-						db.prepare(
-							`UPDATE memory_items SET
-							kind = COALESCE(?, kind),
-							title = COALESCE(?, title),
-							subtitle = ?,
-							body_text = COALESCE(?, body_text),
-							confidence = COALESCE(?, confidence),
-							tags_text = COALESCE(?, tags_text),
-							active = COALESCE(?, active),
-							updated_at = ?,
-							metadata_json = ?,
-							rev = ?,
-							deleted_at = ?,
-							actor_id = COALESCE(?, actor_id),
-							actor_display_name = COALESCE(?, actor_display_name),
-							visibility = COALESCE(?, visibility),
-							workspace_id = COALESCE(?, workspace_id),
-							workspace_kind = COALESCE(?, workspace_kind),
-							origin_device_id = COALESCE(?, origin_device_id),
-							origin_source = COALESCE(?, origin_source),
-							trust_state = COALESCE(?, trust_state),
-							narrative = ?,
-							facts = ?,
-							concepts = ?,
-							files_read = ?,
-							files_modified = ?
-						WHERE import_key = ?`,
-						).run(
-							(payload.kind as string) || null,
-							(payload.title as string) || null,
-							(payload.subtitle as string) ?? null,
-							(payload.body_text as string) || null,
-							payload.confidence != null ? Number(payload.confidence) : null,
-							(payload.tags_text as string) ?? null,
-							payload.active != null ? Number(payload.active) : null,
-							op.clock_updated_at,
-							toJson(metaObj),
-							op.clock_rev,
-							(payload.deleted_at as string) || null,
-							(payload.actor_id as string) ?? null,
-							(payload.actor_display_name as string) ?? null,
-							(payload.visibility as string) ?? null,
-							(payload.workspace_id as string) ?? null,
-							(payload.workspace_kind as string) ?? null,
-							(payload.origin_device_id as string) ?? null,
-							(payload.origin_source as string) ?? null,
-							(payload.trust_state as string) ?? null,
-							(payload.narrative as string) ?? null,
-							toJson(payload.facts ?? null),
-							toJson(payload.concepts ?? null),
-							toJson(payload.files_read ?? null),
-							toJson(payload.files_modified ?? null),
-							importKey,
-						);
+						d.update(schema.memoryItems)
+							.set({
+								kind: sql`COALESCE(${(payload.kind as string) || null}, ${schema.memoryItems.kind})`,
+								title: sql`COALESCE(${(payload.title as string) || null}, ${schema.memoryItems.title})`,
+								subtitle: (payload.subtitle as string) ?? null,
+								body_text: sql`COALESCE(${(payload.body_text as string) || null}, ${schema.memoryItems.body_text})`,
+								confidence: sql`COALESCE(${payload.confidence != null ? Number(payload.confidence) : null}, ${schema.memoryItems.confidence})`,
+								tags_text: sql`COALESCE(${(payload.tags_text as string) ?? null}, ${schema.memoryItems.tags_text})`,
+								active: sql`COALESCE(${payload.active != null ? Number(payload.active) : null}, ${schema.memoryItems.active})`,
+								updated_at: op.clock_updated_at,
+								metadata_json: toJson(metaObj),
+								rev: op.clock_rev,
+								deleted_at: (payload.deleted_at as string) || null,
+								actor_id: sql`COALESCE(${(payload.actor_id as string) ?? null}, ${schema.memoryItems.actor_id})`,
+								actor_display_name: sql`COALESCE(${(payload.actor_display_name as string) ?? null}, ${schema.memoryItems.actor_display_name})`,
+								visibility: sql`COALESCE(${(payload.visibility as string) ?? null}, ${schema.memoryItems.visibility})`,
+								workspace_id: sql`COALESCE(${(payload.workspace_id as string) ?? null}, ${schema.memoryItems.workspace_id})`,
+								workspace_kind: sql`COALESCE(${(payload.workspace_kind as string) ?? null}, ${schema.memoryItems.workspace_kind})`,
+								origin_device_id: sql`COALESCE(${(payload.origin_device_id as string) ?? null}, ${schema.memoryItems.origin_device_id})`,
+								origin_source: sql`COALESCE(${(payload.origin_source as string) ?? null}, ${schema.memoryItems.origin_source})`,
+								trust_state: sql`COALESCE(${(payload.trust_state as string) ?? null}, ${schema.memoryItems.trust_state})`,
+								narrative: (payload.narrative as string) ?? null,
+								facts: toJson(payload.facts ?? null),
+								concepts: toJson(payload.concepts ?? null),
+								files_read: toJson(payload.files_read ?? null),
+								files_modified: toJson(payload.files_modified ?? null),
+							})
+							.where(eq(schema.memoryItems.import_key, importKey))
+							.run();
 					} else {
 						// Insert new memory item — need a local session (never reuse remote session_id)
-						const payload = op.payload_json ? fromJson(op.payload_json) : {};
-						const sessionId = ensureSessionForReplication(db, null, op.clock_updated_at);
+						const payload = parsePayload(op.payload_json);
+						const sessionId = ensureSessionForReplication(d, null, op.clock_updated_at);
 
 						const newMeta = payload.metadata_json ?? {};
 						const metaObj =
@@ -536,84 +517,86 @@ export function applyReplicationOps(
 								: {};
 						metaObj.clock_device_id = op.clock_device_id;
 
-						db.prepare(
-							`INSERT INTO memory_items(
-							session_id, kind, title, subtitle, body_text, confidence, tags_text,
-							active, created_at, updated_at, metadata_json, import_key,
-							deleted_at, rev,
-							actor_id, actor_display_name, visibility, workspace_id,
-							workspace_kind, origin_device_id, origin_source, trust_state,
-							narrative, facts, concepts, files_read, files_modified
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						).run(
-							sessionId,
-							(payload.kind as string) || "discovery",
-							(payload.title as string) || "",
-							(payload.subtitle as string) ?? null,
-							(payload.body_text as string) || "",
-							payload.confidence != null ? Number(payload.confidence) : 0.5,
-							(payload.tags_text as string) || "",
-							payload.active != null ? Number(payload.active) : 1,
-							(payload.created_at as string) || op.clock_updated_at,
-							op.clock_updated_at,
-							toJson(metaObj),
-							importKey,
-							(payload.deleted_at as string) || null,
-							op.clock_rev,
-							(payload.actor_id as string) ?? null,
-							(payload.actor_display_name as string) ?? null,
-							(payload.visibility as string) ?? null,
-							(payload.workspace_id as string) ?? null,
-							(payload.workspace_kind as string) ?? null,
-							(payload.origin_device_id as string) ?? null,
-							(payload.origin_source as string) ?? null,
-							(payload.trust_state as string) ?? null,
-							(payload.narrative as string) ?? null,
-							toJson(payload.facts ?? null),
-							toJson(payload.concepts ?? null),
-							toJson(payload.files_read ?? null),
-							toJson(payload.files_modified ?? null),
-						);
+						d.insert(schema.memoryItems)
+							.values({
+								session_id: sessionId,
+								kind: (payload.kind as string) || "discovery",
+								title: (payload.title as string) || "",
+								subtitle: (payload.subtitle as string) ?? null,
+								body_text: (payload.body_text as string) || "",
+								confidence: payload.confidence != null ? Number(payload.confidence) : 0.5,
+								tags_text: (payload.tags_text as string) || "",
+								active: payload.active != null ? Number(payload.active) : 1,
+								created_at: (payload.created_at as string) || op.clock_updated_at,
+								updated_at: op.clock_updated_at,
+								metadata_json: toJson(metaObj),
+								import_key: importKey,
+								deleted_at: (payload.deleted_at as string) || null,
+								rev: op.clock_rev,
+								actor_id: (payload.actor_id as string) ?? null,
+								actor_display_name: (payload.actor_display_name as string) ?? null,
+								visibility: (payload.visibility as string) ?? null,
+								workspace_id: (payload.workspace_id as string) ?? null,
+								workspace_kind: (payload.workspace_kind as string) ?? null,
+								origin_device_id: (payload.origin_device_id as string) ?? null,
+								origin_source: (payload.origin_source as string) ?? null,
+								trust_state: (payload.trust_state as string) ?? null,
+								narrative: (payload.narrative as string) ?? null,
+								facts: toJson(payload.facts ?? null),
+								concepts: toJson(payload.concepts ?? null),
+								files_read: toJson(payload.files_read ?? null),
+								files_modified: toJson(payload.files_modified ?? null),
+							})
+							.run();
 					}
 				} else if (op.op_type === "delete") {
 					const importKey = op.entity_id;
-					const existingForDelete = db
-						.prepare(
-							"SELECT id, rev, updated_at, metadata_json FROM memory_items WHERE import_key = ? LIMIT 1",
-						)
-						.get(importKey) as Record<string, unknown> | undefined;
+					const existingForDelete = d
+						.select({
+							id: schema.memoryItems.id,
+							rev: schema.memoryItems.rev,
+							updated_at: schema.memoryItems.updated_at,
+							metadata_json: schema.memoryItems.metadata_json,
+						})
+						.from(schema.memoryItems)
+						.where(eq(schema.memoryItems.import_key, importKey))
+						.limit(1)
+						.get();
 
 					if (existingForDelete) {
 						// Clock-compare: only delete if the incoming op is newer
-						const existingMeta =
-							typeof existingForDelete.metadata_json === "string"
-								? (fromJson(existingForDelete.metadata_json) as Record<string, unknown>)
-								: {};
+						const existingMeta = fromJson(existingForDelete.metadata_json);
 						const existingClock = clockTuple(
-							Number(existingForDelete.rev ?? 1),
-							String(existingForDelete.updated_at ?? ""),
-							String(existingMeta.clock_device_id ?? ""),
+							existingForDelete.rev ?? 1,
+							existingForDelete.updated_at ?? "",
+							String((existingMeta as Record<string, unknown>).clock_device_id ?? ""),
 						);
 						const incomingClock = clockTuple(op.clock_rev, op.clock_updated_at, op.clock_device_id);
 						if (!isNewerClock(incomingClock, existingClock)) {
 							result.conflicts++;
-							insertReplicationOpRow(db, op);
+							insertReplicationOpRow(d, op);
 							continue;
 						}
 						const now = new Date().toISOString();
-						db.prepare(
-							"UPDATE memory_items SET active = 0, deleted_at = COALESCE(deleted_at, ?), rev = ?, updated_at = ? WHERE id = ?",
-						).run(now, op.clock_rev, op.clock_updated_at, existingForDelete.id);
+						d.update(schema.memoryItems)
+							.set({
+								active: 0,
+								deleted_at: sql`COALESCE(${schema.memoryItems.deleted_at}, ${now})`,
+								rev: op.clock_rev,
+								updated_at: op.clock_updated_at,
+							})
+							.where(eq(schema.memoryItems.id, existingForDelete.id))
+							.run();
 					}
 					// If import_key not found, record the op as a tombstone for future resolution
 				} else {
 					result.skipped++;
-					insertReplicationOpRow(db, op);
+					insertReplicationOpRow(d, op);
 					continue;
 				}
 
 				// Record the applied op
-				insertReplicationOpRow(db, op);
+				insertReplicationOpRow(d, op);
 				result.applied++;
 			} catch (err) {
 				result.errors.push(`op ${op.op_id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -625,25 +608,23 @@ export function applyReplicationOps(
 	return result;
 }
 
-/** Insert a replication op row into the replication_ops table. */
-function insertReplicationOpRow(db: Database, op: ReplicationOp): void {
-	db.prepare(
-		`INSERT OR IGNORE INTO replication_ops(
-			op_id, entity_type, entity_id, op_type, payload_json,
-			clock_rev, clock_updated_at, clock_device_id, device_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		op.op_id,
-		op.entity_type,
-		op.entity_id,
-		op.op_type,
-		op.payload_json,
-		op.clock_rev,
-		op.clock_updated_at,
-		op.clock_device_id,
-		op.device_id,
-		op.created_at,
-	);
+/** Insert a replication op row into the replication_ops table (ignore on conflict). */
+function insertReplicationOpRow(d: ReturnType<typeof drizzle>, op: ReplicationOp): void {
+	d.insert(schema.replicationOps)
+		.values({
+			op_id: op.op_id,
+			entity_type: op.entity_type,
+			entity_id: op.entity_id,
+			op_type: op.op_type,
+			payload_json: op.payload_json,
+			clock_rev: op.clock_rev,
+			clock_updated_at: op.clock_updated_at,
+			clock_device_id: op.clock_device_id,
+			device_id: op.device_id,
+			created_at: op.created_at,
+		})
+		.onConflictDoNothing()
+		.run();
 }
 
 /**
@@ -651,21 +632,31 @@ function insertReplicationOpRow(db: Database, op: ReplicationOp): void {
  * Creates a minimal session if one doesn't exist yet.
  */
 function ensureSessionForReplication(
-	db: Database,
+	d: ReturnType<typeof drizzle>,
 	sessionId: number | null,
 	createdAt: string,
 ): number {
 	if (sessionId != null) {
-		const row = db.prepare("SELECT id FROM sessions WHERE id = ?").get(sessionId);
+		const row = d
+			.select({ id: schema.sessions.id })
+			.from(schema.sessions)
+			.where(eq(schema.sessions.id, sessionId))
+			.get();
 		if (row) return sessionId;
 	}
 	// Create a new session for replicated data
 	const now = createdAt || new Date().toISOString();
-	const info = db
-		.prepare(
-			`INSERT INTO sessions(started_at, user, tool_version, metadata_json)
-			 VALUES (?, ?, ?, ?)`,
-		)
-		.run(now, "sync", "sync_replication", toJson({ source: "sync" }));
-	return Number(info.lastInsertRowid);
+	const rows = d
+		.insert(schema.sessions)
+		.values({
+			started_at: now,
+			user: "sync",
+			tool_version: "sync_replication",
+			metadata_json: toJson({ source: "sync" }),
+		})
+		.returning({ id: schema.sessions.id })
+		.all();
+	const id = rows[0]?.id;
+	if (id == null) throw new Error("session insert returned no id");
+	return id;
 }
