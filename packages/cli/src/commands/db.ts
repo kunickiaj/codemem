@@ -1,13 +1,22 @@
+import { statSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
+	connect,
 	getRawEventStatus,
 	initDatabase,
 	rawEventsGate,
+	resolveDbPath,
 	retryRawEventFailures,
 	vacuumDatabase,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
+
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export const dbCommand = new Command("db")
 	.configureHelp(helpStyle)
@@ -145,4 +154,75 @@ dbCommand
 					}
 				},
 			),
+	)
+	.addCommand(
+		new Command("size-report")
+			.configureHelp(helpStyle)
+			.description("Show SQLite file size and major storage consumers")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--limit <n>", "number of largest tables/indexes to show", "12")
+			.option("--json", "output as JSON")
+			.action((opts: { db?: string; dbPath?: string; limit: string; json?: boolean }) => {
+				const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
+				const db = connect(dbPath);
+				try {
+					const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 12);
+					const fileSizeBytes = statSync(dbPath).size;
+					const pageInfo = db
+						.prepare(
+							"SELECT page_count * page_size as total FROM pragma_page_count, pragma_page_size",
+						)
+						.get() as { total: number } | undefined;
+					const freePages = db.prepare("SELECT freelist_count FROM pragma_freelist_count").get() as
+						| { freelist_count: number }
+						| undefined;
+					const pageSize = db.prepare("PRAGMA page_size").get() as
+						| { page_size: number }
+						| undefined;
+					const tables = db
+						.prepare(
+							`SELECT name, SUM(pgsize) as size_bytes
+							 FROM dbstat
+							 GROUP BY name
+							 ORDER BY size_bytes DESC
+							 LIMIT ?`,
+						)
+						.all(limit) as Array<{ name: string; size_bytes: number }>;
+
+					if (opts.json) {
+						console.log(
+							JSON.stringify(
+								{
+									file_size_bytes: fileSizeBytes,
+									db_size_bytes: pageInfo?.total ?? 0,
+									free_bytes: (freePages?.freelist_count ?? 0) * (pageSize?.page_size ?? 4096),
+									tables: tables.map((t) => ({ name: t.name, size_bytes: t.size_bytes })),
+								},
+								null,
+								2,
+							),
+						);
+						return;
+					}
+
+					p.intro("codemem db size-report");
+					p.log.info(
+						[
+							`File size:     ${formatBytes(fileSizeBytes)}`,
+							`DB size:       ${formatBytes(pageInfo?.total ?? 0)}`,
+							`Free space:    ${formatBytes((freePages?.freelist_count ?? 0) * (pageSize?.page_size ?? 4096))}`,
+						].join("\n"),
+					);
+					if (tables.length > 0) {
+						p.log.info("Largest objects:");
+						for (const t of tables) {
+							p.log.message(`  ${t.name.padEnd(40)} ${formatBytes(t.size_bytes).padStart(10)}`);
+						}
+					}
+					p.outro("done");
+				} finally {
+					db.close();
+				}
+			}),
 	);
