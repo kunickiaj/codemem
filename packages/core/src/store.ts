@@ -436,40 +436,43 @@ export class MemoryStore {
 	 * No-op if the memory doesn't exist.
 	 */
 	forget(memoryId: number): void {
-		const row = this.d
-			.select({
-				rev: schema.memoryItems.rev,
-				metadata_json: schema.memoryItems.metadata_json,
+		this.db
+			.transaction(() => {
+				const row = this.d
+					.select({
+						rev: schema.memoryItems.rev,
+						metadata_json: schema.memoryItems.metadata_json,
+					})
+					.from(schema.memoryItems)
+					.where(eq(schema.memoryItems.id, memoryId))
+					.get();
+				if (!row) return;
+
+				const meta = fromJson(row.metadata_json);
+				meta.clock_device_id = this.deviceId;
+
+				const now = nowIso();
+				const rev = (row.rev ?? 0) + 1;
+
+				this.d
+					.update(schema.memoryItems)
+					.set({
+						active: 0,
+						deleted_at: now,
+						updated_at: now,
+						metadata_json: toJson(meta),
+						rev,
+					})
+					.where(eq(schema.memoryItems.id, memoryId))
+					.run();
+
+				try {
+					recordReplicationOp(this.db, { memoryId, opType: "delete", deviceId: this.deviceId });
+				} catch {
+					// Non-fatal
+				}
 			})
-			.from(schema.memoryItems)
-			.where(eq(schema.memoryItems.id, memoryId))
-			.get();
-		if (!row) return;
-
-		const meta = fromJson(row.metadata_json);
-		meta.clock_device_id = this.deviceId;
-
-		const now = nowIso();
-		const rev = (row.rev ?? 0) + 1;
-
-		this.d
-			.update(schema.memoryItems)
-			.set({
-				active: 0,
-				deleted_at: now,
-				updated_at: now,
-				metadata_json: toJson(meta),
-				rev,
-			})
-			.where(eq(schema.memoryItems.id, memoryId))
-			.run();
-
-		// Record replication op for sync propagation (matches Python)
-		try {
-			recordReplicationOp(this.db, { memoryId, opType: "delete", deviceId: this.deviceId });
-		} catch {
-			// Non-fatal
-		}
+			.immediate();
 	}
 
 	// recent
@@ -656,70 +659,69 @@ export class MemoryStore {
 			throw new Error("visibility must be private or shared");
 		}
 
-		const row = this.d
-			.select()
-			.from(schema.memoryItems)
-			.where(and(eq(schema.memoryItems.id, memoryId), eq(schema.memoryItems.active, 1)))
-			.get() as MemoryItem | undefined;
-		if (!row) {
-			throw new Error("memory not found");
-		}
+		return this.db
+			.transaction(() => {
+				const row = this.d
+					.select()
+					.from(schema.memoryItems)
+					.where(and(eq(schema.memoryItems.id, memoryId), eq(schema.memoryItems.active, 1)))
+					.get() as MemoryItem | undefined;
+				if (!row) {
+					throw new Error("memory not found");
+				}
 
-		// Ownership check — matches Python's memory_owned_by_self().
-		// Python checks: actor_id == self.actor_id, then origin_device_id in claimed peers.
-		// Simplified: check actor_id first, then fall back to origin_device_id.
-		if (!this.memoryOwnedBySelf(row)) {
-			throw new Error("memory not owned by this device");
-		}
+				if (!this.memoryOwnedBySelf(row)) {
+					throw new Error("memory not owned by this device");
+				}
 
-		const rowActorId = cleanStr(row.actor_id) ?? this.actorId;
-		const workspaceKind = cleaned === "shared" ? "shared" : "personal";
-		const workspaceId =
-			cleaned === "shared" && row.workspace_id?.startsWith("shared:")
-				? row.workspace_id
-				: workspaceKind === "personal"
-					? `personal:${rowActorId}`
-					: "shared:default";
+				const rowActorId = cleanStr(row.actor_id) ?? this.actorId;
+				const workspaceKind = cleaned === "shared" ? "shared" : "personal";
+				const workspaceId =
+					cleaned === "shared" && row.workspace_id?.startsWith("shared:")
+						? row.workspace_id
+						: workspaceKind === "personal"
+							? `personal:${rowActorId}`
+							: "shared:default";
 
-		// Update metadata with visibility change + clock stamp
-		const meta = fromJson(row.metadata_json);
-		meta.visibility = cleaned;
-		meta.workspace_kind = workspaceKind;
-		meta.workspace_id = workspaceId;
-		meta.clock_device_id = this.deviceId;
+				const meta = fromJson(row.metadata_json);
+				meta.visibility = cleaned;
+				meta.workspace_kind = workspaceKind;
+				meta.workspace_id = workspaceId;
+				meta.clock_device_id = this.deviceId;
 
-		const now = nowIso();
-		const rev = (row.rev ?? 0) + 1;
+				const now = nowIso();
+				const rev = (row.rev ?? 0) + 1;
 
-		this.d
-			.update(schema.memoryItems)
-			.set({
-				visibility: cleaned,
-				workspace_kind: workspaceKind,
-				workspace_id: workspaceId,
-				updated_at: now,
-				metadata_json: toJson(meta),
-				rev,
+				this.d
+					.update(schema.memoryItems)
+					.set({
+						visibility: cleaned,
+						workspace_kind: workspaceKind,
+						workspace_id: workspaceId,
+						updated_at: now,
+						metadata_json: toJson(meta),
+						rev,
+					})
+					.where(eq(schema.memoryItems.id, memoryId))
+					.run();
+
+				try {
+					recordReplicationOp(this.db, {
+						memoryId,
+						opType: "upsert",
+						deviceId: this.deviceId,
+					});
+				} catch {
+					// Non-fatal
+				}
+
+				const updated = this.get(memoryId);
+				if (!updated) {
+					throw new Error("memory not found after update");
+				}
+				return updated;
 			})
-			.where(eq(schema.memoryItems.id, memoryId))
-			.run();
-
-		// Record replication op for sync propagation (matches Python)
-		try {
-			recordReplicationOp(this.db, {
-				memoryId,
-				opType: "upsert",
-				deviceId: this.deviceId,
-			});
-		} catch {
-			// Non-fatal — replication op recording failure shouldn't block the UI
-		}
-
-		const updated = this.get(memoryId);
-		if (!updated) {
-			throw new Error("memory not found after update");
-		}
-		return updated;
+			.immediate();
 	}
 
 	// search
