@@ -319,6 +319,24 @@ export function fromJson(text: string | null | undefined): Record<string, unknow
 	}
 }
 
+/**
+ * Parse a JSON string strictly — throws on invalid input.
+ *
+ * Use in mutation paths (replication apply, import) where silently
+ * returning {} would mask data corruption. Read paths should use
+ * fromJson() which is forgiving.
+ */
+export function fromJsonStrict(text: string | null | undefined): Record<string, unknown> {
+	if (!text) return {};
+	const parsed = JSON.parse(text);
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error(
+			`fromJsonStrict: expected object, got ${Array.isArray(parsed) ? "array" : typeof parsed}`,
+		);
+	}
+	return parsed as Record<string, unknown>;
+}
+
 /** Serialize a value to JSON, defaulting null/undefined to "{}". */
 export function toJson(data: unknown): string {
 	if (data == null) return "{}";
