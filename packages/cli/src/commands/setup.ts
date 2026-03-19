@@ -11,13 +11,14 @@
  * Designed to be safe to run repeatedly (idempotent unless --force).
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
-import { stripJsonComments, stripTrailingCommas, VERSION } from "@codemem/core";
+import { VERSION } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
+import { loadJsoncConfig, resolveOpencodeConfigPath, writeJsonConfig } from "./setup-config.js";
 
 function opencodeConfigDir(): string {
 	return join(homedir(), ".config", "opencode");
@@ -83,22 +84,6 @@ function findCompatSource(): string | null {
 	return null;
 }
 
-function loadJsoncConfig(path: string): Record<string, unknown> {
-	if (!existsSync(path)) return {};
-	const raw = readFileSync(path, "utf-8");
-	try {
-		return JSON.parse(raw) as Record<string, unknown>;
-	} catch {
-		const cleaned = stripTrailingCommas(stripJsonComments(raw));
-		return JSON.parse(cleaned) as Record<string, unknown>;
-	}
-}
-
-function writeJsonConfig(path: string, data: Record<string, unknown>): void {
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
-}
-
 function installPlugin(force: boolean): boolean {
 	const source = findPluginSource();
 	if (!source) {
@@ -129,7 +114,7 @@ function installPlugin(force: boolean): boolean {
 }
 
 function installMcp(force: boolean): boolean {
-	const configPath = join(opencodeConfigDir(), "opencode.json");
+	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
 	let config: Record<string, unknown>;
 	try {
 		config = loadJsoncConfig(configPath);
