@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, gt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
-import { fromJson, toJson, toJsonNullable } from "./db.js";
+import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import * as schema from "./schema.js";
 import type { ReplicationOp } from "./types.js";
 
@@ -439,15 +439,16 @@ export function applyReplicationOps(
 						.where(eq(schema.memoryItems.import_key, importKey))
 						.get();
 
-					// Parse the payload — add null/corruption guard
-					const parsePayload = (json: string | null): Record<string, unknown> => {
-						if (!json) return {};
-						const parsed = fromJson(json);
-						if (typeof parsed !== "object" || parsed === null) {
-							result.errors.push(`op ${op.op_id}: payload_json is not a valid object`);
-							return {};
+					const parsePayload = (json: string | null): Record<string, unknown> | null => {
+						if (!json) return null;
+						try {
+							return fromJsonStrict(json);
+						} catch (err) {
+							result.errors.push(
+								`op ${op.op_id}: skipped — payload_json is not a valid object: ${err instanceof Error ? err.message : String(err)}`,
+							);
+							return null;
 						}
-						return parsed;
 					};
 
 					if (memRow) {
@@ -467,8 +468,9 @@ export function applyReplicationOps(
 							continue;
 						}
 
-						// Update existing row from payload
+						// Update existing row from payload — skip if malformed
 						const payload = parsePayload(op.payload_json);
+						if (!payload) continue;
 						const newMeta = payload.metadata_json ?? {};
 						const metaObj =
 							typeof newMeta === "object" && newMeta !== null
@@ -506,8 +508,9 @@ export function applyReplicationOps(
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
 					} else {
-						// Insert new memory item — need a local session (never reuse remote session_id)
+						// Insert new memory item — skip if malformed
 						const payload = parsePayload(op.payload_json);
+						if (!payload) continue;
 						const sessionId = ensureSessionForReplication(d, null, op.clock_updated_at);
 
 						const newMeta = payload.metadata_json ?? {};
