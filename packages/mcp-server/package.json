@@ -2,6 +2,7 @@
 	"name": "@codemem/mcp",
 	"version": "0.20.0-alpha.2",
 	"type": "module",
+	"types": "./dist/index.d.ts",
 	"exports": {
 		".": {
 			"source": "./src/index.ts",
@@ -16,8 +17,8 @@
 		"dist/"
 	],
 	"scripts": {
-		"clean": "rm -rf dist",
-		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist",
+		"clean": "rm -rf dist tsconfig.tsbuildinfo",
+		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist && pnpm exec tsc --build --force",
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {

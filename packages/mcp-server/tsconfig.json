@@ -2,8 +2,11 @@
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
 		"rootDir": "src",
-		"outDir": "dist"
+		"outDir": "dist",
+		"declaration": true,
+		"emitDeclarationOnly": true
 	},
 	"include": ["src"],
+	"exclude": ["src/**/*.test.ts"],
 	"references": [{ "path": "../core" }]
 }
