@@ -2,6 +2,7 @@
  * Sync CLI commands — enable/disable/status/peers/connect.
  */
 
+import { spawn } from "node:child_process";
 import * as p from "@clack/prompts";
 import {
 	ensureDeviceIdentity,
@@ -37,6 +38,83 @@ function parseAttemptsLimit(value: string): number {
 		throw new Error(`Invalid --limit: ${value}`);
 	}
 	return Number.parseInt(value, 10);
+}
+
+interface SyncLifecycleOptions {
+	db?: string;
+	dbPath?: string;
+	host?: string;
+	port?: string;
+	user?: boolean;
+	system?: boolean;
+}
+
+export function buildServeLifecycleArgs(
+	action: "start" | "stop" | "restart",
+	opts: SyncLifecycleOptions,
+	scriptPath = process.argv[1],
+	execArgv: string[] = process.execArgv,
+): string[] {
+	if (!scriptPath) throw new Error("Unable to resolve CLI entrypoint for sync lifecycle command");
+	const args = [...execArgv, scriptPath, "serve"];
+	if (action === "start") {
+		args.push("--restart");
+	} else if (action === "stop") {
+		args.push("--stop");
+	} else {
+		args.push("--restart");
+	}
+	if (opts.db ?? opts.dbPath) args.push("--db-path", opts.db ?? opts.dbPath ?? "");
+	if (opts.host) args.push("--host", opts.host);
+	if (opts.port) args.push("--port", opts.port);
+	return args;
+}
+
+async function runServeLifecycle(
+	action: "start" | "stop" | "restart",
+	opts: SyncLifecycleOptions,
+): Promise<void> {
+	if (opts.user === false || opts.system === true) {
+		p.log.warn(
+			"TS sync lifecycle currently manages the local viewer process, not separate user/system services.",
+		);
+	}
+	if (action === "start") {
+		const config = readCodememConfigFile();
+		if (config.sync_enabled !== true) {
+			p.log.error("Sync is disabled. Run `codemem sync enable` first.");
+			process.exitCode = 1;
+			return;
+		}
+		const configuredHost = typeof config.sync_host === "string" ? config.sync_host : "0.0.0.0";
+		const configuredPort = typeof config.sync_port === "number" ? String(config.sync_port) : "7337";
+		opts.host ??= configuredHost;
+		opts.port ??= configuredPort;
+	} else if (action === "restart") {
+		const config = readCodememConfigFile();
+		const configuredHost = typeof config.sync_host === "string" ? config.sync_host : "0.0.0.0";
+		const configuredPort = typeof config.sync_port === "number" ? String(config.sync_port) : "7337";
+		opts.host ??= configuredHost;
+		opts.port ??= configuredPort;
+	}
+	const args = buildServeLifecycleArgs(action, opts);
+	await new Promise<void>((resolve, reject) => {
+		const child = spawn(process.execPath, args, {
+			cwd: process.cwd(),
+			stdio: "inherit",
+			env: {
+				...process.env,
+				...((opts.db ?? opts.dbPath) ? { CODEMEM_DB: opts.db ?? opts.dbPath } : {}),
+			},
+		});
+		child.once("error", reject);
+		child.once("exit", (code) => {
+			if (code && code !== 0) {
+				process.exitCode = code;
+			}
+			resolve();
+		});
+	});
 }
 
 export const syncCommand = new Command("sync")
@@ -82,6 +160,51 @@ syncCommand.addCommand(
 			} finally {
 				store.close();
 			}
+		}),
+);
+
+syncCommand.addCommand(
+	new Command("start")
+		.configureHelp(helpStyle)
+		.description("Start sync daemon")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--host <host>", "viewer host")
+		.option("--port <port>", "viewer port")
+		.option("--user", "accepted for compatibility", true)
+		.option("--system", "accepted for compatibility")
+		.action(async (opts: SyncLifecycleOptions) => {
+			await runServeLifecycle("start", opts);
+		}),
+);
+
+syncCommand.addCommand(
+	new Command("stop")
+		.configureHelp(helpStyle)
+		.description("Stop sync daemon")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--host <host>", "viewer host")
+		.option("--port <port>", "viewer port")
+		.option("--user", "accepted for compatibility", true)
+		.option("--system", "accepted for compatibility")
+		.action(async (opts: SyncLifecycleOptions) => {
+			await runServeLifecycle("stop", opts);
+		}),
+);
+
+syncCommand.addCommand(
+	new Command("restart")
+		.configureHelp(helpStyle)
+		.description("Restart sync daemon")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--host <host>", "viewer host")
+		.option("--port <port>", "viewer port")
+		.option("--user", "accepted for compatibility", true)
+		.option("--system", "accepted for compatibility")
+		.action(async (opts: SyncLifecycleOptions) => {
+			await runServeLifecycle("restart", opts);
 		}),
 );
 
