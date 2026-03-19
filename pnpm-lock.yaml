@@ -138,6 +138,15 @@ importers:
         specifier: 4.0.17
         version: 4.0.17(@types/node@25.5.0)(lightningcss@1.32.0)(tsx@4.21.0)
 
+  packages/ui:
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.0.1(@types/node@25.5.0)(esbuild@0.27.4)(tsx@4.21.0)
+
   packages/viewer-server:
     dependencies:
       '@codemem/core':

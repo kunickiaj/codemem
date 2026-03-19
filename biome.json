@@ -54,6 +54,7 @@
 			"packages/**/src/**/*.js",
 			"packages/**/*.json",
 			"packages/**/vite.config.ts",
+			"!packages/ui",
 			"vitest.config.ts",
 			"tsconfig.base.json",
 			"tsconfig.json",
