@@ -35,10 +35,7 @@ Release checklist:
    - `codemem/__init__.py`
 3. Regenerate lockfiles/artifacts and commit the results:
    - Python: run `uv sync` and commit `uv.lock` (the lockfile includes the local package version)
-   - Viewer UI bundle: in `viewer_ui/`, run:
-     - `bun install`
-     - `bun run build`
-     - commit updated `codemem/viewer_static/app.js`
+   - Viewer UI bundle: built automatically by `pnpm build` (packages/ui)
 4. Ensure JS installs use the public npm registry (avoid private registries/mirrors)
    - Keep `.opencode/.npmrc` with `registry=https://registry.npmjs.org/`
 5. Wait for CI to pass, then squash-merge the PR
