@@ -452,7 +452,7 @@ export function applyReplicationOps(
 
 					if (memRow) {
 						const existingMeta = fromJson(memRow.metadata_json);
-						const existingClockDeviceId = (existingMeta.clock_device_id as string) || "";
+						const existingClockDeviceId = (existingMeta.clock_device_id as string) ?? "";
 						const existingClock = clockTuple(
 							memRow.rev ?? 0,
 							memRow.updated_at ?? "",
@@ -478,17 +478,17 @@ export function applyReplicationOps(
 
 						d.update(schema.memoryItems)
 							.set({
-								kind: sql`COALESCE(${(payload.kind as string) || null}, ${schema.memoryItems.kind})`,
-								title: sql`COALESCE(${(payload.title as string) || null}, ${schema.memoryItems.title})`,
+								kind: sql`COALESCE(${(payload.kind as string) ?? null}, ${schema.memoryItems.kind})`,
+								title: sql`COALESCE(${(payload.title as string) ?? null}, ${schema.memoryItems.title})`,
 								subtitle: (payload.subtitle as string) ?? null,
-								body_text: sql`COALESCE(${(payload.body_text as string) || null}, ${schema.memoryItems.body_text})`,
+								body_text: sql`COALESCE(${(payload.body_text as string) ?? null}, ${schema.memoryItems.body_text})`,
 								confidence: sql`COALESCE(${payload.confidence != null ? Number(payload.confidence) : null}, ${schema.memoryItems.confidence})`,
 								tags_text: sql`COALESCE(${(payload.tags_text as string) ?? null}, ${schema.memoryItems.tags_text})`,
 								active: sql`COALESCE(${payload.active != null ? Number(payload.active) : null}, ${schema.memoryItems.active})`,
 								updated_at: op.clock_updated_at,
 								metadata_json: toJson(metaObj),
 								rev: op.clock_rev,
-								deleted_at: (payload.deleted_at as string) || null,
+								deleted_at: (payload.deleted_at as string) ?? null,
 								actor_id: sql`COALESCE(${(payload.actor_id as string) ?? null}, ${schema.memoryItems.actor_id})`,
 								actor_display_name: sql`COALESCE(${(payload.actor_display_name as string) ?? null}, ${schema.memoryItems.actor_display_name})`,
 								visibility: sql`COALESCE(${(payload.visibility as string) ?? null}, ${schema.memoryItems.visibility})`,
@@ -520,18 +520,18 @@ export function applyReplicationOps(
 						d.insert(schema.memoryItems)
 							.values({
 								session_id: sessionId,
-								kind: (payload.kind as string) || "discovery",
-								title: (payload.title as string) || "",
+								kind: (payload.kind as string) ?? "discovery",
+								title: (payload.title as string) ?? "",
 								subtitle: (payload.subtitle as string) ?? null,
-								body_text: (payload.body_text as string) || "",
+								body_text: (payload.body_text as string) ?? "",
 								confidence: payload.confidence != null ? Number(payload.confidence) : 0.5,
-								tags_text: (payload.tags_text as string) || "",
+								tags_text: (payload.tags_text as string) ?? "",
 								active: payload.active != null ? Number(payload.active) : 1,
-								created_at: (payload.created_at as string) || op.clock_updated_at,
+								created_at: (payload.created_at as string) ?? op.clock_updated_at,
 								updated_at: op.clock_updated_at,
 								metadata_json: toJson(metaObj),
 								import_key: importKey,
-								deleted_at: (payload.deleted_at as string) || null,
+								deleted_at: (payload.deleted_at as string) ?? null,
 								rev: op.clock_rev,
 								actor_id: (payload.actor_id as string) ?? null,
 								actor_display_name: (payload.actor_display_name as string) ?? null,
