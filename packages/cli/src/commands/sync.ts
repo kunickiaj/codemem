@@ -4,7 +4,10 @@
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import net from "node:net";
 import { networkInterfaces } from "node:os";
+import { dirname, join } from "node:path";
+
 import * as p from "@clack/prompts";
 import {
 	ensureDeviceIdentity,
@@ -57,6 +60,46 @@ interface SyncPairOptions {
 	all?: boolean;
 	default?: boolean;
 	dbPath?: string;
+}
+
+async function portOpen(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.createConnection({ host, port });
+		const done = (ok: boolean) => {
+			socket.removeAllListeners();
+			socket.destroy();
+			resolve(ok);
+		};
+		socket.setTimeout(300);
+		socket.once("connect", () => done(true));
+		socket.once("timeout", () => done(false));
+		socket.once("error", () => done(false));
+	});
+}
+
+function readViewerBinding(dbPath: string): { host: string; port: number } | null {
+	try {
+		const raw = readFileSync(join(dirname(dbPath), "viewer.pid"), "utf8");
+		const parsed = JSON.parse(raw) as Partial<{ host: string; port: number }>;
+		if (typeof parsed.host === "string" && typeof parsed.port === "number") {
+			return { host: parsed.host, port: parsed.port };
+		}
+	} catch {
+		// ignore malformed or missing pidfile
+	}
+	return null;
+}
+
+function parseStoredAddressEndpoint(value: string): { host: string; port: number } | null {
+	try {
+		const normalized = value.includes("://") ? value : `http://${value}`;
+		const url = new URL(normalized);
+		const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === "https:" ? 443 : 80;
+		if (!url.hostname || !Number.isFinite(port)) return null;
+		return { host: url.hostname, port };
+	} catch {
+		return null;
+	}
 }
 
 async function runServeLifecycle(
@@ -437,6 +480,212 @@ syncCommand.addCommand(
 					"On the accepting device, --include/--exclude only control what it sends to peers.",
 				);
 				console.log("This device does not yet enforce incoming project filters.");
+			} finally {
+				store.close();
+			}
+		}),
+);
+
+syncCommand.addCommand(
+	new Command("doctor")
+		.configureHelp(helpStyle)
+		.description("Diagnose common sync setup and connectivity issues")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.action(async (opts: { db?: string; dbPath?: string }) => {
+			const config = readCodememConfigFile();
+			const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
+			const store = new MemoryStore(dbPath);
+			try {
+				const d = drizzle(store.db, { schema });
+				const device = d
+					.select({ device_id: schema.syncDevice.device_id })
+					.from(schema.syncDevice)
+					.limit(1)
+					.get();
+				const daemonState = d
+					.select()
+					.from(schema.syncDaemonState)
+					.where(eq(schema.syncDaemonState.id, 1))
+					.get();
+				const peers = d
+					.select({
+						peer_device_id: schema.syncPeers.peer_device_id,
+						addresses_json: schema.syncPeers.addresses_json,
+						pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
+						public_key: schema.syncPeers.public_key,
+					})
+					.from(schema.syncPeers)
+					.all();
+
+				const issues: string[] = [];
+				const syncHost = typeof config.sync_host === "string" ? config.sync_host : "0.0.0.0";
+				const syncPort = typeof config.sync_port === "number" ? config.sync_port : 7337;
+				const viewerBinding = readViewerBinding(dbPath);
+
+				console.log("Sync doctor");
+				console.log(`- Enabled: ${config.sync_enabled === true}`);
+				console.log(`- Listen: ${syncHost}:${syncPort}`);
+				console.log(`- mDNS: ${process.env.CODEMEM_SYNC_MDNS ? "env-configured" : "default/off"}`);
+
+				const reachable = viewerBinding
+					? await portOpen(viewerBinding.host, viewerBinding.port)
+					: false;
+				console.log(`- Daemon: ${reachable ? "running" : "not running"}`);
+				if (!reachable) issues.push("daemon not running");
+
+				if (!device) {
+					console.log("- Identity: missing (run `codemem sync enable`)");
+					issues.push("identity missing");
+				} else {
+					console.log(`- Identity: ${device.device_id}`);
+				}
+
+				if (
+					daemonState?.last_error &&
+					(!daemonState.last_ok_at || daemonState.last_ok_at < (daemonState.last_error_at ?? ""))
+				) {
+					console.log(
+						`- Daemon error: ${daemonState.last_error} (at ${daemonState.last_error_at ?? "unknown"})`,
+					);
+					issues.push("daemon error");
+				}
+
+				if (peers.length === 0) {
+					console.log("- Peers: none (pair a device first)");
+					issues.push("no peers");
+				} else {
+					console.log(`- Peers: ${peers.length}`);
+					for (const peer of peers) {
+						const addresses = peer.addresses_json
+							? (JSON.parse(peer.addresses_json) as string[])
+							: [];
+						const endpoint = parseStoredAddressEndpoint(addresses[0] ?? "");
+						const reach = endpoint
+							? (await portOpen(endpoint.host, endpoint.port))
+								? "ok"
+								: "unreachable"
+							: "unknown";
+						const pinned = Boolean(peer.pinned_fingerprint);
+						const hasKey = Boolean(peer.public_key);
+						console.log(
+							`  - ${peer.peer_device_id}: addresses=${addresses.length} reach=${reach} pinned=${pinned} public_key=${hasKey}`,
+						);
+						if (reach !== "ok") issues.push(`peer ${peer.peer_device_id} unreachable`);
+						if (!pinned || !hasKey) issues.push(`peer ${peer.peer_device_id} not pinned`);
+					}
+				}
+
+				if (!config.sync_enabled) issues.push("sync is disabled");
+
+				if (issues.length > 0) {
+					console.log(`WARN: ${[...new Set(issues)].slice(0, 3).join(", ")}`);
+				} else {
+					console.log("OK: sync looks healthy");
+				}
+			} finally {
+				store.close();
+			}
+		}),
+);
+
+syncCommand.addCommand(
+	new Command("doctor")
+		.configureHelp(helpStyle)
+		.description("Diagnose common sync setup and connectivity issues")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.action(async (opts: { db?: string; dbPath?: string }) => {
+			const config = readCodememConfigFile();
+			const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
+			const store = new MemoryStore(dbPath);
+			try {
+				const d = drizzle(store.db, { schema });
+				const device = d
+					.select({ device_id: schema.syncDevice.device_id })
+					.from(schema.syncDevice)
+					.limit(1)
+					.get();
+				const daemonState = d
+					.select()
+					.from(schema.syncDaemonState)
+					.where(eq(schema.syncDaemonState.id, 1))
+					.get();
+				const peers = d
+					.select({
+						peer_device_id: schema.syncPeers.peer_device_id,
+						addresses_json: schema.syncPeers.addresses_json,
+						pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
+						public_key: schema.syncPeers.public_key,
+					})
+					.from(schema.syncPeers)
+					.all();
+
+				const issues: string[] = [];
+				const syncHost = typeof config.sync_host === "string" ? config.sync_host : "0.0.0.0";
+				const syncPort = typeof config.sync_port === "number" ? config.sync_port : 7337;
+				const viewerBinding = readViewerBinding(dbPath);
+
+				console.log("Sync doctor");
+				console.log(`- Enabled: ${config.sync_enabled === true}`);
+				console.log(`- Listen: ${syncHost}:${syncPort}`);
+				console.log(`- mDNS: ${process.env.CODEMEM_SYNC_MDNS ? "env-configured" : "default/off"}`);
+
+				const reachable = viewerBinding
+					? await portOpen(viewerBinding.host, viewerBinding.port)
+					: false;
+				console.log(`- Daemon: ${reachable ? "running" : "not running"}`);
+				if (!reachable) issues.push("daemon not running");
+
+				if (!device) {
+					console.log("- Identity: missing (run `codemem sync enable`)");
+					issues.push("identity missing");
+				} else {
+					console.log(`- Identity: ${device.device_id}`);
+				}
+
+				if (
+					daemonState?.last_error &&
+					(!daemonState.last_ok_at || daemonState.last_ok_at < (daemonState.last_error_at ?? ""))
+				) {
+					console.log(
+						`- Daemon error: ${daemonState.last_error} (at ${daemonState.last_error_at ?? "unknown"})`,
+					);
+					issues.push("daemon error");
+				}
+
+				if (peers.length === 0) {
+					console.log("- Peers: none (pair a device first)");
+					issues.push("no peers");
+				} else {
+					console.log(`- Peers: ${peers.length}`);
+					for (const peer of peers) {
+						const addresses = peer.addresses_json
+							? (JSON.parse(peer.addresses_json) as string[])
+							: [];
+						const endpoint = parseStoredAddressEndpoint(addresses[0] ?? "");
+						const reach = endpoint
+							? (await portOpen(endpoint.host, endpoint.port))
+								? "ok"
+								: "unreachable"
+							: "unknown";
+						const pinned = Boolean(peer.pinned_fingerprint);
+						const hasKey = Boolean(peer.public_key);
+						console.log(
+							`  - ${peer.peer_device_id}: addresses=${addresses.length} reach=${reach} pinned=${pinned} public_key=${hasKey}`,
+						);
+						if (reach !== "ok") issues.push(`peer ${peer.peer_device_id} unreachable`);
+						if (!pinned || !hasKey) issues.push(`peer ${peer.peer_device_id} not pinned`);
+					}
+				}
+
+				if (!config.sync_enabled) issues.push("sync is disabled");
+
+				if (issues.length > 0) {
+					console.log(`WARN: ${[...new Set(issues)].slice(0, 3).join(", ")}`);
+				} else {
+					console.log("OK: sync looks healthy");
+				}
 			} finally {
 				store.close();
 			}
