@@ -4,6 +4,7 @@ import {
 	connect,
 	getRawEventStatus,
 	initDatabase,
+	MemoryStore,
 	rawEventsGate,
 	resolveDbPath,
 	retryRawEventFailures,
@@ -154,6 +155,146 @@ dbCommand
 					}
 				},
 			),
+	)
+	.addCommand(
+		new Command("rename-project")
+			.configureHelp(helpStyle)
+			.description("Rename a project across sessions and related tables")
+			.argument("<old-name>", "current project name")
+			.argument("<new-name>", "new project name")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--apply", "apply changes (default is dry-run)")
+			.action(
+				(
+					oldName: string,
+					newName: string,
+					opts: { db?: string; dbPath?: string; apply?: boolean },
+				) => {
+					const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+					try {
+						const dryRun = !opts.apply;
+						const escapedOld = oldName.replace(/%/g, "\\%").replace(/_/g, "\\_");
+						const suffixPattern = `%/${escapedOld}`;
+						const tables = ["sessions", "raw_event_sessions"] as const;
+						const counts: Record<string, number> = {};
+						const run = () => {
+							for (const table of tables) {
+								const rows = store.db
+									.prepare(
+										`SELECT COUNT(*) as cnt FROM ${table} WHERE project = ? OR project LIKE ? ESCAPE '\\'`,
+									)
+									.get(oldName, suffixPattern) as { cnt: number };
+								counts[table] = rows.cnt;
+								if (!dryRun && rows.cnt > 0) {
+									store.db
+										.prepare(`UPDATE ${table} SET project = ? WHERE project = ?`)
+										.run(newName, oldName);
+									store.db
+										.prepare(
+											`UPDATE ${table} SET project = ? WHERE project LIKE ? ESCAPE '\\' AND project != ?`,
+										)
+										.run(newName, suffixPattern, newName);
+								}
+							}
+						};
+						if (dryRun) {
+							run();
+						} else {
+							store.db.transaction(run)();
+						}
+						const action = dryRun ? "Will rename" : "Renamed";
+						p.intro("codemem db rename-project");
+						p.log.info(`${action} ${oldName} → ${newName}`);
+						p.log.info(
+							[
+								`Sessions: ${counts.sessions}`,
+								`Raw event sessions: ${counts.raw_event_sessions}`,
+							].join("\n"),
+						);
+						if (dryRun) {
+							p.outro("Pass --apply to execute");
+						} else {
+							p.outro("done");
+						}
+					} finally {
+						store.close();
+					}
+				},
+			),
+	)
+	.addCommand(
+		new Command("normalize-projects")
+			.configureHelp(helpStyle)
+			.description("Normalize path-like project identifiers to their basename")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--apply", "apply changes (default is dry-run)")
+			.action((opts: { db?: string; dbPath?: string; apply?: boolean }) => {
+				const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+				try {
+					const dryRun = !opts.apply;
+					const tables = ["sessions", "raw_event_sessions"] as const;
+					const rewrites: Map<string, string> = new Map();
+					const counts: Record<string, number> = {};
+
+					const run = () => {
+						for (const table of tables) {
+							const projects = store.db
+								.prepare(
+									`SELECT DISTINCT project FROM ${table} WHERE project IS NOT NULL AND project LIKE '%/%'`,
+								)
+								.all() as Array<{ project: string }>;
+							let updated = 0;
+							for (const row of projects) {
+								const basename = row.project.split("/").pop() ?? row.project;
+								if (basename !== row.project) {
+									rewrites.set(row.project, basename);
+									if (!dryRun) {
+										const info = store.db
+											.prepare(`UPDATE ${table} SET project = ? WHERE project = ?`)
+											.run(basename, row.project);
+										updated += info.changes;
+									} else {
+										const cnt = store.db
+											.prepare(`SELECT COUNT(*) as cnt FROM ${table} WHERE project = ?`)
+											.get(row.project) as { cnt: number };
+										updated += cnt.cnt;
+									}
+								}
+							}
+							counts[table] = updated;
+						}
+					};
+					if (dryRun) {
+						run();
+					} else {
+						store.db.transaction(run)();
+					}
+
+					p.intro("codemem db normalize-projects");
+					p.log.info(`Dry run: ${dryRun}`);
+					p.log.info(
+						[
+							`Sessions to update: ${counts.sessions}`,
+							`Raw event sessions to update: ${counts.raw_event_sessions}`,
+						].join("\n"),
+					);
+					if (rewrites.size > 0) {
+						p.log.info("Rewritten paths:");
+						for (const [from, to] of [...rewrites.entries()].sort()) {
+							p.log.message(`  ${from} → ${to}`);
+						}
+					}
+					if (dryRun) {
+						p.outro("Pass --apply to execute");
+					} else {
+						p.outro("done");
+					}
+				} finally {
+					store.close();
+				}
+			}),
 	)
 	.addCommand(
 		new Command("size-report")
