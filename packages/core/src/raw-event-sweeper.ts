@@ -22,8 +22,9 @@ import { readCodememConfigFile } from "./observer-config.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import type { MemoryStore } from "./store.js";
 
-/** Back off for 5 minutes after an auth error (seconds). */
-const AUTH_BACKOFF_S = 300;
+/** Back off after an auth error. 60s gives OpenCode time to refresh its
+ *  OAuth token while staying longer than the default 30s sweep interval. */
+const AUTH_BACKOFF_S = 60;
 
 // ---------------------------------------------------------------------------
 // Env helpers — read config from env vars matching Python exactly
