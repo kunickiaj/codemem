@@ -222,28 +222,24 @@ describe("opencode adapter event mapping", () => {
     expect(dropped).toBe("a");
   });
 
-  test("buildRunnerArgs defaults uvx to pinned backend source", () => {
+  test("buildRunnerArgs returns empty for direct codemem runner", () => {
     const args = __testUtils.buildRunnerArgs({
-      runner: "uvx",
-      runnerFrom: __testUtils.DEFAULT_UVX_SOURCE,
+      runner: "codemem",
+      runnerFrom: "/some/path",
       runnerFromExplicit: false,
     });
 
-    expect(args).toEqual([`codemem==${__testUtils.PINNED_BACKEND_VERSION}`]);
+    expect(args).toEqual([]);
   });
 
-  test("buildRunnerArgs keeps explicit uvx source behavior", () => {
+  test("buildRunnerArgs pins npx to backend version", () => {
     const args = __testUtils.buildRunnerArgs({
-      runner: "uvx",
-      runnerFrom: "git+https://github.com/kunickiaj/codemem.git",
-      runnerFromExplicit: true,
+      runner: "npx",
+      runnerFrom: "/some/path",
+      runnerFromExplicit: false,
     });
 
-    expect(args).toEqual([
-      "--from",
-      "git+https://github.com/kunickiaj/codemem.git",
-      "codemem",
-    ]);
+    expect(args).toEqual(["-y", `codemem@${__testUtils.PINNED_BACKEND_VERSION}`]);
   });
 
   test("pinned backend version matches package version", () => {
