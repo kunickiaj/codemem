@@ -16,9 +16,74 @@ import { desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { helpStyle } from "../help-style.js";
 
+interface SyncAttemptRow {
+	peer_device_id: string;
+	ok: number;
+	ops_in: number;
+	ops_out: number;
+	error: string | null;
+	finished_at: string | null;
+}
+
+export function formatSyncAttempt(row: SyncAttemptRow): string {
+	const status = row.ok ? "ok" : "error";
+	const error = String(row.error || "");
+	const suffix = error ? ` | ${error}` : "";
+	return `${row.peer_device_id}|${status}|in=${row.ops_in}|out=${row.ops_out}|${row.finished_at ?? ""}${suffix}`;
+}
+
+function parseAttemptsLimit(value: string): number {
+	if (!/^\d+$/.test(value.trim())) {
+		throw new Error(`Invalid --limit: ${value}`);
+	}
+	return Number.parseInt(value, 10);
+}
+
 export const syncCommand = new Command("sync")
 	.configureHelp(helpStyle)
 	.description("Sync configuration and peer management");
+
+// codemem sync attempts
+syncCommand.addCommand(
+	new Command("attempts")
+		.configureHelp(helpStyle)
+		.description("Show recent sync attempts")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--limit <n>", "max attempts", "10")
+		.option("--json", "output as JSON")
+		.action((opts: { db?: string; dbPath?: string; limit: string; json?: boolean }) => {
+			const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+			try {
+				const d = drizzle(store.db, { schema });
+				const limit = parseAttemptsLimit(opts.limit);
+				const rows = d
+					.select({
+						peer_device_id: schema.syncAttempts.peer_device_id,
+						ok: schema.syncAttempts.ok,
+						ops_in: schema.syncAttempts.ops_in,
+						ops_out: schema.syncAttempts.ops_out,
+						error: schema.syncAttempts.error,
+						finished_at: schema.syncAttempts.finished_at,
+					})
+					.from(schema.syncAttempts)
+					.orderBy(desc(schema.syncAttempts.finished_at))
+					.limit(limit)
+					.all();
+
+				if (opts.json) {
+					console.log(JSON.stringify(rows, null, 2));
+					return;
+				}
+
+				for (const row of rows) {
+					console.log(formatSyncAttempt(row));
+				}
+			} finally {
+				store.close();
+			}
+		}),
+);
 
 // codemem sync status
 syncCommand.addCommand(
