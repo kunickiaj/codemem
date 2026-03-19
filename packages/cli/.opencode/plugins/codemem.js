@@ -16,7 +16,6 @@ import {
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
 const PINNED_BACKEND_VERSION = "0.20.0-alpha.4";
-const DEFAULT_UVX_SOURCE = `codemem==${PINNED_BACKEND_VERSION}`;
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
 const envHasValue = (value, truthyValues) =>
@@ -389,17 +388,14 @@ const detectRunner = ({ cwd, envRunner }) => {
   if (envRunner) {
     return envRunner;
   }
-  // Check if we're in the codemem repo (dev mode)
+  // Prefer the TS codemem if installed globally, fall back to npx
   try {
-    const pyprojectPath = `${cwd}/pyproject.toml`;
-    if (existsSync(pyprojectPath)) {
-      const content = readFileSync(pyprojectPath, "utf-8");
-      if (content.includes('name = "codemem"')) {
-        return "uv";
-      }
+    const versionOutput = execSync("codemem --version", { encoding: "utf-8", timeout: 3000 }).trim();
+    if (versionOutput === PINNED_BACKEND_VERSION || versionOutput.startsWith("0.2")) {
+      return "codemem";
     }
-  } catch (err) {
-    // Not in dev mode
+  } catch {
+    // not on PATH or timed out
   }
   return "npx";
 };
@@ -417,28 +413,21 @@ const tsCliAvailable = (cliPath) => {
 };
 
 const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
-  if (runner === "uvx") {
-    if (runnerFromExplicit) {
-      return ["--from", runnerFrom, "codemem"];
-    }
-    return [runnerFrom || "codemem"];
-  }
-  if (runner === "uv") {
-    return ["run", "--directory", runnerFrom, "codemem"];
-  }
-  if (runner === "node") {
-    // TS CLI — runnerFrom points to the built CLI entry or repo root.
-    // Default: packages/cli/dist/index.js relative to repo root.
-    const cliPath = runnerFromExplicit
-      ? runnerFrom
-      : require("path").join(runnerFrom, "packages/cli/dist/index.js");
-    return [cliPath];
+  if (runner === "codemem") {
+    return [];
   }
   if (runner === "npx") {
     const pkg = runnerFromExplicit ? runnerFrom : `codemem@${PINNED_BACKEND_VERSION}`;
     return ["-y", pkg];
   }
-  return [];
+  if (runner === "node") {
+    const cliPath = runnerFromExplicit
+      ? runnerFrom
+      : join(runnerFrom, "packages/cli/dist/index.js");
+    return [cliPath];
+  }
+  // Custom runner via CODEMEM_RUNNER env — pass through as-is
+  return runnerFromExplicit ? [runnerFrom] : [];
 };
 
 export const OpencodeMemPlugin = async ({
@@ -480,17 +469,12 @@ export const OpencodeMemPlugin = async ({
     return {};
   }
 
-  // Determine runner mode:
-  // - If CODEMEM_RUNNER is set, use that ("uvx", "uv", "node", "npx")
-  // - If we're in a directory with pyproject.toml containing codemem, use "uv" (dev mode)
-  // - Otherwise, use "uvx" with a package source pinned to plugin version
   const runner = detectRunner({
     cwd,
     envRunner: process.env.CODEMEM_RUNNER,
   });
   const runnerFromExplicit = Boolean(String(process.env.CODEMEM_RUNNER_FROM || "").trim());
-  const defaultRunnerFrom = runner === "uvx" ? DEFAULT_UVX_SOURCE : cwd;
-  const runnerFrom = process.env.CODEMEM_RUNNER_FROM || defaultRunnerFrom;
+  const runnerFrom = process.env.CODEMEM_RUNNER_FROM || cwd;
   const runnerArgs = buildRunnerArgs({ runner, runnerFrom, runnerFromExplicit });
   const viewerEnabled = envNotDisabled(process.env.CODEMEM_VIEWER || "1");
   const viewerAutoStart = envNotDisabled(
@@ -1823,7 +1807,6 @@ export const OpencodeMemPlugin = async ({
 export default OpencodeMemPlugin;
 export const __testUtils = {
   PINNED_BACKEND_VERSION,
-  DEFAULT_UVX_SOURCE,
   buildRunnerArgs,
   appendWorkingSetFileArgs,
   extractApplyPatchPaths,
