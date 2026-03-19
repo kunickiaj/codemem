@@ -319,7 +319,13 @@ function buildAnthropicPayload(
 
 function parseAnthropicResponse(body: Record<string, unknown>): string | null {
 	const content = body.content;
-	if (!Array.isArray(content)) return null;
+	if (!Array.isArray(content)) {
+		console.warn(
+			`[codemem] Anthropic response has no content array (stop_reason=${body.stop_reason ?? "unknown"}, ` +
+				`keys=${Object.keys(body).join(",")})`,
+		);
+		return null;
+	}
 	const parts: string[] = [];
 	for (const block of content) {
 		if (
@@ -330,6 +336,17 @@ function parseAnthropicResponse(body: Record<string, unknown>): string | null {
 			const text = (block as Record<string, unknown>).text;
 			if (typeof text === "string") parts.push(text);
 		}
+	}
+	if (parts.length === 0 && content.length > 0) {
+		const blockTypes = content
+			.map((b) =>
+				typeof b === "object" && b != null ? (b as Record<string, unknown>).type : typeof b,
+			)
+			.join(",");
+		console.warn(
+			`[codemem] Anthropic response has ${content.length} content block(s) but no text blocks (types=${blockTypes}, ` +
+				`stop_reason=${body.stop_reason ?? "unknown"})`,
+		);
 	}
 	return parts.length > 0 ? parts.join("") : null;
 }
@@ -717,14 +734,14 @@ export class ObserverClient {
 
 		// Anthropic OAuth consumer path
 		if (this._anthropicOAuthAccess) {
-			return this._callAnthropicConsumer(userPrompt);
+			return this._callAnthropicConsumer(systemPrompt, userPrompt);
 		}
 
 		// Refresh if we have no token
 		if (!this.auth.token) {
 			this._initProvider(true);
 			if (this._codexAccess) return this._callCodexConsumer(userPrompt);
-			if (this._anthropicOAuthAccess) return this._callAnthropicConsumer(userPrompt);
+			if (this._anthropicOAuthAccess) return this._callAnthropicConsumer(systemPrompt, userPrompt);
 			if (!this.auth.token) {
 				this._setLastError(`${capitalize(this.provider)} credentials are missing.`, "auth_missing");
 				return null;
@@ -820,7 +837,10 @@ export class ObserverClient {
 	// Anthropic OAuth consumer (SSE streaming)
 	// -----------------------------------------------------------------------
 
-	private async _callAnthropicConsumer(userPrompt: string): Promise<string | null> {
+	private async _callAnthropicConsumer(
+		systemPrompt: string,
+		userPrompt: string,
+	): Promise<string | null> {
 		if (!this._anthropicOAuthAccess) return null;
 
 		const headers = buildAnthropicHeaders(this._anthropicOAuthAccess, true);
@@ -844,7 +864,7 @@ export class ObserverClient {
 			max_tokens: this.maxTokens,
 			stream: true,
 			messages: [{ role: "user", content: userPrompt }],
-			system: "You are a memory observer.",
+			system: systemPrompt,
 		};
 
 		return this._fetchSSE(url, headers, payload, extractAnthropicStreamDelta, {
@@ -881,7 +901,14 @@ export class ObserverClient {
 			}
 
 			const body = (await response.json()) as Record<string, unknown>;
-			return opts.parseResponse(body);
+			const result = opts.parseResponse(body);
+			if (result === null) {
+				this._setLastError(
+					`${opts.providerLabel} returned 200 but response contained no extractable text.`,
+					"empty_response",
+				);
+			}
+			return result;
 		} catch (err) {
 			if (err instanceof ObserverAuthError) throw err;
 			this._setLastError(
