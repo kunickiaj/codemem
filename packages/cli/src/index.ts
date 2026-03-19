@@ -65,15 +65,13 @@ completion.on("command", ({ reply }) => {
 });
 completion.init();
 
-// `codemem --setup-completion` installs shell completion
-if (process.argv.includes("--setup-completion")) {
-	completion.setupShellInitFile();
-	process.exit(0);
-}
-// `codemem --cleanup-completion` removes it
-if (process.argv.includes("--cleanup-completion")) {
-	completion.cleanupShellInitFile();
-	process.exit(0);
+function hasRootFlag(flag: string): boolean {
+	for (const arg of process.argv.slice(2)) {
+		if (arg === "--") return false;
+		if (arg === flag) return true;
+		if (!arg.startsWith("-")) return false;
+	}
+	return false;
 }
 
 const program = new Command();
@@ -83,6 +81,16 @@ program
 	.description("codemem — persistent memory for AI coding agents")
 	.version(VERSION)
 	.configureHelp(helpStyle);
+
+if (hasRootFlag("--setup-completion")) {
+	completion.setupShellInitFile();
+	process.exit(0);
+}
+
+if (hasRootFlag("--cleanup-completion")) {
+	completion.cleanupShellInitFile();
+	process.exit(0);
+}
 
 program.addCommand(serveCommand);
 program.addCommand(mcpCommand);

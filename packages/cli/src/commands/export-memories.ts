@@ -15,6 +15,7 @@ export const exportMemoriesCommand = new Command("export-memories")
 	.description("Export memories to a JSON file for sharing or backup")
 	.argument("<output>", "output file path (use '-' for stdout)")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--project <project>", "filter by project (defaults to git repo root)")
 	.option("--all-projects", "export all projects")
 	.option("--include-inactive", "include deactivated memories")
@@ -24,6 +25,7 @@ export const exportMemoriesCommand = new Command("export-memories")
 			output: string,
 			opts: {
 				db?: string;
+				dbPath?: string;
 				project?: string;
 				allProjects?: boolean;
 				includeInactive?: boolean;
@@ -31,7 +33,7 @@ export const exportMemoriesCommand = new Command("export-memories")
 			},
 		) => {
 			const payload = exportMemories({
-				dbPath: resolveDbPath(opts.db),
+				dbPath: resolveDbPath(opts.db ?? opts.dbPath),
 				project: opts.project,
 				allProjects: opts.allProjects,
 				includeInactive: opts.includeInactive,

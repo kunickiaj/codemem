@@ -18,14 +18,14 @@ function parseStrictPositiveId(value: string): number | null {
 	return Number.isFinite(n) && n >= 1 && Number.isInteger(n) ? n : null;
 }
 
-function showMemoryAction(idStr: string, opts: { db?: string }): void {
+function showMemoryAction(idStr: string, opts: { db?: string; dbPath?: string }): void {
 	const memoryId = parseStrictPositiveId(idStr);
 	if (memoryId === null) {
 		p.log.error(`Invalid memory ID: ${idStr}`);
 		process.exitCode = 1;
 		return;
 	}
-	const store = new MemoryStore(resolveDbPath(opts.db));
+	const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 	try {
 		const item = store.get(memoryId);
 		if (!item) {
@@ -39,14 +39,14 @@ function showMemoryAction(idStr: string, opts: { db?: string }): void {
 	}
 }
 
-function forgetMemoryAction(idStr: string, opts: { db?: string }): void {
+function forgetMemoryAction(idStr: string, opts: { db?: string; dbPath?: string }): void {
 	const memoryId = parseStrictPositiveId(idStr);
 	if (memoryId === null) {
 		p.log.error(`Invalid memory ID: ${idStr}`);
 		process.exitCode = 1;
 		return;
 	}
-	const store = new MemoryStore(resolveDbPath(opts.db));
+	const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 	try {
 		store.forget(memoryId);
 		p.log.success(`Memory ${memoryId} marked inactive`);
@@ -62,10 +62,11 @@ interface RememberMemoryOptions {
 	tags?: string[];
 	project?: string;
 	db?: string;
+	dbPath?: string;
 }
 
 function rememberMemoryAction(opts: RememberMemoryOptions): void {
-	const store = new MemoryStore(resolveDbPath(opts.db));
+	const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 	let sessionId: number | null = null;
 	try {
 		const project = resolveProject(process.cwd(), opts.project ?? null);
@@ -99,6 +100,7 @@ function createShowMemoryCommand(): Command {
 		.description("Print a memory item as JSON")
 		.argument("<id>", "memory ID")
 		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
 		.action(showMemoryAction);
 }
 
@@ -108,6 +110,7 @@ function createForgetMemoryCommand(): Command {
 		.description("Deactivate a memory item")
 		.argument("<id>", "memory ID")
 		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
 		.action(forgetMemoryAction);
 }
 
@@ -121,6 +124,7 @@ function createRememberMemoryCommand(): Command {
 		.option("--tags <tags...>", "tags (space-separated)")
 		.option("--project <project>", "project name (defaults to git repo root)")
 		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
 		.action(rememberMemoryAction);
 }
 

@@ -18,9 +18,10 @@ export const statsCommand = new Command("stats")
 	.configureHelp(helpStyle)
 	.description("Show database statistics")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--json", "output as JSON")
-	.action((opts: { db?: string; json?: boolean }) => {
-		const store = new MemoryStore(resolveDbPath(opts.db));
+	.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
+		const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 		try {
 			const result = store.stats();
 			if (opts.json) {

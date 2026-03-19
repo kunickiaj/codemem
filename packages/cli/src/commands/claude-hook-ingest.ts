@@ -137,9 +137,10 @@ export const claudeHookIngestCommand = new Command("claude-hook-ingest")
 	.configureHelp(helpStyle)
 	.description("Ingest a Claude Code hook payload from stdin")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--host <host>", "viewer server host", "127.0.0.1")
 	.option("--port <port>", "viewer server port", "38888")
-	.action(async (opts: { db?: string; host: string; port: string }) => {
+	.action(async (opts: { db?: string; dbPath?: string; host: string; port: string }) => {
 		// Read payload from stdin
 		let raw: string;
 		try {
@@ -180,7 +181,7 @@ export const claudeHookIngestCommand = new Command("claude-hook-ingest")
 
 		// Strategy 2: direct local enqueue
 		try {
-			const dbPath = resolveDbPath(opts.db);
+			const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
 			const directResult = directEnqueue(payload, dbPath);
 			console.log(JSON.stringify({ ...directResult, via: "direct" }));
 		} catch {
