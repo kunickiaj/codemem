@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildServeLifecycleArgs, formatSyncAttempt } from "./sync.js";
+import {
+	buildServeLifecycleArgs,
+	formatSyncAttempt,
+	formatSyncOnceResult,
+} from "./sync-helpers.js";
 
 describe("formatSyncAttempt", () => {
 	it("matches the compact Python-era output shape", () => {
@@ -66,5 +70,15 @@ describe("formatSyncAttempt", () => {
 			"--db-path",
 			"/tmp/test.sqlite",
 		]);
+	});
+
+	it("formats sync once success output like the Python command", () => {
+		expect(formatSyncOnceResult("peer-1", { ok: true })).toBe("- peer-1: ok");
+	});
+
+	it("formats sync once error output like the Python command", () => {
+		expect(formatSyncOnceResult("peer-2", { ok: false, error: "timeout" })).toBe(
+			"- peer-2: error: timeout",
+		);
 	});
 });

@@ -9,29 +9,21 @@ import {
 	MemoryStore,
 	readCodememConfigFile,
 	resolveDbPath,
+	runSyncPass,
 	schema,
+	syncPassPreflight,
 	writeCodememConfigFile,
 } from "@codemem/core";
 import { Command } from "commander";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { helpStyle } from "../help-style.js";
-
-interface SyncAttemptRow {
-	peer_device_id: string;
-	ok: number;
-	ops_in: number;
-	ops_out: number;
-	error: string | null;
-	finished_at: string | null;
-}
-
-export function formatSyncAttempt(row: SyncAttemptRow): string {
-	const status = row.ok ? "ok" : "error";
-	const error = String(row.error || "");
-	const suffix = error ? ` | ${error}` : "";
-	return `${row.peer_device_id}|${status}|in=${row.ops_in}|out=${row.ops_out}|${row.finished_at ?? ""}${suffix}`;
-}
+import {
+	buildServeLifecycleArgs,
+	formatSyncAttempt,
+	formatSyncOnceResult,
+	type SyncLifecycleOptions,
+} from "./sync-helpers.js";
 
 function parseAttemptsLimit(value: string): number {
 	if (!/^\d+$/.test(value.trim())) {
@@ -40,34 +32,10 @@ function parseAttemptsLimit(value: string): number {
 	return Number.parseInt(value, 10);
 }
 
-interface SyncLifecycleOptions {
+interface SyncOnceOptions {
 	db?: string;
 	dbPath?: string;
-	host?: string;
-	port?: string;
-	user?: boolean;
-	system?: boolean;
-}
-
-export function buildServeLifecycleArgs(
-	action: "start" | "stop" | "restart",
-	opts: SyncLifecycleOptions,
-	scriptPath = process.argv[1],
-	execArgv: string[] = process.execArgv,
-): string[] {
-	if (!scriptPath) throw new Error("Unable to resolve CLI entrypoint for sync lifecycle command");
-	const args = [...execArgv, scriptPath, "serve"];
-	if (action === "start") {
-		args.push("--restart");
-	} else if (action === "stop") {
-		args.push("--stop");
-	} else {
-		args.push("--restart");
-	}
-	if (opts.db ?? opts.dbPath) args.push("--db-path", opts.db ?? opts.dbPath ?? "");
-	if (opts.host) args.push("--host", opts.host);
-	if (opts.port) args.push("--port", opts.port);
-	return args;
+	peer?: string;
 }
 
 async function runServeLifecycle(
@@ -97,7 +65,7 @@ async function runServeLifecycle(
 		opts.host ??= configuredHost;
 		opts.port ??= configuredPort;
 	}
-	const args = buildServeLifecycleArgs(action, opts);
+	const args = buildServeLifecycleArgs(action, opts, process.argv[1] ?? "", process.execArgv);
 	await new Promise<void>((resolve, reject) => {
 		const child = spawn(process.execPath, args, {
 			cwd: process.cwd(),
@@ -205,6 +173,64 @@ syncCommand.addCommand(
 		.option("--system", "accepted for compatibility")
 		.action(async (opts: SyncLifecycleOptions) => {
 			await runServeLifecycle("restart", opts);
+		}),
+);
+
+syncCommand.addCommand(
+	new Command("once")
+		.configureHelp(helpStyle)
+		.description("Run a single sync pass")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--peer <peer>", "peer device id or name")
+		.action(async (opts: SyncOnceOptions) => {
+			const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+			try {
+				syncPassPreflight(store.db);
+				const d = drizzle(store.db, { schema });
+				const rows = opts.peer
+					? (() => {
+							const deviceMatches = d
+								.select({ peer_device_id: schema.syncPeers.peer_device_id })
+								.from(schema.syncPeers)
+								.where(eq(schema.syncPeers.peer_device_id, opts.peer))
+								.all();
+							if (deviceMatches.length > 0) return deviceMatches;
+							const nameMatches = d
+								.select({ peer_device_id: schema.syncPeers.peer_device_id })
+								.from(schema.syncPeers)
+								.where(eq(schema.syncPeers.name, opts.peer))
+								.all();
+							if (nameMatches.length > 1) {
+								p.log.error(`Peer name is ambiguous: ${opts.peer}`);
+								process.exitCode = 1;
+								return [];
+							}
+							return nameMatches;
+						})()
+					: d
+							.select({ peer_device_id: schema.syncPeers.peer_device_id })
+							.from(schema.syncPeers)
+							.all();
+
+				if (rows.length === 0) {
+					p.log.warn("No peers available for sync");
+					process.exitCode = 1;
+					return;
+				}
+
+				let hadFailure = false;
+				for (const row of rows) {
+					const result = await runSyncPass(store.db, row.peer_device_id);
+					if (!result.ok) hadFailure = true;
+					console.log(formatSyncOnceResult(row.peer_device_id, result));
+				}
+				if (hadFailure) {
+					process.exitCode = 1;
+				}
+			} finally {
+				store.close();
+			}
 		}),
 );
 
