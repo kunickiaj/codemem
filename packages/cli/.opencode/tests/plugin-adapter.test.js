@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { __testUtils } from "../plugin/codemem.js";
+import { __testUtils } from "../plugins/codemem.js";
 
 describe("opencode adapter event mapping", () => {
   test("maps user_prompt to prompt adapter envelope", () => {
