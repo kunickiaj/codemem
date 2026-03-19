@@ -23,6 +23,8 @@ const envHasValue = (value, truthyValues) =>
 const envNotDisabled = (value) =>
   !DISABLED_VALUES.includes(normalizeEnvValue(value));
 
+const DEFAULT_LOG_PATH = (homeDir, cwd) => `${homeDir || cwd}/.codemem/plugin.log`;
+
 const resolveLogPath = (logPathEnvRaw, cwd, homeDir) => {
   const logPathEnv = normalizeEnvValue(logPathEnvRaw);
   const logEnabled = !!logPathEnvRaw && !DISABLED_VALUES.includes(logPathEnv);
@@ -30,10 +32,13 @@ const resolveLogPath = (logPathEnvRaw, cwd, homeDir) => {
     return null;
   }
   if (["true", "yes", "1"].includes(logPathEnv)) {
-    return `${homeDir || cwd}/.codemem/plugin.log`;
+    return DEFAULT_LOG_PATH(homeDir, cwd);
   }
   return logPathEnvRaw;
 };
+
+/** Path for error/warning logging — always available regardless of debug flag. */
+const resolveErrorLogPath = (cwd, homeDir) => DEFAULT_LOG_PATH(homeDir, cwd);
 
 const createLogLine = (logPath) => async (line) => {
   if (!logPath) {
@@ -47,9 +52,15 @@ const createLogLine = (logPath) => async (line) => {
   }
 };
 
-const createDebugLogger = ({ debug, client, logTimeoutMs, getLogLine }) =>
+const createDebugLogger = ({ debug, client, logTimeoutMs, getLogLine, getErrorLogLine }) =>
   async (level, message, extra = {}) => {
-    if (!debug) {
+    // Always log errors and warnings to the error log path
+    const alwaysLog = level === "error" || level === "warn";
+    if (alwaysLog) {
+      const extraStr = Object.keys(extra).length > 0 ? ` ${JSON.stringify(extra)}` : "";
+      await getErrorLogLine()(`[${level}] ${message}${extraStr}`);
+    }
+    if (!debug && !alwaysLog) {
       return;
     }
     try {
@@ -454,12 +465,15 @@ export const OpencodeMemPlugin = async ({
   );
   const logPathEnvRaw = process.env.CODEMEM_PLUGIN_LOG || "";
   const logPath = resolveLogPath(logPathEnvRaw, cwd, process.env.HOME);
+  const errorLogPath = resolveErrorLogPath(cwd, process.env.HOME);
   const logLine = createLogLine(logPath);
+  const errorLogLine = createLogLine(errorLogPath);
   const log = createDebugLogger({
     debug,
     client,
     logTimeoutMs,
     getLogLine: () => logLine,
+    getErrorLogLine: () => errorLogLine,
   });
   const pluginIgnored = envHasValue(
     process.env.CODEMEM_PLUGIN_IGNORE,
