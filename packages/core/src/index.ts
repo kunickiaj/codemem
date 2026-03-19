@@ -37,6 +37,7 @@ export {
 	connect,
 	DEFAULT_DB_PATH,
 	fromJson,
+	fromJsonStrict,
 	getSchemaVersion,
 	isEmbeddingDisabled,
 	loadSqliteVec,
