@@ -30,29 +30,15 @@ function claudeConfigDir(): string {
 
 /**
  * Find the plugin source file — walk up from this module's location
- * to find the .opencode/plugin/codemem.js in the package tree.
+ * to find the .opencode/plugins/codemem.js in the package tree.
  */
 function findPluginSource(): string | null {
-	// In the built CLI, __dirname is packages/cli/dist or similar.
-	// The plugin lives at the repo/package root under .opencode/plugin/codemem.js
 	let dir = dirname(import.meta.url.replace("file://", ""));
 	for (let i = 0; i < 6; i++) {
-		const candidate = join(dir, ".opencode", "plugin", "codemem.js");
+		const candidate = join(dir, ".opencode", "plugins", "codemem.js");
 		if (existsSync(candidate)) return candidate;
-		// Check node_modules/codemem/.opencode/plugin/codemem.js (unscoped)
-		const nmCandidate = join(dir, "node_modules", "codemem", ".opencode", "plugin", "codemem.js");
+		const nmCandidate = join(dir, "node_modules", "codemem", ".opencode", "plugins", "codemem.js");
 		if (existsSync(nmCandidate)) return nmCandidate;
-		// Legacy: node_modules/@kunickiaj/codemem/.opencode/plugin/codemem.js
-		const legacyCandidate = join(
-			dir,
-			"node_modules",
-			"@kunickiaj",
-			"codemem",
-			".opencode",
-			"plugin",
-			"codemem.js",
-		);
-		if (existsSync(legacyCandidate)) return legacyCandidate;
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
@@ -91,7 +77,7 @@ function installPlugin(force: boolean): boolean {
 		return false;
 	}
 
-	const destDir = join(opencodeConfigDir(), "plugin");
+	const destDir = join(opencodeConfigDir(), "plugins");
 	const dest = join(destDir, "codemem.js");
 
 	if (existsSync(dest) && !force) {

@@ -1,6 +1,8 @@
 import { appendFile, mkdir } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
+import { spawn as nodeSpawn, execSync } from "node:child_process";
 import { tool } from "@opencode-ai/plugin";
 
 import {
@@ -13,7 +15,7 @@ import {
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
-const PINNED_BACKEND_VERSION = "0.20.0-alpha.3";
+const PINNED_BACKEND_VERSION = "0.20.0-alpha.4";
 const DEFAULT_UVX_SOURCE = `codemem==${PINNED_BACKEND_VERSION}`;
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
@@ -389,12 +391,9 @@ const detectRunner = ({ cwd, envRunner }) => {
   }
   // Check if we're in the codemem repo (dev mode)
   try {
-    const pyproject = Bun.file(`${cwd}/pyproject.toml`);
-    if (pyproject.size > 0) {
-      const content = require("fs").readFileSync(
-        `${cwd}/pyproject.toml`,
-        "utf-8"
-      );
+    const pyprojectPath = `${cwd}/pyproject.toml`;
+    if (existsSync(pyprojectPath)) {
+      const content = readFileSync(pyprojectPath, "utf-8");
       if (content.includes('name = "codemem"')) {
         return "uv";
       }
@@ -402,7 +401,7 @@ const detectRunner = ({ cwd, envRunner }) => {
   } catch (err) {
     // Not in dev mode
   }
-  return "uvx";
+  return "npx";
 };
 
 /**
@@ -436,7 +435,7 @@ const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
     return [cliPath];
   }
   if (runner === "npx") {
-    const pkg = runnerFromExplicit ? runnerFrom : "@codemem/cli";
+    const pkg = runnerFromExplicit ? runnerFrom : `codemem@${PINNED_BACKEND_VERSION}`;
     return ["-y", pkg];
   }
   return [];
@@ -1002,73 +1001,69 @@ export const OpencodeMemPlugin = async ({
       return;
     }
     viewerStarted = true;
-    log("info", "starting codemem viewer", { cwd });
-    Bun.spawn({
-      cmd: [runner, ...runnerArgs, "serve", "--background"],
-      cwd,
-      env: process.env,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const cmd = [runner, ...runnerArgs, "serve", "start"];
+    log("info", "starting codemem viewer", { cwd, cmd: cmd.join(" ") });
+    try {
+      const child = nodeSpawn(cmd[0], cmd.slice(1), {
+        cwd,
+        env: process.env,
+        detached: true,
+        stdio: "ignore",
+      });
+      child.on("error", (err) => {
+        logLine(`viewer spawn error: ${err.message}`).catch(() => {});
+      });
+      child.unref();
+    } catch (err) {
+      logLine(`viewer spawn failed: ${err}`).catch(() => {});
+    }
   };
 
   const runCommand = async (cmd, options = {}) => {
     const { stdinText = null } = options;
-    const proc = Bun.spawn({
-      cmd,
-      cwd,
-      env: process.env,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    let stdinFailure = null;
-    if (typeof stdinText === "string") {
-      try {
-        proc.stdin.write(stdinText);
-      } catch (stdinErr) {
-        stdinFailure = `stdin write failed: ${String(stdinErr)}`;
-      }
-    }
-    try {
-      proc.stdin.end();
-    } catch (stdinErr) {
-      if (!stdinFailure) {
-        stdinFailure = `stdin close failed: ${String(stdinErr)}`;
-      }
-    }
-    if (stdinFailure) {
-      try {
-        proc.kill();
-      } catch (killErr) {
-        // ignore
-      }
-      return { exitCode: 1, stdout: "", stderr: stdinFailure };
-    }
-    const resultPromise = Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]).then(([exitCode, stdout, stderr]) => ({ exitCode, stdout, stderr }));
-    if (!Number.isFinite(commandTimeout) || commandTimeout <= 0) {
-      return resultPromise;
-    }
-    let timer = null;
-    const timeoutPromise = new Promise((resolve) => {
-      timer = setTimeout(() => {
+    const [command, ...args] = cmd;
+    return new Promise((resolve) => {
+      const proc = nodeSpawn(command, args, {
+        cwd,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", (chunk) => { stdout += chunk; });
+      proc.stderr.on("data", (chunk) => { stderr += chunk; });
+      if (typeof stdinText === "string") {
         try {
-          proc.kill();
-        } catch (err) {
-          // ignore
+          proc.stdin.write(stdinText);
+        } catch (stdinErr) {
+          try { proc.kill(); } catch { /* ignore */ }
+          resolve({ exitCode: 1, stdout: "", stderr: `stdin write failed: ${String(stdinErr)}` });
+          return;
         }
-        resolve({ exitCode: null, stdout: "", stderr: "timeout" });
-      }, commandTimeout);
+      }
+      try {
+        proc.stdin.end();
+      } catch (stdinErr) {
+        try { proc.kill(); } catch { /* ignore */ }
+        resolve({ exitCode: 1, stdout: "", stderr: `stdin close failed: ${String(stdinErr)}` });
+        return;
+      }
+      let timer = null;
+      if (Number.isFinite(commandTimeout) && commandTimeout > 0) {
+        timer = setTimeout(() => {
+          try { proc.kill(); } catch { /* ignore */ }
+          resolve({ exitCode: null, stdout, stderr: "timeout" });
+        }, commandTimeout);
+      }
+      proc.once("exit", (exitCode) => {
+        if (timer) clearTimeout(timer);
+        resolve({ exitCode, stdout, stderr });
+      });
+      proc.once("error", (err) => {
+        if (timer) clearTimeout(timer);
+        resolve({ exitCode: 1, stdout: "", stderr: String(err) });
+      });
     });
-    const result = await Promise.race([resultPromise, timeoutPromise]);
-    if (timer) {
-      clearTimeout(timer);
-    }
-    return result;
   };
 
   const runCli = async (args, options = {}) =>
@@ -1097,7 +1092,7 @@ export const OpencodeMemPlugin = async ({
     if (!viewerEnabled || !viewerAutoStart || !viewerStarted) {
       return { attempted: false, ok: false };
     }
-    const restartResult = await runCli(["serve", "--restart"]);
+    const restartResult = await runCli(["serve", "restart"]);
     if (restartResult?.exitCode === 0) {
       await logLine("compat.auto_update_viewer_restart ok");
       return { attempted: true, ok: true };
@@ -1191,7 +1186,7 @@ export const OpencodeMemPlugin = async ({
           );
           if (viewerRestart.attempted && !viewerRestart.ok) {
             await showToast(
-              "Backend updated, but viewer restart failed. Run `codemem serve --restart`.",
+              "Backend updated, but viewer restart failed. Run `codemem serve restart`.",
               "warning"
             );
           }
@@ -1341,25 +1336,17 @@ export const OpencodeMemPlugin = async ({
     }
     viewerStarted = false;
     await logLine("viewer stop requested");
-    await runCli(["serve", "--stop"]);
+    await runCli(["serve", "stop"]);
   };
 
   // Get version info (commit hash) for debugging
   let version = "unknown";
   try {
-    const gitProc = Bun.spawn({
-      cmd: ["git", "rev-parse", "--short", "HEAD"],
+    version = execSync("git rev-parse --short HEAD", {
       cwd: runnerFrom,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const gitResult = await Promise.race([
-      new Response(gitProc.stdout).text(),
-      new Promise((resolve) => setTimeout(() => resolve("timeout"), 500)),
-    ]);
-    if (typeof gitResult === "string" && gitResult !== "timeout") {
-      version = gitResult.trim();
-    }
+      timeout: 500,
+      encoding: "utf-8",
+    }).trim();
   } catch (err) {
     // Ignore - version will remain 'unknown'
   }

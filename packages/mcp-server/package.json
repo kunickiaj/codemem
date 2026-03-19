@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/mcp",
-	"version": "0.20.0-alpha.3",
+	"version": "0.20.0-alpha.4",
 	"type": "module",
 	"types": "./dist/index.d.ts",
 	"exports": {
@@ -29,8 +29,8 @@
 	"devDependencies": {
 		"@types/node": "^25.5.0",
 		"typescript": "catalog:",
-		"vite": "catalog:",
-		"vitest": "catalog:"
+		"vite": "8.0.1",
+		"vitest": "4.0.17"
 	},
 	"repository": {
 		"type": "git",

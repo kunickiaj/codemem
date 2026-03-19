@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildInjectionToastMessage } from "../plugin/codemem.js";
+import { buildInjectionToastMessage } from "../plugins/codemem.js";
 
 describe("buildInjectionToastMessage", () => {
   test("includes delta counts when present", () => {

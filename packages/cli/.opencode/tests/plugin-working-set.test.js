@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { __testUtils } from "../plugin/codemem.js";
+import { __testUtils } from "../plugins/codemem.js";
 
 describe("appendWorkingSetFileArgs", () => {
   test("adds one CLI flag per path", () => {
