@@ -1,0 +1,16 @@
+{
+	"name": "@codemem/ui",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"clean": "rm -f ../viewer-server/static/app.js",
+		"dev": "vite",
+		"build": "vite build --mode production",
+		"build:watch": "vite build --watch --mode development",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"devDependencies": {
+		"typescript": "catalog:",
+		"vite": "catalog:"
+	}
+}
