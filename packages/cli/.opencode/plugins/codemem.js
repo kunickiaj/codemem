@@ -996,11 +996,12 @@ export const OpencodeMemPlugin = async ({
 
   const startViewer = () => {
     if (!viewerEnabled || !viewerAutoStart || viewerStarted) {
+      if (viewerStarted) logLine("viewer already started, skipping auto-start").catch(() => {});
       return;
     }
     viewerStarted = true;
     const cmd = [runner, ...runnerArgs, "serve", "start"];
-    log("info", "starting codemem viewer", { cwd, cmd: cmd.join(" ") });
+    logLine(`auto-starting viewer: ${cmd.join(" ")}`).catch(() => {});
     try {
       const child = nodeSpawn(cmd[0], cmd.slice(1), {
         cwd,
