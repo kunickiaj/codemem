@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildServeLifecycleArgs,
+	collectAdvertiseAddresses,
 	formatSyncAttempt,
 	formatSyncOnceResult,
+	parseProjectList,
 } from "./sync-helpers.js";
 
 describe("formatSyncAttempt", () => {
@@ -80,5 +82,22 @@ describe("formatSyncAttempt", () => {
 		expect(formatSyncOnceResult("peer-2", { ok: false, error: "timeout" })).toBe(
 			"- peer-2: error: timeout",
 		);
+	});
+
+	it("parses comma-separated project filter lists", () => {
+		expect(parseProjectList("foo, bar ,baz")).toEqual(["foo", "bar", "baz"]);
+	});
+
+	it("drops empty project filter entries", () => {
+		expect(parseProjectList("foo, , ,bar")).toEqual(["foo", "bar"]);
+	});
+
+	it("collects advertise addresses from non-loopback interfaces when host is unspecified", () => {
+		expect(
+			collectAdvertiseAddresses(null, "0.0.0.0", 7337, {
+				lo0: [{ address: "127.0.0.1", internal: true, family: "IPv4" }],
+				en0: [{ address: "192.168.1.10", internal: false, family: "IPv4" }],
+			}),
+		).toEqual(["192.168.1.10:7337"]);
 	});
 });

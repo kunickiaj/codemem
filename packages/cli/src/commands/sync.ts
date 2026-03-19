@@ -3,15 +3,21 @@
  */
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import * as p from "@clack/prompts";
 import {
 	ensureDeviceIdentity,
+	fingerprintPublicKey,
+	loadPublicKey,
 	MemoryStore,
 	readCodememConfigFile,
 	resolveDbPath,
 	runSyncPass,
 	schema,
+	setPeerProjectFilter,
 	syncPassPreflight,
+	updatePeerAddresses,
 	writeCodememConfigFile,
 } from "@codemem/core";
 import { Command } from "commander";
@@ -20,8 +26,10 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { helpStyle } from "../help-style.js";
 import {
 	buildServeLifecycleArgs,
+	collectAdvertiseAddresses,
 	formatSyncAttempt,
 	formatSyncOnceResult,
+	parseProjectList,
 	type SyncLifecycleOptions,
 } from "./sync-helpers.js";
 
@@ -36,6 +44,19 @@ interface SyncOnceOptions {
 	db?: string;
 	dbPath?: string;
 	peer?: string;
+}
+
+interface SyncPairOptions {
+	accept?: string;
+	acceptFile?: string;
+	payloadOnly?: boolean;
+	name?: string;
+	address?: string;
+	include?: string;
+	exclude?: string;
+	all?: boolean;
+	default?: boolean;
+	dbPath?: string;
 }
 
 async function runServeLifecycle(
@@ -228,6 +249,194 @@ syncCommand.addCommand(
 				if (hadFailure) {
 					process.exitCode = 1;
 				}
+			} finally {
+				store.close();
+			}
+		}),
+);
+
+syncCommand.addCommand(
+	new Command("pair")
+		.configureHelp(helpStyle)
+		.description("Print pairing payload or accept a peer payload")
+		.option("--accept <json>", "accept pairing payload JSON from another device")
+		.option("--accept-file <path>", "accept pairing payload from file path, or '-' for stdin")
+		.option("--payload-only", "when generating pairing payload, print JSON only")
+		.option("--name <name>", "label for the peer")
+		.option("--address <host:port>", "override peer address (host:port)")
+		.option("--include <projects>", "outbound-only allowlist for accepted peer")
+		.option("--exclude <projects>", "outbound-only blocklist for accepted peer")
+		.option("--all", "with --accept, push all projects to that peer")
+		.option("--default", "with --accept, use default/global push filters")
+		.option("--db-path <path>", "database path")
+		.action(async (opts: SyncPairOptions) => {
+			const store = new MemoryStore(resolveDbPath(opts.dbPath));
+			try {
+				const acceptModeRequested = opts.accept != null || opts.acceptFile != null;
+				if (opts.payloadOnly && acceptModeRequested) {
+					p.log.error("--payload-only cannot be combined with --accept or --accept-file");
+					process.exitCode = 1;
+					return;
+				}
+				if (opts.accept && opts.acceptFile) {
+					p.log.error("Use only one of --accept or --accept-file");
+					process.exitCode = 1;
+					return;
+				}
+
+				let acceptText = opts.accept;
+				if (opts.acceptFile) {
+					try {
+						acceptText =
+							opts.acceptFile === "-"
+								? await new Promise<string>((resolve, reject) => {
+										let text = "";
+										process.stdin.setEncoding("utf8");
+										process.stdin.on("data", (chunk) => {
+											text += chunk;
+										});
+										process.stdin.on("end", () => resolve(text));
+										process.stdin.on("error", reject);
+									})
+								: readFileSync(opts.acceptFile, "utf8");
+					} catch (error) {
+						p.log.error(
+							error instanceof Error
+								? `Failed to read pairing payload from ${opts.acceptFile}: ${error.message}`
+								: `Failed to read pairing payload from ${opts.acceptFile}`,
+						);
+						process.exitCode = 1;
+						return;
+					}
+				}
+
+				if (acceptModeRequested && !(acceptText ?? "").trim()) {
+					p.log.error("Empty pairing payload; provide JSON via --accept or --accept-file");
+					process.exitCode = 1;
+					return;
+				}
+
+				if (!acceptText && (opts.include || opts.exclude || opts.all || opts.default)) {
+					p.log.error(
+						"Project filters are outbound-only and must be set on the device running --accept",
+					);
+					process.exitCode = 1;
+					return;
+				}
+
+				if (acceptText?.trim()) {
+					if (opts.all && opts.default) {
+						p.log.error("Use only one of --all or --default");
+						process.exitCode = 1;
+						return;
+					}
+					if ((opts.all || opts.default) && (opts.include || opts.exclude)) {
+						p.log.error("--include/--exclude cannot be combined with --all/--default");
+						process.exitCode = 1;
+						return;
+					}
+
+					let payload: Record<string, unknown>;
+					try {
+						payload = JSON.parse(acceptText) as Record<string, unknown>;
+					} catch (error) {
+						p.log.error(
+							error instanceof Error
+								? `Invalid pairing payload: ${error.message}`
+								: "Invalid pairing payload",
+						);
+						process.exitCode = 1;
+						return;
+					}
+
+					const deviceId = String(payload.device_id || "").trim();
+					const fingerprint = String(payload.fingerprint || "").trim();
+					const publicKey = String(payload.public_key || "").trim();
+					const resolvedAddresses = opts.address?.trim()
+						? [opts.address.trim()]
+						: Array.isArray(payload.addresses)
+							? (payload.addresses as unknown[])
+									.filter(
+										(item): item is string => typeof item === "string" && item.trim().length > 0,
+									)
+									.map((item) => item.trim())
+							: [];
+					if (!deviceId || !fingerprint || !publicKey || resolvedAddresses.length === 0) {
+						p.log.error("Pairing payload missing device_id, fingerprint, public_key, or addresses");
+						process.exitCode = 1;
+						return;
+					}
+					if (fingerprintPublicKey(publicKey) !== fingerprint) {
+						p.log.error("Pairing payload fingerprint mismatch");
+						process.exitCode = 1;
+						return;
+					}
+
+					updatePeerAddresses(store.db, deviceId, resolvedAddresses, {
+						name: opts.name,
+						pinnedFingerprint: fingerprint,
+						publicKey,
+					});
+
+					if (opts.default) {
+						setPeerProjectFilter(store.db, deviceId, { include: null, exclude: null });
+					} else if (opts.all || opts.include || opts.exclude) {
+						setPeerProjectFilter(store.db, deviceId, {
+							include: opts.all ? [] : parseProjectList(opts.include),
+							exclude: opts.all ? [] : parseProjectList(opts.exclude),
+						});
+					}
+
+					p.log.success(`Paired with ${deviceId}`);
+					return;
+				}
+
+				const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir });
+				const publicKey = loadPublicKey(keysDir);
+				if (!publicKey) {
+					p.log.error("Public key missing");
+					process.exitCode = 1;
+					return;
+				}
+
+				const config = readCodememConfigFile();
+				const explicitAddress = opts.address?.trim();
+				const configuredHost = typeof config.sync_host === "string" ? config.sync_host : null;
+				const configuredPort = typeof config.sync_port === "number" ? config.sync_port : 7337;
+				const addresses = collectAdvertiseAddresses(
+					explicitAddress ?? null,
+					configuredHost,
+					configuredPort,
+					networkInterfaces(),
+				);
+				const payload = {
+					device_id: deviceId,
+					fingerprint,
+					public_key: publicKey,
+					address: addresses[0] ?? "",
+					addresses,
+				};
+				const payloadText = JSON.stringify(payload);
+
+				if (opts.payloadOnly) {
+					process.stdout.write(`${payloadText}\n`);
+					return;
+				}
+
+				const escaped = payloadText.replaceAll("'", "'\\''");
+				console.log("Pairing payload");
+				console.log(payloadText);
+				console.log("On the other device, save this JSON to pairing.json, then run:");
+				console.log("  codemem sync pair --accept-file pairing.json");
+				console.log("If you prefer inline JSON, run:");
+				console.log(`  codemem sync pair --accept '${escaped}'`);
+				console.log("For machine-friendly output next time, run:");
+				console.log("  codemem sync pair --payload-only");
+				console.log(
+					"On the accepting device, --include/--exclude only control what it sends to peers.",
+				);
+				console.log("This device does not yet enforce incoming project filters.");
 			} finally {
 				store.close();
 			}

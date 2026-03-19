@@ -52,3 +52,37 @@ export function formatSyncOnceResult(
 	const suffix = result.error ? `: ${result.error}` : "";
 	return `- ${peerDeviceId}: error${suffix}`;
 }
+
+export function parseProjectList(value: string | undefined): string[] {
+	if (!value) return [];
+	return value
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+type InterfaceMap = Record<
+	string,
+	Array<{ address: string; family?: string | number; internal?: boolean }> | undefined
+>;
+
+export function collectAdvertiseAddresses(
+	explicitAddress: string | null,
+	configuredHost: string | null,
+	port: number,
+	interfaces: InterfaceMap,
+): string[] {
+	if (explicitAddress && !["auto", "default"].includes(explicitAddress.toLowerCase())) {
+		return [explicitAddress];
+	}
+	if (configuredHost && configuredHost !== "0.0.0.0") {
+		return [`${configuredHost}:${port}`];
+	}
+	const addresses = Object.values(interfaces)
+		.flatMap((entries) => entries ?? [])
+		.filter((entry) => !entry.internal)
+		.map((entry) => entry.address)
+		.filter((address) => address && address !== "127.0.0.1" && address !== "::1")
+		.map((address) => `${address}:${port}`);
+	return [...new Set(addresses)];
+}
