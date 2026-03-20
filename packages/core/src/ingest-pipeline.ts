@@ -21,6 +21,7 @@
 
 import { and, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { normalizeProjectLabel } from "./claude-hooks.js";
 import { toJson } from "./db.js";
 import {
 	budgetToolEvents,
@@ -50,6 +51,7 @@ import type {
 } from "./ingest-types.js";
 import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
 import type { ObserverClient } from "./observer-client.js";
+import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
 import type { MemoryStore } from "./store.js";
 
@@ -180,7 +182,7 @@ export async function ingest(
 
 	const d = drizzle(store.db, { schema });
 	const now = new Date().toISOString();
-	const project = payload.project ?? null;
+	const project = normalizeProjectLabel(payload.project) ?? resolveProject(cwd) ?? null;
 
 	const rows = d
 		.insert(schema.sessions)
@@ -397,6 +399,12 @@ export async function ingest(
 							undefined,
 							{
 								is_summary: true,
+								request,
+								investigated: summary.investigated,
+								learned: summary.learned,
+								completed: summary.completed,
+								next_steps: summary.nextSteps,
+								notes: summary.notes,
 								prompt_number: promptNumber,
 								files_read: summary.filesRead,
 								files_modified: summary.filesModified,

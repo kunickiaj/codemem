@@ -28,7 +28,19 @@ const RECORDING_FOCUS = `Focus on deliverables, capabilities, AND learnings:
 
 Use outcome-focused verbs: implemented, fixed, deployed, configured, migrated, optimized, added, refactored, discovered, learned, debugged.
 Only describe actions that are clearly supported by the observed context.
-Never invent file changes, API behavior, or code edits that are not explicitly present in the session evidence.`;
+Never invent file changes, API behavior, or code edits that are not explicitly present in the session evidence.
+
+GOOD examples (describes what was built or learned):
+- "Authentication now supports OAuth2 with PKCE flow"
+- "Deployment pipeline runs canary releases with auto-rollback"
+- "Fixed race condition in session handler causing duplicate events"
+- "Discovered flush timing strategy needed adaptation for multi-session environment"
+- "Learned transcript building was broken - empty strings passed instead of conversation"
+
+BAD examples (describes observation process - DO NOT DO THIS):
+- "Analyzed authentication implementation and stored findings in database"
+- "Tracked deployment steps and logged outcomes to memory system"
+- "Recorded investigation results for later reference"`;
 
 const SKIP_GUIDANCE = `Skip routine operations WITHOUT learnings:
 - Empty status checks or listings (unless revealing important state)
@@ -60,18 +72,47 @@ const OUTPUT_GUIDANCE =
 
 const OBSERVATION_SCHEMA = `<observation>
   <type>[ ${OBSERVATION_TYPES} ]</type>
+  <!--
+    type MUST be EXACTLY one of these 7 options:
+      - bugfix: something was broken, now fixed
+      - feature: new capability or functionality added
+      - refactor: code restructured, behavior unchanged
+      - change: generic modification (docs, config, misc)
+      - discovery: learning about existing system, debugging insights
+      - decision: architectural/design choice with rationale
+      - exploration: attempted approach that was tried but NOT shipped
+
+    IMPORTANT: Use 'exploration' when:
+      - Multiple approaches were tried for the same problem
+      - An implementation was attempted but then replaced or reverted
+      - Something was tested/experimented with but not kept
+      - The attempt provides useful "why we didn't do X" context
+
+    Exploration memories are valuable. They prevent repeating failed approaches.
+    Include what was tried AND why it didn't work out.
+  -->
   <title>[Short outcome-focused title - what was achieved or learned]</title>
+  <!-- GOOD: "OAuth2 PKCE flow added to authentication" -->
+  <!-- GOOD: "Discovered flush strategy fails in multi-session environments" -->
+  <!-- GOOD (exploration): "Tried emoji theme toggle - poor contrast on light backgrounds" -->
+  <!-- BAD: "Analyzed authentication code" (too vague, no outcome) -->
   <subtitle>[One sentence explanation of the outcome (max 24 words)]</subtitle>
   <facts>
     <fact>[Specific, self-contained statement with concrete details]</fact>
+    <fact>[Include: file paths, function names, config values, error messages]</fact>
+    <fact>[Each fact must stand alone - no pronouns like "it" or "this"]</fact>
   </facts>
   <narrative>[
     Full context: What was done, how it works, why it matters.
-    Aim for 100-500 words.
+    For discoveries/debugging: what was investigated, what was found, what it means.
+    For explorations: what was tried, why it didn't work, what was done instead.
+    Include specific details: file paths, function names, configuration values.
+    Aim for 100-500 words - enough to be useful, not overwhelming.
   ]</narrative>
   <concepts>
     <concept>[how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off]</concept>
   </concepts>
+  <!-- concepts: 2-5 knowledge categories from the list above -->
   <files_read>
     <file>[full path from project root]</file>
   </files_read>
@@ -81,12 +122,23 @@ const OBSERVATION_SCHEMA = `<observation>
 </observation>`;
 
 const SUMMARY_SCHEMA = `<summary>
-  <request>[What did the user request?]</request>
-  <investigated>[What was explored or examined?]</investigated>
-  <learned>[What was learned about how things work?]</learned>
-  <completed>[What work was done? What shipped?]</completed>
-  <next_steps>[What are the logical next steps?]</next_steps>
-  <notes>[Additional context, insights, or warnings.]</notes>
+  <request>[What did the user request? What was the goal of this work session?]</request>
+
+  <investigated>[What was explored or examined? What files, systems, logs were reviewed?
+  What questions were asked? What did you try to understand?]</investigated>
+
+  <learned>[What was learned about how things work? Any discoveries about the codebase,
+  architecture, or domain? Gotchas or surprises? Understanding gained?]</learned>
+
+  <completed>[What work was done? What shipped? What does the system do now that it
+  didn't before? Be specific: files changed, features added, bugs fixed.]</completed>
+
+  <next_steps>[What are the logical next steps? What remains to be done? What should
+  the next session pick up? Any blockers or dependencies?]</next_steps>
+
+  <notes>[Additional context, insights, or warnings. Anything future sessions should
+  know that doesn't fit above. Design decisions, trade-offs, alternatives considered.]</notes>
+
   <files_read>
     <file>[path]</file>
   </files_read>
@@ -96,12 +148,17 @@ const SUMMARY_SCHEMA = `<summary>
 </summary>
 
 If nothing meaningful happened, emit <skip_summary reason="low-signal"/> and do not emit <summary>.
-Otherwise, write a summary that explains the current state of the PRIMARY work.
+Otherwise, write a summary that explains the current state of the PRIMARY work (not your observation process).
+
+If the user prompt is a short approval or acknowledgement ("yes", "ok", "approved"),
+infer the request from the observed work and the completed/learned sections instead.
 
 Only summarize what is evidenced in the session context. Do not infer or fabricate
 file edits, behaviors, or outcomes that are not explicitly observed.
 
-Keep summaries concise (aim for ~150-450 words total across all fields).`;
+Keep summaries concise (aim for ~150-450 words total across all fields).
+
+This summary helps future sessions understand where this work left off.`;
 
 // ---------------------------------------------------------------------------
 // XML escaping

@@ -534,7 +534,41 @@ describe("ingest() integration", () => {
 		const session = store.db
 			.prepare("SELECT * FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as Record<string, unknown>;
+		expect(session.project).toBe("test-project");
 		expect(session.ended_at).not.toBeNull();
+
+		const summaryMemory = store.db
+			.prepare(
+				"SELECT metadata_json FROM memory_items WHERE json_extract(metadata_json, '$.is_summary') = 1 ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { metadata_json: string };
+		const summaryMetadata = JSON.parse(summaryMemory.metadata_json) as Record<string, unknown>;
+		expect(summaryMetadata.request).toBe("Fix auth timeout");
+		expect(summaryMetadata.completed).toBe("Fixed the timeout");
+		expect(summaryMetadata.learned).toBe("Race condition in handler");
+	});
+
+	it("falls back to cwd basename when payload project is missing", async () => {
+		const payload = buildPayload({ cwd: "/tmp/workspaces/codemem" });
+		await ingest(payload, store, { observer: mockObserver } as unknown as IngestOptions);
+
+		const session = store.db
+			.prepare("SELECT * FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as Record<string, unknown>;
+		expect(session.project).toBe("codemem");
+	});
+
+	it("normalizes explicit path-like project labels before storing the session", async () => {
+		const payload = buildPayload({
+			cwd: "/tmp/workspaces/other-repo",
+			project: "C:\\work\\codemem\\",
+		});
+		await ingest(payload, store, { observer: mockObserver } as unknown as IngestOptions);
+
+		const session = store.db
+			.prepare("SELECT * FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as Record<string, unknown>;
+		expect(session.project).toBe("codemem");
 	});
 
 	it("handles observer returning null gracefully", async () => {

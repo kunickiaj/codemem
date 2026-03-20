@@ -116,7 +116,7 @@ function stableEventId(...parts: string[]): string {
 /** Normalize a raw label value to a plain project name (basename if path). */
 export function normalizeProjectLabel(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const cleaned = value.trim();
+	const cleaned = value.trim().replace(/[\\/]+$/, "");
 	if (!cleaned) return null;
 	if (cleaned.includes("/") || cleaned.includes("\\")) {
 		// Windows-style path (drive letter or backslash)

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { __testUtils } from "../plugins/codemem.js";
 
@@ -158,6 +159,74 @@ describe("opencode adapter event mapping", () => {
     });
 
     expect(envelope.event_id).toBe("stable-raw-id");
+  });
+
+  test("resolveProjectName falls back to cwd basename when project metadata is missing", () => {
+    const projectName = __testUtils.resolveProjectName(null, "/tmp/workspaces/codemem");
+
+    expect(projectName).toBe("codemem");
+  });
+
+  test("resolveProjectName prefers git root basename for nested cwd", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "codemem-plugin-project-"));
+    try {
+      const repoRoot = join(tmp, "codemem");
+      const nested = join(repoRoot, "packages", "core");
+      mkdirSync(join(repoRoot, ".git"), { recursive: true });
+      mkdirSync(nested, { recursive: true });
+
+      const projectName = __testUtils.resolveProjectName(null, nested);
+      expect(projectName).toBe("codemem");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveProjectName handles git worktree cwd", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "codemem-plugin-project-"));
+    try {
+      const mainRepo = join(tmp, "main-repo");
+      const worktree = join(tmp, "feature-worktree");
+      mkdirSync(join(mainRepo, ".git", "worktrees", "feature-worktree"), { recursive: true });
+      mkdirSync(worktree, { recursive: true });
+      writeFileSync(
+        join(worktree, ".git"),
+        `gitdir: ${join(mainRepo, ".git", "worktrees", "feature-worktree")}`,
+      );
+
+      const projectName = __testUtils.resolveProjectName(null, worktree);
+      expect(projectName).toBe("main-repo");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveProjectName handles relative git worktree markers", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "codemem-plugin-project-"));
+    try {
+      const mainRepo = join(tmp, "main-repo");
+      const worktree = join(tmp, "feature-worktree");
+      mkdirSync(join(mainRepo, ".git", "worktrees", "feature-worktree"), { recursive: true });
+      mkdirSync(worktree, { recursive: true });
+      writeFileSync(
+        join(worktree, ".git"),
+        "gitdir: ../main-repo/.git/worktrees/feature-worktree",
+      );
+
+      const projectName = __testUtils.resolveProjectName(null, worktree);
+      expect(projectName).toBe("main-repo");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveProjectName normalizes path-like project metadata", () => {
+    const projectName = __testUtils.resolveProjectName(
+      { root: "C:\\Users\\adam\\workspace\\codemem" },
+      null,
+    );
+
+    expect(projectName).toBe("codemem");
   });
 
   test("parsePositiveInt falls back for invalid values", () => {
