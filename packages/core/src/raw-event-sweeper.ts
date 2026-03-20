@@ -54,6 +54,10 @@ export class RawEventSweeper {
 	private currentTick: Promise<void> | null = null;
 	private wakeHandle: ReturnType<typeof setTimeout> | null = null;
 	private loopHandle: ReturnType<typeof setTimeout> | null = null;
+	private autoFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private sessionFlushing = new Set<string>();
+	private autoFlushPending = new Set<string>();
+	private autoFlushPromises = new Set<Promise<void>>();
 	private authBackoffUntil = 0; // epoch seconds
 	private authErrorLogged = false;
 
@@ -104,6 +108,14 @@ export class RawEventSweeper {
 
 	private retentionMs(): number {
 		return envInt("CODEMEM_RAW_EVENTS_RETENTION_MS", 0);
+	}
+
+	private autoFlushEnabled(): boolean {
+		return (process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH ?? "").trim() === "1";
+	}
+
+	private debounceMs(): number {
+		return envInt("CODEMEM_RAW_EVENTS_DEBOUNCE_MS", 60_000);
 	}
 
 	private stuckBatchMs(): number {
@@ -177,8 +189,13 @@ export class RawEventSweeper {
 			clearTimeout(this.wakeHandle);
 			this.wakeHandle = null;
 		}
+		for (const timer of this.autoFlushTimers.values()) clearTimeout(timer);
+		this.autoFlushTimers.clear();
 		if (this.currentTick != null) {
 			await this.currentTick;
+		}
+		if (this.autoFlushPromises.size > 0) {
+			await Promise.allSettled([...this.autoFlushPromises]);
 		}
 	}
 
@@ -191,13 +208,100 @@ export class RawEventSweeper {
 	}
 
 	/**
-	 * Notify the sweeper that new events arrived (nudge it to flush soon).
-	 * Mirrors Python's RawEventFlusher.note_activity() — schedules a near-
-	 * immediate extra tick so events are processed without waiting for the
-	 * full interval.
+	 * Notify the debounced auto-flush path that new events arrived.
+	 * Mirrors Python's RawEventAutoFlusher.note_activity() behavior.
 	 */
-	nudge(): void {
-		this.wake();
+	nudge(opencodeSessionId: string, source = "opencode"): void {
+		if (!this.autoFlushEnabled()) return;
+		if (Date.now() / 1000 < this.authBackoffUntil) return;
+		const streamId = opencodeSessionId.trim();
+		if (!streamId) return;
+		const sourceNorm = source.trim().toLowerCase() || "opencode";
+		const key = `${sourceNorm}:${streamId}`;
+		if (this.sessionFlushing.has(key)) {
+			this.autoFlushPending.add(key);
+			return;
+		}
+		const delayMs = this.debounceMs();
+		if (delayMs <= 0) {
+			this.trackAutoFlush(this.flushNow(streamId, sourceNorm));
+			return;
+		}
+		const existing = this.autoFlushTimers.get(key);
+		if (existing) clearTimeout(existing);
+		const timer = setTimeout(() => {
+			this.autoFlushTimers.delete(key);
+			this.trackAutoFlush(this.flushNow(streamId, sourceNorm));
+		}, delayMs);
+		if (typeof timer === "object" && "unref" in timer) timer.unref();
+		this.autoFlushTimers.set(key, timer);
+	}
+
+	private trackAutoFlush(promise: Promise<void>): void {
+		this.autoFlushPromises.add(promise);
+		void promise.finally(() => {
+			this.autoFlushPromises.delete(promise);
+		});
+	}
+
+	private scheduleAutoFlush(opencodeSessionId: string, source: string): void {
+		const key = `${source}:${opencodeSessionId}`;
+		if (this.sessionFlushing.has(key)) {
+			this.autoFlushPending.add(key);
+			return;
+		}
+		const delayMs = this.debounceMs();
+		if (delayMs <= 0) {
+			this.trackAutoFlush(this.flushNow(opencodeSessionId, source));
+			return;
+		}
+		const existing = this.autoFlushTimers.get(key);
+		if (existing) clearTimeout(existing);
+		const timer = setTimeout(() => {
+			this.autoFlushTimers.delete(key);
+			this.trackAutoFlush(this.flushNow(opencodeSessionId, source));
+		}, delayMs);
+		if (typeof timer === "object" && "unref" in timer) timer.unref();
+		this.autoFlushTimers.set(key, timer);
+	}
+
+	private async flushNow(opencodeSessionId: string, source: string): Promise<void> {
+		if (Date.now() / 1000 < this.authBackoffUntil) return;
+		const key = `${source}:${opencodeSessionId}`;
+		if (this.sessionFlushing.has(key)) {
+			this.autoFlushPending.add(key);
+			return;
+		}
+		this.sessionFlushing.add(key);
+		const existing = this.autoFlushTimers.get(key);
+		if (existing) {
+			clearTimeout(existing);
+			this.autoFlushTimers.delete(key);
+		}
+		try {
+			await flushRawEvents(this.store, this.ingestOpts, {
+				opencodeSessionId,
+				source,
+				cwd: null,
+				project: null,
+				startedAt: null,
+				maxEvents: null,
+			});
+		} catch (exc) {
+			if (exc instanceof ObserverAuthError) {
+				this.handleAuthError(exc);
+				return;
+			}
+			console.error(
+				`codemem: raw event auto flush failed for ${opencodeSessionId}:`,
+				exc instanceof Error ? exc.message : exc,
+			);
+		} finally {
+			this.sessionFlushing.delete(key);
+			if (this.autoFlushPending.delete(key)) {
+				this.scheduleAutoFlush(opencodeSessionId, source);
+			}
+		}
 	}
 
 	/** Schedule the next tick after the configured interval. */
@@ -295,6 +399,9 @@ export class RawEventSweeper {
 		for (const item of queueSessions) {
 			const { source, streamId } = item;
 			if (!streamId) continue;
+			const key = `${source}:${streamId}`;
+			if (this.sessionFlushing.has(key)) continue;
+			this.sessionFlushing.add(key);
 
 			try {
 				await flushRawEvents(this.store, this.ingestOpts, {
@@ -315,6 +422,8 @@ export class RawEventSweeper {
 					`codemem: raw event queue worker flush failed for ${streamId}:`,
 					exc instanceof Error ? exc.message : exc,
 				);
+			} finally {
+				this.sessionFlushing.delete(key);
 			}
 		}
 
@@ -324,6 +433,9 @@ export class RawEventSweeper {
 			const { source, streamId } = item;
 			if (!streamId) continue;
 			if (drained.has(`${source}:${streamId}`)) continue;
+			const key = `${source}:${streamId}`;
+			if (this.sessionFlushing.has(key)) continue;
+			this.sessionFlushing.add(key);
 
 			try {
 				await flushRawEvents(this.store, this.ingestOpts, {
@@ -343,6 +455,8 @@ export class RawEventSweeper {
 					`codemem: raw event sweeper flush failed for ${streamId}:`,
 					exc instanceof Error ? exc.message : exc,
 				);
+			} finally {
+				this.sessionFlushing.delete(key);
 			}
 		}
 	}
