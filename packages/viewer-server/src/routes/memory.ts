@@ -3,7 +3,7 @@
  */
 
 import type { MemoryStore } from "@codemem/core";
-import { fromJson, parseStrictInteger, schema } from "@codemem/core";
+import { buildFilterClausesWithContext, fromJson, parseStrictInteger, schema } from "@codemem/core";
 import { desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
@@ -66,6 +66,93 @@ function projectBasename(raw: string): string {
 	return parts[parts.length - 1] ?? raw;
 }
 
+function normalizeScope(raw: string | undefined): "mine" | "theirs" | undefined {
+	const value = String(raw ?? "")
+		.trim()
+		.toLowerCase();
+	if (value === "mine" || value === "theirs") return value;
+	return undefined;
+}
+
+function queryMemoryPage(
+	store: MemoryStore,
+	options: {
+		limit: number;
+		offset: number;
+		project?: string;
+		scope?: "mine" | "theirs";
+	},
+): Record<string, unknown>[] {
+	const filters: Record<string, unknown> = {};
+	if (options.project) filters.project = options.project;
+	if (options.scope) filters.ownership_scope = options.scope;
+
+	const filterResult = buildFilterClausesWithContext(filters, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+	});
+	const clauses = ["memory_items.active = 1", ...filterResult.clauses];
+	const where = clauses.join(" AND ");
+	const from = filterResult.joinSessions
+		? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
+		: "memory_items";
+
+	const rows = store.db
+		.prepare(
+			`SELECT memory_items.* FROM ${from}
+			 WHERE ${where}
+			 ORDER BY memory_items.created_at DESC
+			 LIMIT ? OFFSET ?`,
+		)
+		.all(...filterResult.params, options.limit + 1, options.offset) as Record<string, unknown>[];
+
+	return rows.map((row) => ({
+		...row,
+		metadata_json: fromJson((row.metadata_json as string) ?? null),
+	}));
+}
+
+function isSummaryLikeMemory(item: Record<string, unknown>): boolean {
+	if (String(item.kind ?? "").toLowerCase() === "session_summary") return true;
+	const metadata = (item.metadata_json ?? {}) as Record<string, unknown>;
+	if (metadata.is_summary === true) return true;
+	return (
+		String(metadata.source ?? "")
+			.trim()
+			.toLowerCase() === "observer_summary"
+	);
+}
+
+function selectMemoryPage(
+	store: MemoryStore,
+	options: {
+		limit: number;
+		offset: number;
+		project?: string;
+		scope?: "mine" | "theirs";
+		matcher: (item: Record<string, unknown>) => boolean;
+	},
+): Record<string, unknown>[] {
+	const pageSize = Math.max(options.limit + options.offset + 10, 50);
+	let rawOffset = 0;
+	const matched: Record<string, unknown>[] = [];
+
+	while (matched.length < options.offset + options.limit + 1) {
+		const page = queryMemoryPage(store, {
+			limit: pageSize,
+			offset: rawOffset,
+			project: options.project,
+			scope: options.scope,
+		});
+		if (page.length === 0) break;
+		matched.push(...page.filter(options.matcher));
+		if (page.length < pageSize) break;
+		rawOffset += page.length;
+	}
+
+	return matched.slice(options.offset, options.offset + options.limit + 1);
+}
+
 export function memoryRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 
@@ -113,7 +200,10 @@ export function memoryRoutes(getStore: StoreFactory) {
 	});
 
 	// GET /api/observations (aliased from /api/memories)
-	app.get("/api/memories", (c) => c.redirect("/api/observations", 301));
+	app.get("/api/memories", (c) => {
+		const search = new URL(c.req.url).search;
+		return c.redirect(`/api/observations${search}`, 301);
+	});
 
 	app.get("/api/observations", (c) => {
 		const store = getStore();
@@ -121,19 +211,14 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const limit = Math.max(1, queryInt(c.req.query("limit"), 20));
 			const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
 			const project = c.req.query("project") || undefined;
-			const kinds = [
-				"bugfix",
-				"change",
-				"decision",
-				"discovery",
-				"exploration",
-				"feature",
-				"refactor",
-			];
-			const filters: Record<string, unknown> = {};
-			if (project) filters.project = project;
-
-			const items = store.recentByKinds(kinds, limit + 1, filters, offset);
+			const scope = normalizeScope(c.req.query("scope"));
+			const items = selectMemoryPage(store, {
+				limit,
+				offset,
+				project,
+				scope,
+				matcher: (item) => !isSummaryLikeMemory(item),
+			});
 			const hasMore = items.length > limit;
 			const result = hasMore ? items.slice(0, limit) : items;
 			const asRecords = result as unknown as Record<string, unknown>[];
@@ -157,10 +242,14 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
 			const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
 			const project = c.req.query("project") || undefined;
-			const filters: Record<string, unknown> = { kind: "session_summary" };
-			if (project) filters.project = project;
-
-			const items = store.recent(limit + 1, filters, offset);
+			const scope = normalizeScope(c.req.query("scope"));
+			const items = selectMemoryPage(store, {
+				limit,
+				offset,
+				project,
+				scope,
+				matcher: (item) => isSummaryLikeMemory(item),
+			});
 			const hasMore = items.length > limit;
 			const result = hasMore ? items.slice(0, limit) : items;
 			const asRecords = result as unknown as Record<string, unknown>[];
@@ -191,6 +280,22 @@ export function memoryRoutes(getStore: StoreFactory) {
 			let artifacts: number;
 			let memories: number;
 			let observations: number;
+			const countObservations = (scopeProject?: string) => {
+				let offset = 0;
+				let total = 0;
+				while (true) {
+					const page = queryMemoryPage(store, {
+						limit: 200,
+						offset,
+						project: scopeProject,
+					});
+					if (page.length === 0) break;
+					total += page.filter((item) => !isSummaryLikeMemory(item)).length;
+					if (page.length < 200) break;
+					offset += page.length;
+				}
+				return total;
+			};
 			if (project) {
 				prompts = count("SELECT COUNT(*) AS total FROM user_prompts WHERE project = ?", project);
 				artifacts = count(
@@ -205,19 +310,12 @@ export function memoryRoutes(getStore: StoreFactory) {
 					 WHERE sessions.project = ?`,
 					project,
 				);
-				observations = count(
-					`SELECT COUNT(*) AS total FROM memory_items
-					 JOIN sessions ON sessions.id = memory_items.session_id
-					 WHERE kind != 'session_summary' AND sessions.project = ?`,
-					project,
-				);
+				observations = countObservations(project);
 			} else {
 				prompts = count("SELECT COUNT(*) AS total FROM user_prompts");
 				artifacts = count("SELECT COUNT(*) AS total FROM artifacts");
 				memories = count("SELECT COUNT(*) AS total FROM memory_items");
-				observations = count(
-					"SELECT COUNT(*) AS total FROM memory_items WHERE kind != 'session_summary'",
-				);
+				observations = countObservations();
 			}
 			const total = prompts + artifacts + memories;
 			return c.json({ total, memories, artifacts, prompts, observations });
@@ -291,7 +389,12 @@ export function memoryRoutes(getStore: StoreFactory) {
 	// POST /api/memories/visibility
 	app.post("/api/memories/visibility", async (c) => {
 		const store = getStore();
-		const body = await c.req.json<Record<string, unknown>>();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid JSON" }, 400);
+		}
 		const memoryId = parseStrictInteger(
 			typeof body.memory_id === "string" ? body.memory_id : String(body.memory_id ?? ""),
 		);

@@ -516,7 +516,18 @@ describe("buildFilterClauses", () => {
 			{ actorId: "local:device-1", deviceId: "device-1" },
 		);
 		expect(result.clauses).toEqual([
-			"(memory_items.actor_id = ? OR memory_items.origin_device_id = ?)",
+			"(COALESCE(memory_items.actor_id, '') = ? OR COALESCE(memory_items.origin_device_id, '') = ?)",
+		]);
+		expect(result.params).toEqual(["local:device-1", "device-1"]);
+	});
+
+	it("builds ownership_scope theirs clause with null-safe comparisons", () => {
+		const result = buildFilterClausesWithContext(
+			{ ownership_scope: "theirs" },
+			{ actorId: "local:device-1", deviceId: "device-1" },
+		);
+		expect(result.clauses).toEqual([
+			"(COALESCE(memory_items.actor_id, '') != ? AND COALESCE(memory_items.origin_device_id, '') != ?)",
 		]);
 		expect(result.params).toEqual(["local:device-1", "device-1"]);
 	});
