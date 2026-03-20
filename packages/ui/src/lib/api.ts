@@ -45,7 +45,7 @@ export async function loadMemoriesPage(
   options?: { limit?: number; offset?: number; scope?: string },
 ): Promise<any> {
   const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
-  return fetchJson(`/api/memories?${query}`);
+  return fetchJson(`/api/observations?${query}`);
 }
 
 export async function updateMemoryVisibility(memoryId: number, visibility: 'private' | 'shared'): Promise<any> {

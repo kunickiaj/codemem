@@ -45,6 +45,8 @@ function createTestStore(): MemoryStore {
 		db: rawDb,
 		dbPath: ":memory:",
 		deviceId: "test-device-001",
+		actorId: "local:test-device-001",
+		actorDisplayName: "Test User",
 		stats() {
 			return {
 				database: {
@@ -63,6 +65,49 @@ function createTestStore(): MemoryStore {
 			rawDb.close();
 		},
 	} as unknown as MemoryStore;
+}
+
+function insertTestMemory(
+	store: MemoryStore,
+	options: {
+		sessionId: number;
+		kind: string;
+		title: string;
+		bodyText?: string;
+		metadata?: Record<string, unknown>;
+		actorId?: string | null;
+		originDeviceId?: string | null;
+		createdAt?: string;
+		active?: boolean;
+	},
+) {
+	const now = options.createdAt ?? new Date().toISOString();
+	store.db
+		.prepare(
+			`INSERT INTO memory_items (
+				session_id, kind, title, subtitle, body_text, confidence, tags_text, active,
+				created_at, updated_at, metadata_json, actor_id, actor_display_name, visibility,
+				workspace_id, workspace_kind, origin_device_id, origin_source, trust_state,
+				facts, narrative, concepts, files_read, files_modified, prompt_number, rev, import_key
+			) VALUES (?, ?, ?, NULL, ?, 0.5, '', ?, ?, ?, ?, ?, ?, 'shared', 'shared:default', 'shared', ?, ?, 'trusted', NULL, NULL, NULL, NULL, NULL, NULL, 1, ?)`,
+		)
+		.run(
+			options.sessionId,
+			options.kind,
+			options.title,
+			options.bodyText ?? options.title,
+			options.active === false ? 0 : 1,
+			now,
+			now,
+			JSON.stringify(options.metadata ?? {}),
+			options.actorId === undefined ? "local:test-device-001" : options.actorId,
+			options.actorId == null || options.actorId === "local:test-device-001"
+				? "Test User"
+				: options.actorId,
+			options.originDeviceId === undefined ? "test-device-001" : options.originDeviceId,
+			String(options.metadata?.source ?? "test"),
+			`${options.kind}-${options.title}-${now}`,
+		);
 }
 
 /** Create a test Hono app backed by a fresh in-memory DB. */
@@ -145,6 +190,221 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).toHaveProperty("projects");
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("memory feed routes", () => {
+		it("applies mine/theirs scope filters to observations", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "bugfix",
+					title: "Mine",
+					actorId: "local:test-device-001",
+					originDeviceId: "test-device-001",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "feature",
+					title: "Theirs",
+					actorId: "peer:other",
+					originDeviceId: "peer-device-002",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Null owned fields",
+					actorId: null,
+					originDeviceId: null,
+					metadata: { source: "observer" },
+				});
+
+				const mineRes = await app.request("/api/observations?scope=mine");
+				expect(mineRes.status).toBe(200);
+				const mineItems = ((await mineRes.json()) as { items: Array<{ title: string }> }).items;
+				expect(mineItems.map((item) => item.title)).toEqual(["Mine"]);
+
+				const theirsRes = await app.request("/api/observations?scope=theirs");
+				expect(theirsRes.status).toBe(200);
+				const theirsItems = ((await theirsRes.json()) as { items: Array<{ title: string }> }).items;
+				expect(theirsItems.map((item) => item.title).sort()).toEqual([
+					"Null owned fields",
+					"Theirs",
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("preserves query parameters on the /api/memories alias", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "bugfix",
+					title: "Mine",
+					bodyText: "Owned by local actor",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "feature",
+					title: "Theirs",
+					bodyText: "Owned by remote actor",
+					actorId: "peer:other",
+					originDeviceId: "peer-device-002",
+				});
+
+				const aliasRes = await app.request(
+					"/api/memories?project=test-project&scope=mine&limit=1&offset=0",
+				);
+				expect(aliasRes.status).toBe(301);
+				expect(aliasRes.headers.get("location")).toBe(
+					"/api/observations?project=test-project&scope=mine&limit=1&offset=0",
+				);
+
+				const res = await app.request(aliasRes.headers.get("location")!);
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					items: Array<{ title: string }>;
+					pagination: { limit: number; offset: number };
+				};
+				expect(body.items.map((item) => item.title)).toEqual(["Mine"]);
+				expect(body.pagination.limit).toBe(1);
+				expect(body.pagination.offset).toBe(0);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("routes observer summaries into summaries and excludes them from observations", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Observer summary memory",
+					bodyText: "## Request\nFix feed\n\n## Completed\nShipped route fix",
+					metadata: {
+						is_summary: true,
+						source: "observer_summary",
+						request: "Fix feed",
+						completed: "Shipped route fix",
+					},
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Legacy summary",
+					metadata: { request: "Legacy request" },
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Regular change",
+					metadata: { source: "observer" },
+				});
+
+				const summariesRes = await app.request("/api/summaries");
+				expect(summariesRes.status).toBe(200);
+				const summaries = (
+					(await summariesRes.json()) as { items: Array<{ title: string; kind: string }> }
+				).items;
+				expect(summaries).toHaveLength(2);
+				expect(summaries.map((item) => item.title).sort()).toEqual([
+					"Legacy summary",
+					"Observer summary memory",
+				]);
+
+				const observationsRes = await app.request("/api/observations");
+				expect(observationsRes.status).toBe(200);
+				const observations = ((await observationsRes.json()) as { items: Array<{ title: string }> })
+					.items;
+				expect(observations.map((item) => item.title)).toContain("Regular change");
+				expect(observations.map((item) => item.title)).not.toContain("Observer summary memory");
+				expect(observations.map((item) => item.title)).not.toContain("Legacy summary");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("keeps session observation counts aligned with active feed items", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "bugfix",
+					title: "Active observation",
+					bodyText: "Still visible",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "bugfix",
+					title: "Inactive observation",
+					bodyText: "Soft deleted",
+					active: false,
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Observer summary memory",
+					bodyText: "## Request\nCount summary\n\n## Completed\nDone",
+					metadata: { is_summary: true, source: "observer_summary" },
+				});
+
+				const res = await app.request("/api/session");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { observations: number };
+				expect(body.observations).toBe(1);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("tolerates malformed metadata when classifying summaries", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Broken metadata row",
+					bodyText: "Should still render as observation",
+				});
+				store.db
+					.prepare("UPDATE memory_items SET metadata_json = ? WHERE title = ?")
+					.run("{not-json", "Broken metadata row");
+
+				const observationsRes = await app.request("/api/observations");
+				expect(observationsRes.status).toBe(200);
+				const observations = ((await observationsRes.json()) as { items: Array<{ title: string }> })
+					.items;
+				expect(observations.map((item) => item.title)).toContain("Broken metadata row");
+
+				const summariesRes = await app.request("/api/summaries");
+				expect(summariesRes.status).toBe(200);
 			} finally {
 				cleanup();
 			}
@@ -395,6 +655,25 @@ describe("viewer-server", () => {
 			try {
 				const res = await app.request("/api/stats");
 				expect(res.status).toBe(200);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns 400 for invalid JSON on visibility updates", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/memories/visibility", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: "{bad json",
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("invalid JSON");
 			} finally {
 				cleanup();
 			}
