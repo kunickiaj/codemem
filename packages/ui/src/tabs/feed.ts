@@ -181,7 +181,35 @@ function getSummaryObject(item: any): Record<string, any> | null {
   const metadata = item?.metadata_json;
   if (looksLikeSummary(metadata)) return metadata;
   if (looksLikeSummary(metadata?.summary)) return metadata.summary;
+  const bodyText = String(item?.body_text || '').trim();
+  if (bodyText.includes('## ')) {
+    const headingMap: Record<string, string> = {
+      request: 'request',
+      completed: 'completed',
+      learned: 'learned',
+      investigated: 'investigated',
+      'next steps': 'next_steps',
+      notes: 'notes',
+    };
+    const parsed: Record<string, string> = {};
+    const sectionRe = /(?:^|\n)##\s+([^\n]+)\n([\s\S]*?)(?=\n##\s+|$)/g;
+    for (let match = sectionRe.exec(bodyText); match; match = sectionRe.exec(bodyText)) {
+      const rawLabel = String(match[1] || '').trim().toLowerCase();
+      const key = headingMap[rawLabel];
+      const content = String(match[2] || '').trim();
+      if (key && content) parsed[key] = content;
+    }
+    if (looksLikeSummary(parsed)) return parsed;
+  }
   return null;
+}
+
+function isSummaryLikeItem(item: any, metadata: any): boolean {
+  const kindValue = String(item?.kind || '').toLowerCase();
+  if (kindValue === 'session_summary') return true;
+  if (metadata?.is_summary === true) return true;
+  const source = String(metadata?.source || '').trim().toLowerCase();
+  return source === 'observer_summary';
 }
 
 function getFactsList(item: any): string[] {
@@ -331,6 +359,23 @@ function renderSummaryObject(summary: Record<string, any>): HTMLElement | null {
 function renderFacts(facts: string[]): HTMLElement | null {
   const trimmed = facts.map((f) => String(f || '').trim()).filter(Boolean);
   if (!trimmed.length) return null;
+  const labeledFacts = trimmed.every((f) => /.+?:\s+.+/.test(f));
+  if (labeledFacts) {
+    const container = el('div', 'feed-body facts') as HTMLDivElement;
+    trimmed.forEach((fact) => {
+      const splitAt = fact.indexOf(':');
+      const labelText = fact.slice(0, splitAt).trim();
+      const contentText = fact.slice(splitAt + 1).trim();
+      if (!labelText || !contentText) return;
+      const row = el('div', 'summary-section');
+      const label = el('div', 'summary-section-label', labelText);
+      const value = el('div', 'summary-section-content');
+      value.innerHTML = renderMarkdownSafe(contentText);
+      row.append(label, value);
+      container.appendChild(row);
+    });
+    if (container.childElementCount > 0) return container;
+  }
   const container = el('div', 'feed-body');
   const list = document.createElement('ul');
   trimmed.forEach((f) => { const li = document.createElement('li'); li.textContent = f; list.appendChild(li); });
@@ -377,10 +422,11 @@ function createTagChip(tag: any): HTMLElement | null {
 
 function renderFeedItem(item: any): HTMLElement {
   const kindValue = String(item.kind || 'session_summary').toLowerCase();
-  const isSessionSummary = kindValue === 'session_summary';
   const metadata = mergeMetadata(item?.metadata_json);
+  const isSessionSummary = isSummaryLikeItem(item, metadata);
+  const displayKindValue = isSessionSummary ? 'session_summary' : kindValue;
 
-  const card = el('div', `feed-item ${kindValue}`.trim());
+  const card = el('div', `feed-item ${displayKindValue}`.trim());
   const rowKey = itemKey(item);
   (card as any).dataset.key = rowKey;
 
@@ -396,7 +442,7 @@ function renderFeedItem(item: any): HTMLElement {
   const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;
   const title = el('div', 'feed-title title');
   title.innerHTML = highlightText(displayTitle, state.feedQuery);
-  const kind = el('span', `kind-pill ${kindValue}`.trim(), kindValue.replace(/_/g, ' '));
+  const kind = el('span', `kind-pill ${displayKindValue}`.trim(), displayKindValue.replace(/_/g, ' '));
   titleWrap.append(kind, title);
 
   const rightWrap = el('div', 'feed-actions');
@@ -409,7 +455,7 @@ function renderFeedItem(item: any): HTMLElement {
   let bodyNode: HTMLElement = el('div', 'feed-body');
 
   if (isSessionSummary) {
-    const summaryObj = getSummaryObject({ metadata_json: metadata });
+    const summaryObj = getSummaryObject({ ...item, metadata_json: metadata });
     const rendered = summaryObj ? renderSummaryObject(summaryObj) : null;
     bodyNode = rendered || renderNarrative(String(item.body_text || '')) || bodyNode;
   } else {
@@ -566,8 +612,8 @@ function renderFeedItem(item: any): HTMLElement {
 /* ── Filtering ───────────────────────────────────────────── */
 
 function filterByType(items: any[]): any[] {
-  if (state.feedTypeFilter === 'observations') return items.filter((i) => String(i.kind || '').toLowerCase() !== 'session_summary');
-  if (state.feedTypeFilter === 'summaries') return items.filter((i) => String(i.kind || '').toLowerCase() === 'session_summary');
+  if (state.feedTypeFilter === 'observations') return items.filter((i) => !isSummaryLikeItem(i, mergeMetadata(i?.metadata_json)));
+  if (state.feedTypeFilter === 'summaries') return items.filter((i) => isSummaryLikeItem(i, mergeMetadata(i?.metadata_json)));
   return items;
 }
 

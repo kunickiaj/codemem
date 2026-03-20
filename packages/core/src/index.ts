@@ -66,7 +66,7 @@ export {
 	mergeSummaryMetadata,
 	readImportPayload,
 } from "./export-import.js";
-export { buildFilterClauses } from "./filters.js";
+export { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 // Ingest pipeline
 export {
 	budgetToolEvents,

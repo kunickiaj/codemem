@@ -122,11 +122,14 @@ export function buildFilterClausesWithContext(
 		.trim()
 		.toLowerCase();
 	if (ownership && (ownershipScope === "mine" || ownershipScope === "theirs")) {
-		const ownedClause = "(memory_items.actor_id = ? OR memory_items.origin_device_id = ?)";
+		const ownedClause =
+			"(COALESCE(memory_items.actor_id, '') = ? OR COALESCE(memory_items.origin_device_id, '') = ?)";
 		if (ownershipScope === "mine") {
 			clauses.push(ownedClause);
 		} else {
-			clauses.push(`NOT ${ownedClause}`);
+			clauses.push(
+				"(COALESCE(memory_items.actor_id, '') != ? AND COALESCE(memory_items.origin_device_id, '') != ?)",
+			);
 		}
 		params.push(ownership.actorId, ownership.deviceId);
 	}
