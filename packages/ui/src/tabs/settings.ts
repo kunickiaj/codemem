@@ -97,6 +97,9 @@ function inferObserverModel(runtime: string, provider: string, configuredModel: 
   if (provider === 'anthropic') {
     return { model: DEFAULT_ANTHROPIC_MODEL, source: 'Recommended (Anthropic provider)' };
   }
+  if (provider === 'opencode') {
+    return { model: 'opencode/gpt-5.1-codex-mini', source: 'Recommended (OpenCode Zen provider)' };
+  }
   if (provider && provider !== 'openai') {
     return { model: 'provider default', source: 'Recommended (provider default)' };
   }

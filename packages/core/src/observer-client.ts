@@ -18,6 +18,7 @@ import {
 	extractOAuthAccess,
 	extractOAuthAccountId,
 	extractOAuthExpires,
+	extractProviderApiKey,
 	loadOpenCodeOAuthCache,
 	ObserverAuthAdapter,
 	type ObserverAuthMaterial,
@@ -28,7 +29,10 @@ import {
 import {
 	getOpenCodeProviderConfig,
 	getProviderApiKey,
-	listCustomProviders,
+	listConfiguredOpenCodeProviders,
+	resolveBuiltInProviderDefaultModel,
+	resolveBuiltInProviderFromModel,
+	resolveBuiltInProviderModel,
 	resolveCustomProviderDefaultModel,
 	resolveCustomProviderFromModel,
 	resolveCustomProviderModel,
@@ -41,7 +45,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
-const DEFAULT_OPENAI_MODEL = "gpt-4.1-mini";
+const DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini";
 
 const ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -506,7 +510,7 @@ export class ObserverClient {
 		const model = (cfg.observerModel ?? "").trim();
 
 		// Collect known custom providers
-		const customProviders = listCustomProviders();
+		const customProviders = listConfiguredOpenCodeProviders();
 		if (provider && provider !== "openai" && provider !== "anthropic") {
 			customProviders.add(provider);
 		}
@@ -518,9 +522,18 @@ export class ObserverClient {
 			if (inferred) resolved = inferred;
 		}
 		if (!resolved) {
+			const builtIn = resolveBuiltInProviderFromModel(model);
+			if (builtIn) resolved = builtIn;
+		}
+		if (!resolved) {
 			resolved = resolveOAuthProvider(null, model || DEFAULT_OPENAI_MODEL);
 		}
-		if (resolved !== "openai" && resolved !== "anthropic" && !customProviders.has(resolved)) {
+		if (
+			resolved !== "openai" &&
+			resolved !== "anthropic" &&
+			resolved !== "opencode" &&
+			!customProviders.has(resolved)
+		) {
 			resolved = "openai";
 		}
 		this.provider = resolved;
@@ -538,7 +551,10 @@ export class ObserverClient {
 		} else if (resolved === "openai") {
 			this.model = DEFAULT_OPENAI_MODEL;
 		} else {
-			this.model = resolveCustomProviderDefaultModel(resolved) ?? "";
+			this.model =
+				resolveBuiltInProviderDefaultModel(resolved) ??
+				resolveCustomProviderDefaultModel(resolved) ??
+				"";
 		}
 
 		this.maxChars = cfg.observerMaxChars;
@@ -671,13 +687,13 @@ export class ObserverClient {
 		if (this.provider !== "openai" && this.provider !== "anthropic") {
 			// Custom provider — resolve base URL, model ID, and headers from OpenCode config
 			const providerConfig = getOpenCodeProviderConfig(this.provider);
-			const [baseUrl, modelId, providerHeaders] = resolveCustomProviderModel(
-				this.provider,
-				this.model,
-			);
+			const hasExplicitProviderConfig = Object.keys(providerConfig).length > 0;
+			const [baseUrl, modelId, providerHeaders] = hasExplicitProviderConfig
+				? resolveCustomProviderModel(this.provider, this.model)
+				: resolveBuiltInProviderModel(this.provider, this.model);
 
 			// Persist resolved values for use in _callOpenAIDirect
-			if (baseUrl) this._customBaseUrl = baseUrl;
+			if (baseUrl && !this._customBaseUrl) this._customBaseUrl = baseUrl;
 			if (modelId) this.model = modelId;
 			if (providerHeaders && Object.keys(providerHeaders).length > 0) {
 				this._observerHeaders = { ...this._observerHeaders, ...providerHeaders };
@@ -686,7 +702,9 @@ export class ObserverClient {
 			const effectiveBaseUrl = this._customBaseUrl;
 			if (!effectiveBaseUrl) return;
 
-			const apiKey = getProviderApiKey(providerConfig) || this._apiKey;
+			const cachedApiKey =
+				this.provider === "opencode" ? extractProviderApiKey(oauthCache, this.provider) : null;
+			const apiKey = getProviderApiKey(providerConfig) || this._apiKey || cachedApiKey;
 
 			this.auth = this.authAdapter.resolve({
 				explicitToken: apiKey,

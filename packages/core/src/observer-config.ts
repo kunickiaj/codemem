@@ -258,6 +258,55 @@ export function listCustomProviders(): Set<string> {
 	return new Set(Object.keys(providerConfig));
 }
 
+const BUILTIN_MODEL_PREFIX_PROVIDERS = new Set(["openai", "anthropic", "opencode"]);
+
+function extractProviderPrefix(value: unknown): string | null {
+	if (typeof value !== "string" || !value.includes("/")) return null;
+	const prefix = value.split("/")[0]?.trim().toLowerCase();
+	return prefix ? prefix : null;
+}
+
+export function listConfiguredOpenCodeProviders(): Set<string> {
+	const providers = listCustomProviders();
+	const config = loadOpenCodeConfig();
+	for (const key of ["model", "small_model"]) {
+		const prefix = extractProviderPrefix(config[key]);
+		if (prefix) providers.add(prefix);
+	}
+	return providers;
+}
+
+export function listObserverProviderOptions(): string[] {
+	const providers = listConfiguredOpenCodeProviders();
+	for (const provider of BUILTIN_MODEL_PREFIX_PROVIDERS) providers.add(provider);
+	return Array.from(providers).sort((a, b) => a.localeCompare(b));
+}
+
+export function resolveBuiltInProviderFromModel(model: string): string | null {
+	const prefix = extractProviderPrefix(model);
+	return prefix && BUILTIN_MODEL_PREFIX_PROVIDERS.has(prefix) ? prefix : null;
+}
+
+export function resolveBuiltInProviderDefaultModel(provider: string): string | null {
+	if (provider === "openai") return "gpt-5.1-codex-mini";
+	if (provider === "anthropic") return "claude-sonnet-4-20250514";
+	if (provider === "opencode") return "opencode/gpt-5.1-codex-mini";
+	return null;
+}
+
+export function resolveBuiltInProviderModel(
+	provider: string,
+	modelName: string,
+): [baseUrl: string | null, modelId: string | null, headers: Record<string, string>] {
+	if (provider !== "opencode") {
+		return [null, modelName || resolveBuiltInProviderDefaultModel(provider), {}];
+	}
+	const name = modelName || resolveBuiltInProviderDefaultModel(provider) || "";
+	const prefix = `${provider}/`;
+	const shortName = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+	return ["https://opencode.ai/zen/v1", shortName || null, {}];
+}
+
 /** Extract provider prefix from a model string like `"myprovider/model-name"`. */
 export function resolveCustomProviderFromModel(
 	model: string,
