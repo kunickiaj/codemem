@@ -12,6 +12,7 @@ import {
 	CODEMEM_CONFIG_ENV_OVERRIDES,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
+	listObserverProviderOptions,
 	type RawEventSweeper,
 	readCodememConfigFile,
 	stripJsonComments,
@@ -78,7 +79,7 @@ export interface ConfigRouteOptions {
 }
 
 function loadProviderOptions(): string[] {
-	return ["openai", "anthropic", "google", "xai", "groq", "deepseek", "mistral", "together"];
+	return listObserverProviderOptions();
 }
 
 function getConfigPath(): string {
