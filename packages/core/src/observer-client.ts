@@ -586,6 +586,8 @@ export class ObserverClient {
 			method = "anthropic_consumer";
 		} else if (this._codexAccess) {
 			method = "codex_consumer";
+		} else if (this.provider === "opencode" && this.auth.token) {
+			method = "sdk_client";
 		} else if (this.auth.token) {
 			method = "api_direct";
 		}

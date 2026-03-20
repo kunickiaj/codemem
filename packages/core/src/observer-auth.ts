@@ -103,6 +103,36 @@ export function extractProviderApiKey(
 	return typeof key === "string" && key ? key : null;
 }
 
+/** Probe which credential sources are currently available per built-in provider. */
+export function probeAvailableCredentials(): Record<
+	string,
+	{ oauth: boolean; api_key: boolean; env_var: boolean }
+> {
+	const cache = loadOpenCodeOAuthCache();
+	const now = Date.now();
+	const explicitApiKey = Boolean(process.env.CODEMEM_OBSERVER_API_KEY);
+	const providers = [
+		["openai", "OPENAI_API_KEY"],
+		["anthropic", "ANTHROPIC_API_KEY"],
+		["opencode", null],
+	] as const;
+	const result: Record<string, { oauth: boolean; api_key: boolean; env_var: boolean }> = {};
+	for (const [provider, envVar] of providers) {
+		const oauthAccess = extractOAuthAccess(cache, provider);
+		const oauthExpires = extractOAuthExpires(cache, provider);
+		const oauthValid =
+			provider === "opencode"
+				? Boolean(extractProviderApiKey(cache, provider))
+				: Boolean(oauthAccess) && (oauthExpires == null || oauthExpires > now);
+		result[provider] = {
+			oauth: oauthValid,
+			api_key: explicitApiKey,
+			env_var: envVar ? Boolean(process.env[envVar]) : false,
+		};
+	}
+	return result;
+}
+
 /** Extract account ID from OAuth cache for a given provider. */
 export function extractOAuthAccountId(
 	cache: Record<string, unknown>,

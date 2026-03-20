@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ObserverClient } from "@codemem/core";
 import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@codemem/core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
@@ -47,11 +48,13 @@ export function closeStore(): void {
 export interface AppOptions {
 	storeFactory?: () => MemoryStore;
 	sweeper?: RawEventSweeper | null;
+	observer?: ObserverClient | null;
 }
 
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
+	const observer = opts?.observer ?? null;
 	const app = new Hono();
 
 	// CORS / origin guard
@@ -61,7 +64,14 @@ export function createApp(opts?: AppOptions) {
 	// API routes
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
-	app.route("/", observerStatusRoutes({ getStore: storeFactory, getSweeper: () => sweeper }));
+	app.route(
+		"/",
+		observerStatusRoutes({
+			getStore: storeFactory,
+			getSweeper: () => sweeper,
+			getObserver: () => observer,
+		}),
+	);
 	app.route("/", configRoutes({ getSweeper: () => sweeper }));
 	app.route("/", rawEventsRoutes(storeFactory, sweeper));
 	app.route("/", syncRoutes(storeFactory));
