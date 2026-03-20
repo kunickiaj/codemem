@@ -84,3 +84,37 @@ jobs:
 
       - name: Run plugin unit tests
         run: pnpm --filter codemem test:plugin && pnpm --filter codemem test:smoke
+
+  packaged-plugin-smoke:
+    name: Packaged Plugin Smoke Test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Copy viewer static assets
+        run: |
+          mkdir -p packages/viewer-server/static
+          cp codemem/viewer_static/index.html codemem/viewer_static/favicon.svg packages/viewer-server/static/
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Run packed artifact smoke test
+        run: pnpm --filter codemem test:packed-artifact
