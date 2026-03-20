@@ -1,0 +1,54 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { beforeAll, describe, expect, it } from "vitest";
+
+const packageDir = dirname(fileURLToPath(import.meta.url));
+const cliPackageRoot = resolve(packageDir, "..");
+const workspaceRoot = resolve(cliPackageRoot, "..", "..");
+const distEntrypoint = resolve(cliPackageRoot, "dist/index.js");
+const cliPackageVersion = JSON.parse(readFileSync(resolve(cliPackageRoot, "package.json"), "utf8"))
+	.version as string;
+
+function runCommand(command: string, args: string[], cwd = cliPackageRoot) {
+	return spawnSync(command, args, {
+		cwd,
+		encoding: "utf8",
+		env: process.env,
+	});
+}
+
+function runCli(args: string[]) {
+	return runCommand(process.execPath, [distEntrypoint, ...args]);
+}
+
+describe("cli smoke", () => {
+	beforeAll(() => {
+		const build = runCommand("pnpm", ["run", "build"], workspaceRoot);
+
+		expect(build.status).toBe(0);
+	});
+
+	it("prints top-level help", () => {
+		const result = runCli(["--help"]);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("persistent memory for AI coding agents");
+		expect(result.stdout).toContain("serve");
+		expect(result.stdout).toContain("search");
+	});
+
+	it("prints the current version", () => {
+		const result = runCli(["version"]);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toBe(cliPackageVersion);
+	});
+
+	it("emits an executable dist entrypoint", () => {
+		const mode = statSync(distEntrypoint).mode & 0o777;
+
+		expect(mode & 0o111).not.toBe(0);
+	});
+});

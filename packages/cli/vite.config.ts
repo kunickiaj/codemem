@@ -35,6 +35,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "cli",
-		exclude: [".opencode/**", "node_modules/**"],
+		exclude: ["src/index.smoke.test.ts", ".opencode/**", "node_modules/**"],
 	},
 });

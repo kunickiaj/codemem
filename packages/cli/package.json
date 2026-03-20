@@ -16,6 +16,9 @@
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist",
+		"test": "pnpm exec vitest run",
+		"test:plugin": "pnpm exec vitest run --config .opencode/vitest.config.ts",
+		"test:smoke": "pnpm exec vitest run --config smoke.vitest.config.ts",
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {

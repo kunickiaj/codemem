@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { __testUtils } from "../plugins/codemem.js";
 
@@ -312,7 +313,12 @@ describe("opencode adapter event mapping", () => {
   });
 
   test("pinned backend version matches package version", () => {
-    const packageJsonPath = resolve(import.meta.dir, "..", "..", "package.json");
+    const packageJsonPath = resolve(
+      fileURLToPath(new URL(".", import.meta.url)),
+      "..",
+      "..",
+      "package.json",
+    );
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 
     expect(__testUtils.PINNED_BACKEND_VERSION).toBe(packageJson.version);
