@@ -412,16 +412,56 @@ describe("viewer-server", () => {
 	});
 
 	describe("GET /api/observer-status", () => {
-		it("returns stub observer status", async () => {
-			const { app, cleanup } = createTestApp();
+		it("returns live observer status and suppresses stale failures after success", async () => {
+			const store = createTestStore();
 			try {
-				const res = await app.request("/api/observer-status");
+				(
+					store as MemoryStore & {
+						rawEventBacklogTotals: () => { pending: number; sessions: number };
+						latestRawEventFlushFailure: () => Record<string, unknown> | null;
+					}
+				).rawEventBacklogTotals = () => ({ pending: 0, sessions: 0 });
+				(
+					store as MemoryStore & {
+						latestRawEventFlushFailure: () => Record<string, unknown> | null;
+					}
+				).latestRawEventFlushFailure = () => ({
+					observer_provider: "openai",
+					observer_model: "gpt-4.1-mini",
+					error_message: "OpenAI returned no usable output for raw-event processing.",
+					updated_at: "2026-03-20T10:57:37Z",
+				});
+				const activeStatus = {
+					provider: "opencode",
+					model: "gpt-5.4-mini",
+					runtime: "api_http",
+					auth: { type: "sdk_client", hasToken: true, source: "cache" },
+					lastError: null,
+				};
+				const appWithObserver = createApp({
+					storeFactory: () => store,
+					sweeper: { authBackoffStatus: () => ({ active: false, remainingS: 0 }) } as never,
+					observer: { getStatus: () => activeStatus } as never,
+				});
+				const res = await appWithObserver.request("/api/observer-status");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
-				expect(body.active).toBeNull();
+				expect(body.active).toEqual({
+					...activeStatus,
+					auth: {
+						...activeStatus.auth,
+						method: "sdk_client",
+						token_present: true,
+					},
+				});
+				expect(body.available_credentials).toHaveProperty("opencode");
+				expect(
+					(body.available_credentials as Record<string, { env_var: boolean }>).opencode.env_var,
+				).toBe(false);
 				expect(body).toHaveProperty("queue");
+				expect(body.latest_failure).toBeNull();
 			} finally {
-				cleanup();
+				store.close();
 			}
 		});
 	});

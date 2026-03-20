@@ -213,7 +213,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			});
 	}
 
-	const app = createApp({ storeFactory: getStore, sweeper });
+	const app = createApp({ storeFactory: getStore, sweeper, observer });
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const pidPath = pidFilePath(dbPath);
 

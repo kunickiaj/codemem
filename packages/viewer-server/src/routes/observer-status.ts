@@ -5,7 +5,8 @@
  * Returns observer runtime info, credential availability, and queue status.
  */
 
-import type { MemoryStore, RawEventSweeper } from "@codemem/core";
+import type { ObserverClient } from "@codemem/core";
+import { type MemoryStore, probeAvailableCredentials, type RawEventSweeper } from "@codemem/core";
 import { Hono } from "hono";
 
 type StoreFactory = () => MemoryStore;
@@ -13,6 +14,19 @@ type StoreFactory = () => MemoryStore;
 export interface ObserverStatusDeps {
 	getStore: StoreFactory;
 	getSweeper: () => RawEventSweeper | null;
+	getObserver?: () => ObserverClient | null;
+}
+
+function normalizeActiveObserver(active: ReturnType<ObserverClient["getStatus"]> | null) {
+	if (!active) return null;
+	return {
+		...active,
+		auth: {
+			...active.auth,
+			method: active.auth.type,
+			token_present: active.auth.hasToken,
+		},
+	};
 }
 
 function buildFailureImpact(
@@ -36,6 +50,7 @@ export function observerStatusRoutes(deps?: ObserverStatusDeps) {
 	app.get("/api/observer-status", (c) => {
 		const store = deps?.getStore();
 		const sweeper = deps?.getSweeper();
+		const observer = deps?.getObserver?.() ?? null;
 
 		// Stub fallback when store doesn't have the required methods (e.g. tests with mock store)
 		if (!store || typeof store.rawEventBacklogTotals !== "function") {
@@ -55,14 +70,19 @@ export function observerStatusRoutes(deps?: ObserverStatusDeps) {
 		const queueTotals = store.rawEventBacklogTotals();
 		const authBackoff = sweeper?.authBackoffStatus() ?? { active: false, remainingS: 0 };
 		const latestFailure = store.latestRawEventFlushFailure();
+		const active = normalizeActiveObserver(observer?.getStatus() ?? null);
+		const availableCredentials = probeAvailableCredentials();
+		const shouldShowFailure =
+			latestFailure != null && (authBackoff.active || queueTotals.pending > 0);
 
-		const failureWithImpact = latestFailure
-			? { ...latestFailure, impact: buildFailureImpact(latestFailure, queueTotals, authBackoff) }
-			: null;
+		const failureWithImpact =
+			shouldShowFailure && latestFailure
+				? { ...latestFailure, impact: buildFailureImpact(latestFailure, queueTotals, authBackoff) }
+				: null;
 
 		return c.json({
-			active: null, // TODO: wire observer singleton status when available
-			available_credentials: {}, // TODO: port probe_available_credentials
+			active,
+			available_credentials: availableCredentials,
 			latest_failure: failureWithImpact,
 			queue: {
 				...queueTotals,

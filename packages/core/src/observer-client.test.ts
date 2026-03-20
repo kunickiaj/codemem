@@ -416,6 +416,41 @@ describe("ObserverClient", () => {
 			expect(status.auth.hasToken).toBe(true);
 			expect(status.auth.type).toBe("api_direct");
 		});
+
+		it("reports sdk_client auth type for opencode cached key auth", () => {
+			const prevHome = process.env.HOME;
+			const tmpDir = mkdtempSync(join(tmpdir(), "codemem-opencode-auth-test-"));
+			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			writeFileSync(
+				join(tmpDir, ".local", "share", "opencode", "auth.json"),
+				JSON.stringify({ opencode: { type: "api", key: "zen-test-key" } }),
+			);
+			try {
+				process.env.HOME = tmpDir;
+				const client = new ObserverClient({
+					observerProvider: "opencode",
+					observerModel: "opencode/gpt-5.4-mini",
+					observerRuntime: null,
+					observerApiKey: null,
+					observerBaseUrl: null,
+					observerMaxChars: 12_000,
+					observerMaxTokens: 4_000,
+					observerHeaders: {},
+					observerAuthSource: "auto",
+					observerAuthFile: null,
+					observerAuthCommand: [],
+					observerAuthTimeoutMs: 1500,
+					observerAuthCacheTtlS: 300,
+				});
+				const status = client.getStatus();
+				expect(status.auth.hasToken).toBe(true);
+				expect(status.auth.type).toBe("sdk_client");
+			} finally {
+				if (prevHome == null) delete process.env.HOME;
+				else process.env.HOME = prevHome;
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
 	});
 
 	describe("refreshAuth", () => {
