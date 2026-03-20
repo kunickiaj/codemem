@@ -67,16 +67,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          bun-version: 1.3.4
+          node-version: 24
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Install plugin runtime dependency
-        run: |
-          cd packages/cli/.opencode
-          echo '{"dependencies":{"@opencode-ai/plugin":"1.2.27"}}' > package.json
-          bun install
+        run: npm install --prefix packages/cli/.opencode --no-save @opencode-ai/plugin@1.2.27
 
       - name: Run plugin unit tests
-        run: bun test ./packages/cli/.opencode/tests/*.test.js
+        run: pnpm --filter codemem test:plugin && pnpm --filter codemem test:smoke
