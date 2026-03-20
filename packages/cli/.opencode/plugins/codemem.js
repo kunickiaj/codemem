@@ -1,6 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawn as nodeSpawn, execSync } from "node:child_process";
 import { tool } from "@opencode-ai/plugin";
@@ -251,11 +251,76 @@ const buildOpencodeAdapterEvent = ({ sessionID, event }) => {
   };
 };
 
-const resolveProjectName = (project) =>
-  project?.name ||
-  (project?.root
-    ? String(project.root).split(/[/\\]/).filter(Boolean).pop()
-    : null) ||
+const normalizeProjectLabel = (value) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const cleaned = value.trim();
+  if (!cleaned) {
+    return null;
+  }
+  if (cleaned.includes("/") || cleaned.includes("\\")) {
+    const normalized = cleaned.replaceAll("\\", "/").replace(/\/+$/, "");
+    return basename(normalized) || null;
+  }
+  return cleaned;
+};
+
+const inferredProjectByCwd = new Map();
+
+const inferProjectFromCwd = (cwd) => {
+  if (typeof cwd !== "string") {
+    return null;
+  }
+  const cleaned = cwd.trim();
+  if (!cleaned) {
+    return null;
+  }
+  if (inferredProjectByCwd.has(cleaned)) {
+    return inferredProjectByCwd.get(cleaned);
+  }
+
+  let current = cleaned;
+  while (true) {
+    const gitPath = `${current}/.git`;
+    if (existsSync(gitPath)) {
+      try {
+        const text = readFileSync(gitPath, "utf8").trim();
+        if (text.startsWith("gitdir:")) {
+          const normalized = resolve(current, text.slice("gitdir:".length).trim()).replaceAll(
+            "\\",
+            "/",
+          );
+          const worktreeMarker = "/.git/worktrees/";
+          const worktreeIndex = normalized.indexOf(worktreeMarker);
+          if (worktreeIndex >= 0) {
+            const inferred = normalizeProjectLabel(normalized.slice(0, worktreeIndex));
+            inferredProjectByCwd.set(cleaned, inferred);
+            return inferred;
+          }
+        }
+      } catch {
+        // .git is a directory in normal repos; fall through to cwd basename.
+      }
+      const inferred = normalizeProjectLabel(current);
+      inferredProjectByCwd.set(cleaned, inferred);
+      return inferred;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      const inferred = normalizeProjectLabel(cleaned);
+      inferredProjectByCwd.set(cleaned, inferred);
+      return inferred;
+    }
+    current = parent;
+  }
+};
+
+const resolveProjectName = (project, cwd) =>
+  normalizeProjectLabel(process.env.CODEMEM_PROJECT) ||
+  normalizeProjectLabel(project?.name) ||
+  normalizeProjectLabel(project?.root) ||
+  inferProjectFromCwd(cwd) ||
   null;
 
 const selectRawEventId = ({ payload, nextEventId }) => {
@@ -599,7 +664,7 @@ export const OpencodeMemPlugin = async ({
       type,
       payload,
       cwd,
-      project: resolveProjectName(project),
+      project: resolveProjectName(project, cwd),
       startedAt: sessionStartedAt,
       nowMs: now,
       nowMono:
@@ -1231,7 +1296,7 @@ export const OpencodeMemPlugin = async ({
     }
 
     // Project name for scoping
-    const projectName = resolveProjectName(project);
+    const projectName = resolveProjectName(project, cwd);
     if (projectName) {
       parts.push(projectName);
     }
@@ -1822,6 +1887,9 @@ export const OpencodeMemPlugin = async ({
 export default OpencodeMemPlugin;
 export const __testUtils = {
   PINNED_BACKEND_VERSION,
+  inferProjectFromCwd,
+  normalizeProjectLabel,
+  resolveProjectName,
   buildRunnerArgs,
   appendWorkingSetFileArgs,
   extractApplyPatchPaths,
