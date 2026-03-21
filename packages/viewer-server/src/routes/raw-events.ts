@@ -88,9 +88,15 @@ async function parseJsonObjectBody(
 }
 
 /** Nudge the sweeper safely — never crashes the caller. */
-function nudgeSweeper(sweeper: RawEventSweeper | null | undefined): void {
+function nudgeSweeper(
+	sweeper: RawEventSweeper | null | undefined,
+	sessionIds: Iterable<string>,
+	source = "opencode",
+): void {
 	try {
-		sweeper?.nudge();
+		for (const sessionId of sessionIds) {
+			sweeper?.nudge(sessionId, source);
+		}
 	} catch {
 		// never crash the request if sweeper nudge fails
 	}
@@ -362,8 +368,8 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 				});
 			}
 
-			// Nudge sweeper once after all metadata updates (mirrors Python note_activity)
-			nudgeSweeper(sweeper);
+			// Note per-session activity for optional debounced auto-flush.
+			nudgeSweeper(sweeper, sessionIds);
 
 			return c.json({ inserted, received: (items as unknown[]).length });
 		} catch (err) {
@@ -412,8 +418,8 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 				lastSeenTsWallMs: envelope.ts_wall_ms,
 			});
 
-			// Nudge sweeper to process promptly
-			nudgeSweeper(sweeper);
+			// Note activity for optional debounced auto-flush.
+			nudgeSweeper(sweeper, [opencodeSessionId], source);
 
 			return c.json({ inserted: inserted ? 1 : 0, skipped: 0 });
 		} catch (err) {
