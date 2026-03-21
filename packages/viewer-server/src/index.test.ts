@@ -5,7 +5,7 @@
  * Uses Record<string, unknown> instead of Record<string, any> (fix #6).
  */
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTestSchema, insertTestSession, type MemoryStore } from "@codemem/core";
@@ -426,7 +426,35 @@ describe("viewer-server", () => {
 		});
 	});
 
-	describe("POST /api/config", () => {
+	describe("/api/config", () => {
+		it("returns provider options from real opencode config prefixes", async () => {
+			const tmpHome = mkdtempSync(join(tmpdir(), "codemem-home-test-"));
+			const opencodeConfigDir = join(tmpHome, ".config", "opencode");
+			const prevHome = process.env.HOME;
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			process.env.HOME = tmpHome;
+			process.env.CODEMEM_CONFIG = configPath;
+			mkdirSync(opencodeConfigDir, { recursive: true });
+			writeFileSync(
+				join(opencodeConfigDir, "opencode.jsonc"),
+				JSON.stringify({ model: "openai/gpt-5.4", small_model: "opencode/gpt-5-nano" }),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.providers).toEqual(["anthropic", "openai", "opencode"]);
+			} finally {
+				cleanup();
+				if (prevHome == null) delete process.env.HOME;
+				else process.env.HOME = prevHome;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
 		it("writes config and returns effects", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const notifyConfigChanged = vi.fn();
@@ -457,6 +485,35 @@ describe("viewer-server", () => {
 				cleanup();
 				if (previous == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = previous;
+			}
+		});
+
+		it("accepts built-in observer providers on a clean config", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevHome = process.env.HOME;
+			const tmpHome = mkdtempSync(join(tmpdir(), "codemem-home-test-"));
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.HOME = tmpHome;
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: { observer_provider: "anthropic" } }),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect((body.config as Record<string, unknown>).observer_provider).toBe("anthropic");
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevHome == null) delete process.env.HOME;
+				else process.env.HOME = prevHome;
 			}
 		});
 

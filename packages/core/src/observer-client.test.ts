@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -149,7 +149,7 @@ describe("ObserverClient", () => {
 				observerAuthCacheTtlS: 300,
 			});
 			expect(client.provider).toBe("openai");
-			expect(client.model).toBe("gpt-4.1-mini");
+			expect(client.model).toBe("gpt-5.1-codex-mini");
 			expect(client.runtime).toBe("api_http");
 		});
 
@@ -210,6 +210,140 @@ describe("ObserverClient", () => {
 			});
 			expect(client.provider).toBe("anthropic");
 			expect(client.model).toBe("claude-sonnet-4-20250514");
+		});
+
+		it("infers opencode provider from prefixed model", () => {
+			const prevHome = process.env.HOME;
+			const tmpDir = mkdtempSync(join(tmpdir(), "codemem-opencode-test-"));
+			const configDir = join(tmpDir, ".config", "opencode");
+			mkdirSync(configDir, { recursive: true });
+			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			writeFileSync(
+				join(tmpDir, ".local", "share", "opencode", "auth.json"),
+				JSON.stringify({ opencode: { type: "api", key: "zen-test-key" } }),
+			);
+			try {
+				writeFileSync(
+					join(configDir, "opencode.jsonc"),
+					JSON.stringify({ small_model: "opencode/gpt-5-nano" }),
+				);
+				process.env.HOME = tmpDir;
+				const client = new ObserverClient({
+					observerProvider: null,
+					observerModel: "opencode/gpt-5.4-mini",
+					observerRuntime: null,
+					observerApiKey: null,
+					observerBaseUrl: null,
+					observerMaxChars: 12_000,
+					observerMaxTokens: 4_000,
+					observerHeaders: {},
+					observerAuthSource: "auto",
+					observerAuthFile: null,
+					observerAuthCommand: [],
+					observerAuthTimeoutMs: 1500,
+					observerAuthCacheTtlS: 300,
+				});
+				expect(client.provider).toBe("opencode");
+				expect(client.model).toBe("gpt-5.4-mini");
+				expect(client.getStatus().auth.hasToken).toBe(true);
+			} finally {
+				if (prevHome == null) delete process.env.HOME;
+				else process.env.HOME = prevHome;
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		it("preserves explicit observer_base_url for opencode built-in provider", () => {
+			const client = new ObserverClient({
+				observerProvider: "opencode",
+				observerModel: "opencode/gpt-5.4-mini",
+				observerRuntime: null,
+				observerApiKey: "override-key",
+				observerBaseUrl: "https://proxy.example.test/v1",
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+
+			expect((client as unknown as { _customBaseUrl: string | null })._customBaseUrl).toBe(
+				"https://proxy.example.test/v1",
+			);
+		});
+
+		it("prefers explicit observer api key over cached opencode auth", () => {
+			const prevHome = process.env.HOME;
+			const tmpDir = mkdtempSync(join(tmpdir(), "codemem-opencode-override-test-"));
+			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			writeFileSync(
+				join(tmpDir, ".local", "share", "opencode", "auth.json"),
+				JSON.stringify({ opencode: { type: "api", key: "cached-key" } }),
+			);
+			try {
+				process.env.HOME = tmpDir;
+				const client = new ObserverClient({
+					observerProvider: "opencode",
+					observerModel: "opencode/gpt-5.4-mini",
+					observerRuntime: null,
+					observerApiKey: "explicit-key",
+					observerBaseUrl: null,
+					observerMaxChars: 12_000,
+					observerMaxTokens: 4_000,
+					observerHeaders: {},
+					observerAuthSource: "auto",
+					observerAuthFile: null,
+					observerAuthCommand: [],
+					observerAuthTimeoutMs: 1500,
+					observerAuthCacheTtlS: 300,
+				});
+				expect((client as unknown as { auth: { token: string | null } }).auth.token).toBe(
+					"explicit-key",
+				);
+			} finally {
+				if (prevHome == null) delete process.env.HOME;
+				else process.env.HOME = prevHome;
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		it("does not use auth cache API keys for arbitrary custom providers", () => {
+			const prevHome = process.env.HOME;
+			const tmpDir = mkdtempSync(join(tmpdir(), "codemem-custom-provider-test-"));
+			const configDir = join(tmpDir, ".config", "opencode");
+			mkdirSync(configDir, { recursive: true });
+			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			writeFileSync(join(configDir, "opencode.jsonc"), JSON.stringify({ provider: { acme: {} } }));
+			writeFileSync(
+				join(tmpDir, ".local", "share", "opencode", "auth.json"),
+				JSON.stringify({ acme: { type: "api", key: "should-not-be-used" } }),
+			);
+			try {
+				process.env.HOME = tmpDir;
+				const client = new ObserverClient({
+					observerProvider: "acme",
+					observerModel: "acme/custom-model",
+					observerRuntime: null,
+					observerApiKey: null,
+					observerBaseUrl: null,
+					observerMaxChars: 12_000,
+					observerMaxTokens: 4_000,
+					observerHeaders: {},
+					observerAuthSource: "auto",
+					observerAuthFile: null,
+					observerAuthCommand: [],
+					observerAuthTimeoutMs: 1500,
+					observerAuthCacheTtlS: 300,
+				});
+				expect(client.getStatus().auth.hasToken).toBe(false);
+			} finally {
+				if (prevHome == null) delete process.env.HOME;
+				else process.env.HOME = prevHome;
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
 		});
 	});
 

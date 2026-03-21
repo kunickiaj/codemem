@@ -92,6 +92,17 @@ export function extractOAuthAccess(
 	return typeof access === "string" && access ? access : null;
 }
 
+/** Extract API key from auth cache for a given provider. */
+export function extractProviderApiKey(
+	cache: Record<string, unknown>,
+	provider: string,
+): string | null {
+	const entry = getOAuthEntry(cache, provider);
+	if (!entry) return null;
+	const key = entry.key;
+	return typeof key === "string" && key ? key : null;
+}
+
 /** Extract account ID from OAuth cache for a given provider. */
 export function extractOAuthAccountId(
 	cache: Record<string, unknown>,
