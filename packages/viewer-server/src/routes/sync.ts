@@ -7,6 +7,9 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import type { MemoryStore } from "@codemem/core";
 import {
+	coordinatorCreateInviteAction,
+	coordinatorImportInviteAction,
+	coordinatorReviewJoinRequestAction,
 	coordinatorStatusSnapshot,
 	ensureDeviceIdentity,
 	listCoordinatorJoinRequests,
@@ -469,6 +472,93 @@ export function syncRoutes(getStore: StoreFactory) {
 				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 				.run();
 			return c.json({ ok: true });
+		}
+	});
+
+	app.post("/api/sync/invites/create", async (c) => {
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const groupId = String(body.group_id ?? "").trim();
+		const coordinatorUrl = body.coordinator_url == null ? null : String(body.coordinator_url ?? "");
+		const policy = String(body.policy ?? "auto_admit").trim();
+		const ttlHours = Number.parseInt(String(body.ttl_hours ?? 24), 10);
+		if (!groupId) return c.json({ error: "group_id required" }, 400);
+		if (body.coordinator_url != null && typeof body.coordinator_url !== "string") {
+			return c.json({ error: "coordinator_url must be string" }, 400);
+		}
+		if (!["auto_admit", "approval_required"].includes(policy)) {
+			return c.json({ error: "policy must be auto_admit or approval_required" }, 400);
+		}
+		if (!Number.isFinite(ttlHours)) return c.json({ error: "ttl_hours must be int" }, 400);
+		try {
+			const config = readCoordinatorSyncConfig();
+			const result = await coordinatorCreateInviteAction({
+				groupId,
+				coordinatorUrl,
+				policy,
+				ttlHours,
+				createdBy: null,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json(result);
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		}
+	});
+
+	app.post("/api/sync/invites/import", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const inviteValue = String(body.invite ?? "").trim();
+		if (!inviteValue) return c.json({ error: "invite required" }, 400);
+		try {
+			const result = await coordinatorImportInviteAction({ inviteValue, dbPath: store.dbPath });
+			return c.json(result);
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		}
+	});
+
+	app.post("/api/sync/join-requests/review", async (c) => {
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const requestId = String(body.request_id ?? "").trim();
+		const action = String(body.action ?? "").trim();
+		if (!requestId) return c.json({ error: "request_id required" }, 400);
+		if (!["approve", "deny"].includes(action)) {
+			return c.json({ error: "action must be approve or deny" }, 400);
+		}
+		try {
+			const config = readCoordinatorSyncConfig();
+			const result = await coordinatorReviewJoinRequestAction({
+				requestId,
+				approve: action === "approve",
+				reviewedBy: null,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!result) return c.json({ error: "join request not found" }, 404);
+			return c.json({ ok: true, request: result });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json(
+				{ error: message },
+				message.includes("request_not_found") || message.includes("not found") ? 404 : 400,
+			);
 		}
 	});
 
