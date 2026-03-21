@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const packageRoot = process.cwd();
+const workspaceRoot = resolve(packageRoot, "..", "..");
 const packageJson = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
 const packageVersion = String(packageJson.version);
 const tempDir = mkdtempSync(join(tmpdir(), "codemem-packed-artifact-"));
@@ -36,6 +37,21 @@ function assert(condition, message) {
 }
 
 try {
+	const coreTarball = run("pnpm", ["pack", "--pack-destination", tempDir], resolve(workspaceRoot, "packages/core"))
+		.stdout.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.at(-1);
+	const mcpTarball = run("pnpm", ["pack", "--pack-destination", tempDir], resolve(workspaceRoot, "packages/mcp-server"))
+		.stdout.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.at(-1);
+	const serverTarball = run("pnpm", ["pack", "--pack-destination", tempDir], resolve(workspaceRoot, "packages/viewer-server"))
+		.stdout.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.at(-1);
 	const packResult = run("pnpm", ["pack", "--pack-destination", tempDir]);
 	const packedTarball = packResult.stdout
 		.split(/\r?\n/)
@@ -43,7 +59,13 @@ try {
 		.filter(Boolean)
 		.at(-1);
 
+	assert(Boolean(coreTarball), "pnpm pack did not report a core tarball path");
+	assert(Boolean(mcpTarball), "pnpm pack did not report an mcp tarball path");
+	assert(Boolean(serverTarball), "pnpm pack did not report a server tarball path");
 	assert(Boolean(packedTarball), "pnpm pack did not report a tarball path");
+	assert(existsSync(coreTarball), `Packed core tarball not found: ${coreTarball}`);
+	assert(existsSync(mcpTarball), `Packed mcp tarball not found: ${mcpTarball}`);
+	assert(existsSync(serverTarball), `Packed server tarball not found: ${serverTarball}`);
 	assert(existsSync(packedTarball), `Packed tarball not found: ${packedTarball}`);
 
 	const tarListing = run("tar", ["-tf", packedTarball]).stdout;
@@ -61,7 +83,7 @@ try {
 	);
 
 	const installDir = join(tempDir, "install");
-	run("npm", ["install", "--prefix", installDir, packedTarball]);
+	run("npm", ["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball]);
 
 	const installedPackageRoot = join(installDir, "node_modules", "codemem");
 	const installedPluginRoot = join(installedPackageRoot, ".opencode");
