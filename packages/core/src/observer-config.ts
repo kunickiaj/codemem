@@ -161,10 +161,15 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	sync_port: "CODEMEM_SYNC_PORT",
 	sync_interval_s: "CODEMEM_SYNC_INTERVAL_S",
 	sync_mdns: "CODEMEM_SYNC_MDNS",
+	sync_advertise: "CODEMEM_SYNC_ADVERTISE",
 	sync_coordinator_url: "CODEMEM_SYNC_COORDINATOR_URL",
 	sync_coordinator_group: "CODEMEM_SYNC_COORDINATOR_GROUP",
+	sync_coordinator_groups: "CODEMEM_SYNC_COORDINATOR_GROUPS",
 	sync_coordinator_timeout_s: "CODEMEM_SYNC_COORDINATOR_TIMEOUT_S",
 	sync_coordinator_presence_ttl_s: "CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S",
+	sync_coordinator_admin_secret: "CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET",
+	sync_projects_include: "CODEMEM_SYNC_PROJECTS_INCLUDE",
+	sync_projects_exclude: "CODEMEM_SYNC_PROJECTS_EXCLUDE",
 	raw_events_sweeper_interval_s: "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
 };
 

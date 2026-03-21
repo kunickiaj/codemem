@@ -2,8 +2,17 @@
  * Sync routes — status, peers, actors, attempts, pairing, mutations.
  */
 
+import { readFileSync } from "node:fs";
+import net from "node:net";
+import { dirname, join } from "node:path";
 import type { MemoryStore } from "@codemem/core";
-import { ensureDeviceIdentity, schema } from "@codemem/core";
+import {
+	coordinatorStatusSnapshot,
+	ensureDeviceIdentity,
+	listCoordinatorJoinRequests,
+	readCoordinatorSyncConfig,
+	schema,
+} from "@codemem/core";
 import { count, desc, eq, max, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
@@ -100,6 +109,34 @@ function attemptStatus(attempt: Record<string, unknown>): string {
 	return "unknown";
 }
 
+function readViewerBinding(dbPath: string): { host: string; port: number } | null {
+	try {
+		const raw = readFileSync(join(dirname(dbPath), "viewer.pid"), "utf8");
+		const parsed = JSON.parse(raw) as Partial<{ host: string; port: number }>;
+		if (typeof parsed.host === "string" && typeof parsed.port === "number") {
+			return { host: parsed.host, port: parsed.port };
+		}
+	} catch {
+		// ignore missing/malformed pidfile
+	}
+	return null;
+}
+
+async function portOpen(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.createConnection({ host, port });
+		const done = (ok: boolean) => {
+			socket.removeAllListeners();
+			socket.destroy();
+			resolve(ok);
+		};
+		socket.setTimeout(300);
+		socket.once("connect", () => done(true));
+		socket.once("timeout", () => done(false));
+		socket.once("error", () => done(false));
+	});
+}
+
 const PEERS_QUERY = `
 	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
@@ -118,11 +155,12 @@ export function syncRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 
 	// GET /api/sync/status
-	app.get("/api/sync/status", (c) => {
+	app.get("/api/sync/status", async (c) => {
 		const store = getStore();
 		{
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
-			const _project = c.req.query("project") || null;
+			const project = c.req.query("project") || null;
+			const config = readCoordinatorSyncConfig();
 
 			const d = drizzle(store.db, { schema });
 
@@ -151,30 +189,46 @@ export function syncRoutes(getStore: StoreFactory) {
 			const lastError = daemonState?.last_error as string | null;
 			const lastErrorAt = daemonState?.last_error_at as string | null;
 			const lastOkAt = daemonState?.last_ok_at as string | null;
+			const viewerBinding = readViewerBinding(store.dbPath);
+			const daemonRunning = viewerBinding
+				? await portOpen(viewerBinding.host, viewerBinding.port)
+				: false;
+			const daemonDetail = viewerBinding
+				? daemonRunning
+					? `viewer pidfile at ${viewerBinding.host}:${viewerBinding.port}`
+					: `pidfile present but ${viewerBinding.host}:${viewerBinding.port} is unreachable`
+				: null;
 
 			let daemonStateValue = "ok";
-			// Simplified: without full config access, default to enabled
-			if (lastError && (!lastOkAt || String(lastOkAt) < String(lastErrorAt ?? ""))) {
+			if (!config.syncEnabled) {
+				daemonStateValue = "disabled";
+			} else if (lastError && (!lastOkAt || String(lastOkAt) < String(lastErrorAt ?? ""))) {
 				daemonStateValue = "error";
+			} else if (!daemonRunning) {
+				daemonStateValue = "stopped";
 			}
 
 			const statusPayload: Record<string, unknown> = {
-				enabled: true,
-				interval_s: 60,
+				enabled: config.syncEnabled,
+				interval_s: config.syncIntervalS,
 				peer_count: Number(peerCountRow?.total ?? 0),
 				last_sync_at: lastSyncRow?.last_sync_at ?? null,
 				daemon_state: daemonStateValue,
-				daemon_running: false,
-				daemon_detail: null,
-				project_filter_active: false,
-				project_filter: { include: [], exclude: [] },
+				daemon_running: daemonRunning,
+				daemon_detail: daemonDetail,
+				project_filter_active:
+					config.syncProjectsInclude.length > 0 || config.syncProjectsExclude.length > 0,
+				project_filter: {
+					include: config.syncProjectsInclude,
+					exclude: config.syncProjectsExclude,
+				},
 				redacted: !showDiag,
 			};
 
 			if (showDiag) {
 				statusPayload.device_id = deviceRow?.device_id ?? null;
 				statusPayload.fingerprint = deviceRow?.fingerprint ?? null;
-				statusPayload.bind = null;
+				statusPayload.bind = `${config.syncHost}:${config.syncPort}`;
 				statusPayload.daemon_last_error = lastError;
 				statusPayload.daemon_last_error_at = lastErrorAt;
 				statusPayload.daemon_last_ok_at = lastOkAt;
@@ -214,23 +268,65 @@ export function syncRoutes(getStore: StoreFactory) {
 				address: null,
 			}));
 
-			const statusBlock = {
+			const statusBlock: Record<string, unknown> = {
 				...statusPayload,
 				peers: peersMap,
 				pending: 0,
 				sync: {},
 				ping: {},
 			};
+			const legacyDevices = store.claimableLegacyDeviceIds();
+			const sharingReview = store.sharingReviewSummary(project);
+			const coordinator = await coordinatorStatusSnapshot(store, config);
+			let joinRequests: Record<string, unknown>[] = [];
+			try {
+				joinRequests = await listCoordinatorJoinRequests(config);
+			} catch {
+				joinRequests = [];
+			}
+
+			if (daemonStateValue === "ok") {
+				const peerStates = new Set(
+					peersItems.map((peer) =>
+						String((peer.status as Record<string, unknown> | undefined)?.peer_state ?? ""),
+					),
+				);
+				const latestFailedRecently = Boolean(
+					attemptsItems[0] &&
+						attemptsItems[0].status === "error" &&
+						isRecentIso(attemptsItems[0].finished_at),
+				);
+				const allOffline =
+					peersItems.length > 0 &&
+					peersItems.every(
+						(peer) =>
+							String((peer.status as Record<string, unknown>)?.peer_state ?? "") === "offline",
+					);
+				if (latestFailedRecently) {
+					const hasLivePeer = peerStates.has("online") || peerStates.has("degraded");
+					if (hasLivePeer) daemonStateValue = "degraded";
+					else if (allOffline) daemonStateValue = "offline-peers";
+					else if (peersItems.length > 0) daemonStateValue = "stale";
+				} else if (peerStates.has("degraded")) {
+					daemonStateValue = "degraded";
+				} else if (allOffline) {
+					daemonStateValue = "offline-peers";
+				} else if (peersItems.length > 0 && !peerStates.has("online")) {
+					daemonStateValue = "stale";
+				}
+				statusPayload.daemon_state = daemonStateValue;
+				statusBlock.daemon_state = daemonStateValue;
+			}
 
 			return c.json({
 				...statusPayload,
 				status: statusBlock,
 				peers: peersItems,
 				attempts: attemptsItems.slice(0, 5),
-				legacy_devices: [],
-				sharing_review: { unreviewed: 0 },
-				coordinator: { enabled: false, configured: false },
-				join_requests: [],
+				legacy_devices: legacyDevices,
+				sharing_review: sharingReview,
+				coordinator,
+				join_requests: joinRequests,
 			});
 		}
 	});
