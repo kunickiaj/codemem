@@ -662,6 +662,17 @@ describe("MemoryStore.explain", () => {
 		expect(result.metadata).toHaveProperty("query", "database");
 		expect(result.metadata).toHaveProperty("requested_ids_count", 0);
 		expect(typeof result.metadata.returned_items_count).toBe("number");
+		expect(result.metadata.include_pack_context).toBe(false);
+	});
+
+	it("includes pack_context when includePackContext option is enabled", () => {
+		seedMemories();
+		const result = store.explain("database", null, 10, undefined, { includePackContext: true });
+		expect(result.metadata.include_pack_context).toBe(true);
+		expect(result.items.length).toBeGreaterThan(0);
+		for (const item of result.items) {
+			expect(item.pack_context).toEqual({ included: null, section: null });
+		}
 	});
 
 	it("rejects booleans and floats in ids (dedupeOrderedIds)", () => {

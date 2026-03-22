@@ -220,7 +220,9 @@ async function main() {
 		async (args) => {
 			try {
 				const filters = buildFilters(args);
-				const result = store.explain(args.query ?? null, args.ids ?? null, args.limit, filters);
+				const result = store.explain(args.query ?? null, args.ids ?? null, args.limit, filters, {
+					includePackContext: args.include_pack_context,
+				});
 				return jsonContent(result);
 			} catch (err) {
 				return errorContent(err instanceof Error ? err.message : String(err));
