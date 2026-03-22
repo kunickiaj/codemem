@@ -427,9 +427,22 @@ export interface ApiSyncAttemptItemEnriched extends ApiSyncAttemptItem {
 	address: string | null;
 }
 
-/** Sharing review summary. */
-export interface ApiSharingReviewSummary {
-	unreviewed: number;
+export interface ApiSharingReviewItem {
+	peer_device_id: string;
+	peer_name: string;
+	actor_id: string;
+	actor_display_name: string;
+	project: string | null;
+	scope_label: string;
+	shareable_count: number;
+	private_count: number;
+	total_count: number;
+}
+
+export interface ApiLegacyDeviceItem {
+	origin_device_id: string;
+	memory_count: number;
+	last_seen_at: string | null;
 }
 
 /**
@@ -498,8 +511,8 @@ export interface ApiSyncStatusResponse {
 	status: ApiSyncStatusBlock;
 	peers: ApiSyncPeerItem[];
 	attempts: ApiSyncAttemptItemEnriched[];
-	legacy_devices: string[];
-	sharing_review: ApiSharingReviewSummary;
+	legacy_devices: ApiLegacyDeviceItem[];
+	sharing_review: ApiSharingReviewItem[];
 	coordinator: ApiCoordinatorStatus;
 	join_requests: ApiJoinRequest[];
 }

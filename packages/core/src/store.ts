@@ -83,6 +83,31 @@ function cleanStr(value: unknown): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
+function parseJsonList(value: unknown): string[] {
+	if (typeof value !== "string" || !value.trim()) return [];
+	try {
+		const parsed = JSON.parse(value);
+		return Array.isArray(parsed)
+			? parsed
+					.filter((item): item is string => typeof item === "string")
+					.map((item) => item.trim())
+					.filter(Boolean)
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+function projectBasename(value: string | null | undefined): string {
+	const raw = cleanStr(value);
+	if (!raw) return "";
+	const parts = raw.replace(/\\/g, "/").split("/").filter(Boolean);
+	return parts[parts.length - 1] ?? raw;
+}
+
+const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
+const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
+
 /**
  * Parse a row's metadata_json string into a plain object.
  * Returns a new MemoryItemResponse with metadata_json as a parsed object.
@@ -1625,6 +1650,163 @@ export class MemoryStore {
 		const row = this.db.prepare(query).get(...params) as Record<string, unknown> | undefined;
 		if (!row) return null;
 		return { ...row, status: "error" };
+	}
+
+	getSyncDaemonState(): Record<string, unknown> | null {
+		const row = this.db
+			.prepare(
+				"SELECT last_error, last_traceback, last_error_at, last_ok_at FROM sync_daemon_state WHERE id = 1",
+			)
+			.get() as Record<string, unknown> | undefined;
+		return row ? { ...row } : null;
+	}
+
+	sameActorPeerIds(): string[] {
+		const rows = this.db
+			.prepare(
+				"SELECT peer_device_id FROM sync_peers WHERE claimed_local_actor = 1 OR actor_id = ? ORDER BY peer_device_id",
+			)
+			.all(this.actorId) as Array<Record<string, unknown>>;
+		return rows.map((row) => String(row.peer_device_id ?? "").trim()).filter(Boolean);
+	}
+
+	claimedSameActorLegacyActorIds(): string[] {
+		return this.sameActorPeerIds().map((peerId) => `legacy-sync:${peerId}`);
+	}
+
+	claimableLegacyDeviceIds(): Record<string, unknown>[] {
+		const rows = this.db
+			.prepare(
+				`SELECT origin_device_id, COUNT(*) AS memory_count, MAX(created_at) AS last_seen_at
+				 FROM memory_items
+				 WHERE origin_device_id IS NOT NULL
+				   AND origin_device_id != ''
+				   AND origin_device_id != 'unknown'
+				   AND ((actor_id IS NULL OR TRIM(actor_id) = '' OR actor_id LIKE 'legacy-sync:%')
+				     AND (actor_id IS NULL OR TRIM(actor_id) = '' OR actor_id LIKE 'legacy-sync:%' OR actor_display_name = ? OR workspace_id = ? OR trust_state = 'legacy_unknown'))
+				   AND origin_device_id != ?
+				   AND origin_device_id NOT IN (SELECT peer_device_id FROM sync_peers WHERE peer_device_id IS NOT NULL)
+				 GROUP BY origin_device_id
+				 ORDER BY last_seen_at DESC, origin_device_id ASC`,
+			)
+			.all(LEGACY_SYNC_ACTOR_DISPLAY_NAME, LEGACY_SHARED_WORKSPACE_ID, this.deviceId) as Array<
+			Record<string, unknown>
+		>;
+		return rows
+			.filter((row) => cleanStr(row.origin_device_id))
+			.map((row) => ({
+				origin_device_id: String(row.origin_device_id),
+				memory_count: Number(row.memory_count ?? 0),
+				last_seen_at: row.last_seen_at ?? null,
+			}));
+	}
+
+	private effectiveSyncProjectFilters(peerDeviceId?: string | null): {
+		include: string[];
+		exclude: string[];
+	} {
+		const config = readCodememConfigFile();
+		let include = parseJsonList(JSON.stringify(config.sync_projects_include ?? []));
+		let exclude = parseJsonList(JSON.stringify(config.sync_projects_exclude ?? []));
+		if (peerDeviceId) {
+			const row = this.db
+				.prepare(
+					"SELECT projects_include_json, projects_exclude_json FROM sync_peers WHERE peer_device_id = ?",
+				)
+				.get(peerDeviceId) as Record<string, unknown> | undefined;
+			if (row) {
+				if (row.projects_include_json != null) include = parseJsonList(row.projects_include_json);
+				if (row.projects_exclude_json != null) exclude = parseJsonList(row.projects_exclude_json);
+			}
+		}
+		return { include, exclude };
+	}
+
+	private syncProjectAllowed(project: string | null, peerDeviceId?: string | null): boolean {
+		const { include, exclude } = this.effectiveSyncProjectFilters(peerDeviceId);
+		const name = cleanStr(project);
+		const basename = projectBasename(name);
+		if (include.length > 0 && !include.some((item) => item === name || item === basename))
+			return false;
+		if (exclude.some((item) => item === name || item === basename)) return false;
+		return true;
+	}
+
+	sharingReviewSummary(project?: string | null): Record<string, unknown>[] {
+		const selectedProject = cleanStr(project);
+		const claimedPeers = this.sameActorPeerIds();
+		const legacyActorIds = this.claimedSameActorLegacyActorIds();
+		const ownershipClauses = ["memory_items.actor_id = ?"];
+		const params: unknown[] = [this.actorId];
+		if (claimedPeers.length > 0) {
+			ownershipClauses.push(
+				`memory_items.origin_device_id IN (${claimedPeers.map(() => "?").join(", ")})`,
+			);
+			params.push(...claimedPeers);
+		}
+		if (legacyActorIds.length > 0) {
+			ownershipClauses.push(
+				`memory_items.actor_id IN (${legacyActorIds.map(() => "?").join(", ")})`,
+			);
+			params.push(...legacyActorIds);
+		}
+		const rows = this.db
+			.prepare(
+				`SELECT sync_peers.peer_device_id, sync_peers.name, sync_peers.actor_id,
+				        actors.display_name AS actor_display_name,
+				        sessions.project AS project, memory_items.visibility AS visibility,
+				        COUNT(*) AS total
+				 FROM sync_peers
+				 LEFT JOIN actors ON actors.actor_id = sync_peers.actor_id
+				 JOIN memory_items ON memory_items.active = 1
+				 JOIN sessions ON sessions.id = memory_items.session_id
+				 WHERE sync_peers.actor_id IS NOT NULL
+				   AND TRIM(sync_peers.actor_id) != ''
+				   AND sync_peers.actor_id != ?
+				   AND (${ownershipClauses.join(" OR ")})
+				 GROUP BY sync_peers.peer_device_id, sync_peers.name, sync_peers.actor_id, sessions.project, memory_items.visibility
+				 ORDER BY sync_peers.name, sync_peers.peer_device_id`,
+			)
+			.all(this.actorId, ...params) as Array<Record<string, unknown>>;
+		const byPeer = new Map<string, Record<string, unknown>>();
+		for (const row of rows) {
+			const peerDeviceId = String(row.peer_device_id ?? "").trim();
+			const actorId = String(row.actor_id ?? "").trim();
+			if (!peerDeviceId || !actorId || actorId === this.actorId) continue;
+			const projectName = cleanStr(row.project);
+			if (selectedProject) {
+				const selectedBase = projectBasename(selectedProject);
+				const projectBase = projectBasename(projectName);
+				if (projectName !== selectedProject && projectBase !== selectedBase) continue;
+			}
+			if (!this.syncProjectAllowed(projectName, peerDeviceId)) continue;
+			const current = byPeer.get(peerDeviceId) ?? {
+				peer_device_id: peerDeviceId,
+				peer_name: cleanStr(row.name) ?? peerDeviceId,
+				actor_id: actorId,
+				actor_display_name: cleanStr(row.actor_display_name) ?? actorId,
+				project: selectedProject,
+				scope_label: selectedProject ?? "All allowed projects",
+				shareable_count: 0,
+				private_count: 0,
+			};
+			const total = Number(row.total ?? 0);
+			if (String(row.visibility ?? "") === "private") {
+				current.private_count = Number(current.private_count ?? 0) + total;
+			} else {
+				current.shareable_count = Number(current.shareable_count ?? 0) + total;
+			}
+			byPeer.set(peerDeviceId, current);
+		}
+		const results = [...byPeer.values()].map((item) => ({
+			...item,
+			total_count: Number(item.shareable_count ?? 0) + Number(item.private_count ?? 0),
+		}));
+		return results.sort(
+			(a: Record<string, unknown>, b: Record<string, unknown>) =>
+				String(a.peer_name ?? "").localeCompare(String(b.peer_name ?? "")) ||
+				String(a.peer_device_id ?? "").localeCompare(String(b.peer_device_id ?? "")),
+		);
 	}
 
 	// close

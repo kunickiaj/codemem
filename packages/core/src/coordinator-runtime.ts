@@ -1,0 +1,298 @@
+import { networkInterfaces } from "node:os";
+import { mergeAddresses } from "./address-utils.js";
+import { getCodememEnvOverrides, readCodememConfigFile } from "./observer-config.js";
+import type { MemoryStore } from "./store.js";
+import { buildAuthHeaders } from "./sync-auth.js";
+import { buildBaseUrl, requestJson } from "./sync-http-client.js";
+import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
+
+type ConfigRecord = Record<string, unknown>;
+
+function clean(value: unknown): string {
+	return typeof value === "string" ? value.trim() : "";
+}
+
+function parseIntOr(value: unknown, fallback: number): number {
+	if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+	if (typeof value === "string" && /^-?\d+$/.test(value.trim()))
+		return Number.parseInt(value.trim(), 10);
+	return fallback;
+}
+
+function parseBoolOr(value: unknown, fallback: boolean): boolean {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "string") {
+		const normalized = value.trim().toLowerCase();
+		if (["1", "true", "yes", "on"].includes(normalized)) return true;
+		if (["0", "false", "no", "off"].includes(normalized)) return false;
+	}
+	return fallback;
+}
+
+function parseStringList(value: unknown): string[] {
+	if (Array.isArray(value)) {
+		return value
+			.filter((item): item is string => typeof item === "string")
+			.map((item) => item.trim())
+			.filter(Boolean);
+	}
+	if (typeof value === "string") {
+		return value
+			.split(",")
+			.map((item) => item.trim())
+			.filter(Boolean);
+	}
+	return [];
+}
+
+export interface CoordinatorSyncConfig {
+	syncEnabled: boolean;
+	syncHost: string;
+	syncPort: number;
+	syncIntervalS: number;
+	syncAdvertise: string;
+	syncProjectsInclude: string[];
+	syncProjectsExclude: string[];
+	syncCoordinatorUrl: string;
+	syncCoordinatorGroup: string;
+	syncCoordinatorGroups: string[];
+	syncCoordinatorTimeoutS: number;
+	syncCoordinatorPresenceTtlS: number;
+	syncCoordinatorAdminSecret: string;
+}
+
+export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyncConfig {
+	const raw = { ...(config ?? readCodememConfigFile()) } as ConfigRecord;
+	const envOverrides = getCodememEnvOverrides();
+	for (const key of Object.keys(envOverrides)) {
+		const value = process.env[envOverrides[key] as string];
+		if (value != null) raw[key] = value;
+	}
+	const syncCoordinatorGroup = clean(raw.sync_coordinator_group);
+	const syncCoordinatorGroups = parseStringList(raw.sync_coordinator_groups);
+	return {
+		syncEnabled: parseBoolOr(raw.sync_enabled, false),
+		syncHost: clean(raw.sync_host) || "0.0.0.0",
+		syncPort: parseIntOr(raw.sync_port, 7337),
+		syncIntervalS: parseIntOr(raw.sync_interval_s, 120),
+		syncAdvertise: clean(raw.sync_advertise) || "auto",
+		syncProjectsInclude: parseStringList(raw.sync_projects_include),
+		syncProjectsExclude: parseStringList(raw.sync_projects_exclude),
+		syncCoordinatorUrl: clean(raw.sync_coordinator_url),
+		syncCoordinatorGroup,
+		syncCoordinatorGroups:
+			syncCoordinatorGroups.length > 0
+				? syncCoordinatorGroups
+				: syncCoordinatorGroup
+					? [syncCoordinatorGroup]
+					: [],
+		syncCoordinatorTimeoutS: parseIntOr(raw.sync_coordinator_timeout_s, 3),
+		syncCoordinatorPresenceTtlS: parseIntOr(raw.sync_coordinator_presence_ttl_s, 180),
+		syncCoordinatorAdminSecret: clean(raw.sync_coordinator_admin_secret),
+	};
+}
+
+export function coordinatorEnabled(config: CoordinatorSyncConfig): boolean {
+	return Boolean(config.syncCoordinatorUrl && config.syncCoordinatorGroups.length > 0);
+}
+
+function advertisedSyncAddresses(config: CoordinatorSyncConfig): string[] {
+	const advertise = config.syncAdvertise.toLowerCase();
+	if (advertise && advertise !== "auto" && advertise !== "default") {
+		return mergeAddresses(
+			[],
+			advertise
+				.split(",")
+				.map((item) => item.trim())
+				.filter(Boolean),
+		);
+	}
+	if (config.syncHost && config.syncHost !== "0.0.0.0") {
+		return [`${config.syncHost}:${config.syncPort}`];
+	}
+	const addresses = Object.values(networkInterfaces())
+		.flatMap((entries) => entries ?? [])
+		.filter((entry) => !entry.internal)
+		.map((entry) => entry.address)
+		.filter((address) => address && address !== "127.0.0.1" && address !== "::1")
+		.map((address) => `${address}:${config.syncPort}`);
+	return [...new Set(addresses)];
+}
+
+export async function registerCoordinatorPresence(
+	store: MemoryStore,
+	config: CoordinatorSyncConfig,
+): Promise<{ groups: string[]; responses: Record<string, unknown>[] } | null> {
+	if (!coordinatorEnabled(config)) return null;
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir });
+	const publicKey = loadPublicKey(keysDir);
+	if (!publicKey) throw new Error("public key missing");
+	const baseUrl = buildBaseUrl(config.syncCoordinatorUrl);
+	const payload = {
+		fingerprint,
+		public_key: publicKey,
+		addresses: advertisedSyncAddresses(config),
+		ttl_s: Math.max(1, config.syncCoordinatorPresenceTtlS),
+	};
+	const responses: Record<string, unknown>[] = [];
+	for (const groupId of config.syncCoordinatorGroups) {
+		const groupPayload = { ...payload, group_id: groupId };
+		const bodyBytes = Buffer.from(JSON.stringify(groupPayload), "utf8");
+		const url = `${baseUrl}/v1/presence`;
+		const headers = buildAuthHeaders({ deviceId, method: "POST", url, bodyBytes, keysDir });
+		const [status, response] = await requestJson("POST", url, {
+			headers,
+			body: groupPayload,
+			bodyBytes,
+			timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+		});
+		if (status !== 200 || !response) {
+			const detail = typeof response?.error === "string" ? response.error : "unknown";
+			throw new Error(`coordinator presence failed (${status}: ${detail})`);
+		}
+		responses.push(response);
+	}
+	return { groups: config.syncCoordinatorGroups, responses };
+}
+
+export async function lookupCoordinatorPeers(
+	store: MemoryStore,
+	config: CoordinatorSyncConfig,
+): Promise<Record<string, unknown>[]> {
+	if (!coordinatorEnabled(config)) return [];
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+	const baseUrl = buildBaseUrl(config.syncCoordinatorUrl);
+	const merged = new Map<string, Record<string, unknown>>();
+	for (const groupId of config.syncCoordinatorGroups) {
+		const url = `${baseUrl}/v1/peers?group_id=${encodeURIComponent(groupId)}`;
+		const headers = buildAuthHeaders({
+			deviceId,
+			method: "GET",
+			url,
+			bodyBytes: Buffer.alloc(0),
+			keysDir,
+		});
+		const [status, response] = await requestJson("GET", url, {
+			headers,
+			timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+		});
+		if (status !== 200 || !response) {
+			const detail = typeof response?.error === "string" ? response.error : "unknown";
+			throw new Error(`coordinator lookup failed (${status}: ${detail})`);
+		}
+		const items = Array.isArray(response.items) ? response.items : [];
+		for (const item of items) {
+			if (!item || typeof item !== "object") continue;
+			const record = item as Record<string, unknown>;
+			const device = clean(record.device_id);
+			const fingerprint = clean(record.fingerprint);
+			if (!device) continue;
+			const key = `${device}:${fingerprint}`;
+			const existing = merged.get(key);
+			if (!existing) {
+				merged.set(key, {
+					...record,
+					addresses: mergeAddresses(
+						[],
+						Array.isArray(record.addresses)
+							? record.addresses.filter((x): x is string => typeof x === "string")
+							: [],
+					),
+					groups: [groupId],
+				});
+				continue;
+			}
+			existing.addresses = mergeAddresses(
+				(Array.isArray(existing.addresses) ? existing.addresses : []) as string[],
+				Array.isArray(record.addresses)
+					? record.addresses.filter((x): x is string => typeof x === "string")
+					: [],
+			);
+			existing.groups = mergeAddresses(
+				(Array.isArray(existing.groups) ? existing.groups : []) as string[],
+				[groupId],
+			);
+			existing.stale = Boolean(existing.stale) && Boolean(record.stale);
+			if (clean(record.last_seen_at) > clean(existing.last_seen_at)) {
+				existing.last_seen_at = record.last_seen_at;
+				existing.expires_at = record.expires_at;
+			}
+		}
+	}
+	return [...merged.values()];
+}
+
+export async function coordinatorStatusSnapshot(
+	store: MemoryStore,
+	config: CoordinatorSyncConfig,
+): Promise<Record<string, unknown>> {
+	const pairedPeerCount = Number(
+		(
+			store.db.prepare("SELECT COUNT(1) AS total FROM sync_peers").get() as
+				| { total?: number }
+				| undefined
+		)?.total ?? 0,
+	);
+	if (!coordinatorEnabled(config)) {
+		return {
+			enabled: false,
+			configured: false,
+			groups: config.syncCoordinatorGroups,
+			paired_peer_count: pairedPeerCount,
+		};
+	}
+	const snapshot: Record<string, unknown> = {
+		enabled: true,
+		configured: true,
+		coordinator_url: config.syncCoordinatorUrl,
+		groups: config.syncCoordinatorGroups,
+		paired_peer_count: pairedPeerCount,
+		presence_status: "unknown",
+		presence_error: null,
+		advertised_addresses: [],
+		fresh_peer_count: 0,
+		stale_peer_count: 0,
+		discovered_peer_count: 0,
+	};
+	try {
+		const registration = await registerCoordinatorPresence(store, config);
+		snapshot.presence_status = "posted";
+		const first = registration?.responses?.[0];
+		if (first && typeof first === "object") {
+			snapshot.advertised_addresses = (first as Record<string, unknown>).addresses ?? [];
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		snapshot.presence_status = message.includes("unknown_device") ? "not_enrolled" : "error";
+		snapshot.presence_error = message;
+	}
+	try {
+		const peers = await lookupCoordinatorPeers(store, config);
+		snapshot.discovered_peer_count = peers.length;
+		snapshot.fresh_peer_count = peers.filter((peer) => !peer.stale).length;
+		snapshot.stale_peer_count = peers.filter((peer) => Boolean(peer.stale)).length;
+	} catch (error) {
+		snapshot.lookup_error = error instanceof Error ? error.message : String(error);
+	}
+	return snapshot;
+}
+
+export async function listCoordinatorJoinRequests(
+	config: CoordinatorSyncConfig,
+): Promise<Record<string, unknown>[]> {
+	const groupId = config.syncCoordinatorGroup || config.syncCoordinatorGroups[0] || "";
+	if (!groupId || !config.syncCoordinatorUrl || !config.syncCoordinatorAdminSecret) return [];
+	const url = `${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/join-requests?group_id=${encodeURIComponent(groupId)}`;
+	const [status, response] = await requestJson("GET", url, {
+		headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
+		timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+	});
+	if (status !== 200 || !response) return [];
+	return Array.isArray(response.items)
+		? response.items.filter(
+				(item): item is Record<string, unknown> => Boolean(item) && typeof item === "object",
+			)
+		: [];
+}

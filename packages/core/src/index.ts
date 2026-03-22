@@ -26,6 +26,14 @@ export {
 	inviteLink,
 } from "./coordinator-invites.js";
 export {
+	coordinatorEnabled,
+	coordinatorStatusSnapshot,
+	listCoordinatorJoinRequests,
+	lookupCoordinatorPeers,
+	readCoordinatorSyncConfig,
+	registerCoordinatorPresence,
+} from "./coordinator-runtime.js";
+export {
 	CoordinatorStore,
 	connectCoordinator,
 	DEFAULT_COORDINATOR_DB_PATH,

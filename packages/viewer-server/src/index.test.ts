@@ -5,10 +5,15 @@
  * Uses Record<string, unknown> instead of Record<string, any> (fix #6).
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initTestSchema, insertTestSession, type MemoryStore } from "@codemem/core";
+import {
+	ensureDeviceIdentity,
+	initTestSchema,
+	insertTestSession,
+	MemoryStore,
+} from "@codemem/core";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
@@ -17,54 +22,25 @@ import { createApp } from "./index.js";
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Create an in-memory MemoryStore backed by a fresh test schema.
- * The caller must close() when done.
- */
-function createTestStore(): MemoryStore {
-	// Create raw DB, init schema, then wrap in MemoryStore via its constructor
-	// MemoryStore constructor calls connect() which creates a new DB.
-	// Instead, we need to use the store directly with a test DB path.
-	// Use :memory: via a temporary approach.
-	const rawDb = new Database(":memory:");
+function createTestStore(): { store: MemoryStore; cleanup: () => void } {
+	const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-store-test-"));
+	const dbPath = join(tmpDir, "test.sqlite");
+	const rawDb = new Database(dbPath);
 	initTestSchema(rawDb);
-
-	// MemoryStore expects a file path; for tests we create a thin wrapper
-	// that reuses the raw DB.
-	// Since MemoryStore.constructor calls connect() internally, we need to
-	// create a store-compatible object. For now, create a real MemoryStore
-	// using a temp file, but that's slow. Instead, create a lightweight
-	// test harness.
-	//
-	// Actually, MemoryStore from core re-opens the db. For in-memory tests,
-	// we need to work around this. The cleanest approach: insert test data
-	// into the raw DB, then use it directly for assertions.
-
-	// Return the raw DB wrapped to match the subset of MemoryStore we need.
+	rawDb
+		.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+		)
+		.run("test-device-001", "test-public-key", "test-fingerprint", new Date().toISOString());
+	rawDb.close();
+	const store = new MemoryStore(dbPath);
 	return {
-		db: rawDb,
-		dbPath: ":memory:",
-		deviceId: "test-device-001",
-		actorId: "local:test-device-001",
-		actorDisplayName: "Test User",
-		stats() {
-			return {
-				database: {
-					path: ":memory:",
-					size_bytes: 0,
-					sessions: 0,
-					memory_items: 0,
-					active_memory_items: 0,
-					artifacts: 0,
-					vector_rows: 0,
-					raw_events: 0,
-				},
-			};
+		store,
+		cleanup: () => {
+			store.close();
+			rmSync(tmpDir, { recursive: true, force: true });
 		},
-		close() {
-			rawDb.close();
-		},
-	} as unknown as MemoryStore;
+	};
 }
 
 function insertTestMemory(
@@ -113,13 +89,15 @@ function insertTestMemory(
 /** Create a test Hono app backed by a fresh in-memory DB. */
 function createTestApp(opts?: { sweeper?: unknown }) {
 	let store: MemoryStore | null = null;
+	let storeCleanup: (() => void) | null = null;
 
 	const app = createApp({
 		sweeper: (opts?.sweeper ?? null) as never,
 		storeFactory: () => {
-			// Reuse the same store for the lifetime of the test
 			if (!store) {
-				store = createTestStore();
+				const created = createTestStore();
+				store = created.store;
+				storeCleanup = created.cleanup;
 			}
 			return store;
 		},
@@ -129,10 +107,9 @@ function createTestApp(opts?: { sweeper?: unknown }) {
 		app,
 		getStore: () => store,
 		cleanup: () => {
-			if (store) {
-				store.close();
-				store = null;
-			}
+			storeCleanup?.();
+			store = null;
+			storeCleanup = null;
 		},
 	};
 }
@@ -413,7 +390,7 @@ describe("viewer-server", () => {
 
 	describe("GET /api/observer-status", () => {
 		it("returns live observer status and suppresses stale failures after success", async () => {
-			const store = createTestStore();
+			const { store, cleanup } = createTestStore();
 			try {
 				(
 					store as MemoryStore & {
@@ -461,7 +438,7 @@ describe("viewer-server", () => {
 				expect(body).toHaveProperty("queue");
 				expect(body.latest_failure).toBeNull();
 			} finally {
-				store.close();
+				cleanup();
 			}
 		});
 	});
@@ -834,6 +811,186 @@ describe("viewer-server", () => {
 				expect(body.status.peers["peer-1"]?.sync_status).toBe("ok");
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("returns real sync config and coordinator status details", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://1.2.3.4:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-1",
+									fingerprint: "fp1",
+									addresses: ["http://10.0.0.2:7337"],
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/admin/join-requests")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									request_id: "req-1",
+									device_id: "joiner-1",
+									fingerprint: "fpj",
+									status: "pending",
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_host: "127.0.0.1",
+					sync_port: 7337,
+					sync_interval_s: 45,
+					sync_projects_include: ["codemem"],
+					sync_projects_exclude: ["junk"],
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, any>;
+				expect(body.enabled).toBe(true);
+				expect(body.interval_s).toBe(45);
+				expect(body.project_filter_active).toBe(true);
+				expect(body.project_filter).toEqual({ include: ["codemem"], exclude: ["junk"] });
+				expect(body.coordinator.enabled).toBe(true);
+				expect(body.coordinator.configured).toBe(true);
+				expect(body.coordinator.groups).toEqual(["team-a"]);
+				expect(body.join_requests).toHaveLength(1);
+				expect(body.join_requests[0].request_id).toBe("req-1");
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+				delete process.env.CODEMEM_SYNC_ENABLED;
+			}
+		});
+
+		it("respects env-only sync configuration in status output", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevEnabled = process.env.CODEMEM_SYNC_ENABLED;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_SYNC_ENABLED = "1";
+			writeFileSync(configPath, JSON.stringify({ sync_enabled: false }));
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.enabled).toBe(true);
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevEnabled == null) delete process.env.CODEMEM_SYNC_ENABLED;
+				else process.env.CODEMEM_SYNC_ENABLED = prevEnabled;
+			}
+		});
+
+		it("returns real legacy device and sharing review summaries", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({ sync_enabled: true, sync_projects_include: ["codemem"] }),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("codemem", sessionId);
+				store.db
+					.prepare(
+						"INSERT OR REPLACE INTO actors(actor_id, display_name, is_local, status, created_at, updated_at) VALUES (?, ?, 0, 'active', ?, ?)",
+					)
+					.run("actor:peer", "Peer Person", new Date().toISOString(), new Date().toISOString());
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, 0, ?)",
+					)
+					.run("peer-actor", "Peer Device", "actor:peer", new Date().toISOString());
+				insertTestMemory(store, {
+					sessionId,
+					kind: "feature",
+					title: "Shared memory",
+					bodyText: "body",
+					metadata: { source: "observer" },
+				});
+				store.db
+					.prepare(
+						`UPDATE memory_items SET actor_id = ?, actor_display_name = ?, visibility = 'shared', workspace_id = 'shared:default', trust_state = 'trusted' WHERE title = ?`,
+					)
+					.run(store.actorId, store.actorDisplayName, "Shared memory");
+				insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Legacy memory",
+					bodyText: "legacy",
+					actorId: null,
+					originDeviceId: "legacy-peer-1",
+					metadata: { source: "observer" },
+				});
+				store.db
+					.prepare(
+						`UPDATE memory_items SET actor_id = NULL, actor_display_name = ?, workspace_id = ?, trust_state = 'legacy_unknown' WHERE title = ?`,
+					)
+					.run("Legacy synced peer", "shared:legacy", "Legacy memory");
+				const res = await app.request("/api/sync/status?includeDiagnostics=1&project=codemem");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, any>;
+				expect(body.legacy_devices).toHaveLength(1);
+				expect(body.legacy_devices[0].origin_device_id).toBe("legacy-peer-1");
+				expect(body.sharing_review).toHaveLength(1);
+				expect(body.sharing_review[0].peer_device_id).toBe("peer-actor");
+				expect(body.sharing_review[0].actor_display_name).toBe("Peer Person");
+				expect(body.sharing_review[0].shareable_count).toBe(1);
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
 			}
 		});
 	});
