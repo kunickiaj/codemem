@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
 import {
 	applyReplicationOps,
+	backfillReplicationOps,
 	chunkOpsBySize,
 	clockTuple,
 	extractReplicationOps,
 	getReplicationCursor,
 	isNewerClock,
 	loadReplicationOpsSince,
+	migrateLegacyImportKeys,
 	recordReplicationOp,
 	setReplicationCursor,
 } from "./sync-replication.js";
@@ -468,6 +470,126 @@ describe("loadReplicationOpsSince", () => {
 		const [ops, cursor] = loadReplicationOpsSince(db, null);
 		expect(ops).toEqual([]);
 		expect(cursor).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyImportKeys / backfillReplicationOps
+// ---------------------------------------------------------------------------
+
+describe("legacy key migration + replication backfill", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	it("rewrites old-format legacy import keys to device-scoped keys", () => {
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+		).run("dev-local", "pub", "fp", "2026-01-01T00:00:00Z");
+
+		const sessionId = insertTestSession(db);
+		const now = "2026-01-01T00:00:00Z";
+
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, metadata_json, rev)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(sessionId, "discovery", "A", "a", now, now, null, toJson({}), 1);
+
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, metadata_json, rev)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(sessionId, "discovery", "B", "b", now, now, "legacy:memory_item:42", toJson({}), 2);
+
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, metadata_json, rev)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"C",
+			"c",
+			now,
+			now,
+			"legacy:memory_item:99",
+			toJson({ clock_device_id: "peer-9" }),
+			3,
+		);
+
+		const changed = migrateLegacyImportKeys(db, 100);
+		expect(changed).toBe(3);
+
+		const rows = db.prepare("SELECT id, import_key FROM memory_items ORDER BY id").all() as Array<{
+			id: number;
+			import_key: string;
+		}>;
+		expect(rows[0]?.import_key).toBe(`legacy:dev-local:memory_item:${rows[0]?.id}`);
+		expect(rows[1]?.import_key).toBe("legacy:dev-local:memory_item:42");
+		expect(rows[2]?.import_key).toBe("legacy:peer-9:memory_item:99");
+	});
+
+	it("backfills missing delete/upsert ops once and remains idempotent", () => {
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+		).run("dev-local", "pub", "fp", "2026-01-01T00:00:00Z");
+		const sessionId = insertTestSession(db);
+		const now = "2026-01-02T00:00:00Z";
+
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(sessionId, "feature", "Live row", "live", now, now, "key:live", 1, 1, toJson({}));
+
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(sessionId, "bugfix", "Deleted row", "gone", now, now, "key:gone", 2, 0, now, toJson({}));
+
+		const first = backfillReplicationOps(db, 10);
+		expect(first).toBe(2);
+
+		const ops = db
+			.prepare(
+				"SELECT op_id, entity_id, op_type, clock_rev FROM replication_ops ORDER BY op_type, entity_id",
+			)
+			.all() as Array<{ op_id: string; entity_id: string; op_type: string; clock_rev: number }>;
+		expect(ops).toHaveLength(2);
+		expect(ops.map((op) => op.op_type).sort()).toEqual(["delete", "upsert"]);
+		expect(ops[0]?.op_id).toContain("backfill:memory_item:");
+
+		const second = backfillReplicationOps(db, 10);
+		expect(second).toBe(0);
+		const count = db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as { n: number };
+		expect(count.n).toBe(2);
+	});
+
+	it("does not mint legacy:local import keys before device identity exists", () => {
+		const sessionId = insertTestSession(db);
+		const now = "2026-01-02T00:00:00Z";
+
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(sessionId, "feature", "Live row", "live", now, now, null, 1, 1, toJson({}));
+
+		const inserted = backfillReplicationOps(db, 10);
+		expect(inserted).toBe(0);
+
+		const row = db.prepare("SELECT import_key FROM memory_items LIMIT 1").get() as {
+			import_key: string | null;
+		};
+		expect(row.import_key).toBeNull();
+
+		const localLegacyCount = db
+			.prepare("SELECT COUNT(*) AS n FROM memory_items WHERE import_key LIKE 'legacy:local:%'")
+			.get() as { n: number };
+		expect(localLegacyCount.n).toBe(0);
 	});
 });
 

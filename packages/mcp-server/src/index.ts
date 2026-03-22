@@ -607,13 +607,13 @@ async function main() {
 						"Notable regressions or follow-ups that should be remembered.",
 					],
 					how: [
-						"Use memory.remember with kind decision/observation/note.",
+						"Use memory.remember with kind decision/discovery/change/exploration.",
 						"Keep titles short and bodies high-signal.",
 						"ALWAYS pass the project parameter if known.",
 					],
 					examples: [
 						'memory.remember(kind="decision", title="Switch to async cache", body="...why...", project="my-service")',
-						'memory.remember(kind="observation", title="Fixed retry loop", body="...impact...", project="my-service")',
+						'memory.remember(kind="change", title="Fixed retry loop", body="...impact...", project="my-service")',
 					],
 				},
 				forget: {
@@ -646,7 +646,7 @@ async function main() {
 					"",
 					"Persistence:",
 					"- On milestones (task done, key decision, new facts learned), call memory.remember.",
-					"- Use kind=decision for tradeoffs, kind=observation for outcomes, kind=note for small useful facts.",
+					"- Use kind=decision for tradeoffs, kind=change for outcomes, kind=discovery/exploration for useful findings.",
 					"- Keep titles short and bodies high-signal.",
 					"- ALWAYS pass the project parameter if known.",
 					"",
@@ -658,7 +658,7 @@ async function main() {
 					"- memory.timeline(memory_id=123)",
 					"- memory.get_observations([123, 456])",
 					'- memory.remember(kind="decision", title="Use async cache", body="Chose async cache to avoid lock contention in X.", project="my-service")',
-					'- memory.remember(kind="observation", title="Fixed retry loop", body="Root cause was Y; added guard in Z.", project="my-service")',
+					'- memory.remember(kind="change", title="Fixed retry loop", body="Root cause was Y; added guard in Z.", project="my-service")',
 					"- memory.forget(123)",
 				].join("\n"),
 			});

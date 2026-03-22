@@ -387,6 +387,246 @@ export interface ApplyResult {
 	errors: string[];
 }
 
+const LEGACY_IMPORT_KEY_OLD_RE = /^legacy:memory_item:(.+)$/;
+
+/**
+ * Rewrite legacy import keys into globally unique, device-scoped keys.
+ *
+ * Older databases may contain keys like `legacy:memory_item:<id>`, which can
+ * collide across peers. This rewrites them to
+ * `legacy:<device_id>:memory_item:<id>`.
+ */
+export function migrateLegacyImportKeys(db: Database, limit = 2000): number {
+	const d = drizzle(db, { schema });
+	const deviceRow = d
+		.select({ device_id: schema.syncDevice.device_id })
+		.from(schema.syncDevice)
+		.limit(1)
+		.get();
+	const localDeviceId = String(deviceRow?.device_id ?? "").trim();
+	if (!localDeviceId) return 0;
+
+	const rows = db
+		.prepare(
+			`SELECT id, import_key, metadata_json
+			 FROM memory_items
+			 WHERE import_key IS NULL
+			    OR TRIM(import_key) = ''
+			    OR import_key LIKE 'legacy:memory_item:%'
+			 ORDER BY id ASC
+			 LIMIT ?`,
+		)
+		.all(limit) as Array<{ id: number; import_key: string | null; metadata_json: string | null }>;
+
+	if (rows.length === 0) return 0;
+
+	let updated = 0;
+	for (const row of rows) {
+		const memoryId = Number(row.id);
+		const current = String(row.import_key ?? "").trim();
+		const metadata = fromJson(row.metadata_json);
+		const clockDeviceId = String(metadata.clock_device_id ?? "").trim();
+
+		let canonical = "";
+		if (!current) {
+			canonical = `legacy:${localDeviceId}:memory_item:${memoryId}`;
+		} else {
+			const match = current.match(LEGACY_IMPORT_KEY_OLD_RE);
+			if (!match) continue;
+			const suffix = match[1] ?? "";
+			const origin = clockDeviceId && clockDeviceId !== "local" ? clockDeviceId : localDeviceId;
+			canonical = origin ? `legacy:${origin}:memory_item:${suffix}` : "";
+		}
+
+		if (!canonical || canonical === current) continue;
+
+		const existing = db
+			.prepare("SELECT id FROM memory_items WHERE import_key = ? LIMIT 1")
+			.get(canonical) as { id: number } | undefined;
+		if (existing && Number(existing.id) !== memoryId) {
+			continue;
+		}
+
+		db.prepare("UPDATE memory_items SET import_key = ? WHERE id = ?").run(canonical, memoryId);
+		updated++;
+	}
+
+	return updated;
+}
+
+/**
+ * Generate replication ops for rows that predate replication.
+ *
+ * Prioritizes delete/tombstone ops first, then active upserts, and only
+ * generates ops when a matching op for the same entity/rev/op_type is missing.
+ */
+export function backfillReplicationOps(db: Database, limit = 200): number {
+	if (limit <= 0) return 0;
+
+	migrateLegacyImportKeys(db, 2000);
+
+	const d = drizzle(db, { schema });
+	const deviceRow = d
+		.select({ device_id: schema.syncDevice.device_id })
+		.from(schema.syncDevice)
+		.limit(1)
+		.get();
+	const localDeviceId = String(deviceRow?.device_id ?? "").trim();
+
+	const deletedRows = db
+		.prepare(
+			`SELECT mi.*
+			 FROM memory_items mi
+			 WHERE (mi.deleted_at IS NOT NULL OR mi.active = 0)
+			   AND NOT EXISTS (
+			     SELECT 1
+			     FROM replication_ops ro
+			     WHERE ro.entity_type = 'memory_item'
+			       AND ro.entity_id = mi.import_key
+			       AND ro.op_type = 'delete'
+			       AND ro.clock_rev = COALESCE(mi.rev, 0)
+			   )
+			 ORDER BY mi.updated_at ASC
+			 LIMIT ?`,
+		)
+		.all(limit) as Array<Record<string, unknown>>;
+
+	const remaining = Math.max(0, limit - deletedRows.length);
+	let rows = deletedRows;
+	if (remaining > 0) {
+		const upsertRows = db
+			.prepare(
+				`SELECT mi.*
+				 FROM memory_items mi
+				 WHERE mi.deleted_at IS NULL
+				   AND mi.active = 1
+				   AND NOT EXISTS (
+				     SELECT 1
+				     FROM replication_ops ro
+				     WHERE ro.entity_type = 'memory_item'
+				       AND ro.entity_id = mi.import_key
+				       AND ro.op_type = 'upsert'
+				       AND ro.clock_rev = COALESCE(mi.rev, 0)
+				   )
+				 ORDER BY mi.updated_at ASC
+				 LIMIT ?`,
+			)
+			.all(remaining) as Array<Record<string, unknown>>;
+		rows = [...rows, ...upsertRows];
+	}
+
+	if (rows.length === 0) return 0;
+
+	const now = new Date().toISOString();
+	let inserted = 0;
+
+	for (const row of rows) {
+		const rowId = Number(row.id ?? 0);
+		if (!rowId) continue;
+
+		const metadata =
+			typeof row.metadata_json === "string"
+				? fromJson(row.metadata_json)
+				: fromJsonNullableLike(row.metadata_json);
+		const metadataClockDeviceId = String(metadata.clock_device_id ?? "").trim();
+		const originDeviceId =
+			metadataClockDeviceId && metadataClockDeviceId !== "local"
+				? metadataClockDeviceId
+				: localDeviceId;
+
+		let importKey = String(row.import_key ?? "").trim();
+		if (!importKey) {
+			if (!originDeviceId) continue;
+			importKey = `legacy:${originDeviceId}:memory_item:${rowId}`;
+			db.prepare("UPDATE memory_items SET import_key = ? WHERE id = ?").run(importKey, rowId);
+		}
+
+		const rev = Number(row.rev ?? 0);
+		const active = Number(row.active ?? 1);
+		const deletedAt = String(row.deleted_at ?? "").trim();
+		const opType: "upsert" | "delete" = deletedAt || active === 0 ? "delete" : "upsert";
+		const opId = `backfill:memory_item:${importKey}:${rev}:${opType}`;
+
+		const exists = db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ? LIMIT 1").get(opId) as
+			| { 1: number }
+			| undefined;
+		if (exists) continue;
+
+		const clockDeviceId = originDeviceId;
+		if (!clockDeviceId) continue;
+		const payload = buildPayloadFromMemoryRow(row);
+
+		d.insert(schema.replicationOps)
+			.values({
+				op_id: opId,
+				entity_type: "memory_item",
+				entity_id: importKey,
+				op_type: opType,
+				payload_json: toJson(payload),
+				clock_rev: rev,
+				clock_updated_at: String(row.updated_at ?? now),
+				clock_device_id: clockDeviceId,
+				device_id: clockDeviceId,
+				created_at: now,
+			})
+			.onConflictDoNothing()
+			.run();
+
+		inserted++;
+	}
+
+	return inserted;
+}
+
+function fromJsonNullableLike(value: unknown): Record<string, unknown> {
+	if (typeof value === "string") return fromJson(value);
+	if (value && typeof value === "object") return value as Record<string, unknown>;
+	return {};
+}
+
+function buildPayloadFromMemoryRow(row: Record<string, unknown>): Record<string, unknown> {
+	const parseSqliteJson = (val: unknown): unknown => {
+		if (typeof val !== "string") return val ?? null;
+		try {
+			return JSON.parse(val);
+		} catch {
+			return val;
+		}
+	};
+
+	return {
+		session_id: row.session_id ?? null,
+		kind: row.kind ?? null,
+		title: row.title ?? null,
+		subtitle: row.subtitle ?? null,
+		body_text: row.body_text ?? null,
+		confidence: row.confidence ?? null,
+		tags_text: row.tags_text ?? null,
+		active: row.active ?? null,
+		created_at: row.created_at ?? null,
+		updated_at: row.updated_at ?? null,
+		metadata_json: parseSqliteJson(row.metadata_json),
+		actor_id: row.actor_id ?? null,
+		actor_display_name: row.actor_display_name ?? null,
+		visibility: row.visibility ?? null,
+		workspace_id: row.workspace_id ?? null,
+		workspace_kind: row.workspace_kind ?? null,
+		origin_device_id: row.origin_device_id ?? null,
+		origin_source: row.origin_source ?? null,
+		trust_state: row.trust_state ?? null,
+		narrative: row.narrative ?? null,
+		facts: parseSqliteJson(row.facts),
+		concepts: parseSqliteJson(row.concepts),
+		files_read: parseSqliteJson(row.files_read),
+		files_modified: parseSqliteJson(row.files_modified),
+		user_prompt_id: row.user_prompt_id ?? null,
+		prompt_number: row.prompt_number ?? null,
+		deleted_at: row.deleted_at ?? null,
+		rev: row.rev ?? 0,
+		import_key: row.import_key ?? null,
+	};
+}
+
 /**
  * Apply inbound replication ops from a remote peer.
  *

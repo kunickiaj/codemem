@@ -814,6 +814,34 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("exposes /v1/status sync endpoint (auth-gated)", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/v1/status");
+				expect(res.status).toBe(401);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("unauthorized");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("exposes /v1/ops sync endpoint (auth-gated)", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const getRes = await app.request("/v1/ops");
+				expect(getRes.status).toBe(401);
+				const postRes = await app.request("/v1/ops", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ ops: [] }),
+				});
+				expect(postRes.status).toBe(401);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("returns real sync config and coordinator status details", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
