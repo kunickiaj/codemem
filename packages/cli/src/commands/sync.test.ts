@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { syncCommand } from "./sync.js";
 import {
 	buildServeLifecycleArgs,
 	collectAdvertiseAddresses,
@@ -99,5 +100,52 @@ describe("formatSyncAttempt", () => {
 				en0: [{ address: "192.168.1.10", internal: false, family: "IPv4" }],
 			}),
 		).toEqual(["192.168.1.10:7337"]);
+	});
+
+	it("registers coordinator parity subcommands", () => {
+		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
+		expect(coordinator).toBeDefined();
+		expect(coordinator?.commands.map((command) => command.name())).toEqual([
+			"serve",
+			"create-invite",
+			"import-invite",
+			"list-join-requests",
+			"approve-join-request",
+			"deny-join-request",
+		]);
+	});
+
+	it("documents the coordinator command surface in help output", () => {
+		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
+		const help = coordinator?.helpInformation() ?? "";
+		expect(help).toContain("serve");
+		expect(help).toContain("create-invite");
+		expect(help).toContain("import-invite");
+		expect(help).toContain("list-join-requests");
+		expect(help).toContain("approve-join-request");
+		expect(help).toContain("deny-join-request");
+	});
+
+	it("defaults coordinator serve to the coordinator store database", () => {
+		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
+		const serve = coordinator?.commands.find((command) => command.name() === "serve");
+		expect(serve?.options.find((opt) => opt.long === "--db")?.defaultValue).toBeUndefined();
+		// runtime default is enforced in action code, not commander metadata
+		const help = serve?.helpInformation() ?? "";
+		expect(help).toContain("coordinator database path");
+	});
+
+	it("allows positional group ids for create-invite and list-join-requests", () => {
+		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
+		const createInvite = coordinator?.commands.find(
+			(command) => command.name() === "create-invite",
+		);
+		const listRequests = coordinator?.commands.find(
+			(command) => command.name() === "list-join-requests",
+		);
+		expect(createInvite?.registeredArguments[0]?.required).toBe(false);
+		expect(listRequests?.registeredArguments[0]?.required).toBe(false);
+		expect(createInvite?.helpInformation()).toContain("[group]");
+		expect(listRequests?.helpInformation()).toContain("[group]");
 	});
 });

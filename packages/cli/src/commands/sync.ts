@@ -10,6 +10,12 @@ import { dirname, join } from "node:path";
 
 import * as p from "@clack/prompts";
 import {
+	coordinatorCreateInviteAction,
+	coordinatorImportInviteAction,
+	coordinatorListJoinRequestsAction,
+	coordinatorReviewJoinRequestAction,
+	createCoordinatorApp,
+	DEFAULT_COORDINATOR_DB_PATH,
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
 	loadPublicKey,
@@ -23,6 +29,7 @@ import {
 	updatePeerAddresses,
 	writeCodememConfigFile,
 } from "@codemem/core";
+import { serve as honoServe } from "@hono/node-server";
 import { Command } from "commander";
 import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -797,3 +804,218 @@ syncCommand.addCommand(
 			p.outro("Restart `codemem serve` to activate coordinator sync");
 		}),
 );
+
+const coordinatorCommand = new Command("coordinator")
+	.configureHelp(helpStyle)
+	.description("Manage coordinator invites, join requests, and relay server");
+
+coordinatorCommand.addCommand(
+	new Command("serve")
+		.configureHelp(helpStyle)
+		.description("Run the coordinator relay HTTP server")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--host <host>", "bind host", "127.0.0.1")
+		.option("--port <port>", "bind port", "7340")
+		.action(async (opts: { db?: string; dbPath?: string; host?: string; port?: string }) => {
+			const host = String(opts.host ?? "127.0.0.1").trim() || "127.0.0.1";
+			const port = Number.parseInt(String(opts.port ?? "7340"), 10);
+			const dbPath = opts.db ?? opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH;
+			const app = createCoordinatorApp({ dbPath });
+			p.intro("codemem sync coordinator serve");
+			p.log.success(`Coordinator listening at http://${host}:${port}`);
+			p.log.info(`DB: ${dbPath}`);
+			honoServe({ fetch: app.fetch, hostname: host, port });
+		}),
+);
+
+coordinatorCommand.addCommand(
+	new Command("create-invite")
+		.configureHelp(helpStyle)
+		.description("Create a coordinator team invite")
+		.argument("[group]", "group id")
+		.option("--group <group>", "group id")
+		.option("--coordinator-url <url>", "coordinator URL override")
+		.option("--policy <policy>", "invite policy", "auto_admit")
+		.option("--ttl-hours <hours>", "invite TTL hours", "24")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override")
+		.option("--json", "output as JSON")
+		.action(
+			async (
+				groupArg: string | undefined,
+				opts: {
+					group?: string;
+					coordinatorUrl?: string;
+					policy?: string;
+					ttlHours?: string;
+					db?: string;
+					dbPath?: string;
+					remoteUrl?: string;
+					adminSecret?: string;
+					json?: boolean;
+				},
+			) => {
+				const ttlHours = Number.parseInt(String(opts.ttlHours ?? "24"), 10);
+				const groupId = String(opts.group ?? "").trim() || String(groupArg ?? "").trim();
+				const result = await coordinatorCreateInviteAction({
+					groupId,
+					coordinatorUrl: opts.coordinatorUrl?.trim() || null,
+					policy: String(opts.policy ?? "auto_admit").trim(),
+					ttlHours,
+					createdBy: null,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(result, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator create-invite");
+				p.log.success(`Invite created for ${groupId}`);
+				if (typeof result.link === "string") p.log.message(`- link: ${result.link}`);
+				if (typeof result.encoded === "string") p.log.message(`- invite: ${result.encoded}`);
+				p.outro("Invite ready");
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("import-invite")
+		.configureHelp(helpStyle)
+		.description("Import a coordinator invite")
+		.argument("<invite>", "invite value or link")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--keys-dir <path>", "keys directory")
+		.option("--config <path>", "config path")
+		.option("--json", "output as JSON")
+		.action(
+			async (
+				invite: string,
+				opts: { db?: string; dbPath?: string; keysDir?: string; config?: string; json?: boolean },
+			) => {
+				const result = await coordinatorImportInviteAction({
+					inviteValue: invite,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+					keysDir: opts.keysDir ?? null,
+					configPath: opts.config ?? null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(result, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator import-invite");
+				p.log.success(`Invite imported for ${result.group_id}`);
+				p.log.message(`- coordinator: ${result.coordinator_url}`);
+				p.log.message(`- status: ${result.status}`);
+				p.outro("Coordinator config updated");
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("list-join-requests")
+		.configureHelp(helpStyle)
+		.description("List pending coordinator join requests")
+		.argument("[group]", "group id")
+		.option("--group <group>", "group id")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override")
+		.option("--json", "output as JSON")
+		.action(
+			async (
+				groupArg: string | undefined,
+				opts: {
+					group?: string;
+					db?: string;
+					dbPath?: string;
+					remoteUrl?: string;
+					adminSecret?: string;
+					json?: boolean;
+				},
+			) => {
+				const groupId = String(opts.group ?? "").trim() || String(groupArg ?? "").trim();
+				const rows = await coordinatorListJoinRequestsAction({
+					groupId,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(rows, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator list-join-requests");
+				if (rows.length === 0) {
+					p.outro(`No pending join requests for ${groupId}`);
+					return;
+				}
+				for (const row of rows) {
+					const displayName = row.display_name || row.device_id;
+					p.log.message(`- ${displayName} (${row.device_id}) request_id=${row.request_id}`);
+				}
+				p.outro(`${rows.length} pending join request(s)`);
+			},
+		),
+);
+
+function addReviewJoinRequestCommand(
+	name: "approve-join-request" | "deny-join-request",
+	approve: boolean,
+) {
+	coordinatorCommand.addCommand(
+		new Command(name)
+			.configureHelp(helpStyle)
+			.description(`${approve ? "Approve" : "Deny"} a coordinator join request`)
+			.argument("<request-id>", "join request id")
+			.option("--db <path>", "coordinator database path")
+			.option("--db-path <path>", "coordinator database path")
+			.option("--remote-url <url>", "remote coordinator URL override")
+			.option("--admin-secret <secret>", "remote coordinator admin secret override")
+			.option("--json", "output as JSON")
+			.action(
+				async (
+					requestId: string,
+					opts: {
+						db?: string;
+						dbPath?: string;
+						remoteUrl?: string;
+						adminSecret?: string;
+						json?: boolean;
+					},
+				) => {
+					const request = await coordinatorReviewJoinRequestAction({
+						requestId: requestId.trim(),
+						approve,
+						reviewedBy: null,
+						dbPath: opts.db ?? opts.dbPath ?? null,
+						remoteUrl: opts.remoteUrl?.trim() || null,
+						adminSecret: opts.adminSecret?.trim() || null,
+					});
+					if (!request) {
+						p.log.error(`Join request not found: ${requestId.trim()}`);
+						process.exitCode = 1;
+						return;
+					}
+					if (opts.json) {
+						console.log(JSON.stringify(request, null, 2));
+						return;
+					}
+					p.intro(`codemem sync coordinator ${name}`);
+					p.log.success(`${approve ? "Approved" : "Denied"} join request ${requestId.trim()}`);
+					p.outro(String(request.status ?? "updated"));
+				},
+			),
+	);
+}
+
+addReviewJoinRequestCommand("approve-join-request", true);
+addReviewJoinRequestCommand("deny-join-request", false);
+
+syncCommand.addCommand(coordinatorCommand);
