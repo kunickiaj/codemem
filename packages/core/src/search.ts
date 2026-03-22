@@ -251,6 +251,91 @@ function sharedTrustPenalty(
 	return 0.0;
 }
 
+function canonicalPath(rawPath: string): string {
+	let path = rawPath.trim().replaceAll("\\", "/");
+	if (path.startsWith("./")) {
+		path = path.slice(2);
+	}
+	const parts = path.split("/").filter((part) => part && part !== ".");
+	if (parts.length === 0) return "";
+	return parts.join("/").toLowerCase();
+}
+
+function pathSegments(path: string): string[] {
+	const canonical = canonicalPath(path);
+	if (!canonical) return [];
+	return canonical.split("/");
+}
+
+function pathBasename(path: string): string {
+	const segments = pathSegments(path);
+	if (segments.length === 0) return "";
+	return segments[segments.length - 1] ?? "";
+}
+
+function pathSegmentsOverlap(a: string[], b: string[]): boolean {
+	if (a.length === 0 || b.length === 0) return false;
+	if (a.length <= b.length) {
+		return b.slice(b.length - a.length).join("/") === a.join("/");
+	}
+	return a.slice(a.length - b.length).join("/") === b.join("/");
+}
+
+function normalizeWorkingSetPaths(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const raw of value) {
+		if (typeof raw !== "string") continue;
+		const path = canonicalPath(raw);
+		if (!path || seen.has(path)) continue;
+		seen.add(path);
+		normalized.push(path);
+	}
+	return normalized;
+}
+
+function memoryFilesModified(item: MemoryResult): string[] {
+	const metadata = item.metadata ?? {};
+	const rawPaths = metadata.files_modified;
+	if (!Array.isArray(rawPaths)) return [];
+	const normalized: string[] = [];
+	for (const raw of rawPaths) {
+		if (typeof raw !== "string") continue;
+		const path = canonicalPath(raw);
+		if (path) normalized.push(path);
+	}
+	return normalized;
+}
+
+function workingSetOverlapBoost(item: MemoryResult, workingSetPaths: string[]): number {
+	if (workingSetPaths.length === 0) return 0.0;
+	const itemPaths = memoryFilesModified(item);
+	if (itemPaths.length === 0) return 0.0;
+
+	const itemPathSegments = [...new Set(itemPaths)].map((path) => pathSegments(path));
+	const workingSetSegments = [...new Set(workingSetPaths)].map((path) => pathSegments(path));
+	const itemBasenames = new Set(itemPaths.map((path) => pathBasename(path)).filter(Boolean));
+	const workingSetBasenames = new Set(
+		workingSetPaths.map((path) => pathBasename(path)).filter(Boolean),
+	);
+
+	let directHits = 0;
+	for (const itemSegment of itemPathSegments) {
+		if (workingSetSegments.some((wsSegment) => pathSegmentsOverlap(itemSegment, wsSegment))) {
+			directHits += 1;
+		}
+	}
+
+	let basenameHits = 0;
+	for (const basename of itemBasenames) {
+		if (workingSetBasenames.has(basename)) basenameHits += 1;
+	}
+
+	const boost = directHits * 0.16 + basenameHits * 0.06;
+	return Math.min(0.32, boost);
+}
+
 /**
  * Re-rank search results by combining BM25 score, recency, kind bonus,
  * personal bias, and shared trust penalty.
@@ -262,6 +347,7 @@ export function rerankResults(
 	filters?: MemoryFilters,
 ): MemoryResult[] {
 	const referenceNow = new Date();
+	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
 
 	const scored = results.map((item) => ({
 		item,
@@ -269,6 +355,7 @@ export function rerankResults(
 			item.score * 1.5 +
 			recencyScore(item.created_at, referenceNow) +
 			kindBonus(item.kind) +
+			workingSetOverlapBoost(item, workingSetPaths) +
 			personalBias(store, item, filters) -
 			sharedTrustPenalty(store, item, filters),
 	}));

@@ -45,16 +45,14 @@ export const packCommand = new Command("pack")
 				const limit = Number.parseInt(opts.limit, 10) || 10;
 				const budgetRaw = opts.tokenBudget ?? opts.budget;
 				const budget = budgetRaw ? Number.parseInt(budgetRaw, 10) : undefined;
-				const filters: { project?: string } = {};
+				const filters: { project?: string; working_set_paths?: string[] } = {};
 				if (!opts.allProjects) {
 					const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
 					const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
 					if (project) filters.project = project;
 				}
 				if ((opts.workingSetFile?.length ?? 0) > 0) {
-					p.log.warn(
-						"--working-set-file is accepted for compatibility but is not yet used by the TS pack builder.",
-					);
+					filters.working_set_paths = opts.workingSetFile;
 				}
 				const result = store.buildMemoryPack(context, limit, budget, filters);
 

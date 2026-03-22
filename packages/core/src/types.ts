@@ -455,6 +455,7 @@ export interface MemoryFilters {
 	kind?: string;
 	session_id?: number;
 	since?: string;
+	working_set_paths?: string[];
 	/** Project scope — matches sessions.project. Triggers session JOIN. */
 	project?: string;
 	visibility?: string | string[];
