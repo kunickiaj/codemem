@@ -5,16 +5,24 @@
 import { readFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, join } from "node:path";
-import type { MemoryStore } from "@codemem/core";
+import type { MemoryStore, ReplicationOp } from "@codemem/core";
 import {
+	applyReplicationOps,
+	cleanupNonces,
 	coordinatorCreateInviteAction,
 	coordinatorImportInviteAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorStatusSnapshot,
+	DEFAULT_TIME_WINDOW_S,
 	ensureDeviceIdentity,
+	extractReplicationOps,
+	fingerprintPublicKey,
 	listCoordinatorJoinRequests,
+	loadReplicationOpsSince,
 	readCoordinatorSyncConfig,
+	recordNonce,
 	schema,
+	verifySignature,
 } from "@codemem/core";
 import { count, desc, eq, max, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -24,11 +32,250 @@ import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 type StoreFactory = () => MemoryStore;
 
 const SYNC_STALE_AFTER_SECONDS = 10 * 60;
+const SYNC_PROTOCOL_VERSION = "1";
+
+function intEnvOr(name: string, fallback: number): number {
+	const value = Number.parseInt(process.env[name] ?? "", 10);
+	return Number.isFinite(value) ? value : fallback;
+}
+
+const MAX_SYNC_BODY_BYTES = intEnvOr("CODEMEM_SYNC_MAX_BODY_BYTES", 1_048_576);
+const MAX_SYNC_OPS = intEnvOr("CODEMEM_SYNC_MAX_OPS", 2000);
 
 const PAIRING_FILTER_HINT =
 	"Run this on another device with codemem sync pair --accept '<payload>'. " +
 	"On that accepting device, --include/--exclude only control what it sends to peers. " +
 	"This device does not yet enforce incoming project filters.";
+
+function pathWithQuery(url: string): string {
+	const parsed = new URL(url);
+	return parsed.search ? `${parsed.pathname}${parsed.search}` : parsed.pathname;
+}
+
+function unauthorizedPayload(reason: string): Record<string, string> {
+	if (process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS === "1") {
+		return { error: "unauthorized", reason };
+	}
+	return { error: "unauthorized" };
+}
+
+function authorizeSyncRequest(
+	store: MemoryStore,
+	request: { method: string; url: string; header(name: string): string | undefined },
+	body: Buffer,
+): { ok: boolean; reason: string; deviceId: string } {
+	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
+	const signature = request.header("X-Opencode-Signature") ?? "";
+	const timestamp = request.header("X-Opencode-Timestamp") ?? "";
+	const nonce = request.header("X-Opencode-Nonce") ?? "";
+	if (!deviceId || !signature || !timestamp || !nonce) {
+		return { ok: false, reason: "missing_headers", deviceId };
+	}
+
+	const peerRow = store.db
+		.prepare(
+			"SELECT pinned_fingerprint, public_key FROM sync_peers WHERE peer_device_id = ? LIMIT 1",
+		)
+		.get(deviceId) as { pinned_fingerprint: string | null; public_key: string | null } | undefined;
+	if (!peerRow) {
+		return { ok: false, reason: "unknown_peer", deviceId };
+	}
+
+	const pinnedFingerprint = String(peerRow.pinned_fingerprint ?? "").trim();
+	const publicKey = String(peerRow.public_key ?? "").trim();
+	if (!pinnedFingerprint || !publicKey) {
+		return { ok: false, reason: "peer_record_incomplete", deviceId };
+	}
+	if (fingerprintPublicKey(publicKey) !== pinnedFingerprint) {
+		return { ok: false, reason: "fingerprint_mismatch", deviceId };
+	}
+
+	let valid = false;
+	try {
+		valid = verifySignature({
+			method: request.method,
+			pathWithQuery: pathWithQuery(request.url),
+			bodyBytes: body,
+			timestamp,
+			nonce,
+			signature,
+			publicKey,
+			deviceId,
+		});
+	} catch {
+		return { ok: false, reason: "signature_verification_error", deviceId };
+	}
+
+	if (!valid) {
+		return { ok: false, reason: "invalid_signature", deviceId };
+	}
+
+	const createdAt = new Date().toISOString();
+	if (!recordNonce(store.db, deviceId, nonce, createdAt)) {
+		return { ok: false, reason: "nonce_replay", deviceId };
+	}
+
+	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
+	cleanupNonces(store.db, cutoff);
+	return { ok: true, reason: "ok", deviceId };
+}
+
+function projectBasename(value: string | null | undefined): string {
+	const project = String(value ?? "")
+		.trim()
+		.replaceAll("\\", "/");
+	if (!project) return "";
+	const parts = project.split("/").filter(Boolean);
+	return parts.length > 0 ? (parts[parts.length - 1] ?? "") : "";
+}
+
+function parseJsonList(value: unknown): string[] {
+	if (value == null) return [];
+	if (typeof value === "string") {
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			if (!Array.isArray(parsed)) return [];
+			return parsed.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+		} catch {
+			return [];
+		}
+	}
+	if (!Array.isArray(value)) return [];
+	return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+}
+
+function readPeerProjectFilters(
+	store: MemoryStore,
+	peerDeviceId: string,
+): { include: string[]; exclude: string[] } {
+	const globalConfig = readCoordinatorSyncConfig();
+	const row = store.db
+		.prepare(
+			"SELECT projects_include_json, projects_exclude_json FROM sync_peers WHERE peer_device_id = ? LIMIT 1",
+		)
+		.get(peerDeviceId) as
+		| { projects_include_json: string | null; projects_exclude_json: string | null }
+		| undefined;
+	if (!row) {
+		return {
+			include: globalConfig.syncProjectsInclude,
+			exclude: globalConfig.syncProjectsExclude,
+		};
+	}
+	const hasOverride = row.projects_include_json != null || row.projects_exclude_json != null;
+	if (!hasOverride) {
+		return {
+			include: globalConfig.syncProjectsInclude,
+			exclude: globalConfig.syncProjectsExclude,
+		};
+	}
+	return {
+		include: parseJsonList(row.projects_include_json),
+		exclude: parseJsonList(row.projects_exclude_json),
+	};
+}
+
+function peerClaimedLocalActor(store: MemoryStore, peerDeviceId: string): boolean {
+	const row = store.db
+		.prepare("SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ? LIMIT 1")
+		.get(peerDeviceId) as { claimed_local_actor: number | null } | undefined;
+	return Boolean(row?.claimed_local_actor);
+}
+
+function parseOpPayload(op: { payload_json: string | null }): Record<string, unknown> | null {
+	if (!op.payload_json || !String(op.payload_json).trim()) return null;
+	try {
+		const parsed = JSON.parse(op.payload_json) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		return parsed as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
+function isSharedVisibility(payload: Record<string, unknown> | null): boolean {
+	if (!payload) return false;
+	let visibility = String(payload.visibility ?? "")
+		.trim()
+		.toLowerCase();
+	const metadata =
+		payload.metadata_json &&
+		typeof payload.metadata_json === "object" &&
+		!Array.isArray(payload.metadata_json)
+			? (payload.metadata_json as Record<string, unknown>)
+			: {};
+	const metadataVisibility = String(metadata.visibility ?? "")
+		.trim()
+		.toLowerCase();
+	if (!visibility && metadataVisibility) visibility = metadataVisibility;
+	if (!visibility) {
+		let workspaceKind = String(payload.workspace_kind ?? "")
+			.trim()
+			.toLowerCase();
+		let workspaceId = String(payload.workspace_id ?? "")
+			.trim()
+			.toLowerCase();
+		if (!workspaceKind)
+			workspaceKind = String(metadata.workspace_kind ?? "")
+				.trim()
+				.toLowerCase();
+		if (!workspaceId)
+			workspaceId = String(metadata.workspace_id ?? "")
+				.trim()
+				.toLowerCase();
+		if (workspaceKind === "shared" || workspaceId.startsWith("shared:")) {
+			visibility = "shared";
+		} else {
+			return true;
+		}
+	}
+	return visibility === "shared";
+}
+
+function projectAllowed(
+	projectValue: string | null,
+	filters: { include: string[]; exclude: string[] },
+): boolean {
+	const value = String(projectValue ?? "").trim();
+	const valueBase = projectBasename(value);
+	for (const blocked of filters.exclude) {
+		if (blocked === value || blocked === valueBase) return false;
+	}
+	if (filters.include.length === 0) return true;
+	for (const allowed of filters.include) {
+		if (allowed === value || allowed === valueBase) return true;
+	}
+	return false;
+}
+
+function filterOpsForPeer(
+	store: MemoryStore,
+	peerDeviceId: string,
+	ops: ReplicationOp[],
+): { allowed: ReplicationOp[]; skipped: number } {
+	const filters = readPeerProjectFilters(store, peerDeviceId);
+	const allowPrivate = peerClaimedLocalActor(store, peerDeviceId);
+	const allowed: ReplicationOp[] = [];
+	let skipped = 0;
+	for (const op of ops) {
+		if (op.entity_type !== "memory_item") {
+			allowed.push(op);
+			continue;
+		}
+		const payload = parseOpPayload(op);
+		if (!allowPrivate && !isSharedVisibility(payload)) {
+			skipped++;
+			continue;
+		}
+		const project = payload && typeof payload.project === "string" ? payload.project : null;
+		if (!projectAllowed(project, filters)) {
+			skipped++;
+			continue;
+		}
+		allowed.push(op);
+	}
+	return { allowed, skipped };
+}
 
 // ---------------------------------------------------------------------------
 // Peer row mapping — deduplicated helper (fix #4)
@@ -156,6 +403,120 @@ const PEERS_QUERY = `
 
 export function syncRoutes(getStore: StoreFactory) {
 	const app = new Hono();
+
+	// GET /v1/status (peer sync protocol)
+	app.get("/v1/status", (c) => {
+		const store = getStore();
+		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+
+		try {
+			let device = store.db
+				.prepare("SELECT device_id, fingerprint FROM sync_device LIMIT 1")
+				.get() as { device_id: string; fingerprint: string } | undefined;
+			if (!device) {
+				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db);
+				device = { device_id: deviceId, fingerprint };
+			}
+			return c.json({
+				device_id: device.device_id,
+				protocol_version: SYNC_PROTOCOL_VERSION,
+				fingerprint: device.fingerprint,
+			});
+		} catch {
+			return c.json({ error: "internal_error" }, 500);
+		}
+	});
+
+	// GET /v1/ops (peer sync protocol)
+	app.get("/v1/ops", (c) => {
+		const store = getStore();
+		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+		const peerDeviceId = auth.deviceId;
+
+		try {
+			const since = c.req.query("since") ?? null;
+			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
+			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 1000)) : 200;
+			let localDeviceId = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
+				| { device_id: string }
+				| undefined;
+			if (!localDeviceId) {
+				const [deviceId] = ensureDeviceIdentity(store.db);
+				localDeviceId = { device_id: deviceId };
+			}
+			const [ops, nextCursor] = loadReplicationOpsSince(
+				store.db,
+				since,
+				limit,
+				localDeviceId.device_id,
+			);
+			const filtered = filterOpsForPeer(store, peerDeviceId, ops);
+			return c.json({
+				ops: filtered.allowed,
+				next_cursor: nextCursor,
+				skipped: filtered.skipped,
+			});
+		} catch {
+			return c.json({ error: "internal_error" }, 500);
+		}
+	});
+
+	// POST /v1/ops (peer sync protocol)
+	app.post("/v1/ops", async (c) => {
+		const store = getStore();
+		const raw = Buffer.from(await c.req.arrayBuffer());
+		if (raw.length > MAX_SYNC_BODY_BYTES) {
+			return c.json({ error: "payload_too_large" }, 413);
+		}
+
+		const auth = authorizeSyncRequest(store, c.req, raw);
+		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+		const peerDeviceId = auth.deviceId;
+
+		let body: Record<string, unknown>;
+		try {
+			const parsed = JSON.parse(raw.toString("utf-8")) as unknown;
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return c.json({ error: "invalid_json" }, 400);
+			}
+			body = parsed as Record<string, unknown>;
+		} catch {
+			return c.json({ error: "invalid_json" }, 400);
+		}
+
+		if (!Array.isArray(body.ops)) {
+			return c.json({ error: "invalid_ops" }, 400);
+		}
+		if (body.ops.length > MAX_SYNC_OPS) {
+			return c.json({ error: "too_many_ops" }, 413);
+		}
+
+		const normalizedOps = extractReplicationOps(body);
+		for (const op of normalizedOps) {
+			if (op.device_id !== peerDeviceId || op.clock_device_id !== peerDeviceId) {
+				return c.json(
+					{
+						error: "invalid_op_device",
+						reason: "device_id_mismatch",
+						op_id: op.op_id,
+					},
+					400,
+				);
+			}
+		}
+		let localDeviceId = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
+			| { device_id: string }
+			| undefined;
+		if (!localDeviceId) {
+			const [deviceId] = ensureDeviceIdentity(store.db);
+			localDeviceId = { device_id: deviceId };
+		}
+
+		const result = applyReplicationOps(store.db, normalizedOps, localDeviceId.device_id);
+		return c.json(result);
+	});
 
 	// GET /api/sync/status
 	app.get("/api/sync/status", async (c) => {

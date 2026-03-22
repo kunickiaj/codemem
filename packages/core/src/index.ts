@@ -275,12 +275,14 @@ export {
 export type { ApplyResult } from "./sync-replication.js";
 export {
 	applyReplicationOps,
+	backfillReplicationOps,
 	chunkOpsBySize,
 	clockTuple,
 	extractReplicationOps,
 	getReplicationCursor,
 	isNewerClock,
 	loadReplicationOpsSince,
+	migrateLegacyImportKeys,
 	recordReplicationOp,
 	setReplicationCursor,
 } from "./sync-replication.js";

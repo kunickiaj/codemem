@@ -13,7 +13,15 @@ import * as schema from "./schema.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
-import { chunkOpsBySize, getReplicationCursor, setReplicationCursor } from "./sync-replication.js";
+import {
+	applyReplicationOps,
+	backfillReplicationOps,
+	chunkOpsBySize,
+	extractReplicationOps,
+	getReplicationCursor,
+	migrateLegacyImportKeys,
+	setReplicationCursor,
+} from "./sync-replication.js";
 import type { ReplicationOp } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -118,47 +126,6 @@ function recordPeerSuccess(db: Database, peerDeviceId: string): void {
 		.set({ last_sync_at: now, last_seen_at: now, last_error: null })
 		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 		.run();
-}
-
-/**
- * Apply incoming replication ops to the local store.
- *
- * Uses INSERT OR IGNORE as a placeholder — full apply_replication_ops
- * semantics (clock comparison, upsert into entity tables) are not yet ported.
- */
-function applyOpsPlaceholder(
-	db: Database,
-	ops: ReplicationOp[],
-	_sourceDeviceId: string,
-): { inserted: number; skipped: number } {
-	if (ops.length === 0) return { inserted: 0, skipped: 0 };
-
-	const d = drizzle(db, { schema });
-	let inserted = 0;
-	for (const op of ops) {
-		try {
-			const result = d
-				.insert(schema.replicationOps)
-				.values({
-					op_id: op.op_id,
-					entity_type: op.entity_type,
-					entity_id: op.entity_id,
-					op_type: op.op_type,
-					payload_json: op.payload_json ?? null,
-					clock_rev: op.clock_rev,
-					clock_updated_at: op.clock_updated_at,
-					clock_device_id: op.clock_device_id,
-					device_id: op.device_id,
-					created_at: op.created_at,
-				})
-				.onConflictDoNothing()
-				.run();
-			if (result.changes > 0) inserted++;
-		} catch {
-			// Skip malformed ops (missing NOT NULL fields) — matches INSERT OR IGNORE
-		}
-	}
-	return { inserted, skipped: ops.length - inserted };
 }
 
 /**
@@ -277,14 +244,10 @@ async function pushOps(
 // Preflight
 // ---------------------------------------------------------------------------
 
-/**
- * Placeholder for legacy migration + replication backfill.
- *
- * In the Python implementation this calls migrate_legacy_import_keys and
- * backfill_replication_ops. Those are not yet ported to TS.
- */
-export function syncPassPreflight(_db: Database): void {
-	// TODO: port migrate_legacy_import_keys + backfill_replication_ops
+/** Run migration + replication backfill preflight. */
+export function syncPassPreflight(db: Database): void {
+	migrateLegacyImportKeys(db, 2000);
+	backfillReplicationOps(db, 200);
 }
 
 // ---------------------------------------------------------------------------
@@ -383,20 +346,38 @@ export async function syncOnce(
 				const suffix = detail ? ` (${getStatus}: ${detail})` : ` (${getStatus})`;
 				throw new Error(`peer ops fetch failed${suffix}`);
 			}
-			const ops = getPayload.ops;
-			if (!Array.isArray(ops)) {
+			if (!Array.isArray(getPayload.ops)) {
 				throw new Error("invalid ops response");
 			}
+			const ops = extractReplicationOps(getPayload);
 
-			// -- 3. Store incoming ops --
-			// IMPORTANT: applyOpsPlaceholder only stores ops (INSERT OR IGNORE).
-			// It does NOT materialize changes to entity tables (memory_items etc).
-			// We deliberately DO NOT advance the applied cursor here — when the
-			// real apply logic is ported, it will re-process these ops from the
-			// current cursor position and advance it after successful materialization.
-			// Advancing the cursor now would permanently skip ops that need real
-			// conflict resolution.
-			const applied = applyOpsPlaceholder(db, ops as ReplicationOp[], peerDeviceId);
+			// -- 3. Apply incoming ops to local entities --
+			const applied = applyReplicationOps(db, ops, deviceId);
+
+			if (ops.length > 0) {
+				const last = ops.at(-1);
+				if (last) {
+					const localNext = computeCursor(last.created_at, last.op_id);
+					if (cursorAdvances(lastApplied, localNext)) {
+						setReplicationCursor(db, peerDeviceId, { lastApplied: localNext });
+						lastApplied = localNext;
+					}
+				}
+			} else {
+				const peerNext =
+					typeof getPayload.next_cursor === "string" ? getPayload.next_cursor.trim() : "";
+				const skippedValue = getPayload.skipped;
+				const skippedCount =
+					typeof skippedValue === "number"
+						? skippedValue
+						: typeof skippedValue === "string"
+							? Number.parseInt(skippedValue, 10) || 0
+							: 0;
+				if (skippedCount > 0 && cursorAdvances(lastApplied, peerNext)) {
+					setReplicationCursor(db, peerDeviceId, { lastApplied: peerNext });
+					lastApplied = peerNext;
+				}
+			}
 
 			// -- 5. Push local ops to peer --
 			const [outboundOps, outboundCursor] = loadLocalOpsSince(db, lastAcked, deviceId, limit);
@@ -416,13 +397,13 @@ export async function syncOnce(
 			recordPeerSuccess(db, peerDeviceId);
 			recordSyncAttempt(db, peerDeviceId, {
 				ok: true,
-				opsIn: applied.inserted,
+				opsIn: applied.applied,
 				opsOut: outboundOps.length,
 			});
 			return {
 				ok: true,
 				address: baseUrl,
-				opsIn: ops.length,
+				opsIn: applied.applied,
 				opsOut: outboundOps.length,
 				addressErrors: [],
 			};
