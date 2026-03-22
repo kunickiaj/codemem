@@ -439,9 +439,6 @@ export class MemoryStore {
 	 * 1. actor_id == self.actor_id → owned
 	 * 2. origin_device_id in claimed_same_actor_peers → owned
 	 * 3. actor_id in legacy sync actor ids → owned
-	 *
-	 * Simplified: check actor_id first, then origin_device_id.
-	 * Peer claim/legacy checks deferred until sync parity is needed.
 	 */
 	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean {
 		const rec = item as Record<string, unknown>;
@@ -454,6 +451,12 @@ export class MemoryStore {
 
 		const deviceId = cleanStr(rec.origin_device_id) ?? cleanStr(meta.origin_device_id);
 		if (deviceId === this.deviceId) return true;
+
+		const claimedPeers = new Set(this.sameActorPeerIds());
+		if (deviceId && claimedPeers.has(deviceId)) return true;
+
+		const legacyActorIds = new Set(this.claimedSameActorLegacyActorIds());
+		if (actorId && legacyActorIds.has(actorId)) return true;
 
 		return false;
 	}
@@ -1668,6 +1671,7 @@ export class MemoryStore {
 	}
 
 	sameActorPeerIds(): string[] {
+		if (!tableExists(this.db, "sync_peers")) return [];
 		const rows = this.db
 			.prepare(
 				"SELECT peer_device_id FROM sync_peers WHERE claimed_local_actor = 1 OR actor_id = ? ORDER BY peer_device_id",
