@@ -7,11 +7,13 @@ import {
 } from "./memory.js";
 
 describe("memory command aliases", () => {
-	it("keeps show/forget/remember under the memory group", () => {
+	it("keeps memory subcommands available under the memory group", () => {
 		expect(memoryCommand.commands.map((command) => command.name())).toEqual([
 			"show",
 			"forget",
 			"remember",
+			"inject",
+			"compact",
 		]);
 	});
 
@@ -19,5 +21,12 @@ describe("memory command aliases", () => {
 		expect(showMemoryCommand.name()).toBe("show");
 		expect(forgetMemoryCommand.name()).toBe("forget");
 		expect(rememberMemoryCommand.name()).toBe("remember");
+	});
+
+	it("keeps inject expecting a context argument", () => {
+		const inject = memoryCommand.commands.find((command) => command.name() === "inject");
+		expect(inject).toBeDefined();
+		expect(inject?.registeredArguments[0]?.required).toBe(true);
+		expect(inject?.registeredArguments[0]?.name()).toBe("context");
 	});
 });
