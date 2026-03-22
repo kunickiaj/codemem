@@ -227,6 +227,16 @@ export function getReliabilityMetrics(
 		const sessionBoundaryAccuracy =
 			sessionsWithEvents > 0 ? sessionsWithStartedAt / sessionsWithEvents : 1.0;
 
+		const retryDepthSql = `
+			SELECT COALESCE(MAX(attempt_count), 0) AS retry_depth_max
+			FROM raw_event_flush_batches
+			${cutoffIso ? "WHERE updated_at >= ?" : ""}
+		`;
+		const retryDepthRow = (
+			cutoffIso ? db.prepare(retryDepthSql).get(cutoffIso) : db.prepare(retryDepthSql).get()
+		) as Record<string, number> | undefined;
+		const retryDepthMax = Math.max(0, Number(retryDepthRow?.retry_depth_max ?? 0) - 1);
+
 		return {
 			counts: {
 				inserted_events: insertedEvents,
@@ -238,7 +248,7 @@ export function getReliabilityMetrics(
 				terminal_batches: terminalBatches,
 				sessions_with_events: sessionsWithEvents,
 				sessions_with_started_at: sessionsWithStartedAt,
-				retry_depth_max: 0, // TODO: needs attempt_count column
+				retry_depth_max: retryDepthMax,
 			},
 			rates: {
 				flush_success_rate: flushSuccessRate,

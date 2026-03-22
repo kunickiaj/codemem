@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
 	getRawEventStatus,
+	getReliabilityMetrics,
 	initDatabase,
 	retryRawEventFailures,
 	vacuumDatabase,
@@ -93,5 +94,37 @@ describe("maintenance", () => {
 		const vacuum = vacuumDatabase(dbPath);
 		expect(vacuum.path).toBe(dbPath);
 		expect(vacuum.sizeBytes).toBeGreaterThan(0);
+	});
+
+	it("reports max retry depth from raw_event_flush_batches.attempt_count", () => {
+		const dbPath = createDbPath("retry-depth");
+		seedMaintenanceDb(dbPath);
+
+		const db = new Database(dbPath);
+		try {
+			db.prepare("UPDATE raw_event_flush_batches SET attempt_count = ? WHERE id = 1").run(4);
+			db.prepare(
+				`INSERT INTO raw_event_flush_batches(
+					source, stream_id, opencode_session_id, start_event_seq, end_event_seq,
+					extractor_version, status, updated_at, created_at, attempt_count
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				"opencode",
+				"sess-2",
+				"sess-2",
+				1,
+				1,
+				"raw_events_v1",
+				"completed",
+				"2026-03-01T11:00:00Z",
+				"2026-03-01T10:59:00Z",
+				2,
+			);
+		} finally {
+			db.close();
+		}
+
+		const metrics = getReliabilityMetrics(dbPath);
+		expect(metrics.counts.retry_depth_max).toBe(3);
 	});
 });
