@@ -128,6 +128,72 @@ function createRememberMemoryCommand(): Command {
 		.action(rememberMemoryAction);
 }
 
+function createInjectMemoryCommand(): Command {
+	return new Command("inject")
+		.configureHelp(helpStyle)
+		.description("Build raw memory context text for manual prompt injection")
+		.argument("<context>", "context string to search for")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("-n, --limit <n>", "max items", "10")
+		.option("--budget <tokens>", "token budget")
+		.option("--token-budget <tokens>", "token budget")
+		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--all-projects", "search across all projects")
+		.allowUnknownOption(true)
+		.allowExcessArguments(true)
+		.action(
+			(
+				context: string,
+				opts: {
+					db?: string;
+					dbPath?: string;
+					limit?: string;
+					budget?: string;
+					tokenBudget?: string;
+					project?: string;
+					allProjects?: boolean;
+				},
+			) => {
+				const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+				try {
+					const limit = Number.parseInt(opts.limit ?? "10", 10) || 10;
+					const budgetRaw = opts.tokenBudget ?? opts.budget;
+					const budget = budgetRaw ? Number.parseInt(budgetRaw, 10) : undefined;
+					const filters: { project?: string } = {};
+					if (!opts.allProjects) {
+						const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
+						const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
+						if (project) filters.project = project;
+					}
+					const pack = store.buildMemoryPack(context, limit, budget, filters);
+					console.log(pack.pack_text ?? "");
+				} finally {
+					store.close();
+				}
+			},
+		);
+}
+
+function createCompactMemoryCommand(): Command {
+	return new Command("compact")
+		.configureHelp(helpStyle)
+		.description("Deferred command guidance for memory compaction")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--session-id <id>", "session ID")
+		.option("--limit <n>", "max sessions to compact", "10")
+		.allowUnknownOption(true)
+		.allowExcessArguments(true)
+		.action(() => {
+			p.log.warn("`codemem memory compact` is not implemented in the TypeScript CLI yet.");
+			p.log.info(
+				"Current workaround: rely on automatic ingestion; for manual context use `codemem memory inject <context>`.",
+			);
+			process.exitCode = 2;
+		});
+}
+
 export const showMemoryCommand = createShowMemoryCommand();
 export const forgetMemoryCommand = createForgetMemoryCommand();
 export const rememberMemoryCommand = createRememberMemoryCommand();
@@ -139,3 +205,5 @@ export const memoryCommand = new Command("memory")
 memoryCommand.addCommand(createShowMemoryCommand());
 memoryCommand.addCommand(createForgetMemoryCommand());
 memoryCommand.addCommand(createRememberMemoryCommand());
+memoryCommand.addCommand(createInjectMemoryCommand());
+memoryCommand.addCommand(createCompactMemoryCommand());

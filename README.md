@@ -137,6 +137,9 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 
 Run `codemem --help` for the full list.
 
+Note: in the TypeScript CLI, `codemem memory inject <context>` prints raw `pack_text`
+for manual prompt injection. `codemem memory compact` remains deferred.
+
 ## MCP tools
 
 To give the LLM direct access to memory tools (search, timeline, pack, remember, forget):
