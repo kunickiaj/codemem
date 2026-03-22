@@ -30,6 +30,10 @@ import type {
 	TimelineItemResponse,
 } from "./types.js";
 
+export interface ExplainOptions {
+	includePackContext?: boolean;
+}
+
 /** Lazily wrap a better-sqlite3 Database in a Drizzle ORM instance. */
 function getDrizzle(db: Database) {
 	return drizzle(db, { schema });
@@ -566,6 +570,7 @@ function explainItem(
 	queryTokens: string[],
 	projectFilter: string | null | undefined,
 	projectValue: string | null | undefined,
+	includePackContext: boolean,
 	referenceNow: Date,
 ): ExplainItem {
 	const text = `${item.title} ${item.body_text} ${item.tags_text}`.toLowerCase();
@@ -605,7 +610,7 @@ function explainItem(
 			query_terms: matchedTerms,
 			project_match: projectMatchesFilter(projectFilter, projectValue),
 		},
-		pack_context: null, // TODO: port include_pack_context
+		pack_context: includePackContext ? { included: null, section: null } : null,
 	};
 }
 
@@ -735,7 +740,9 @@ export function explain(
 	ids?: unknown[] | null,
 	limit = 10,
 	filters?: MemoryFilters | null,
+	options?: ExplainOptions,
 ): ExplainResponse {
+	const includePackContext = options?.includePackContext ?? false;
 	const normalizedQuery = (query ?? "").trim();
 	const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(ids ?? []);
 
@@ -765,7 +772,7 @@ export function explain(
 				project: null,
 				requested_ids_count: orderedIds.length,
 				returned_items_count: 0,
-				include_pack_context: false,
+				include_pack_context: includePackContext,
 			},
 		};
 	}
@@ -832,6 +839,7 @@ export function explain(
 			queryTokens,
 			filters?.project ?? null,
 			sessionProjects.get(item.session_id) ?? null,
+			includePackContext,
 			referenceNow,
 		),
 	);
@@ -873,7 +881,7 @@ export function explain(
 			project: filters?.project ?? null,
 			requested_ids_count: orderedIds.length,
 			returned_items_count: itemsPayload.length,
-			include_pack_context: false,
+			include_pack_context: includePackContext,
 		},
 	};
 }

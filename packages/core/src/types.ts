@@ -373,7 +373,10 @@ export interface ExplainItem {
 		query_terms: string[];
 		project_match: boolean | null;
 	};
-	pack_context: string | null;
+	pack_context: {
+		included: boolean | null;
+		section: string | null;
+	} | null;
 }
 
 /** Explain response */

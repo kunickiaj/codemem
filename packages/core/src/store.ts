@@ -33,7 +33,12 @@ import { buildFilterClauses } from "./filters.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { buildMemoryPack, buildMemoryPackAsync } from "./pack.js";
 import * as schema from "./schema.js";
-import { explain as explainFn, search as searchFn, timeline as timelineFn } from "./search.js";
+import {
+	type ExplainOptions,
+	explain as explainFn,
+	search as searchFn,
+	timeline as timelineFn,
+} from "./search.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
 	ExplainResponse,
@@ -792,8 +797,9 @@ export class MemoryStore {
 		ids?: unknown[] | null,
 		limit = 10,
 		filters?: MemoryFilters | null,
+		options?: ExplainOptions,
 	): ExplainResponse {
-		return explainFn(this, query, ids, limit, filters);
+		return explainFn(this, query, ids, limit, filters, options);
 	}
 
 	// buildMemoryPack
