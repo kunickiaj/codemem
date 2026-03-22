@@ -5,6 +5,7 @@
  * and mDNS stubs. Ported from codemem/sync/discovery.py.
  */
 
+import { execFileSync, spawn } from "node:child_process";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mergeAddresses, normalizeAddress } from "./address-utils.js";
@@ -225,6 +226,81 @@ export interface MdnsEntry {
 	properties?: Record<string, string | Uint8Array>;
 }
 
+function commandAvailable(command: string): boolean {
+	try {
+		execFileSync("which", [command], { stdio: "pipe" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function runDnsSd(args: string[], timeoutMs = 1200): string {
+	try {
+		return execFileSync("dns-sd", args, {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: timeoutMs,
+		});
+	} catch (err) {
+		if (err && typeof err === "object") {
+			const e = err as { stdout?: string | Buffer; stderr?: string | Buffer };
+			const out = [e.stdout, e.stderr]
+				.map((part) => {
+					if (typeof part === "string") return part;
+					if (part instanceof Buffer) return part.toString("utf8");
+					return "";
+				})
+				.filter(Boolean)
+				.join("\n");
+			return out;
+		}
+		return "";
+	}
+}
+
+function discoverServiceNamesDnsSd(): string[] {
+	const output = runDnsSd(["-B", "_codemem._tcp", "local."], 1200);
+	if (!output) return [];
+	const names = new Set<string>();
+	for (const line of output.split(/\r?\n/)) {
+		if (!line.includes("Add")) continue;
+		let name = "";
+		const columnMatch = line.match(/\bAdd\b.*\slocal\.\s+_codemem\._tcp\.\s+(.+)$/);
+		if (columnMatch) {
+			name = String(columnMatch[1] ?? "").trim();
+		} else {
+			const legacyMatch = line.match(/\sAdd\s+\S+\s+\S+\s+\S+\s+(.+)\._codemem\._tcp\./);
+			if (legacyMatch) name = String(legacyMatch[1] ?? "").trim();
+		}
+		if (name) names.add(name);
+	}
+	return [...names];
+}
+
+function resolveServiceDnsSd(name: string): MdnsEntry | null {
+	const output = runDnsSd(["-L", name, "_codemem._tcp", "local."], 1200);
+	if (!output) return null;
+
+	const hostPortMatch = output.match(/can be reached at\s+([^:\s]+)\.?:(\d+)/i);
+	const host = hostPortMatch?.[1] ? String(hostPortMatch[1]).trim() : "";
+	const port = hostPortMatch?.[2] ? Number.parseInt(String(hostPortMatch[2]), 10) : 0;
+
+	const txtDeviceIdMatch = output.match(/device_id=([^\s"',]+)/i);
+	const deviceId = txtDeviceIdMatch?.[1] ? String(txtDeviceIdMatch[1]).trim() : "";
+
+	if (!host || !port || Number.isNaN(port)) return null;
+	const properties: Record<string, string> = {};
+	if (deviceId) properties.device_id = deviceId;
+
+	return {
+		name,
+		host,
+		port,
+		properties,
+	};
+}
+
 /**
  * Check if mDNS discovery is enabled via the CODEMEM_SYNC_MDNS env var.
  */
@@ -241,7 +317,31 @@ export function mdnsEnabled(): boolean {
  * Real implementation will use dns-sd (macOS) or bonjour-service (Linux).
  */
 export function advertiseMdns(_deviceId: string, _port: number): { close(): void } {
-	return { close() {} };
+	if (!mdnsEnabled()) return { close() {} };
+	if (process.platform !== "darwin") return { close() {} };
+	if (!commandAvailable("dns-sd")) return { close() {} };
+
+	const serviceName = `codemem-${_deviceId.slice(0, 12)}`;
+	const child = spawn(
+		"dns-sd",
+		["-R", serviceName, "_codemem._tcp", "local.", String(_port), `device_id=${_deviceId}`],
+		{
+			stdio: "ignore",
+			detached: false,
+		},
+	);
+
+	return {
+		close() {
+			if (!child.killed) {
+				try {
+					child.kill("SIGTERM");
+				} catch {
+					// best effort
+				}
+			}
+		},
+	};
 }
 
 /**
@@ -251,7 +351,19 @@ export function advertiseMdns(_deviceId: string, _port: number): { close(): void
  * Real implementation will use dns-sd (macOS) or bonjour-service (Linux).
  */
 export function discoverPeersViaMdns(): MdnsEntry[] {
-	return [];
+	if (!mdnsEnabled()) return [];
+	if (process.platform !== "darwin") return [];
+	if (!commandAvailable("dns-sd")) return [];
+
+	const names = discoverServiceNamesDnsSd();
+	if (names.length === 0) return [];
+
+	const entries: MdnsEntry[] = [];
+	for (const name of names) {
+		const resolved = resolveServiceDnsSd(name);
+		if (resolved) entries.push(resolved);
+	}
+	return entries;
 }
 
 /**

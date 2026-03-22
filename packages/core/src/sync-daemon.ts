@@ -11,7 +11,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
 import * as schema from "./schema.js";
-import { advertiseMdns, discoverPeersViaMdns, mdnsEnabled } from "./sync-discovery.js";
+import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import { runSyncPass, shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
 
@@ -91,9 +91,6 @@ export function setSyncDaemonError(db: Database, error: string, traceback?: stri
  */
 export async function syncDaemonTick(db: Database, keysDir?: string): Promise<SyncTickResult[]> {
 	syncPassPreflight(db);
-
-	const mdnsEntries = mdnsEnabled() ? discoverPeersViaMdns() : [];
-	void mdnsEntries; // unused until mDNS is real
 
 	const d = drizzle(db, { schema });
 	const rows = d

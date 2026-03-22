@@ -2,6 +2,8 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	addressDedupeKey,
+	advertiseMdns,
+	discoverPeersViaMdns,
 	loadPeerAddresses,
 	mdnsAddressesForPeer,
 	mdnsEnabled,
@@ -329,5 +331,17 @@ describe("mdnsAddressesForPeer", () => {
 			},
 		];
 		expect(mdnsAddressesForPeer("peer-1", entries)).toEqual(["host.local:9090"]);
+	});
+});
+
+describe("mDNS runtime hooks", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it("returns no entries and no-op close when mDNS is disabled", () => {
+		vi.stubEnv("CODEMEM_SYNC_MDNS", "");
+		expect(discoverPeersViaMdns()).toEqual([]);
+		expect(() => advertiseMdns("dev-local", 7337).close()).not.toThrow();
 	});
 });
