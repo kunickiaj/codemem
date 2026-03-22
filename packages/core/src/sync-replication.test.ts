@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toJson } from "./db.js";
 import {
 	applyReplicationOps,
@@ -7,6 +7,8 @@ import {
 	chunkOpsBySize,
 	clockTuple,
 	extractReplicationOps,
+	filterReplicationOpsForSync,
+	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	isNewerClock,
 	loadReplicationOpsSince,
@@ -590,6 +592,154 @@ describe("legacy key migration + replication backfill", () => {
 			.prepare("SELECT COUNT(*) AS n FROM memory_items WHERE import_key LIKE 'legacy:local:%'")
 			.get() as { n: number };
 		expect(localLegacyCount.n).toBe(0);
+	});
+});
+
+describe("filterReplicationOpsForSyncWithStatus", () => {
+	let db: InstanceType<typeof Database>;
+	let prevInclude: string | undefined;
+	let prevExclude: string | undefined;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		prevInclude = process.env.CODEMEM_SYNC_PROJECTS_INCLUDE;
+		prevExclude = process.env.CODEMEM_SYNC_PROJECTS_EXCLUDE;
+	});
+
+	afterEach(() => {
+		db.close();
+		if (prevInclude === undefined) delete process.env.CODEMEM_SYNC_PROJECTS_INCLUDE;
+		else process.env.CODEMEM_SYNC_PROJECTS_INCLUDE = prevInclude;
+		if (prevExclude === undefined) delete process.env.CODEMEM_SYNC_PROJECTS_EXCLUDE;
+		else process.env.CODEMEM_SYNC_PROJECTS_EXCLUDE = prevExclude;
+		vi.unstubAllEnvs();
+	});
+
+	function makeOp(overrides: Partial<ReplicationOp> = {}): ReplicationOp {
+		return {
+			op_id: "op-1",
+			entity_type: "memory_item",
+			entity_id: "key-1",
+			op_type: "upsert",
+			payload_json: toJson({ project: "proj-a", visibility: "shared" }),
+			clock_rev: 1,
+			clock_updated_at: "2026-01-01T00:00:00Z",
+			clock_device_id: "peer-1",
+			device_id: "peer-1",
+			created_at: "2026-01-01T00:00:00Z",
+			...overrides,
+		};
+	}
+
+	it("filters by peer include scope and advances cursor past skipped ops", () => {
+		db.prepare(
+			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, created_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", toJson(["proj-a"]), toJson([]), "2026-01-01T00:00:00Z");
+
+		const op1 = makeOp({
+			op_id: "op-1",
+			payload_json: toJson({ project: "proj-b", visibility: "shared" }),
+			created_at: "2026-01-01T00:00:01Z",
+		});
+		const op2 = makeOp({
+			op_id: "op-2",
+			payload_json: toJson({ project: "proj-a", visibility: "shared" }),
+			created_at: "2026-01-01T00:00:02Z",
+		});
+
+		const [allowed, nextCursor, skipped] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[op1, op2],
+			"peer-1",
+		);
+		expect(allowed.map((op) => op.op_id)).toEqual(["op-2"]);
+		expect(nextCursor).toBe("2026-01-01T00:00:02Z|op-2");
+		expect(skipped?.reason).toBe("project_filter");
+		expect(skipped?.skipped_count).toBe(1);
+
+		const [allowedOnly, nextOnly] = filterReplicationOpsForSync(db, [op1, op2], "peer-1");
+		expect(allowedOnly.map((op) => op.op_id)).toEqual(["op-2"]);
+		expect(nextOnly).toBe("2026-01-01T00:00:02Z|op-2");
+	});
+
+	it("filters private visibility unless peer is claimed local actor", () => {
+		db.prepare(
+			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?, ?)",
+		).run("peer-1", toJson([]), toJson([]), 0, "2026-01-01T00:00:00Z");
+
+		const privateOp = makeOp({
+			op_id: "op-private",
+			payload_json: toJson({ project: "proj-a", visibility: "private" }),
+		});
+
+		const [blockedOps, blockedCursor, blockedMeta] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[privateOp],
+			"peer-1",
+		);
+		expect(blockedOps).toEqual([]);
+		expect(blockedCursor).toBe("2026-01-01T00:00:00Z|op-private");
+		expect(blockedMeta?.reason).toBe("visibility_filter");
+
+		db.prepare("UPDATE sync_peers SET claimed_local_actor = 1 WHERE peer_device_id = ?").run(
+			"peer-1",
+		);
+		const [allowedOps, allowedCursor, allowedMeta] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[privateOp],
+			"peer-1",
+		);
+		expect(allowedOps.map((op) => op.op_id)).toEqual(["op-private"]);
+		expect(allowedCursor).toBe("2026-01-01T00:00:00Z|op-private");
+		expect(allowedMeta).toBeNull();
+	});
+
+	it("keeps delete tombstones with null payload_json", () => {
+		db.prepare(
+			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?, ?)",
+		).run("peer-1", toJson(["proj-a"]), toJson([]), 0, "2026-01-01T00:00:00Z");
+
+		const tombstone = makeOp({
+			op_id: "op-del",
+			op_type: "delete",
+			payload_json: null,
+			created_at: "2026-01-01T00:00:05Z",
+		});
+
+		const [allowed, cursor, skipped] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[tombstone],
+			"peer-1",
+		);
+		expect(allowed.map((op) => op.op_id)).toEqual(["op-del"]);
+		expect(cursor).toBe("2026-01-01T00:00:05Z|op-del");
+		expect(skipped).toBeNull();
+	});
+
+	it("respects CODEMEM_SYNC_PROJECTS_* env overrides", () => {
+		vi.stubEnv("CODEMEM_SYNC_PROJECTS_INCLUDE", "proj-env");
+		vi.stubEnv("CODEMEM_SYNC_PROJECTS_EXCLUDE", "proj-blocked");
+
+		const allowedOp = makeOp({
+			op_id: "op-env-allow",
+			payload_json: toJson({ project: "proj-env", visibility: "shared" }),
+			created_at: "2026-01-01T00:00:10Z",
+		});
+		const blockedOp = makeOp({
+			op_id: "op-env-block",
+			payload_json: toJson({ project: "proj-other", visibility: "shared" }),
+			created_at: "2026-01-01T00:00:11Z",
+		});
+
+		const [allowed, cursor, skipped] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[allowedOp, blockedOp],
+			null,
+		);
+		expect(allowed.map((op) => op.op_id)).toEqual(["op-env-allow"]);
+		expect(cursor).toBe("2026-01-01T00:00:11Z|op-env-block");
+		expect(skipped?.reason).toBe("project_filter");
 	});
 });
 

@@ -44,8 +44,7 @@ const MAX_SYNC_OPS = intEnvOr("CODEMEM_SYNC_MAX_OPS", 2000);
 
 const PAIRING_FILTER_HINT =
 	"Run this on another device with codemem sync pair --accept '<payload>'. " +
-	"On that accepting device, --include/--exclude only control what it sends to peers. " +
-	"This device does not yet enforce incoming project filters.";
+	"On the accepting device, --include/--exclude control both what it sends and what it accepts from that peer.";
 
 function pathWithQuery(url: string): string {
 	const parsed = new URL(url);
@@ -514,8 +513,12 @@ export function syncRoutes(getStore: StoreFactory) {
 			localDeviceId = { device_id: deviceId };
 		}
 
-		const result = applyReplicationOps(store.db, normalizedOps, localDeviceId.device_id);
-		return c.json(result);
+		const filteredInbound = filterOpsForPeer(store, peerDeviceId, normalizedOps);
+		const result = applyReplicationOps(store.db, filteredInbound.allowed, localDeviceId.device_id);
+		return c.json({
+			...result,
+			skipped: result.skipped + filteredInbound.skipped,
+		});
 	});
 
 	// GET /api/sync/status

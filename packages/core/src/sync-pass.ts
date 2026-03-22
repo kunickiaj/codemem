@@ -18,6 +18,8 @@ import {
 	backfillReplicationOps,
 	chunkOpsBySize,
 	extractReplicationOps,
+	filterReplicationOpsForSync,
+	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	migrateLegacyImportKeys,
 	setReplicationCursor,
@@ -350,37 +352,30 @@ export async function syncOnce(
 				throw new Error("invalid ops response");
 			}
 			const ops = extractReplicationOps(getPayload);
+			const [inboundOps, inboundCursor] = filterReplicationOpsForSyncWithStatus(
+				db,
+				ops,
+				peerDeviceId,
+			);
 
 			// -- 3. Apply incoming ops to local entities --
-			const applied = applyReplicationOps(db, ops, deviceId);
+			const applied = applyReplicationOps(db, inboundOps, deviceId);
 
-			if (ops.length > 0) {
-				const last = ops.at(-1);
-				if (last) {
-					const localNext = computeCursor(last.created_at, last.op_id);
-					if (cursorAdvances(lastApplied, localNext)) {
-						setReplicationCursor(db, peerDeviceId, { lastApplied: localNext });
-						lastApplied = localNext;
-					}
-				}
-			} else {
-				const peerNext =
-					typeof getPayload.next_cursor === "string" ? getPayload.next_cursor.trim() : "";
-				const skippedValue = getPayload.skipped;
-				const skippedCount =
-					typeof skippedValue === "number"
-						? skippedValue
-						: typeof skippedValue === "string"
-							? Number.parseInt(skippedValue, 10) || 0
-							: 0;
-				if (skippedCount > 0 && cursorAdvances(lastApplied, peerNext)) {
-					setReplicationCursor(db, peerDeviceId, { lastApplied: peerNext });
-					lastApplied = peerNext;
-				}
+			const inboundCursorCandidate =
+				inboundCursor ||
+				(typeof getPayload.next_cursor === "string" ? getPayload.next_cursor.trim() : "");
+			if (cursorAdvances(lastApplied, inboundCursorCandidate)) {
+				setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate });
+				lastApplied = inboundCursorCandidate;
 			}
 
 			// -- 5. Push local ops to peer --
-			const [outboundOps, outboundCursor] = loadLocalOpsSince(db, lastAcked, deviceId, limit);
+			const [outboundWindow, outboundCursor] = loadLocalOpsSince(db, lastAcked, deviceId, limit);
+			const [outboundOps, filteredOutboundCursor] = filterReplicationOpsForSync(
+				db,
+				outboundWindow,
+				peerDeviceId,
+			);
 			const postUrl = `${baseUrl}/v1/ops`;
 			if (outboundOps.length > 0) {
 				const batches = chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES);
@@ -388,9 +383,10 @@ export async function syncOnce(
 					await pushOps(postUrl, deviceId, batch, keysDir);
 				}
 			}
-			if (outboundCursor) {
-				setReplicationCursor(db, peerDeviceId, { lastAcked: outboundCursor });
-				lastAcked = outboundCursor;
+			const ackCursor = filteredOutboundCursor ?? outboundCursor;
+			if (ackCursor && cursorAdvances(lastAcked, ackCursor)) {
+				setReplicationCursor(db, peerDeviceId, { lastAcked: ackCursor });
+				lastAcked = ackCursor;
 			}
 
 			// -- 6. Record success --
