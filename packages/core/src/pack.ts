@@ -15,6 +15,7 @@
  */
 
 import type { Database } from "./db.js";
+import { projectBasename } from "./project.js";
 import type { StoreHandle } from "./search.js";
 import { rerankResults, search, timeline } from "./search.js";
 import type {
@@ -322,6 +323,170 @@ function recallFallbackRecent(
 	const prioritized = prioritizeTaskResults(remainder, limit - summaries.length);
 	return [...summaries, ...prioritized];
 }
+function parseNonNegativeInt(value: unknown): number | null {
+	if (value == null || typeof value === "boolean") return null;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return null;
+	const intValue = Math.trunc(parsed);
+	if (intValue < 0) return null;
+	return intValue;
+}
+
+function dedupePositiveIds(values: unknown[]): number[] {
+	const deduped: number[] = [];
+	const seen = new Set<number>();
+	for (const raw of values) {
+		const parsed = parseNonNegativeInt(raw);
+		if (parsed == null || parsed <= 0 || seen.has(parsed)) continue;
+		seen.add(parsed);
+		deduped.push(parsed);
+	}
+	return deduped;
+}
+
+function coercePackItemIds(value: unknown): { ids: number[]; valid: boolean } {
+	if (!Array.isArray(value)) return { ids: [], valid: false };
+	for (const raw of value) {
+		if (raw == null || typeof raw === "boolean") return { ids: [], valid: false };
+	}
+	return { ids: dedupePositiveIds(value), valid: true };
+}
+
+function parseMetadataObject(value: unknown): Record<string, unknown> {
+	if (!value) return {};
+	if (typeof value === "string") {
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return parsed as Record<string, unknown>;
+			}
+			return {};
+		} catch {
+			return {};
+		}
+	}
+	if (typeof value === "object" && !Array.isArray(value)) {
+		return value as Record<string, unknown>;
+	}
+	return {};
+}
+
+function getPackDeltaBaseline(
+	store: StoreHandle,
+	project: string | null,
+): { previousPackIds: number[] | null; previousPackTokens: number | null } {
+	const projectBase = project ? projectBasename(project) : null;
+	const metaProjectExpr =
+		"CASE WHEN json_valid(metadata_json) = 1 THEN json_extract(metadata_json, '$.project') ELSE NULL END";
+	const rows = project
+		? (store.db
+				.prepare(
+					`SELECT metadata_json, tokens_read
+					 FROM usage_events
+					 WHERE event = 'pack'
+					   AND (${metaProjectExpr} = ? OR ${metaProjectExpr} = ?)
+					 ORDER BY created_at DESC
+					 LIMIT 25`,
+				)
+				.all(project, projectBase ?? project) as Array<{
+				metadata_json: string | null;
+				tokens_read: number | null;
+			}>)
+		: (store.db
+				.prepare(
+					`SELECT metadata_json, tokens_read
+					 FROM usage_events
+					 WHERE event = 'pack'
+					 ORDER BY created_at DESC
+					 LIMIT 25`,
+				)
+				.all() as Array<{ metadata_json: string | null; tokens_read: number | null }>);
+
+	for (const row of rows) {
+		const metadata = parseMetadataObject(row.metadata_json);
+		if (project != null) {
+			const rowProject = typeof metadata.project === "string" ? metadata.project : null;
+			if (rowProject !== project && rowProject !== projectBase) continue;
+		}
+		if (!("pack_item_ids" in metadata)) continue;
+
+		const { ids, valid } = coercePackItemIds(metadata.pack_item_ids);
+		if (!valid) continue;
+
+		const previousTokens =
+			parseNonNegativeInt(metadata.pack_tokens) ?? parseNonNegativeInt(row.tokens_read);
+		if (previousTokens == null) continue;
+
+		return { previousPackIds: ids, previousPackTokens: previousTokens };
+	}
+
+	return { previousPackIds: null, previousPackTokens: null };
+}
+
+function resolveUsageSessionId(store: StoreHandle, project: string | null): number | null {
+	if (!project) return null;
+	const projectBase = projectBasename(project);
+	const row = store.db
+		.prepare(
+			`SELECT id
+			 FROM sessions
+			 WHERE project = ? OR project = ?
+			 ORDER BY started_at DESC, id DESC
+			 LIMIT 1`,
+		)
+		.get(project, projectBase) as { id: number } | undefined;
+	return row?.id ?? null;
+}
+
+function estimateWorkTokens(item: MemoryResult): number {
+	const metadata = parseMetadataObject(item.metadata);
+	const known = parseNonNegativeInt(metadata.discovery_tokens);
+	if (known != null) return known;
+	return Math.max(2000, estimateTokens(`${item.title} ${item.body_text}`.trim()));
+}
+
+function discoveryGroup(item: MemoryResult): string {
+	const metadata = parseMetadataObject(item.metadata);
+	const group = metadata.discovery_group;
+	if (typeof group === "string" && group.trim().length > 0) return group.trim();
+	return `memory:${item.id}`;
+}
+
+function avoidedWorkTokens(item: MemoryResult): { tokens: number; source: string } {
+	const metadata = parseMetadataObject(item.metadata);
+	const tokens = parseNonNegativeInt(metadata.discovery_tokens);
+	if (tokens != null && tokens > 0) {
+		const source =
+			typeof metadata.discovery_source === "string" && metadata.discovery_source
+				? metadata.discovery_source
+				: "known";
+		return { tokens, source };
+	}
+	return { tokens: 0, source: "unknown" };
+}
+
+function workSource(item: MemoryResult): "usage" | "estimate" {
+	const metadata = parseMetadataObject(item.metadata);
+	return metadata.discovery_source === "usage" ? "usage" : "estimate";
+}
+
+function recordPackUsage(store: StoreHandle, metrics: Record<string, unknown>): void {
+	const now = new Date().toISOString();
+	const tokensRead = parseNonNegativeInt(metrics.pack_tokens) ?? 0;
+	const tokensSaved = parseNonNegativeInt(metrics.tokens_saved) ?? 0;
+	const project = typeof metrics.project === "string" ? metrics.project : null;
+	const sessionId = resolveUsageSessionId(store, project);
+	try {
+		store.db
+			.prepare(
+				`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+				 VALUES (?, 'pack', ?, 0, ?, ?, ?)`,
+			)
+			.run(sessionId, tokensRead, tokensSaved, now, JSON.stringify(metrics));
+	} catch {
+		// Non-fatal for pack building path
+	}
+}
 // ---------------------------------------------------------------------------
 // buildMemoryPack
 // ---------------------------------------------------------------------------
@@ -571,34 +736,125 @@ export function buildMemoryPack(
 	];
 
 	const packText = sections.join("\n\n");
+	const packTokens = estimateTokens(packText);
 
 	// Collect all unique items across sections
 	const seenIds = new Set<number>();
 	const allItems: PackItem[] = [];
+	const selectedItems: MemoryResult[] = [];
 	const allItemIds: number[] = [];
 	for (const item of [...budgetedSummary, ...budgetedTimeline, ...budgetedObservations]) {
 		if (seenIds.has(item.id)) continue;
 		seenIds.add(item.id);
+		selectedItems.push(item);
 		allItems.push(toPackItem(item, dedupeState));
 		allItemIds.push(item.id);
 	}
+
+	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(
+		store,
+		filters?.project ?? null,
+	);
+	const packDeltaAvailable = previousPackIds != null && previousPackTokens != null;
+	const previousSet = new Set(previousPackIds ?? []);
+	const currentSet = new Set(allItemIds);
+	const addedIds = packDeltaAvailable ? allItemIds.filter((id) => !previousSet.has(id)) : [];
+	const removedIds = packDeltaAvailable
+		? (previousPackIds ?? []).filter((id) => !currentSet.has(id))
+		: [];
+	const retainedIds = packDeltaAvailable ? allItemIds.filter((id) => previousSet.has(id)) : [];
+	const packTokenDelta = packDeltaAvailable ? packTokens - (previousPackTokens ?? 0) : 0;
+
+	const workTokens = selectedItems.reduce((sum, item) => sum + estimateWorkTokens(item), 0);
+	const groupedWork = new Map<string, number>();
+	for (const item of selectedItems) {
+		const key = discoveryGroup(item);
+		const estimate = estimateWorkTokens(item);
+		const existing = groupedWork.get(key) ?? 0;
+		if (estimate > existing) groupedWork.set(key, estimate);
+	}
+	const workTokensUnique = [...groupedWork.values()].reduce((sum, value) => sum + value, 0);
+	const tokensSaved = Math.max(0, workTokensUnique - packTokens);
+
+	let avoidedWorkTokensTotal = 0;
+	let avoidedKnownItems = 0;
+	let avoidedUnknownItems = 0;
+	const avoidedWorkSources: Record<string, number> = {};
+	for (const item of selectedItems) {
+		const avoided = avoidedWorkTokens(item);
+		if (avoided.tokens > 0) {
+			avoidedWorkTokensTotal += avoided.tokens;
+			avoidedKnownItems += 1;
+			avoidedWorkSources[avoided.source] = (avoidedWorkSources[avoided.source] ?? 0) + 1;
+		} else {
+			avoidedUnknownItems += 1;
+		}
+	}
+	const avoidedWorkSaved = Math.max(0, avoidedWorkTokensTotal - packTokens);
+	const avoidedWorkRatio =
+		avoidedWorkTokensTotal > 0 ? avoidedWorkTokensTotal / Math.max(packTokens, 1) : null;
+
+	const workSources = selectedItems.map(workSource);
+	const workUsageItems = workSources.filter((source) => source === "usage").length;
+	const workEstimateItems = workSources.length - workUsageItems;
+	const workSourceLabel: "estimate" | "usage" | "mixed" =
+		workUsageItems > 0 && workEstimateItems > 0
+			? "mixed"
+			: workUsageItems > 0
+				? "usage"
+				: "estimate";
+
+	const compressionRatio = workTokensUnique > 0 ? packTokens / workTokensUnique : null;
+	const overheadTokens = workTokensUnique > 0 ? packTokens - workTokensUnique : null;
+	const fallbackLabel: "recent" | null = fallbackUsed ? "recent" : null;
+	const modeLabel: "default" | "task" | "recall" = taskMode
+		? "task"
+		: recallMode
+			? "recall"
+			: "default";
+
+	const metrics = {
+		total_items: allItems.length,
+		pack_tokens: packTokens,
+		fallback_used: fallbackUsed,
+		fallback: fallbackLabel,
+		limit: effectiveLimit,
+		token_budget: tokenBudget,
+		project: filters?.project ?? null,
+		pack_item_ids: allItemIds,
+		mode: modeLabel,
+		added_ids: addedIds,
+		removed_ids: removedIds,
+		retained_ids: retainedIds,
+		pack_token_delta: packTokenDelta,
+		pack_delta_available: packDeltaAvailable,
+		work_tokens: workTokens,
+		work_tokens_unique: workTokensUnique,
+		tokens_saved: tokensSaved,
+		compression_ratio: compressionRatio,
+		overhead_tokens: overheadTokens,
+		avoided_work_tokens: avoidedWorkTokensTotal,
+		avoided_work_saved: avoidedWorkSaved,
+		avoided_work_ratio: avoidedWorkRatio,
+		avoided_work_known_items: avoidedKnownItems,
+		avoided_work_unknown_items: avoidedUnknownItems,
+		avoided_work_sources: avoidedWorkSources,
+		work_source: workSourceLabel,
+		work_usage_items: workUsageItems,
+		work_estimate_items: workEstimateItems,
+		savings_reliable:
+			avoidedKnownItems + avoidedUnknownItems > 0 ? avoidedKnownItems >= avoidedUnknownItems : true,
+		sources: { fts: ftsCount, semantic: semanticCount, fuzzy: 0 },
+	};
+
+	recordPackUsage(store, metrics);
 
 	return {
 		context,
 		items: allItems,
 		item_ids: allItemIds,
 		pack_text: packText,
-		metrics: {
-			total_items: allItems.length,
-			pack_tokens: estimateTokens(packText),
-			fallback_used: fallbackUsed,
-			fallback: fallbackUsed ? "recent" : null,
-			limit: effectiveLimit,
-			token_budget: tokenBudget,
-			project: filters?.project ?? null,
-			pack_item_ids: allItemIds,
-			sources: { fts: ftsCount, semantic: semanticCount, fuzzy: 0 },
-		},
+		metrics,
 	};
 }
 
