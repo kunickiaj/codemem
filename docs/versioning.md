@@ -31,6 +31,19 @@ The script updates/checks:
 - `plugins/claude/.claude-plugin/plugin.json` (`version` and `codemem==X.Y.Z` MCP arg)
 - `.claude-plugin/marketplace.json` (`metadata.version` and `plugins[*].version` for `codemem`)
 
+## Release tag preflight
+
+Before creating or pushing a release tag, run:
+
+```bash
+pnpm run release:preflight-tag
+```
+
+This verifies release tagging safety in two contexts:
+
+- local preflight: target commit must match `origin/main` HEAD, and the working tree must be clean
+- CI tag workflow: tagged commit must be reachable from `origin/main` (avoids false failures if `main` advances after tag push)
+
 ## Compatibility check
 
 The OpenCode plugin performs a runtime CLI version check and warns if the local CLI is below
