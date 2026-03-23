@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { and, eq, gt, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
@@ -422,6 +422,7 @@ function effectiveSyncProjectFilters(
 	db: Database,
 	peerDeviceId: string | null,
 ): { include: string[]; exclude: string[] } {
+	const d = drizzle(db, { schema });
 	const config = readCodememConfigFile();
 	const includeOverride = process.env.CODEMEM_SYNC_PROJECTS_INCLUDE;
 	const excludeOverride = process.env.CODEMEM_SYNC_PROJECTS_EXCLUDE;
@@ -435,13 +436,15 @@ function effectiveSyncProjectFilters(
 			: parseStringList(config.sync_projects_exclude);
 	if (!peerDeviceId) return { include: globalInclude, exclude: globalExclude };
 
-	const row = db
-		.prepare(
-			"SELECT projects_include_json, projects_exclude_json FROM sync_peers WHERE peer_device_id = ? LIMIT 1",
-		)
-		.get(peerDeviceId) as
-		| { projects_include_json: string | null; projects_exclude_json: string | null }
-		| undefined;
+	const row = d
+		.select({
+			projects_include_json: schema.syncPeers.projects_include_json,
+			projects_exclude_json: schema.syncPeers.projects_exclude_json,
+		})
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.limit(1)
+		.get();
 	if (!row) return { include: globalInclude, exclude: globalExclude };
 
 	const hasOverride = row.projects_include_json != null || row.projects_exclude_json != null;
@@ -514,9 +517,13 @@ function syncVisibilityAllowed(payload: Record<string, unknown> | null): boolean
 
 function peerClaimedLocalActor(db: Database, peerDeviceId: string | null): boolean {
 	if (!peerDeviceId) return false;
-	const row = db
-		.prepare("SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ? LIMIT 1")
-		.get(peerDeviceId) as { claimed_local_actor: number | null } | undefined;
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({ claimed_local_actor: schema.syncPeers.claimed_local_actor })
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.limit(1)
+		.get();
 	return Boolean(row?.claimed_local_actor);
 }
 
@@ -653,17 +660,23 @@ export function migrateLegacyImportKeys(db: Database, limit = 2000): number {
 	const localDeviceId = String(deviceRow?.device_id ?? "").trim();
 	if (!localDeviceId) return 0;
 
-	const rows = db
-		.prepare(
-			`SELECT id, import_key, metadata_json
-			 FROM memory_items
-			 WHERE import_key IS NULL
-			    OR TRIM(import_key) = ''
-			    OR import_key LIKE 'legacy:memory_item:%'
-			 ORDER BY id ASC
-			 LIMIT ?`,
+	const rows = d
+		.select({
+			id: schema.memoryItems.id,
+			import_key: schema.memoryItems.import_key,
+			metadata_json: schema.memoryItems.metadata_json,
+		})
+		.from(schema.memoryItems)
+		.where(
+			or(
+				isNull(schema.memoryItems.import_key),
+				sql`TRIM(${schema.memoryItems.import_key}) = ''`,
+				like(schema.memoryItems.import_key, "legacy:memory_item:%"),
+			),
 		)
-		.all(limit) as Array<{ id: number; import_key: string | null; metadata_json: string | null }>;
+		.orderBy(schema.memoryItems.id)
+		.limit(limit)
+		.all();
 
 	if (rows.length === 0) return 0;
 
@@ -687,14 +700,20 @@ export function migrateLegacyImportKeys(db: Database, limit = 2000): number {
 
 		if (!canonical || canonical === current) continue;
 
-		const existing = db
-			.prepare("SELECT id FROM memory_items WHERE import_key = ? LIMIT 1")
-			.get(canonical) as { id: number } | undefined;
+		const existing = d
+			.select({ id: schema.memoryItems.id })
+			.from(schema.memoryItems)
+			.where(eq(schema.memoryItems.import_key, canonical))
+			.limit(1)
+			.get();
 		if (existing && Number(existing.id) !== memoryId) {
 			continue;
 		}
 
-		db.prepare("UPDATE memory_items SET import_key = ? WHERE id = ?").run(canonical, memoryId);
+		d.update(schema.memoryItems)
+			.set({ import_key: canonical })
+			.where(eq(schema.memoryItems.id, memoryId))
+			.run();
 		updated++;
 	}
 
@@ -720,45 +739,49 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 		.get();
 	const localDeviceId = String(deviceRow?.device_id ?? "").trim();
 
-	const deletedRows = db
-		.prepare(
-			`SELECT mi.*
-			 FROM memory_items mi
-			 WHERE (mi.deleted_at IS NOT NULL OR mi.active = 0)
-			   AND NOT EXISTS (
-			     SELECT 1
-			     FROM replication_ops ro
-			     WHERE ro.entity_type = 'memory_item'
-			       AND ro.entity_id = mi.import_key
-			       AND ro.op_type = 'delete'
-			       AND ro.clock_rev = COALESCE(mi.rev, 0)
-			   )
-			 ORDER BY mi.updated_at ASC
-			 LIMIT ?`,
+	const deletedRows = d
+		.select()
+		.from(schema.memoryItems)
+		.where(
+			and(
+				or(isNotNull(schema.memoryItems.deleted_at), eq(schema.memoryItems.active, 0)),
+				sql`NOT EXISTS (
+					SELECT 1
+					FROM replication_ops ro
+					WHERE ro.entity_type = 'memory_item'
+					  AND ro.entity_id = ${schema.memoryItems.import_key}
+					  AND ro.op_type = 'delete'
+					  AND ro.clock_rev = COALESCE(${schema.memoryItems.rev}, 0)
+				)`,
+			),
 		)
-		.all(limit) as Array<Record<string, unknown>>;
+		.orderBy(schema.memoryItems.updated_at)
+		.limit(limit)
+		.all();
 
 	const remaining = Math.max(0, limit - deletedRows.length);
 	let rows = deletedRows;
 	if (remaining > 0) {
-		const upsertRows = db
-			.prepare(
-				`SELECT mi.*
-				 FROM memory_items mi
-				 WHERE mi.deleted_at IS NULL
-				   AND mi.active = 1
-				   AND NOT EXISTS (
-				     SELECT 1
-				     FROM replication_ops ro
-				     WHERE ro.entity_type = 'memory_item'
-				       AND ro.entity_id = mi.import_key
-				       AND ro.op_type = 'upsert'
-				       AND ro.clock_rev = COALESCE(mi.rev, 0)
-				   )
-				 ORDER BY mi.updated_at ASC
-				 LIMIT ?`,
+		const upsertRows = d
+			.select()
+			.from(schema.memoryItems)
+			.where(
+				and(
+					isNull(schema.memoryItems.deleted_at),
+					eq(schema.memoryItems.active, 1),
+					sql`NOT EXISTS (
+						SELECT 1
+						FROM replication_ops ro
+						WHERE ro.entity_type = 'memory_item'
+						  AND ro.entity_id = ${schema.memoryItems.import_key}
+						  AND ro.op_type = 'upsert'
+						  AND ro.clock_rev = COALESCE(${schema.memoryItems.rev}, 0)
+					)`,
+				),
 			)
-			.all(remaining) as Array<Record<string, unknown>>;
+			.orderBy(schema.memoryItems.updated_at)
+			.limit(remaining)
+			.all();
 		rows = [...rows, ...upsertRows];
 	}
 
@@ -785,7 +808,10 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 		if (!importKey) {
 			if (!originDeviceId) continue;
 			importKey = `legacy:${originDeviceId}:memory_item:${rowId}`;
-			db.prepare("UPDATE memory_items SET import_key = ? WHERE id = ?").run(importKey, rowId);
+			d.update(schema.memoryItems)
+				.set({ import_key: importKey })
+				.where(eq(schema.memoryItems.id, rowId))
+				.run();
 		}
 
 		const rev = Number(row.rev ?? 0);
@@ -794,9 +820,12 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 		const opType: "upsert" | "delete" = deletedAt || active === 0 ? "delete" : "upsert";
 		const opId = `backfill:memory_item:${importKey}:${rev}:${opType}`;
 
-		const exists = db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ? LIMIT 1").get(opId) as
-			| { 1: number }
-			| undefined;
+		const exists = d
+			.select({ one: sql<number>`1` })
+			.from(schema.replicationOps)
+			.where(eq(schema.replicationOps.op_id, opId))
+			.limit(1)
+			.get();
 		if (exists) continue;
 
 		const clockDeviceId = originDeviceId;
