@@ -45,7 +45,10 @@ function summarizeFlushFailure(exc: Error, provider: string | null | undefined):
 	if (exc.name === "TimeoutError" || rawMessage.includes("timeout")) {
 		return `${providerTitle} request timed out during raw-event processing.`;
 	}
-	if (rawMessage === "observer failed during raw-event flush") {
+	if (
+		rawMessage === "observer failed during raw-event flush" ||
+		rawMessage === "observer produced no storable output for raw-event flush"
+	) {
 		return `${providerTitle} returned no usable output for raw-event processing.`;
 	}
 	if (/parse|xml|json/i.test(rawMessage)) {
@@ -138,6 +141,7 @@ export interface FlushRawEventsOptions {
 	project?: string | null;
 	startedAt?: string | null;
 	maxEvents?: number | null;
+	allowEmptyFlush?: boolean;
 }
 
 /**
@@ -158,6 +162,7 @@ export async function flushRawEvents(
 ): Promise<{ flushed: number; updatedState: number }> {
 	let { source = "opencode", cwd, project, startedAt } = opts;
 	const { opencodeSessionId, maxEvents } = opts;
+	const allowEmptyFlush = opts.allowEmptyFlush ?? false;
 
 	source = (source ?? "").trim().toLowerCase() || "opencode";
 
@@ -244,6 +249,14 @@ export async function flushRawEvents(
 	} catch (exc) {
 		// Record failure details on the batch
 		const err = exc instanceof Error ? exc : new Error(String(exc));
+		if (
+			allowEmptyFlush &&
+			err.message === "observer produced no storable output for raw-event flush"
+		) {
+			store.updateRawEventFlushBatchStatus(batchId, "completed");
+			store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+			return { flushed: events.length, updatedState: 1 };
+		}
 		const provider = ingestOpts.observer?.getStatus?.()?.provider as string | undefined;
 		const message = truncateErrorMessage(summarizeFlushFailure(err, provider));
 		store.recordRawEventFlushBatchFailure(batchId, {
