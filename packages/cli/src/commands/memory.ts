@@ -153,7 +153,7 @@ function createInjectMemoryCommand(): Command {
 		.allowUnknownOption(true)
 		.allowExcessArguments(true)
 		.action(
-			(
+			async (
 				context: string,
 				opts: {
 					db?: string;
@@ -180,7 +180,7 @@ function createInjectMemoryCommand(): Command {
 					if ((opts.workingSetFile?.length ?? 0) > 0) {
 						filters.working_set_paths = opts.workingSetFile;
 					}
-					const pack = store.buildMemoryPack(context, limit, budget, filters);
+					const pack = await store.buildMemoryPackAsync(context, limit, budget, filters);
 					console.log(pack.pack_text ?? "");
 				} finally {
 					store.close();

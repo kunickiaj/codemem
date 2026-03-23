@@ -6,6 +6,7 @@ import { connect } from "./db.js";
 import { buildMemoryPack, estimateTokens } from "./pack.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
+import type { MemoryResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Unit tests: estimateTokens
@@ -170,5 +171,47 @@ describe("buildMemoryPack", () => {
 		expect(item).toHaveProperty("confidence");
 		expect(item).toHaveProperty("tags");
 		expect(item).toHaveProperty("metadata");
+	});
+
+	it("keeps working-set overlaps prioritized when semantic candidates are merged", () => {
+		const semanticResults: MemoryResult[] = [
+			{
+				id: 1,
+				kind: "feature",
+				title: "Overlapping file",
+				body_text: "Directly related to current file",
+				confidence: 0.9,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+				tags_text: "",
+				score: 0.22,
+				session_id: sessionId,
+				metadata: { files_modified: ["src/important.ts"] },
+			},
+			{
+				id: 2,
+				kind: "feature",
+				title: "Non-overlapping file",
+				body_text: "Not tied to working set",
+				confidence: 0.9,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+				tags_text: "",
+				score: 0.25,
+				session_id: sessionId,
+				metadata: { files_modified: ["src/other.ts"] },
+			},
+		];
+
+		const pack = buildMemoryPack(
+			store,
+			"zzz_nomatch_zzz",
+			10,
+			null,
+			{ working_set_paths: ["src/important.ts"] },
+			semanticResults,
+		);
+
+		expect(pack.item_ids[0]).toBe(1);
 	});
 });
