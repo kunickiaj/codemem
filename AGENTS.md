@@ -13,7 +13,9 @@ will be published.
 - If you discover sensitive content already tracked or in git history: stop and propose a
   remediation plan (remove from tree + consider history rewrite).
 
-If you are about to run commands, prefer `uv run ...` (no manual venv activation needed).
+If you are about to run commands, default to the TypeScript toolchain (`pnpm ...`).
+Use `uv run ...` only when you are explicitly working on the legacy Python backend
+(`codemem/`, `tests/`, pytest/ruff, or Python release metadata).
 
 ## Execution Contract
 
@@ -64,9 +66,9 @@ Release checklist:
 - Lint/format: ruff
 - UI/plugin ("frontend"):
   - Viewer UI is embedded in Python: `codemem/viewer.py`
-  - OpenCode plugin is ESM JS: `.opencode/plugin/codemem.js`
+  - OpenCode plugin is ESM JS: `.opencode/plugins/codemem.js`
 
-### TypeScript Backend (migration in progress)
+### TypeScript Backend (primary path)
 
 - Node: >=22
 - Package manager: pnpm (workspace at root)
@@ -84,18 +86,38 @@ plugin-only config that breaks workspace commands.
 
 ## Quick Commands
 
-### Setup
+### TypeScript default workflow
+
+- Install JS deps: `pnpm install`
+- Build all TS packages: `pnpm build`
+- Run tests: `pnpm run test`
+- Lint: `pnpm run lint`
+- Typecheck: `pnpm run typecheck`
+- Run TS CLI from source: `pnpm run codemem --help`
+
+### Legacy Python setup (only when required)
 - Install dev deps + create venv: `uv sync`
 - Run commands via the venv (no activate): `uv run codemem --help`
 - Activate (fish): `source .venv/bin/activate.fish`
 - Activate (bash/zsh): `source .venv/bin/activate`
 
-### Build / Install
+### Legacy Python build / install
 - Editable install (if you want `codemem` on PATH): `uv pip install -e .`
 - No-install run from this repo: `uv run codemem stats`
 - One-off run via uvx: `uvx --from . codemem stats`
 
-### Common Dev Commands
+### TypeScript runtime commands (preferred)
+
+- CLI help: `pnpm run codemem --help`
+- Viewer help: `pnpm run codemem serve --help`
+- Serve viewer: `pnpm run codemem serve`
+- Serve viewer (background): `pnpm run codemem serve --background`
+- Serve viewer (restart): `pnpm run codemem serve restart`
+- MCP server: `pnpm run codemem mcp`
+- Claude hook ingest (stdin JSON): `pnpm run codemem claude-hook-ingest`
+- Stats: `pnpm run codemem stats`
+
+### Legacy Python runtime commands (only when required)
 
 - CLI help: `uv run codemem --help`
 - Viewer help: `uv run codemem serve --help`
@@ -141,7 +163,7 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 
 ### OpenCode plugin
 
-- Source: `.opencode/plugin/codemem.js`
+- Source: `.opencode/plugins/codemem.js`
 - Rules:
   - ESM only (`import`/`export`)
   - must never crash OpenCode (no uncaught exceptions)
@@ -153,7 +175,7 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 - `codemem/plugin_ingest.py`: ingestion + filtering of tool events / transcripts
 - `codemem/mcp_server.py`: MCP tools (search/timeline/pack/etc.)
 - `codemem/viewer.py`: embedded viewer HTML + server glue
-- `.opencode/plugin/codemem.js`: OpenCode plugin entrypoint
+- `.opencode/plugins/codemem.js`: OpenCode plugin entrypoint
 - `tests/`: pytest tests (prefer fast, isolated unit tests)
 
 ## Runtime Commands
