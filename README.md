@@ -130,6 +130,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | `codemem search <query>` | Search memories |
 | `codemem embed` | Backfill semantic embeddings |
 | `codemem serve` | Launch the web viewer |
+| `codemem db backfill-tags` | Populate missing `tags_text` values |
+| `codemem db prune-observations` | Deactivate low-signal observations |
 | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
 | `codemem export-memories` | Export memories by project |
 | `codemem import-memories` | Import memories (idempotent) |
