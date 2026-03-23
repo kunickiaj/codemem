@@ -248,4 +248,56 @@ describe("buildMemoryPack", () => {
 
 		expect(pack.item_ids[0]).toBe(1);
 	});
+
+	it("keeps topical terms when using task mode", () => {
+		const decisionId = store.remember(
+			sessionId,
+			"decision",
+			"Task: auth hardening",
+			"Need to add OAuth callback validation",
+			0.9,
+		);
+		store.remember(
+			sessionId,
+			"feature",
+			"Task: polish viewer cards",
+			"Refine spacing in cards",
+			0.8,
+		);
+
+		const pack = buildMemoryPack(store, "what should we do next about auth", 10);
+
+		expect(pack.item_ids[0]).toBe(decisionId);
+		expect(pack.pack_text.toLowerCase()).toContain("auth");
+	});
+
+	it("finds detailed recall anchors before summary narrowing", () => {
+		const insertSummary = (targetSessionId: number, title: string, body: string) => {
+			const now = new Date().toISOString();
+			store.db
+				.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
+					) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+				)
+				.run(targetSessionId, title, body, now, now);
+		};
+
+		const olderSession = insertTestSession(store.db);
+		store.remember(
+			olderSession,
+			"decision",
+			"OAuth callback fix",
+			"Patched callback verification",
+			0.8,
+		);
+		insertSummary(olderSession, "Old summary", "Earlier wrap-up without oauth keyword");
+
+		insertSummary(sessionId, "Recent summary", "Latest generic session wrap-up");
+		store.remember(sessionId, "feature", "Recent unrelated", "Viewer polish task", 0.7);
+
+		const pack = buildMemoryPack(store, "what did we do last time about oauth", 10);
+
+		expect(pack.pack_text).toContain("OAuth callback fix");
+	});
 });
