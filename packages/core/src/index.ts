@@ -129,6 +129,8 @@ export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
 export type {
 	BackfillTagsTextOptions,
 	BackfillTagsTextResult,
+	DeactivateLowSignalMemoriesOptions,
+	DeactivateLowSignalResult,
 	GateResult,
 	RawEventStatusItem,
 	RawEventStatusResult,
@@ -136,6 +138,8 @@ export type {
 } from "./maintenance.js";
 export {
 	backfillTagsText,
+	deactivateLowSignalMemories,
+	deactivateLowSignalObservations,
 	getRawEventStatus,
 	getReliabilityMetrics,
 	initDatabase,

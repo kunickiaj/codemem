@@ -3,6 +3,8 @@ import * as p from "@clack/prompts";
 import {
 	backfillTagsText,
 	connect,
+	deactivateLowSignalMemories,
+	deactivateLowSignalObservations,
 	getRawEventStatus,
 	initDatabase,
 	MemoryStore,
@@ -28,6 +30,15 @@ function parseOptionalPositiveInt(value: string | undefined): number | undefined
 		throw new Error(`invalid positive integer: ${value}`);
 	}
 	return parsed;
+}
+
+function parseKindsCsv(value: string | undefined): string[] | undefined {
+	if (!value) return undefined;
+	const kinds = value
+		.split(",")
+		.map((kind) => kind.trim())
+		.filter((kind) => kind.length > 0);
+	return kinds.length > 0 ? kinds : undefined;
 }
 
 export const dbCommand = new Command("db")
@@ -429,6 +440,95 @@ dbCommand
 						p.intro("codemem db backfill-tags");
 						p.log.success(`${action} ${result.updated} memories (skipped ${result.skipped})`);
 						p.outro(`Checked ${result.checked} memories`);
+					} catch (error) {
+						p.log.error(error instanceof Error ? error.message : String(error));
+						process.exitCode = 1;
+					} finally {
+						store.close();
+					}
+				},
+			),
+	)
+	.addCommand(
+		new Command("prune-observations")
+			.configureHelp(helpStyle)
+			.description("Deactivate low-signal observations (does not delete rows)")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--limit <n>", "max observations to check")
+			.option("--dry-run", "preview deactivations without writing")
+			.option("--json", "output as JSON")
+			.action(
+				(opts: {
+					db?: string;
+					dbPath?: string;
+					limit?: string;
+					dryRun?: boolean;
+					json?: boolean;
+				}) => {
+					const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+					try {
+						const limit = parseOptionalPositiveInt(opts.limit);
+						const result = deactivateLowSignalObservations(
+							store.db,
+							limit ?? null,
+							opts.dryRun === true,
+						);
+
+						if (opts.json) {
+							console.log(JSON.stringify(result, null, 2));
+							return;
+						}
+
+						const action = opts.dryRun ? "Would deactivate" : "Deactivated";
+						p.intro("codemem db prune-observations");
+						p.outro(`${action} ${result.deactivated} of ${result.checked} observations`);
+					} catch (error) {
+						p.log.error(error instanceof Error ? error.message : String(error));
+						process.exitCode = 1;
+					} finally {
+						store.close();
+					}
+				},
+			),
+	)
+	.addCommand(
+		new Command("prune-memories")
+			.configureHelp(helpStyle)
+			.description("Deactivate low-signal memories across selected kinds")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--limit <n>", "max memories to check")
+			.option("--kinds <csv>", "comma-separated memory kinds (default set when omitted)")
+			.option("--dry-run", "preview deactivations without writing")
+			.option("--json", "output as JSON")
+			.action(
+				(opts: {
+					db?: string;
+					dbPath?: string;
+					limit?: string;
+					kinds?: string;
+					dryRun?: boolean;
+					json?: boolean;
+				}) => {
+					const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+					try {
+						const limit = parseOptionalPositiveInt(opts.limit);
+						const kinds = parseKindsCsv(opts.kinds);
+						const result = deactivateLowSignalMemories(store.db, {
+							kinds,
+							limit: limit ?? null,
+							dryRun: opts.dryRun === true,
+						});
+
+						if (opts.json) {
+							console.log(JSON.stringify(result, null, 2));
+							return;
+						}
+
+						const action = opts.dryRun ? "Would deactivate" : "Deactivated";
+						p.intro("codemem db prune-memories");
+						p.outro(`${action} ${result.deactivated} of ${result.checked} memories`);
 					} catch (error) {
 						p.log.error(error instanceof Error ? error.message : String(error));
 						process.exitCode = 1;

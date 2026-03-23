@@ -5,6 +5,8 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
 	backfillTagsText,
+	deactivateLowSignalMemories,
+	deactivateLowSignalObservations,
 	getRawEventStatus,
 	getReliabilityMetrics,
 	initDatabase,
@@ -187,6 +189,66 @@ describe("maintenance", () => {
 				tags_text: string;
 			};
 			expect(row.tags_text).toBe("");
+		} finally {
+			db.close();
+		}
+	});
+
+	it("deactivates low-signal observations only", () => {
+		const dbPath = createDbPath("prune-observations");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, import_key
+				) VALUES
+					(1, 1, 'observation', 'Low signal', 'No code changes were made', 1, '2026-03-01T10:00:00Z', '2026-03-01T10:00:00Z', 'k1'),
+					(2, 1, 'observation', 'High signal', 'Implemented a retry guard', 1, '2026-03-01T10:00:01Z', '2026-03-01T10:00:01Z', 'k2');
+			`);
+
+			const result = deactivateLowSignalObservations(db);
+			expect(result).toEqual({ checked: 2, deactivated: 1 });
+
+			const rows = db.prepare("SELECT id, active FROM memory_items ORDER BY id").all() as Array<{
+				id: number;
+				active: number;
+			}>;
+			expect(rows).toEqual([
+				{ id: 1, active: 0 },
+				{ id: 2, active: 1 },
+			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("supports prune-memories dry-run mode", () => {
+		const dbPath = createDbPath("prune-memories-dry-run");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, import_key
+				) VALUES
+					(1, 1, 'change', 'Low signal', 'No code changes were made', 1, '2026-03-01T10:00:00Z', '2026-03-01T10:00:00Z', 'k1');
+			`);
+
+			const result = deactivateLowSignalMemories(db, {
+				kinds: ["change"],
+				dryRun: true,
+			});
+			expect(result).toEqual({ checked: 1, deactivated: 1 });
+
+			const row = db.prepare("SELECT active FROM memory_items WHERE id = 1").get() as {
+				active: number;
+			};
+			expect(row.active).toBe(1);
 		} finally {
 			db.close();
 		}
