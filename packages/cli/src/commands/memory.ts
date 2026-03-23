@@ -11,6 +11,10 @@ import { MemoryStore, resolveDbPath, resolveProject } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 
+function collectWorkingSetFile(value: string, previous: string[]): string[] {
+	return [...previous, value];
+}
+
 /** Parse a strict positive integer, rejecting prefixes like "12abc". */
 function parseStrictPositiveId(value: string): number | null {
 	if (!/^\d+$/.test(value.trim())) return null;
@@ -138,6 +142,12 @@ function createInjectMemoryCommand(): Command {
 		.option("-n, --limit <n>", "max items", "10")
 		.option("--budget <tokens>", "token budget")
 		.option("--token-budget <tokens>", "token budget")
+		.option(
+			"--working-set-file <path>",
+			"recently modified file path used as ranking hint",
+			collectWorkingSetFile,
+			[],
+		)
 		.option("--project <project>", "project identifier (defaults to git repo root)")
 		.option("--all-projects", "search across all projects")
 		.allowUnknownOption(true)
@@ -151,6 +161,7 @@ function createInjectMemoryCommand(): Command {
 					limit?: string;
 					budget?: string;
 					tokenBudget?: string;
+					workingSetFile?: string[];
 					project?: string;
 					allProjects?: boolean;
 				},
@@ -160,11 +171,14 @@ function createInjectMemoryCommand(): Command {
 					const limit = Number.parseInt(opts.limit ?? "10", 10) || 10;
 					const budgetRaw = opts.tokenBudget ?? opts.budget;
 					const budget = budgetRaw ? Number.parseInt(budgetRaw, 10) : undefined;
-					const filters: { project?: string } = {};
+					const filters: { project?: string; working_set_paths?: string[] } = {};
 					if (!opts.allProjects) {
 						const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
 						const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
 						if (project) filters.project = project;
+					}
+					if ((opts.workingSetFile?.length ?? 0) > 0) {
+						filters.working_set_paths = opts.workingSetFile;
 					}
 					const pack = store.buildMemoryPack(context, limit, budget, filters);
 					console.log(pack.pack_text ?? "");

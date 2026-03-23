@@ -193,6 +193,25 @@ describe("rerankResults", () => {
 		expect(reranked[0]?.id).toBe(1);
 	});
 
+	it("boosts results that overlap working_set_paths", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 1.0,
+				metadata: { files_modified: ["src/features/auth/login.ts"] },
+			}),
+			makeResult({
+				id: 2,
+				score: 1.0,
+				metadata: { files_modified: ["docs/architecture.md"] },
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, {
+			working_set_paths: ["src/features/auth/login.ts"],
+		});
+		expect(reranked[0]?.id).toBe(1);
+	});
+
 	it("returns empty array for empty input", () => {
 		expect(rerankResults(mockStore, [], 10)).toEqual([]);
 	});

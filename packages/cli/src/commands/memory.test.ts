@@ -28,5 +28,6 @@ describe("memory command aliases", () => {
 		expect(inject).toBeDefined();
 		expect(inject?.registeredArguments[0]?.required).toBe(true);
 		expect(inject?.registeredArguments[0]?.name()).toBe("context");
+		expect(inject?.options.some((option) => option.long === "--working-set-file")).toBe(true);
 	});
 });
