@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { and, desc, eq, gt, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import {
@@ -881,23 +881,39 @@ export class MemoryStore {
 		idleBeforeTsWallMs: number,
 		limit = 25,
 	): { source: string; streamId: string }[] {
-		const rows = this.db
-			.prepare(
-				`WITH max_events AS (
-            SELECT source, stream_id, MAX(event_seq) AS max_seq
-            FROM raw_events
-            GROUP BY source, stream_id
-        )
-        SELECT s.source, s.stream_id
-        FROM raw_event_sessions s
-        JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
-        WHERE s.last_seen_ts_wall_ms IS NOT NULL
-          AND s.last_seen_ts_wall_ms <= ?
-          AND e.max_seq > s.last_flushed_event_seq
-        ORDER BY s.last_seen_ts_wall_ms ASC
-        LIMIT ?`,
+		const maxEvents = this.d
+			.select({
+				source: schema.rawEvents.source,
+				stream_id: schema.rawEvents.stream_id,
+				max_seq: sql<number>`MAX(${schema.rawEvents.event_seq})`.as("max_seq"),
+			})
+			.from(schema.rawEvents)
+			.groupBy(schema.rawEvents.source, schema.rawEvents.stream_id)
+			.as("max_events");
+
+		const rows = this.d
+			.select({
+				source: schema.rawEventSessions.source,
+				stream_id: schema.rawEventSessions.stream_id,
+			})
+			.from(schema.rawEventSessions)
+			.innerJoin(
+				maxEvents,
+				and(
+					eq(maxEvents.source, schema.rawEventSessions.source),
+					eq(maxEvents.stream_id, schema.rawEventSessions.stream_id),
+				),
 			)
-			.all(idleBeforeTsWallMs, limit) as { source: string | null; stream_id: string | null }[];
+			.where(
+				and(
+					isNotNull(schema.rawEventSessions.last_seen_ts_wall_ms),
+					lte(schema.rawEventSessions.last_seen_ts_wall_ms, idleBeforeTsWallMs),
+					gt(maxEvents.max_seq, schema.rawEventSessions.last_flushed_event_seq),
+				),
+			)
+			.orderBy(schema.rawEventSessions.last_seen_ts_wall_ms)
+			.limit(limit)
+			.all();
 
 		return rows
 			.filter((row) => row.stream_id)
@@ -912,28 +928,52 @@ export class MemoryStore {
 	 * Port of raw_event_sessions_with_pending_queue().
 	 */
 	rawEventSessionsWithPendingQueue(limit = 25): { source: string; streamId: string }[] {
-		const rows = this.db
-			.prepare(
-				`WITH pending_batches AS (
-            SELECT b.source, b.stream_id, MIN(b.updated_at) AS oldest_pending_update
-            FROM raw_event_flush_batches b
-            WHERE b.status IN ('pending', 'failed', 'started', 'error')
-            GROUP BY b.source, b.stream_id
-        ),
-        max_events AS (
-            SELECT source, stream_id, MAX(event_seq) AS max_seq
-            FROM raw_events
-            GROUP BY source, stream_id
-        )
-        SELECT b.source, b.stream_id
-        FROM pending_batches b
-        JOIN max_events e ON e.source = b.source AND e.stream_id = b.stream_id
-        LEFT JOIN raw_event_sessions s ON s.source = b.source AND s.stream_id = b.stream_id
-        WHERE e.max_seq > COALESCE(s.last_flushed_event_seq, -1)
-        ORDER BY b.oldest_pending_update ASC
-        LIMIT ?`,
+		const pendingBatches = this.d
+			.select({
+				source: schema.rawEventFlushBatches.source,
+				stream_id: schema.rawEventFlushBatches.stream_id,
+				oldest_pending_update: sql<string>`MIN(${schema.rawEventFlushBatches.updated_at})`.as(
+					"oldest_pending_update",
+				),
+			})
+			.from(schema.rawEventFlushBatches)
+			.where(inArray(schema.rawEventFlushBatches.status, ["pending", "failed", "started", "error"]))
+			.groupBy(schema.rawEventFlushBatches.source, schema.rawEventFlushBatches.stream_id)
+			.as("pending_batches");
+
+		const maxEvents = this.d
+			.select({
+				source: schema.rawEvents.source,
+				stream_id: schema.rawEvents.stream_id,
+				max_seq: sql<number>`MAX(${schema.rawEvents.event_seq})`.as("max_seq"),
+			})
+			.from(schema.rawEvents)
+			.groupBy(schema.rawEvents.source, schema.rawEvents.stream_id)
+			.as("max_events");
+
+		const rows = this.d
+			.select({ source: pendingBatches.source, stream_id: pendingBatches.stream_id })
+			.from(pendingBatches)
+			.innerJoin(
+				maxEvents,
+				and(
+					eq(maxEvents.source, pendingBatches.source),
+					eq(maxEvents.stream_id, pendingBatches.stream_id),
+				),
 			)
-			.all(limit) as { source: string | null; stream_id: string | null }[];
+			.leftJoin(
+				schema.rawEventSessions,
+				and(
+					eq(schema.rawEventSessions.source, pendingBatches.source),
+					eq(schema.rawEventSessions.stream_id, pendingBatches.stream_id),
+				),
+			)
+			.where(
+				gt(maxEvents.max_seq, sql`COALESCE(${schema.rawEventSessions.last_flushed_event_seq}, -1)`),
+			)
+			.orderBy(sql`${pendingBatches.oldest_pending_update}`)
+			.limit(limit)
+			.all();
 
 		return rows
 			.filter((row) => row.stream_id)
