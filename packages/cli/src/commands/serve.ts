@@ -4,6 +4,8 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
+	isEmbeddingDisabled,
+	type MemoryStore,
 	ObserverClient,
 	RawEventSweeper,
 	readCodememConfigFile,
@@ -141,6 +143,29 @@ export function buildForegroundRunnerArgs(
 	return args;
 }
 
+export function isSqliteVecLoadFailure(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const text = error.message.toLowerCase();
+	return (
+		text.includes("sqlite-vec") ||
+		text.includes("vec_version") ||
+		text.includes("vec0") ||
+		(text.includes("sqlite") && text.includes("vec"))
+	);
+}
+
+export function sqliteVecFailureDiagnostics(error: unknown, dbPath: string): string[] {
+	const message = error instanceof Error ? error.message : String(error);
+	return [
+		`db=${dbPath}`,
+		`node=${process.version}`,
+		`exec=${process.execPath}`,
+		`cwd=${process.cwd()}`,
+		`embedding_disabled=${process.env.CODEMEM_EMBEDDING_DISABLED ?? ""}`,
+		`error=${message}`,
+	];
+}
+
 async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	if (await isPortOpen(invocation.host, invocation.port)) {
 		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
@@ -183,7 +208,28 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	}
 
 	const observer = new ObserverClient();
-	const sweeper = new RawEventSweeper(getStore(), { observer });
+	let store: MemoryStore;
+	try {
+		store = getStore();
+	} catch (err) {
+		if (isEmbeddingDisabled() || !isSqliteVecLoadFailure(err)) {
+			throw err;
+		}
+
+		p.log.warn("sqlite-vec failed to load; retrying viewer startup with embeddings disabled");
+		for (const line of sqliteVecFailureDiagnostics(
+			err,
+			resolveDbPath(invocation.dbPath ?? undefined),
+		)) {
+			p.log.warn(`sqlite-vec diagnostic: ${line}`);
+		}
+		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
+		closeStore();
+		store = getStore();
+		p.log.warn("Embeddings disabled for this viewer process; raw-event ingestion remains active.");
+	}
+
+	const sweeper = new RawEventSweeper(store, { observer });
 	sweeper.start();
 
 	const syncAbort = new AbortController();
@@ -213,7 +259,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			});
 	}
 
-	const app = createApp({ storeFactory: getStore, sweeper, observer });
+	const app = createApp({ storeFactory: () => store, sweeper, observer });
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const pidPath = pidFilePath(dbPath);
 

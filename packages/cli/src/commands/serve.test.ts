@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildForegroundRunnerArgs } from "./serve.js";
+import {
+	buildForegroundRunnerArgs,
+	isSqliteVecLoadFailure,
+	sqliteVecFailureDiagnostics,
+} from "./serve.js";
 import {
 	resolveLegacyServeInvocation,
 	resolveServeInvocation,
@@ -130,5 +134,21 @@ describe("serve command option resolution", () => {
 			"--db-path",
 			"/tmp/test.sqlite",
 		]);
+	});
+
+	it("detects sqlite-vec load errors for viewer startup fallback", () => {
+		expect(isSqliteVecLoadFailure(new Error("sqlite-vec loaded but version check failed"))).toBe(
+			true,
+		);
+		expect(isSqliteVecLoadFailure(new Error("no such function: vec_version"))).toBe(true);
+		expect(isSqliteVecLoadFailure(new Error("database is locked"))).toBe(false);
+	});
+
+	it("formats sqlite-vec diagnostics with runtime context", () => {
+		const lines = sqliteVecFailureDiagnostics(new Error("vec0 load failed"), "/tmp/mem.sqlite");
+		expect(lines.some((line) => line.startsWith("db=/tmp/mem.sqlite"))).toBe(true);
+		expect(lines.some((line) => line.startsWith("node="))).toBe(true);
+		expect(lines.some((line) => line.startsWith("exec="))).toBe(true);
+		expect(lines.some((line) => line.startsWith("error=vec0 load failed"))).toBe(true);
 	});
 });

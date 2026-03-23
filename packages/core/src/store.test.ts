@@ -468,6 +468,29 @@ describe("MemoryStore", () => {
 			expect(result.database.memory_items).toBe(2);
 			expect(result.database.active_memory_items).toBe(1);
 		});
+
+		it("handles memory_vectors count failures without crashing", () => {
+			const sessionId = insertTestSession(store.db);
+			store.remember(sessionId, "discovery", "Vector test", "Body");
+			store.db.exec("CREATE TABLE IF NOT EXISTS memory_vectors(id INTEGER)");
+
+			const originalPrepare = store.db.prepare.bind(store.db);
+			(store.db as unknown as { prepare: typeof store.db.prepare }).prepare = ((
+				statement: string,
+			) => {
+				if (statement.includes("FROM memory_vectors")) {
+					throw new Error("no such module: vec0");
+				}
+				return originalPrepare(statement);
+			}) as typeof store.db.prepare;
+
+			try {
+				const result = store.stats();
+				expect(result.database.vector_coverage).toBe(0);
+			} finally {
+				(store.db as unknown as { prepare: typeof store.db.prepare }).prepare = originalPrepare;
+			}
+		});
 	});
 
 	// -- updateMemoryVisibility ----------------------------------------------
