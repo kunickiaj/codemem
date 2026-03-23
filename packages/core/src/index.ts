@@ -279,6 +279,8 @@ export {
 	chunkOpsBySize,
 	clockTuple,
 	extractReplicationOps,
+	filterReplicationOpsForSync,
+	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	isNewerClock,
 	loadReplicationOpsSince,

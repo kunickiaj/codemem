@@ -484,9 +484,8 @@ syncCommand.addCommand(
 				console.log("For machine-friendly output next time, run:");
 				console.log("  codemem sync pair --payload-only");
 				console.log(
-					"On the accepting device, --include/--exclude only control what it sends to peers.",
+					"On the accepting device, --include/--exclude control both what it sends and what it accepts from that peer.",
 				);
-				console.log("This device does not yet enforce incoming project filters.");
 			} finally {
 				store.close();
 			}

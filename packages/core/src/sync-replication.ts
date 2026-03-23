@@ -13,6 +13,7 @@ import { and, eq, gt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
+import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
 import type { ReplicationOp } from "./types.js";
 
@@ -376,6 +377,252 @@ export function loadReplicationOpsSince(
 	}
 
 	return [ops, nextCursor];
+}
+
+function cleanList(values: unknown): string[] {
+	if (!Array.isArray(values)) return [];
+	const out: string[] = [];
+	for (const raw of values) {
+		const value = String(raw ?? "").trim();
+		if (value) out.push(value);
+	}
+	return out;
+}
+
+function parseStringList(value: unknown): string[] {
+	if (Array.isArray(value)) return cleanList(value);
+	if (typeof value === "string") {
+		return value
+			.split(",")
+			.map((part) => part.trim())
+			.filter(Boolean);
+	}
+	return [];
+}
+
+function parseJsonList(valuesJson: string | null | undefined): string[] {
+	if (!valuesJson) return [];
+	try {
+		return cleanList(JSON.parse(valuesJson));
+	} catch {
+		return [];
+	}
+}
+
+function projectBasename(value: string | null | undefined): string {
+	const raw = String(value ?? "")
+		.trim()
+		.replaceAll("\\", "/");
+	if (!raw) return "";
+	const parts = raw.split("/").filter(Boolean);
+	return parts.length > 0 ? (parts[parts.length - 1] ?? "") : "";
+}
+
+function effectiveSyncProjectFilters(
+	db: Database,
+	peerDeviceId: string | null,
+): { include: string[]; exclude: string[] } {
+	const config = readCodememConfigFile();
+	const includeOverride = process.env.CODEMEM_SYNC_PROJECTS_INCLUDE;
+	const excludeOverride = process.env.CODEMEM_SYNC_PROJECTS_EXCLUDE;
+	const globalInclude =
+		includeOverride !== undefined
+			? parseStringList(includeOverride)
+			: parseStringList(config.sync_projects_include);
+	const globalExclude =
+		excludeOverride !== undefined
+			? parseStringList(excludeOverride)
+			: parseStringList(config.sync_projects_exclude);
+	if (!peerDeviceId) return { include: globalInclude, exclude: globalExclude };
+
+	const row = db
+		.prepare(
+			"SELECT projects_include_json, projects_exclude_json FROM sync_peers WHERE peer_device_id = ? LIMIT 1",
+		)
+		.get(peerDeviceId) as
+		| { projects_include_json: string | null; projects_exclude_json: string | null }
+		| undefined;
+	if (!row) return { include: globalInclude, exclude: globalExclude };
+
+	const hasOverride = row.projects_include_json != null || row.projects_exclude_json != null;
+	if (!hasOverride) {
+		return { include: globalInclude, exclude: globalExclude };
+	}
+
+	return {
+		include: parseJsonList(row.projects_include_json),
+		exclude: parseJsonList(row.projects_exclude_json),
+	};
+}
+
+function syncProjectAllowed(
+	db: Database,
+	project: string | null,
+	peerDeviceId: string | null,
+): boolean {
+	const { include, exclude } = effectiveSyncProjectFilters(db, peerDeviceId);
+	const projectName = String(project ?? "").trim();
+	const basename = projectBasename(projectName);
+
+	if (exclude.some((item) => item === projectName || item === basename)) return false;
+	if (include.length === 0) return true;
+	return include.some((item) => item === projectName || item === basename);
+}
+
+function syncVisibilityAllowed(payload: Record<string, unknown> | null): boolean {
+	if (!payload) return false;
+	let visibility = String(payload.visibility ?? "")
+		.trim()
+		.toLowerCase();
+	const metadata =
+		payload.metadata_json &&
+		typeof payload.metadata_json === "object" &&
+		!Array.isArray(payload.metadata_json)
+			? (payload.metadata_json as Record<string, unknown>)
+			: {};
+	const metadataVisibility = String(metadata.visibility ?? "")
+		.trim()
+		.toLowerCase();
+	if (!visibility && metadataVisibility) {
+		visibility = metadataVisibility;
+	}
+
+	if (!visibility) {
+		let workspaceKind = String(payload.workspace_kind ?? "")
+			.trim()
+			.toLowerCase();
+		let workspaceId = String(payload.workspace_id ?? "")
+			.trim()
+			.toLowerCase();
+		if (!workspaceKind)
+			workspaceKind = String(metadata.workspace_kind ?? "")
+				.trim()
+				.toLowerCase();
+		if (!workspaceId)
+			workspaceId = String(metadata.workspace_id ?? "")
+				.trim()
+				.toLowerCase();
+		if (workspaceKind === "shared" || workspaceId.startsWith("shared:")) {
+			visibility = "shared";
+		} else {
+			return true;
+		}
+	}
+
+	return visibility === "shared";
+}
+
+function peerClaimedLocalActor(db: Database, peerDeviceId: string | null): boolean {
+	if (!peerDeviceId) return false;
+	const row = db
+		.prepare("SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ? LIMIT 1")
+		.get(peerDeviceId) as { claimed_local_actor: number | null } | undefined;
+	return Boolean(row?.claimed_local_actor);
+}
+
+function parsePayload(payloadJson: string | null): Record<string, unknown> | null {
+	if (!payloadJson || !payloadJson.trim()) return null;
+	try {
+		const parsed = JSON.parse(payloadJson) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		return parsed as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
+export interface FilterReplicationSkipped {
+	reason: "visibility_filter" | "project_filter";
+	op_id: string;
+	created_at: string;
+	entity_type: string;
+	entity_id: string;
+	skipped_count: number;
+	project?: string | null;
+	visibility?: string | null;
+}
+
+/**
+ * Filter replication ops for peer sync scopes.
+ *
+ * Returns ops that pass project/visibility rules, a cursor for the last
+ * processed op (including skipped ops), and skipped metadata when filtering
+ * removed one or more ops.
+ */
+export function filterReplicationOpsForSyncWithStatus(
+	db: Database,
+	ops: ReplicationOp[],
+	peerDeviceId: string | null,
+): [ReplicationOp[], string | null, FilterReplicationSkipped | null] {
+	const allowed: ReplicationOp[] = [];
+	let nextCursor: string | null = null;
+	let skippedCount = 0;
+	let firstSkipped: FilterReplicationSkipped | null = null;
+	for (const op of ops) {
+		if (op.entity_type === "memory_item") {
+			const payload = parsePayload(op.payload_json);
+			if (op.op_type === "delete" && payload == null) {
+				allowed.push(op);
+				nextCursor = computeCursor(op.created_at, op.op_id);
+				continue;
+			}
+			if (!syncVisibilityAllowed(payload) && !peerClaimedLocalActor(db, peerDeviceId)) {
+				skippedCount += 1;
+				if (!firstSkipped) {
+					firstSkipped = {
+						reason: "visibility_filter",
+						op_id: op.op_id,
+						created_at: op.created_at,
+						entity_type: op.entity_type,
+						entity_id: op.entity_id,
+						visibility: typeof payload?.visibility === "string" ? String(payload.visibility) : null,
+						skipped_count: 0,
+					};
+				}
+				nextCursor = computeCursor(op.created_at, op.op_id);
+				continue;
+			}
+
+			const project =
+				typeof payload?.project === "string" && payload.project.trim()
+					? payload.project.trim()
+					: null;
+			if (!syncProjectAllowed(db, project, peerDeviceId)) {
+				skippedCount += 1;
+				if (!firstSkipped) {
+					firstSkipped = {
+						reason: "project_filter",
+						op_id: op.op_id,
+						created_at: op.created_at,
+						entity_type: op.entity_type,
+						entity_id: op.entity_id,
+						project,
+						skipped_count: 0,
+					};
+				}
+				nextCursor = computeCursor(op.created_at, op.op_id);
+				continue;
+			}
+		}
+
+		allowed.push(op);
+		nextCursor = computeCursor(op.created_at, op.op_id);
+	}
+
+	if (firstSkipped) {
+		firstSkipped.skipped_count = skippedCount;
+	}
+
+	return [allowed, nextCursor, firstSkipped];
+}
+
+export function filterReplicationOpsForSync(
+	db: Database,
+	ops: ReplicationOp[],
+	peerDeviceId: string | null,
+): [ReplicationOp[], string | null] {
+	const [allowed, nextCursor] = filterReplicationOpsForSyncWithStatus(db, ops, peerDeviceId);
+	return [allowed, nextCursor];
 }
 
 // Apply inbound replication ops
