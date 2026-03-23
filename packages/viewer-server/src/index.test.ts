@@ -986,6 +986,13 @@ describe("viewer-server", () => {
 				expect(body.coordinator.groups).toEqual(["team-a"]);
 				expect(body.join_requests).toHaveLength(1);
 				expect(body.join_requests[0].request_id).toBe("req-1");
+
+				const second = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(second.status).toBe(200);
+
+				const calls = fetchMock.mock.calls.map(([input]) => String(input));
+				const presenceCalls = calls.filter((url) => url.includes("/v1/presence"));
+				expect(presenceCalls).toHaveLength(1);
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
@@ -1016,6 +1023,68 @@ describe("viewer-server", () => {
 				else process.env.CODEMEM_CONFIG = prevConfig;
 				if (prevEnabled == null) delete process.env.CODEMEM_SYNC_ENABLED;
 				else process.env.CODEMEM_SYNC_ENABLED = prevEnabled;
+			}
+		});
+
+		it("retries coordinator presence immediately after not_enrolled status", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			let presenceCalls = 0;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/presence")) {
+					presenceCalls += 1;
+					if (presenceCalls === 1) {
+						return new Response(JSON.stringify({ error: "unknown_device" }), { status: 401 });
+					}
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://1.2.3.4:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers")) {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+
+				const first = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(first.status).toBe(200);
+				const firstBody = (await first.json()) as Record<string, any>;
+				expect(firstBody.coordinator.presence_status).toBe("not_enrolled");
+
+				const second = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(second.status).toBe(200);
+				const secondBody = (await second.json()) as Record<string, any>;
+				expect(secondBody.coordinator.presence_status).toBe("posted");
+				expect(presenceCalls).toBe(2);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+				delete process.env.CODEMEM_SYNC_ENABLED;
 			}
 		});
 

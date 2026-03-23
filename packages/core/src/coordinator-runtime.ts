@@ -61,6 +61,33 @@ export interface CoordinatorSyncConfig {
 	syncCoordinatorAdminSecret: string;
 }
 
+type PresenceStatus = "posted" | "not_enrolled" | "error";
+
+interface PresenceSnapshot {
+	status: PresenceStatus;
+	error: string | null;
+	advertisedAddresses: unknown;
+	nextRefreshAtMs: number;
+}
+
+const coordinatorPresenceCache = new Map<string, PresenceSnapshot>();
+
+function presenceCacheKey(store: MemoryStore, config: CoordinatorSyncConfig): string {
+	const groups = [...config.syncCoordinatorGroups].sort().join(",");
+	return `${store.dbPath}|${config.syncCoordinatorUrl}|${groups}`;
+}
+
+function presenceRefreshIntervalMs(config: CoordinatorSyncConfig): number {
+	const ttl = Math.max(1, config.syncCoordinatorPresenceTtlS);
+	const halfTtl = Math.floor(ttl / 2);
+	const refreshS = Math.max(5, Math.min(60, halfTtl > 0 ? halfTtl : 1));
+	return refreshS * 1000;
+}
+
+function presenceRetryIntervalMs(): number {
+	return 30_000;
+}
+
 export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyncConfig {
 	const raw = { ...(config ?? readCodememConfigFile()) } as ConfigRecord;
 	const envOverrides = getCodememEnvOverrides();
@@ -256,17 +283,42 @@ export async function coordinatorStatusSnapshot(
 		stale_peer_count: 0,
 		discovered_peer_count: 0,
 	};
-	try {
-		const registration = await registerCoordinatorPresence(store, config);
-		snapshot.presence_status = "posted";
-		const first = registration?.responses?.[0];
-		if (first && typeof first === "object") {
-			snapshot.advertised_addresses = (first as Record<string, unknown>).addresses ?? [];
+	const cacheKey = presenceCacheKey(store, config);
+	const now = Date.now();
+	const cachedPresence = coordinatorPresenceCache.get(cacheKey);
+	if (cachedPresence && now < cachedPresence.nextRefreshAtMs) {
+		snapshot.presence_status = cachedPresence.status;
+		snapshot.presence_error = cachedPresence.error;
+		snapshot.advertised_addresses = cachedPresence.advertisedAddresses;
+	} else {
+		try {
+			const registration = await registerCoordinatorPresence(store, config);
+			const first = registration?.responses?.[0];
+			const advertisedAddresses =
+				first && typeof first === "object"
+					? ((first as Record<string, unknown>).addresses ?? [])
+					: [];
+			snapshot.presence_status = "posted";
+			snapshot.advertised_addresses = advertisedAddresses;
+			coordinatorPresenceCache.set(cacheKey, {
+				status: "posted",
+				error: null,
+				advertisedAddresses,
+				nextRefreshAtMs: now + presenceRefreshIntervalMs(config),
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			const status: PresenceStatus = message.includes("unknown_device") ? "not_enrolled" : "error";
+			const nextRefreshAtMs = status === "not_enrolled" ? now : now + presenceRetryIntervalMs();
+			snapshot.presence_status = status;
+			snapshot.presence_error = message;
+			coordinatorPresenceCache.set(cacheKey, {
+				status,
+				error: message,
+				advertisedAddresses: [],
+				nextRefreshAtMs,
+			});
 		}
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		snapshot.presence_status = message.includes("unknown_device") ? "not_enrolled" : "error";
-		snapshot.presence_error = message;
 	}
 	try {
 		const peers = await lookupCoordinatorPeers(store, config);
