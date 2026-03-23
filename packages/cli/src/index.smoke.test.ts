@@ -37,6 +37,7 @@ describe("cli smoke", () => {
 		expect(result.stdout).toContain("persistent memory for AI coding agents");
 		expect(result.stdout).toContain("serve");
 		expect(result.stdout).toContain("search");
+		expect(result.stdout).toContain("embed");
 	});
 
 	it("prints the current version", () => {

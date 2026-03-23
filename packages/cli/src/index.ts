@@ -16,6 +16,7 @@ import { Command } from "commander";
 import omelette from "omelette";
 import { claudeHookIngestCommand } from "./commands/claude-hook-ingest.js";
 import { dbCommand } from "./commands/db.js";
+import { embedCommand } from "./commands/embed.js";
 import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
 import { exportMemoriesCommand } from "./commands/export-memories.js";
 import { importMemoriesCommand } from "./commands/import-memories.js";
@@ -42,6 +43,7 @@ completion.on("command", ({ reply }) => {
 	reply([
 		"claude-hook-ingest",
 		"db",
+		"embed",
 		"export-memories",
 		"forget",
 		"memory",
@@ -99,6 +101,7 @@ program.addCommand(dbCommand);
 program.addCommand(exportMemoriesCommand);
 program.addCommand(importMemoriesCommand);
 program.addCommand(statsCommand);
+program.addCommand(embedCommand);
 program.addCommand(recentCommand);
 program.addCommand(searchCommand);
 program.addCommand(packCommand);
