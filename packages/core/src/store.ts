@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import {
@@ -80,6 +80,37 @@ function validateMemoryKind(kind: string): string {
 /** ISO 8601 timestamp in UTC. */
 function nowIso(): string {
 	return new Date().toISOString();
+}
+
+function countQuestionPlaceholders(clause: string): number {
+	return (clause.match(/\?/g) ?? []).length;
+}
+
+function sqlFromParameterizedClause(clause: string, params: unknown[]): SQL {
+	const parts = clause.split("?");
+	let acc: SQL = sql.raw(parts[0] ?? "");
+	for (let i = 1; i < parts.length; i++) {
+		acc = sql`${acc}${params[i - 1]}${sql.raw(parts[i] ?? "")}`;
+	}
+	return acc;
+}
+
+function buildWhereSql(clauses: string[], params: unknown[]): SQL {
+	const sqlClauses: SQL[] = [];
+	let cursor = 0;
+	for (const clause of clauses) {
+		const count = countQuestionPlaceholders(clause);
+		const clauseParams = params.slice(cursor, cursor + count);
+		sqlClauses.push(sqlFromParameterizedClause(clause, clauseParams));
+		cursor += count;
+	}
+	if (cursor !== params.length) {
+		throw new Error("filter parameter mismatch while building SQL clauses");
+	}
+	if (sqlClauses.length === 1) return sqlClauses[0] ?? sql`1=1`;
+	const combined = and(...sqlClauses);
+	if (!combined) throw new Error("failed to combine filter SQL clauses");
+	return combined;
 }
 
 /** Trim a string value, returning null for empty/non-string. Matches Python's _clean_optional_str. */
@@ -540,22 +571,20 @@ export class MemoryStore {
 		const baseClauses = ["memory_items.active = 1"];
 		const filterResult = buildFilterClauses(filters);
 		const allClauses = [...baseClauses, ...filterResult.clauses];
-		const where = allClauses.join(" AND ");
+		const whereSql = buildWhereSql(allClauses, filterResult.params);
 
 		// Note: joinSessions is set by the project filter (not yet ported).
 		// Once project filtering lands, it will trigger the sessions JOIN.
-		const from = filterResult.joinSessions
-			? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
-			: "memory_items";
+		const fromSql = filterResult.joinSessions
+			? sql.raw("memory_items JOIN sessions ON sessions.id = memory_items.session_id")
+			: sql.raw("memory_items");
 
-		const rows = this.db
-			.prepare(
-				`SELECT memory_items.* FROM ${from}
-				 WHERE ${where}
-				 ORDER BY created_at DESC
-				 LIMIT ? OFFSET ?`,
-			)
-			.all(...filterResult.params, limit, Math.max(offset, 0)) as MemoryItem[];
+		const rows = this.d.all<MemoryItem>(
+			sql`SELECT memory_items.* FROM ${fromSql}
+				WHERE ${whereSql}
+				ORDER BY created_at DESC
+				LIMIT ${limit} OFFSET ${Math.max(offset, 0)}`,
+		);
 
 		return rows.map((row) => parseMetadata(row));
 	}
@@ -578,22 +607,19 @@ export class MemoryStore {
 		const baseClauses = ["memory_items.active = 1", `memory_items.kind IN (${kindPlaceholders})`];
 		const filterResult = buildFilterClauses(filters);
 		const allClauses = [...baseClauses, ...filterResult.clauses];
-		const where = allClauses.join(" AND ");
+		const params = [...kindsList, ...filterResult.params];
+		const whereSql = buildWhereSql(allClauses, params);
 
-		const from = filterResult.joinSessions
-			? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
-			: "memory_items";
+		const fromSql = filterResult.joinSessions
+			? sql.raw("memory_items JOIN sessions ON sessions.id = memory_items.session_id")
+			: sql.raw("memory_items");
 
-		const params = [...kindsList, ...filterResult.params, limit, Math.max(offset, 0)];
-
-		const rows = this.db
-			.prepare(
-				`SELECT memory_items.* FROM ${from}
-				 WHERE ${where}
-				 ORDER BY created_at DESC
-				 LIMIT ? OFFSET ?`,
-			)
-			.all(...params) as MemoryItem[];
+		const rows = this.d.all<MemoryItem>(
+			sql`SELECT memory_items.* FROM ${fromSql}
+				WHERE ${whereSql}
+				ORDER BY created_at DESC
+				LIMIT ${limit} OFFSET ${Math.max(offset, 0)}`,
+		);
 
 		return rows.map((row) => parseMetadata(row));
 	}
@@ -1861,38 +1887,48 @@ export class MemoryStore {
 		const selectedProject = cleanStr(project);
 		const claimedPeers = this.sameActorPeerIds();
 		const legacyActorIds = this.claimedSameActorLegacyActorIds();
-		const ownershipClauses = ["memory_items.actor_id = ?"];
-		const params: unknown[] = [this.actorId];
+		const ownershipConditions = [eq(schema.memoryItems.actor_id, this.actorId)];
 		if (claimedPeers.length > 0) {
-			ownershipClauses.push(
-				`memory_items.origin_device_id IN (${claimedPeers.map(() => "?").join(", ")})`,
-			);
-			params.push(...claimedPeers);
+			ownershipConditions.push(inArray(schema.memoryItems.origin_device_id, claimedPeers));
 		}
 		if (legacyActorIds.length > 0) {
-			ownershipClauses.push(
-				`memory_items.actor_id IN (${legacyActorIds.map(() => "?").join(", ")})`,
-			);
-			params.push(...legacyActorIds);
+			ownershipConditions.push(inArray(schema.memoryItems.actor_id, legacyActorIds));
 		}
-		const rows = this.db
-			.prepare(
-				`SELECT sync_peers.peer_device_id, sync_peers.name, sync_peers.actor_id,
-				        actors.display_name AS actor_display_name,
-				        sessions.project AS project, memory_items.visibility AS visibility,
-				        COUNT(*) AS total
-				 FROM sync_peers
-				 LEFT JOIN actors ON actors.actor_id = sync_peers.actor_id
-				 JOIN memory_items ON memory_items.active = 1
-				 JOIN sessions ON sessions.id = memory_items.session_id
-				 WHERE sync_peers.actor_id IS NOT NULL
-				   AND TRIM(sync_peers.actor_id) != ''
-				   AND sync_peers.actor_id != ?
-				   AND (${ownershipClauses.join(" OR ")})
-				 GROUP BY sync_peers.peer_device_id, sync_peers.name, sync_peers.actor_id, sessions.project, memory_items.visibility
-				 ORDER BY sync_peers.name, sync_peers.peer_device_id`,
+		const ownershipWhere =
+			ownershipConditions.length === 1 ? ownershipConditions[0] : or(...ownershipConditions);
+		const rows = this.d
+			.select({
+				peer_device_id: schema.syncPeers.peer_device_id,
+				name: schema.syncPeers.name,
+				actor_id: schema.syncPeers.actor_id,
+				actor_display_name: schema.actors.display_name,
+				project: schema.sessions.project,
+				visibility: schema.memoryItems.visibility,
+				total: sql<number>`COUNT(*)`,
+			})
+			.from(schema.syncPeers)
+			.leftJoin(schema.actors, eq(schema.actors.actor_id, schema.syncPeers.actor_id))
+			.innerJoin(schema.memoryItems, sql`1 = 1`)
+			.innerJoin(schema.sessions, eq(schema.sessions.id, schema.memoryItems.session_id))
+			.where(
+				and(
+					eq(schema.memoryItems.active, 1),
+					isNotNull(schema.syncPeers.actor_id),
+					sql`TRIM(${schema.syncPeers.actor_id}) != ''`,
+					sql`${schema.syncPeers.actor_id} != ${this.actorId}`,
+					ownershipWhere,
+				),
 			)
-			.all(this.actorId, ...params) as Array<Record<string, unknown>>;
+			.groupBy(
+				schema.syncPeers.peer_device_id,
+				schema.syncPeers.name,
+				schema.syncPeers.actor_id,
+				schema.actors.display_name,
+				schema.sessions.project,
+				schema.memoryItems.visibility,
+			)
+			.orderBy(schema.syncPeers.name, schema.syncPeers.peer_device_id)
+			.all();
 		const byPeer = new Map<string, Record<string, unknown>>();
 		for (const row of rows) {
 			const peerDeviceId = String(row.peer_device_id ?? "").trim();
