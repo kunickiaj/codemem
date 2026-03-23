@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { assertSchemaReady, connect, type Database, resolveDbPath } from "./db.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
@@ -175,21 +175,32 @@ export function getReliabilityMetrics(
 	windowHours?: number | null,
 ): ReliabilityMetrics {
 	return withDb(dbPath, (db) => {
+		const d = drizzle(db, { schema });
 		const cutoffIso =
 			windowHours != null ? new Date(Date.now() - windowHours * 3600 * 1000).toISOString() : null;
 
 		// Batch counts
-		const batchSql = `
-			SELECT
-				COALESCE(SUM(CASE WHEN status IN ('started', 'pending') THEN 1 ELSE 0 END), 0) AS started,
-				COALESCE(SUM(CASE WHEN status IN ('running', 'claimed') THEN 1 ELSE 0 END), 0) AS running,
-				COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
-				COALESCE(SUM(CASE WHEN status IN ('error', 'failed') THEN 1 ELSE 0 END), 0) AS errored
-			FROM raw_event_flush_batches
-			${cutoffIso ? "WHERE updated_at >= ?" : ""}
-		`;
 		const batchRow = (
-			cutoffIso ? db.prepare(batchSql).get(cutoffIso) : db.prepare(batchSql).get()
+			cutoffIso
+				? d
+						.select({
+							started: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('started', 'pending') THEN 1 ELSE 0 END), 0)`,
+							running: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('running', 'claimed') THEN 1 ELSE 0 END), 0)`,
+							completed: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} = 'completed' THEN 1 ELSE 0 END), 0)`,
+							errored: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('error', 'failed') THEN 1 ELSE 0 END), 0)`,
+						})
+						.from(schema.rawEventFlushBatches)
+						.where(gte(schema.rawEventFlushBatches.updated_at, cutoffIso))
+						.get()
+				: d
+						.select({
+							started: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('started', 'pending') THEN 1 ELSE 0 END), 0)`,
+							running: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('running', 'claimed') THEN 1 ELSE 0 END), 0)`,
+							completed: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} = 'completed' THEN 1 ELSE 0 END), 0)`,
+							errored: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventFlushBatches.status} IN ('error', 'failed') THEN 1 ELSE 0 END), 0)`,
+						})
+						.from(schema.rawEventFlushBatches)
+						.get()
 		) as Record<string, number> | undefined;
 
 		const startedBatches = Number(batchRow?.started ?? 0);
@@ -201,26 +212,59 @@ export function getReliabilityMetrics(
 
 		// Event counts from raw_event_sessions
 		// Sequences are 0-based indexes, so +1 converts to counts.
-		const eventSql = `
-			SELECT
-				COALESCE(SUM(last_received_event_seq + 1), 0) AS total_received,
-				COALESCE(SUM(CASE WHEN last_flushed_event_seq >= 0 THEN last_flushed_event_seq + 1 ELSE 0 END), 0) AS total_flushed
-			FROM raw_event_sessions
-			${cutoffIso ? "WHERE updated_at >= ?" : ""}
-		`;
 		const eventRow = (
-			cutoffIso ? db.prepare(eventSql).get(cutoffIso) : db.prepare(eventSql).get()
+			cutoffIso
+				? d
+						.select({
+							total_received: sql<number>`COALESCE(SUM(${schema.rawEventSessions.last_received_event_seq} + 1), 0)`,
+							total_flushed: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventSessions.last_flushed_event_seq} >= 0 THEN ${schema.rawEventSessions.last_flushed_event_seq} + 1 ELSE 0 END), 0)`,
+						})
+						.from(schema.rawEventSessions)
+						.where(gte(schema.rawEventSessions.updated_at, cutoffIso))
+						.get()
+				: d
+						.select({
+							total_received: sql<number>`COALESCE(SUM(${schema.rawEventSessions.last_received_event_seq} + 1), 0)`,
+							total_flushed: sql<number>`COALESCE(SUM(CASE WHEN ${schema.rawEventSessions.last_flushed_event_seq} >= 0 THEN ${schema.rawEventSessions.last_flushed_event_seq} + 1 ELSE 0 END), 0)`,
+						})
+						.from(schema.rawEventSessions)
+						.get()
 		) as Record<string, number> | undefined;
 
 		// In-flight events: sum of (end_event_seq - start_event_seq + 1) for active batches
-		const inFlightSql = `
-			SELECT COALESCE(SUM(end_event_seq - start_event_seq + 1), 0) AS in_flight
-			FROM raw_event_flush_batches
-			WHERE status IN ('started', 'pending', 'running', 'claimed')
-			${cutoffIso ? "AND updated_at >= ?" : ""}
-		`;
 		const inFlightRow = (
-			cutoffIso ? db.prepare(inFlightSql).get(cutoffIso) : db.prepare(inFlightSql).get()
+			cutoffIso
+				? d
+						.select({
+							in_flight: sql<number>`COALESCE(SUM(${schema.rawEventFlushBatches.end_event_seq} - ${schema.rawEventFlushBatches.start_event_seq} + 1), 0)`,
+						})
+						.from(schema.rawEventFlushBatches)
+						.where(
+							and(
+								inArray(schema.rawEventFlushBatches.status, [
+									"started",
+									"pending",
+									"running",
+									"claimed",
+								]),
+								gte(schema.rawEventFlushBatches.updated_at, cutoffIso),
+							),
+						)
+						.get()
+				: d
+						.select({
+							in_flight: sql<number>`COALESCE(SUM(${schema.rawEventFlushBatches.end_event_seq} - ${schema.rawEventFlushBatches.start_event_seq} + 1), 0)`,
+						})
+						.from(schema.rawEventFlushBatches)
+						.where(
+							inArray(schema.rawEventFlushBatches.status, [
+								"started",
+								"pending",
+								"running",
+								"claimed",
+							]),
+						)
+						.get()
 		) as Record<string, number> | undefined;
 		const inFlightEvents = Number(inFlightRow?.in_flight ?? 0);
 
@@ -233,33 +277,58 @@ export function getReliabilityMetrics(
 		const droppedEventRate = droppedDenom > 0 ? droppedEvents / droppedDenom : 0.0;
 
 		// Session boundary accuracy
-		const boundarySql = `
-			WITH has_events AS (
-				SELECT DISTINCT source, stream_id FROM raw_events
-				${cutoffIso ? "WHERE created_at >= ?" : ""}
+		const hasEvents = (
+			cutoffIso
+				? d
+						.selectDistinct({
+							source: schema.rawEvents.source,
+							stream_id: schema.rawEvents.stream_id,
+						})
+						.from(schema.rawEvents)
+						.where(gte(schema.rawEvents.created_at, cutoffIso))
+				: d
+						.selectDistinct({
+							source: schema.rawEvents.source,
+							stream_id: schema.rawEvents.stream_id,
+						})
+						.from(schema.rawEvents)
+		).as("has_events");
+
+		const boundaryRow = d
+			.select({
+				sessions_with_events: sql<number>`COUNT(1)`,
+				sessions_with_started_at: sql<number>`COALESCE(SUM(CASE WHEN COALESCE(${schema.rawEventSessions.started_at}, '') != '' THEN 1 ELSE 0 END), 0)`,
+			})
+			.from(hasEvents)
+			.leftJoin(
+				schema.rawEventSessions,
+				and(
+					eq(schema.rawEventSessions.source, hasEvents.source),
+					eq(schema.rawEventSessions.stream_id, hasEvents.stream_id),
+				),
 			)
-			SELECT
-				COUNT(1) AS sessions_with_events,
-				COALESCE(SUM(CASE WHEN COALESCE(s.started_at, '') != '' THEN 1 ELSE 0 END), 0) AS sessions_with_started_at
-			FROM has_events e
-			LEFT JOIN raw_event_sessions s ON s.source = e.source AND s.stream_id = e.stream_id
-		`;
-		const boundaryRow = (
-			cutoffIso ? db.prepare(boundarySql).get(cutoffIso) : db.prepare(boundarySql).get()
-		) as Record<string, number> | undefined;
+			.get() as Record<string, number> | undefined;
 
 		const sessionsWithEvents = Number(boundaryRow?.sessions_with_events ?? 0);
 		const sessionsWithStartedAt = Number(boundaryRow?.sessions_with_started_at ?? 0);
 		const sessionBoundaryAccuracy =
 			sessionsWithEvents > 0 ? sessionsWithStartedAt / sessionsWithEvents : 1.0;
 
-		const retryDepthSql = `
-			SELECT COALESCE(MAX(attempt_count), 0) AS retry_depth_max
-			FROM raw_event_flush_batches
-			${cutoffIso ? "WHERE updated_at >= ?" : ""}
-		`;
 		const retryDepthRow = (
-			cutoffIso ? db.prepare(retryDepthSql).get(cutoffIso) : db.prepare(retryDepthSql).get()
+			cutoffIso
+				? d
+						.select({
+							retry_depth_max: sql<number>`COALESCE(MAX(${schema.rawEventFlushBatches.attempt_count}), 0)`,
+						})
+						.from(schema.rawEventFlushBatches)
+						.where(gte(schema.rawEventFlushBatches.updated_at, cutoffIso))
+						.get()
+				: d
+						.select({
+							retry_depth_max: sql<number>`COALESCE(MAX(${schema.rawEventFlushBatches.attempt_count}), 0)`,
+						})
+						.from(schema.rawEventFlushBatches)
+						.get()
 		) as Record<string, number> | undefined;
 		const retryDepthMax = Math.max(0, Number(retryDepthRow?.retry_depth_max ?? 0) - 1);
 
