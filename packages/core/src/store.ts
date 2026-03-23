@@ -1749,23 +1749,43 @@ export class MemoryStore {
 	}
 
 	claimableLegacyDeviceIds(): Record<string, unknown>[] {
-		const rows = this.db
-			.prepare(
-				`SELECT origin_device_id, COUNT(*) AS memory_count, MAX(created_at) AS last_seen_at
-				 FROM memory_items
-				 WHERE origin_device_id IS NOT NULL
-				   AND origin_device_id != ''
-				   AND origin_device_id != 'unknown'
-				   AND ((actor_id IS NULL OR TRIM(actor_id) = '' OR actor_id LIKE 'legacy-sync:%')
-				     AND (actor_id IS NULL OR TRIM(actor_id) = '' OR actor_id LIKE 'legacy-sync:%' OR actor_display_name = ? OR workspace_id = ? OR trust_state = 'legacy_unknown'))
-				   AND origin_device_id != ?
-				   AND origin_device_id NOT IN (SELECT peer_device_id FROM sync_peers WHERE peer_device_id IS NOT NULL)
-				 GROUP BY origin_device_id
-				 ORDER BY last_seen_at DESC, origin_device_id ASC`,
+		const rows = this.d
+			.select({
+				origin_device_id: schema.memoryItems.origin_device_id,
+				memory_count: sql<number>`COUNT(*)`,
+				last_seen_at: sql<string | null>`MAX(${schema.memoryItems.created_at})`,
+			})
+			.from(schema.memoryItems)
+			.where(
+				and(
+					isNotNull(schema.memoryItems.origin_device_id),
+					sql`TRIM(${schema.memoryItems.origin_device_id}) != ''`,
+					sql`${schema.memoryItems.origin_device_id} != 'unknown'`,
+					sql`(
+						(${schema.memoryItems.actor_id} IS NULL OR TRIM(${schema.memoryItems.actor_id}) = '' OR ${schema.memoryItems.actor_id} LIKE 'legacy-sync:%')
+						AND (
+							${schema.memoryItems.actor_id} IS NULL
+							OR TRIM(${schema.memoryItems.actor_id}) = ''
+							OR ${schema.memoryItems.actor_id} LIKE 'legacy-sync:%'
+							OR ${schema.memoryItems.actor_display_name} = ${LEGACY_SYNC_ACTOR_DISPLAY_NAME}
+							OR ${schema.memoryItems.workspace_id} = ${LEGACY_SHARED_WORKSPACE_ID}
+							OR ${schema.memoryItems.trust_state} = 'legacy_unknown'
+						)
+					)`,
+					sql`${schema.memoryItems.origin_device_id} != ${this.deviceId}`,
+					sql`${schema.memoryItems.origin_device_id} NOT IN (
+						SELECT ${schema.syncPeers.peer_device_id}
+						FROM ${schema.syncPeers}
+						WHERE ${schema.syncPeers.peer_device_id} IS NOT NULL
+					)`,
+				),
 			)
-			.all(LEGACY_SYNC_ACTOR_DISPLAY_NAME, LEGACY_SHARED_WORKSPACE_ID, this.deviceId) as Array<
-			Record<string, unknown>
-		>;
+			.groupBy(schema.memoryItems.origin_device_id)
+			.orderBy(
+				desc(sql`MAX(${schema.memoryItems.created_at})`),
+				schema.memoryItems.origin_device_id,
+			)
+			.all();
 		return rows
 			.filter((row) => cleanStr(row.origin_device_id))
 			.map((row) => ({
