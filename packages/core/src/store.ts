@@ -23,6 +23,7 @@ import {
 	connect,
 	DEFAULT_DB_PATH,
 	fromJson,
+	isEmbeddingDisabled,
 	loadSqliteVec,
 	resolveDbPath,
 	tableExists,
@@ -646,9 +647,13 @@ export class MemoryStore {
 		const rawEvents = countRows(schema.rawEvents);
 
 		let vectorCount = 0;
-		if (tableExists(this.db, "memory_vectors")) {
-			const row = this.d.get<{ c: number | null }>(sql`SELECT COUNT(*) AS c FROM memory_vectors`);
-			vectorCount = row?.c ?? 0;
+		if (!isEmbeddingDisabled() && tableExists(this.db, "memory_vectors")) {
+			try {
+				const row = this.d.get<{ c: number | null }>(sql`SELECT COUNT(*) AS c FROM memory_vectors`);
+				vectorCount = row?.c ?? 0;
+			} catch {
+				vectorCount = 0;
+			}
 		}
 		const vectorCoverage = activeMemories > 0 ? Math.min(1, vectorCount / activeMemories) : 0;
 
