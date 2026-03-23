@@ -16,6 +16,7 @@ import {
 	MemoryStore,
 	projectClause,
 	resolveDbPath,
+	storeVectors,
 	toJson,
 	VERSION,
 } from "@codemem/core";
@@ -505,10 +506,16 @@ async function main() {
 						.prepare("UPDATE sessions SET ended_at = ?, metadata_json = ? WHERE id = ?")
 						.run(nowIso(), toJson({ mcp: true }), sessionId);
 
-					return memId;
+					return { memId, title: args.title, body: args.body };
 				})();
 
-				return jsonContent({ id: result });
+				try {
+					await storeVectors(store.db, result.memId, result.title, result.body);
+				} catch {
+					// Non-fatal — memory writes should succeed even if embeddings are unavailable
+				}
+
+				return jsonContent({ id: result.memId });
 			} catch (err) {
 				return errorContent(err instanceof Error ? err.message : String(err));
 			}
