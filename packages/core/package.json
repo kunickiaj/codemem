@@ -16,7 +16,8 @@
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
-		"typecheck": "pnpm exec tsc --noEmit"
+		"typecheck": "pnpm exec tsc --noEmit",
+		"generate:test-schema": "pnpm exec tsx scripts/generate-test-schema.ts"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",

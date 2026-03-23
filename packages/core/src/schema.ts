@@ -35,7 +35,7 @@ export const artifacts = sqliteTable(
 		id: integer("id").primaryKey(),
 		session_id: integer("session_id")
 			.notNull()
-			.references(() => sessions.id),
+			.references(() => sessions.id, { onDelete: "cascade" }),
 		kind: text("kind").notNull(),
 		path: text("path"),
 		content_text: text("content_text"),
@@ -55,7 +55,7 @@ export const memoryItems = sqliteTable(
 		id: integer("id").primaryKey(),
 		session_id: integer("session_id")
 			.notNull()
-			.references(() => sessions.id),
+			.references(() => sessions.id, { onDelete: "cascade" }),
 		kind: text("kind").notNull(),
 		title: text("title").notNull(),
 		subtitle: text("subtitle"),
