@@ -37,8 +37,13 @@ import { syncCommand } from "./commands/sync.js";
 import { versionCommand } from "./commands/version.js";
 import { helpStyle } from "./help-style.js";
 
+type CompletionWithScriptGenerators = ReturnType<typeof omelette> & {
+	generateCompletionCode: () => string;
+	generateCompletionCodeFish: () => string;
+};
+
 // Shell completion (bash/zsh/fish)
-const completion = omelette("codemem <command>");
+const completion = omelette("codemem <command>") as CompletionWithScriptGenerators;
 completion.on("command", ({ reply }) => {
 	reply([
 		"claude-hook-ingest",
@@ -76,16 +81,31 @@ function hasRootFlag(flag: string): boolean {
 	return false;
 }
 
+function getShellCompletionScript(): string {
+	const shellPath = process.env.SHELL ?? "";
+	if (shellPath.includes("fish")) {
+		return completion.generateCompletionCodeFish();
+	}
+	return completion.generateCompletionCode();
+}
+
 const program = new Command();
 
 program
 	.name("codemem")
 	.description("codemem — persistent memory for AI coding agents")
+	.option("--install-completion", "install shell completion")
+	.option("--show-completion", "show shell completion install guidance")
 	.version(VERSION)
 	.configureHelp(helpStyle);
 
-if (hasRootFlag("--setup-completion")) {
+if (hasRootFlag("--setup-completion") || hasRootFlag("--install-completion")) {
 	completion.setupShellInitFile();
+	process.exit(0);
+}
+
+if (hasRootFlag("--show-completion")) {
+	console.log(getShellCompletionScript());
 	process.exit(0);
 }
 
