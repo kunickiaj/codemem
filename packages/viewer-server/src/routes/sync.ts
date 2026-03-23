@@ -526,6 +526,7 @@ export function syncRoutes(getStore: StoreFactory) {
 		const store = getStore();
 		{
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
+			const includeJoinRequests = queryBool(c.req.query("includeJoinRequests"));
 			const project = c.req.query("project") || null;
 			const config = readCoordinatorSyncConfig();
 
@@ -646,10 +647,12 @@ export function syncRoutes(getStore: StoreFactory) {
 			const sharingReview = store.sharingReviewSummary(project);
 			const coordinator = await coordinatorStatusSnapshot(store, config);
 			let joinRequests: Record<string, unknown>[] = [];
-			try {
-				joinRequests = await listCoordinatorJoinRequests(config);
-			} catch {
-				joinRequests = [];
+			if (includeJoinRequests && config.syncCoordinatorAdminSecret) {
+				try {
+					joinRequests = await listCoordinatorJoinRequests(config);
+				} catch {
+					joinRequests = [];
+				}
 			}
 
 			if (daemonStateValue === "ok") {
@@ -685,7 +688,7 @@ export function syncRoutes(getStore: StoreFactory) {
 				statusBlock.daemon_state = daemonStateValue;
 			}
 
-			return c.json({
+			const responsePayload: Record<string, unknown> = {
 				...statusPayload,
 				status: statusBlock,
 				peers: peersItems,
@@ -693,8 +696,11 @@ export function syncRoutes(getStore: StoreFactory) {
 				legacy_devices: legacyDevices,
 				sharing_review: sharingReview,
 				coordinator,
-				join_requests: joinRequests,
-			});
+			};
+			if (includeJoinRequests) {
+				responsePayload.join_requests = joinRequests;
+			}
+			return c.json(responsePayload);
 		}
 	});
 

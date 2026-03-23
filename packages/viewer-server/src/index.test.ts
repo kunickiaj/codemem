@@ -974,7 +974,9 @@ describe("viewer-server", () => {
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
 				ensureDeviceIdentity(store.db, { keysDir });
-				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				const res = await app.request(
+					"/api/sync/status?includeDiagnostics=1&includeJoinRequests=1",
+				);
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, any>;
 				expect(body.enabled).toBe(true);
@@ -987,12 +989,73 @@ describe("viewer-server", () => {
 				expect(body.join_requests).toHaveLength(1);
 				expect(body.join_requests[0].request_id).toBe("req-1");
 
-				const second = await app.request("/api/sync/status?includeDiagnostics=1");
+				const second = await app.request(
+					"/api/sync/status?includeDiagnostics=1&includeJoinRequests=1",
+				);
 				expect(second.status).toBe(200);
 
 				const calls = fetchMock.mock.calls.map(([input]) => String(input));
 				const presenceCalls = calls.filter((url) => url.includes("/v1/presence"));
 				expect(presenceCalls).toHaveLength(1);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+				delete process.env.CODEMEM_SYNC_ENABLED;
+			}
+		});
+
+		it("skips coordinator join request lookup unless includeJoinRequests=1", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://1.2.3.4:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers")) {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				if (url.includes("/v1/admin/join-requests")) {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).not.toHaveProperty("join_requests");
+
+				const calls = fetchMock.mock.calls.map(([input]) => String(input));
+				const joinRequestCalls = calls.filter((url) => url.includes("/v1/admin/join-requests"));
+				expect(joinRequestCalls).toHaveLength(0);
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
