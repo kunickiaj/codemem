@@ -16,7 +16,7 @@
 
 import type { Database } from "./db.js";
 import type { StoreHandle } from "./search.js";
-import { search } from "./search.js";
+import { rerankResults, search } from "./search.js";
 import type { MemoryFilters, MemoryResult, PackItem, PackResponse } from "./types.js";
 import { semanticSearch } from "./vectors.js";
 
@@ -187,9 +187,11 @@ function countOverlap(tags: string, tokens: Set<string>): number {
  * Matches Python's always-merge behavior when semantic results are available.
  */
 function mergeResults(
+	store: StoreHandle,
 	ftsResults: MemoryResult[],
 	semanticResults: MemoryResult[],
 	limit: number,
+	filters?: MemoryFilters,
 ): { merged: MemoryResult[]; ftsCount: number; semanticCount: number } {
 	const seen = new Map<number, MemoryResult>();
 	for (const r of ftsResults) {
@@ -202,8 +204,7 @@ function mergeResults(
 		const existing = seen.get(r.id);
 		if (!existing || r.score > existing.score) seen.set(r.id, r);
 	}
-	// Sort by score descending, then truncate to limit
-	const merged = [...seen.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+	const merged = rerankResults(store, [...seen.values()], limit, filters);
 	return { merged, ftsCount: ftsResults.length, semanticCount };
 }
 
@@ -226,7 +227,7 @@ export function buildMemoryPack(
 	// Step 1b: merge semantic candidates when provided
 	let results: MemoryResult[];
 	if (semanticResults && semanticResults.length > 0) {
-		const merge = mergeResults(ftsResults, semanticResults, effectiveLimit);
+		const merge = mergeResults(store, ftsResults, semanticResults, effectiveLimit, filters);
 		results = merge.merged;
 		ftsCount = merge.ftsCount;
 		semanticCount = merge.semanticCount;

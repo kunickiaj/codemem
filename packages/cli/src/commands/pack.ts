@@ -26,7 +26,7 @@ export const packCommand = new Command("pack")
 	.option("--all-projects", "search across all projects")
 	.option("--json", "output as JSON")
 	.action(
-		(
+		async (
 			context: string,
 			opts: {
 				db?: string;
@@ -54,7 +54,7 @@ export const packCommand = new Command("pack")
 				if ((opts.workingSetFile?.length ?? 0) > 0) {
 					filters.working_set_paths = opts.workingSetFile;
 				}
-				const result = store.buildMemoryPack(context, limit, budget, filters);
+				const result = await store.buildMemoryPackAsync(context, limit, budget, filters);
 
 				if (opts.json) {
 					console.log(JSON.stringify(result, null, 2));

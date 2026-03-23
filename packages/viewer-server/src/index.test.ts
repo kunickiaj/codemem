@@ -388,6 +388,44 @@ describe("viewer-server", () => {
 		});
 	});
 
+	describe("GET /api/pack", () => {
+		it("uses async pack builder path", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const expected = {
+					context: "semantic context",
+					items: [],
+					item_ids: [],
+					pack_text: "",
+					metrics: {
+						total_items: 0,
+						pack_tokens: 0,
+						fallback_used: true,
+						sources: { fts: 0, semantic: 0, fuzzy: 0 },
+					},
+				};
+
+				const asyncSpy = vi.spyOn(store, "buildMemoryPackAsync").mockResolvedValue(expected);
+				const syncSpy = vi.spyOn(store, "buildMemoryPack").mockImplementation(() => {
+					throw new Error("sync pack builder should not be called");
+				});
+
+				const res = await app.request("/api/pack?context=semantic%20context");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toEqual(expected);
+				expect(asyncSpy).toHaveBeenCalledTimes(1);
+				expect(syncSpy).not.toHaveBeenCalled();
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
 	describe("GET /api/observer-status", () => {
 		it("returns live observer status and suppresses stale failures after success", async () => {
 			const { store, cleanup } = createTestStore();

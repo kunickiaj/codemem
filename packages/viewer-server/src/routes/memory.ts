@@ -323,7 +323,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 	});
 
 	// GET /api/pack
-	app.get("/api/pack", (c) => {
+	app.get("/api/pack", async (c) => {
 		const store = getStore();
 		{
 			const context = c.req.query("context") || "";
@@ -340,9 +340,9 @@ export function memoryRoutes(getStore: StoreFactory) {
 				}
 			}
 			const project = c.req.query("project") || undefined;
-			const filters: Record<string, unknown> = {};
+			const filters: { project?: string } = {};
 			if (project) filters.project = project;
-			const pack = store.buildMemoryPack(context, limit, tokenBudget ?? null, filters);
+			const pack = await store.buildMemoryPackAsync(context, limit, tokenBudget ?? null, filters);
 			return c.json(pack);
 		}
 	});
