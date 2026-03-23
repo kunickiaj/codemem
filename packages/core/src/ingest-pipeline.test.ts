@@ -602,6 +602,40 @@ describe("ingest() integration", () => {
 		expect(session.ended_at).not.toBeNull();
 	});
 
+	it("throws during direct raw-event flush when observer yields no storable memories", async () => {
+		const lowSignalObserver = {
+			observe: async () => ({
+				raw: '<skip_summary reason="low-signal"/>',
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-low-signal",
+				promptCount: 1,
+				toolCount: 1,
+				durationMs: 1000,
+				flusher: "raw_events",
+			},
+		});
+
+		await expect(
+			ingest(payload, store, { observer: lowSignalObserver } as unknown as IngestOptions),
+		).rejects.toThrow("observer produced no storable output for raw-event flush");
+
+		expect(store.recent(10)).toHaveLength(0);
+	});
+
 	it("skips trivial requests", async () => {
 		let observerCalled = false;
 		const trackingObserver = {

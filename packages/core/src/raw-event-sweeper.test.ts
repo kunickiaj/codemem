@@ -224,4 +224,33 @@ describe("RawEventSweeper auto flush", () => {
 
 		expect(store.rawEventFlushState("sess-auto")).toBe(1);
 	});
+
+	it("advances flush cursor when observer output has no storable memories", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		seedSession("sess-low-signal");
+
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => ({
+					raw: '<skip_summary reason="low-signal"/>',
+					parsed: null,
+					provider: "test",
+					model: "test",
+				}),
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		sweeper.nudge("sess-low-signal");
+		await sleep(150);
+
+		expect(store.rawEventFlushState("sess-low-signal")).toBe(1);
+		expect(store.latestRawEventFlushFailure("opencode")).toBeNull();
+	});
 });

@@ -286,6 +286,7 @@ export class RawEventSweeper {
 				project: null,
 				startedAt: null,
 				maxEvents: null,
+				allowEmptyFlush: true,
 			});
 		} catch (exc) {
 			if (exc instanceof ObserverAuthError) {
@@ -411,6 +412,7 @@ export class RawEventSweeper {
 					project: null,
 					startedAt: null,
 					maxEvents,
+					allowEmptyFlush: true,
 				});
 				drained.add(`${source}:${streamId}`);
 			} catch (exc) {
@@ -445,6 +447,7 @@ export class RawEventSweeper {
 					project: null,
 					startedAt: null,
 					maxEvents,
+					allowEmptyFlush: true,
 				});
 			} catch (exc) {
 				if (exc instanceof ObserverAuthError) {

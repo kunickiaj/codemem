@@ -328,91 +328,100 @@ export async function ingest(
 		const rawText = response.raw;
 		const parsed = parseObserverResponse(rawText);
 
+		const observationsToStore: typeof parsed.observations = [];
+		if (storeTyped && hasMeaningfulObservation(parsed.observations)) {
+			for (const obs of parsed.observations) {
+				const kind = obs.kind.trim().toLowerCase();
+				if (!ALLOWED_KINDS.has(kind)) continue;
+				if (!obs.title && !obs.narrative) continue;
+				if (isLowSignalObservation(obs.title) || isLowSignalObservation(obs.narrative)) {
+					continue;
+				}
+
+				obs.filesRead = normalizePaths(obs.filesRead, cwd);
+				obs.filesModified = normalizePaths(obs.filesModified, cwd);
+				observationsToStore.push(obs);
+			}
+		}
+
+		let summaryToStore: { summary: ParsedSummary; request: string; body: string } | null = null;
+		if (storeSummary && parsed.summary && !parsed.skipSummaryReason) {
+			const summary = parsed.summary;
+			if (
+				summary.request ||
+				summary.investigated ||
+				summary.learned ||
+				summary.completed ||
+				summary.nextSteps ||
+				summary.notes
+			) {
+				summary.filesRead = normalizePaths(summary.filesRead, cwd);
+				summary.filesModified = normalizePaths(summary.filesModified, cwd);
+
+				let request = summary.request;
+				if (isTrivialRequest(request)) {
+					const derived = deriveRequest(summary);
+					if (derived) request = derived;
+				}
+
+				const body = summaryBody(summary);
+				if (body && !isLowSignalObservation(firstSentence(body))) {
+					summaryToStore = { summary, request, body };
+				}
+			}
+		}
+
+		if (sessionContext?.flusher === "raw_events") {
+			const storableCount = observationsToStore.length + (summaryToStore ? 1 : 0);
+			if (storableCount === 0) {
+				throw new Error("observer produced no storable output for raw-event flush");
+			}
+		}
+
 		// Persist all observations, summary, and usage atomically
 		store.db.transaction(() => {
 			// ------------------------------------------------------------------
 			// Filter and persist observations
 			// ------------------------------------------------------------------
-			if (storeTyped && hasMeaningfulObservation(parsed.observations)) {
-				for (const obs of parsed.observations) {
-					const kind = obs.kind.trim().toLowerCase();
-					if (!ALLOWED_KINDS.has(kind)) continue;
-					if (!obs.title && !obs.narrative) continue;
-					if (isLowSignalObservation(obs.title) || isLowSignalObservation(obs.narrative)) {
-						continue;
-					}
+			for (const obs of observationsToStore) {
+				const kind = obs.kind.trim().toLowerCase();
 
-					const filesRead = normalizePaths(obs.filesRead, cwd);
-					const filesModified = normalizePaths(obs.filesModified, cwd);
-
-					// Build body text from narrative
-					const bodyParts: string[] = [];
-					if (obs.narrative) bodyParts.push(obs.narrative);
-					if (obs.facts.length > 0) {
-						bodyParts.push(obs.facts.map((f) => `- ${f}`).join("\n"));
-					}
-					const bodyText = bodyParts.join("\n\n");
-
-					store.remember(sessionId, kind, obs.title || obs.narrative, bodyText, 0.5, undefined, {
-						subtitle: obs.subtitle,
-						facts: obs.facts,
-						concepts: obs.concepts,
-						files_read: filesRead,
-						files_modified: filesModified,
-						prompt_number: promptNumber,
-						source: "observer",
-					});
+				const bodyParts: string[] = [];
+				if (obs.narrative) bodyParts.push(obs.narrative);
+				if (obs.facts.length > 0) {
+					bodyParts.push(obs.facts.map((f) => `- ${f}`).join("\n"));
 				}
+				const bodyText = bodyParts.join("\n\n");
+
+				store.remember(sessionId, kind, obs.title || obs.narrative, bodyText, 0.5, undefined, {
+					subtitle: obs.subtitle,
+					facts: obs.facts,
+					concepts: obs.concepts,
+					files_read: obs.filesRead,
+					files_modified: obs.filesModified,
+					prompt_number: promptNumber,
+					source: "observer",
+				});
 			}
 
 			// ------------------------------------------------------------------
 			// Persist session summary
 			// ------------------------------------------------------------------
-			if (storeSummary && parsed.summary && !parsed.skipSummaryReason) {
-				const summary = parsed.summary;
-				if (
-					summary.request ||
-					summary.investigated ||
-					summary.learned ||
-					summary.completed ||
-					summary.nextSteps ||
-					summary.notes
-				) {
-					summary.filesRead = normalizePaths(summary.filesRead, cwd);
-					summary.filesModified = normalizePaths(summary.filesModified, cwd);
-
-					// Derive meaningful request if trivial
-					let request = summary.request;
-					if (isTrivialRequest(request)) {
-						const derived = deriveRequest(summary);
-						if (derived) request = derived;
-					}
-
-					const body = summaryBody(summary);
-					if (body && !isLowSignalObservation(firstSentence(body))) {
-						store.remember(
-							sessionId,
-							"change",
-							request || "Session summary",
-							body,
-							0.3,
-							undefined,
-							{
-								is_summary: true,
-								request,
-								investigated: summary.investigated,
-								learned: summary.learned,
-								completed: summary.completed,
-								next_steps: summary.nextSteps,
-								notes: summary.notes,
-								prompt_number: promptNumber,
-								files_read: summary.filesRead,
-								files_modified: summary.filesModified,
-								source: "observer_summary",
-							},
-						);
-					}
-				}
+			if (summaryToStore) {
+				const { summary, request, body } = summaryToStore;
+				store.remember(sessionId, "change", request || "Session summary", body, 0.3, undefined, {
+					is_summary: true,
+					request,
+					investigated: summary.investigated,
+					learned: summary.learned,
+					completed: summary.completed,
+					next_steps: summary.nextSteps,
+					notes: summary.notes,
+					prompt_number: promptNumber,
+					files_read: summary.filesRead,
+					files_modified: summary.filesModified,
+					source: "observer_summary",
+				});
 			}
 
 			// ------------------------------------------------------------------
@@ -431,8 +440,8 @@ export async function ingest(
 					created_at: new Date().toISOString(),
 					metadata_json: toJson({
 						project,
-						observation_count: parsed.observations.length,
-						has_summary: parsed.summary != null,
+						observation_count: observationsToStore.length,
+						has_summary: summaryToStore != null,
 						provider: response.provider,
 						model: response.model,
 						session_usage_tokens: usageTokenTotal,
