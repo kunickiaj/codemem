@@ -11,7 +11,8 @@
     "format": "pnpm exec biome check --write packages/",
     "typecheck": "pnpm exec tsc --build",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
-    "codemem": "tsx --conditions source packages/cli/src/index.ts"
+    "codemem": "tsx --conditions source packages/cli/src/index.ts",
+    "release:preflight-tag": "bash scripts/release-tag-preflight.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.6",

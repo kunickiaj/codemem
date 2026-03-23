@@ -9,8 +9,23 @@ permissions:
   contents: write
 
 jobs:
+  preflight-tag:
+    name: Release Tag Preflight
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag points at merged main HEAD
+        env:
+          RELEASE_TAG_COMMIT: ${{ github.sha }}
+        run: bash scripts/release-tag-preflight.sh
+
   ci:
     name: CI
+    needs: preflight-tag
     uses: ./.github/workflows/ci.yml
 
   publish-npm:
