@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import { assertSchemaReady, connect, type Database, resolveDbPath } from "./db.js";
+import { projectClause } from "./project.js";
 
 export interface RawEventStatusItem {
 	source: string;
@@ -332,4 +333,197 @@ export function retryRawEventFailures(dbPath?: string, limit = 25): { retried: n
 
 		return { retried: result.changes };
 	});
+}
+
+export interface BackfillTagsTextOptions {
+	limit?: number | null;
+	since?: string | null;
+	project?: string | null;
+	activeOnly?: boolean;
+	dryRun?: boolean;
+	memoryIds?: number[] | null;
+}
+
+export interface BackfillTagsTextResult {
+	checked: number;
+	updated: number;
+	skipped: number;
+}
+
+function normalizeTag(value: string): string {
+	let normalized = value.trim().toLowerCase();
+	if (!normalized) return "";
+	normalized = normalized.replace(/[^a-z0-9_]+/g, "-");
+	normalized = normalized.replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+	if (!normalized) return "";
+	if (normalized.length > 40) normalized = normalized.slice(0, 40).replace(/-+$/g, "");
+	return normalized;
+}
+
+function fileTags(pathValue: string): string[] {
+	const raw = pathValue.trim();
+	if (!raw) return [];
+	const parts = raw.split(/[\\/]+/).filter((part) => part && part !== "." && part !== "..");
+	if (parts.length === 0) return [];
+	const tags: string[] = [];
+	const basename = normalizeTag(parts[parts.length - 1] ?? "");
+	if (basename) tags.push(basename);
+	if (parts.length >= 2) {
+		const parent = normalizeTag(parts[parts.length - 2] ?? "");
+		if (parent) tags.push(parent);
+	}
+	if (parts.length >= 3) {
+		const top = normalizeTag(parts[0] ?? "");
+		if (top) tags.push(top);
+	}
+	return tags;
+}
+
+function parseJsonStringList(value: string | null): string[] {
+	if (!value) return [];
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (!Array.isArray(parsed)) return [];
+		return parsed
+			.map((item) => (typeof item === "string" ? item.trim() : ""))
+			.filter((item) => item.length > 0);
+	} catch {
+		return [];
+	}
+}
+
+function deriveTags(input: {
+	kind: string;
+	title: string;
+	concepts: string[];
+	filesRead: string[];
+	filesModified: string[];
+}): string[] {
+	const tags: string[] = [];
+	const kindTag = normalizeTag(input.kind);
+	if (kindTag) tags.push(kindTag);
+
+	for (const concept of input.concepts) {
+		const tag = normalizeTag(concept);
+		if (tag) tags.push(tag);
+	}
+
+	for (const filePath of [...input.filesRead, ...input.filesModified]) {
+		tags.push(...fileTags(filePath));
+	}
+
+	if (tags.length === 0 && input.title.trim()) {
+		const tokens = input.title.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
+		for (const token of tokens) {
+			const tag = normalizeTag(token);
+			if (tag) tags.push(tag);
+		}
+	}
+
+	const deduped: string[] = [];
+	const seen = new Set<string>();
+	for (const tag of tags) {
+		if (seen.has(tag)) continue;
+		seen.add(tag);
+		deduped.push(tag);
+		if (deduped.length >= 20) break;
+	}
+	return deduped;
+}
+
+/**
+ * Populate memory_items.tags_text for rows where it is empty.
+ * Port of Python's backfill_tags_text() maintenance helper.
+ */
+export function backfillTagsText(
+	db: Database,
+	opts: BackfillTagsTextOptions = {},
+): BackfillTagsTextResult {
+	const { limit, since, project, activeOnly = true, dryRun = false, memoryIds } = opts;
+
+	const params: unknown[] = [];
+	const whereClauses = ["(memory_items.tags_text IS NULL OR TRIM(memory_items.tags_text) = '')"];
+
+	if (activeOnly) whereClauses.push("memory_items.active = 1");
+	if (since) {
+		whereClauses.push("memory_items.created_at >= ?");
+		params.push(since);
+	}
+
+	let joinSessions = false;
+	if (project) {
+		const pc = projectClause(project);
+		if (pc.clause) {
+			whereClauses.push(pc.clause);
+			params.push(...pc.params);
+			joinSessions = true;
+		}
+	}
+
+	if (memoryIds && memoryIds.length > 0) {
+		const placeholders = memoryIds.map(() => "?").join(",");
+		whereClauses.push(`memory_items.id IN (${placeholders})`);
+		params.push(...memoryIds.map((id) => Number(id)));
+	}
+
+	const where = whereClauses.join(" AND ");
+	const joinClause = joinSessions ? "JOIN sessions ON sessions.id = memory_items.session_id" : "";
+	const limitClause = limit != null && limit > 0 ? "LIMIT ?" : "";
+	if (limit != null && limit > 0) params.push(limit);
+
+	const rows = db
+		.prepare(
+			`SELECT memory_items.id, memory_items.kind, memory_items.title,
+			        memory_items.concepts, memory_items.files_read, memory_items.files_modified
+			 FROM memory_items
+			 ${joinClause}
+			 WHERE ${where}
+			 ORDER BY memory_items.created_at ASC
+			 ${limitClause}`,
+		)
+		.all(...params) as Array<{
+		id: number;
+		kind: string | null;
+		title: string | null;
+		concepts: string | null;
+		files_read: string | null;
+		files_modified: string | null;
+	}>;
+
+	let checked = 0;
+	let updated = 0;
+	let skipped = 0;
+	const now = new Date().toISOString();
+	const updateStmt = db.prepare(
+		"UPDATE memory_items SET tags_text = ?, updated_at = ? WHERE id = ?",
+	);
+	const updates: Array<{ id: number; tagsText: string }> = [];
+
+	for (const row of rows) {
+		checked += 1;
+		const tags = deriveTags({
+			kind: String(row.kind ?? ""),
+			title: String(row.title ?? ""),
+			concepts: parseJsonStringList(row.concepts),
+			filesRead: parseJsonStringList(row.files_read),
+			filesModified: parseJsonStringList(row.files_modified),
+		});
+		const tagsText = tags.join(" ");
+		if (!tagsText) {
+			skipped += 1;
+			continue;
+		}
+		updates.push({ id: row.id, tagsText });
+		updated += 1;
+	}
+
+	if (!dryRun && updates.length > 0) {
+		db.transaction(() => {
+			for (const update of updates) {
+				updateStmt.run(update.tagsText, now, update.id);
+			}
+		})();
+	}
+
+	return { checked, updated, skipped };
 }
