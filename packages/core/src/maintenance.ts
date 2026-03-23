@@ -1,7 +1,10 @@
 import { statSync } from "node:fs";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { assertSchemaReady, connect, type Database, resolveDbPath } from "./db.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
 import { projectClause } from "./project.js";
+import * as schema from "./schema.js";
 
 export interface RawEventStatusItem {
 	source: string;
@@ -52,23 +55,42 @@ export function vacuumDatabase(dbPath?: string): { path: string; sizeBytes: numb
 
 export function getRawEventStatus(dbPath?: string, limit = 25): RawEventStatusResult {
 	return withDb(dbPath, (db) => {
-		const rows = db
-			.prepare(
-				`WITH max_events AS (
-					SELECT source, stream_id, MAX(event_seq) AS max_seq
-					FROM raw_events
-					GROUP BY source, stream_id
-				)
-				SELECT s.source, s.stream_id, s.opencode_session_id, s.cwd, s.project,
-					s.started_at, s.last_seen_ts_wall_ms,
-					s.last_received_event_seq, s.last_flushed_event_seq, s.updated_at
-				FROM raw_event_sessions s
-				JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
-				WHERE e.max_seq > s.last_flushed_event_seq
-				ORDER BY s.updated_at DESC
-				 LIMIT ?`,
+		const d = drizzle(db, { schema });
+		const maxEvents = d
+			.select({
+				source: schema.rawEvents.source,
+				stream_id: schema.rawEvents.stream_id,
+				max_seq: sql<number>`MAX(${schema.rawEvents.event_seq})`.as("max_seq"),
+			})
+			.from(schema.rawEvents)
+			.groupBy(schema.rawEvents.source, schema.rawEvents.stream_id)
+			.as("max_events");
+
+		const rows = d
+			.select({
+				source: schema.rawEventSessions.source,
+				stream_id: schema.rawEventSessions.stream_id,
+				opencode_session_id: schema.rawEventSessions.opencode_session_id,
+				cwd: schema.rawEventSessions.cwd,
+				project: schema.rawEventSessions.project,
+				started_at: schema.rawEventSessions.started_at,
+				last_seen_ts_wall_ms: schema.rawEventSessions.last_seen_ts_wall_ms,
+				last_received_event_seq: schema.rawEventSessions.last_received_event_seq,
+				last_flushed_event_seq: schema.rawEventSessions.last_flushed_event_seq,
+				updated_at: schema.rawEventSessions.updated_at,
+			})
+			.from(schema.rawEventSessions)
+			.innerJoin(
+				maxEvents,
+				and(
+					eq(maxEvents.source, schema.rawEventSessions.source),
+					eq(maxEvents.stream_id, schema.rawEventSessions.stream_id),
+				),
 			)
-			.all(limit) as Array<Record<string, unknown>>;
+			.where(gt(maxEvents.max_seq, schema.rawEventSessions.last_flushed_event_seq))
+			.orderBy(sql`${schema.rawEventSessions.updated_at} DESC`)
+			.limit(limit)
+			.all();
 
 		const items = rows.map((row) => {
 			const streamId = String(row.stream_id ?? row.opencode_session_id ?? "");
@@ -90,21 +112,23 @@ export function getRawEventStatus(dbPath?: string, limit = 25): RawEventStatusRe
 			};
 		});
 
-		const totalsRow = db
-			.prepare(
-				`WITH max_events AS (
-					SELECT source, stream_id, MAX(event_seq) AS max_seq
-					FROM raw_events
-					GROUP BY source, stream_id
-				)
-				SELECT
-					COUNT(1) AS sessions,
-					SUM(e.max_seq - s.last_flushed_event_seq) AS pending
-				FROM raw_event_sessions s
-				JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
-				WHERE e.max_seq > s.last_flushed_event_seq`,
+		const totalsRow = d
+			.select({
+				sessions: sql<number>`COUNT(1)`,
+				pending: sql<
+					number | null
+				>`SUM(${maxEvents.max_seq} - ${schema.rawEventSessions.last_flushed_event_seq})`,
+			})
+			.from(schema.rawEventSessions)
+			.innerJoin(
+				maxEvents,
+				and(
+					eq(maxEvents.source, schema.rawEventSessions.source),
+					eq(maxEvents.stream_id, schema.rawEventSessions.stream_id),
+				),
 			)
-			.get() as { sessions: number | null; pending: number | null } | undefined;
+			.where(gt(maxEvents.max_seq, schema.rawEventSessions.last_flushed_event_seq))
+			.get();
 
 		return {
 			items,
@@ -310,29 +334,41 @@ export function rawEventsGate(
 
 export function retryRawEventFailures(dbPath?: string, limit = 25): { retried: number } {
 	return withDb(dbPath, (db) => {
+		const d = drizzle(db, { schema });
 		const now = new Date().toISOString();
-		// Single atomic UPDATE with subquery to avoid TOCTOU race with concurrent
-		// workers that may claim or complete batches between SELECT and UPDATE.
-		const result = db
-			.prepare(
-				`UPDATE raw_event_flush_batches
-				 SET status = 'pending',
-				     updated_at = ?,
-				     error_message = NULL,
-				     error_type = NULL,
-				     observer_provider = NULL,
-				     observer_model = NULL,
-				     observer_runtime = NULL
-				 WHERE id IN (
-				     SELECT id FROM raw_event_flush_batches
-				     WHERE status IN ('failed', 'error')
-				     ORDER BY updated_at ASC
-				     LIMIT ?
-				 )`,
-			)
-			.run(now, limit);
+		return db.transaction(() => {
+			const candidateIds = d
+				.select({ id: schema.rawEventFlushBatches.id })
+				.from(schema.rawEventFlushBatches)
+				.where(inArray(schema.rawEventFlushBatches.status, ["failed", "error"]))
+				.orderBy(schema.rawEventFlushBatches.updated_at)
+				.limit(limit)
+				.all()
+				.map((row) => Number(row.id));
 
-		return { retried: result.changes };
+			if (candidateIds.length === 0) return { retried: 0 };
+
+			const result = d
+				.update(schema.rawEventFlushBatches)
+				.set({
+					status: "pending",
+					updated_at: now,
+					error_message: null,
+					error_type: null,
+					observer_provider: null,
+					observer_model: null,
+					observer_runtime: null,
+				})
+				.where(
+					and(
+						inArray(schema.rawEventFlushBatches.id, candidateIds),
+						inArray(schema.rawEventFlushBatches.status, ["failed", "error"]),
+					),
+				)
+				.run();
+
+			return { retried: Number(result.changes ?? 0) };
+		})();
 	});
 }
 
