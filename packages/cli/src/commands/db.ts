@@ -1,12 +1,14 @@
 import { statSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
+	backfillTagsText,
 	connect,
 	getRawEventStatus,
 	initDatabase,
 	MemoryStore,
 	rawEventsGate,
 	resolveDbPath,
+	resolveProject,
 	retryRawEventFailures,
 	vacuumDatabase,
 } from "@codemem/core";
@@ -17,6 +19,15 @@ function formatBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parseOptionalPositiveInt(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		throw new Error(`invalid positive integer: ${value}`);
+	}
+	return parsed;
 }
 
 export const dbCommand = new Command("db")
@@ -366,4 +377,64 @@ dbCommand
 					db.close();
 				}
 			}),
+	)
+	.addCommand(
+		new Command("backfill-tags")
+			.configureHelp(helpStyle)
+			.description("Populate tags_text for memories where tags are empty")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--limit <n>", "max memories to check")
+			.option("--since <iso>", "only memories created at/after this ISO timestamp")
+			.option("--project <project>", "project identifier (defaults to git repo root)")
+			.option("--all-projects", "backfill across all projects")
+			.option("--inactive", "include inactive memories")
+			.option("--dry-run", "preview updates without writing")
+			.option("--json", "output as JSON")
+			.action(
+				(opts: {
+					db?: string;
+					dbPath?: string;
+					limit?: string;
+					since?: string;
+					project?: string;
+					allProjects?: boolean;
+					inactive?: boolean;
+					dryRun?: boolean;
+					json?: boolean;
+				}) => {
+					const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+					try {
+						const limit = parseOptionalPositiveInt(opts.limit);
+						const project =
+							opts.allProjects === true
+								? null
+								: opts.project?.trim() ||
+									process.env.CODEMEM_PROJECT?.trim() ||
+									resolveProject(process.cwd(), null);
+						const result = backfillTagsText(store.db, {
+							limit,
+							since: opts.since ?? null,
+							project,
+							activeOnly: !opts.inactive,
+							dryRun: opts.dryRun === true,
+						});
+
+						if (opts.json) {
+							console.log(JSON.stringify(result, null, 2));
+							return;
+						}
+
+						const action = opts.dryRun ? "Would update" : "Updated";
+						p.intro("codemem db backfill-tags");
+						p.log.success(`${action} ${result.updated} memories (skipped ${result.skipped})`);
+						p.outro(`Checked ${result.checked} memories`);
+					} catch (error) {
+						p.log.error(error instanceof Error ? error.message : String(error));
+						process.exitCode = 1;
+					} finally {
+						store.close();
+					}
+				},
+			),
 	);

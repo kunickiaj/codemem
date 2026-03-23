@@ -127,12 +127,15 @@ export type {
 export { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
 export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
 export type {
+	BackfillTagsTextOptions,
+	BackfillTagsTextResult,
 	GateResult,
 	RawEventStatusItem,
 	RawEventStatusResult,
 	ReliabilityMetrics,
 } from "./maintenance.js";
 export {
+	backfillTagsText,
 	getRawEventStatus,
 	getReliabilityMetrics,
 	initDatabase,

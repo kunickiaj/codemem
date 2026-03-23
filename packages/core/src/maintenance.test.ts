@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
+	backfillTagsText,
 	getRawEventStatus,
 	getReliabilityMetrics,
 	initDatabase,
@@ -126,5 +127,68 @@ describe("maintenance", () => {
 
 		const metrics = getReliabilityMetrics(dbPath);
 		expect(metrics.counts.retry_depth_max).toBe(3);
+	});
+
+	it("backfills tags_text for memories with empty tags", () => {
+		const dbPath = createDbPath("backfill-tags");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, tags_text, active,
+					created_at, updated_at, concepts, files_modified, import_key
+				) VALUES
+					(1, 1, 'feature', 'Auth login flow', 'body', '', 1,
+					 '2026-03-01T10:00:00Z', '2026-03-01T10:00:00Z', '["authentication"]', '["src/auth/login.ts"]', 'k1');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const dbRw = new Database(dbPath);
+		try {
+			const result = backfillTagsText(dbRw, {});
+			expect(result).toEqual({ checked: 1, updated: 1, skipped: 0 });
+
+			const row = dbRw.prepare("SELECT tags_text FROM memory_items WHERE id = 1").get() as {
+				tags_text: string;
+			};
+			expect(row.tags_text).toContain("feature");
+			expect(row.tags_text).toContain("authentication");
+			expect(row.tags_text).toContain("login-ts");
+		} finally {
+			dbRw.close();
+		}
+	});
+
+	it("supports backfill-tags dry-run mode", () => {
+		const dbPath = createDbPath("backfill-tags-dry-run");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, tags_text, active,
+					created_at, updated_at, import_key
+				) VALUES
+					(1, 1, 'feature', 'Needs tags', 'body', '', 1,
+					 '2026-03-01T10:00:00Z', '2026-03-01T10:00:00Z', 'k1');
+			`);
+
+			const result = backfillTagsText(db, { dryRun: true });
+			expect(result).toEqual({ checked: 1, updated: 1, skipped: 0 });
+
+			const row = db.prepare("SELECT tags_text FROM memory_items WHERE id = 1").get() as {
+				tags_text: string;
+			};
+			expect(row.tags_text).toBe("");
+		} finally {
+			db.close();
+		}
 	});
 });
