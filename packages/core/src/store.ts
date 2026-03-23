@@ -1602,39 +1602,26 @@ export class MemoryStore {
 			const endSeq = Number(seqRow.last_received_event_seq);
 			const startSeq = endSeq - newEvents.length + 1;
 
-			let inserted = 0;
-			const insertStmt = this.db.prepare(
-				`INSERT INTO raw_events(
-					source, stream_id, opencode_session_id, event_id, event_seq,
-					event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			);
+			const insertRows = newEvents.map((event, offset) => {
+				const tsWallMs = typeof event.tsWallMs === "number" ? event.tsWallMs : null;
+				const tsMonoMs = typeof event.tsMonoMs === "number" ? event.tsMonoMs : null;
+				return {
+					source,
+					stream_id: streamId,
+					opencode_session_id: streamId,
+					event_id: event.eventId,
+					event_seq: startSeq + offset,
+					event_type: event.eventType,
+					ts_wall_ms: tsWallMs,
+					ts_mono_ms: tsMonoMs,
+					payload_json: toJson(event.payload),
+					created_at: now,
+				};
+			});
 
-			for (let offset = 0; offset < newEvents.length; offset++) {
-				const event = newEvents[offset]!;
-				try {
-					insertStmt.run(
-						source,
-						streamId,
-						streamId,
-						event.eventId,
-						startSeq + offset,
-						event.eventType,
-						event.tsWallMs ?? null,
-						event.tsMonoMs ?? null,
-						toJson(event.payload),
-						now,
-					);
-					inserted++;
-				} catch (err: unknown) {
-					// SQLite UNIQUE constraint → skip conflict
-					if (err instanceof Error && err.message.includes("UNIQUE constraint")) {
-						skippedConflict++;
-					} else {
-						throw err;
-					}
-				}
-			}
+			const result = this.d.insert(schema.rawEvents).values(insertRows).onConflictDoNothing().run();
+			const inserted = Number(result.changes ?? 0);
+			skippedConflict += newEvents.length - inserted;
 
 			this.updateRawEventIngestStats(inserted, skippedInvalid, skippedDuplicate, skippedConflict);
 			return { inserted, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
