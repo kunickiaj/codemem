@@ -110,10 +110,18 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics).toHaveProperty("total_items");
 		expect(pack.metrics).toHaveProperty("pack_tokens");
 		expect(pack.metrics).toHaveProperty("fallback_used");
+		expect(pack.metrics).toHaveProperty("fallback");
+		expect(pack.metrics).toHaveProperty("limit");
+		expect(pack.metrics).toHaveProperty("token_budget");
+		expect(pack.metrics).toHaveProperty("project");
+		expect(pack.metrics).toHaveProperty("pack_item_ids");
 		expect(pack.metrics).toHaveProperty("sources");
 		expect(typeof pack.metrics.total_items).toBe("number");
 		expect(typeof pack.metrics.pack_tokens).toBe("number");
 		expect(typeof pack.metrics.fallback_used).toBe("boolean");
+		expect(["recent", null]).toContain(pack.metrics.fallback);
+		expect(typeof pack.metrics.limit).toBe("number");
+		expect(Array.isArray(pack.metrics.pack_item_ids)).toBe(true);
 
 		expect(pack.metrics.sources).toHaveProperty("fts");
 		expect(pack.metrics.sources).toHaveProperty("semantic");
@@ -126,11 +134,37 @@ describe("buildMemoryPack", () => {
 		const pack = buildMemoryPack(store, "anything");
 
 		expect(pack.items.length).toBe(0);
-		expect(pack.pack_text).toBe("");
+		expect(pack.pack_text).toContain("## Summary");
+		expect(pack.pack_text).toContain("## Timeline");
+		expect(pack.pack_text).toContain("## Observations");
 		expect(pack.item_ids.length).toBe(0);
 
 		expect(pack.metrics.total_items).toBe(0);
 		expect(pack.metrics.fallback_used).toBe(true);
+	});
+
+	it("always emits all three section headers", () => {
+		const pack = buildMemoryPack(store, "anything");
+
+		expect(pack.pack_text).toContain("## Summary");
+		expect(pack.pack_text).toContain("## Timeline");
+		expect(pack.pack_text).toContain("## Observations");
+	});
+
+	it("falls back to timeline items for observations when none exist", () => {
+		store.remember(sessionId, "feature", "Runtime entities", "Tracked agent entities", 0.7);
+
+		const originalRecentByKinds = store.recentByKinds.bind(store);
+		(store as unknown as { recentByKinds: typeof store.recentByKinds }).recentByKinds = () => [];
+		try {
+			const pack = buildMemoryPack(store, "runtime entities");
+
+			const observationsBlock = pack.pack_text.split("## Observations")[1] ?? "";
+			expect(observationsBlock).toContain("(feature)");
+		} finally {
+			(store as unknown as { recentByKinds: typeof store.recentByKinds }).recentByKinds =
+				originalRecentByKinds;
+		}
 	});
 
 	it("includes context in the result", () => {

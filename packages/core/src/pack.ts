@@ -56,9 +56,9 @@ function formatItem(item: MemoryResult): string {
 
 /** Build a formatted section with header and items. */
 function formatSection(header: string, items: MemoryResult[]): string {
-	if (items.length === 0) return "";
-	const lines = [`## ${header}`, ...items.map(formatItem)];
-	return lines.join("\n");
+	const heading = `## ${header}`;
+	if (items.length === 0) return `${heading}\n`;
+	return [heading, ...items.map(formatItem)].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +315,10 @@ export function buildMemoryPack(
 		}));
 	}
 
+	if (observationItems.length === 0) {
+		observationItems = [...timelineItems];
+	}
+
 	// Sort observations by tag overlap with context, then by kind priority
 	observationItems = sortByTagOverlap(observationItems, context);
 
@@ -365,7 +369,7 @@ export function buildMemoryPack(
 		formatSection("Summary", budgetedSummary),
 		formatSection("Timeline", budgetedTimeline),
 		formatSection("Observations", budgetedObservations),
-	].filter((s) => s.length > 0);
+	];
 
 	const packText = sections.join("\n\n");
 
@@ -389,6 +393,11 @@ export function buildMemoryPack(
 			total_items: allItems.length,
 			pack_tokens: estimateTokens(packText),
 			fallback_used: fallbackUsed,
+			fallback: fallbackUsed ? "recent" : null,
+			limit: effectiveLimit,
+			token_budget: tokenBudget,
+			project: filters?.project ?? null,
+			pack_item_ids: allItemIds,
 			sources: { fts: ftsCount, semantic: semanticCount, fuzzy: 0 },
 		},
 	};

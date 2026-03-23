@@ -425,6 +425,11 @@ export interface PackResponse {
 		total_items: number;
 		pack_tokens: number;
 		fallback_used: boolean;
+		fallback: "recent" | null;
+		limit: number;
+		token_budget: number | null;
+		project: string | null;
+		pack_item_ids: number[];
 		sources: { fts: number; semantic: number; fuzzy: number };
 	};
 }
