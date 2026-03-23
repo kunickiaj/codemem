@@ -17,12 +17,56 @@ export { renderSyncPeers } from './people';
 /* ── Data loading ────────────────────────────────────────── */
 
 let lastSyncHash = '';
+let cachedSyncStatus: { key: string; expiresAtMs: number; payload: any } | null = null;
+
+const HEALTH_SYNC_STATUS_CACHE_TTL_MS = 15_000;
+
+function syncStatusCacheKey(project: string): string {
+  return `project:${project || ''}|includeJoinRequests:false`;
+}
+
+function readCachedSyncStatus(project: string): any | null {
+  const key = syncStatusCacheKey(project);
+  if (!cachedSyncStatus) return null;
+  if (cachedSyncStatus.key !== key) return null;
+  if (Date.now() >= cachedSyncStatus.expiresAtMs) return null;
+  return cachedSyncStatus.payload;
+}
+
+function writeCachedSyncStatus(project: string, payload: any): void {
+  cachedSyncStatus = {
+    key: syncStatusCacheKey(project),
+    expiresAtMs: Date.now() + HEALTH_SYNC_STATUS_CACHE_TTL_MS,
+    payload,
+  };
+}
+
+function normalizeSyncStatusForCache(payload: any): any {
+  if (!payload || typeof payload !== 'object') return payload;
+  return {
+    ...payload,
+    join_requests: [],
+  };
+}
 
 export async function loadSyncData() {
   try {
-    const payload = await api.loadSyncStatus(true, state.currentProject || '', {
-      includeJoinRequests: state.activeTab === 'sync',
-    });
+    const project = state.currentProject || '';
+    const includeJoinRequests = state.activeTab === 'sync';
+    const useCache = state.activeTab === 'health';
+
+    let payload: any;
+    if (useCache) {
+      payload = readCachedSyncStatus(project);
+      if (!payload) {
+        payload = await api.loadSyncStatus(true, project, { includeJoinRequests: false });
+        writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
+      }
+    } else {
+      payload = await api.loadSyncStatus(true, project, { includeJoinRequests });
+      writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
+    }
+
     let actorsPayload: any = null;
     let actorLoadError = false;
     try {
