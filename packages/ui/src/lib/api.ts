@@ -100,10 +100,15 @@ export async function saveConfig(payload: any): Promise<void> {
   return parsed;
 }
 
-export async function loadSyncStatus(includeDiagnostics: boolean, project = ''): Promise<any> {
+export async function loadSyncStatus(
+  includeDiagnostics: boolean,
+  project = '',
+  options?: { includeJoinRequests?: boolean },
+): Promise<any> {
   const params = new URLSearchParams();
   if (includeDiagnostics) params.set('includeDiagnostics', '1');
   if (project) params.set('project', project);
+  if (options?.includeJoinRequests) params.set('includeJoinRequests', '1');
   const suffix = params.size ? `?${params.toString()}` : '';
   return fetchJson(`/api/sync/status${suffix}`);
 }

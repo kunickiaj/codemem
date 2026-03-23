@@ -20,7 +20,9 @@ let lastSyncHash = '';
 
 export async function loadSyncData() {
   try {
-    const payload = await api.loadSyncStatus(true, state.currentProject || '');
+    const payload = await api.loadSyncStatus(true, state.currentProject || '', {
+      includeJoinRequests: state.activeTab === 'sync',
+    });
     let actorsPayload: any = null;
     let actorLoadError = false;
     try {
@@ -41,7 +43,9 @@ export async function loadSyncData() {
     state.lastSyncPeers = payload.peers || [];
     state.lastSyncSharingReview = payload.sharing_review || [];
     state.lastSyncCoordinator = payload.coordinator || null;
-    state.lastSyncJoinRequests = payload.join_requests || [];
+    if (Array.isArray(payload.join_requests)) {
+      state.lastSyncJoinRequests = payload.join_requests;
+    }
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
     renderSyncStatus();
