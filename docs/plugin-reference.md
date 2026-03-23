@@ -46,9 +46,11 @@ uv tool install --upgrade codemem
 
 Claude MCP launch uses `uvx`; startup can be slower on first run because it may install dependencies on demand.
 
-Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks` to the local codemem server) with a version-pinned CLI fallback when the server path is unavailable:
+Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks` to the local codemem server) with a version-pinned CLI direct-enqueue fallback when the server path is unavailable:
 
 - `uvx codemem==<plugin-version> claude-hook-ingest`
+
+Contract note: fallback is direct local DB enqueue from the TS CLI. There is currently no file spool/lock durability path in the fallback contract.
 
 You can update an existing marketplace install with:
 
@@ -260,10 +262,6 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_PLUGIN_LOG_PATH` | Explicit log file path for Claude hook script logging (overrides `CODEMEM_PLUGIN_LOG` for that script). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_CONNECT_TIMEOUT_S` | Claude hook HTTP enqueue connect timeout in seconds (default `1`). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_MAX_TIME_S` | Claude hook HTTP enqueue total timeout in seconds (default `2`). |
-| `CODEMEM_CLAUDE_HOOK_LOCK_DIR` | Claude hook fallback lock directory path (default `~/.codemem/claude-hook-ingest.lock`). |
-| `CODEMEM_CLAUDE_HOOK_LOCK_TTL_S` | Reclaim stale Claude hook fallback lock after this many seconds (default `300`). |
-| `CODEMEM_CLAUDE_HOOK_LOCK_GRACE_S` | Grace period before treating lock metadata gaps as stale (default `2`). |
-| `CODEMEM_CLAUDE_HOOK_SPOOL_DIR` | Claude hook durable spool directory for all-fail fallback payloads (default `~/.codemem/claude-hook-spool`). |
 | `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
 | `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
 | `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for `claude-hook-inject` (default `1`). |

@@ -80,13 +80,13 @@ uv tool install --upgrade codemem
 
 Claude MCP launch uses `uvx`; first startup may be slower because `uvx` can fetch/install tooling on demand.
 
-Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and auto-falls back to `codemem ingest-claude-hook` / `uvx codemem==<plugin-version> ingest-claude-hook` when the local server path is unavailable.
+Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and falls back to direct local DB enqueue via `codemem claude-hook-ingest` (or pinned `uvx codemem==<plugin-version> claude-hook-ingest`) when the local server path is unavailable.
 
 Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` runs
 capture ingest in the background and injects memory context via Claude `additionalContext` using
 local CLI/store pack generation by default, with optional HTTP `/api/pack` fallback.
 
-The packaged Claude hook shell scripts are thin wrappers over Python runtime commands:
+The packaged Claude hook shell scripts are thin wrappers over TS CLI commands:
 `codemem claude-hook-ingest` and `codemem claude-hook-inject`.
 `claude-hook-inject` does not use `uvx` fallback by default to keep prompt-submit latency low.
 

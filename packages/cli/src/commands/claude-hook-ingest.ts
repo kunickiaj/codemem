@@ -22,6 +22,21 @@ import {
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 
+type IngestResult = { inserted: number; skipped: number; via: "http" | "direct" };
+
+type IngestOpts = {
+	host: string;
+	port: number;
+	db?: string;
+	dbPath?: string;
+};
+
+type IngestDeps = {
+	httpIngest?: typeof tryHttpIngest;
+	directIngest?: typeof directEnqueue;
+	resolveDb?: typeof resolveDbPath;
+};
+
 /** Try to POST the hook payload to the running viewer server. */
 async function tryHttpIngest(
 	payload: Record<string, unknown>,
@@ -53,7 +68,7 @@ async function tryHttpIngest(
 }
 
 /** Fall back to direct raw-event enqueue via the local SQLite store. */
-function directEnqueue(
+export function directEnqueue(
 	payload: Record<string, unknown>,
 	dbPath: string,
 ): { inserted: number; skipped: number } {
@@ -133,9 +148,34 @@ function directEnqueue(
 	}
 }
 
+/**
+ * Ingest one Claude hook payload using the TS contract:
+ * HTTP enqueue first, then direct local enqueue fallback.
+ *
+ * This path intentionally does not implement file-spool/lock durability.
+ */
+export async function ingestClaudeHookPayload(
+	payload: Record<string, unknown>,
+	opts: IngestOpts,
+	deps: IngestDeps = {},
+): Promise<IngestResult> {
+	const httpIngest = deps.httpIngest ?? tryHttpIngest;
+	const directIngest = deps.directIngest ?? directEnqueue;
+	const resolveDb = deps.resolveDb ?? resolveDbPath;
+
+	const httpResult = await httpIngest(payload, opts.host, opts.port);
+	if (httpResult.ok) {
+		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
+	}
+
+	const dbPath = resolveDb(opts.db ?? opts.dbPath);
+	const directResult = directIngest(payload, dbPath);
+	return { ...directResult, via: "direct" };
+}
+
 export const claudeHookIngestCommand = new Command("claude-hook-ingest")
 	.configureHelp(helpStyle)
-	.description("Ingest a Claude Code hook payload from stdin")
+	.description("Ingest Claude hook payload: HTTP first, direct DB fallback")
 	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--host <host>", "viewer server host", "127.0.0.1")
@@ -170,20 +210,14 @@ export const claudeHookIngestCommand = new Command("claude-hook-ingest")
 		const port = Number.parseInt(opts.port, 10);
 		const host = opts.host;
 
-		// Strategy 1: try HTTP POST to running viewer
-		const httpResult = await tryHttpIngest(payload, host, port);
-		if (httpResult.ok) {
-			console.log(
-				JSON.stringify({ inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" }),
-			);
-			return;
-		}
-
-		// Strategy 2: direct local enqueue
 		try {
-			const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
-			const directResult = directEnqueue(payload, dbPath);
-			console.log(JSON.stringify({ ...directResult, via: "direct" }));
+			const result = await ingestClaudeHookPayload(payload, {
+				host,
+				port,
+				db: opts.db,
+				dbPath: opts.dbPath,
+			});
+			console.log(JSON.stringify(result));
 		} catch {
 			process.exitCode = 1;
 		}

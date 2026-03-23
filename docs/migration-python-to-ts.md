@@ -89,7 +89,7 @@ Python backend, `pyproject.toml`, and `uv`/`uvx` runner paths removed.
 | Config read | Complete |
 | Config write + runtime effects | Not yet ported |
 | Schema initialization (DDL) | Python-only |
-| `/api/claude-hooks` ingestion | Not yet ported |
+| `/api/claude-hooks` ingestion | Complete (HTTP-first + direct enqueue fallback) |
 
 ## Rollback
 
