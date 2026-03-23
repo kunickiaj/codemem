@@ -430,6 +430,27 @@ export interface PackResponse {
 		token_budget: number | null;
 		project: string | null;
 		pack_item_ids: number[];
+		mode: "default" | "task" | "recall";
+		added_ids: number[];
+		removed_ids: number[];
+		retained_ids: number[];
+		pack_token_delta: number;
+		pack_delta_available: boolean;
+		work_tokens: number;
+		work_tokens_unique: number;
+		tokens_saved: number;
+		compression_ratio: number | null;
+		overhead_tokens: number | null;
+		avoided_work_tokens: number;
+		avoided_work_saved: number;
+		avoided_work_ratio: number | null;
+		avoided_work_known_items: number;
+		avoided_work_unknown_items: number;
+		avoided_work_sources: Record<string, number>;
+		work_source: "estimate" | "usage" | "mixed";
+		work_usage_items: number;
+		work_estimate_items: number;
+		savings_reliable: boolean;
 		sources: { fts: number; semantic: number; fuzzy: number };
 	};
 }

@@ -115,6 +115,19 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics).toHaveProperty("token_budget");
 		expect(pack.metrics).toHaveProperty("project");
 		expect(pack.metrics).toHaveProperty("pack_item_ids");
+		expect(pack.metrics).toHaveProperty("mode");
+		expect(pack.metrics).toHaveProperty("added_ids");
+		expect(pack.metrics).toHaveProperty("removed_ids");
+		expect(pack.metrics).toHaveProperty("retained_ids");
+		expect(pack.metrics).toHaveProperty("pack_token_delta");
+		expect(pack.metrics).toHaveProperty("pack_delta_available");
+		expect(pack.metrics).toHaveProperty("work_tokens");
+		expect(pack.metrics).toHaveProperty("work_tokens_unique");
+		expect(pack.metrics).toHaveProperty("tokens_saved");
+		expect(pack.metrics).toHaveProperty("avoided_work_tokens");
+		expect(pack.metrics).toHaveProperty("avoided_work_saved");
+		expect(pack.metrics).toHaveProperty("work_source");
+		expect(pack.metrics).toHaveProperty("savings_reliable");
 		expect(pack.metrics).toHaveProperty("sources");
 		expect(typeof pack.metrics.total_items).toBe("number");
 		expect(typeof pack.metrics.pack_tokens).toBe("number");
@@ -122,12 +135,74 @@ describe("buildMemoryPack", () => {
 		expect(["recent", null]).toContain(pack.metrics.fallback);
 		expect(typeof pack.metrics.limit).toBe("number");
 		expect(Array.isArray(pack.metrics.pack_item_ids)).toBe(true);
+		expect(["default", "task", "recall"]).toContain(pack.metrics.mode);
 
 		expect(pack.metrics.sources).toHaveProperty("fts");
 		expect(pack.metrics.sources).toHaveProperty("semantic");
 		expect(pack.metrics.sources).toHaveProperty("fuzzy");
 		expect(pack.metrics.sources.semantic).toBe(0);
 		expect(pack.metrics.sources.fuzzy).toBe(0);
+	});
+
+	it("tracks pack delta against prior pack usage metadata", () => {
+		const id1 = store.remember(sessionId, "feature", "First item", "Body one", 0.7);
+		const first = buildMemoryPack(store, "first", 10);
+		expect(first.metrics.pack_delta_available).toBe(false);
+
+		const id2 = store.remember(sessionId, "feature", "Second item", "Body two", 0.7);
+		const second = buildMemoryPack(store, "item", 10);
+
+		expect(second.metrics.pack_delta_available).toBe(true);
+		expect(second.metrics.added_ids).toContain(id2);
+		expect(second.metrics.retained_ids).toContain(id1);
+		expect(typeof second.metrics.pack_token_delta).toBe("number");
+	});
+
+	it("keeps project delta baseline after many packs in other projects", () => {
+		store.remember(sessionId, "feature", "Project A item", "Body A", 0.7);
+
+		const firstA = buildMemoryPack(store, "project", 10, null, { project: "test-project" });
+		expect(firstA.metrics.pack_delta_available).toBe(false);
+
+		for (let i = 0; i < 26; i++) {
+			buildMemoryPack(store, `noise ${i}`, 10, null, { project: "other-project" });
+		}
+
+		const secondA = buildMemoryPack(store, "project", 10, null, { project: "test-project" });
+		expect(secondA.metrics.pack_delta_available).toBe(true);
+	});
+
+	it("records pack usage with project-linked session id when project is provided", () => {
+		store.remember(sessionId, "feature", "Project scoped item", "Body", 0.7);
+
+		buildMemoryPack(store, "project scoped", 10, null, { project: "test-project" });
+
+		const row = store.db
+			.prepare(
+				"SELECT session_id, metadata_json FROM usage_events WHERE event = 'pack' ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { session_id: number | null; metadata_json: string | null };
+
+		expect(row.session_id).toBe(sessionId);
+		const metadata = row.metadata_json
+			? (JSON.parse(row.metadata_json) as Record<string, unknown>)
+			: {};
+		expect(metadata.project).toBe("test-project");
+	});
+
+	it("uses discovery_tokens metadata for avoided-work metrics", () => {
+		store.remember(sessionId, "feature", "Token heavy memory", "Useful context", 0.8, undefined, {
+			discovery_tokens: 6000,
+			discovery_source: "usage",
+			discovery_group: "g1",
+		});
+
+		const pack = buildMemoryPack(store, "token heavy", 10);
+
+		expect(pack.metrics.avoided_work_tokens).toBeGreaterThan(0);
+		expect(pack.metrics.avoided_work_known_items).toBeGreaterThan(0);
+		expect(pack.metrics.work_source).toBe("usage");
+		expect(pack.metrics.work_usage_items).toBeGreaterThan(0);
 	});
 
 	it("returns empty pack for empty database", () => {
@@ -267,6 +342,7 @@ describe("buildMemoryPack", () => {
 
 		const pack = buildMemoryPack(store, "what should we do next about auth", 10);
 
+		expect(pack.metrics.mode).toBe("task");
 		expect(pack.item_ids[0]).toBe(decisionId);
 		expect(pack.pack_text.toLowerCase()).toContain("auth");
 	});
