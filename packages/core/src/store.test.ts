@@ -209,6 +209,76 @@ describe("MemoryStore", () => {
 
 	// -- forget --------------------------------------------------------------
 
+	describe("memoryOwnedBySelf", () => {
+		it("returns false (without throwing) when sync_peers table is unavailable", () => {
+			store.db.prepare("DROP TABLE IF EXISTS sync_peers").run();
+
+			expect(() =>
+				store.memoryOwnedBySelf({
+					actor_id: "legacy-sync:peer-missing",
+					origin_device_id: "peer-missing",
+					metadata: {},
+				}),
+			).not.toThrow();
+			expect(
+				store.memoryOwnedBySelf({
+					actor_id: "legacy-sync:peer-missing",
+					origin_device_id: "peer-missing",
+					metadata: {},
+				}),
+			).toBe(false);
+		});
+
+		it("returns true for claimed same-actor peer origin_device_id", () => {
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-claimed-1", store.actorId, 1, "2026-01-01T00:00:00Z");
+
+			expect(
+				store.memoryOwnedBySelf({
+					actor_id: null,
+					origin_device_id: "peer-claimed-1",
+					metadata: {},
+				}),
+			).toBe(true);
+		});
+
+		it("returns true for legacy-sync actor IDs tied to claimed peers", () => {
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-claimed-2", store.actorId, 1, "2026-01-01T00:00:00Z");
+
+			expect(
+				store.memoryOwnedBySelf({
+					actor_id: "legacy-sync:peer-claimed-2",
+					origin_device_id: null,
+					metadata: {},
+				}),
+			).toBe(true);
+		});
+
+		it("reads actor/origin ownership from metadata when top-level fields are absent", () => {
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-claimed-3", store.actorId, 1, "2026-01-01T00:00:00Z");
+
+			expect(
+				store.memoryOwnedBySelf({
+					metadata: {
+						actor_id: "legacy-sync:peer-claimed-3",
+						origin_device_id: "peer-claimed-3",
+					},
+				}),
+			).toBe(true);
+		});
+	});
+
 	describe("forget", () => {
 		it("soft-deletes an existing memory", () => {
 			const sessionId = insertTestSession(store.db);
