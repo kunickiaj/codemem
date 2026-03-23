@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import {
@@ -958,11 +958,16 @@ export class MemoryStore {
 				.delete(schema.rawEventIngestSamples)
 				.where(sql`${schema.rawEventIngestSamples.created_at} < ${cutoffIso}`)
 				.run();
-			// Use raw SQL for DELETE to access result.changes
-			const result = this.db
-				.prepare("DELETE FROM raw_events WHERE ts_wall_ms IS NOT NULL AND ts_wall_ms < ?")
-				.run(cutoffTsWallMs);
-			return result.changes;
+			const result = this.d
+				.delete(schema.rawEvents)
+				.where(
+					and(
+						isNotNull(schema.rawEvents.ts_wall_ms),
+						lt(schema.rawEvents.ts_wall_ms, cutoffTsWallMs),
+					),
+				)
+				.run();
+			return Number(result.changes ?? 0);
 		})();
 	}
 
@@ -1059,26 +1064,26 @@ export class MemoryStore {
 		limit?: number | null,
 	): Record<string, unknown>[] {
 		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
-		const limitClause = limit != null && limit > 0 ? "LIMIT ?" : "";
-		const params: unknown[] = [s, sid, afterEventSeq];
-		if (limit != null && limit > 0) params.push(limit);
-
-		const rows = this.db
-			.prepare(
-				`SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
-				 FROM raw_events
-				 WHERE source = ? AND stream_id = ? AND event_seq > ?
-				 ORDER BY event_seq ASC
-				 ${limitClause}`,
+		const baseQuery = this.d
+			.select({
+				event_seq: schema.rawEvents.event_seq,
+				event_type: schema.rawEvents.event_type,
+				ts_wall_ms: schema.rawEvents.ts_wall_ms,
+				ts_mono_ms: schema.rawEvents.ts_mono_ms,
+				payload_json: schema.rawEvents.payload_json,
+				event_id: schema.rawEvents.event_id,
+			})
+			.from(schema.rawEvents)
+			.where(
+				and(
+					eq(schema.rawEvents.source, s),
+					eq(schema.rawEvents.stream_id, sid),
+					gt(schema.rawEvents.event_seq, afterEventSeq),
+				),
 			)
-			.all(...params) as {
-			event_seq: number;
-			event_type: string;
-			ts_wall_ms: number | null;
-			ts_mono_ms: number | null;
-			payload_json: string | null;
-			event_id: string | null;
-		}[];
+			.orderBy(schema.rawEvents.event_seq);
+
+		const rows = limit != null && limit > 0 ? baseQuery.limit(limit).all() : baseQuery.all();
 
 		return rows.map((row) => {
 			const payload = fromJson(row.payload_json) as Record<string, unknown>;
@@ -1109,26 +1114,32 @@ export class MemoryStore {
 		// Atomic UPSERT to avoid SELECT+INSERT races. We intentionally do NOT
 		// heartbeat claimed/running batches: their updated_at stays unchanged so
 		// stuck-batch recovery can still age them out.
-		const row = this.db
-			.prepare(
-				`INSERT INTO raw_event_flush_batches(
-					source, stream_id, opencode_session_id,
-					start_event_seq, end_event_seq, extractor_version,
-					status, created_at, updated_at
-				)
-				VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-				ON CONFLICT(source, stream_id, start_event_seq, end_event_seq, extractor_version)
-				DO UPDATE SET
-					updated_at = CASE
-						WHEN raw_event_flush_batches.status IN ('claimed', 'running')
-						THEN raw_event_flush_batches.updated_at
+		const t = schema.rawEventFlushBatches;
+		const row = this.d
+			.insert(t)
+			.values({
+				source: s,
+				stream_id: sid,
+				opencode_session_id: sid,
+				start_event_seq: startEventSeq,
+				end_event_seq: endEventSeq,
+				extractor_version: extractorVersion,
+				status: "pending",
+				created_at: now,
+				updated_at: now,
+			})
+			.onConflictDoUpdate({
+				target: [t.source, t.stream_id, t.start_event_seq, t.end_event_seq, t.extractor_version],
+				set: {
+					updated_at: sql`CASE
+						WHEN ${t.status} IN ('claimed', 'running')
+						THEN ${t.updated_at}
 						ELSE excluded.updated_at
-					END
-				RETURNING id, status`,
-			)
-			.get(s, sid, sid, startEventSeq, endEventSeq, extractorVersion, now, now) as
-			| { id: number; status: string }
-			| undefined;
+					END`,
+				},
+			})
+			.returning({ id: t.id, status: t.status })
+			.get();
 
 		if (!row) throw new Error("Failed to create flush batch");
 		// Canonicalize legacy DB statuses to match Python's _RAW_EVENT_QUEUE_DB_TO_CANONICAL
@@ -1151,14 +1162,21 @@ export class MemoryStore {
 	 */
 	claimRawEventFlushBatch(batchId: number): boolean {
 		const now = new Date().toISOString();
-		const row = this.db
-			.prepare(
-				`UPDATE raw_event_flush_batches
-				 SET status = 'claimed', updated_at = ?, attempt_count = attempt_count + 1
-				 WHERE id = ? AND status IN ('pending', 'failed', 'started', 'error')
-				 RETURNING id`,
+		const row = this.d
+			.update(schema.rawEventFlushBatches)
+			.set({
+				status: "claimed",
+				updated_at: now,
+				attempt_count: sql`${schema.rawEventFlushBatches.attempt_count} + 1`,
+			})
+			.where(
+				and(
+					eq(schema.rawEventFlushBatches.id, batchId),
+					inArray(schema.rawEventFlushBatches.status, ["pending", "failed", "started", "error"]),
+				),
 			)
-			.get(now, batchId) as { id: number } | undefined;
+			.returning({ id: schema.rawEventFlushBatches.id })
+			.get();
 		return row != null;
 	}
 
