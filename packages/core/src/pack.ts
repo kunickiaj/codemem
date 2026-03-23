@@ -10,14 +10,21 @@
  * Semantic candidate merging is supported via `buildMemoryPackAsync` or
  * by passing pre-computed semantic results to `buildMemoryPack`.
  *
- * NOT ported: fuzzy search, task/recall mode detection, pack delta
+ * NOT ported: fuzzy search, pack delta
  * tracking, discovery-token work estimation.
  */
 
 import type { Database } from "./db.js";
 import type { StoreHandle } from "./search.js";
-import { rerankResults, search } from "./search.js";
-import type { MemoryFilters, MemoryResult, PackItem, PackResponse } from "./types.js";
+import { rerankResults, search, timeline } from "./search.js";
+import type {
+	MemoryFilters,
+	MemoryItemResponse,
+	MemoryResult,
+	PackItem,
+	PackResponse,
+	TimelineItemResponse,
+} from "./types.js";
 import { semanticSearch } from "./vectors.js";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +42,13 @@ const OBSERVATION_KIND_PRIORITY: Record<string, number> = {
 	exploration: 6,
 	note: 7,
 };
+
+const TASK_RECENCY_DAYS = 365;
+
+const TASK_HINT_QUERY =
+	"todo todos task tasks pending follow up follow-up next resume continue backlog pick up pick-up";
+
+const RECALL_HINT_QUERY = "session summary recap remember last time previous work";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,6 +181,147 @@ function countOverlap(tags: string, tokens: Set<string>): number {
 	return count;
 }
 
+function queryLooksLikeTasks(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const token of [
+		"todo",
+		"todos",
+		"pending",
+		"task",
+		"tasks",
+		"next",
+		"resume",
+		"continue",
+		"backlog",
+	]) {
+		if (lowered.includes(token)) return true;
+	}
+	for (const phrase of [
+		"follow up",
+		"follow-up",
+		"followups",
+		"pick up",
+		"pick-up",
+		"left off",
+		"where we left off",
+		"work on next",
+		"what's next",
+		"what was next",
+	]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	return false;
+}
+
+function queryLooksLikeRecall(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const token of ["remember", "remind", "recall", "recap", "summary", "summarize"]) {
+		if (lowered.includes(token)) return true;
+	}
+	for (const phrase of [
+		"what did we do",
+		"what did we work on",
+		"what did we decide",
+		"what happened",
+		"last time",
+		"previous session",
+		"previous work",
+		"where were we",
+		"catch me up",
+		"catch up",
+	]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	return false;
+}
+
+function toMemoryResult(row: MemoryItemResponse | TimelineItemResponse): MemoryResult {
+	return {
+		id: row.id,
+		kind: row.kind,
+		title: row.title,
+		body_text: row.body_text,
+		confidence: row.confidence ?? 0,
+		created_at: row.created_at,
+		updated_at: row.updated_at,
+		tags_text: row.tags_text ?? "",
+		score: 0,
+		session_id: row.session_id,
+		metadata: row.metadata_json,
+	};
+}
+
+function parseCreatedAt(value: string): number {
+	const parsed = Date.parse(value);
+	if (Number.isNaN(parsed)) return Number.NEGATIVE_INFINITY;
+	return parsed;
+}
+
+function filterRecentResults(results: MemoryResult[], days: number): MemoryResult[] {
+	const cutoff = Date.now() - days * 86_400_000;
+	return results.filter((item) => parseCreatedAt(item.created_at) >= cutoff);
+}
+
+function prioritizeTaskResults(results: MemoryResult[], limit: number): MemoryResult[] {
+	const ordered = [...results].sort((a, b) =>
+		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
+	);
+	ordered.sort((a, b) => {
+		const rank = (kind: string): number => {
+			if (kind === "note") return 0;
+			if (kind === "decision") return 1;
+			if (kind === "observation") return 2;
+			return 3;
+		};
+		return rank(a.kind) - rank(b.kind);
+	});
+	return ordered.slice(0, limit);
+}
+
+function prioritizeRecallResults(results: MemoryResult[], limit: number): MemoryResult[] {
+	const ordered = [...results].sort((a, b) =>
+		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
+	);
+	ordered.sort((a, b) => {
+		const rank = (kind: string): number => {
+			if (kind === "session_summary") return 0;
+			if (kind === "decision") return 1;
+			if (kind === "note") return 2;
+			if (kind === "observation") return 3;
+			if (kind === "entities") return 4;
+			return 5;
+		};
+		return rank(a.kind) - rank(b.kind);
+	});
+	return ordered.slice(0, limit);
+}
+
+function taskFallbackRecent(
+	store: StoreHandle,
+	limit: number,
+	filters?: MemoryFilters,
+): MemoryResult[] {
+	const expandedLimit = Math.max(limit * 3, limit);
+	const recentRows = store.recent(expandedLimit, filters ?? null);
+	return prioritizeTaskResults(recentRows.map(toMemoryResult), limit);
+}
+
+function recallFallbackRecent(
+	store: StoreHandle,
+	limit: number,
+	filters?: MemoryFilters,
+): MemoryResult[] {
+	const summaryFilters = { ...(filters ?? {}), kind: "session_summary" };
+	const summaries = store.recent(limit, summaryFilters).map(toMemoryResult);
+	if (summaries.length >= limit) return summaries.slice(0, limit);
+
+	const expandedLimit = Math.max(limit * 3, limit);
+	const recentAll = store.recent(expandedLimit, filters ?? null).map(toMemoryResult);
+	const summaryIds = new Set(summaries.map((item) => item.id));
+	const remainder = recentAll.filter((item) => !summaryIds.has(item.id));
+	const prioritized = prioritizeTaskResults(remainder, limit - summaries.length);
+	return [...summaries, ...prioritized];
+}
 // ---------------------------------------------------------------------------
 // buildMemoryPack
 // ---------------------------------------------------------------------------
@@ -220,39 +375,79 @@ export function buildMemoryPack(
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
-
-	// Step 1: search for matching memories (FTS)
-	const ftsResults = search(store, context, effectiveLimit, filters);
-
-	// Step 1b: merge semantic candidates when provided
 	let results: MemoryResult[];
-	if (semanticResults && semanticResults.length > 0) {
-		const merge = mergeResults(store, ftsResults, semanticResults, effectiveLimit, filters);
-		results = merge.merged;
-		ftsCount = merge.ftsCount;
-		semanticCount = merge.semanticCount;
-	} else {
-		results = ftsResults;
-		ftsCount = results.length;
-	}
+	const taskMode = queryLooksLikeTasks(context);
+	const recallMode = !taskMode && queryLooksLikeRecall(context);
 
-	// Step 3: fall back to recent if no search results
-	if (results.length === 0) {
-		fallbackUsed = true;
-		const recentRows = store.recent(effectiveLimit, filters ?? null);
-		results = recentRows.map((row) => ({
-			id: row.id,
-			kind: row.kind,
-			title: row.title,
-			body_text: row.body_text,
-			confidence: row.confidence ?? 0,
-			created_at: row.created_at,
-			updated_at: row.updated_at,
-			tags_text: row.tags_text ?? "",
-			score: 0,
-			session_id: row.session_id,
-			metadata: row.metadata_json,
-		}));
+	if (taskMode) {
+		const taskQuery = `${context} ${TASK_HINT_QUERY}`.trim();
+		let taskResults = search(store, taskQuery, effectiveLimit, filters);
+		ftsCount = taskResults.length;
+		if (semanticResults && semanticResults.length > 0) {
+			const merge = mergeResults(store, taskResults, semanticResults, effectiveLimit, filters);
+			taskResults = merge.merged;
+			semanticCount = merge.semanticCount;
+		}
+		if (taskResults.length === 0) {
+			fallbackUsed = true;
+			results = taskFallbackRecent(store, effectiveLimit, filters);
+		} else {
+			const recentTaskResults = filterRecentResults(taskResults, TASK_RECENCY_DAYS);
+			results = prioritizeTaskResults(
+				recentTaskResults.length > 0 ? recentTaskResults : taskResults,
+				effectiveLimit,
+			);
+		}
+	} else if (recallMode) {
+		const recallQuery = context.trim().length > 0 ? context : RECALL_HINT_QUERY;
+		let recallResults = search(store, recallQuery, effectiveLimit, filters);
+		ftsCount = recallResults.length;
+		if (recallResults.length === 0) {
+			const recallFilters = { ...(filters ?? {}), kind: "session_summary" };
+			recallResults = search(store, RECALL_HINT_QUERY, effectiveLimit, recallFilters);
+			ftsCount = recallResults.length;
+		}
+		if (semanticResults && semanticResults.length > 0) {
+			const merge = mergeResults(store, recallResults, semanticResults, effectiveLimit, filters);
+			recallResults = merge.merged;
+			semanticCount = merge.semanticCount;
+		}
+		results = prioritizeRecallResults(recallResults, effectiveLimit);
+		if (results.length === 0) {
+			fallbackUsed = true;
+			results = recallFallbackRecent(store, effectiveLimit, filters);
+		}
+		const anchorId = results[0]?.id;
+		if (anchorId != null) {
+			const depthBefore = Math.max(0, Math.floor(effectiveLimit / 2));
+			const depthAfter = Math.max(0, effectiveLimit - depthBefore - 1);
+			const timelineRows = timeline(
+				store,
+				undefined,
+				anchorId,
+				depthBefore,
+				depthAfter,
+				filters ?? null,
+			);
+			if (timelineRows.length > 0) {
+				results = timelineRows.map(toMemoryResult);
+			}
+		}
+	} else {
+		const ftsResults = search(store, context, effectiveLimit, filters);
+		if (semanticResults && semanticResults.length > 0) {
+			const merge = mergeResults(store, ftsResults, semanticResults, effectiveLimit, filters);
+			results = merge.merged;
+			ftsCount = merge.ftsCount;
+			semanticCount = merge.semanticCount;
+		} else {
+			results = ftsResults;
+			ftsCount = results.length;
+		}
+		if (results.length === 0) {
+			fallbackUsed = true;
+			results = store.recent(effectiveLimit, filters ?? null).map(toMemoryResult);
+		}
 	}
 
 	// Step 2: categorize results
@@ -293,6 +488,10 @@ export function buildMemoryPack(
 			const pb = OBSERVATION_KIND_PRIORITY[b.kind] ?? 99;
 			return pa - pb;
 		});
+
+	if (recallMode && observationItems.length === 0) {
+		observationItems = results.filter((r) => r.kind !== "session_summary");
+	}
 
 	if (observationItems.length === 0) {
 		const recentObs = store.recentByKinds(
