@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import {
@@ -599,9 +599,7 @@ export class MemoryStore {
 
 		let vectorCount = 0;
 		if (tableExists(this.db, "memory_vectors")) {
-			const row = this.db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get() as
-				| { c: number }
-				| undefined;
+			const row = this.d.get<{ c: number | null }>(sql`SELECT COUNT(*) AS c FROM memory_vectors`);
 			vectorCount = row?.c ?? 0;
 		}
 		const vectorCoverage = activeMemories > 0 ? Math.min(1, vectorCount / activeMemories) : 0;
@@ -1642,41 +1640,67 @@ export class MemoryStore {
 	 * Port of latest_raw_event_flush_failure().
 	 */
 	latestRawEventFlushFailure(source?: string | null): Record<string, unknown> | null {
-		let query = `SELECT
-			id, source, stream_id, opencode_session_id,
-			start_event_seq, end_event_seq, extractor_version,
-			status, updated_at, attempt_count,
-			error_message, error_type,
-			observer_provider, observer_model, observer_runtime
-		FROM raw_event_flush_batches
-		WHERE status IN ('error', 'failed')`;
-		const params: unknown[] = [];
+		const conditions = [inArray(schema.rawEventFlushBatches.status, ["error", "failed"])];
 		if (source != null) {
-			query += " AND source = ?";
-			params.push(source.trim().toLowerCase() || "opencode");
+			conditions.push(
+				eq(schema.rawEventFlushBatches.source, source.trim().toLowerCase() || "opencode"),
+			);
 		}
-		query += " ORDER BY updated_at DESC LIMIT 1";
-		const row = this.db.prepare(query).get(...params) as Record<string, unknown> | undefined;
+
+		const row = this.d
+			.select({
+				id: schema.rawEventFlushBatches.id,
+				source: schema.rawEventFlushBatches.source,
+				stream_id: schema.rawEventFlushBatches.stream_id,
+				opencode_session_id: schema.rawEventFlushBatches.opencode_session_id,
+				start_event_seq: schema.rawEventFlushBatches.start_event_seq,
+				end_event_seq: schema.rawEventFlushBatches.end_event_seq,
+				extractor_version: schema.rawEventFlushBatches.extractor_version,
+				status: schema.rawEventFlushBatches.status,
+				updated_at: schema.rawEventFlushBatches.updated_at,
+				attempt_count: schema.rawEventFlushBatches.attempt_count,
+				error_message: schema.rawEventFlushBatches.error_message,
+				error_type: schema.rawEventFlushBatches.error_type,
+				observer_provider: schema.rawEventFlushBatches.observer_provider,
+				observer_model: schema.rawEventFlushBatches.observer_model,
+				observer_runtime: schema.rawEventFlushBatches.observer_runtime,
+			})
+			.from(schema.rawEventFlushBatches)
+			.where(and(...conditions))
+			.orderBy(desc(schema.rawEventFlushBatches.updated_at))
+			.limit(1)
+			.get();
 		if (!row) return null;
 		return { ...row, status: "error" };
 	}
 
 	getSyncDaemonState(): Record<string, unknown> | null {
-		const row = this.db
-			.prepare(
-				"SELECT last_error, last_traceback, last_error_at, last_ok_at FROM sync_daemon_state WHERE id = 1",
-			)
-			.get() as Record<string, unknown> | undefined;
+		const row = this.d
+			.select({
+				last_error: schema.syncDaemonState.last_error,
+				last_traceback: schema.syncDaemonState.last_traceback,
+				last_error_at: schema.syncDaemonState.last_error_at,
+				last_ok_at: schema.syncDaemonState.last_ok_at,
+			})
+			.from(schema.syncDaemonState)
+			.where(eq(schema.syncDaemonState.id, 1))
+			.get();
 		return row ? { ...row } : null;
 	}
 
 	sameActorPeerIds(): string[] {
 		if (!tableExists(this.db, "sync_peers")) return [];
-		const rows = this.db
-			.prepare(
-				"SELECT peer_device_id FROM sync_peers WHERE claimed_local_actor = 1 OR actor_id = ? ORDER BY peer_device_id",
+		const rows = this.d
+			.select({ peer_device_id: schema.syncPeers.peer_device_id })
+			.from(schema.syncPeers)
+			.where(
+				or(
+					eq(schema.syncPeers.claimed_local_actor, 1),
+					eq(schema.syncPeers.actor_id, this.actorId),
+				),
 			)
-			.all(this.actorId) as Array<Record<string, unknown>>;
+			.orderBy(schema.syncPeers.peer_device_id)
+			.all();
 		return rows.map((row) => String(row.peer_device_id ?? "").trim()).filter(Boolean);
 	}
 
@@ -1719,11 +1743,15 @@ export class MemoryStore {
 		let include = parseJsonList(JSON.stringify(config.sync_projects_include ?? []));
 		let exclude = parseJsonList(JSON.stringify(config.sync_projects_exclude ?? []));
 		if (peerDeviceId) {
-			const row = this.db
-				.prepare(
-					"SELECT projects_include_json, projects_exclude_json FROM sync_peers WHERE peer_device_id = ?",
-				)
-				.get(peerDeviceId) as Record<string, unknown> | undefined;
+			const row = this.d
+				.select({
+					projects_include_json: schema.syncPeers.projects_include_json,
+					projects_exclude_json: schema.syncPeers.projects_exclude_json,
+				})
+				.from(schema.syncPeers)
+				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+				.limit(1)
+				.get();
 			if (row) {
 				if (row.projects_include_json != null) include = parseJsonList(row.projects_include_json);
 				if (row.projects_exclude_json != null) exclude = parseJsonList(row.projects_exclude_json);
