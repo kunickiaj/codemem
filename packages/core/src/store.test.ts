@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
+import * as vectors from "./vectors.js";
 
 // ---------------------------------------------------------------------------
 // Helper: create a MemoryStore backed by a temp DB with test schema.
@@ -204,6 +205,52 @@ describe("MemoryStore", () => {
 
 			const row = store.get(memId);
 			expect(row?.tags_text).toBe("alpha beta");
+		});
+
+		it("kicks off vector storage after remembering a memory", () => {
+			const storeVectorsSpy = vi.spyOn(vectors, "storeVectors").mockResolvedValue();
+			try {
+				const sessionId = insertTestSession(store.db);
+				const memId = store.remember(sessionId, "feature", "Vector title", "Vector body");
+
+				expect(storeVectorsSpy).toHaveBeenCalledTimes(1);
+				expect(storeVectorsSpy).toHaveBeenCalledWith(
+					store.db,
+					memId,
+					"Vector title",
+					"Vector body",
+				);
+			} finally {
+				storeVectorsSpy.mockRestore();
+			}
+		});
+
+		it("does not fail remember when vector storage fails", () => {
+			const storeVectorsSpy = vi
+				.spyOn(vectors, "storeVectors")
+				.mockRejectedValue(new Error("embedding unavailable"));
+			try {
+				const sessionId = insertTestSession(store.db);
+				expect(() =>
+					store.remember(sessionId, "feature", "Resilient title", "Resilient body"),
+				).not.toThrow();
+			} finally {
+				storeVectorsSpy.mockRestore();
+			}
+		});
+
+		it("does not launch vector writes from inside an open transaction", () => {
+			const storeVectorsSpy = vi.spyOn(vectors, "storeVectors").mockResolvedValue();
+			try {
+				const sessionId = insertTestSession(store.db);
+				store.db.transaction(() => {
+					store.remember(sessionId, "feature", "Tx title", "Tx body");
+					expect(storeVectorsSpy).not.toHaveBeenCalled();
+				})();
+				expect(storeVectorsSpy).not.toHaveBeenCalled();
+			} finally {
+				storeVectorsSpy.mockRestore();
+			}
 		});
 	});
 

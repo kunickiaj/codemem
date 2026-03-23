@@ -69,7 +69,7 @@ interface RememberMemoryOptions {
 	dbPath?: string;
 }
 
-function rememberMemoryAction(opts: RememberMemoryOptions): void {
+async function rememberMemoryAction(opts: RememberMemoryOptions): Promise<void> {
 	const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 	let sessionId: number | null = null;
 	try {
@@ -82,6 +82,7 @@ function rememberMemoryAction(opts: RememberMemoryOptions): void {
 			metadata: { manual: true },
 		});
 		const memId = store.remember(sessionId, opts.kind, opts.title, opts.body, 0.5, opts.tags);
+		await store.flushPendingVectorWrites();
 		store.endSession(sessionId, { manual: true });
 		p.log.success(`Stored memory ${memId}`);
 	} catch (err) {

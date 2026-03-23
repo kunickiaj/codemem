@@ -50,6 +50,7 @@ import type {
 	StoreStats,
 	TimelineItemResponse,
 } from "./types.js";
+import { storeVectors } from "./vectors.js";
 
 // Memory kind validation (mirrors codemem/memory_kinds.py)
 
@@ -130,6 +131,7 @@ export class MemoryStore {
 	readonly deviceId: string;
 	readonly actorId: string;
 	readonly actorDisplayName: string;
+	private readonly pendingVectorWrites = new Set<Promise<void>>();
 
 	/** Lazy Drizzle ORM wrapper — shares the same better-sqlite3 connection. */
 	private _drizzle: ReturnType<typeof drizzle> | null = null;
@@ -184,6 +186,24 @@ export class MemoryStore {
 			: (cleanStr(config.actor_display_name) ?? null);
 		this.actorDisplayName =
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
+	}
+
+	private enqueueVectorWrite(memoryId: number, title: string, bodyText: string): void {
+		if (this.db.inTransaction) return;
+		let op: Promise<void> | null = null;
+		op = storeVectors(this.db, memoryId, title, bodyText)
+			.catch(() => {
+				// Non-fatal — keep memory writes resilient when embeddings are unavailable
+			})
+			.finally(() => {
+				if (op) this.pendingVectorWrites.delete(op);
+			});
+		this.pendingVectorWrites.add(op);
+	}
+
+	async flushPendingVectorWrites(): Promise<void> {
+		if (this.pendingVectorWrites.size === 0) return;
+		await Promise.allSettled([...this.pendingVectorWrites]);
 	}
 
 	// get
@@ -355,6 +375,8 @@ export class MemoryStore {
 		} catch {
 			// Non-fatal — don't block memory creation
 		}
+
+		this.enqueueVectorWrite(memoryId, title, bodyText);
 
 		return memoryId;
 	}

@@ -54,6 +54,7 @@ import type { ObserverClient } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
 import type { MemoryStore } from "./store.js";
+import { storeVectors } from "./vectors.js";
 
 // ---------------------------------------------------------------------------
 // Allowed memory kinds (matches Python)
@@ -378,6 +379,8 @@ export async function ingest(
 			}
 		}
 
+		const vectorWriteInputs: Array<{ memoryId: number; title: string; bodyText: string }> = [];
+
 		// Persist all observations, summary, and usage atomically
 		store.db.transaction(() => {
 			// ------------------------------------------------------------------
@@ -393,7 +396,8 @@ export async function ingest(
 				}
 				const bodyText = bodyParts.join("\n\n");
 
-				store.remember(sessionId, kind, obs.title || obs.narrative, bodyText, 0.5, undefined, {
+				const memoryTitle = obs.title || obs.narrative;
+				const memoryId = store.remember(sessionId, kind, memoryTitle, bodyText, 0.5, undefined, {
 					subtitle: obs.subtitle,
 					facts: obs.facts,
 					concepts: obs.concepts,
@@ -402,6 +406,7 @@ export async function ingest(
 					prompt_number: promptNumber,
 					source: "observer",
 				});
+				vectorWriteInputs.push({ memoryId, title: memoryTitle, bodyText });
 			}
 
 			// ------------------------------------------------------------------
@@ -409,7 +414,8 @@ export async function ingest(
 			// ------------------------------------------------------------------
 			if (summaryToStore) {
 				const { summary, request, body } = summaryToStore;
-				store.remember(sessionId, "change", request || "Session summary", body, 0.3, undefined, {
+				const summaryTitle = request || "Session summary";
+				const memoryId = store.remember(sessionId, "change", summaryTitle, body, 0.3, undefined, {
 					is_summary: true,
 					request,
 					investigated: summary.investigated,
@@ -422,6 +428,7 @@ export async function ingest(
 					files_modified: summary.filesModified,
 					source: "observer_summary",
 				});
+				vectorWriteInputs.push({ memoryId, title: summaryTitle, bodyText: body });
 			}
 
 			// ------------------------------------------------------------------
@@ -449,6 +456,14 @@ export async function ingest(
 				})
 				.run();
 		})();
+
+		for (const input of vectorWriteInputs) {
+			try {
+				await storeVectors(store.db, input.memoryId, input.title, input.bodyText);
+			} catch {
+				// Non-fatal — ingestion should not fail when embeddings are unavailable
+			}
+		}
 
 		// ------------------------------------------------------------------
 		// End session
