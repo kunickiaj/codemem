@@ -400,7 +400,14 @@ const PEERS_QUERY = `
 // Route factory
 // ---------------------------------------------------------------------------
 
-export function syncRoutes(getStore: StoreFactory) {
+/**
+ * Peer-to-peer sync protocol routes (/v1/*).
+ *
+ * These are mounted on the sync listener (0.0.0.0:7337) and are
+ * network-accessible. All requests are auth-gated via signature
+ * verification so unauthenticated callers are rejected.
+ */
+export function syncProtocolRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 
 	// GET /v1/status (peer sync protocol)
@@ -520,6 +527,19 @@ export function syncRoutes(getStore: StoreFactory) {
 			skipped: result.skipped + filteredInbound.skipped,
 		});
 	});
+
+	return app;
+}
+
+/**
+ * Viewer-facing sync management routes (/api/sync/*).
+ *
+ * These are mounted on the viewer listener (127.0.0.1:38888) and
+ * provide sync status, peer management, and coordinator UI for the
+ * local viewer.
+ */
+export function syncRoutes(getStore: StoreFactory) {
+	const app = new Hono();
 
 	// GET /api/sync/status
 	app.get("/api/sync/status", async (c) => {

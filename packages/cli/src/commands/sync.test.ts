@@ -58,6 +58,25 @@ describe("formatSyncAttempt", () => {
 		]);
 	});
 
+	it("builds sync start without host/port when not explicitly provided", () => {
+		expect(
+			buildServeLifecycleArgs(
+				"start",
+				{ dbPath: "/tmp/test.sqlite" },
+				"/repo/packages/cli/src/index.ts",
+				["--conditions", "source"],
+			),
+		).toEqual([
+			"--conditions",
+			"source",
+			"/repo/packages/cli/src/index.ts",
+			"serve",
+			"--restart",
+			"--db-path",
+			"/tmp/test.sqlite",
+		]);
+	});
+
 	it("builds sync restart as a serve restart invocation", () => {
 		expect(
 			buildServeLifecycleArgs(

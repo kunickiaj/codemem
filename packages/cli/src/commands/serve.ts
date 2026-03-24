@@ -9,6 +9,7 @@ import {
 	ObserverClient,
 	RawEventSweeper,
 	readCodememConfigFile,
+	readCoordinatorSyncConfig,
 	resolveDbPath,
 	runSyncDaemon,
 } from "@codemem/core";
@@ -307,7 +308,7 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 }
 
 async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
-	const { createApp, closeStore, getStore } = await import("@codemem/server");
+	const { createApp, createSyncApp, closeStore, getStore } = await import("@codemem/server");
 	const { serve } = await import("@hono/node-server");
 
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
@@ -345,19 +346,17 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const syncAbort = new AbortController();
 	let syncRunning = false;
 	const config = readCodememConfigFile();
-	const syncEnabled =
-		config.sync_enabled === true ||
-		process.env.CODEMEM_SYNC_ENABLED?.toLowerCase() === "true" ||
-		process.env.CODEMEM_SYNC_ENABLED === "1";
+	const syncConfig = readCoordinatorSyncConfig(config);
+	const syncEnabled = syncConfig.syncEnabled;
 
 	if (syncEnabled) {
 		syncRunning = true;
-		const syncIntervalS = typeof config.sync_interval_s === "number" ? config.sync_interval_s : 120;
+		const syncIntervalS = syncConfig.syncIntervalS;
 		runSyncDaemon({
 			dbPath: resolveDbPath(invocation.dbPath ?? undefined),
 			intervalS: syncIntervalS,
-			host: invocation.host,
-			port: invocation.port,
+			host: syncConfig.syncHost,
+			port: syncConfig.syncPort,
 			signal: syncAbort.signal,
 		})
 			.catch((err: unknown) => {
@@ -369,9 +368,35 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			});
 	}
 
-	const app = createApp({ storeFactory: () => store, sweeper, observer });
+	const appOpts = { storeFactory: () => store, sweeper, observer };
+	const app = createApp(appOpts);
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const pidPath = pidFilePath(dbPath);
+
+	// Sync protocol listener — separate port, network-accessible for peers.
+	// syncServerRef is never nulled after creation so shutdown always drains it.
+	let syncServer: ReturnType<typeof serve> | null = null;
+	let syncListenerReady = false;
+	if (syncEnabled) {
+		const syncApp = createSyncApp(appOpts);
+		syncServer = serve(
+			{ fetch: syncApp.fetch, hostname: syncConfig.syncHost, port: syncConfig.syncPort },
+			(info) => {
+				syncListenerReady = true;
+				p.log.step(`Sync protocol listening on http://${info.address}:${info.port}`);
+			},
+		);
+		syncServer.on("error", (err: NodeJS.ErrnoException) => {
+			if (!syncListenerReady && err.code === "EADDRINUSE") {
+				p.log.warn(
+					`Sync port ${syncConfig.syncPort} already in use; peer sync protocol unavailable`,
+				);
+			} else {
+				p.log.warn(`Sync listener error: ${err.message}`);
+			}
+			// Non-fatal — viewer continues. syncServer ref is kept for shutdown drain.
+		});
+	}
 
 	const server = serve(
 		{ fetch: app.fetch, hostname: invocation.host, port: invocation.port },
@@ -402,15 +427,30 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		p.outro("shutting down");
 		syncAbort.abort();
 		await sweeper.stop();
-		server.close(() => {
-			try {
-				rmSync(pidPath);
-			} catch {
-				// ignore
-			}
-			closeStore();
-			process.exit(0);
+
+		// Drain both listeners before closing the shared store.
+		await new Promise<void>((resolve) => {
+			let remaining = syncServer ? 2 : 1;
+			const done = () => {
+				if (--remaining === 0) resolve();
+			};
+			syncServer?.close(done);
+			server.close(done);
+		}).catch(() => {
+			// Best-effort drain — proceed to cleanup.
 		});
+
+		try {
+			rmSync(pidPath);
+		} catch {
+			// ignore
+		}
+		closeStore();
+		process.exit(0);
+	};
+
+	// Force-exit safety net if graceful shutdown stalls.
+	const forceShutdown = () => {
 		setTimeout(() => {
 			try {
 				rmSync(pidPath);
@@ -422,9 +462,11 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		}, 5000).unref();
 	};
 	process.on("SIGINT", () => {
+		forceShutdown();
 		void shutdown();
 	});
 	process.on("SIGTERM", () => {
+		forceShutdown();
 		void shutdown();
 	});
 }

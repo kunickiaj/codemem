@@ -125,16 +125,10 @@ async function runServeLifecycle(
 			process.exitCode = 1;
 			return;
 		}
-		const configuredHost = typeof config.sync_host === "string" ? config.sync_host : "0.0.0.0";
-		const configuredPort = typeof config.sync_port === "number" ? String(config.sync_port) : "7337";
-		opts.host ??= configuredHost;
-		opts.port ??= configuredPort;
-	} else if (action === "restart") {
-		const config = readCodememConfigFile();
-		const configuredHost = typeof config.sync_host === "string" ? config.sync_host : "0.0.0.0";
-		const configuredPort = typeof config.sync_port === "number" ? String(config.sync_port) : "7337";
-		opts.host ??= configuredHost;
-		opts.port ??= configuredPort;
+		// Don't pass sync_host/sync_port as viewer bind values.
+		// The viewer binds its own host/port (default 127.0.0.1:38888)
+		// and the sync protocol listener reads sync_host/sync_port
+		// internally from readCoordinatorSyncConfig().
 	}
 	const args = buildServeLifecycleArgs(action, opts, process.argv[1] ?? "", process.execArgv);
 	await new Promise<void>((resolve, reject) => {

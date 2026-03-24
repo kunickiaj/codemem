@@ -16,7 +16,7 @@ import {
 } from "@codemem/core";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
-import { createApp } from "./index.js";
+import { createApp, createSyncApp } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -91,20 +91,25 @@ function createTestApp(opts?: { sweeper?: unknown }) {
 	let store: MemoryStore | null = null;
 	let storeCleanup: (() => void) | null = null;
 
+	const storeFactory = () => {
+		if (!store) {
+			const created = createTestStore();
+			store = created.store;
+			storeCleanup = created.cleanup;
+		}
+		return store;
+	};
+
 	const app = createApp({
 		sweeper: (opts?.sweeper ?? null) as never,
-		storeFactory: () => {
-			if (!store) {
-				const created = createTestStore();
-				store = created.store;
-				storeCleanup = created.cleanup;
-			}
-			return store;
-		},
+		storeFactory,
 	});
+
+	const syncApp = createSyncApp({ storeFactory });
 
 	return {
 		app,
+		syncApp,
 		getStore: () => store,
 		cleanup: () => {
 			storeCleanup?.();
@@ -879,10 +884,23 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("exposes /v1/status sync endpoint (auth-gated)", async () => {
+		it("does not expose /v1/status on viewer app (moved to sync listener)", async () => {
 			const { app, cleanup } = createTestApp();
 			try {
 				const res = await app.request("/v1/status");
+				// Should return SPA fallback (200 html), not 401 — route is gone from viewer
+				expect(res.status).toBe(200);
+				const ct = res.headers.get("content-type") ?? "";
+				expect(ct).toContain("text/html");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("exposes /v1/status on sync app (auth-gated)", async () => {
+			const { syncApp, cleanup } = createTestApp();
+			try {
+				const res = await syncApp.request("/v1/status");
 				expect(res.status).toBe(401);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.error).toBe("unauthorized");
@@ -891,17 +909,54 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("exposes /v1/ops sync endpoint (auth-gated)", async () => {
-			const { app, cleanup } = createTestApp();
+		it("exposes /v1/ops on sync app (auth-gated)", async () => {
+			const { syncApp, cleanup } = createTestApp();
 			try {
-				const getRes = await app.request("/v1/ops");
+				const getRes = await syncApp.request("/v1/ops");
 				expect(getRes.status).toBe(401);
-				const postRes = await app.request("/v1/ops", {
+				const postRes = await syncApp.request("/v1/ops", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ ops: [] }),
 				});
 				expect(postRes.status).toBe(401);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("does not expose viewer routes on sync app", async () => {
+			const { syncApp, cleanup } = createTestApp();
+			try {
+				const statsRes = await syncApp.request("/api/stats");
+				expect(statsRes.status).toBe(404);
+
+				const peersRes = await syncApp.request("/api/sync/peers");
+				expect(peersRes.status).toBe(404);
+
+				const obsRes = await syncApp.request("/api/observations");
+				expect(obsRes.status).toBe(404);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("sync app does not apply CORS origin guard on POST", async () => {
+			const { syncApp, cleanup } = createTestApp();
+			try {
+				// POST with a non-loopback origin — sync app should return 401 (auth),
+				// not 403 (CORS rejection), since it has no origin guard middleware.
+				const res = await syncApp.request("/v1/ops", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "https://evil.example.com",
+					},
+					body: JSON.stringify({ ops: [] }),
+				});
+				expect(res.status).toBe(401);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("unauthorized");
 			} finally {
 				cleanup();
 			}
