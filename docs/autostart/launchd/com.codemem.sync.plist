@@ -7,8 +7,9 @@
     <key>ProgramArguments</key>
     <array>
       <string>codemem</string>
-      <string>sync</string>
-      <string>daemon</string>
+      <string>serve</string>
+      <string>start</string>
+      <string>--foreground</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

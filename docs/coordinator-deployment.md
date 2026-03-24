@@ -1,19 +1,19 @@
-# Deploying the Python coordinator
+# Deploying the coordinator
 
-The built-in Python coordinator is the canonical deployment target for team sync. This guide covers how to run it
+The built-in coordinator is the canonical deployment target for team sync. This guide covers how to run it
 natively, in a container, and how to expose it to teammates outside your local network.
 
 ## Quick start (native)
 
 ```fish
-# Install codemem (makes the `codemem` command available)
-pip install codemem
+# Install codemem CLI (makes the `codemem` command available)
+npm install -g codemem
 
 # Create a coordinator group
 codemem sync coordinator group-create my-team --db-path ~/.codemem/coordinator.sqlite
 
 # Set an admin secret (required for creating invites via the API)
-set -x CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET (python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+set -x CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET (openssl rand -base64 32)
 
 # Start the coordinator
 codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
@@ -79,9 +79,9 @@ codemem sync coordinator deny-join-request <request-id> --db-path <path>
 No official Dockerfile is shipped yet. Here is a minimal example:
 
 ```dockerfile
-FROM python:3.12-slim
+FROM node:24-slim
 
-RUN pip install --no-cache-dir codemem
+RUN npm install -g codemem
 
 VOLUME /data
 

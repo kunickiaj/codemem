@@ -69,7 +69,7 @@ cp ~/.config/opencode-mem/config.json ~/.config/codemem/config.json
 
 ```bash
 codemem stats
-codemem raw-events-status
+codemem db raw-events-status
 ```
 
 7. Confirm migrated default DB exists:

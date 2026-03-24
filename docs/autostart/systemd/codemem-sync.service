@@ -1,9 +1,9 @@
 [Unit]
-Description=codemem sync daemon
+Description=codemem viewer + sync daemon
 After=network-online.target
 
 [Service]
-ExecStart=codemem sync daemon
+ExecStart=codemem serve start --foreground
 Restart=on-failure
 Environment=CODEMEM_CONFIG=%h/.config/codemem/config.json
 

@@ -6,13 +6,13 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 
 | Component | What it does | Key files |
 |-----------|-------------|-----------|
-| Adapters | Capture OpenCode/Claude events and enqueue raw events for ingest | `.opencode/plugin/codemem.js`, `plugins/claude/scripts/ingest-hook.sh`, `codemem/commands/claude_integration_cmds.py`, `codemem/claude_hooks.py` |
-| Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `codemem/plugin_ingest.py`, `codemem/ingest/` |
-| Observer | Produces typed observations and session summaries from transcripts | `codemem/observer_prompts.py`, `codemem/xml_parser.py` |
-| Store | SQLite persistence for sessions, memories, artifacts, embeddings | `codemem/store/`, `codemem/db.py` |
-| Viewer | Local web UI + JSON APIs for stats, sessions, and memory items | `codemem/viewer.py`, `codemem/viewer_routes/` |
-| MCP server | Exposes memory tools (search, timeline, pack, remember, forget) to OpenCode | `codemem/mcp_server.py` |
-| CLI | Ties everything together: ingest, serve, search, export/import, sync | `codemem/cli_app.py` |
+| Adapters | Capture OpenCode/Claude events and enqueue raw events for ingest | `.opencode/plugin/codemem.js`, `plugins/claude/scripts/ingest-hook.sh`, `packages/core/src/claude-hooks.ts` |
+| Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `packages/core/src/ingest-pipeline.ts`, `packages/core/src/ingest-events.ts` |
+| Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/ingest-prompts.ts`, `packages/core/src/ingest-xml-parser.ts` |
+| Store | SQLite persistence for sessions, memories, artifacts, embeddings | `packages/core/src/store.ts`, `packages/core/src/schema.ts` |
+| Viewer | Local web UI + JSON APIs for stats, sessions, and memory items | `packages/viewer-server/src/`, `packages/ui/src/` |
+| MCP server | Exposes memory tools (search, timeline, pack, remember, forget) to OpenCode | `packages/mcp-server/src/` |
+| CLI | Ties everything together: ingest, serve, search, export/import, sync | `packages/cli/src/` |
 
 ## Data flow
 
@@ -34,7 +34,7 @@ flowchart LR
 
 1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
 2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail.
-3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue (or pinned `uvx`) when the local viewer API is unavailable.
+3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
 6. Ingest builds a transcript from user prompts and assistant messages, then hands it to the observer.
@@ -117,7 +117,7 @@ If sqlite-vec can't load (e.g., missing native extension), semantic search is si
 
 ### Hybrid merge and re-rank (pack path)
 
-In the pack-building path — CLI `pack`/`inject`, MCP `memory_pack`, and plugin injection — results from both backends are merged and re-ranked. This happens in `_merge_ranked_results` (`codemem/store/search.py`):
+In the pack-building path — CLI `pack`/`inject`, MCP `memory_pack`, and plugin injection — results from both backends are merged and re-ranked. This happens in the hybrid merge layer (`packages/core/src/search.ts`):
 
 1. Run FTS5 search to get lexical candidates.
 2. Run semantic search to get vector candidates.
@@ -177,7 +177,7 @@ These are concatenated into a single query string, capped at 500 characters.
 
 ### How the pack is built
 
-`build_memory_pack` (`codemem/store/packs.py`) assembles three sections:
+`buildMemoryPack` (`packages/core/src/pack.ts`) assembles three sections:
 
 1. **Summary** — the most recent `session_summary` matching the query (or the latest one if none match)
 2. **Timeline** — recent memories from search results, ordered by relevance
@@ -238,7 +238,7 @@ The observer turns raw session transcripts into typed, structured memories. It's
 
 ### Memory taxonomy
 
-Observations use a fixed set of kinds defined in `codemem/memory_kinds.py`:
+Observations use a fixed set of kinds defined in `packages/core/src/store.ts`:
 
 | Kind | When to use | Example |
 |------|------------|---------|
@@ -258,11 +258,11 @@ Observations use a fixed set of kinds defined in `codemem/memory_kinds.py`:
 
 Noise control happens at three layers:
 
-1. **Event extraction** (`codemem/ingest/events.py`) — Low-signal tool types (`tui`, `shell`, `task`, `slashcommand`, `skill`, `todowrite`, `askuserquestion`) are dropped before they reach the observer. Internal codemem memory tools (anything starting with `codemem_memory_`) are also excluded to prevent feedback loops.
+1. **Event extraction** (`packages/core/src/ingest-events.ts`) — Low-signal tool types (`tui`, `shell`, `task`, `slashcommand`, `skill`, `todowrite`, `askuserquestion`) are dropped before they reach the observer. Internal codemem memory tools (anything starting with `codemem_memory_`) are also excluded to prevent feedback loops.
 
-2. **Observer prompt guidance** (`codemem/observer_prompts.py`) — The observer prompt instructs the LLM to skip routine/noise-only work and focus on meaningful changes, decisions, and discoveries.
+2. **Observer prompt guidance** (`packages/core/src/ingest-prompts.ts`) — The observer prompt instructs the LLM to skip routine/noise-only work and focus on meaningful changes, decisions, and discoveries.
 
-3. **Post-observer text filtering** (`codemem/summarizer.py`) — `is_low_signal_observation` applies regex patterns to catch formulaic low-value outputs that the observer sometimes produces despite guidance (e.g., "no code changes were recorded", "only file inspection occurred").
+3. **Post-observer text filtering** (`packages/core/src/ingest-filters.ts`) — `isLowSignalObservation` applies regex patterns to catch formulaic low-value outputs that the observer sometimes produces despite guidance (e.g., "no code changes were recorded", "only file inspection occurred").
 
 ### Structured fields
 
@@ -272,7 +272,7 @@ Each observation is persisted with structured metadata that improves retrieval:
 - **`concepts`** — domain concepts and technical terms mentioned
 - **`files_read`** / **`files_modified`** — file paths involved in the work
 - **`narrative`** — the full observation text
-- **`tags_text`** — auto-derived from kind, concepts, and file paths (`codemem/store/tags.py`); used in FTS5 indexing
+- **`tags_text`** — auto-derived from kind, concepts, and file paths (`packages/core/src/tags.ts`); used in FTS5 indexing
 
 These fields feed into tag derivation, which directly influences FTS5 recall and pack section ordering (tag overlap with the query boosts observation ranking).
 
