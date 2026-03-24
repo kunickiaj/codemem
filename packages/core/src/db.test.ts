@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
+	backupOnFirstAccess,
 	columnExists,
 	connect,
 	ensureAdditiveSchemaCompatibility,
@@ -65,6 +66,82 @@ describe("connect", () => {
 
 	it("expands ~/ paths like Python", () => {
 		expect(resolveDbPath("~/codemem-test.sqlite")).toBe(join(homedir(), "codemem-test.sqlite"));
+	});
+});
+
+describe("backupOnFirstAccess", () => {
+	let tmpDir: string;
+	let dbPath: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-backup-"));
+		dbPath = join(tmpDir, "mem.sqlite");
+		writeFileSync(dbPath, "test-db-content");
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("creates marker and skips repeated backups", () => {
+		backupOnFirstAccess(dbPath);
+		const markerPath = join(tmpDir, ".codemem-ts-accessed");
+		expect(existsSync(markerPath)).toBe(true);
+
+		const firstBackups = readdirSync(tmpDir).filter(
+			(name) => name.startsWith("mem.sqlite.pre-ts-") && name.endsWith(".bak"),
+		);
+		expect(firstBackups.length).toBe(1);
+
+		backupOnFirstAccess(dbPath);
+		const secondBackups = readdirSync(tmpDir).filter(
+			(name) => name.startsWith("mem.sqlite.pre-ts-") && name.endsWith(".bak"),
+		);
+		expect(secondBackups.length).toBe(1);
+	});
+
+	it("writes marker when a viable pre-ts backup already exists", () => {
+		const existingBackup = `${dbPath}.pre-ts-20260324T1710.bak`;
+		writeFileSync(existingBackup, "test-db-content");
+
+		backupOnFirstAccess(dbPath);
+
+		const markerPath = join(tmpDir, ".codemem-ts-accessed");
+		expect(existsSync(markerPath)).toBe(true);
+		const backups = readdirSync(tmpDir).filter(
+			(name) => name.startsWith("mem.sqlite.pre-ts-") && name.endsWith(".bak"),
+		);
+		expect(backups.length).toBe(1);
+	});
+
+	it("skips backup when lock contention is active", () => {
+		const lockPath = join(tmpDir, ".codemem-ts-backup.lock");
+		writeFileSync(lockPath, "live");
+
+		backupOnFirstAccess(dbPath);
+
+		const markerPath = join(tmpDir, ".codemem-ts-accessed");
+		expect(existsSync(markerPath)).toBe(false);
+		const backups = readdirSync(tmpDir).filter(
+			(name) => name.startsWith("mem.sqlite.pre-ts-") && name.endsWith(".bak"),
+		);
+		expect(backups.length).toBe(0);
+	});
+
+	it("treats stale lock files as recoverable", () => {
+		const lockPath = join(tmpDir, ".codemem-ts-backup.lock");
+		writeFileSync(lockPath, "stale");
+		const old = new Date(Date.now() - 20 * 60 * 1000);
+		utimesSync(lockPath, old, old);
+
+		backupOnFirstAccess(dbPath);
+
+		const markerPath = join(tmpDir, ".codemem-ts-accessed");
+		expect(existsSync(markerPath)).toBe(true);
+		const backups = readdirSync(tmpDir).filter(
+			(name) => name.startsWith("mem.sqlite.pre-ts-") && name.endsWith(".bak"),
+		);
+		expect(backups.length).toBe(1);
 	});
 });
 

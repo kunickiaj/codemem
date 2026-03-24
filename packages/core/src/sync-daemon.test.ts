@@ -25,6 +25,7 @@ describe("syncDaemonTick", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
+		vi.clearAllMocks();
 		db = new Database(":memory:");
 		initTestSchema(db);
 	});
@@ -34,11 +35,14 @@ describe("syncDaemonTick", () => {
 	});
 
 	it("returns empty array when no peers exist", async () => {
+		const { syncPassPreflight } = await import("./sync-pass.js");
 		const results = await syncDaemonTick(db);
 		expect(results).toEqual([]);
+		expect(syncPassPreflight).not.toHaveBeenCalled();
 	});
 
 	it("runs sync for each peer", async () => {
+		const { syncPassPreflight } = await import("./sync-pass.js");
 		const now = new Date().toISOString();
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
@@ -51,6 +55,7 @@ describe("syncDaemonTick", () => {
 		expect(results).toHaveLength(2);
 		expect(results[0].ok).toBe(true);
 		expect(results[1].ok).toBe(true);
+		expect(syncPassPreflight).toHaveBeenCalledTimes(1);
 	});
 
 	it("skips offline peers in backoff", async () => {
