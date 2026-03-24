@@ -263,6 +263,41 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "raw_event_flush_batches", "attempt_count")).toBe(true);
 	});
 
+	it("treats duplicate-column races as benign when column now exists", () => {
+		let racedColumnVisible = false;
+		let alterAttempts = 0;
+
+		const fakeDb = {
+			prepare(query: string) {
+				return {
+					get(...args: unknown[]) {
+						if (query.includes("sqlite_master")) {
+							return { ok: 1 };
+						}
+						if (query.includes("pragma_table_info")) {
+							const requestedColumn = String(args[1] ?? "");
+							if (requestedColumn === "error_message") {
+								return racedColumnVisible ? { ok: 1 } : undefined;
+							}
+							return { ok: 1 };
+						}
+						return undefined;
+					},
+				};
+			},
+			exec(sqlText: string) {
+				if (sqlText.includes("ADD COLUMN error_message")) {
+					alterAttempts += 1;
+					racedColumnVisible = true;
+					throw new Error("duplicate column name: error_message");
+				}
+			},
+		} as unknown as Database;
+
+		expect(() => ensureAdditiveSchemaCompatibility(fakeDb)).not.toThrow();
+		expect(alterAttempts).toBe(1);
+	});
+
 	it("is a no-op when raw_event_flush_batches does not exist", () => {
 		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
 	});
