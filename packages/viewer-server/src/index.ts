@@ -20,7 +20,7 @@ import { memoryRoutes } from "./routes/memory.js";
 import { observerStatusRoutes } from "./routes/observer-status.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
-import { syncRoutes } from "./routes/sync.js";
+import { syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
 
 export { VERSION };
 
@@ -97,6 +97,27 @@ export function createApp(opts?: AppOptions) {
 		}
 		return c.html(indexHtml);
 	});
+
+	return app;
+}
+
+/**
+ * Create the Hono app for peer-to-peer sync protocol routes only.
+ *
+ * This app is bound to a separate network-accessible listener
+ * (default 0.0.0.0:7337) so remote peers can reach the sync
+ * endpoints without exposing the viewer UI or local API routes.
+ *
+ * No CORS/origin guard is applied — sync requests are authenticated
+ * via cryptographic signature verification instead.
+ */
+export function createSyncApp(opts?: AppOptions) {
+	const storeFactory = opts?.storeFactory ?? getStore;
+	const app = new Hono();
+	app.route("/", syncProtocolRoutes(storeFactory));
+
+	// Catch-all — return generic 404 to avoid fingerprinting the server.
+	app.all("*", (c) => c.json({ error: "not found" }, 404));
 
 	return app;
 }
