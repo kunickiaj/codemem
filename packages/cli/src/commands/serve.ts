@@ -190,6 +190,15 @@ async function waitForProcessExit(pid: number, timeoutMs = 5000): Promise<void> 
 	}
 }
 
+async function waitForPortRelease(host: string, port: number, timeoutMs = 10000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (!(await isPortOpen(host, port))) return true;
+		await new Promise((resolve) => setTimeout(resolve, 200));
+	}
+	return false;
+}
+
 async function stopExistingViewer(
 	dbPath: string,
 	target: { host: string; port: number },
@@ -484,6 +493,11 @@ async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<
 			if (invocation.mode === "stop") {
 				p.outro("done");
 				return;
+			}
+			// Wait for port to be fully released before restarting.
+			const released = await waitForPortRelease(invocation.host, invocation.port);
+			if (!released) {
+				p.log.warn(`Port ${invocation.port} still in use after stop — restart may fail`);
 			}
 		} else if (invocation.mode === "stop") {
 			p.intro("codemem viewer");

@@ -19,7 +19,6 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
-	backupOnFirstAccess,
 	connect,
 	DEFAULT_DB_PATH,
 	ensureAdditiveSchemaCompatibility,
@@ -175,7 +174,6 @@ export class MemoryStore {
 
 	constructor(dbPath: string = DEFAULT_DB_PATH) {
 		this.dbPath = resolveDbPath(dbPath);
-		backupOnFirstAccess(this.dbPath);
 		this.db = connect(this.dbPath);
 		try {
 			loadSqliteVec(this.db);
