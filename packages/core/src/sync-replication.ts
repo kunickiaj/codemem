@@ -17,6 +17,119 @@ import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
 import type { ReplicationOp } from "./types.js";
 
+type MemoryItemRow = typeof schema.memoryItems.$inferSelect;
+
+interface MemoryPayload {
+	session_id: number | null;
+	kind: string | null;
+	title: string | null;
+	subtitle: string | null;
+	body_text: string | null;
+	confidence: number | null;
+	tags_text: string | null;
+	active: number | null;
+	created_at: string | null;
+	updated_at: string | null;
+	metadata_json: Record<string, unknown>;
+	actor_id: string | null;
+	actor_display_name: string | null;
+	visibility: string | null;
+	workspace_id: string | null;
+	workspace_kind: string | null;
+	origin_device_id: string | null;
+	origin_source: string | null;
+	trust_state: string | null;
+	narrative: string | null;
+	facts: unknown;
+	concepts: unknown;
+	files_read: unknown;
+	files_modified: unknown;
+	user_prompt_id: number | null;
+	prompt_number: number | null;
+	deleted_at: string | null;
+	rev: number;
+	import_key: string | null;
+}
+
+function asNumberOrNull(value: unknown): number | null {
+	if (value == null) return null;
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "string" && value.trim().length > 0) {
+		const parsed = Number(value);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return null;
+}
+
+function asStringOrNull(value: unknown): string | null {
+	if (value == null) return null;
+	return String(value);
+}
+
+function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload | null {
+	if (!op.payload_json) return null;
+	let raw: Record<string, unknown>;
+	try {
+		raw = fromJsonStrict(op.payload_json);
+	} catch (err) {
+		errors.push(
+			`op ${op.op_id}: skipped — payload_json is not a valid object: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return null;
+	}
+	const metadataRaw = raw.metadata_json;
+	const metadata_json =
+		metadataRaw && typeof metadataRaw === "object" && !Array.isArray(metadataRaw)
+			? { ...(metadataRaw as Record<string, unknown>) }
+			: {};
+	return {
+		session_id: asNumberOrNull(raw.session_id),
+		kind: asStringOrNull(raw.kind),
+		title: asStringOrNull(raw.title),
+		subtitle: asStringOrNull(raw.subtitle),
+		body_text: asStringOrNull(raw.body_text),
+		confidence: asNumberOrNull(raw.confidence),
+		tags_text: asStringOrNull(raw.tags_text),
+		active: asNumberOrNull(raw.active),
+		created_at: asStringOrNull(raw.created_at),
+		updated_at: asStringOrNull(raw.updated_at),
+		metadata_json,
+		actor_id: asStringOrNull(raw.actor_id),
+		actor_display_name: asStringOrNull(raw.actor_display_name),
+		visibility: asStringOrNull(raw.visibility),
+		workspace_id: asStringOrNull(raw.workspace_id),
+		workspace_kind: asStringOrNull(raw.workspace_kind),
+		origin_device_id: asStringOrNull(raw.origin_device_id),
+		origin_source: asStringOrNull(raw.origin_source),
+		trust_state: asStringOrNull(raw.trust_state),
+		narrative: asStringOrNull(raw.narrative),
+		facts: raw.facts ?? null,
+		concepts: raw.concepts ?? null,
+		files_read: raw.files_read ?? null,
+		files_modified: raw.files_modified ?? null,
+		user_prompt_id: asNumberOrNull(raw.user_prompt_id),
+		prompt_number: asNumberOrNull(raw.prompt_number),
+		deleted_at: asStringOrNull(raw.deleted_at),
+		rev: asNumberOrNull(raw.rev) ?? 0,
+		import_key: asStringOrNull(raw.import_key),
+	};
+}
+
+function mergePayloadMetadata(
+	metadata: Record<string, unknown>,
+	clockDeviceId: string,
+): Record<string, unknown> {
+	return {
+		...metadata,
+		clock_device_id: clockDeviceId,
+	};
+}
+
+function clockDeviceIdFromMetadataJson(raw: string | null): string {
+	const metadata = fromJson(raw);
+	return typeof metadata.clock_device_id === "string" ? metadata.clock_device_id : "";
+}
+
 // Op chunking
 
 /**
@@ -231,7 +344,10 @@ export function recordReplicationOp(
 	const updatedAt = row?.updated_at ?? now;
 	const entityId = row?.import_key ?? String(opts.memoryId);
 	const metadata = fromJson(row?.metadata_json);
-	const clockDeviceId = (metadata.clock_device_id as string) || opts.deviceId;
+	const clockDeviceId =
+		typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim().length > 0
+			? metadata.clock_device_id
+			: opts.deviceId;
 
 	// Build payload from the memory row so peers can reconstruct the full item.
 	// Explicit payload override takes precedence (used by tests).
@@ -685,7 +801,8 @@ export function migrateLegacyImportKeys(db: Database, limit = 2000): number {
 		const memoryId = Number(row.id);
 		const current = String(row.import_key ?? "").trim();
 		const metadata = fromJson(row.metadata_json);
-		const clockDeviceId = String(metadata.clock_device_id ?? "").trim();
+		const clockDeviceId =
+			typeof metadata.clock_device_id === "string" ? metadata.clock_device_id.trim() : "";
 
 		let canonical = "";
 		if (!current) {
@@ -798,7 +915,8 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 			typeof row.metadata_json === "string"
 				? fromJson(row.metadata_json)
 				: fromJsonNullableLike(row.metadata_json);
-		const metadataClockDeviceId = String(metadata.clock_device_id ?? "").trim();
+		const metadataClockDeviceId =
+			typeof metadata.clock_device_id === "string" ? metadata.clock_device_id.trim() : "";
 		const originDeviceId =
 			metadataClockDeviceId && metadataClockDeviceId !== "local"
 				? metadataClockDeviceId
@@ -860,7 +978,7 @@ function fromJsonNullableLike(value: unknown): Record<string, unknown> {
 	return {};
 }
 
-function buildPayloadFromMemoryRow(row: Record<string, unknown>): Record<string, unknown> {
+function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
 	const parseSqliteJson = (val: unknown): unknown => {
 		if (typeof val !== "string") return val ?? null;
 		try {
@@ -869,6 +987,11 @@ function buildPayloadFromMemoryRow(row: Record<string, unknown>): Record<string,
 			return val;
 		}
 	};
+	const metadataParsed = parseSqliteJson(row.metadata_json);
+	const metadataJson =
+		metadataParsed && typeof metadataParsed === "object" && !Array.isArray(metadataParsed)
+			? (metadataParsed as Record<string, unknown>)
+			: {};
 
 	return {
 		session_id: row.session_id ?? null,
@@ -881,7 +1004,7 @@ function buildPayloadFromMemoryRow(row: Record<string, unknown>): Record<string,
 		active: row.active ?? null,
 		created_at: row.created_at ?? null,
 		updated_at: row.updated_at ?? null,
-		metadata_json: parseSqliteJson(row.metadata_json),
+		metadata_json: metadataJson,
 		actor_id: row.actor_id ?? null,
 		actor_display_name: row.actor_display_name ?? null,
 		visibility: row.visibility ?? null,
@@ -955,21 +1078,8 @@ export function applyReplicationOps(
 						.where(eq(schema.memoryItems.import_key, importKey))
 						.get();
 
-					const parsePayload = (json: string | null): Record<string, unknown> | null => {
-						if (!json) return null;
-						try {
-							return fromJsonStrict(json);
-						} catch (err) {
-							result.errors.push(
-								`op ${op.op_id}: skipped — payload_json is not a valid object: ${err instanceof Error ? err.message : String(err)}`,
-							);
-							return null;
-						}
-					};
-
 					if (memRow) {
-						const existingMeta = fromJson(memRow.metadata_json);
-						const existingClockDeviceId = (existingMeta.clock_device_id as string) ?? "";
+						const existingClockDeviceId = clockDeviceIdFromMetadataJson(memRow.metadata_json);
 						const existingClock = clockTuple(
 							memRow.rev ?? 0,
 							memRow.updated_at ?? "",
@@ -985,37 +1095,32 @@ export function applyReplicationOps(
 						}
 
 						// Update existing row from payload — skip if malformed
-						const payload = parsePayload(op.payload_json);
+						const payload = parseMemoryPayload(op, result.errors);
 						if (!payload) continue;
-						const newMeta = payload.metadata_json ?? {};
-						const metaObj =
-							typeof newMeta === "object" && newMeta !== null
-								? (newMeta as Record<string, unknown>)
-								: {};
-						metaObj.clock_device_id = op.clock_device_id;
+						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
 
 						d.update(schema.memoryItems)
 							.set({
-								kind: sql`COALESCE(${(payload.kind as string) ?? null}, ${schema.memoryItems.kind})`,
-								title: sql`COALESCE(${(payload.title as string) ?? null}, ${schema.memoryItems.title})`,
-								subtitle: (payload.subtitle as string) ?? null,
-								body_text: sql`COALESCE(${(payload.body_text as string) ?? null}, ${schema.memoryItems.body_text})`,
+								kind: sql`COALESCE(${payload.kind}, ${schema.memoryItems.kind})`,
+								title: sql`COALESCE(${payload.title}, ${schema.memoryItems.title})`,
+								subtitle: payload.subtitle,
+								body_text: sql`COALESCE(${payload.body_text}, ${schema.memoryItems.body_text})`,
 								confidence: sql`COALESCE(${payload.confidence != null ? Number(payload.confidence) : null}, ${schema.memoryItems.confidence})`,
-								tags_text: sql`COALESCE(${(payload.tags_text as string) ?? null}, ${schema.memoryItems.tags_text})`,
+								tags_text: sql`COALESCE(${payload.tags_text}, ${schema.memoryItems.tags_text})`,
 								active: sql`COALESCE(${payload.active != null ? Number(payload.active) : null}, ${schema.memoryItems.active})`,
 								updated_at: op.clock_updated_at,
 								metadata_json: toJson(metaObj),
 								rev: op.clock_rev,
-								deleted_at: (payload.deleted_at as string) ?? null,
-								actor_id: sql`COALESCE(${(payload.actor_id as string) ?? null}, ${schema.memoryItems.actor_id})`,
-								actor_display_name: sql`COALESCE(${(payload.actor_display_name as string) ?? null}, ${schema.memoryItems.actor_display_name})`,
-								visibility: sql`COALESCE(${(payload.visibility as string) ?? null}, ${schema.memoryItems.visibility})`,
-								workspace_id: sql`COALESCE(${(payload.workspace_id as string) ?? null}, ${schema.memoryItems.workspace_id})`,
-								workspace_kind: sql`COALESCE(${(payload.workspace_kind as string) ?? null}, ${schema.memoryItems.workspace_kind})`,
-								origin_device_id: sql`COALESCE(${(payload.origin_device_id as string) ?? null}, ${schema.memoryItems.origin_device_id})`,
-								origin_source: sql`COALESCE(${(payload.origin_source as string) ?? null}, ${schema.memoryItems.origin_source})`,
-								trust_state: sql`COALESCE(${(payload.trust_state as string) ?? null}, ${schema.memoryItems.trust_state})`,
-								narrative: (payload.narrative as string) ?? null,
+								deleted_at: payload.deleted_at,
+								actor_id: sql`COALESCE(${payload.actor_id}, ${schema.memoryItems.actor_id})`,
+								actor_display_name: sql`COALESCE(${payload.actor_display_name}, ${schema.memoryItems.actor_display_name})`,
+								visibility: sql`COALESCE(${payload.visibility}, ${schema.memoryItems.visibility})`,
+								workspace_id: sql`COALESCE(${payload.workspace_id}, ${schema.memoryItems.workspace_id})`,
+								workspace_kind: sql`COALESCE(${payload.workspace_kind}, ${schema.memoryItems.workspace_kind})`,
+								origin_device_id: sql`COALESCE(${payload.origin_device_id}, ${schema.memoryItems.origin_device_id})`,
+								origin_source: sql`COALESCE(${payload.origin_source}, ${schema.memoryItems.origin_source})`,
+								trust_state: sql`COALESCE(${payload.trust_state}, ${schema.memoryItems.trust_state})`,
+								narrative: payload.narrative,
 								facts: toJsonNullable(payload.facts),
 								concepts: toJsonNullable(payload.concepts),
 								files_read: toJsonNullable(payload.files_read),
@@ -1025,42 +1130,36 @@ export function applyReplicationOps(
 							.run();
 					} else {
 						// Insert new memory item — skip if malformed
-						const payload = parsePayload(op.payload_json);
+						const payload = parseMemoryPayload(op, result.errors);
 						if (!payload) continue;
 						const sessionId = ensureSessionForReplication(d, null, op.clock_updated_at);
-
-						const newMeta = payload.metadata_json ?? {};
-						const metaObj =
-							typeof newMeta === "object" && newMeta !== null
-								? (newMeta as Record<string, unknown>)
-								: {};
-						metaObj.clock_device_id = op.clock_device_id;
+						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
 
 						d.insert(schema.memoryItems)
 							.values({
 								session_id: sessionId,
-								kind: (payload.kind as string) ?? "discovery",
-								title: (payload.title as string) ?? "",
-								subtitle: (payload.subtitle as string) ?? null,
-								body_text: (payload.body_text as string) ?? "",
+								kind: payload.kind ?? "discovery",
+								title: payload.title ?? "",
+								subtitle: payload.subtitle,
+								body_text: payload.body_text ?? "",
 								confidence: payload.confidence != null ? Number(payload.confidence) : 0.5,
-								tags_text: (payload.tags_text as string) ?? "",
+								tags_text: payload.tags_text ?? "",
 								active: payload.active != null ? Number(payload.active) : 1,
-								created_at: (payload.created_at as string) ?? op.clock_updated_at,
+								created_at: payload.created_at ?? op.clock_updated_at,
 								updated_at: op.clock_updated_at,
 								metadata_json: toJson(metaObj),
 								import_key: importKey,
-								deleted_at: (payload.deleted_at as string) ?? null,
+								deleted_at: payload.deleted_at,
 								rev: op.clock_rev,
-								actor_id: (payload.actor_id as string) ?? null,
-								actor_display_name: (payload.actor_display_name as string) ?? null,
-								visibility: (payload.visibility as string) ?? null,
-								workspace_id: (payload.workspace_id as string) ?? null,
-								workspace_kind: (payload.workspace_kind as string) ?? null,
-								origin_device_id: (payload.origin_device_id as string) ?? null,
-								origin_source: (payload.origin_source as string) ?? null,
-								trust_state: (payload.trust_state as string) ?? null,
-								narrative: (payload.narrative as string) ?? null,
+								actor_id: payload.actor_id,
+								actor_display_name: payload.actor_display_name,
+								visibility: payload.visibility,
+								workspace_id: payload.workspace_id,
+								workspace_kind: payload.workspace_kind,
+								origin_device_id: payload.origin_device_id,
+								origin_source: payload.origin_source,
+								trust_state: payload.trust_state,
+								narrative: payload.narrative,
 								facts: toJsonNullable(payload.facts),
 								concepts: toJsonNullable(payload.concepts),
 								files_read: toJsonNullable(payload.files_read),
@@ -1084,11 +1183,10 @@ export function applyReplicationOps(
 
 					if (existingForDelete) {
 						// Clock-compare: only delete if the incoming op is newer
-						const existingMeta = fromJson(existingForDelete.metadata_json);
 						const existingClock = clockTuple(
 							existingForDelete.rev ?? 1,
 							existingForDelete.updated_at ?? "",
-							String((existingMeta as Record<string, unknown>).clock_device_id ?? ""),
+							clockDeviceIdFromMetadataJson(existingForDelete.metadata_json),
 						);
 						const incomingClock = clockTuple(op.clock_rev, op.clock_updated_at, op.clock_device_id);
 						if (!isNewerClock(incomingClock, existingClock)) {
