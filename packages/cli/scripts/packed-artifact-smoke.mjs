@@ -81,6 +81,7 @@ try {
 		tarListing.includes("package/.opencode/package.json"),
 		"Packed artifact is missing .opencode/package.json",
 	);
+	assert(tarListing.includes("package/README.md"), "Packed artifact is missing README.md");
 
 	const installDir = join(tempDir, "install");
 	run("npm", ["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball]);
@@ -97,6 +98,10 @@ try {
 	assert(
 		existsSync(join(installedPluginRoot, "package.json")),
 		"Installed artifact is missing .opencode/package.json",
+	);
+	assert(
+		existsSync(join(installedPackageRoot, "README.md")),
+		"Installed artifact is missing README.md",
 	);
 
 	const helpOutput = run(cliBin, ["--help"]).stdout;
