@@ -33,11 +33,16 @@ Release checklist:
 
 1. Create a release branch + PR (no direct pushes to `main`)
 2. Update version:
-   - `pyproject.toml`
-   - `codemem/__init__.py`
+   - `packages/core/package.json`
+   - `packages/cli/package.json`
+   - `packages/mcp-server/package.json`
+   - `packages/viewer-server/package.json`
+   - `packages/core/src/index.ts`
+   - `packages/core/src/index.test.ts`
+   - `packages/cli/.opencode/plugins/codemem.js`
 3. Regenerate lockfiles/artifacts and commit the results:
-   - Python: run `uv sync` and commit `uv.lock` (the lockfile includes the local package version)
-   - Viewer UI bundle: built automatically by `pnpm build` (packages/ui)
+   - JS: run `pnpm install` and commit lockfile/artifact changes when applicable
+   - Viewer UI bundle/assets: built via `pnpm build`
 4. Ensure JS installs use the public npm registry (avoid private registries/mirrors)
    - Keep `.opencode/.npmrc` with `registry=https://registry.npmjs.org/`
 5. Wait for CI to pass, then squash-merge the PR
@@ -52,23 +57,11 @@ Release checklist:
    - Never assume the release branch tip and merged `main` commit are interchangeable; verify before tagging
    - The `Release` workflow triggers on `v*` tags and publishes the GitHub Release artifacts.
 8. Do not immediately bump `main` to the next unreleased version with the current shared versioning model
-   - `main` also carries live marketplace/plugin metadata and pinned `uvx codemem==X.Y.Z` references
+   - `main` also carries live marketplace/plugin metadata and pinned CLI version references
    - A post-release bump on `main` can point live install paths at a package version that is not published yet
    - Keep next-version bumps in a later release-prep branch/PR unless versioning is explicitly decoupled first
 
 ## Stack
-
-- Python: >=3.11,<3.15
-- Env/tooling: `uv` (creates `.venv/`)
-- CLI: Typer (`codemem`)
-- Storage: SQLite (path configurable)
-- Tests: pytest
-- Lint/format: ruff
-- UI/plugin ("frontend"):
-  - Viewer UI is embedded in Python: `codemem/viewer.py`
-  - OpenCode plugin is ESM JS: `.opencode/plugins/codemem.js`
-
-### TypeScript Backend (primary path)
 
 - Node: >=22
 - Package manager: pnpm (workspace at root)
@@ -76,13 +69,16 @@ Release checklist:
 - Tests: vitest
 - Lint/format: biome
 - Packages: `packages/core`, `packages/mcp-server`, `packages/viewer-server`, `packages/cli`
+- Storage: SQLite (path configurable)
 
-**Root package.json dual purpose:** The root `package.json` serves as both the pnpm
-workspace root AND the published `@kunickiaj/codemem` npm plugin package. The `files`
-field scopes what gets published (plugin files only). The `devDependencies` (biome,
-typescript, vitest) are workspace tooling and are NOT included in the published package.
-Do not add workspace-only config that would break the plugin publish, and do not add
-plugin-only config that breaks workspace commands.
+### Legacy Python (reference-only)
+
+- Python backend code remains in `codemem/` and `tests/` for migration/reference work.
+- Use `uv run ...` only when explicitly touching legacy Python surfaces.
+
+**Publish model:** root `package.json` is workspace-only (`private: true`).
+The published CLI package is `codemem` from `packages/cli`, and it includes
+plugin artifacts under `packages/cli/.opencode/`.
 
 ## Quick Commands
 
@@ -110,14 +106,15 @@ plugin-only config that breaks workspace commands.
 
 - CLI help: `pnpm run codemem --help`
 - Viewer help: `pnpm run codemem serve --help`
-- Serve viewer: `pnpm run codemem serve`
+- Serve viewer (start): `pnpm run codemem serve start`
 - Serve viewer (background): `pnpm run codemem serve --background`
 - Serve viewer (restart): `pnpm run codemem serve restart`
 - MCP server: `pnpm run codemem mcp`
 - Claude hook ingest (stdin JSON): `pnpm run codemem claude-hook-ingest`
 - Stats: `pnpm run codemem stats`
+- Raw-event backlog: `pnpm run codemem db raw-events-status`
 
-### Legacy Python runtime commands (only when required)
+### Legacy Python runtime commands (only when explicitly required)
 
 - CLI help: `uv run codemem --help`
 - Viewer help: `uv run codemem serve --help`
@@ -154,35 +151,35 @@ Ruff config (from `pyproject.toml`):
 
 ## Frontend Development
 
-This repo does not have a separate JS build step (no Vite/Next/etc). The UI is embedded.
+Viewer UI is in `packages/ui` and served by `packages/viewer-server`.
 
 ### Viewer UI
 
-- Source: `codemem/viewer.py`
-- Dev loop: edit `codemem/viewer.py` then restart `codemem serve`
+- Source: `packages/ui/src/`
+- Dev loop: edit UI files, run `pnpm build`, then restart viewer if needed
 
 ### OpenCode plugin
 
-- Source: `.opencode/plugins/codemem.js`
+- Source: `packages/cli/.opencode/plugins/codemem.js`
 - Rules:
   - ESM only (`import`/`export`)
   - must never crash OpenCode (no uncaught exceptions)
   - avoid blocking hooks; defer heavy work to background CLI calls
 
 ## Repo Map
-- `codemem/`: Python package (CLI, ingest pipeline, MCP server, viewer, store)
-- `codemem/store/_store.py`: SQLite store entrypoint (most store methods hang off `MemoryStore`)
-- `codemem/plugin_ingest.py`: ingestion + filtering of tool events / transcripts
-- `codemem/mcp_server.py`: MCP tools (search/timeline/pack/etc.)
-- `codemem/viewer.py`: embedded viewer HTML + server glue
-- `.opencode/plugins/codemem.js`: OpenCode plugin entrypoint
-- `tests/`: pytest tests (prefer fast, isolated unit tests)
+- `packages/core/src/`: core store/search/ingest/sync logic
+- `packages/viewer-server/src/`: viewer API server
+- `packages/ui/src/`: viewer frontend
+- `packages/mcp-server/src/`: MCP server tools
+- `packages/cli/src/`: CLI commands
+- `packages/cli/.opencode/plugins/codemem.js`: OpenCode plugin entrypoint
+- `codemem/`, `tests/`: legacy Python backend/tests (reference only)
 
 ## Runtime Commands
-- CLI entrypoint: `codemem` (Typer)
+- CLI entrypoint: `codemem`
 - MCP server: `codemem mcp` (or `codemem-mcp`)
-- Plugin ingest (stdin JSON): `codemem ingest`
-- Viewer: `codemem serve` (add `--background` / `--restart` as needed)
+- Claude hook ingest (stdin JSON): `codemem claude-hook-ingest`
+- Viewer: `codemem serve start|stop|restart` (or `codemem serve --background`)
 - Export/Import: `codemem export-memories`, `codemem import-memories`
 - Store maintenance: `codemem db prune-memories` (use `--dry-run` first)
 
@@ -234,13 +231,13 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 - Avoid hardcoding user paths in code; use config/env and normalize with `Path(...).expanduser()`
 
 ## Testing Guidance
-- Prefer fast unit tests in `tests/` (avoid network; mock external calls)
-- Use `tmp_path` fixtures for DB/filesystem tests
-- Add/adjust tests when changing ingestion filters, low-signal heuristics, or schemas
+- Prefer fast unit tests in `packages/**` via vitest (avoid network; mock external calls)
+- Use targeted test runs for touched files, then broader runs as needed
+- Legacy Python tests in `tests/` are for reference/migration surfaces
 
 ## Plugin / Viewer Notes
 - Plugin must be defensive: no uncaught exceptions in hooks; avoid blocking work
-- Viewer HTML is embedded in Python (`codemem/viewer.py`); restart the viewer to see UI changes
+- Viewer UI comes from `packages/ui` and `packages/viewer-server`; restart viewer to see runtime changes
 - Docs:
   - `docs/architecture.md` (data flow, flush strategy)
   - `docs/user-guide.md` (viewer usage, troubleshooting)
@@ -248,15 +245,15 @@ This repo does not have a separate JS build step (no Vite/Next/etc). The UI is e
 ## Quick Debug Checklist
 - Plugin logging: `CODEMEM_PLUGIN_LOG=1` then check `~/.codemem/plugin.log`
 - Missing sessions: confirm plugin + viewer use the same DB path (`CODEMEM_DB`)
-- Flush/backlog issues: look for viewer logs and `codemem raw-events-status` output
+- Flush/backlog issues: look for viewer logs and `codemem db raw-events-status` output
 
 ## When Changing Behavior
 - If you change plugin behavior, update `README.md` (and relevant docs under `docs/`)
 - If you change memory kinds, also update:
-  - `codemem/observer_prompts.py` (types/schema)
-  - `codemem/mcp_server.py` (`memory_schema`)
-  - `codemem/viewer.py` (UI kind lists)
-  - `tests/test_e2e_pipeline.py` coverage around documented types
+  - `packages/core/src/store.ts` (kind handling and persistence)
+  - `packages/mcp-server/src/index.ts` (`memory_schema` tool)
+  - `packages/ui/src/tabs/feed.ts` (UI kind presentation)
+  - relevant vitest coverage in `packages/**`
 
 ## PR Hygiene
 
