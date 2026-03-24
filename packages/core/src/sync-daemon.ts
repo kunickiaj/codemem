@@ -90,13 +90,19 @@ export function setSyncDaemonError(db: Database, error: string, traceback?: stri
  * Returns per-peer results. Peers in backoff are skipped.
  */
 export async function syncDaemonTick(db: Database, keysDir?: string): Promise<SyncTickResult[]> {
-	syncPassPreflight(db);
-
 	const d = drizzle(db, { schema });
 	const rows = d
 		.select({ peer_device_id: schema.syncPeers.peer_device_id })
 		.from(schema.syncPeers)
 		.all();
+
+	// Skip heavy preflight work when there are no peers configured.
+	// This keeps startup and idle daemon ticks responsive on large local stores.
+	if (rows.length === 0) {
+		return [];
+	}
+
+	syncPassPreflight(db);
 
 	const results: SyncTickResult[] = [];
 	for (const row of rows) {

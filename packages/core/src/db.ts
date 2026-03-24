@@ -7,15 +7,19 @@
  */
 
 import {
+	closeSync,
 	copyFileSync,
 	existsSync,
 	mkdirSync,
+	openSync,
+	readdirSync,
 	renameSync,
+	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
@@ -47,6 +51,9 @@ const REQUIRED_TABLES = [
 
 /** Marker file written after the first successful TS access to a DB. */
 const TS_MARKER = ".codemem-ts-accessed";
+
+/** Lock file to avoid concurrent first-access backups. */
+const TS_BACKUP_LOCK = ".codemem-ts-backup.lock";
 
 /** Default database path — matches Python's DEFAULT_DB_PATH. */
 export const DEFAULT_DB_PATH = join(homedir(), ".codemem", "mem.sqlite");
@@ -214,10 +221,62 @@ export function backupOnFirstAccess(dbPath: string): void {
 		}
 	}
 
+	const lockPath = join(dirname(dbPath), TS_BACKUP_LOCK);
+	let lockFd: number | null = null;
+	try {
+		lockFd = openSync(lockPath, "wx");
+	} catch {
+		// Another process is handling first-access backup.
+		return;
+	}
+
+	const writeMarker = (): void => {
+		try {
+			mkdirSync(dirname(markerPath), { recursive: true });
+			writeFileSync(markerPath, new Date().toISOString(), "utf-8");
+		} catch {
+			// Non-fatal — worst case we attempt backup again later.
+		}
+	};
+
+	const hasViableExistingBackup = (): boolean => {
+		let sourceSize = 0;
+		try {
+			sourceSize = statSync(sourceDbPath).size;
+		} catch {
+			sourceSize = 0;
+		}
+		const minViableSize = sourceSize > 0 ? Math.floor(sourceSize * 0.9) : 1;
+		const prefix = `${basename(sourceDbPath)}.pre-ts-`;
+		try {
+			const entries = readdirSync(dirname(sourceDbPath));
+			for (const entry of entries) {
+				if (!entry.startsWith(prefix) || !entry.endsWith(".bak")) continue;
+				const fullPath = join(dirname(sourceDbPath), entry);
+				try {
+					if (statSync(fullPath).size >= minViableSize) {
+						return true;
+					}
+				} catch {
+					// Ignore races while inspecting backup candidates.
+				}
+			}
+		} catch {
+			// Ignore directory read errors — proceed with normal backup path.
+		}
+		return false;
+	};
+
 	const ts = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
 	const backupPath = `${sourceDbPath}.pre-ts-${ts}.bak`;
 	let backupSucceeded = false;
 	try {
+		if (existsSync(markerPath)) return;
+		if (hasViableExistingBackup()) {
+			writeMarker();
+			return;
+		}
+
 		copyFileSync(sourceDbPath, backupPath);
 		// Also back up WAL/SHM if present (they contain uncommitted data)
 		const walPath = `${sourceDbPath}-wal`;
@@ -229,17 +288,25 @@ export function backupOnFirstAccess(dbPath: string): void {
 	} catch (err) {
 		console.error(`[codemem] Warning: failed to create backup at ${backupPath}:`, err);
 		// Continue — backup failure shouldn't prevent operation, but don't write marker
+	} finally {
+		if (lockFd != null) {
+			try {
+				closeSync(lockFd);
+			} catch {
+				// Ignore close errors.
+			}
+			try {
+				unlinkSync(lockPath);
+			} catch {
+				// Ignore lock cleanup errors.
+			}
+		}
 	}
 
 	// Only write marker after backup succeeds — a transient failure should
 	// retry on next access, not permanently suppress the safety net.
 	if (backupSucceeded) {
-		try {
-			mkdirSync(dirname(markerPath), { recursive: true });
-			writeFileSync(markerPath, new Date().toISOString(), "utf-8");
-		} catch {
-			// Non-fatal — worst case we back up again next time
-		}
+		writeMarker();
 	}
 }
 
