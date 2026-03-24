@@ -1,51 +1,41 @@
-# PyPI Trusted Publisher Setup
+# npm Trusted Publishing Setup
 
-This project uses GitHub OIDC to publish to PyPI without long-lived API tokens.
+This project uses GitHub OIDC + npm provenance for release publishing.
 
-## Required PyPI configuration
+## Required npm configuration
 
-Create a Trusted Publisher entry for each project:
-
-- `codemem`
-- `codemem-core`
-
-Production PyPI values:
+Use npm trusted publishing for this GitHub repo:
 
 - **Owner**: `kunickiaj`
-- **Repository name**: `codemem`
-- **Workflow name**: `release.yml`
-- **Environment name**: `release`
-
-TestPyPI values:
-
-- **Owner**: `kunickiaj`
-- **Repository name**: `codemem`
-- **Workflow name**: `release.yml`
-- **Environment name**: `testpypi`
+- **Repository**: `codemem`
+- **Workflow**: `release.yml`
+- **Environment**: `release`
 
 ## GitHub workflow behavior
 
-`.github/workflows/release.yml` includes:
+`.github/workflows/release.yml` publishes on `v*` tags via the `publish-npm` job.
 
-- `publish-pypi` on tag pushes (`v*`) for production PyPI
-- `publish-testpypi` on manual workflow dispatch when `publish_target=testpypi`
+Published packages (in dependency order):
 
-Both jobs:
+1. `@codemem/core`
+2. `@codemem/mcp`
+3. `@codemem/server`
+4. `codemem`
 
-1. downloads `dist/` artifacts from the build job
-2. publishes via `pypa/gh-action-pypi-publish@release/v1`
-3. authenticates using OIDC (`permissions: id-token: write`)
+Publish command shape:
 
-## TestPyPI verification process
+- `pnpm --filter <package> publish --provenance --access public --tag <dist-tag>`
 
-1. In GitHub Actions, run the `Release` workflow manually.
-2. Set `publish_target` to `testpypi`.
-3. Confirm `publish-testpypi` succeeds.
-4. Verify package appears on TestPyPI.
+Dist-tag selection is automatic from the Git tag:
+
+- `*-alpha*` → `alpha`
+- `*-beta*` → `beta`
+- `*-rc*` → `rc`
+- otherwise → `latest`
 
 ## Verification checklist
 
-- Tag push `vX.Y.Z` runs `Release` workflow
-- `publish-pypi` job completes successfully
-- Package appears on PyPI with matching version
-- `uvx`/`pipx` install command resolves published version
+- Tag push `vX.Y.Z` runs `Release`
+- `publish-npm` job succeeds
+- Package versions on npm match the release tag
+- npm provenance attestation is present for published artifacts

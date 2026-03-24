@@ -84,7 +84,7 @@ codemem sync coordinator remove-device team-alpha <device-id> --db-path ~/.codem
 codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
 ```
 
-This keeps the primary deployment path inside the main `codemem` artifact and reuses the existing Python signature
+This keeps the primary deployment path inside the main `codemem` artifact and reuses the existing signature
 verification code directly.
 
 These management commands operate on the built-in local coordinator store only. Remote coordinator admin flows require a
@@ -137,7 +137,7 @@ is only for remote mutation/listing endpoints.
 
 ## Canonical deployment target
 
-The built-in Python coordinator (`codemem sync coordinator serve`) is the canonical deployment target for ongoing
+The built-in coordinator (`codemem sync coordinator serve`) is the canonical deployment target for ongoing
 product development and dogfooding.
 
 Recommended deployment patterns:
@@ -146,17 +146,17 @@ Recommended deployment patterns:
 - **Container**: run via Docker/Podman with the coordinator SQLite volume mounted
 - **Exposure**: use Tailscale Funnel or Cloudflare Tunnel to make the coordinator reachable from outside a local network
 
-This keeps the deployment path inside the main `codemem` artifact, avoids a separate JS runtime dependency, and ensures
-new coordinator features (invites, join requests, admin flows) are immediately available without porting.
+This keeps the deployment path inside the main `codemem` artifact and ensures new coordinator features (invites, join
+requests, admin flows) are immediately available.
 
 ## Cloudflare Worker reference deployment
 
 A Cloudflare Worker reference implementation exists in `examples/cloudflare-coordinator/`. It implements the same HTTP
-contract against D1, but is secondary to the Python coordinator for ongoing feature development.
+contract against D1, but is secondary to the built-in coordinator for ongoing feature development.
 
 Use the Cloudflare Worker path when you specifically want a serverless/edge deployment and are comfortable with the
-feature lag — new coordinator capabilities (invite/join flows, admin endpoints) land in the Python coordinator first and
-may not be ported to the Worker immediately.
+feature lag — new coordinator capabilities (invite/join flows, admin endpoints) land in the built-in coordinator first
+and may not be ported to the Worker immediately.
 
 ## Current limitations
 

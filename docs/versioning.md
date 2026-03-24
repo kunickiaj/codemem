@@ -1,11 +1,10 @@
 # CodeMem Versioning Policy
 
-CodeMem uses one shared semantic version stream across npm and PyPI artifacts.
+CodeMem uses one shared semantic version stream across its npm packages.
 
 ## Canonical packages
 
-- npm: `@kunickiaj/codemem`
-- PyPI: `codemem` (runtime/CLI)
+- npm: `codemem` (plugin + CLI)
 
 ## Policy
 
@@ -13,23 +12,17 @@ CodeMem uses one shared semantic version stream across npm and PyPI artifacts.
 - npm and PyPI artifacts should publish the same `X.Y.Z`.
 - Changelog/release notes are shared per version.
 
-## Release helper
+## Release workflow
 
-Use the helper script to keep versioned files aligned:
+Version bumps are prepared on a release branch and touch these files:
 
-```bash
-uv run python scripts/release_version.py set X.Y.Z
-uv run python scripts/release_version.py check
-```
-
-The script updates/checks:
-
-- `pyproject.toml` (`[project].version`)
-- `codemem/__init__.py` (`__version__`)
-- `package.json` (`version`)
-- `.opencode/plugin/codemem.js` (`PINNED_BACKEND_VERSION`)
-- `plugins/claude/.claude-plugin/plugin.json` (`version` and `codemem==X.Y.Z` MCP arg)
-- `.claude-plugin/marketplace.json` (`metadata.version` and `plugins[*].version` for `codemem`)
+- `packages/core/package.json` (`version`)
+- `packages/cli/package.json` (`version`)
+- `packages/mcp-server/package.json` (`version`)
+- `packages/viewer-server/package.json` (`version`)
+- `packages/core/src/index.ts` (`VERSION` export)
+- `packages/core/src/index.test.ts` (version assertion)
+- `packages/cli/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
 
 ## Release tag preflight
 
@@ -63,6 +56,5 @@ export CODEMEM_MIN_VERSION=0.9.20
 
 ## Transition notes
 
-- `codemem` and `codemem-core` are reserved on PyPI.
-- `codemem` and `@kunickiaj/codemem` are reserved on npm.
-- Git-based install paths remain fallback only during migration.
+- `codemem` is published on npm (CLI + plugin).
+- `@kunickiaj/codemem` is the OpenCode plugin identifier.

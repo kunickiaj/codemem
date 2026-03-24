@@ -3,13 +3,11 @@
 ## Start or restart the viewer
 - `codemem serve` runs the viewer in the foreground.
 - `codemem serve --background` runs it in the background.
-- `codemem serve --restart` restarts the background viewer.
+- `codemem serve restart` restarts the background viewer.
 
 ## Seeing UI changes
-- The viewer is a static HTML string in `codemem/viewer.py`.
-- Restart the viewer after updates.
-- If changes don’t show up, ensure the installed package matches this repo:
-  - `uv pip install -e .` then rerun `codemem serve --restart`.
+- The viewer UI is built from `packages/ui/` and served by `packages/viewer-server/`.
+- Restart the viewer after updates: `codemem serve restart`.
 
 ## Settings modal
 - Open via the Settings button in the header.
@@ -114,7 +112,7 @@ Judged query JSONL format:
 ### Enable + run
 
 - `codemem sync enable` generates keys and writes config.
-- `codemem sync daemon` starts the sync daemon (foreground).
+- `codemem sync start` starts sync daemon processing.
 - `codemem sync status` shows device info and peer health.
 
 ### Pair devices
@@ -152,9 +150,9 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 ### Autostart
 
-- macOS: `codemem sync install` then `launchctl load -w ~/Library/LaunchAgents/com.codemem.sync.plist`.
-- Linux (user service): `codemem sync install --user` then `systemctl --user enable --now codemem-sync.service`.
-- Linux (system service): `codemem sync install --system` then `systemctl enable --now codemem-sync.service`.
+- codemem does not ship a `sync install` helper in the TS CLI.
+- Use an OS service manager to run `codemem serve start --foreground` at login/boot.
+- Example service templates live in `docs/autostart/launchd/` and `docs/autostart/systemd/`.
 
 ### Service helpers
 

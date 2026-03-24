@@ -17,17 +17,7 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 
 ## Quick start
 
-**Prerequisites:** Python 3.11+ and [uv](https://docs.astral.sh/uv/)
-
-If `uv` is not installed yet:
-
-```bash
-# Homebrew
-brew install uv
-
-# mise
-mise use -g uv@latest
-```
+**Prerequisites:** Node.js 22+ and npm (or pnpm)
 
 1. Add the plugin to your OpenCode config (`~/.config/opencode/opencode.jsonc`):
 
@@ -40,24 +30,23 @@ mise use -g uv@latest
 
 2. Restart OpenCode.
 
-By default, the OpenCode plugin resolves backend CLI calls from a `uvx` source pinned to the plugin version, so plugin and backend stay aligned unless you override `CODEMEM_RUNNER` / `CODEMEM_RUNNER_FROM`. That means the backend is fetched on first use; no separate `codemem` install is required for the basic OpenCode path.
+The OpenCode plugin manages backend execution automatically — no separate global install is required.
 
 3. Verify:
 
 ```bash
-uvx codemem stats
-uvx codemem raw-events-status
+# Works on fresh installs (no global codemem needed)
+npx -y codemem stats
+npx -y codemem db raw-events-status
 ```
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
 
-If you want `codemem` available directly on your `PATH` for repeated manual commands, install the CLI separately:
+If you want `codemem` available directly on your `PATH` for manual commands, install the CLI globally:
 
 ```bash
-uv tool install --upgrade codemem
+npm install -g codemem
 ```
-
-First startup may be slower because `uvx` can fetch/install the backend on demand.
 
 ### Claude Code (marketplace install)
 
@@ -68,19 +57,9 @@ In [Claude Code](https://claude.ai/code), add the codemem marketplace source and
 /plugin install codemem
 ```
 
-The Claude plugin starts MCP with:
+The Claude plugin starts MCP with the TS CLI (`codemem mcp`).
 
-- `uvx codemem==<plugin-version> mcp`
-
-We still recommend installing/upgrading the CLI for local hook ingestion and manual `codemem` commands:
-
-```bash
-uv tool install --upgrade codemem
-```
-
-Claude MCP launch uses `uvx`; first startup may be slower because `uvx` can fetch/install tooling on demand.
-
-Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and falls back to direct local DB enqueue via `codemem claude-hook-ingest` (or pinned `uvx codemem==<plugin-version> claude-hook-ingest`) when the local server path is unavailable.
+Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and falls back to direct local DB enqueue via `codemem claude-hook-ingest` when the local server path is unavailable.
 
 Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` runs
 capture ingest in the background and injects memory context via Claude `additionalContext` using
@@ -88,7 +67,6 @@ local CLI/store pack generation by default, with optional HTTP `/api/pack` fallb
 
 The packaged Claude hook shell scripts are thin wrappers over TS CLI commands:
 `codemem claude-hook-ingest` and `codemem claude-hook-inject`.
-`claude-hook-inject` does not use `uvx` fallback by default to keep prompt-submit latency low.
 
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 
@@ -207,8 +185,8 @@ Replicate memories across devices without a central server.
 ```bash
 codemem sync enable        # generate device keys
 codemem sync pair          # generate pairing payload
-codemem sync daemon        # start sync daemon
-codemem sync install       # autostart on macOS + Linux
+codemem sync start         # start sync daemon
+codemem sync once          # run one immediate sync pass
 ```
 
 The viewer now includes actor management for mapping multiple peers to one logical person, plus owned-memory visibility controls so project-filtered memories share by default while `Only me` stays a per-memory local override.
@@ -221,38 +199,23 @@ For cross-network setups where peer addresses change frequently or mDNS does not
 
 Embeddings are stored in sqlite-vec and written automatically when memories are created. Use `codemem embed` to backfill existing memories. If sqlite-vec cannot load, keyword search still works.
 
-> **aarch64 Linux note:** The PyPI wheels currently ship a 32-bit `vec0.so` on aarch64. See [docs/user-guide.md](docs/user-guide.md) for the workaround.
-
 ## Alternative install methods
 
 <details>
-<summary>Local development, uvx, git install</summary>
+<summary>Local development, npx, git install</summary>
 
 ### Local development
 
 ```bash
-uv sync
-source .venv/bin/activate  # bash/zsh
-source .venv/bin/activate.fish  # fish
-codemem --help
+pnpm install
+pnpm build
+pnpm run codemem --help
 ```
 
-### Via uvx (no install)
+### Via npx (no install)
 
 ```bash
-uvx --from git+ssh://git@github.com/kunickiaj/codemem.git codemem stats
-```
-
-### Install from GitHub
-
-```bash
-uv pip install git+ssh://git@github.com/kunickiaj/codemem.git
-```
-
-### Plugin from git (advanced)
-
-```bash
-uvx --from git+ssh://git@github.com/kunickiaj/codemem.git codemem install-plugin
+npx -y codemem stats
 ```
 
 ### Plugin for development

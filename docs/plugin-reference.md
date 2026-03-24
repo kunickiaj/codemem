@@ -24,31 +24,13 @@ In Claude Code, add the marketplace and install the plugin:
 /plugin install codemem
 ```
 
-Prerequisite: `uvx` must be available (provided by `uv`). If needed:
+The plugin starts MCP with the TS CLI:
 
-```bash
-# Homebrew
-brew install uv
+- `codemem mcp`
 
-# mise
-mise use -g uv@latest
-```
+Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks` to the local codemem server) with a CLI direct-enqueue fallback when the server path is unavailable:
 
-The plugin starts MCP with:
-
-- `uvx codemem==<plugin-version> mcp`
-
-We still recommend installing the CLI explicitly for local hook ingestion and manual `codemem` usage:
-
-```bash
-uv tool install --upgrade codemem
-```
-
-Claude MCP launch uses `uvx`; startup can be slower on first run because it may install dependencies on demand.
-
-Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks` to the local codemem server) with a version-pinned CLI direct-enqueue fallback when the server path is unavailable:
-
-- `uvx codemem==<plugin-version> claude-hook-ingest`
+- `codemem claude-hook-ingest`
 
 Contract note: fallback is direct local DB enqueue from the TS CLI. There is currently no file spool/lock durability path in the fallback contract.
 
@@ -67,8 +49,6 @@ printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/t
 `inject-context-hook.sh` is also a thin wrapper and delegates prompt-time context output to:
 
 - `codemem claude-hook-inject`
-
-To avoid prompt-time latency spikes, `inject-context-hook.sh` does not use `uvx` by default. You can opt in with `CODEMEM_INJECT_ALLOW_UVX=1`.
 
 By default, `SessionEnd` triggers a boundary flush after enqueue to preserve progress without waiting for sweeper timing. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only behavior, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop` boundary flush.
 
@@ -102,12 +82,12 @@ After restarting OpenCode or the viewer, run this quick check when behavior look
 2. Check backend stats and recent writes (`codemem stats`, `codemem recent`).
 3. Verify runner mode and source (`CODEMEM_RUNNER`, `CODEMEM_RUNNER_FROM`) match your install strategy.
 4. Confirm injection controls are what you expect (`CODEMEM_INJECT_CONTEXT`, `CODEMEM_INJECT_LIMIT`, `CODEMEM_INJECT_TOKEN_BUDGET`).
-5. If stream mode is enabled, check backlog health (`codemem raw-events-status`) and Claude-specific health (`codemem claude-integration-status`).
+5. If stream mode is enabled, check backlog health (`codemem db raw-events-status`).
 
 If needed, restart viewer + plugin flow:
 
 ```bash
-codemem serve --restart
+codemem serve restart
 ```
 
 If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
@@ -186,7 +166,7 @@ Stream contract:
 - Event streaming: `POST /api/raw-events`
 - Non-2xx and network failures are treated as stream failures.
 - Raw events are delivered through the viewer ingest API.
-- Raw-event batches accepted by the viewer are retried by Python flush workers.
+- Raw-event batches accepted by the viewer are retried by the sweeper flush workers.
 
 Suggested settings:
 
@@ -204,13 +184,13 @@ export CODEMEM_RAW_EVENTS_STUCK_BATCH_MS=300000
 To monitor backlog:
 
 ```bash
-codemem raw-events-status
+codemem db raw-events-status
 ```
 
 If `raw-events-status` shows `batches=error:N` (legacy label) or `queue=... failed:N` for a stream, retry:
 
 ```bash
-codemem raw-events-retry <session_stream_id>
+codemem db raw-events-retry <session_stream_id>
 ```
 
 ## Hook lifecycle and flush boundaries
@@ -231,7 +211,7 @@ Force-flush thresholds (immediate flush):
 Failure semantics:
 - Stream POST failures are backoff-gated in plugin runtime (`CODEMEM_RAW_EVENTS_BACKOFF_MS`).
 - Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`).
-- Accepted raw-event batches are retried by viewer/store queue workers (`codemem raw-events-retry`).
+- Accepted raw-event batches are retried by viewer/store queue workers (`codemem db raw-events-retry`).
 
 ## Project label normalization
 
@@ -252,8 +232,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 
 | Env var | Description |
 | --- | --- |
-| `CODEMEM_RUNNER` | Override auto-detected runner: `uv` (dev mode), `uvx` (installed mode), or direct binary path. |
-| `CODEMEM_RUNNER_FROM` | Override source location: directory path for `uv run --directory`, or package/git/path source for `uvx --from` (default OpenCode source is pinned to plugin version). |
+| `CODEMEM_RUNNER` | Override auto-detected runner: `codemem` (global), `npx`, `node` (repo/dev), or custom binary name. |
+| `CODEMEM_RUNNER_FROM` | Runner source override: npm package spec for `npx` (for example `codemem@0.20.0-alpha.7`), or repo/CLI entry path for `node`. |
 | `CODEMEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
 | `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
@@ -266,7 +246,6 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
 | `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for `claude-hook-inject` (default `1`). |
 | `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude `additionalContext` (default `16000`). |
-| `CODEMEM_INJECT_ALLOW_UVX` | Set to `1` to allow `uvx` fallback for `claude-hook-inject` (default `0`, disabled for prompt latency). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Backend update behavior on compatibility mismatch: `notify` (default), `auto`, or `off`. |
@@ -310,18 +289,17 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 
 When the plugin detects CLI/runtime version mismatch, it shows guidance based on runner mode:
 
-- `CODEMEM_RUNNER=uv`: pull latest in your repo, run `uv sync`, restart OpenCode
-- `CODEMEM_RUNNER=uvx` with package source: update `CODEMEM_RUNNER_FROM` (or update plugin package version), restart OpenCode
-- `CODEMEM_RUNNER=uvx` with git source: update `CODEMEM_RUNNER_FROM` to newer ref/source, restart OpenCode
-- `CODEMEM_RUNNER=uvx` with custom source: update `CODEMEM_RUNNER_FROM`, restart OpenCode
-- other/unknown runner: run `uv tool install --upgrade codemem`, restart OpenCode
+- `CODEMEM_RUNNER=codemem`: run `npm install -g codemem`, then restart OpenCode
+- `CODEMEM_RUNNER=npx`: update `CODEMEM_RUNNER_FROM` to a newer package/version (or reinstall plugin), then restart OpenCode
+- `CODEMEM_RUNNER=node`: pull latest repo changes and run `pnpm build`, then restart OpenCode
+- custom/unknown runner: update the underlying `codemem` binary or package source, then restart OpenCode
 
 Update policy:
 
 - `CODEMEM_BACKEND_UPDATE_POLICY=notify` (default): show warning toast with suggested action
 - `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible runners, then warn if still outdated
-  - skipped in `uv` dev mode
-  - skipped when `CODEMEM_RUNNER_FROM` is pinned to a git ref (for example `...git@vX.Y.Z`)
+  - skipped for `node` dev-mode runners
+  - skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
 - `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
 
 Compatibility checks do not block plugin startup.
