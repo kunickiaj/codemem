@@ -37,10 +37,10 @@ function seedSourceDb(dbPath: string): void {
 		db.prepare(
 			`INSERT INTO memory_items(
 				id, session_id, kind, title, body_text, confidence, tags_text, active,
-				created_at, updated_at, metadata_json, import_key
+				created_at, updated_at, metadata_json, deleted_at, import_key
 			) VALUES (
 				101, 1, 'exploration', 'Inactive', 'skipped by default', 0.5, '', 0,
-				'2026-03-01T10:03:00Z', '2026-03-01T10:03:00Z', '{}', 'memory-2'
+				'2026-03-01T10:03:00Z', '2026-03-01T10:03:00Z', '{}', '2026-03-01T10:03:30Z', 'memory-2'
 			)`,
 		).run();
 		db.prepare(
@@ -133,6 +133,9 @@ describe("export/import", () => {
 				project: (
 					checkDb.prepare("SELECT project FROM sessions LIMIT 1").get() as { project: string }
 				).project,
+				inactiveMemory: checkDb
+					.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = ?")
+					.get("memory-2") as { active: number; deleted_at: string | null },
 			};
 			expect(counts).toEqual({
 				sessions: 1,
@@ -140,6 +143,7 @@ describe("export/import", () => {
 				memories: 2,
 				summaries: 1,
 				project: "/tmp/remapped",
+				inactiveMemory: { active: 0, deleted_at: "2026-03-01T10:03:30Z" },
 			});
 			// Original created_at_epoch values (1) from the source DB are preserved
 			expect(promptEpoch).toBe(1);

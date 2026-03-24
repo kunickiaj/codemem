@@ -14,6 +14,7 @@ import { projectColumnClause, resolveProject as resolveProjectName } from "./pro
 import * as schema from "./schema.js";
 
 type JsonObject = Record<string, unknown>;
+type MemoryInsert = typeof schema.memoryItems.$inferInsert;
 
 export interface ExportOptions {
 	dbPath?: string;
@@ -347,39 +348,44 @@ function insertPrompt(d: DrizzleDb, row: JsonObject): number {
 
 function insertMemory(d: DrizzleDb, row: JsonObject): number {
 	const now = nowIso();
+	const parsedActive = row.active == null ? 1 : Number(row.active);
+	const active = Number.isFinite(parsedActive) ? parsedActive : 1;
+	const deletedAt =
+		typeof row.deleted_at === "string" && row.deleted_at.trim().length > 0 ? row.deleted_at : null;
+	const values: MemoryInsert = {
+		session_id: Number(row.session_id),
+		kind: String(row.kind ?? "observation"),
+		title: String(row.title ?? "Untitled"),
+		subtitle: row.subtitle == null ? null : String(row.subtitle),
+		body_text: String(row.body_text ?? row.narrative ?? ""),
+		confidence: Number(row.confidence ?? 0.5),
+		tags_text: String(row.tags_text ?? ""),
+		active,
+		created_at: typeof row.created_at === "string" ? row.created_at : now,
+		updated_at: typeof row.updated_at === "string" ? row.updated_at : now,
+		metadata_json: toJson(row.metadata_json ?? null),
+		actor_id: row.actor_id == null ? null : String(row.actor_id),
+		actor_display_name: row.actor_display_name == null ? null : String(row.actor_display_name),
+		visibility: row.visibility == null ? null : String(row.visibility),
+		workspace_id: row.workspace_id == null ? null : String(row.workspace_id),
+		workspace_kind: row.workspace_kind == null ? null : String(row.workspace_kind),
+		origin_device_id: row.origin_device_id == null ? null : String(row.origin_device_id),
+		origin_source: row.origin_source == null ? null : String(row.origin_source),
+		trust_state: row.trust_state == null ? null : String(row.trust_state),
+		facts: toJsonNullable(row.facts),
+		narrative: row.narrative == null ? null : String(row.narrative),
+		concepts: toJsonNullable(row.concepts),
+		files_read: toJsonNullable(row.files_read),
+		files_modified: toJsonNullable(row.files_modified),
+		user_prompt_id: row.user_prompt_id == null ? null : Number(row.user_prompt_id),
+		prompt_number: row.prompt_number == null ? null : Number(row.prompt_number),
+		deleted_at: deletedAt,
+		rev: Number(row.rev ?? 1),
+		import_key: String(row.import_key),
+	};
 	const rows = d
 		.insert(schema.memoryItems)
-		.values({
-			session_id: Number(row.session_id),
-			kind: String(row.kind ?? "observation"),
-			title: String(row.title ?? "Untitled"),
-			subtitle: row.subtitle == null ? null : String(row.subtitle),
-			body_text: String(row.body_text ?? row.narrative ?? ""),
-			confidence: Number(row.confidence ?? 0.5),
-			tags_text: String(row.tags_text ?? ""),
-			active: 1,
-			created_at: typeof row.created_at === "string" ? row.created_at : now,
-			updated_at: typeof row.updated_at === "string" ? row.updated_at : now,
-			metadata_json: toJson(row.metadata_json ?? null),
-			actor_id: row.actor_id == null ? null : String(row.actor_id),
-			actor_display_name: row.actor_display_name == null ? null : String(row.actor_display_name),
-			visibility: row.visibility == null ? null : String(row.visibility),
-			workspace_id: row.workspace_id == null ? null : String(row.workspace_id),
-			workspace_kind: row.workspace_kind == null ? null : String(row.workspace_kind),
-			origin_device_id: row.origin_device_id == null ? null : String(row.origin_device_id),
-			origin_source: row.origin_source == null ? null : String(row.origin_source),
-			trust_state: row.trust_state == null ? null : String(row.trust_state),
-			facts: toJsonNullable(row.facts),
-			narrative: row.narrative == null ? null : String(row.narrative),
-			concepts: toJsonNullable(row.concepts),
-			files_read: toJsonNullable(row.files_read),
-			files_modified: toJsonNullable(row.files_modified),
-			user_prompt_id: row.user_prompt_id == null ? null : Number(row.user_prompt_id),
-			prompt_number: row.prompt_number == null ? null : Number(row.prompt_number),
-			deleted_at: null,
-			rev: Number(row.rev ?? 1),
-			import_key: String(row.import_key),
-		})
+		.values(values)
 		.returning({ id: schema.memoryItems.id })
 		.all();
 	const id = rows[0]?.id;
