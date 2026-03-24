@@ -334,7 +334,17 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 
 	for (const { name, ddl } of additiveColumns) {
 		if (columnExists(db, "raw_event_flush_batches", name)) continue;
-		db.exec(`ALTER TABLE raw_event_flush_batches ADD COLUMN ${name} ${ddl}`);
+		try {
+			db.exec(`ALTER TABLE raw_event_flush_batches ADD COLUMN ${name} ${ddl}`);
+		} catch (err) {
+			const message = err instanceof Error ? err.message.toLowerCase() : "";
+			const duplicateColumn = message.includes("duplicate column name");
+			if (duplicateColumn && columnExists(db, "raw_event_flush_batches", name)) {
+				// Another process may have raced and added the column first.
+				continue;
+			}
+			throw err;
+		}
 	}
 }
 
