@@ -55,6 +55,63 @@ const TS_MARKER = ".codemem-ts-accessed";
 /** Lock file to avoid concurrent first-access backups. */
 const TS_BACKUP_LOCK = ".codemem-ts-backup.lock";
 
+/** Consider a backup lock stale after 15 minutes. */
+const TS_BACKUP_LOCK_STALE_MS = 15 * 60 * 1000;
+
+interface BackupLockAcquireResult {
+	fd: number | null;
+	contention: boolean;
+}
+
+function acquireBackupLock(lockPath: string): BackupLockAcquireResult {
+	mkdirSync(dirname(lockPath), { recursive: true });
+	try {
+		return { fd: openSync(lockPath, "wx"), contention: false };
+	} catch (err) {
+		const code = err && typeof err === "object" ? (err as NodeJS.ErrnoException).code : undefined;
+		if (code === "EEXIST") {
+			let stale = false;
+			try {
+				const ageMs = Date.now() - statSync(lockPath).mtimeMs;
+				stale = Number.isFinite(ageMs) && ageMs > TS_BACKUP_LOCK_STALE_MS;
+			} catch {
+				// If we can't read lock metadata, treat as live contention.
+			}
+
+			if (!stale) {
+				return { fd: null, contention: true };
+			}
+
+			try {
+				unlinkSync(lockPath);
+			} catch (unlinkErr) {
+				console.error(
+					`[codemem] Warning: failed to clear stale backup lock at ${lockPath}:`,
+					unlinkErr,
+				);
+				return { fd: null, contention: false };
+			}
+
+			try {
+				return { fd: openSync(lockPath, "wx"), contention: false };
+			} catch (retryErr) {
+				const retryCode =
+					retryErr && typeof retryErr === "object"
+						? (retryErr as NodeJS.ErrnoException).code
+						: undefined;
+				if (retryCode === "EEXIST") {
+					return { fd: null, contention: true };
+				}
+				console.error(`[codemem] Warning: failed to acquire backup lock at ${lockPath}:`, retryErr);
+				return { fd: null, contention: false };
+			}
+		}
+
+		console.error(`[codemem] Warning: failed to acquire backup lock at ${lockPath}:`, err);
+		return { fd: null, contention: false };
+	}
+}
+
 /** Default database path — matches Python's DEFAULT_DB_PATH. */
 export const DEFAULT_DB_PATH = join(homedir(), ".codemem", "mem.sqlite");
 
@@ -222,10 +279,8 @@ export function backupOnFirstAccess(dbPath: string): void {
 	}
 
 	const lockPath = join(dirname(dbPath), TS_BACKUP_LOCK);
-	let lockFd: number | null = null;
-	try {
-		lockFd = openSync(lockPath, "wx");
-	} catch {
+	const { fd: lockFd, contention } = acquireBackupLock(lockPath);
+	if (contention) {
 		// Another process is handling first-access backup.
 		return;
 	}
