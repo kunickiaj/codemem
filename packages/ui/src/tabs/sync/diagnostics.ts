@@ -142,21 +142,21 @@ export function renderSyncStatus() {
   } else if (daemonState === 'offline-peers') {
     /* informational */
   } else if (daemonState === 'stopped') {
-    actions.push({ label: 'Sync daemon is stopped. Start it.', command: 'uv run codemem sync start' });
-    actions.push({ label: 'Then run one immediate sync pass.', command: 'uv run codemem sync once' });
+    actions.push({ label: 'Sync daemon is stopped. Start it.', command: 'codemem sync start' });
+    actions.push({ label: 'Then run one immediate sync pass.', command: 'codemem sync once' });
   } else if (syncError || pingError || daemonState === 'error') {
     actions.push({
       label: 'Sync reports errors. Restart now.',
-      command: 'uv run codemem sync restart && uv run codemem sync once',
+      command: 'codemem sync restart && codemem sync once',
     });
     actions.push({
       label: 'Then run doctor for root cause.',
-      command: 'uv run codemem sync doctor',
+      command: 'codemem sync doctor',
     });
   } else if (!syncDisabled && !syncNoPeers && pending > 0) {
     actions.push({
       label: 'Pending sync work detected. Run one pass now.',
-      command: 'uv run codemem sync once',
+      command: 'codemem sync once',
     });
   }
   renderActionList(syncActions, actions);
