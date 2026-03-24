@@ -16,15 +16,6 @@ log_line() {
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)}"
 PLUGIN_MANIFEST="${PLUGIN_ROOT}/.claude-plugin/plugin.json"
-UVX_PACKAGE_SPEC="codemem"
-
-if [ -f "${PLUGIN_MANIFEST}" ]; then
-  PLUGIN_VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${PLUGIN_MANIFEST}" | sed -n '1p')"
-  if [ -n "${PLUGIN_VERSION}" ]; then
-    UVX_PACKAGE_SPEC="codemem==${PLUGIN_VERSION}"
-  fi
-fi
-
 payload="$(cat)"
 if [ -z "${payload}" ]; then
   exit 0
@@ -43,11 +34,11 @@ if command -v codemem >/dev/null 2>&1; then
   log_line "codemem claude-hook-ingest failed via codemem binary"
 fi
 
-if command -v uvx >/dev/null 2>&1; then
-  if printf '%s' "${payload}" | uvx "${UVX_PACKAGE_SPEC}" claude-hook-ingest >/dev/null 2>&1; then
+if command -v npx >/dev/null 2>&1; then
+  if printf '%s' "${payload}" | npx -y codemem claude-hook-ingest >/dev/null 2>&1; then
     exit 0
   fi
-  log_line "codemem claude-hook-ingest failed via uvx"
+  log_line "codemem claude-hook-ingest failed via npx"
 fi
 
 log_line "codemem claude-hook-ingest failed: all command attempts failed"

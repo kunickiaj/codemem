@@ -4,16 +4,16 @@
  * Replaces Python's install_plugin_cmd + install_mcp_cmd.
  *
  * What it does:
- * 1. Copies the plugin file to ~/.config/opencode/plugin/codemem.js
- * 2. Adds/updates the MCP entry in ~/.config/opencode/opencode.json
- * 3. Copies the compat lib to ~/.config/opencode/lib/compat.js
+ * 1. Adds "codemem" to the plugin array in ~/.config/opencode/opencode.jsonc
+ * 2. Adds/updates the MCP entry in ~/.config/opencode/opencode.jsonc
+ * 3. For Claude Code: installs MCP config and guides marketplace plugin install
  *
  * Designed to be safe to run repeatedly (idempotent unless --force).
  */
 
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { VERSION } from "@codemem/core";
 import { Command } from "commander";
@@ -28,72 +28,142 @@ function claudeConfigDir(): string {
 	return join(homedir(), ".claude");
 }
 
-/**
- * Find the plugin source file — walk up from this module's location
- * to find the .opencode/plugins/codemem.js in the package tree.
- */
-function findPluginSource(): string | null {
-	let dir = dirname(import.meta.url.replace("file://", ""));
-	for (let i = 0; i < 6; i++) {
-		const candidate = join(dir, ".opencode", "plugins", "codemem.js");
-		if (existsSync(candidate)) return candidate;
-		const nmCandidate = join(dir, "node_modules", "codemem", ".opencode", "plugins", "codemem.js");
-		if (existsSync(nmCandidate)) return nmCandidate;
-		const parent = dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
+/** The npm package name used in the OpenCode plugin array. */
+const OPENCODE_PLUGIN_SPEC = "codemem";
+
+// ---------------------------------------------------------------------------
+// Legacy migration helpers
+// ---------------------------------------------------------------------------
+
+/** Remove legacy copied plugin JS file from ~/.config/opencode/plugins/codemem.js */
+function migrateLegacyOpencodePlugin(): void {
+	const legacyPlugin = join(opencodeConfigDir(), "plugins", "codemem.js");
+	const legacyCompat = join(opencodeConfigDir(), "lib", "compat.js");
+	if (existsSync(legacyPlugin)) {
+		try {
+			rmSync(legacyPlugin);
+			p.log.step("Removed legacy copied plugin: ~/.config/opencode/plugins/codemem.js");
+		} catch {
+			p.log.warn("Could not remove legacy plugin file — remove manually if needed");
+		}
 	}
-	return null;
+	if (existsSync(legacyCompat)) {
+		try {
+			rmSync(legacyCompat);
+			p.log.step("Removed legacy compat lib: ~/.config/opencode/lib/compat.js");
+		} catch {
+			// Non-fatal.
+		}
+	}
 }
 
-function findCompatSource(): string | null {
-	let dir = dirname(import.meta.url.replace("file://", ""));
-	for (let i = 0; i < 6; i++) {
-		const candidate = join(dir, ".opencode", "lib", "compat.js");
-		if (existsSync(candidate)) return candidate;
-		const nmCandidate = join(dir, "node_modules", "codemem", ".opencode", "lib", "compat.js");
-		if (existsSync(nmCandidate)) return nmCandidate;
-		const legacyCandidate = join(
-			dir,
-			"node_modules",
-			"@kunickiaj",
-			"codemem",
-			".opencode",
-			"lib",
-			"compat.js",
-		);
-		if (existsSync(legacyCandidate)) return legacyCandidate;
-		const parent = dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
+/** Detect and upgrade legacy uvx/uv-based MCP entries in OpenCode config. */
+function migrateLegacyOpencodeMcp(config: Record<string, unknown>): boolean {
+	const mcpConfig = config.mcp as Record<string, unknown> | undefined;
+	if (!mcpConfig || typeof mcpConfig !== "object") return false;
+	const entry = mcpConfig.codemem as Record<string, unknown> | undefined;
+	if (!entry || typeof entry !== "object") return false;
+
+	const command = entry.command;
+	const isLegacy =
+		(Array.isArray(command) &&
+			command.some((arg) => typeof arg === "string" && (arg === "uvx" || arg === "uv"))) ||
+		(typeof command === "string" && (command === "uvx" || command === "uv"));
+
+	if (isLegacy) {
+		p.log.step("Upgrading legacy uvx MCP entry to npx");
+		mcpConfig.codemem = {
+			type: "local",
+			command: ["npx", "codemem", "mcp"],
+			enabled: true,
+		};
+		return true;
 	}
-	return null;
+	return false;
 }
+
+/** Detect and upgrade legacy uvx-based MCP entries in Claude settings. */
+function migrateLegacyClaudeMcp(settings: Record<string, unknown>): boolean {
+	const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
+	if (!mcpServers || typeof mcpServers !== "object") return false;
+	const entry = mcpServers.codemem as Record<string, unknown> | undefined;
+	if (!entry || typeof entry !== "object") return false;
+
+	const command = entry.command;
+	const args = entry.args;
+	const isLegacy =
+		(typeof command === "string" && (command === "uvx" || command === "uv")) ||
+		(Array.isArray(args) &&
+			args.some(
+				(arg) => typeof arg === "string" && (arg.startsWith("codemem==") || arg === "uvx"),
+			));
+
+	if (isLegacy) {
+		p.log.step("Upgrading legacy uvx Claude MCP entry to npx");
+		mcpServers.codemem = {
+			command: "npx",
+			args: ["-y", "codemem", "mcp"],
+		};
+		return true;
+	}
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Install functions
+// ---------------------------------------------------------------------------
 
 function installPlugin(force: boolean): boolean {
-	const source = findPluginSource();
-	if (!source) {
-		p.log.error("Plugin file not found in package tree");
+	// Clean up legacy copied plugin files first.
+	migrateLegacyOpencodePlugin();
+
+	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
+	let config: Record<string, unknown>;
+	try {
+		config = loadJsoncConfig(configPath);
+	} catch (err) {
+		p.log.error(
+			`Failed to parse ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return false;
 	}
 
-	const destDir = join(opencodeConfigDir(), "plugins");
-	const dest = join(destDir, "codemem.js");
-
-	if (existsSync(dest) && !force) {
-		p.log.info(`Plugin already installed at ${dest}`);
-	} else {
-		mkdirSync(destDir, { recursive: true });
-		copyFileSync(source, dest);
-		p.log.success(`Plugin installed: ${dest}`);
+	let plugins = config.plugin as unknown;
+	if (!Array.isArray(plugins)) {
+		plugins = [];
 	}
 
-	// Always install/update compat lib (plugin imports ../lib/compat.js)
-	const compatSource = findCompatSource();
-	if (compatSource) {
-		const compatDir = join(opencodeConfigDir(), "lib");
-		mkdirSync(compatDir, { recursive: true });
-		copyFileSync(compatSource, join(compatDir, "compat.js"));
+	const hasCodemem = (plugins as string[]).some(
+		(entry) =>
+			typeof entry === "string" &&
+			(entry === OPENCODE_PLUGIN_SPEC || entry.startsWith(`${OPENCODE_PLUGIN_SPEC}@`)),
+	);
+
+	if (hasCodemem && !force) {
+		p.log.info(`Plugin "${OPENCODE_PLUGIN_SPEC}" already in plugin array`);
+		return true;
+	}
+
+	if (hasCodemem && force) {
+		// Remove existing entry so we can re-add the canonical one.
+		plugins = (plugins as string[]).filter(
+			(entry) =>
+				typeof entry !== "string" ||
+				(entry !== OPENCODE_PLUGIN_SPEC && !entry.startsWith(`${OPENCODE_PLUGIN_SPEC}@`)),
+		);
+	}
+
+	(plugins as string[]).push(OPENCODE_PLUGIN_SPEC);
+	config.plugin = plugins;
+
+	try {
+		writeJsonConfig(configPath, config);
+		p.log.success(`Plugin "${OPENCODE_PLUGIN_SPEC}" added to ${configPath}`);
+	} catch (err) {
+		p.log.error(
+			`Failed to write ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return false;
 	}
 
 	return true;
@@ -116,17 +186,22 @@ function installMcp(force: boolean): boolean {
 		mcpConfig = {};
 	}
 
-	if ("codemem" in mcpConfig && !force) {
+	// Auto-upgrade legacy uvx-based MCP entries.
+	const migrated = migrateLegacyOpencodeMcp(config);
+
+	if ("codemem" in mcpConfig && !force && !migrated) {
 		p.log.info(`MCP entry already exists in ${configPath}`);
 		return true;
 	}
 
-	mcpConfig.codemem = {
-		type: "local",
-		command: ["npx", "codemem", "mcp"],
-		enabled: true,
-	};
-	config.mcp = mcpConfig;
+	if (!migrated) {
+		mcpConfig.codemem = {
+			type: "local",
+			command: ["npx", "codemem", "mcp"],
+			enabled: true,
+		};
+		config.mcp = mcpConfig;
+	}
 
 	try {
 		writeJsonConfig(configPath, config);
@@ -139,6 +214,17 @@ function installMcp(force: boolean): boolean {
 	}
 
 	return true;
+}
+
+function isClaudeHooksPluginInstalled(): boolean {
+	// Check if the marketplace hooks plugin is installed by looking for
+	// the hooks directory — NOT for MCP config (which we write ourselves).
+	const pluginDir = join(claudeConfigDir(), "plugins", "codemem");
+	if (existsSync(pluginDir)) return true;
+	// Also check for hook scripts installed by the marketplace plugin.
+	const hooksJson = join(pluginDir, "hooks", "hooks.json");
+	if (existsSync(hooksJson)) return true;
+	return false;
 }
 
 function installClaudeMcp(force: boolean): boolean {
@@ -155,25 +241,41 @@ function installClaudeMcp(force: boolean): boolean {
 		mcpServers = {};
 	}
 
-	if ("codemem" in mcpServers && !force) {
+	// Auto-upgrade legacy uvx-based Claude MCP entries.
+	const migrated = migrateLegacyClaudeMcp(settings);
+
+	if ("codemem" in mcpServers && !force && !migrated) {
 		p.log.info(`Claude MCP entry already exists in ${settingsPath}`);
-		return true;
+	} else {
+		if (!migrated) {
+			mcpServers.codemem = {
+				command: "npx",
+				args: ["-y", "codemem", "mcp"],
+			};
+			settings.mcpServers = mcpServers;
+		}
+
+		try {
+			writeJsonConfig(settingsPath, settings);
+			p.log.success(`Claude MCP entry installed: ${settingsPath}`);
+		} catch (err) {
+			p.log.error(
+				`Failed to write ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return false;
+		}
 	}
 
-	mcpServers.codemem = {
-		command: "npx",
-		args: ["codemem", "mcp"],
-	};
-	settings.mcpServers = mcpServers;
-
-	try {
-		writeJsonConfig(settingsPath, settings);
-		p.log.success(`Claude MCP entry installed: ${settingsPath}`);
-	} catch (err) {
-		p.log.error(
-			`Failed to write ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`,
-		);
-		return false;
+	// Guide marketplace plugin install for hooks integration.
+	if (!isClaudeHooksPluginInstalled() || force) {
+		p.log.info("To install the Claude Code hooks plugin, run in Claude Code:");
+		p.log.info("  /plugin marketplace add kunickiaj/codemem");
+		p.log.info("  /plugin install codemem");
+		p.log.info("");
+		p.log.info("To update an existing install:");
+		p.log.info("  /plugin marketplace update codemem-marketplace");
+	} else {
+		p.log.info("Claude Code hooks plugin appears to be installed");
 	}
 
 	return true;

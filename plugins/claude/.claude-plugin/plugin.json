@@ -1,7 +1,7 @@
 {
   "name": "codemem",
   "description": "Persistent memory for Claude Code. Capture work across sessions and recall relevant context.",
-  "version": "0.19.0",
+  "version": "0.20.4",
   "author": {
     "name": "Adam Kunicki"
   },
@@ -9,9 +9,10 @@
   "license": "MIT",
   "mcpServers": {
     "codemem": {
-      "command": "uvx",
+      "command": "npx",
       "args": [
-        "codemem==0.19.0",
+        "-y",
+        "codemem",
         "mcp"
       ]
     }
