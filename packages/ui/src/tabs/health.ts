@@ -175,18 +175,18 @@ export function renderHealthOverview() {
   const triggerSync = () => api.triggerSync();
   const recommendations: HealthAction[] = [];
   if (hasBacklog) {
-    recommendations.push({ label: 'Pipeline needs attention. Check queue health first.', command: 'uv run codemem raw-events-status' });
-    recommendations.push({ label: 'Then retry failed batches for impacted sessions.', command: 'uv run codemem raw-events-retry <opencode_session_id>' });
+    recommendations.push({ label: 'Pipeline needs attention. Check queue health first.', command: 'codemem db raw-events-status' });
+    recommendations.push({ label: 'Then retry failed batches for impacted sessions.', command: 'codemem db raw-events-retry <opencode_session_id>' });
   } else if (syncState === 'stopped') {
-    recommendations.push({ label: 'Sync daemon is stopped. Start the background service.', command: 'uv run codemem sync start' });
+    recommendations.push({ label: 'Sync daemon is stopped. Start the background service.', command: 'codemem sync start' });
   } else if (!syncDisabled && !syncNoPeers && (syncState === 'error' || syncState === 'degraded')) {
-    recommendations.push({ label: 'Sync is unhealthy. Restart and run one immediate pass.', command: 'uv run codemem sync restart', action: triggerSync, actionLabel: 'Sync now' });
-    recommendations.push({ label: 'Then run doctor to see root cause details.', command: 'uv run codemem sync doctor' });
+    recommendations.push({ label: 'Sync is unhealthy. Restart and run one immediate pass.', command: 'codemem sync restart', action: triggerSync, actionLabel: 'Sync now' });
+    recommendations.push({ label: 'Then run doctor to see root cause details.', command: 'codemem sync doctor' });
   } else if (!syncDisabled && !syncNoPeers && syncLooksStale) {
-    recommendations.push({ label: 'Sync is stale. Run one immediate sync pass.', command: 'uv run codemem sync once', action: triggerSync, actionLabel: 'Sync now' });
+    recommendations.push({ label: 'Sync is stale. Run one immediate sync pass.', command: 'codemem sync once', action: triggerSync, actionLabel: 'Sync now' });
   }
   if (tagCoverage > 0 && tagCoverage < 0.7 && recommendations.length < 2) {
-    recommendations.push({ label: 'Tag coverage is low. Preview backfill impact.', command: 'uv run codemem backfill-tags --dry-run' });
+    recommendations.push({ label: 'Tag coverage is low. Preview backfill impact.', command: 'codemem db backfill-tags --dry-run' });
   }
   renderActionList(healthActions, recommendations);
 

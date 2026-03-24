@@ -211,11 +211,11 @@ export function renderTeamSync() {
     const textWrap = el('div', 'sync-action-text');
     textWrap.textContent = 'No devices are paired yet.';
     textWrap.appendChild(
-      el('span', 'sync-action-command', 'uv run codemem sync pair --payload-only'),
+      el('span', 'sync-action-command', 'codemem sync pair --payload-only'),
     );
     const btn = el('button', 'settings-button sync-action-copy', 'Copy') as HTMLButtonElement;
     btn.addEventListener('click', () =>
-      copyToClipboard('uv run codemem sync pair --payload-only', btn),
+      copyToClipboard('codemem sync pair --payload-only', btn),
     );
     row.append(textWrap, btn);
     actions.appendChild(row);
