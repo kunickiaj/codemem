@@ -9,7 +9,7 @@ CodeMem uses one shared semantic version stream across its npm packages.
 ## Policy
 
 - Release tags `vX.Y.Z` represent the product version.
-- npm and PyPI artifacts should publish the same `X.Y.Z`.
+- npm packages publish the same `X.Y.Z`.
 - Changelog/release notes are shared per version.
 
 ## Release workflow
