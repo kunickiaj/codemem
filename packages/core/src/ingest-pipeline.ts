@@ -54,6 +54,7 @@ import type { ObserverClient } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
 import type { MemoryStore } from "./store.js";
+import { deriveTags } from "./tags.js";
 import { storeVectors } from "./vectors.js";
 
 // ---------------------------------------------------------------------------
@@ -397,7 +398,14 @@ export async function ingest(
 				const bodyText = bodyParts.join("\n\n");
 
 				const memoryTitle = obs.title || obs.narrative;
-				const memoryId = store.remember(sessionId, kind, memoryTitle, bodyText, 0.5, undefined, {
+				const tags = deriveTags({
+					kind,
+					title: memoryTitle,
+					concepts: obs.concepts,
+					filesRead: obs.filesRead,
+					filesModified: obs.filesModified,
+				});
+				const memoryId = store.remember(sessionId, kind, memoryTitle, bodyText, 0.5, tags, {
 					subtitle: obs.subtitle,
 					facts: obs.facts,
 					concepts: obs.concepts,
@@ -415,7 +423,13 @@ export async function ingest(
 			if (summaryToStore) {
 				const { summary, request, body } = summaryToStore;
 				const summaryTitle = request || "Session summary";
-				const memoryId = store.remember(sessionId, "change", summaryTitle, body, 0.3, undefined, {
+				const summaryTags = deriveTags({
+					kind: "change",
+					title: summaryTitle,
+					filesRead: summary.filesRead,
+					filesModified: summary.filesModified,
+				});
+				const memoryId = store.remember(sessionId, "change", summaryTitle, body, 0.3, summaryTags, {
 					is_summary: true,
 					request,
 					investigated: summary.investigated,
