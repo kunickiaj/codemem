@@ -1,5 +1,5 @@
 export const parseSemver = (value) => {
-  const match = String(value || "").trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+  const match = String(value || "").trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-.*)?$/);
   if (!match) return null;
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 };

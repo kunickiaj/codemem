@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.20.4";
+export const VERSION = "0.20.5-alpha.1";
 
 export * as Api from "./api-types.js";
 export type { ClaudeHookAdapterEvent, ClaudeHookRawEventEnvelope } from "./claude-hooks.js";
@@ -47,7 +47,6 @@ export {
 export type { Database } from "./db.js";
 export {
 	assertSchemaReady,
-	backupOnFirstAccess,
 	connect,
 	DEFAULT_DB_PATH,
 	fromJson,
