@@ -304,6 +304,40 @@ export function tableExists(db: DatabaseType, table: string): boolean {
 	return row !== undefined;
 }
 
+/** Check if a column exists in a table. */
+export function columnExists(db: DatabaseType, table: string, column: string): boolean {
+	if (!tableExists(db, table)) return false;
+	const row = db
+		.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1")
+		.get(table, column);
+	return row !== undefined;
+}
+
+/**
+ * Apply additive compatibility fixes for legacy TS-era schemas.
+ *
+ * These are safe, one-way `ALTER TABLE ... ADD COLUMN` updates used to
+ * prevent runtime failures when older local databases are missing columns
+ * introduced in later releases.
+ */
+export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+	if (!tableExists(db, "raw_event_flush_batches")) return;
+
+	const additiveColumns: Array<{ name: string; ddl: string }> = [
+		{ name: "error_message", ddl: "TEXT" },
+		{ name: "error_type", ddl: "TEXT" },
+		{ name: "observer_provider", ddl: "TEXT" },
+		{ name: "observer_model", ddl: "TEXT" },
+		{ name: "observer_runtime", ddl: "TEXT" },
+		{ name: "attempt_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
+	];
+
+	for (const { name, ddl } of additiveColumns) {
+		if (columnExists(db, "raw_event_flush_batches", name)) continue;
+		db.exec(`ALTER TABLE raw_event_flush_batches ADD COLUMN ${name} ${ddl}`);
+	}
+}
+
 /** Safely parse a JSON string, returning {} on failure. */
 export function fromJson(text: string | null | undefined): Record<string, unknown> {
 	if (!text) return {};

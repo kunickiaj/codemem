@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
+	columnExists,
 	connect,
+	ensureAdditiveSchemaCompatibility,
 	fromJson,
 	getSchemaVersion,
 	isEmbeddingDisabled,
@@ -215,6 +217,54 @@ describe("tableExists", () => {
 	it("returns true for an existing table", () => {
 		db.exec("CREATE TABLE test_table (id INTEGER PRIMARY KEY)");
 		expect(tableExists(db, "test_table")).toBe(true);
+	});
+});
+
+describe("ensureAdditiveSchemaCompatibility", () => {
+	let tmpDir: string;
+	let db: Database;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
+		db = connect(join(tmpDir, "test.sqlite"));
+	});
+
+	afterEach(() => {
+		db?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("adds missing raw_event_flush_batches compatibility columns", () => {
+		db.exec(`
+			CREATE TABLE raw_event_flush_batches (
+				id INTEGER PRIMARY KEY,
+				source TEXT NOT NULL,
+				stream_id TEXT NOT NULL,
+				opencode_session_id TEXT NOT NULL,
+				start_event_seq INTEGER NOT NULL,
+				end_event_seq INTEGER NOT NULL,
+				extractor_version TEXT NOT NULL,
+				status TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+
+		expect(columnExists(db, "raw_event_flush_batches", "error_message")).toBe(false);
+		expect(columnExists(db, "raw_event_flush_batches", "attempt_count")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnExists(db, "raw_event_flush_batches", "error_message")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "error_type")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "observer_provider")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "observer_model")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "observer_runtime")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "attempt_count")).toBe(true);
+	});
+
+	it("is a no-op when raw_event_flush_batches does not exist", () => {
+		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
 	});
 });
 

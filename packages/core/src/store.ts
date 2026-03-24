@@ -22,6 +22,7 @@ import {
 	backupOnFirstAccess,
 	connect,
 	DEFAULT_DB_PATH,
+	ensureAdditiveSchemaCompatibility,
 	fromJson,
 	isEmbeddingDisabled,
 	loadSqliteVec,
@@ -179,6 +180,7 @@ export class MemoryStore {
 		try {
 			loadSqliteVec(this.db);
 			assertSchemaReady(this.db);
+			ensureAdditiveSchemaCompatibility(this.db);
 		} catch (err) {
 			this.db.close();
 			throw err;
