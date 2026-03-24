@@ -418,7 +418,7 @@ function buildSettingsNotice(payload: any): { message: string; type: 'success' |
     lines.push(`Sync: ${sync.reason}.`);
   }
   if (restartRequired.length) {
-    lines.push(`Manual restart required: ${joinPhrases(restartRequired)}.`);
+    lines.push(`Restart required for ${joinPhrases(restartRequired)}. Run: codemem serve restart`);
   }
   warnings.forEach((warning) => {
     lines.push(warning);
