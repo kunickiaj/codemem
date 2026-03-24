@@ -127,6 +127,7 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).toHaveProperty("database");
+				expect(typeof body.viewer_pid).toBe("number");
 				const db = body.database as Record<string, unknown>;
 				expect(db).toHaveProperty("path");
 				expect(db).toHaveProperty("sessions");

@@ -16,7 +16,10 @@ export function statsRoutes(getStore: () => MemoryStore) {
 
 	app.get("/api/stats", (c) => {
 		const store = getStore();
-		return c.json(store.stats());
+		return c.json({
+			...store.stats(),
+			viewer_pid: process.pid,
+		});
 	});
 
 	app.get("/api/usage", (c) => {

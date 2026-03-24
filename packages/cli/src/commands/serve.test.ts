@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildForegroundRunnerArgs,
+	extractViewerPid,
+	isLikelyViewerCommand,
+	isLocalHost,
 	isSqliteVecLoadFailure,
+	pickViewerPidCandidate,
 	sqliteVecFailureDiagnostics,
 } from "./serve.js";
 import {
@@ -150,5 +154,39 @@ describe("serve command option resolution", () => {
 		expect(lines.some((line) => line.startsWith("node="))).toBe(true);
 		expect(lines.some((line) => line.startsWith("exec="))).toBe(true);
 		expect(lines.some((line) => line.startsWith("error=vec0 load failed"))).toBe(true);
+	});
+
+	it("extracts viewer_pid from stats payload", () => {
+		expect(extractViewerPid({ viewer_pid: 12345 })).toBe(12345);
+		expect(extractViewerPid({ viewer_pid: -1 })).toBeNull();
+		expect(extractViewerPid({ viewer_pid: "12345" })).toBeNull();
+		expect(extractViewerPid({})).toBeNull();
+	});
+
+	it("selects pid candidate from stats and listener with mismatch protection", () => {
+		expect(pickViewerPidCandidate(123, 123)).toBe(123);
+		expect(pickViewerPidCandidate(null, 456)).toBe(456);
+		expect(pickViewerPidCandidate(123, null)).toBe(123);
+		expect(pickViewerPidCandidate(111, 222)).toBeNull();
+	});
+
+	it("recognizes local hosts for safe process control", () => {
+		expect(isLocalHost("127.0.0.1")).toBe(true);
+		expect(isLocalHost("localhost")).toBe(true);
+		expect(isLocalHost("::1")).toBe(true);
+		expect(isLocalHost("0.0.0.0")).toBe(true);
+		expect(isLocalHost("example.com")).toBe(false);
+	});
+
+	it("matches likely codemem viewer command lines", () => {
+		expect(
+			isLikelyViewerCommand(
+				"node /Users/adam/.local/share/mise/installs/node/24.14.0/bin/codemem serve start --foreground --host 127.0.0.1 --port 38888",
+			),
+		).toBe(true);
+		expect(
+			isLikelyViewerCommand("node /repo/packages/cli/dist/index.js serve start --foreground"),
+		).toBe(true);
+		expect(isLikelyViewerCommand("node /usr/bin/python -m http.server 38888")).toBe(false);
 	});
 });

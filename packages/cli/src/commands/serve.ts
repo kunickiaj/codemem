@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, join } from "node:path";
@@ -25,6 +25,80 @@ interface ViewerPidRecord {
 	pid: number;
 	host: string;
 	port: number;
+}
+
+export function extractViewerPid(payload: unknown): number | null {
+	if (!payload || typeof payload !== "object") return null;
+	const rawPid = (payload as { viewer_pid?: unknown }).viewer_pid;
+	if (typeof rawPid !== "number" || !Number.isFinite(rawPid) || rawPid <= 0) return null;
+	return Math.trunc(rawPid);
+}
+
+export function isLocalHost(host: string): boolean {
+	const normalized = host.trim().toLowerCase();
+	return (
+		normalized === "127.0.0.1" ||
+		normalized === "localhost" ||
+		normalized === "::1" ||
+		normalized === "0.0.0.0" ||
+		normalized === "::"
+	);
+}
+
+export function isLikelyViewerCommand(command: string): boolean {
+	const lowered = command.toLowerCase();
+	if (!/\bserve\s+start\b/.test(lowered)) return false;
+	return (
+		lowered.includes("codemem") ||
+		lowered.includes("packages/cli/dist/index.js") ||
+		lowered.includes("/cli/dist/index.js")
+	);
+}
+
+export function pickViewerPidCandidate(
+	statsPid: number | null,
+	listenerPid: number | null,
+): number | null {
+	if (statsPid && listenerPid && statsPid !== listenerPid) return null;
+	return statsPid ?? listenerPid ?? null;
+}
+
+function lookupListeningPid(host: string, port: number): number | null {
+	if (!isLocalHost(host)) return null;
+	const result = spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+		encoding: "utf-8",
+		timeout: 1000,
+	});
+	if (result.status !== 0) return null;
+	const first = (result.stdout || "")
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find((line) => line.length > 0);
+	if (!first) return null;
+	const parsed = Number.parseInt(first, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function readProcessCommand(pid: number): string | null {
+	const result = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+		encoding: "utf-8",
+		timeout: 1000,
+	});
+	if (result.status !== 0) return null;
+	const cmd = (result.stdout || "").trim();
+	return cmd.length > 0 ? cmd : null;
+}
+
+function isTrustedViewerPid(
+	pid: number,
+	target: { host: string; port: number },
+	listenerPid: number | null,
+): boolean {
+	if (!isLocalHost(target.host)) return false;
+	if (listenerPid && listenerPid !== pid) return false;
+	const command = readProcessCommand(pid);
+	if (!command) return false;
+	return isLikelyViewerCommand(command);
 }
 
 function pidFilePath(dbPath: string): string {
@@ -76,6 +150,22 @@ async function respondsLikeCodememViewer(record: ViewerPidRecord): Promise<boole
 	}
 }
 
+async function lookupViewerPidFromStats(host: string, port: number): Promise<number | null> {
+	try {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 1000);
+		const res = await fetch(`http://${host}:${port}/api/stats`, {
+			signal: controller.signal,
+		});
+		clearTimeout(timer);
+		if (!res.ok) return null;
+		const payload = await res.json();
+		return extractViewerPid(payload);
+	} catch {
+		return null;
+	}
+}
+
 async function isPortOpen(host: string, port: number): Promise<boolean> {
 	return new Promise((resolve) => {
 		const socket = net.createConnection({ host, port });
@@ -101,10 +191,30 @@ async function waitForProcessExit(pid: number, timeoutMs = 5000): Promise<void> 
 
 async function stopExistingViewer(
 	dbPath: string,
+	target: { host: string; port: number },
 ): Promise<{ stopped: boolean; pid: number | null }> {
 	const pidPath = pidFilePath(dbPath);
 	const record = readViewerPidRecord(dbPath);
+	const viewerPidFromStats = await lookupViewerPidFromStats(target.host, target.port);
+	const listenerPid = lookupListeningPid(target.host, target.port);
+	const viewerPid = pickViewerPidCandidate(viewerPidFromStats, listenerPid);
+	if (viewerPid && isTrustedViewerPid(viewerPid, target, listenerPid)) {
+		try {
+			process.kill(viewerPid, "SIGTERM");
+			await waitForProcessExit(viewerPid);
+		} catch {
+			// process may have already exited
+		}
+		try {
+			rmSync(pidPath);
+		} catch {
+			// ignore
+		}
+		return { stopped: true, pid: viewerPid };
+	}
+
 	if (!record) return { stopped: false, pid: null };
+
 	if (await respondsLikeCodememViewer(record)) {
 		try {
 			process.kill(record.pid, "SIGTERM");
@@ -322,7 +432,10 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<void> {
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	if (invocation.mode === "stop" || invocation.mode === "restart") {
-		const result = await stopExistingViewer(dbPath);
+		const result = await stopExistingViewer(dbPath, {
+			host: invocation.host,
+			port: invocation.port,
+		});
 		if (result.stopped) {
 			p.intro("codemem viewer");
 			p.log.success(`Stopped viewer${result.pid ? ` (pid ${result.pid})` : ""}`);
