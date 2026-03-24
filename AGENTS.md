@@ -40,6 +40,8 @@ Release checklist:
    - `packages/core/src/index.ts`
    - `packages/core/src/index.test.ts`
    - `packages/cli/.opencode/plugins/codemem.js`
+   - `.claude-plugin/marketplace.json` (metadata version only; MCP args are unpinned)
+   - `plugins/claude/.claude-plugin/plugin.json` (metadata version only; MCP args are unpinned)
 3. Regenerate lockfiles/artifacts and commit the results:
    - JS: run `pnpm install` and commit lockfile/artifact changes when applicable
    - Viewer UI bundle/assets: built via `pnpm build`
