@@ -1082,6 +1082,109 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("serves paginated memory bootstrap pages with tombstones", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const sessionId = insertTestSession(store.db);
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, visibility, metadata_json)
+						 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, ?, ?)`,
+					)
+					.run(
+						sessionId,
+						"key-a",
+						now,
+						now,
+						"key-a",
+						1,
+						null,
+						"shared",
+						JSON.stringify({ clock_device_id: "dev-a" }),
+					);
+				store.db
+					.prepare(
+						`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, visibility, metadata_json)
+						 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, ?, ?)`,
+					)
+					.run(
+						sessionId,
+						"key-b",
+						now,
+						now,
+						"key-b",
+						0,
+						now,
+						"shared",
+						JSON.stringify({ clock_device_id: "dev-a" }),
+					);
+
+				store.db
+					.prepare(
+						`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+						 VALUES (1, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						11,
+						"snapshot-11",
+						"2026-01-01T00:00:02Z|base-op",
+						"2026-01-01T00:00:03Z|floor-op",
+						now,
+					);
+
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					const peerPublicKey = loadPublicKey(peerKeysDir);
+					if (!peerPublicKey) throw new Error("peer public key missing");
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+
+					store.db
+						.prepare(
+							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+							 VALUES (?, ?, ?, ?)`,
+						)
+						.run(peerDeviceId, peerFingerprint.fingerprint, peerPublicKey, now);
+
+					const url =
+						"http://localhost/v1/bootstrap/memories?limit=2&generation=11&snapshot_id=snapshot-11&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+					});
+
+					const res = await syncApp.request(url, { headers });
+					expect(res.status).toBe(200);
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.generation).toBe(11);
+					expect(body.snapshot_id).toBe("snapshot-11");
+					const items = body.items as Array<Record<string, unknown>>;
+					expect(items.map((item) => item.entity_id)).toEqual(["key-a", "key-b"]);
+					expect(items[1]?.op_type).toBe("delete");
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
+			}
+		});
+
 		it("does not expose viewer routes on sync app", async () => {
 			const { syncApp, cleanup } = createTestApp();
 			try {

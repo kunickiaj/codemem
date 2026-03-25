@@ -286,6 +286,15 @@ export interface SyncResetRequired extends SyncResetBoundary {
 	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
 }
 
+export interface SyncMemorySnapshotItem {
+	entity_id: string;
+	op_type: "upsert" | "delete";
+	payload_json: string;
+	clock_rev: number;
+	clock_updated_at: string;
+	clock_device_id: string;
+}
+
 export interface SyncAttempt {
 	id: number;
 	peer_device_id: string;
