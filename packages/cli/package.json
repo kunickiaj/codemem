@@ -1,12 +1,12 @@
 {
 	"name": "codemem",
-	"version": "0.20.7",
+	"version": "0.20.8",
 	"description": "Memory layer for AI coding agents — search, recall, and sync context across sessions",
 	"type": "module",
-	"main": "./dist/index.js",
+	"main": "./.opencode/entry.js",
 	"exports": {
 		".": {
-			"import": "./dist/index.js"
+			"import": "./.opencode/entry.js"
 		}
 	},
 	"bin": {
@@ -14,6 +14,7 @@
 	},
 	"files": [
 		"dist/",
+		".opencode/entry.js",
 		".opencode/package.json",
 		".opencode/plugins/",
 		".opencode/lib/",
