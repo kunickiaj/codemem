@@ -182,12 +182,13 @@ async function isPortOpen(host: string, port: number): Promise<boolean> {
 	});
 }
 
-async function waitForProcessExit(pid: number, timeoutMs = 5000): Promise<void> {
+async function waitForProcessExit(pid: number, timeoutMs = 5000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (!isProcessRunning(pid)) return;
+		if (!isProcessRunning(pid)) return true;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
+	return !isProcessRunning(pid);
 }
 
 async function waitForPortRelease(host: string, port: number, timeoutMs = 10000): Promise<boolean> {
@@ -203,18 +204,30 @@ async function stopExistingViewer(
 	dbPath: string,
 	target: { host: string; port: number },
 ): Promise<{ stopped: boolean; pid: number | null }> {
+	const terminatePid = async (pid: number): Promise<boolean> => {
+		try {
+			process.kill(pid, "SIGTERM");
+			if (await waitForProcessExit(pid)) return true;
+		} catch {
+			return true;
+		}
+
+		try {
+			process.kill(pid, "SIGKILL");
+			return await waitForProcessExit(pid, 2000);
+		} catch {
+			return !isProcessRunning(pid);
+		}
+	};
+
 	const pidPath = pidFilePath(dbPath);
 	const record = readViewerPidRecord(dbPath);
 	const viewerPidFromStats = await lookupViewerPidFromStats(target.host, target.port);
 	const listenerPid = lookupListeningPid(target.host, target.port);
 	const viewerPid = pickViewerPidCandidate(viewerPidFromStats, listenerPid);
 	if (viewerPid && isTrustedViewerPid(viewerPid, target, listenerPid)) {
-		try {
-			process.kill(viewerPid, "SIGTERM");
-			await waitForProcessExit(viewerPid);
-		} catch {
-			// process may have already exited
-		}
+		const stopped = await terminatePid(viewerPid);
+		if (!stopped) return { stopped: false, pid: viewerPid };
 		try {
 			rmSync(pidPath);
 		} catch {
@@ -226,12 +239,8 @@ async function stopExistingViewer(
 	if (!record) return { stopped: false, pid: null };
 
 	if (await respondsLikeCodememViewer(record)) {
-		try {
-			process.kill(record.pid, "SIGTERM");
-			await waitForProcessExit(record.pid);
-		} catch {
-			// stale pidfile or already exited
-		}
+		const stopped = await terminatePid(record.pid);
+		if (!stopped) return { stopped: false, pid: record.pid };
 	}
 	try {
 		rmSync(pidPath);
@@ -353,31 +362,23 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	sweeper.start();
 
 	const syncAbort = new AbortController();
-	let syncRunning = false;
 	const config = readCodememConfigFile();
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
+	const syncRuntimeStatus: {
+		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
+		detail: string | null;
+	} = {
+		phase: syncEnabled ? "starting" : "disabled",
+		detail: syncEnabled ? "Waiting for viewer startup to finish" : "Sync is disabled",
+	};
 
-	if (syncEnabled) {
-		syncRunning = true;
-		const syncIntervalS = syncConfig.syncIntervalS;
-		runSyncDaemon({
-			dbPath: resolveDbPath(invocation.dbPath ?? undefined),
-			intervalS: syncIntervalS,
-			host: syncConfig.syncHost,
-			port: syncConfig.syncPort,
-			signal: syncAbort.signal,
-		})
-			.catch((err: unknown) => {
-				const msg = err instanceof Error ? err.message : String(err);
-				p.log.error(`Sync daemon failed: ${msg}`);
-			})
-			.finally(() => {
-				syncRunning = false;
-			});
-	}
-
-	const appOpts = { storeFactory: () => store, sweeper, observer };
+	const appOpts = {
+		storeFactory: () => store,
+		sweeper,
+		observer,
+		getSyncRuntimeStatus: () => syncRuntimeStatus,
+	};
 	const app = createApp(appOpts);
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const pidPath = pidFilePath(dbPath);
@@ -419,7 +420,45 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			p.log.success(`Listening on http://${info.address}:${info.port}`);
 			p.log.info(`Database: ${dbPath}`);
 			p.log.step("Raw event sweeper started");
-			if (syncRunning) p.log.step("Sync daemon started");
+			if (syncEnabled) {
+				const syncStartDelayMs = 3000;
+				p.log.step(`Sync daemon will start in background (${syncStartDelayMs / 1000}s delay)`);
+				setTimeout(() => {
+					syncRuntimeStatus.phase = "starting";
+					syncRuntimeStatus.detail = "Starting sync in background";
+					void runSyncDaemon({
+						dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+						intervalS: syncConfig.syncIntervalS,
+						host: syncConfig.syncHost,
+						port: syncConfig.syncPort,
+						signal: syncAbort.signal,
+						onPhaseChange: (phase) => {
+							if (phase === "running") {
+								syncRuntimeStatus.phase = null;
+								syncRuntimeStatus.detail = null;
+							} else {
+								syncRuntimeStatus.phase = phase;
+								syncRuntimeStatus.detail =
+									phase === "starting"
+										? "Running initial sync in background"
+										: "Stopping sync daemon";
+							}
+						},
+					})
+						.catch((err: unknown) => {
+							const msg = err instanceof Error ? err.message : String(err);
+							syncRuntimeStatus.phase = "error";
+							syncRuntimeStatus.detail = msg;
+							p.log.error(`Sync daemon failed: ${msg}`);
+						})
+						.finally(() => {
+							if (syncRuntimeStatus.phase !== "error") {
+								syncRuntimeStatus.phase = syncAbort.signal.aborted ? "stopping" : null;
+								syncRuntimeStatus.detail = syncAbort.signal.aborted ? "Sync stopped" : null;
+							}
+						});
+				}, syncStartDelayMs).unref();
+			}
 		},
 	);
 
@@ -499,6 +538,11 @@ async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<
 			if (!released) {
 				p.log.warn(`Port ${invocation.port} still in use after stop — restart may fail`);
 			}
+		} else if (result.pid) {
+			p.intro("codemem viewer");
+			p.log.error(`Viewer is still shutting down (pid ${result.pid})`);
+			process.exitCode = 1;
+			return;
 		} else if (invocation.mode === "stop") {
 			p.intro("codemem viewer");
 			p.outro("No background viewer found");

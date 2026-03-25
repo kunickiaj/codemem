@@ -49,12 +49,17 @@ export interface AppOptions {
 	storeFactory?: () => MemoryStore;
 	sweeper?: RawEventSweeper | null;
 	observer?: ObserverClient | null;
+	getSyncRuntimeStatus?: () => {
+		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
+		detail?: string | null;
+	} | null;
 }
 
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
 	const observer = opts?.observer ?? null;
+	const getSyncRuntimeStatus = opts?.getSyncRuntimeStatus ?? (() => null);
 	const app = new Hono();
 
 	// CORS / origin guard
@@ -74,7 +79,7 @@ export function createApp(opts?: AppOptions) {
 	);
 	app.route("/", configRoutes({ getSweeper: () => sweeper }));
 	app.route("/", rawEventsRoutes(storeFactory, sweeper));
-	app.route("/", syncRoutes(storeFactory));
+	app.route("/", syncRoutes(storeFactory, getSyncRuntimeStatus));
 
 	// Static assets — serve under /assets/*
 	// Resolves to packages/viewer-server/static/ both in dev and when installed from npm.

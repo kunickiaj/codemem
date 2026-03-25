@@ -30,6 +30,10 @@ import { Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
+type SyncRuntimeStatus = {
+	phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
+	detail?: string | null;
+};
 
 const SYNC_STALE_AFTER_SECONDS = 10 * 60;
 const SYNC_PROTOCOL_VERSION = "1";
@@ -538,7 +542,10 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
  * provide sync status, peer management, and coordinator UI for the
  * local viewer.
  */
-export function syncRoutes(getStore: StoreFactory) {
+export function syncRoutes(
+	getStore: StoreFactory,
+	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
+) {
 	const app = new Hono();
 
 	// GET /api/sync/status
@@ -620,6 +627,14 @@ export function syncRoutes(getStore: StoreFactory) {
 				statusPayload.daemon_last_error = lastError;
 				statusPayload.daemon_last_error_at = lastErrorAt;
 				statusPayload.daemon_last_ok_at = lastOkAt;
+			}
+
+			const runtimeStatus = getSyncRuntimeStatus?.() ?? null;
+			if (runtimeStatus?.phase && runtimeStatus.phase !== "running") {
+				daemonStateValue = runtimeStatus.phase;
+				statusPayload.daemon_state = daemonStateValue;
+				statusPayload.daemon_running = runtimeStatus.phase === "starting" || daemonRunning;
+				statusPayload.daemon_detail = runtimeStatus.detail ?? daemonDetail;
 			}
 
 			// Build peers list using deduplicated mapPeerRow

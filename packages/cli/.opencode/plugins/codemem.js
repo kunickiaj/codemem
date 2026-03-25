@@ -15,7 +15,7 @@ import {
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
-const PINNED_BACKEND_VERSION = "0.20.5-alpha.1";
+const PINNED_BACKEND_VERSION = "0.20.5-alpha.2";
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
 const envHasValue = (value, truthyValues) =>

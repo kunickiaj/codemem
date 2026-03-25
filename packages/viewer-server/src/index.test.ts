@@ -87,7 +87,13 @@ function insertTestMemory(
 }
 
 /** Create a test Hono app backed by a fresh in-memory DB. */
-function createTestApp(opts?: { sweeper?: unknown }) {
+function createTestApp(opts?: {
+	sweeper?: unknown;
+	getSyncRuntimeStatus?: () => {
+		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
+		detail?: string | null;
+	} | null;
+}) {
 	let store: MemoryStore | null = null;
 	let storeCleanup: (() => void) | null = null;
 
@@ -103,6 +109,7 @@ function createTestApp(opts?: { sweeper?: unknown }) {
 	const app = createApp({
 		sweeper: (opts?.sweeper ?? null) as never,
 		storeFactory,
+		getSyncRuntimeStatus: opts?.getSyncRuntimeStatus,
 	});
 
 	const syncApp = createSyncApp({ storeFactory });
@@ -1142,6 +1149,24 @@ describe("viewer-server", () => {
 				else process.env.CODEMEM_CONFIG = prevConfig;
 				if (prevEnabled == null) delete process.env.CODEMEM_SYNC_ENABLED;
 				else process.env.CODEMEM_SYNC_ENABLED = prevEnabled;
+			}
+		});
+
+		it("surfaces runtime sync startup state before daemon settles", async () => {
+			const { app, cleanup } = createTestApp({
+				getSyncRuntimeStatus: () => ({
+					phase: "starting",
+					detail: "Running initial sync in background",
+				}),
+			});
+			try {
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.daemon_state).toBe("starting");
+				expect(body.daemon_detail).toBe("Running initial sync in background");
+			} finally {
+				cleanup();
 			}
 		});
 
