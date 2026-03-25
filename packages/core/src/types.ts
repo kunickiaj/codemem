@@ -286,6 +286,11 @@ export interface SyncResetRequired extends SyncResetBoundary {
 	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
 }
 
+export interface SyncDirtyLocalState {
+	dirty: boolean;
+	count: number;
+}
+
 export interface SyncMemorySnapshotItem {
 	entity_id: string;
 	op_type: "upsert" | "delete";

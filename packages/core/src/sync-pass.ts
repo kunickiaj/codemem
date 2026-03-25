@@ -21,6 +21,7 @@ import {
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
+	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
 	setReplicationCursor,
 } from "./sync-replication.js";
@@ -410,6 +411,7 @@ export async function syncOnce(
 				headers: getHeaders,
 			});
 			if (getStatus === 409 && getPayload?.reset_required === true) {
+				const dirtyLocal = hasUnsyncedSharedMemoryChanges(db);
 				const resetRequired: SyncResult["resetRequired"] = {
 					reset_required: true,
 					reason:
@@ -430,12 +432,16 @@ export async function syncOnce(
 				};
 				recordSyncAttempt(db, peerDeviceId, {
 					ok: false,
-					error: `reset_required:${resetRequired.reason}`,
+					error: dirtyLocal.dirty
+						? `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`
+						: `reset_required:${resetRequired.reason}`,
 				});
 				return {
 					ok: false,
 					address: baseUrl,
-					error: `reset required: ${resetRequired.reason}`,
+					error: dirtyLocal.dirty
+						? `needs attention: ${dirtyLocal.count} unsynced shared memory change(s) block automatic reset`
+						: `reset required: ${resetRequired.reason}`,
 					opsIn: 0,
 					opsOut: 0,
 					addressErrors: [],

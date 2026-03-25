@@ -15,7 +15,7 @@ import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
-import type { ReplicationOp, SyncMemorySnapshotItem } from "./types.js";
+import type { ReplicationOp, SyncDirtyLocalState, SyncMemorySnapshotItem } from "./types.js";
 
 export interface SyncResetBoundary {
 	generation: number;
@@ -816,6 +816,35 @@ export function loadMemorySnapshotPageForPeer(
 		nextPageToken: hasMore ? lastScannedToken : null,
 		hasMore: hasMore && lastScannedToken != null,
 	};
+}
+
+export function hasUnsyncedSharedMemoryChanges(db: Database, limit = 25): SyncDirtyLocalState {
+	const d = drizzle(db, { schema });
+	const rows = d.select().from(schema.memoryItems).orderBy(schema.memoryItems.updated_at).all();
+	let count = 0;
+	for (const row of rows) {
+		if (!row.import_key) continue;
+		const payload = buildPayloadFromMemoryRow(row);
+		if (!syncVisibilityAllowed(payload as unknown as Record<string, unknown>)) continue;
+		const opType: "upsert" | "delete" = row.deleted_at || row.active === 0 ? "delete" : "upsert";
+		const exists = d
+			.select({ one: sql<number>`1` })
+			.from(schema.replicationOps)
+			.where(
+				and(
+					eq(schema.replicationOps.entity_type, "memory_item"),
+					eq(schema.replicationOps.entity_id, row.import_key),
+					eq(schema.replicationOps.op_type, opType),
+					eq(schema.replicationOps.clock_rev, Number(row.rev ?? 0)),
+				),
+			)
+			.limit(1)
+			.get();
+		if (exists) continue;
+		count += 1;
+		if (count >= limit) break;
+	}
+	return { dirty: count > 0, count };
 }
 
 function cleanList(values: unknown): string[] {
