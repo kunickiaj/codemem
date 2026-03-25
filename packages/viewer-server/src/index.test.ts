@@ -1423,6 +1423,38 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("does not let latest needs_attention metadata override live starting state", async () => {
+			const { app, getStore, cleanup } = createTestApp({
+				getSyncRuntimeStatus: () => ({
+					phase: "starting",
+					detail: "Running initial sync in background",
+				}),
+			});
+			try {
+				await app.request("/api/sync/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						`INSERT INTO sync_attempts(peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error)
+						 VALUES ('peer-1', ?, ?, 0, 0, 0, ?)`,
+					)
+					.run(
+						new Date().toISOString(),
+						new Date().toISOString(),
+						"needs_attention:local_unsynced_shared_memory:2",
+					);
+
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.daemon_state).toBe("starting");
+				expect(body.daemon_detail).toBe("Running initial sync in background");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("retries coordinator presence immediately after not_enrolled status", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));

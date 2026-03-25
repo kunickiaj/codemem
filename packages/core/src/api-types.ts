@@ -485,7 +485,9 @@ export type ApiSyncDaemonState =
 	| "offline-peers"
 	| "stale"
 	| "starting"
-	| "stopping";
+	| "stopping"
+	| "rebootstrapping"
+	| "needs_attention";
 
 /** Status block nested in sync status response. */
 export interface ApiSyncStatusBlock {

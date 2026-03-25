@@ -33,7 +33,15 @@ import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
 type SyncRuntimeStatus = {
-	phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
+	phase:
+		| "starting"
+		| "running"
+		| "stopping"
+		| "error"
+		| "disabled"
+		| "rebootstrapping"
+		| "needs_attention"
+		| null;
 	detail?: string | null;
 };
 
@@ -748,6 +756,7 @@ export function syncRoutes(
 				status: attemptStatus(row),
 				address: null,
 			}));
+			const latestAttemptError = String(attemptsItems[0]?.error || "").trim();
 
 			const statusBlock: Record<string, unknown> = {
 				...statusPayload,
@@ -766,6 +775,14 @@ export function syncRoutes(
 				} catch {
 					joinRequests = [];
 				}
+			}
+
+			if (daemonStateValue === "ok" && latestAttemptError.startsWith("needs_attention:")) {
+				daemonStateValue = "needs_attention";
+				statusPayload.daemon_state = daemonStateValue;
+				statusPayload.daemon_detail = latestAttemptError.replace(/^needs_attention:/, "");
+				statusBlock.daemon_state = daemonStateValue;
+				statusBlock.daemon_detail = latestAttemptError.replace(/^needs_attention:/, "");
 			}
 
 			if (daemonStateValue === "ok") {
