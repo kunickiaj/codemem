@@ -1,8 +1,14 @@
 {
 	"name": "codemem",
-	"version": "0.20.6",
+	"version": "0.20.7",
 	"description": "Memory layer for AI coding agents — search, recall, and sync context across sessions",
 	"type": "module",
+	"main": "./dist/index.js",
+	"exports": {
+		".": {
+			"import": "./dist/index.js"
+		}
+	},
 	"bin": {
 		"codemem": "./dist/index.js"
 	},
