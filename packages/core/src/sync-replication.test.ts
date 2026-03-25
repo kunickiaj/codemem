@@ -10,11 +10,14 @@ import {
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
+	getSyncResetState,
 	isNewerClock,
+	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
 	migrateLegacyImportKeys,
 	recordReplicationOp,
 	setReplicationCursor,
+	setSyncResetState,
 } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
@@ -472,6 +475,148 @@ describe("loadReplicationOpsSince", () => {
 		const [ops, cursor] = loadReplicationOpsSince(db, null);
 		expect(ops).toEqual([]);
 		expect(cursor).toBeNull();
+	});
+});
+
+describe("sync reset state", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	it("creates and persists a default reset boundary", () => {
+		const first = getSyncResetState(db);
+		const second = getSyncResetState(db);
+		expect(first.generation).toBe(1);
+		expect(first.snapshot_id).toBeTruthy();
+		expect(first.baseline_cursor).toBeNull();
+		expect(first.retained_floor_cursor).toBeNull();
+		expect(second).toEqual(first);
+	});
+
+	it("updates retained floor and baseline metadata", () => {
+		const updated = setSyncResetState(db, {
+			generation: 3,
+			snapshot_id: "snapshot-3",
+			baseline_cursor: "2026-01-01T00:00:03Z|base-op",
+			retained_floor_cursor: "2026-01-01T00:00:04Z|floor-op",
+		});
+		expect(updated).toEqual({
+			generation: 3,
+			snapshot_id: "snapshot-3",
+			baseline_cursor: "2026-01-01T00:00:03Z|base-op",
+			retained_floor_cursor: "2026-01-01T00:00:04Z|floor-op",
+		});
+		expect(getSyncResetState(db)).toEqual(updated);
+	});
+});
+
+describe("loadReplicationOpsForPeer", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		setSyncResetState(db, {
+			generation: 2,
+			snapshot_id: "snapshot-2",
+			baseline_cursor: "2026-01-01T00:00:01Z|base-op",
+			retained_floor_cursor: "2026-01-01T00:00:02Z|floor-op",
+		});
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	function insertOp(opId: string, createdAt: string, deviceId = "dev-a") {
+		db.prepare(
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at)
+			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, ?, ?, ?)`,
+		).run(opId, `ent-${opId}`, createdAt, deviceId, deviceId, createdAt);
+	}
+
+	it("returns reset_required when the cursor is older than the retained floor", () => {
+		const result = loadReplicationOpsForPeer(db, {
+			since: "2026-01-01T00:00:00Z|too-old",
+			generation: 2,
+			snapshotId: "snapshot-2",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		expect(result.reset_required).toBe(true);
+		if (result.reset_required) {
+			expect(result.reset.reason).toBe("stale_cursor");
+			expect(result.reset.retained_floor_cursor).toBe("2026-01-01T00:00:02Z|floor-op");
+		}
+	});
+
+	it("returns reset_required when the requested generation mismatches", () => {
+		const result = loadReplicationOpsForPeer(db, {
+			since: null,
+			generation: 1,
+			snapshotId: "snapshot-1",
+		});
+		expect(result.reset_required).toBe(true);
+		if (result.reset_required) {
+			expect(result.reset.reason).toBe("generation_mismatch");
+			expect(result.reset.generation).toBe(2);
+		}
+	});
+
+	it("requires an explicit reset boundary on incremental requests", () => {
+		const result = loadReplicationOpsForPeer(db, {
+			since: "2026-01-01T00:00:02Z|floor-op",
+		});
+		expect(result.reset_required).toBe(true);
+		if (result.reset_required) {
+			expect(result.reset.reason).toBe("boundary_mismatch");
+			expect(result.reset.snapshot_id).toBe("snapshot-2");
+		}
+	});
+
+	it("returns reset_required when snapshot metadata is omitted for the current generation", () => {
+		const result = loadReplicationOpsForPeer(db, {
+			since: "2026-01-01T00:00:02Z|floor-op",
+			generation: 2,
+		});
+		expect(result.reset_required).toBe(true);
+		if (result.reset_required) {
+			expect(result.reset.reason).toBe("boundary_mismatch");
+			expect(result.reset.baseline_cursor).toBe("2026-01-01T00:00:01Z|base-op");
+		}
+	});
+
+	it("returns reset_required when only part of the boundary tuple is provided", () => {
+		const result = loadReplicationOpsForPeer(db, {
+			since: "2026-01-01T00:00:02Z|floor-op",
+			snapshotId: "snapshot-2",
+		});
+		expect(result.reset_required).toBe(true);
+		if (result.reset_required) {
+			expect(result.reset.reason).toBe("boundary_mismatch");
+		}
+	});
+
+	it("returns incremental ops when the request matches the current boundary", () => {
+		insertOp("op-1", "2026-01-01T00:00:03Z");
+		const result = loadReplicationOpsForPeer(db, {
+			since: "2026-01-01T00:00:02Z|floor-op",
+			generation: 2,
+			snapshotId: "snapshot-2",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		expect(result.reset_required).toBe(false);
+		if (!result.reset_required) {
+			expect(result.boundary.generation).toBe(2);
+			expect(result.ops.map((op) => op.op_id)).toEqual(["op-1"]);
+			expect(result.nextCursor).toBe("2026-01-01T00:00:03Z|op-1");
+		}
 	});
 });
 

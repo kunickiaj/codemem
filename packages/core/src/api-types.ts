@@ -11,7 +11,14 @@
  * Import existing store/entity types where shapes match.
  */
 
-import type { Actor, MemoryItemResponse, PackResponse, Session, StoreStats } from "./types.js";
+import type {
+	Actor,
+	MemoryItemResponse,
+	PackResponse,
+	ReplicationOp,
+	Session,
+	StoreStats,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -703,3 +710,37 @@ export interface ApiSyncNowRequest {
 export interface ApiSyncNowResponse {
 	items: Record<string, unknown>[];
 }
+
+// ---------------------------------------------------------------------------
+// Peer sync protocol (/v1/*)
+// ---------------------------------------------------------------------------
+
+export interface ApiSyncOpsRequestQuery {
+	since: string | null;
+	limit: number;
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+}
+
+export interface ApiSyncResetBoundary {
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+	retained_floor_cursor: string | null;
+}
+
+export interface ApiSyncOpsIncrementalResponse extends ApiSyncResetBoundary {
+	reset_required: false;
+	ops: ReplicationOp[];
+	next_cursor: string | null;
+	skipped: number;
+}
+
+export interface ApiSyncOpsResetRequiredResponse extends ApiSyncResetBoundary {
+	error: "reset_required";
+	reset_required: true;
+	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
+}
+
+export type ApiSyncOpsResponse = ApiSyncOpsIncrementalResponse | ApiSyncOpsResetRequiredResponse;
