@@ -556,6 +556,76 @@ describe("ObserverClient.observe()", () => {
 		expect(result.provider).toBe("openai");
 	});
 
+	it("dedupes authorization headers case-insensitively for custom providers", async () => {
+		const prevHome = process.env.HOME;
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-custom-auth-header-test-"));
+		const configDir = join(tmpDir, ".config", "opencode");
+		mkdirSync(configDir, { recursive: true });
+		let capturedHeaders: Record<string, string> | undefined;
+
+		writeFileSync(
+			join(configDir, "opencode.jsonc"),
+			JSON.stringify({
+				provider: {
+					acme: {
+						options: {
+							baseURL: "https://proxy.example.test/v1",
+							apiKey: "sk-provider-token",
+							headers: {
+								// biome-ignore lint/suspicious/noTemplateCurlyInString: intentional placeholder syntax
+								Authorization: "Bearer ${auth.token}",
+							},
+						},
+						models: {
+							foo: { id: "foo-model" },
+						},
+					},
+				},
+			}),
+		);
+
+		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedHeaders = Object.fromEntries(
+				Object.entries((init?.headers as Record<string, string>) ?? {}),
+			);
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "custom provider response" } }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		try {
+			process.env.HOME = tmpDir;
+			const client = new ObserverClient({
+				observerProvider: "acme",
+				observerModel: "acme/foo",
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+
+			const result = await client.observe("system", "user");
+
+			expect(result.raw).toBe("custom provider response");
+			expect(capturedHeaders?.Authorization).toBe("Bearer sk-provider-token");
+			expect(capturedHeaders?.authorization).toBeUndefined();
+		} finally {
+			if (prevHome == null) delete process.env.HOME;
+			else process.env.HOME = prevHome;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	it("truncates prompts to maxChars", async () => {
 		let capturedBody: Record<string, unknown> | undefined;
 
