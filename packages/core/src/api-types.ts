@@ -467,13 +467,25 @@ export interface ApiJoinRequest {
 	status: string;
 }
 
+/** Public sync daemon state enum returned by /api/sync/status. */
+export type ApiSyncDaemonState =
+	| "ok"
+	| "disabled"
+	| "error"
+	| "stopped"
+	| "degraded"
+	| "offline-peers"
+	| "stale"
+	| "starting"
+	| "stopping";
+
 /** Status block nested in sync status response. */
 export interface ApiSyncStatusBlock {
 	enabled: boolean;
 	interval_s: number;
 	peer_count: number;
 	last_sync_at: string | null;
-	daemon_state: "ok" | "disabled" | "error" | "stopped" | "degraded" | "offline-peers" | "stale";
+	daemon_state: ApiSyncDaemonState;
 	daemon_running: boolean;
 	daemon_detail: string | null;
 	project_filter_active: boolean;
@@ -494,7 +506,7 @@ export interface ApiSyncStatusResponse {
 	interval_s: number;
 	peer_count: number;
 	last_sync_at: string | null;
-	daemon_state: "ok" | "disabled" | "error" | "stopped" | "degraded" | "offline-peers" | "stale";
+	daemon_state: ApiSyncDaemonState;
 	daemon_running: boolean;
 	daemon_detail: string | null;
 	project_filter_active: boolean;

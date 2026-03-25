@@ -182,7 +182,7 @@ async function isPortOpen(host: string, port: number): Promise<boolean> {
 	});
 }
 
-async function waitForProcessExit(pid: number, timeoutMs = 5000): Promise<boolean> {
+async function waitForProcessExit(pid: number, timeoutMs = 30000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (!isProcessRunning(pid)) return true;
@@ -207,16 +207,9 @@ async function stopExistingViewer(
 	const terminatePid = async (pid: number): Promise<boolean> => {
 		try {
 			process.kill(pid, "SIGTERM");
-			if (await waitForProcessExit(pid)) return true;
+			return await waitForProcessExit(pid);
 		} catch {
 			return true;
-		}
-
-		try {
-			process.kill(pid, "SIGKILL");
-			return await waitForProcessExit(pid, 2000);
-		} catch {
-			return !isProcessRunning(pid);
 		}
 	};
 
@@ -497,7 +490,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		process.exit(0);
 	};
 
-	// Force-exit safety net if graceful shutdown stalls.
+	// Force-exit safety net if graceful shutdown stalls for an unusually long time.
 	const forceShutdown = () => {
 		setTimeout(() => {
 			try {
@@ -507,7 +500,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			}
 			closeStore();
 			process.exit(1);
-		}, 5000).unref();
+		}, 30000).unref();
 	};
 	process.on("SIGINT", () => {
 		forceShutdown();
