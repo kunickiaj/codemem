@@ -366,6 +366,34 @@ function buildOpenAIHeaders(token: string): Record<string, string> {
 	};
 }
 
+function mergeHeadersCaseInsensitive(
+	base: Record<string, string>,
+	override: Record<string, string>,
+): Record<string, string> {
+	const merged: Record<string, string> = { ...base };
+	for (const [key, value] of Object.entries(override)) {
+		const normalizedKey = key.toLowerCase();
+		for (const existingKey of Object.keys(merged)) {
+			if (existingKey.toLowerCase() === normalizedKey) {
+				delete merged[existingKey];
+			}
+		}
+		merged[key] = value;
+	}
+	return merged;
+}
+
+function replaceHeadersCaseInsensitive(
+	target: Record<string, string>,
+	override: Record<string, string>,
+): void {
+	const merged = mergeHeadersCaseInsensitive(target, override);
+	for (const key of Object.keys(target)) {
+		delete target[key];
+	}
+	Object.assign(target, merged);
+}
+
 function buildOpenAIPayload(
 	model: string,
 	systemPrompt: string,
@@ -786,10 +814,10 @@ export class ObserverClient {
 		const url = resolveAnthropicEndpoint();
 		const token = this.auth.token ?? "";
 		const headers = buildAnthropicHeaders(token, false);
-		const mergedHeaders = {
-			...headers,
-			...renderObserverHeaders(this._observerHeaders, this.auth),
-		};
+		const mergedHeaders = mergeHeadersCaseInsensitive(
+			headers,
+			renderObserverHeaders(this._observerHeaders, this.auth),
+		);
 		const payload = buildAnthropicPayload(this.model, systemPrompt, userPrompt, this.maxTokens);
 
 		return this._fetchJSON(url, mergedHeaders, payload, {
@@ -814,10 +842,10 @@ export class ObserverClient {
 		}
 
 		const headers = buildOpenAIHeaders(this.auth.token ?? "");
-		const mergedHeaders = {
-			...headers,
-			...renderObserverHeaders(this._observerHeaders, this.auth),
-		};
+		const mergedHeaders = mergeHeadersCaseInsensitive(
+			headers,
+			renderObserverHeaders(this._observerHeaders, this.auth),
+		);
 		const payload = buildOpenAIPayload(this.model, systemPrompt, userPrompt, this.maxTokens);
 
 		return this._fetchJSON(url, mergedHeaders, payload, {
@@ -840,7 +868,10 @@ export class ObserverClient {
 				authType: "bearer",
 				source: this.auth.source,
 			};
-			Object.assign(headers, renderObserverHeaders(this._observerHeaders, codexAuth));
+			replaceHeadersCaseInsensitive(
+				headers,
+				renderObserverHeaders(this._observerHeaders, codexAuth),
+			);
 		}
 		headers["content-type"] = "application/json";
 
@@ -870,7 +901,10 @@ export class ObserverClient {
 				authType: "bearer",
 				source: this.auth.source,
 			};
-			Object.assign(headers, renderObserverHeaders(this._observerHeaders, anthropicAuth));
+			replaceHeadersCaseInsensitive(
+				headers,
+				renderObserverHeaders(this._observerHeaders, anthropicAuth),
+			);
 		}
 
 		// Append ?beta=true to the endpoint
