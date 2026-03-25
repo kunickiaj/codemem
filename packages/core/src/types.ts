@@ -300,6 +300,11 @@ export interface SyncMemorySnapshotItem {
 	clock_device_id: string;
 }
 
+export interface ReplicationOpsPruneResult {
+	deleted: number;
+	retained_floor_cursor: string | null;
+}
+
 export interface SyncAttempt {
 	id: number;
 	peer_device_id: string;

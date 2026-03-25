@@ -46,7 +46,7 @@ type SyncRuntimeStatus = {
 };
 
 const SYNC_STALE_AFTER_SECONDS = 10 * 60;
-const SYNC_PROTOCOL_VERSION = "1";
+const SYNC_PROTOCOL_VERSION = "2";
 
 function intEnvOr(name: string, fallback: number): number {
 	const value = Number.parseInt(process.env[name] ?? "", 10);
