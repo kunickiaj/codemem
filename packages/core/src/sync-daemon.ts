@@ -26,6 +26,7 @@ export interface SyncDaemonOptions {
 	dbPath?: string;
 	keysDir?: string;
 	signal?: AbortSignal;
+	onPhaseChange?: (phase: "starting" | "running" | "stopping") => void;
 }
 
 export interface SyncTickResult {
@@ -144,6 +145,8 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 	const dbPath = resolveDbPath(options?.dbPath);
 	const keysDir = options?.keysDir;
 	const signal = options?.signal;
+	const onPhaseChange = options?.onPhaseChange;
+	onPhaseChange?.("starting");
 
 	// Ensure device identity
 	const db = connectDb(dbPath);
@@ -165,29 +168,31 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 		return;
 	}
 
-	// Run initial tick
-	await runTickOnce(dbPath, keysDir);
-
-	// If aborted during initial tick, clean up
-	if (signal?.aborted) {
-		mdnsHandle?.close();
-		return;
-	}
-
-	// Set up periodic ticks — serialized to avoid overlapping sync passes
+	// Set up periodic ticks — serialized to avoid overlapping sync passes.
+	// Importantly, the first tick is scheduled asynchronously so startup callers
+	// are not blocked by large sync preflight work on the main request path.
 	return new Promise<void>((resolve) => {
 		let tickRunning = false;
-		const timer = setInterval(() => {
+		let firstTickCompleted = false;
+		const runTick = () => {
 			if (tickRunning) return; // Skip if previous tick still running
 			tickRunning = true;
 			runTickOnce(dbPath, keysDir).finally(() => {
 				tickRunning = false;
+				if (!firstTickCompleted) {
+					firstTickCompleted = true;
+					onPhaseChange?.("running");
+				}
 			});
-		}, intervalS * 1000);
+		};
+
+		const timer = setInterval(runTick, intervalS * 1000);
+		setTimeout(runTick, 0).unref?.();
 
 		const cleanup = () => {
 			clearInterval(timer);
 			mdnsHandle?.close();
+			onPhaseChange?.("stopping");
 			resolve();
 		};
 
