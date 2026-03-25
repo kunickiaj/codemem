@@ -853,88 +853,93 @@ export function hasUnsyncedSharedMemoryChanges(db: Database, limit = 25): SyncDi
 
 export function pruneReplicationOps(
 	db: Database,
-	options?: { maxAgeDays?: number; maxRows?: number },
+	options?: { maxAgeDays?: number; maxSizeBytes?: number },
 ): ReplicationOpsPruneResult {
 	const maxAgeDays = Math.max(1, Math.floor(options?.maxAgeDays ?? 30));
-	const maxRows = Math.max(1, Math.floor(options?.maxRows ?? 50_000));
+	const maxSizeBytes = Math.max(1, Math.floor(options?.maxSizeBytes ?? 512 * 1024 * 1024));
 	const d = drizzle(db, { schema });
 	const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
 	let deleted = 0;
 	let lastDeletedCursor: string | null = null;
+	const deleteStmt = db.prepare("DELETE FROM replication_ops WHERE op_id = ?");
+	const estimatedBytesBefore = estimateReplicationOpsStorageBytes(db);
+	if (estimatedBytesBefore == null) {
+		throw new Error("replication_ops_size_unavailable");
+	}
 
-	const totalRows = Number(
-		d.select({ c: sql<number>`COUNT(*)` }).from(schema.replicationOps).get()?.c ?? 0,
-	);
+	const deleteOp = (row: { op_id: string; created_at: string }) => {
+		lastDeletedCursor = computeCursor(String(row.created_at), String(row.op_id));
+		deleted +=
+			(
+				deleteStmt.run(row.op_id) as {
+					changes?: number;
+				}
+			).changes ?? 0;
+	};
 
 	const ageCandidates = d
-		.select({ op_id: schema.replicationOps.op_id })
+		.select({
+			op_id: schema.replicationOps.op_id,
+			created_at: schema.replicationOps.created_at,
+		})
 		.from(schema.replicationOps)
 		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
 		.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
 		.all();
 	if (ageCandidates.length > 0) {
 		for (const row of ageCandidates) {
-			const opRow = d
-				.select({
-					created_at: schema.replicationOps.created_at,
-					op_id: schema.replicationOps.op_id,
-				})
-				.from(schema.replicationOps)
-				.where(eq(schema.replicationOps.op_id, row.op_id))
-				.limit(1)
-				.get();
-			if (opRow) {
-				lastDeletedCursor = computeCursor(String(opRow.created_at), String(opRow.op_id));
-			}
-			deleted +=
-				(
-					db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(row.op_id) as {
-						changes?: number;
-					}
-				).changes ?? 0;
+			deleteOp(row);
 		}
 	}
 
-	const remainingRows = Number(
-		d.select({ c: sql<number>`COUNT(*)` }).from(schema.replicationOps).get()?.c ?? 0,
-	);
-	if (remainingRows > maxRows) {
-		const overflow = remainingRows - maxRows;
-		const overflowCandidates = d
-			.select({ op_id: schema.replicationOps.op_id })
+	let estimatedSizeBytes = estimatedBytesBefore;
+	while (estimatedSizeBytes > maxSizeBytes) {
+		const oldest = d
+			.select({
+				op_id: schema.replicationOps.op_id,
+				created_at: schema.replicationOps.created_at,
+			})
 			.from(schema.replicationOps)
 			.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
-			.limit(overflow)
-			.all();
-		if (overflowCandidates.length > 0) {
-			for (const row of overflowCandidates) {
-				const opRow = d
-					.select({
-						created_at: schema.replicationOps.created_at,
-						op_id: schema.replicationOps.op_id,
-					})
-					.from(schema.replicationOps)
-					.where(eq(schema.replicationOps.op_id, row.op_id))
-					.limit(1)
-					.get();
-				if (opRow) {
-					lastDeletedCursor = computeCursor(String(opRow.created_at), String(opRow.op_id));
-				}
-				deleted +=
-					(
-						db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(row.op_id) as {
-							changes?: number;
-						}
-					).changes ?? 0;
-			}
+			.limit(1)
+			.get();
+		if (!oldest) break;
+		deleteOp(oldest);
+		const nextEstimatedSize = estimateReplicationOpsStorageBytes(db);
+		if (nextEstimatedSize == null) {
+			throw new Error("replication_ops_size_unavailable");
 		}
+		estimatedSizeBytes = nextEstimatedSize;
 	}
 
 	const currentBoundary = getSyncResetState(db);
 	const retainedFloorCursor =
 		deleted > 0 ? lastDeletedCursor : currentBoundary.retained_floor_cursor;
 	setSyncResetState(db, { retained_floor_cursor: retainedFloorCursor });
-	return { deleted, retained_floor_cursor: retainedFloorCursor };
+	return {
+		deleted,
+		retained_floor_cursor: retainedFloorCursor,
+		estimated_bytes_before: estimatedBytesBefore,
+		estimated_bytes_after: estimatedSizeBytes,
+	};
+}
+
+function estimateReplicationOpsStorageBytes(db: Database): number | null {
+	try {
+		const row = db
+			.prepare(
+				`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
+				 FROM dbstat
+				 WHERE name = 'replication_ops'
+				    OR name LIKE 'idx_replication_ops_%'
+				    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+			)
+			.get() as { total_bytes?: number | string | null } | undefined;
+		const total = Number(row?.total_bytes ?? 0);
+		return Number.isFinite(total) && total >= 0 ? total : null;
+	} catch {
+		return null;
+	}
 }
 
 function cleanList(values: unknown): string[] {

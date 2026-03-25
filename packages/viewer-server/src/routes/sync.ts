@@ -642,6 +642,7 @@ export function syncRoutes(
 			const includeJoinRequests = queryBool(c.req.query("includeJoinRequests"));
 			const project = c.req.query("project") || null;
 			const config = readCoordinatorSyncConfig();
+			const syncReset = getSyncResetState(store.db);
 
 			const d = drizzle(store.db, { schema });
 
@@ -692,6 +693,12 @@ export function syncRoutes(
 			const statusPayload: Record<string, unknown> = {
 				enabled: config.syncEnabled,
 				interval_s: config.syncIntervalS,
+				retention: {
+					enabled: config.syncRetentionEnabled,
+					max_age_days: config.syncRetentionMaxAgeDays,
+					max_size_mb: config.syncRetentionMaxSizeMb,
+					retained_floor_cursor: syncReset.retained_floor_cursor,
+				},
 				peer_count: Number(peerCountRow?.total ?? 0),
 				last_sync_at: lastSyncRow?.last_sync_at ?? null,
 				daemon_state: daemonStateValue,

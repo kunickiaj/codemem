@@ -42,6 +42,9 @@ const ALLOWED_KEYS = [
 	"pack_observation_limit",
 	"pack_session_limit",
 	"sync_enabled",
+	"sync_retention_enabled",
+	"sync_retention_max_age_days",
+	"sync_retention_max_size_mb",
 	"sync_host",
 	"sync_port",
 	"sync_interval_s",
@@ -65,6 +68,9 @@ const DEFAULTS: ConfigData = {
 	pack_observation_limit: 50,
 	pack_session_limit: 10,
 	sync_enabled: false,
+	sync_retention_enabled: false,
+	sync_retention_max_age_days: 30,
+	sync_retention_max_size_mb: 512,
 	sync_host: "0.0.0.0",
 	sync_port: 7337,
 	sync_interval_s: 120,
@@ -207,7 +213,7 @@ function validateAndApplyUpdate(
 		else delete configData[key];
 		return null;
 	}
-	if (key === "sync_enabled" || key === "sync_mdns") {
+	if (key === "sync_enabled" || key === "sync_retention_enabled" || key === "sync_mdns") {
 		if (typeof value !== "boolean") return `${key} must be boolean`;
 		configData[key] = value;
 		return null;

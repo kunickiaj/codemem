@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	getCodememEnvOverrides,
 	getProviderApiKey,
 	loadOpenCodeConfig,
 	resolveCustomProviderFromModel,
@@ -126,5 +127,24 @@ describe("getProviderApiKey", () => {
 
 	it("returns null when no key configured", () => {
 		expect(getProviderApiKey({})).toBeNull();
+	});
+});
+
+describe("getCodememEnvOverrides", () => {
+	it("includes sync retention env overrides when set", () => {
+		process.env.CODEMEM_SYNC_RETENTION_ENABLED = "1";
+		process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS = "14";
+		process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB = "256";
+		try {
+			expect(getCodememEnvOverrides()).toMatchObject({
+				sync_retention_enabled: "CODEMEM_SYNC_RETENTION_ENABLED",
+				sync_retention_max_age_days: "CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS",
+				sync_retention_max_size_mb: "CODEMEM_SYNC_RETENTION_MAX_SIZE_MB",
+			});
+		} finally {
+			delete process.env.CODEMEM_SYNC_RETENTION_ENABLED;
+			delete process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS;
+			delete process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB;
+		}
 	});
 });
