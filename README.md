@@ -24,7 +24,7 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@kunickiaj/codemem"]
+  "plugin": ["@codemem/opencode-plugin"]
 }
 ```
 
@@ -47,6 +47,11 @@ If you want `codemem` available directly on your `PATH` for manual commands, ins
 ```bash
 npm install -g codemem
 ```
+
+OpenCode plugin and CLI are now split intentionally:
+
+- `@codemem/opencode-plugin` — OpenCode plugin package
+- `codemem` — CLI and MCP commands
 
 ### Claude Code (marketplace install)
 

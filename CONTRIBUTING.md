@@ -30,7 +30,7 @@ uv run pytest -k "raw_event and sweeper"
 ## Viewer/plugin development
 
 - Viewer UI is embedded in `codemem/viewer.py`.
-- OpenCode plugin source is `.opencode/plugin/codemem.js`.
+- OpenCode plugin source is `packages/opencode-plugin/.opencode/plugins/codemem.js`.
 - Restart the viewer after UI changes:
 
 ```bash

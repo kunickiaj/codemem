@@ -35,11 +35,12 @@ Release checklist:
 2. Update version:
    - `packages/core/package.json`
    - `packages/cli/package.json`
+   - `packages/opencode-plugin/package.json`
    - `packages/mcp-server/package.json`
    - `packages/viewer-server/package.json`
    - `packages/core/src/index.ts`
    - `packages/core/src/index.test.ts`
-   - `packages/cli/.opencode/plugins/codemem.js`
+   - `packages/opencode-plugin/.opencode/plugins/codemem.js`
    - `.claude-plugin/marketplace.json` (metadata version only; MCP args are unpinned)
    - `plugins/claude/.claude-plugin/plugin.json` (metadata version only; MCP args are unpinned)
 3. Regenerate lockfiles/artifacts and commit the results:
@@ -79,8 +80,8 @@ Release checklist:
 - Use `uv run ...` only when explicitly touching legacy Python surfaces.
 
 **Publish model:** root `package.json` is workspace-only (`private: true`).
-The published CLI package is `codemem` from `packages/cli`, and it includes
-plugin artifacts under `packages/cli/.opencode/`.
+The published CLI package is `codemem` from `packages/cli`.
+The published OpenCode plugin package is `@codemem/opencode-plugin` from `packages/opencode-plugin`.
 
 ## Quick Commands
 
@@ -162,7 +163,7 @@ Viewer UI is in `packages/ui` and served by `packages/viewer-server`.
 
 ### OpenCode plugin
 
-- Source: `packages/cli/.opencode/plugins/codemem.js`
+- Source: `packages/opencode-plugin/.opencode/plugins/codemem.js`
 - Rules:
   - ESM only (`import`/`export`)
   - must never crash OpenCode (no uncaught exceptions)
@@ -174,7 +175,7 @@ Viewer UI is in `packages/ui` and served by `packages/viewer-server`.
 - `packages/ui/src/`: viewer frontend
 - `packages/mcp-server/src/`: MCP server tools
 - `packages/cli/src/`: CLI commands
-- `packages/cli/.opencode/plugins/codemem.js`: OpenCode plugin entrypoint
+- `packages/opencode-plugin/.opencode/plugins/codemem.js`: OpenCode plugin entrypoint
 - `codemem/`, `tests/`: legacy Python backend/tests (reference only)
 
 ## Runtime Commands

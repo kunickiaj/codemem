@@ -3,21 +3,11 @@
 	"version": "0.20.8",
 	"description": "Memory layer for AI coding agents — search, recall, and sync context across sessions",
 	"type": "module",
-	"main": "./.opencode/entry.js",
-	"exports": {
-		".": {
-			"import": "./.opencode/entry.js"
-		}
-	},
 	"bin": {
 		"codemem": "./dist/index.js"
 	},
 	"files": [
 		"dist/",
-		".opencode/entry.js",
-		".opencode/package.json",
-		".opencode/plugins/",
-		".opencode/lib/",
 		"README.md",
 		"LICENSE"
 	],
