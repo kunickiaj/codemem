@@ -4,6 +4,7 @@ import { toJson } from "./db.js";
 import {
 	applyReplicationOps,
 	backfillReplicationOps,
+	bulkPruneReplicationOpsByAgeCutoff,
 	chunkOpsBySize,
 	clockTuple,
 	extractReplicationOps,
@@ -1041,6 +1042,20 @@ describe("pruneReplicationOps", () => {
 			.all() as Array<{ op_id: string }>;
 		expect(remaining.map((row) => row.op_id)).toEqual(["op-4"]);
 		expect(getSyncResetState(db).retained_floor_cursor).toBe("2026-01-01T00:00:03Z|op-3");
+	});
+
+	it("bulkPruneReplicationOpsByAgeCutoff deletes the full oldest prefix before the cutoff", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-03-26T00:00:00Z");
+
+		const result = bulkPruneReplicationOpsByAgeCutoff(db, 30);
+		expect(result.deleted).toBe(2);
+		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:02Z|op-2");
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-3"]);
 	});
 
 	it("does not overshoot the remaining delete budget during bulk age pruning", () => {

@@ -282,6 +282,7 @@ export type { ApplyResult } from "./sync-replication.js";
 export {
 	applyReplicationOps,
 	backfillReplicationOps,
+	bulkPruneReplicationOpsByAgeCutoff,
 	chunkOpsBySize,
 	clockTuple,
 	extractReplicationOps,
