@@ -870,6 +870,9 @@ export function pruneReplicationOps(
 	let deleted = 0;
 	let lastDeletedCursor: string | null = null;
 	const deleteStmt = db.prepare("DELETE FROM replication_ops WHERE op_id = ?");
+	const bulkDeleteBeforeStmt = db.prepare(
+		"DELETE FROM replication_ops WHERE created_at < ? OR (created_at = ? AND op_id <= ?)",
+	);
 	const estimatedBytesBefore = estimateReplicationOpsStorageBytes(db);
 	if (estimatedBytesBefore == null) {
 		throw new Error("replication_ops_size_unavailable");
@@ -887,12 +890,13 @@ export function pruneReplicationOps(
 			).changes ?? 0;
 	};
 
-	const ageBatchSize = Math.max(1, Math.min(maxDeleteOps, 500));
 	while (true) {
 		if (budgetExceeded()) {
 			stoppedByBudget = true;
 			break;
 		}
+		const remainingDeleteBudget = Math.max(1, maxDeleteOps - deleted);
+		const ageBatchSize = Math.max(1, Math.min(remainingDeleteBudget, 10_000));
 		const ageCandidates = d
 			.select({
 				op_id: schema.replicationOps.op_id,
@@ -904,12 +908,18 @@ export function pruneReplicationOps(
 			.limit(ageBatchSize)
 			.all();
 		if (ageCandidates.length === 0) break;
-		for (const row of ageCandidates) {
-			if (budgetExceeded()) {
-				stoppedByBudget = true;
-				break;
-			}
-			deleteOp(row);
+		const boundary = ageCandidates[ageCandidates.length - 1];
+		if (!boundary) break;
+		lastDeletedCursor = computeCursor(String(boundary.created_at), String(boundary.op_id));
+		deleted +=
+			(
+				bulkDeleteBeforeStmt.run(boundary.created_at, boundary.created_at, boundary.op_id) as {
+					changes?: number;
+				}
+			).changes ?? 0;
+		if (budgetExceeded()) {
+			stoppedByBudget = true;
+			break;
 		}
 		if (ageCandidates.length < ageBatchSize) break;
 	}
