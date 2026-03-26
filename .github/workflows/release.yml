@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify tag points at merged main HEAD
+      - name: Verify tag points at merged main or release branch
         env:
           RELEASE_TAG_COMMIT: ${{ github.sha }}
         run: bash scripts/release-tag-preflight.sh
