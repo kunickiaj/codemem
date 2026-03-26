@@ -18,6 +18,7 @@ import {
 	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
 	migrateLegacyImportKeys,
+	planReplicationOpsAgePrune,
 	pruneReplicationOps,
 	recordReplicationOp,
 	setReplicationCursor,
@@ -1056,6 +1057,33 @@ describe("pruneReplicationOps", () => {
 			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
 			.all() as Array<{ op_id: string }>;
 		expect(remaining.map((row) => row.op_id)).toEqual(["op-3"]);
+	});
+
+	it("bulkPruneReplicationOpsByAgeCutoff respects the requested maxDeleteOps chunk size", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+		insertOp("op-4", "2026-03-26T00:00:00Z");
+
+		const result = bulkPruneReplicationOpsByAgeCutoff(db, 30, 2);
+		expect(result.deleted).toBe(2);
+		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:02Z|op-2");
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-3", "op-4"]);
+	});
+
+	it("plans age-pass candidate ops, bytes, cutoff cursor, and estimated batches", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-03-26T00:00:00Z");
+
+		const plan = planReplicationOpsAgePrune(db, 30, 1);
+		expect(plan.candidate_ops).toBe(2);
+		expect(plan.cutoff_cursor).toBe("2026-01-01T00:00:02Z|op-2");
+		expect(plan.estimated_batches).toBe(2);
+		expect(plan.estimated_candidate_bytes).toBeGreaterThanOrEqual(0);
 	});
 
 	it("does not overshoot the remaining delete budget during bulk age pruning", () => {
