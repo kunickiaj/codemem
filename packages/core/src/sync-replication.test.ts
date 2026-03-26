@@ -1020,6 +1020,46 @@ describe("pruneReplicationOps", () => {
 		expect(result.deleted).toBe(1);
 		expect(result.stopped_by_budget).toBe(true);
 	});
+
+	it("bulk deletes an oldest-first age cutoff chunk and updates retained floor to its boundary cursor", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+		insertOp("op-4", "2026-03-26T00:00:00Z");
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 30,
+			maxSizeBytes: 1_000_000,
+			maxDeleteOps: 3,
+			maxRuntimeMs: 60_000,
+		});
+
+		expect(result.deleted).toBe(3);
+		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:03Z|op-3");
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-4"]);
+		expect(getSyncResetState(db).retained_floor_cursor).toBe("2026-01-01T00:00:03Z|op-3");
+	});
+
+	it("does not overshoot the remaining delete budget during bulk age pruning", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+		insertOp("op-4", "2026-01-01T00:00:04Z");
+		insertOp("op-5", "2026-01-01T00:00:05Z");
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 30,
+			maxSizeBytes: 1,
+			maxDeleteOps: 4,
+			maxRuntimeMs: 60_000,
+		});
+
+		expect(result.deleted).toBe(4);
+		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:04Z|op-4");
+	});
 });
 
 // ---------------------------------------------------------------------------
