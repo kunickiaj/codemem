@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { and, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
@@ -967,6 +967,59 @@ export function pruneReplicationOps(
 		estimated_bytes_before: estimatedBytesBefore,
 		estimated_bytes_after: estimatedSizeBytes,
 		stopped_by_budget: stoppedByBudget,
+	};
+}
+
+export function bulkPruneReplicationOpsByAgeCutoff(
+	db: Database,
+	maxAgeDays: number,
+): ReplicationOpsPruneResult {
+	const d = drizzle(db, { schema });
+	const cutoff = new Date(
+		Date.now() - Math.max(1, Math.floor(maxAgeDays)) * 24 * 60 * 60 * 1000,
+	).toISOString();
+	const estimatedBytesBefore = estimateReplicationOpsStorageBytes(db);
+	if (estimatedBytesBefore == null) {
+		throw new Error("replication_ops_size_unavailable");
+	}
+	const boundary = d
+		.select({ op_id: schema.replicationOps.op_id, created_at: schema.replicationOps.created_at })
+		.from(schema.replicationOps)
+		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
+		.orderBy(desc(schema.replicationOps.created_at), desc(schema.replicationOps.op_id))
+		.limit(1)
+		.get();
+	if (!boundary) {
+		const currentBoundary = getSyncResetState(db);
+		return {
+			deleted: 0,
+			retained_floor_cursor: currentBoundary.retained_floor_cursor,
+			estimated_bytes_before: estimatedBytesBefore,
+			estimated_bytes_after: estimatedBytesBefore,
+			stopped_by_budget: false,
+		};
+	}
+	const deleteStmt = db.prepare(
+		"DELETE FROM replication_ops WHERE created_at < ? OR (created_at = ? AND op_id <= ?)",
+	);
+	const deleted =
+		(
+			deleteStmt.run(boundary.created_at, boundary.created_at, boundary.op_id) as {
+				changes?: number;
+			}
+		).changes ?? 0;
+	const retainedFloorCursor = computeCursor(String(boundary.created_at), String(boundary.op_id));
+	setSyncResetState(db, { retained_floor_cursor: retainedFloorCursor });
+	const estimatedBytesAfter = estimateReplicationOpsStorageBytes(db);
+	if (estimatedBytesAfter == null) {
+		throw new Error("replication_ops_size_unavailable");
+	}
+	return {
+		deleted,
+		retained_floor_cursor: retainedFloorCursor,
+		estimated_bytes_before: estimatedBytesBefore,
+		estimated_bytes_after: estimatedBytesAfter,
+		stopped_by_budget: false,
 	};
 }
 

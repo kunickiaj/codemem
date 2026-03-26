@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
 	backfillTagsText,
+	bulkPruneReplicationOpsByAgeCutoff,
 	connect,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
@@ -139,9 +140,19 @@ dbCommand
 						let batches = 0;
 						let lastFloor: string | null = null;
 						let afterBytes = beforeBytes;
+						const ageResult = bulkPruneReplicationOpsByAgeCutoff(db, maxAgeDays);
+						totalDeleted += ageResult.deleted;
+						lastFloor = ageResult.retained_floor_cursor;
+						afterBytes = ageResult.estimated_bytes_after ?? beforeBytes;
+						if (ageResult.deleted > 0) {
+							batches += 1;
+							p.log.step(
+								`Age pass: deleted ${ageResult.deleted.toLocaleString()} ops, remaining size ~${formatBytes(afterBytes)}`,
+							);
+						}
 						while (true) {
 							const result = pruneReplicationOps(db, {
-								maxAgeDays,
+								maxAgeDays: 365000,
 								maxSizeBytes: maxSizeMb * 1024 * 1024,
 								maxDeleteOps: batchOps,
 								maxRuntimeMs: batchRuntimeMs,
