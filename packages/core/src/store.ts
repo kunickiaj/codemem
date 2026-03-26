@@ -22,6 +22,7 @@ import {
 	connect,
 	DEFAULT_DB_PATH,
 	ensureAdditiveSchemaCompatibility,
+	ensurePlannerStats,
 	fromJson,
 	isEmbeddingDisabled,
 	loadSqliteVec,
@@ -179,6 +180,7 @@ export class MemoryStore {
 			loadSqliteVec(this.db);
 			assertSchemaReady(this.db);
 			ensureAdditiveSchemaCompatibility(this.db);
+			ensurePlannerStats(this.db);
 		} catch (err) {
 			this.db.close();
 			throw err;
@@ -1979,6 +1981,7 @@ export class MemoryStore {
 
 	/** Close the database connection. */
 	close(): void {
+		this.db.pragma("optimize");
 		this.db.close();
 	}
 }
