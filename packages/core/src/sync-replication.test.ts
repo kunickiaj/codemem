@@ -20,6 +20,7 @@ import {
 	migrateLegacyImportKeys,
 	planReplicationOpsAgePrune,
 	pruneReplicationOps,
+	pruneReplicationOpsUntilCaughtUp,
 	recordReplicationOp,
 	setReplicationCursor,
 	setSyncResetState,
@@ -1170,6 +1171,55 @@ describe("pruneReplicationOps", () => {
 
 		expect(result.deleted).toBe(4);
 		expect(result.retained_floor_cursor).toBe("2026-03-20T00:00:04Z|op-4");
+	});
+
+	it("keeps applying prune passes until retention is no longer budget-limited", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+		insertOp("op-4", "2026-01-01T00:00:04Z");
+		insertOp("op-5", "2026-03-26T00:00:00Z");
+
+		const result = pruneReplicationOpsUntilCaughtUp(db, {
+			maxAgeDays: 30,
+			maxSizeBytes: 1024 * 1024 * 1024,
+			maxDeleteOps: 2,
+			maxRuntimeMs: 60_000,
+		});
+
+		expect(result.totalDeleted).toBe(4);
+		expect(result.passes).toBe(3);
+		expect(result.stoppedByBudget).toBe(false);
+		expect(result.lastFloor).toBe("2026-01-01T00:00:04Z|op-4");
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-5"]);
+	});
+
+	it("stops multi-pass catch-up after the configured pass cap", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+		insertOp("op-4", "2026-01-01T00:00:04Z");
+		insertOp("op-5", "2026-01-01T00:00:05Z");
+		insertOp("op-6", "2026-03-26T00:00:00Z");
+
+		const result = pruneReplicationOpsUntilCaughtUp(db, {
+			maxAgeDays: 30,
+			maxSizeBytes: 1024 * 1024 * 1024,
+			maxDeleteOps: 2,
+			maxRuntimeMs: 60_000,
+			maxPasses: 2,
+		});
+
+		expect(result.totalDeleted).toBe(4);
+		expect(result.passes).toBe(2);
+		expect(result.stoppedByBudget).toBe(true);
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-5", "op-6"]);
 	});
 });
 
