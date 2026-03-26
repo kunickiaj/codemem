@@ -54,6 +54,9 @@ export interface CoordinatorSyncConfig {
 	syncRetentionEnabled: boolean;
 	syncRetentionMaxAgeDays: number;
 	syncRetentionMaxSizeMb: number;
+	syncRetentionIntervalS: number;
+	syncRetentionMaxRuntimeMs: number;
+	syncRetentionMaxOpsPerPass: number;
 	syncProjectsInclude: string[];
 	syncProjectsExclude: string[];
 	syncCoordinatorUrl: string;
@@ -109,6 +112,9 @@ export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyn
 		syncRetentionEnabled: parseBoolOr(raw.sync_retention_enabled, false),
 		syncRetentionMaxAgeDays: Math.max(1, parseIntOr(raw.sync_retention_max_age_days, 30)),
 		syncRetentionMaxSizeMb: Math.max(1, parseIntOr(raw.sync_retention_max_size_mb, 512)),
+		syncRetentionIntervalS: Math.max(5, parseIntOr(raw.sync_retention_interval_s, 300)),
+		syncRetentionMaxRuntimeMs: Math.max(100, parseIntOr(raw.sync_retention_max_runtime_ms, 2000)),
+		syncRetentionMaxOpsPerPass: Math.max(1, parseIntOr(raw.sync_retention_max_ops_per_pass, 5000)),
 		syncProjectsInclude: parseStringList(raw.sync_projects_include),
 		syncProjectsExclude: parseStringList(raw.sync_projects_exclude),
 		syncCoordinatorUrl: clean(raw.sync_coordinator_url),

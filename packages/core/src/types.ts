@@ -305,6 +305,7 @@ export interface ReplicationOpsPruneResult {
 	retained_floor_cursor: string | null;
 	estimated_bytes_before?: number;
 	estimated_bytes_after?: number;
+	stopped_by_budget?: boolean;
 }
 
 export interface SyncAttempt {

@@ -300,6 +300,7 @@ export {
 	setReplicationCursor,
 	setSyncResetState,
 } from "./sync-replication.js";
+export { SyncRetentionRunner } from "./sync-retention-runner.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 // Test utilities (exported for consumer packages like viewer-server)
 export { initTestSchema, insertTestSession } from "./test-utils.js";

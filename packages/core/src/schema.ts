@@ -396,6 +396,21 @@ export const syncResetState = sqliteTable("sync_reset_state", {
 export type SyncResetState = typeof syncResetState.$inferSelect;
 export type NewSyncResetState = typeof syncResetState.$inferInsert;
 
+export const syncRetentionState = sqliteTable("sync_retention_state", {
+	id: integer("id").primaryKey(),
+	last_run_at: text("last_run_at"),
+	last_duration_ms: integer("last_duration_ms"),
+	last_deleted_ops: integer("last_deleted_ops").notNull().default(0),
+	last_estimated_bytes_before: integer("last_estimated_bytes_before"),
+	last_estimated_bytes_after: integer("last_estimated_bytes_after"),
+	retained_floor_cursor: text("retained_floor_cursor"),
+	last_error: text("last_error"),
+	last_error_at: text("last_error_at"),
+});
+
+export type SyncRetentionState = typeof syncRetentionState.$inferSelect;
+export type NewSyncRetentionState = typeof syncRetentionState.$inferInsert;
+
 export const rawEventIngestSamples = sqliteTable("raw_event_ingest_samples", {
 	id: integer("id").primaryKey({ autoIncrement: true }),
 	created_at: text("created_at").notNull(),
