@@ -1402,12 +1402,14 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.enabled).toBe(true);
-				expect(body.retention).toEqual({
-					enabled: true,
-					max_age_days: 14,
-					max_size_mb: 256,
-					retained_floor_cursor: null,
-				});
+				expect(body.retention).toEqual(
+					expect.objectContaining({
+						enabled: true,
+						max_age_days: 14,
+						max_size_mb: 256,
+						retained_floor_cursor: null,
+					}),
+				);
 			} finally {
 				cleanup();
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
@@ -1436,6 +1438,48 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.daemon_state).toBe("starting");
 				expect(body.daemon_detail).toBe("Running initial sync in background");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("includes retention telemetry in sync status output", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/sync/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						`INSERT INTO sync_retention_state(id, last_run_at, last_duration_ms, last_deleted_ops, last_estimated_bytes_before, last_estimated_bytes_after, retained_floor_cursor, last_error, last_error_at)
+						 VALUES (1, ?, 1200, 42, 1000, 900, 'floor-cursor', 'boom', ?)`,
+					)
+					.run(new Date().toISOString(), new Date().toISOString());
+
+				const prevRetentionEnabled = process.env.CODEMEM_SYNC_RETENTION_ENABLED;
+				const prevMaxAge = process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS;
+				const prevMaxSize = process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB;
+				process.env.CODEMEM_SYNC_RETENTION_ENABLED = "1";
+				process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS = "14";
+				process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB = "256";
+				try {
+					const res = await app.request("/api/sync/status");
+					const body = (await res.json()) as Record<string, unknown>;
+					const retention = body.retention as Record<string, unknown>;
+					expect(retention.enabled).toBe(true);
+					expect(retention.max_age_days).toBe(14);
+					expect(retention.max_size_mb).toBe(256);
+					expect(retention.last_deleted_ops).toBe(42);
+					expect(retention.retained_floor_cursor).toBe("floor-cursor");
+					expect(retention.last_error).toBe("boom");
+				} finally {
+					if (prevRetentionEnabled === undefined) delete process.env.CODEMEM_SYNC_RETENTION_ENABLED;
+					else process.env.CODEMEM_SYNC_RETENTION_ENABLED = prevRetentionEnabled;
+					if (prevMaxAge === undefined) delete process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS;
+					else process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS = prevMaxAge;
+					if (prevMaxSize === undefined) delete process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB;
+					else process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB = prevMaxSize;
+				}
 			} finally {
 				cleanup();
 			}

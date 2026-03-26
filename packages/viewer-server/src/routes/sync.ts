@@ -662,6 +662,27 @@ export function syncRoutes(
 				.get();
 
 			const peerCountRow = d.select({ total: count() }).from(schema.syncPeers).get();
+			let retentionState:
+				| {
+						last_run_at?: string | null;
+						last_duration_ms?: number | null;
+						last_deleted_ops?: number | null;
+						last_estimated_bytes_before?: number | null;
+						last_estimated_bytes_after?: number | null;
+						retained_floor_cursor?: string | null;
+						last_error?: string | null;
+						last_error_at?: string | null;
+				  }
+				| undefined;
+			try {
+				retentionState = d
+					.select()
+					.from(schema.syncRetentionState)
+					.where(eq(schema.syncRetentionState.id, 1))
+					.get();
+			} catch {
+				retentionState = undefined;
+			}
 
 			const lastSyncRow = d
 				.select({ last_sync_at: max(schema.syncPeers.last_sync_at) })
@@ -697,7 +718,29 @@ export function syncRoutes(
 					enabled: config.syncRetentionEnabled,
 					max_age_days: config.syncRetentionMaxAgeDays,
 					max_size_mb: config.syncRetentionMaxSizeMb,
-					retained_floor_cursor: syncReset.retained_floor_cursor,
+					retained_floor_cursor:
+						syncReset.retained_floor_cursor ??
+						(retentionState?.retained_floor_cursor as string | null) ??
+						null,
+					last_run_at: (retentionState?.last_run_at as string | null) ?? null,
+					last_duration_ms:
+						typeof retentionState?.last_duration_ms === "number"
+							? retentionState.last_duration_ms
+							: null,
+					last_deleted_ops:
+						typeof retentionState?.last_deleted_ops === "number"
+							? retentionState.last_deleted_ops
+							: null,
+					last_estimated_bytes_before:
+						typeof retentionState?.last_estimated_bytes_before === "number"
+							? retentionState.last_estimated_bytes_before
+							: null,
+					last_estimated_bytes_after:
+						typeof retentionState?.last_estimated_bytes_after === "number"
+							? retentionState.last_estimated_bytes_after
+							: null,
+					last_error: (retentionState?.last_error as string | null) ?? null,
+					last_error_at: (retentionState?.last_error_at as string | null) ?? null,
 				},
 				peer_count: Number(peerCountRow?.total ?? 0),
 				last_sync_at: lastSyncRow?.last_sync_at ?? null,

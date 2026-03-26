@@ -494,6 +494,13 @@ export interface ApiSyncRetentionStatus {
 	max_age_days: number;
 	max_size_mb: number;
 	retained_floor_cursor: string | null;
+	last_run_at?: string | null;
+	last_duration_ms?: number | null;
+	last_deleted_ops?: number | null;
+	last_estimated_bytes_before?: number | null;
+	last_estimated_bytes_after?: number | null;
+	last_error?: string | null;
+	last_error_at?: string | null;
 }
 
 /** Status block nested in sync status response. */
