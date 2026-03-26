@@ -1060,6 +1060,74 @@ describe("pruneReplicationOps", () => {
 		expect(result.deleted).toBe(4);
 		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:04Z|op-4");
 	});
+
+	it("bulk deletes oldest-prefix chunks during size trimming and remeasures between chunks", () => {
+		insertOp("op-1", "2026-03-20T00:00:01Z");
+		insertOp("op-2", "2026-03-20T00:00:02Z");
+		insertOp("op-3", "2026-03-20T00:00:03Z");
+		insertOp("op-4", "2026-03-20T00:00:04Z");
+
+		const estimatedBytes = Number(
+			(
+				db
+					.prepare(
+						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
+						 FROM dbstat
+						 WHERE name = 'replication_ops'
+						    OR name LIKE 'idx_replication_ops_%'
+						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+					)
+					.get() as { total_bytes: number }
+			).total_bytes,
+		);
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 3650,
+			maxSizeBytes: Math.max(1, estimatedBytes - 1),
+			maxDeleteOps: 2,
+			maxRuntimeMs: 60_000,
+		});
+
+		expect(result.deleted).toBe(2);
+		expect(result.retained_floor_cursor).toBe("2026-03-20T00:00:02Z|op-2");
+		expect(result.stopped_by_budget).toBe(true);
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-3", "op-4"]);
+	});
+
+	it("does not overshoot the remaining delete budget during size trimming", () => {
+		insertOp("op-1", "2026-03-20T00:00:01Z");
+		insertOp("op-2", "2026-03-20T00:00:02Z");
+		insertOp("op-3", "2026-03-20T00:00:03Z");
+		insertOp("op-4", "2026-03-20T00:00:04Z");
+		insertOp("op-5", "2026-03-20T00:00:05Z");
+
+		const estimatedBytes = Number(
+			(
+				db
+					.prepare(
+						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
+						 FROM dbstat
+						 WHERE name = 'replication_ops'
+						    OR name LIKE 'idx_replication_ops_%'
+						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+					)
+					.get() as { total_bytes: number }
+			).total_bytes,
+		);
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 3650,
+			maxSizeBytes: Math.max(1, estimatedBytes - 1),
+			maxDeleteOps: 4,
+			maxRuntimeMs: 60_000,
+		});
+
+		expect(result.deleted).toBe(4);
+		expect(result.retained_floor_cursor).toBe("2026-03-20T00:00:04Z|op-4");
+	});
 });
 
 // ---------------------------------------------------------------------------

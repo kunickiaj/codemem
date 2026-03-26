@@ -930,17 +930,26 @@ export function pruneReplicationOps(
 			stoppedByBudget = true;
 			break;
 		}
-		const oldest = d
+		const remainingDeleteBudget = Math.max(1, maxDeleteOps - deleted);
+		const sizeBatchSize = Math.max(1, Math.min(remainingDeleteBudget, 10_000));
+		const oldestChunk = d
 			.select({
 				op_id: schema.replicationOps.op_id,
 				created_at: schema.replicationOps.created_at,
 			})
 			.from(schema.replicationOps)
 			.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
-			.limit(1)
-			.get();
-		if (!oldest) break;
-		deleteOp(oldest);
+			.limit(sizeBatchSize)
+			.all();
+		const boundary = oldestChunk[oldestChunk.length - 1];
+		if (!boundary) break;
+		lastDeletedCursor = computeCursor(String(boundary.created_at), String(boundary.op_id));
+		deleted +=
+			(
+				bulkDeleteBeforeStmt.run(boundary.created_at, boundary.created_at, boundary.op_id) as {
+					changes?: number;
+				}
+			).changes ?? 0;
 		const nextEstimatedSize = estimateReplicationOpsStorageBytes(db);
 		if (nextEstimatedSize == null) {
 			throw new Error("replication_ops_size_unavailable");
