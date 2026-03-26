@@ -153,6 +153,46 @@ describe("viewer-server", () => {
 		});
 	});
 
+	describe("GET /api/usage", () => {
+		it("returns recent pack rows for the current scope", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("codemem", sessionId);
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 123, 0, 456, ?, ?)`,
+					)
+					.run(
+						sessionId,
+						"2026-03-26T23:30:00Z",
+						JSON.stringify({ pack_tokens: 123, exact_duplicates_collapsed: 4 }),
+					);
+
+				const res = await app.request("/api/usage?project=codemem");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				const recentPacks = body.recent_packs as Array<Record<string, unknown>>;
+				expect(recentPacks).toHaveLength(1);
+				expect(recentPacks[0]).toMatchObject({
+					session_id: sessionId,
+					event: "pack",
+					tokens_read: 123,
+					tokens_saved: 456,
+				});
+				expect(recentPacks[0]?.metadata_json).toMatchObject({
+					exact_duplicates_collapsed: 4,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
 	describe("GET /api/sessions", () => {
 		it("returns sessions list", async () => {
 			const { app, getStore, cleanup } = createTestApp();
