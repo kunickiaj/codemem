@@ -9,6 +9,18 @@ import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 const TEST_SCHEMA_AUX_DDL = `
 CREATE INDEX IF NOT EXISTS idx_sync_peers_actor_id ON sync_peers(actor_id);
 
+CREATE TABLE IF NOT EXISTS sync_retention_state (
+	id INTEGER PRIMARY KEY,
+	last_run_at TEXT,
+	last_duration_ms INTEGER,
+	last_deleted_ops INTEGER NOT NULL DEFAULT 0,
+	last_estimated_bytes_before INTEGER,
+	last_estimated_bytes_after INTEGER,
+	retained_floor_cursor TEXT,
+	last_error TEXT,
+	last_error_at TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 	title, body_text, tags_text,
 	content='memory_items',

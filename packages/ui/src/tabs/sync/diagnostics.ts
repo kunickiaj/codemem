@@ -45,6 +45,11 @@ export function renderSyncStatus() {
   const pending = Number(status.pending || 0);
   const daemonDetail = String(status.daemon_detail || '');
   const daemonState = String(status.daemon_state || 'unknown');
+  const retention = status.retention || {};
+  const retentionEnabled = retention.enabled === true;
+  const retentionDeleted = Number(retention.last_deleted_ops || 0);
+  const retentionLastRunAt = retention.last_run_at || null;
+  const retentionLastError = String(retention.last_error || '');
   const daemonStateLabel =
     daemonState === 'offline-peers'
       ? 'Offline peers'
@@ -72,6 +77,13 @@ export function renderSyncStatus() {
     if (daemonDetail && daemonState === 'stopped') parts.push(`Detail: ${daemonDetail}`);
     if (daemonDetail && (daemonState === 'needs_attention' || daemonState === 'rebootstrapping')) {
       parts.push(`Detail: ${daemonDetail}`);
+    }
+    if (retentionEnabled) {
+      parts.push(
+        retentionLastRunAt
+          ? `Retention last ran ${formatAgeShort(secondsSince(retentionLastRunAt))} ago`
+          : 'Retention enabled',
+      );
     }
     syncMeta.textContent = parts.join(' \u00b7 ');
   }
@@ -101,6 +113,14 @@ export function renderSyncStatus() {
           {
             label: 'Last ping',
             value: lastPing ? `${formatAgeShort(secondsSince(lastPing))} ago` : 'never',
+          },
+          {
+            label: 'Retention',
+            value: retentionEnabled
+              ? retentionLastRunAt
+                ? `${retentionDeleted.toLocaleString()} ops last run`
+                : 'Enabled'
+              : 'Disabled',
           },
         ];
 
@@ -141,6 +161,14 @@ export function renderSyncStatus() {
       el('div', 'value', `${pingPayload.seconds_since_last}s`),
       el('div', 'label', 'Since last ping'),
     );
+    block.appendChild(content);
+    syncStatusGrid.appendChild(block);
+  }
+
+  if (!syncDisabled && retentionEnabled && retentionLastError) {
+    const block = el('div', 'stat');
+    const content = el('div', 'stat-content');
+    content.append(el('div', 'value', 'Retention'), el('div', 'label', retentionLastError));
     block.appendChild(content);
     syncStatusGrid.appendChild(block);
   }
