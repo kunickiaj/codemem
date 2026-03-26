@@ -4,7 +4,7 @@
  * Replaces Python's install_plugin_cmd + install_mcp_cmd.
  *
  * What it does:
- * 1. Adds "codemem" to the plugin array in ~/.config/opencode/opencode.jsonc
+ * 1. Adds "@codemem/opencode-plugin" to the plugin array in ~/.config/opencode/opencode.jsonc
  * 2. Adds/updates the MCP entry in ~/.config/opencode/opencode.jsonc
  * 3. For Claude Code: installs MCP config and guides marketplace plugin install
  *
@@ -29,7 +29,8 @@ function claudeConfigDir(): string {
 }
 
 /** The npm package name used in the OpenCode plugin array. */
-const OPENCODE_PLUGIN_SPEC = "codemem";
+const OPENCODE_PLUGIN_SPEC = "@codemem/opencode-plugin";
+const LEGACY_OPENCODE_PLUGIN_SPECS = ["codemem", "@kunickiaj/codemem"];
 
 // ---------------------------------------------------------------------------
 // Legacy migration helpers
@@ -133,24 +134,31 @@ function installPlugin(force: boolean): boolean {
 		plugins = [];
 	}
 
-	const hasCodemem = (plugins as string[]).some(
+	const isManagedPluginSpec = (entry: unknown): entry is string =>
+		typeof entry === "string" &&
+		[OPENCODE_PLUGIN_SPEC, ...LEGACY_OPENCODE_PLUGIN_SPECS].some(
+			(spec) => entry === spec || entry.startsWith(`${spec}@`),
+		);
+
+	const hasCanonicalSpec = (plugins as string[]).some(
 		(entry) =>
 			typeof entry === "string" &&
 			(entry === OPENCODE_PLUGIN_SPEC || entry.startsWith(`${OPENCODE_PLUGIN_SPEC}@`)),
 	);
+	const hasLegacySpec = (plugins as string[]).some(
+		(entry) =>
+			typeof entry === "string" &&
+			LEGACY_OPENCODE_PLUGIN_SPECS.some((spec) => entry === spec || entry.startsWith(`${spec}@`)),
+	);
 
-	if (hasCodemem && !force) {
+	if (hasCanonicalSpec && !hasLegacySpec && !force) {
 		p.log.info(`Plugin "${OPENCODE_PLUGIN_SPEC}" already in plugin array`);
 		return true;
 	}
 
-	if (hasCodemem && force) {
-		// Remove existing entry so we can re-add the canonical one.
-		plugins = (plugins as string[]).filter(
-			(entry) =>
-				typeof entry !== "string" ||
-				(entry !== OPENCODE_PLUGIN_SPEC && !entry.startsWith(`${OPENCODE_PLUGIN_SPEC}@`)),
-		);
+	plugins = (plugins as string[]).filter((entry) => !isManagedPluginSpec(entry));
+	if (hasLegacySpec) {
+		p.log.step("Removed legacy OpenCode plugin spec(s): codemem / @kunickiaj/codemem");
 	}
 
 	(plugins as string[]).push(OPENCODE_PLUGIN_SPEC);

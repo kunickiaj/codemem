@@ -1,0 +1,48 @@
+{
+	"name": "@codemem/opencode-plugin",
+	"version": "0.20.8",
+	"description": "CodeMem plugin for OpenCode",
+	"type": "module",
+	"main": "./index.js",
+	"exports": {
+		".": {
+			"import": "./index.js"
+		}
+	},
+	"files": [
+		"index.js",
+		"README.md",
+		"LICENSE",
+		".opencode/package.json",
+		".opencode/plugins/",
+		".opencode/lib/"
+	],
+	"scripts": {
+		"test:packed-artifact": "node ./scripts/packed-artifact-smoke.mjs"
+	},
+	"dependencies": {
+		"@opencode-ai/plugin": "1.2.27"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/opencode-plugin"
+	},
+	"homepage": "https://github.com/kunickiaj/codemem",
+	"bugs": {
+		"url": "https://github.com/kunickiaj/codemem/issues"
+	},
+	"license": "MIT",
+	"publishConfig": {
+		"access": "public"
+	},
+	"keywords": [
+		"codemem",
+		"memory",
+		"ai",
+		"coding",
+		"agent",
+		"opencode",
+		"plugin"
+	]
+}

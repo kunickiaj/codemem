@@ -4,7 +4,8 @@ CodeMem uses one shared semantic version stream across its npm packages.
 
 ## Canonical packages
 
-- npm: `codemem` (plugin + CLI)
+- npm: `codemem` (CLI)
+- npm: `@codemem/opencode-plugin` (OpenCode plugin)
 
 ## Policy
 
@@ -18,11 +19,12 @@ Version bumps are prepared on a release branch and touch these files:
 
 - `packages/core/package.json` (`version`)
 - `packages/cli/package.json` (`version`)
+- `packages/opencode-plugin/package.json` (`version`)
 - `packages/mcp-server/package.json` (`version`)
 - `packages/viewer-server/package.json` (`version`)
 - `packages/core/src/index.ts` (`VERSION` export)
 - `packages/core/src/index.test.ts` (version assertion)
-- `packages/cli/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
+- `packages/opencode-plugin/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
 
 ## Release tag preflight
 
@@ -56,5 +58,5 @@ export CODEMEM_MIN_VERSION=0.9.20
 
 ## Transition notes
 
-- `codemem` is published on npm (CLI + plugin).
-- `@kunickiaj/codemem` is the OpenCode plugin identifier.
+- `codemem` is the CLI package on npm.
+- `@codemem/opencode-plugin` is the OpenCode plugin identifier.

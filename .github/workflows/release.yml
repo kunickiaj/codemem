@@ -81,11 +81,12 @@ jobs:
         run: |
           DIST_TAG="${{ steps.dist-tag.outputs.tag }}"
           # pnpm publish resolves workspace:^ to actual version ranges.
-          # Publish in dependency order: core → mcp, server → cli
+          # Publish in dependency order: core → mcp, server → cli, opencode-plugin
           pnpm --filter @codemem/core publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
           pnpm --filter @codemem/mcp publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
           pnpm --filter @codemem/server publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
           pnpm --filter codemem publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
+          pnpm --filter @codemem/opencode-plugin publish --tag "$DIST_TAG" --provenance --access public --no-git-checks
 
   release:
     name: Create GitHub Release

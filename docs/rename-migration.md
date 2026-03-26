@@ -5,7 +5,7 @@ This document tracks migration from `codemem` naming to `CodeMem` package names.
 ## Canonical names
 
 - GitHub repo: `kunickiaj/codemem`
-- npm plugin package: `@kunickiaj/codemem`
+- npm plugin package: `@codemem/opencode-plugin`
 - PyPI package: `codemem`
 
 ## Compatibility policy
@@ -22,7 +22,7 @@ Old:
 
 ```json
 {
-  "plugin": ["codemem"]
+  "plugin": ["@kunickiaj/codemem"]
 }
 ```
 
@@ -30,7 +30,7 @@ New:
 
 ```json
 {
-  "plugin": ["@kunickiaj/codemem"]
+  "plugin": ["@codemem/opencode-plugin"]
 }
 ```
 
@@ -42,7 +42,7 @@ New:
 cp ~/.opencode-mem.sqlite ~/.opencode-mem.sqlite.bak
 ```
 
-2. Update OpenCode plugin config to `@kunickiaj/codemem`.
+2. Update OpenCode plugin config to `@codemem/opencode-plugin`.
 3. Update OpenCode MCP command to `codemem` (if configured):
 
 ```json
@@ -99,8 +99,8 @@ Expected DB behavior:
 
 ### Dev machine behavior
 
-- Inside the codemem repo, OpenCode auto-loads `.opencode/plugin/codemem.js` (dev mode).
-- Outside the repo, OpenCode uses configured plugin package (`@kunickiaj/codemem`).
+- Inside the codemem repo, use the workspace/local plugin test flow for validation.
+- Outside the repo, OpenCode uses configured plugin package (`@codemem/opencode-plugin`).
 - For realistic migration validation on a dev machine, run at least one session outside the repo.
 - Viewer auto-start now occurs on plugin initialization and is idempotent.
 
@@ -111,7 +111,7 @@ Use this snippet in release notes for migration releases:
 ```text
 CodeMem rename update:
 - Repo moved to github.com/kunickiaj/codemem
-- Plugin package: @kunickiaj/codemem
+- Plugin package: @codemem/opencode-plugin
 - Python package: codemem
 - Existing codemem command remains supported during transition window
 ```

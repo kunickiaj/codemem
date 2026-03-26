@@ -80,7 +80,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install plugin runtime dependency
-        run: npm install --prefix packages/cli/.opencode --no-save @opencode-ai/plugin@1.2.27
+        run: |
+          npm install --prefix packages/cli/.opencode --no-save @opencode-ai/plugin@1.2.27
+          npm install --prefix packages/opencode-plugin/.opencode --no-save @opencode-ai/plugin@1.2.27
 
       - name: Run plugin unit tests
         run: pnpm --filter codemem test:plugin && pnpm --filter codemem test:smoke
@@ -117,4 +119,4 @@ jobs:
         run: pnpm run build
 
       - name: Run packed artifact smoke test
-        run: pnpm --filter codemem test:packed-artifact
+        run: pnpm --filter @codemem/opencode-plugin test:packed-artifact
