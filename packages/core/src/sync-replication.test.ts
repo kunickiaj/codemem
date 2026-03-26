@@ -11,6 +11,7 @@ import {
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	getSyncResetState,
+	hasUnsyncedSharedMemoryChanges,
 	isNewerClock,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
@@ -809,6 +810,59 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		});
 
 		expect(page.items.map((item) => item.entity_id)).toEqual(["key-allowed"]);
+	});
+});
+
+describe("hasUnsyncedSharedMemoryChanges", () => {
+	let db: InstanceType<typeof Database>;
+	let sessionId: number;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		sessionId = insertTestSession(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	it("reports missing shared-memory replication ops as dirty", () => {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
+			 VALUES (?, 'discovery', 'shared', 'body', ?, ?, 'shared-key', 2, 'shared', ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "dev-a" }));
+
+		const result = hasUnsyncedSharedMemoryChanges(db);
+		expect(result.dirty).toBe(true);
+		expect(result.count).toBe(1);
+	});
+
+	it("ignores private-only rows when checking dirty shared-memory state", () => {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
+			 VALUES (?, 'discovery', 'private', 'body', ?, ?, 'private-key', 1, 'private', ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "dev-a" }));
+
+		const result = hasUnsyncedSharedMemoryChanges(db);
+		expect(result).toEqual({ dirty: false, count: 0 });
+	});
+
+	it("treats rows with matching replication ops as clean", () => {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
+			 VALUES (?, 'discovery', 'shared', 'body', ?, ?, 'shared-key', 2, 'shared', ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "dev-a" }));
+		db.prepare(
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at)
+			 VALUES ('op-1', 'memory_item', 'shared-key', 'upsert', NULL, 2, ?, 'dev-a', 'dev-a', ?)`,
+		).run(now, now);
+
+		const result = hasUnsyncedSharedMemoryChanges(db);
+		expect(result).toEqual({ dirty: false, count: 0 });
 	});
 });
 
