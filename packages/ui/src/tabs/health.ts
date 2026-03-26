@@ -113,7 +113,14 @@ export function renderHealthOverview() {
   const reductionPercent = parsePercentValue(reductionLabel);
   const tagCoverage = Number(dbStats.tags_coverage || 0);
   const syncState = String(syncStatus.daemon_state || 'unknown');
-  const syncStateLabel = syncState === 'offline-peers' ? 'Offline peers' : titleCase(syncState);
+  const syncStateLabel =
+    syncState === 'offline-peers'
+      ? 'Offline peers'
+      : syncState === 'needs_attention'
+        ? 'Needs attention'
+        : syncState === 'rebootstrapping'
+          ? 'Rebootstrapping'
+          : titleCase(syncState);
   const peerCount = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers.length : 0;
   const syncDisabled = syncState === 'disabled' || syncStatus.enabled === false;
   const syncOfflinePeers = syncState === 'offline-peers';
@@ -136,6 +143,7 @@ export function renderHealthOverview() {
   else if (droppedRate > 0.005) { riskScore += 10; drivers.push('non-trivial dropped-event rate'); }
   if (!syncDisabled && !syncNoPeers) {
     if (syncState === 'error') { riskScore += 36; drivers.push('sync daemon reports errors'); }
+    else if (syncState === 'needs_attention') { riskScore += 40; drivers.push('sync needs manual attention'); }
     else if (syncState === 'stopped') { riskScore += 22; drivers.push('sync daemon stopped'); }
     else if (syncState === 'degraded') { riskScore += 20; drivers.push('sync daemon degraded'); }
     if (syncOfflinePeers) { riskScore += 4; drivers.push('all peers currently offline'); if (syncLooksStale) { riskScore += 4; drivers.push('offline peers and sync not recent'); } }

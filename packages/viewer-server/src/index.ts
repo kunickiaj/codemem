@@ -50,7 +50,15 @@ export interface AppOptions {
 	sweeper?: RawEventSweeper | null;
 	observer?: ObserverClient | null;
 	getSyncRuntimeStatus?: () => {
-		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
+		phase:
+			| "starting"
+			| "running"
+			| "stopping"
+			| "error"
+			| "disabled"
+			| "rebootstrapping"
+			| "needs_attention"
+			| null;
 		detail?: string | null;
 	} | null;
 }

@@ -45,7 +45,14 @@ export function renderSyncStatus() {
   const pending = Number(status.pending || 0);
   const daemonDetail = String(status.daemon_detail || '');
   const daemonState = String(status.daemon_state || 'unknown');
-  const daemonStateLabel = daemonState === 'offline-peers' ? 'Offline peers' : titleCase(daemonState);
+  const daemonStateLabel =
+    daemonState === 'offline-peers'
+      ? 'Offline peers'
+      : daemonState === 'needs_attention'
+        ? 'Needs attention'
+        : daemonState === 'rebootstrapping'
+          ? 'Rebootstrapping'
+          : titleCase(daemonState);
   const syncDisabled = daemonState === 'disabled' || status.enabled === false;
   const peerCount = Object.keys(peers).length;
   const syncNoPeers = !syncDisabled && peerCount === 0;
@@ -63,6 +70,9 @@ export function renderSyncStatus() {
     if (daemonState === 'offline-peers')
       parts.push('All peers are currently offline; sync will resume automatically');
     if (daemonDetail && daemonState === 'stopped') parts.push(`Detail: ${daemonDetail}`);
+    if (daemonDetail && (daemonState === 'needs_attention' || daemonState === 'rebootstrapping')) {
+      parts.push(`Detail: ${daemonDetail}`);
+    }
     syncMeta.textContent = parts.join(' \u00b7 ');
   }
 
@@ -144,6 +154,13 @@ export function renderSyncStatus() {
   } else if (daemonState === 'stopped') {
     actions.push({ label: 'Sync daemon is stopped. Start it.', command: 'codemem sync start' });
     actions.push({ label: 'Then run one immediate sync pass.', command: 'codemem sync once' });
+  } else if (daemonState === 'needs_attention') {
+    actions.push({
+      label: 'Sync needs manual attention before reset can continue.',
+      command: 'codemem sync doctor',
+    });
+  } else if (daemonState === 'rebootstrapping') {
+    actions.push({ label: 'Sync is rebuilding state in the background.', command: 'codemem sync status' });
   } else if (syncError || pingError || daemonState === 'error') {
     actions.push({
       label: 'Sync reports errors. Restart now.',
