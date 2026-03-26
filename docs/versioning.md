@@ -11,7 +11,7 @@ CodeMem uses one shared semantic version stream across its npm packages.
 
 - Release tags `vX.Y.Z` represent the product version.
 - npm packages publish the same `X.Y.Z`.
-- Changelog/release notes are shared per version.
+- GitHub Release notes are shared per version.
 
 ## Release workflow
 
