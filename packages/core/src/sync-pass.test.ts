@@ -1,6 +1,5 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import * as observerConfig from "./observer-config.js";
 import {
 	consecutiveConnectivityFailures,
 	cursorAdvances,
@@ -152,29 +151,12 @@ describe("syncPassPreflight", () => {
 		db.close();
 	});
 
-	it("does not prune replication ops when retention is disabled by default", () => {
+	it("does not run retention pruning in sync preflight", () => {
 		const pruneSpy = vi.spyOn(syncReplication, "pruneReplicationOps");
-		vi.spyOn(observerConfig, "readCodememConfigFile").mockReturnValue({});
 
 		syncPassPreflight(db);
 
 		expect(pruneSpy).not.toHaveBeenCalled();
-	});
-
-	it("uses configured age and size retention settings when enabled", () => {
-		const pruneSpy = vi.spyOn(syncReplication, "pruneReplicationOps");
-		vi.spyOn(observerConfig, "readCodememConfigFile").mockReturnValue({
-			sync_retention_enabled: true,
-			sync_retention_max_age_days: 7,
-			sync_retention_max_size_mb: 3,
-		});
-
-		syncPassPreflight(db);
-
-		expect(pruneSpy).toHaveBeenCalledWith(db, {
-			maxAgeDays: 7,
-			maxSizeBytes: 3 * 1024 * 1024,
-		});
 	});
 });
 

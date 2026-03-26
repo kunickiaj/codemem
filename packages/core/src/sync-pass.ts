@@ -8,9 +8,7 @@
 
 import { and, desc, eq, gt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import type { Database } from "./db.js";
-import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
@@ -25,7 +23,6 @@ import {
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
-	pruneReplicationOps,
 	setReplicationCursor,
 } from "./sync-replication.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
@@ -313,12 +310,6 @@ async function pushOps(
 export function syncPassPreflight(db: Database): void {
 	migrateLegacyImportKeys(db, 2000);
 	backfillReplicationOps(db, 200);
-	const config = readCoordinatorSyncConfig(readCodememConfigFile());
-	if (!config.syncRetentionEnabled) return;
-	pruneReplicationOps(db, {
-		maxAgeDays: config.syncRetentionMaxAgeDays,
-		maxSizeBytes: config.syncRetentionMaxSizeMb * 1024 * 1024,
-	});
 }
 
 // ---------------------------------------------------------------------------
