@@ -73,3 +73,4 @@ packages/viewer-server/static/
 
 # Beads credential files
 .beads/.beads-credential-key
+.beads/push-state.json
