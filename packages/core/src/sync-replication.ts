@@ -853,12 +853,20 @@ export function hasUnsyncedSharedMemoryChanges(db: Database, limit = 25): SyncDi
 
 export function pruneReplicationOps(
 	db: Database,
-	options?: { maxAgeDays?: number; maxSizeBytes?: number },
+	options?: {
+		maxAgeDays?: number;
+		maxSizeBytes?: number;
+		maxDeleteOps?: number;
+		maxRuntimeMs?: number;
+	},
 ): ReplicationOpsPruneResult {
 	const maxAgeDays = Math.max(1, Math.floor(options?.maxAgeDays ?? 30));
 	const maxSizeBytes = Math.max(1, Math.floor(options?.maxSizeBytes ?? 512 * 1024 * 1024));
+	const maxDeleteOps = Math.max(1, Math.floor(options?.maxDeleteOps ?? Number.MAX_SAFE_INTEGER));
+	const maxRuntimeMs = Math.max(1, Math.floor(options?.maxRuntimeMs ?? Number.MAX_SAFE_INTEGER));
 	const d = drizzle(db, { schema });
 	const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+	const startedAt = Date.now();
 	let deleted = 0;
 	let lastDeletedCursor: string | null = null;
 	const deleteStmt = db.prepare("DELETE FROM replication_ops WHERE op_id = ?");
@@ -866,6 +874,8 @@ export function pruneReplicationOps(
 	if (estimatedBytesBefore == null) {
 		throw new Error("replication_ops_size_unavailable");
 	}
+	let stoppedByBudget = false;
+	const budgetExceeded = () => deleted >= maxDeleteOps || Date.now() - startedAt >= maxRuntimeMs;
 
 	const deleteOp = (row: { op_id: string; created_at: string }) => {
 		lastDeletedCursor = computeCursor(String(row.created_at), String(row.op_id));
@@ -877,23 +887,39 @@ export function pruneReplicationOps(
 			).changes ?? 0;
 	};
 
-	const ageCandidates = d
-		.select({
-			op_id: schema.replicationOps.op_id,
-			created_at: schema.replicationOps.created_at,
-		})
-		.from(schema.replicationOps)
-		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
-		.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
-		.all();
-	if (ageCandidates.length > 0) {
+	const ageBatchSize = Math.max(1, Math.min(maxDeleteOps, 500));
+	while (true) {
+		if (budgetExceeded()) {
+			stoppedByBudget = true;
+			break;
+		}
+		const ageCandidates = d
+			.select({
+				op_id: schema.replicationOps.op_id,
+				created_at: schema.replicationOps.created_at,
+			})
+			.from(schema.replicationOps)
+			.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
+			.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
+			.limit(ageBatchSize)
+			.all();
+		if (ageCandidates.length === 0) break;
 		for (const row of ageCandidates) {
+			if (budgetExceeded()) {
+				stoppedByBudget = true;
+				break;
+			}
 			deleteOp(row);
 		}
+		if (ageCandidates.length < ageBatchSize) break;
 	}
 
 	let estimatedSizeBytes = estimatedBytesBefore;
 	while (estimatedSizeBytes > maxSizeBytes) {
+		if (budgetExceeded()) {
+			stoppedByBudget = true;
+			break;
+		}
 		const oldest = d
 			.select({
 				op_id: schema.replicationOps.op_id,
@@ -921,6 +947,7 @@ export function pruneReplicationOps(
 		retained_floor_cursor: retainedFloorCursor,
 		estimated_bytes_before: estimatedBytesBefore,
 		estimated_bytes_after: estimatedSizeBytes,
+		stopped_by_budget: stoppedByBudget,
 	};
 }
 

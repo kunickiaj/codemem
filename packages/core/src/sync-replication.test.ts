@@ -1004,6 +1004,22 @@ describe("pruneReplicationOps", () => {
 		});
 		expect(result.reset_required).toBe(false);
 	});
+
+	it("respects maxDeleteOps budget during pruning", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 1,
+			maxSizeBytes: 1,
+			maxDeleteOps: 1,
+			maxRuntimeMs: 60_000,
+		});
+
+		expect(result.deleted).toBe(1);
+		expect(result.stopped_by_budget).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------

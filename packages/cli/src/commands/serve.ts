@@ -12,6 +12,7 @@ import {
 	readCoordinatorSyncConfig,
 	resolveDbPath,
 	runSyncDaemon,
+	SyncRetentionRunner,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -355,9 +356,14 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	sweeper.start();
 
 	const syncAbort = new AbortController();
+	const retentionAbort = new AbortController();
 	const config = readCodememConfigFile();
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
+	const retentionRunner = new SyncRetentionRunner({
+		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+		signal: retentionAbort.signal,
+	});
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -413,6 +419,10 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			p.log.success(`Listening on http://${info.address}:${info.port}`);
 			p.log.info(`Database: ${dbPath}`);
 			p.log.step("Raw event sweeper started");
+			if (syncConfig.syncRetentionEnabled) {
+				retentionRunner.start();
+				p.log.step("Retention maintenance runner started");
+			}
 			if (syncEnabled) {
 				const syncStartDelayMs = 3000;
 				p.log.step(`Sync daemon will start in background (${syncStartDelayMs / 1000}s delay)`);
@@ -467,7 +477,9 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const shutdown = async () => {
 		p.outro("shutting down");
 		syncAbort.abort();
+		retentionAbort.abort();
 		await sweeper.stop();
+		await retentionRunner.stop();
 
 		// Drain both listeners before closing the shared store.
 		await new Promise<void>((resolve) => {
