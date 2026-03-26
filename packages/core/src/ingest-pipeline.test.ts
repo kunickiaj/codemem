@@ -636,6 +636,91 @@ describe("ingest() integration", () => {
 		expect(store.recent(10)).toHaveLength(0);
 	});
 
+	it("retries once when observer returns plain text instead of XML during raw-event flush", async () => {
+		let calls = 0;
+		const retryingObserver = {
+			observe: async () => {
+				calls += 1;
+				if (calls === 1) {
+					return {
+						raw: "Got it — the session inspected current pack stats and restart state.",
+						parsed: null,
+						provider: "test",
+						model: "test-model",
+					};
+				}
+				return {
+					raw: `<summary><request>Check restart state</request><completed>Confirmed the observer needed an XML retry.</completed></summary>`,
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-retry-xml",
+				promptCount: 1,
+				toolCount: 1,
+				durationMs: 1000,
+				flusher: "raw_events",
+			},
+		});
+
+		await ingest(payload, store, { observer: retryingObserver } as unknown as IngestOptions);
+
+		expect(calls).toBe(2);
+		const memories = store.recent(10);
+		expect(memories[0]?.title).toBe("Check restart state");
+	});
+
+	it("still fails raw-event flush when observer stays non-XML after retry", async () => {
+		let calls = 0;
+		const invalidObserver = {
+			observe: async () => {
+				calls += 1;
+				return {
+					raw: "I can summarize the session in plain English if you want.",
+					parsed: null,
+					provider: "test",
+					model: "test-model",
+				};
+			},
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-invalid-xml",
+				promptCount: 1,
+				toolCount: 1,
+				durationMs: 1000,
+				flusher: "raw_events",
+			},
+		});
+
+		await expect(
+			ingest(payload, store, { observer: invalidObserver } as unknown as IngestOptions),
+		).rejects.toThrow("observer produced no storable output for raw-event flush");
+
+		expect(calls).toBe(2);
+		expect(store.recent(10)).toHaveLength(0);
+	});
+
 	it("skips trivial requests", async () => {
 		let observerCalled = false;
 		const trackingObserver = {

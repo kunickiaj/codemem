@@ -691,6 +691,59 @@ describe("ObserverClient.observe()", () => {
 		expect(result.raw).toBe("retry success");
 	});
 
+	it("passes the full system prompt to the codex consumer instructions field", async () => {
+		const prevHome = process.env.HOME;
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-codex-consumer-test-"));
+		mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+		writeFileSync(
+			join(tmpDir, ".local", "share", "opencode", "auth.json"),
+			JSON.stringify({
+				openai: {
+					access: "oauth-test-token",
+					accountId: "acct-test",
+					expires: Date.now() + 60_000,
+				},
+			}),
+		);
+
+		let capturedBody: Record<string, unknown> | undefined;
+		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+			return new Response(
+				'data: {"type":"response.output_text.delta","delta":"<summary><request>ok</request></summary>"}\n\n',
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		try {
+			process.env.HOME = tmpDir;
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+
+			await client.observe("SYSTEM XML CONTRACT", "USER SESSION TRANSCRIPT");
+
+			expect(client.getStatus().auth.type).toBe("codex_consumer");
+			expect(capturedBody?.instructions).toBe("SYSTEM XML CONTRACT");
+		} finally {
+			if (prevHome == null) delete process.env.HOME;
+			else process.env.HOME = prevHome;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	it("returns null raw when no credentials available", async () => {
 		const client = new ObserverClient({
 			observerProvider: "openai",

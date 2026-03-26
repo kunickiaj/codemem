@@ -430,10 +430,14 @@ function resolveCodexEndpoint(): string {
 	return process.env.CODEMEM_CODEX_ENDPOINT ?? CODEX_API_ENDPOINT;
 }
 
-function buildCodexPayload(model: string, userPrompt: string): Record<string, unknown> {
+function buildCodexPayload(
+	model: string,
+	systemPrompt: string,
+	userPrompt: string,
+): Record<string, unknown> {
 	return {
 		model,
-		instructions: "You are a memory observer.",
+		instructions: systemPrompt,
 		input: [
 			{
 				role: "user",
@@ -777,7 +781,7 @@ export class ObserverClient {
 	private async _callOnce(systemPrompt: string, userPrompt: string): Promise<string | null> {
 		// Codex consumer path (OpenAI OAuth)
 		if (this._codexAccess) {
-			return this._callCodexConsumer(userPrompt);
+			return this._callCodexConsumer(systemPrompt, userPrompt);
 		}
 
 		// Anthropic OAuth consumer path
@@ -788,7 +792,7 @@ export class ObserverClient {
 		// Refresh if we have no token
 		if (!this.auth.token) {
 			this._initProvider(true);
-			if (this._codexAccess) return this._callCodexConsumer(userPrompt);
+			if (this._codexAccess) return this._callCodexConsumer(systemPrompt, userPrompt);
 			if (this._anthropicOAuthAccess) return this._callAnthropicConsumer(systemPrompt, userPrompt);
 			if (!this.auth.token) {
 				this._setLastError(`${capitalize(this.provider)} credentials are missing.`, "auth_missing");
@@ -858,7 +862,10 @@ export class ObserverClient {
 	// Codex consumer (OpenAI OAuth + SSE streaming)
 	// -----------------------------------------------------------------------
 
-	private async _callCodexConsumer(userPrompt: string): Promise<string | null> {
+	private async _callCodexConsumer(
+		systemPrompt: string,
+		userPrompt: string,
+	): Promise<string | null> {
 		if (!this._codexAccess) return null;
 
 		const headers = buildCodexHeaders(this._codexAccess, this._codexAccountId);
@@ -875,7 +882,7 @@ export class ObserverClient {
 		}
 		headers["content-type"] = "application/json";
 
-		const payload = buildCodexPayload(this.model, userPrompt);
+		const payload = buildCodexPayload(this.model, systemPrompt, userPrompt);
 		const url = resolveCodexEndpoint();
 
 		return this._fetchSSE(url, headers, payload, extractCodexDelta, {
