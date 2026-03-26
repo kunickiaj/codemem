@@ -2,7 +2,6 @@ import { statSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
 	backfillTagsText,
-	bulkPruneReplicationOpsByAgeCutoff,
 	connect,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
@@ -10,7 +9,7 @@ import {
 	initDatabase,
 	MemoryStore,
 	planReplicationOpsAgePrune,
-	pruneReplicationOps,
+	pruneReplicationOpsUntilCaughtUp,
 	rawEventsGate,
 	resolveDbPath,
 	resolveProject,
@@ -129,7 +128,7 @@ dbCommand
 						p.intro("codemem db prune-replication-ops");
 						p.log.info(`Replication ops size: ${formatBytes(beforeBytes)}`);
 						p.log.info(
-							`Policy: approximately keep <= ${maxSizeMb} MB and <= ${maxAgeDays} day old history via oldest-first chunk pruning`,
+							`Policy: approximately prune oldest-first toward <= ${maxSizeMb} MB while removing history older than ${maxAgeDays} day(s), subject to per-pass batch/runtime limits`,
 						);
 						const agePlan = planReplicationOpsAgePrune(db, maxAgeDays, batchOps);
 						if (agePlan.candidate_ops > 0) {
@@ -145,42 +144,30 @@ dbCommand
 							return;
 						}
 
-						let totalDeleted = 0;
-						let batches = 0;
-						let lastFloor: string | null = null;
-						let afterBytes = beforeBytes;
-						const ageResult = bulkPruneReplicationOpsByAgeCutoff(db, maxAgeDays, batchOps);
-						totalDeleted += ageResult.deleted;
-						lastFloor = ageResult.retained_floor_cursor;
-						afterBytes = ageResult.estimated_bytes_after ?? beforeBytes;
-						if (ageResult.deleted > 0) {
-							batches += 1;
-							p.log.step(
-								`Age pass batch: deleted ${ageResult.deleted.toLocaleString()} ops, remaining size ~${formatBytes(afterBytes)}`,
-							);
-						}
-						while (true) {
-							const result = pruneReplicationOps(db, {
-								maxAgeDays: 365000,
-								maxSizeBytes: maxSizeMb * 1024 * 1024,
-								maxDeleteOps: batchOps,
-								maxRuntimeMs: batchRuntimeMs,
-							});
-							batches += 1;
-							totalDeleted += result.deleted;
-							lastFloor = result.retained_floor_cursor;
-							afterBytes = result.estimated_bytes_after ?? estimateReplicationOpsBytes(db);
-							p.log.step(
-								`Batch ${batches}: deleted ${result.deleted.toLocaleString()} ops, remaining size ~${formatBytes(afterBytes)}`,
-							);
-							if (result.deleted === 0 || !result.stopped_by_budget) break;
-						}
+						const loopResult = pruneReplicationOpsUntilCaughtUp(db, {
+							maxAgeDays,
+							maxSizeBytes: maxSizeMb * 1024 * 1024,
+							maxDeleteOps: batchOps,
+							maxRuntimeMs: batchRuntimeMs,
+							onPass: (pass) => {
+								if (pass.deleted === 0 && !pass.stoppedByBudget) return;
+								const suffix = pass.stoppedByBudget ? " (budget-limited)" : "";
+								p.log.step(
+									`Pass ${pass.passNumber}: deleted ${pass.deleted.toLocaleString()} ops, remaining size ~${formatBytes(pass.afterBytes)}${suffix}`,
+								);
+							},
+						});
 
-						p.log.info(`Deleted ops: ${totalDeleted.toLocaleString()}`);
+						p.log.info(`Deleted ops: ${loopResult.totalDeleted.toLocaleString()}`);
 						p.log.info(
-							`Estimated replication ops size after prune: ${formatBytes(afterBytes)} (approximate)`,
+							`Estimated replication ops size after prune: ${formatBytes(loopResult.afterBytes)} (approximate)`,
 						);
-						if (lastFloor) p.log.info(`Retained floor: ${lastFloor}`);
+						if (loopResult.lastFloor) p.log.info(`Retained floor: ${loopResult.lastFloor}`);
+						if (loopResult.stoppedByBudget) {
+							p.log.warn(
+								"Prune stopped because the current batch/runtime budget was exhausted before retention caught up. Re-run with higher --batch-ops or --batch-runtime-ms for faster catch-up.",
+							);
+						}
 						if (opts.vacuum) {
 							p.log.step("Running VACUUM as requested...");
 							db.close();

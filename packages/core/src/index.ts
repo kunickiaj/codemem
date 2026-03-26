@@ -298,6 +298,7 @@ export {
 	migrateLegacyImportKeys,
 	planReplicationOpsAgePrune,
 	pruneReplicationOps,
+	pruneReplicationOpsUntilCaughtUp,
 	recordReplicationOp,
 	setReplicationCursor,
 	setSyncResetState,

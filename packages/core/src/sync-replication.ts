@@ -870,7 +870,6 @@ export function pruneReplicationOps(
 	const startedAt = Date.now();
 	let deleted = 0;
 	let lastDeletedCursor: string | null = null;
-	const deleteStmt = db.prepare("DELETE FROM replication_ops WHERE op_id = ?");
 	const bulkDeleteBeforeStmt = db.prepare(
 		"DELETE FROM replication_ops WHERE created_at < ? OR (created_at = ? AND op_id <= ?)",
 	);
@@ -880,16 +879,6 @@ export function pruneReplicationOps(
 	}
 	let stoppedByBudget = false;
 	const budgetExceeded = () => deleted >= maxDeleteOps || Date.now() - startedAt >= maxRuntimeMs;
-
-	const deleteOp = (row: { op_id: string; created_at: string }) => {
-		lastDeletedCursor = computeCursor(String(row.created_at), String(row.op_id));
-		deleted +=
-			(
-				deleteStmt.run(row.op_id) as {
-					changes?: number;
-				}
-			).changes ?? 0;
-	};
 
 	while (true) {
 		if (budgetExceeded()) {
@@ -968,6 +957,67 @@ export function pruneReplicationOps(
 		estimated_bytes_before: estimatedBytesBefore,
 		estimated_bytes_after: estimatedSizeBytes,
 		stopped_by_budget: stoppedByBudget,
+	};
+}
+
+export interface ReplicationOpsPruneLoopResult {
+	totalDeleted: number;
+	passes: number;
+	lastFloor: string | null;
+	afterBytes: number;
+	stoppedByBudget: boolean;
+}
+
+export function pruneReplicationOpsUntilCaughtUp(
+	db: Database,
+	options: {
+		maxAgeDays: number;
+		maxSizeBytes: number;
+		maxDeleteOps: number;
+		maxRuntimeMs: number;
+		maxPasses?: number;
+		signal?: AbortSignal;
+		onPass?: (pass: {
+			passNumber: number;
+			deleted: number;
+			afterBytes: number;
+			stoppedByBudget: boolean;
+		}) => void;
+	},
+): ReplicationOpsPruneLoopResult {
+	const maxPasses = Math.max(1, Math.floor(options.maxPasses ?? 25));
+	let totalDeleted = 0;
+	let passes = 0;
+	let lastFloor: string | null = null;
+	let afterBytes = estimateReplicationOpsStorageBytes(db) ?? 0;
+	let stoppedByBudget = false;
+
+	while (true) {
+		if (options.signal?.aborted || passes >= maxPasses) {
+			stoppedByBudget = true;
+			break;
+		}
+		const result = pruneReplicationOps(db, options);
+		passes += 1;
+		totalDeleted += result.deleted;
+		lastFloor = result.retained_floor_cursor;
+		afterBytes = result.estimated_bytes_after ?? estimateReplicationOpsStorageBytes(db) ?? 0;
+		stoppedByBudget = result.stopped_by_budget ?? false;
+		options.onPass?.({
+			passNumber: passes,
+			deleted: result.deleted,
+			afterBytes,
+			stoppedByBudget,
+		});
+		if (result.deleted === 0 || !result.stopped_by_budget) break;
+	}
+
+	return {
+		totalDeleted,
+		passes,
+		lastFloor,
+		afterBytes,
+		stoppedByBudget,
 	};
 }
 
