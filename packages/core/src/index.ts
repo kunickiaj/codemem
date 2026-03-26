@@ -288,11 +288,14 @@ export {
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
+	getSyncResetState,
 	isNewerClock,
+	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
 	migrateLegacyImportKeys,
 	recordReplicationOp,
 	setReplicationCursor,
+	setSyncResetState,
 } from "./sync-replication.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 // Test utilities (exported for consumer packages like viewer-server)
@@ -327,6 +330,9 @@ export type {
 	SyncDevice,
 	SyncNonce,
 	SyncPeer,
+	SyncResetBoundary,
+	SyncResetRequired,
+	SyncResetState,
 	TimelineItemResponse,
 	UsageEvent,
 	UserPrompt,

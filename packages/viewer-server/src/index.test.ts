@@ -9,9 +9,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	buildAuthHeaders,
+	connect,
 	ensureDeviceIdentity,
 	initTestSchema,
 	insertTestSession,
+	loadPublicKey,
 	MemoryStore,
 } from "@codemem/core";
 import Database from "better-sqlite3";
@@ -929,6 +932,153 @@ describe("viewer-server", () => {
 				expect(postRes.status).toBe(401);
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("returns reset_required metadata for stale peer cursors", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					const peerPublicKey = loadPublicKey(peerKeysDir);
+					if (!peerPublicKey) throw new Error("peer public key missing");
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+
+					store.db
+						.prepare(
+							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+							 VALUES (?, ?, ?, ?)`,
+						)
+						.run(
+							peerDeviceId,
+							peerFingerprint.fingerprint,
+							peerPublicKey,
+							new Date().toISOString(),
+						);
+
+					store.db
+						.prepare(
+							`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+							 VALUES (1, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							7,
+							"snapshot-7",
+							"2026-01-01T00:00:02Z|base-op",
+							"2026-01-01T00:00:03Z|floor-op",
+							new Date().toISOString(),
+						);
+
+					const url =
+						"http://localhost/v1/ops?since=2026-01-01T00:00:01Z%7Cold&limit=50&generation=7&snapshot_id=snapshot-7&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+					});
+
+					const res = await syncApp.request(url, { headers });
+					expect(res.status).toBe(409);
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.error).toBe("reset_required");
+					expect(body.reset_required).toBe(true);
+					expect(body.reason).toBe("stale_cursor");
+					expect(body.generation).toBe(7);
+					expect(body.snapshot_id).toBe("snapshot-7");
+					expect(body.retained_floor_cursor).toBe("2026-01-01T00:00:03Z|floor-op");
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
+			}
+		});
+
+		it("requires explicit reset boundary metadata on incremental sync requests", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					const peerPublicKey = loadPublicKey(peerKeysDir);
+					if (!peerPublicKey) throw new Error("peer public key missing");
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+
+					store.db
+						.prepare(
+							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+							 VALUES (?, ?, ?, ?)`,
+						)
+						.run(
+							peerDeviceId,
+							peerFingerprint.fingerprint,
+							peerPublicKey,
+							new Date().toISOString(),
+						);
+
+					store.db
+						.prepare(
+							`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+							 VALUES (1, ?, ?, ?, ?, ?)`,
+						)
+						.run(
+							9,
+							"snapshot-9",
+							"2026-01-01T00:00:02Z|base-op",
+							"2026-01-01T00:00:03Z|floor-op",
+							new Date().toISOString(),
+						);
+
+					const url = "http://localhost/v1/ops?since=2026-01-01T00:00:03Z%7Cfloor-op&limit=50";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+					});
+
+					const res = await syncApp.request(url, { headers });
+					expect(res.status).toBe(409);
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.error).toBe("reset_required");
+					expect(body.reset_required).toBe(true);
+					expect(body.reason).toBe("boundary_mismatch");
+					expect(body.generation).toBe(9);
+					expect(body.snapshot_id).toBe("snapshot-9");
+					expect(body.baseline_cursor).toBe("2026-01-01T00:00:02Z|base-op");
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
 			}
 		});
 

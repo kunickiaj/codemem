@@ -443,6 +443,21 @@ export function columnExists(db: DatabaseType, table: string, column: string): b
  * introduced in later releases.
  */
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS sync_reset_state (
+				id INTEGER PRIMARY KEY,
+				generation INTEGER NOT NULL,
+				snapshot_id TEXT NOT NULL,
+				baseline_cursor TEXT,
+				retained_floor_cursor TEXT,
+				updated_at TEXT NOT NULL
+			)
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for optional additive tables.
+	}
+
 	if (!tableExists(db, "raw_event_flush_batches")) return;
 
 	const additiveColumns: Array<{ name: string; ddl: string }> = [

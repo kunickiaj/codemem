@@ -265,6 +265,27 @@ export interface SyncDaemonState {
 	last_ok_at: string | null;
 }
 
+export interface SyncResetState {
+	id: number;
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+	retained_floor_cursor: string | null;
+	updated_at: string;
+}
+
+export interface SyncResetBoundary {
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+	retained_floor_cursor: string | null;
+}
+
+export interface SyncResetRequired extends SyncResetBoundary {
+	reset_required: true;
+	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
+}
+
 export interface SyncAttempt {
 	id: number;
 	peer_device_id: string;

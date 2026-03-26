@@ -384,6 +384,18 @@ export const syncDaemonState = sqliteTable("sync_daemon_state", {
 export type SyncDaemonState = typeof syncDaemonState.$inferSelect;
 export type NewSyncDaemonState = typeof syncDaemonState.$inferInsert;
 
+export const syncResetState = sqliteTable("sync_reset_state", {
+	id: integer("id").primaryKey(),
+	generation: integer("generation").notNull(),
+	snapshot_id: text("snapshot_id").notNull(),
+	baseline_cursor: text("baseline_cursor"),
+	retained_floor_cursor: text("retained_floor_cursor"),
+	updated_at: text("updated_at").notNull(),
+});
+
+export type SyncResetState = typeof syncResetState.$inferSelect;
+export type NewSyncResetState = typeof syncResetState.$inferInsert;
+
 export const rawEventIngestSamples = sqliteTable("raw_event_ingest_samples", {
 	id: integer("id").primaryKey({ autoIncrement: true }),
 	created_at: text("created_at").notNull(),
@@ -447,6 +459,7 @@ export const schema = {
 	syncDevice,
 	syncAttempts,
 	syncDaemonState,
+	syncResetState,
 	rawEventIngestSamples,
 	rawEventIngestStats,
 	actors,

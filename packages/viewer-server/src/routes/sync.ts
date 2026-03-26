@@ -17,8 +17,9 @@ import {
 	ensureDeviceIdentity,
 	extractReplicationOps,
 	fingerprintPublicKey,
+	getSyncResetState,
 	listCoordinatorJoinRequests,
-	loadReplicationOpsSince,
+	loadReplicationOpsForPeer,
 	readCoordinatorSyncConfig,
 	recordNonce,
 	schema,
@@ -428,10 +429,12 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db);
 				device = { device_id: deviceId, fingerprint };
 			}
+			const syncReset = getSyncResetState(store.db);
 			return c.json({
 				device_id: device.device_id,
 				protocol_version: SYNC_PROTOCOL_VERSION,
 				fingerprint: device.fingerprint,
+				sync_reset: syncReset,
 			});
 		} catch {
 			return c.json({ error: "internal_error" }, 500);
@@ -448,6 +451,13 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 		try {
 			const since = c.req.query("since") ?? null;
 			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
+			const rawGeneration = c.req.query("generation");
+			const generation =
+				rawGeneration != null && rawGeneration.trim().length > 0
+					? Number.parseInt(rawGeneration, 10)
+					: null;
+			const snapshotId = c.req.query("snapshot_id") ?? null;
+			const baselineCursor = c.req.query("baseline_cursor") ?? null;
 			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 1000)) : 200;
 			let localDeviceId = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
 				| { device_id: string }
@@ -456,14 +466,31 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 				const [deviceId] = ensureDeviceIdentity(store.db);
 				localDeviceId = { device_id: deviceId };
 			}
-			const [ops, nextCursor] = loadReplicationOpsSince(
-				store.db,
+			const result = loadReplicationOpsForPeer(store.db, {
 				since,
 				limit,
-				localDeviceId.device_id,
-			);
+				deviceId: localDeviceId.device_id,
+				generation: Number.isFinite(generation) ? generation : null,
+				snapshotId,
+				baselineCursor,
+			});
+			if (result.reset_required) {
+				return c.json(
+					{
+						error: "reset_required",
+						...result.reset,
+					},
+					409,
+				);
+			}
+			const { ops, nextCursor, boundary } = result;
 			const filtered = filterOpsForPeer(store, peerDeviceId, ops);
 			return c.json({
+				reset_required: false,
+				generation: boundary.generation,
+				snapshot_id: boundary.snapshot_id,
+				baseline_cursor: boundary.baseline_cursor,
+				retained_floor_cursor: boundary.retained_floor_cursor,
 				ops: filtered.allowed,
 				next_cursor: nextCursor,
 				skipped: filtered.skipped,

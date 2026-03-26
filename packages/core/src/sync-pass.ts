@@ -24,7 +24,7 @@ import {
 	migrateLegacyImportKeys,
 	setReplicationCursor,
 } from "./sync-replication.js";
-import type { ReplicationOp } from "./types.js";
+import type { ReplicationOp, SyncResetRequired } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -47,6 +47,7 @@ export interface SyncResult {
 	opsIn: number;
 	opsOut: number;
 	addressErrors: Array<{ address: string; error: string }>;
+	resetRequired?: SyncResetRequired;
 }
 
 export interface SyncPassOptions {
@@ -93,6 +94,61 @@ function summarizeAddressErrors(
 	if (addressErrors.length === 0) return null;
 	const parts = addressErrors.map((item) => `${item.address}: ${item.error}`);
 	return `all addresses failed | ${parts.join(" || ")}`;
+}
+
+function asOptionalCursor(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function parsePeerResetBoundary(payload: Record<string, unknown> | null): {
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+	retained_floor_cursor: string | null;
+} | null {
+	const raw = payload?.sync_reset;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const boundary = raw as Record<string, unknown>;
+	if (!Number.isFinite(boundary.generation)) return null;
+	if (typeof boundary.snapshot_id !== "string" || boundary.snapshot_id.trim().length === 0) {
+		return null;
+	}
+	const baseline = asOptionalCursor(boundary.baseline_cursor);
+	return {
+		generation: Number(boundary.generation),
+		snapshot_id: boundary.snapshot_id.trim(),
+		baseline_cursor: baseline,
+		retained_floor_cursor: asOptionalCursor(boundary.retained_floor_cursor),
+	};
+}
+
+function isValidIncrementalOpsResponse(payload: Record<string, unknown> | null): payload is {
+	reset_required: false;
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+	retained_floor_cursor: string | null;
+	ops: unknown[];
+	next_cursor: string | null;
+	skipped: number;
+} {
+	if (!payload || payload.reset_required !== false) return false;
+	if (!Number.isFinite(payload.generation)) return false;
+	if (typeof payload.snapshot_id !== "string" || payload.snapshot_id.trim().length === 0)
+		return false;
+	if (!(payload.baseline_cursor == null || typeof payload.baseline_cursor === "string"))
+		return false;
+	if (
+		!(payload.retained_floor_cursor == null || typeof payload.retained_floor_cursor === "string")
+	) {
+		return false;
+	}
+	if (!Array.isArray(payload.ops)) return false;
+	if (!(payload.next_cursor == null || typeof payload.next_cursor === "string")) return false;
+	if (!Number.isFinite(payload.skipped)) return false;
+	return true;
 }
 
 /**
@@ -326,12 +382,22 @@ export async function syncOnce(
 			if (statusPayload.fingerprint !== pinnedFingerprint) {
 				throw new Error("peer fingerprint mismatch");
 			}
+			const peerResetBoundary = parsePeerResetBoundary(statusPayload);
+			if (!peerResetBoundary) {
+				throw new Error("peer status missing sync_reset boundary");
+			}
 
 			// -- 2. Pull ops from peer --
-			const query = new URLSearchParams({
+			const queryParams = new URLSearchParams({
 				since: lastApplied ?? "",
 				limit: String(limit),
-			}).toString();
+				generation: String(peerResetBoundary.generation),
+				snapshot_id: peerResetBoundary.snapshot_id,
+			});
+			if (peerResetBoundary.baseline_cursor) {
+				queryParams.set("baseline_cursor", peerResetBoundary.baseline_cursor);
+			}
+			const query = queryParams.toString();
 			const getUrl = `${baseUrl}/v1/ops?${query}`;
 			const getHeaders = buildAuthHeaders({
 				deviceId,
@@ -343,12 +409,45 @@ export async function syncOnce(
 			const [getStatus, getPayload] = await requestJson("GET", getUrl, {
 				headers: getHeaders,
 			});
+			if (getStatus === 409 && getPayload?.reset_required === true) {
+				const resetRequired: SyncResult["resetRequired"] = {
+					reset_required: true,
+					reason:
+						getPayload.reason === "generation_mismatch" || getPayload.reason === "boundary_mismatch"
+							? getPayload.reason
+							: "stale_cursor",
+					generation: Number(getPayload.generation ?? 1),
+					snapshot_id: String(getPayload.snapshot_id ?? ""),
+					baseline_cursor:
+						typeof getPayload.baseline_cursor === "string" && getPayload.baseline_cursor.trim()
+							? getPayload.baseline_cursor.trim()
+							: null,
+					retained_floor_cursor:
+						typeof getPayload.retained_floor_cursor === "string" &&
+						getPayload.retained_floor_cursor.trim()
+							? getPayload.retained_floor_cursor.trim()
+							: null,
+				};
+				recordSyncAttempt(db, peerDeviceId, {
+					ok: false,
+					error: `reset_required:${resetRequired.reason}`,
+				});
+				return {
+					ok: false,
+					address: baseUrl,
+					error: `reset required: ${resetRequired.reason}`,
+					opsIn: 0,
+					opsOut: 0,
+					addressErrors: [],
+					resetRequired,
+				};
+			}
 			if (getStatus !== 200 || getPayload == null) {
 				const detail = errorDetail(getPayload);
 				const suffix = detail ? ` (${getStatus}: ${detail})` : ` (${getStatus})`;
 				throw new Error(`peer ops fetch failed${suffix}`);
 			}
-			if (!Array.isArray(getPayload.ops)) {
+			if (!isValidIncrementalOpsResponse(getPayload)) {
 				throw new Error("invalid ops response");
 			}
 			const ops = extractReplicationOps(getPayload);
@@ -361,9 +460,7 @@ export async function syncOnce(
 			// -- 3. Apply incoming ops to local entities --
 			const applied = applyReplicationOps(db, inboundOps, deviceId);
 
-			const inboundCursorCandidate =
-				inboundCursor ||
-				(typeof getPayload.next_cursor === "string" ? getPayload.next_cursor.trim() : "");
+			const inboundCursorCandidate = inboundCursor || asOptionalCursor(getPayload.next_cursor);
 			if (cursorAdvances(lastApplied, inboundCursorCandidate)) {
 				setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate });
 				lastApplied = inboundCursorCandidate;

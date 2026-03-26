@@ -17,6 +17,39 @@ import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
 import type { ReplicationOp } from "./types.js";
 
+export interface SyncResetBoundary {
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+	retained_floor_cursor: string | null;
+}
+
+export interface SyncResetRequired extends SyncResetBoundary {
+	reset_required: true;
+	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
+}
+
+export interface LoadReplicationOpsForPeerOptions {
+	since: string | null;
+	limit?: number;
+	deviceId?: string;
+	generation?: number | null;
+	snapshotId?: string | null;
+	baselineCursor?: string | null;
+}
+
+export type LoadReplicationOpsForPeerResult =
+	| {
+			reset_required: false;
+			boundary: SyncResetBoundary;
+			ops: ReplicationOp[];
+			nextCursor: string | null;
+	  }
+	| {
+			reset_required: true;
+			reset: SyncResetRequired;
+	  };
+
 type MemoryItemRow = typeof schema.memoryItems.$inferSelect;
 
 interface MemoryPayload {
@@ -112,6 +145,108 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 		deleted_at: asStringOrNull(raw.deleted_at),
 		rev: asNumberOrNull(raw.rev) ?? 0,
 		import_key: asStringOrNull(raw.import_key),
+	};
+}
+
+function normalizeCursor(value: string | null | undefined): string | null {
+	const trimmed = String(value ?? "").trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function ensureSyncResetStateTable(db: Database): void {
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS sync_reset_state (
+			id INTEGER PRIMARY KEY,
+			generation INTEGER NOT NULL,
+			snapshot_id TEXT NOT NULL,
+			baseline_cursor TEXT,
+			retained_floor_cursor TEXT,
+			updated_at TEXT NOT NULL
+		)
+	`);
+}
+
+export function getSyncResetState(db: Database): SyncResetBoundary {
+	ensureSyncResetStateTable(db);
+	const d = drizzle(db, { schema });
+	const existing = d
+		.select()
+		.from(schema.syncResetState)
+		.where(eq(schema.syncResetState.id, 1))
+		.get();
+	if (existing) {
+		return {
+			generation: Number(existing.generation ?? 1),
+			snapshot_id: String(existing.snapshot_id),
+			baseline_cursor: normalizeCursor(existing.baseline_cursor),
+			retained_floor_cursor: normalizeCursor(existing.retained_floor_cursor),
+		};
+	}
+
+	const now = new Date().toISOString();
+	const created = {
+		id: 1,
+		generation: 1,
+		snapshot_id: randomUUID(),
+		baseline_cursor: null,
+		retained_floor_cursor: null,
+		updated_at: now,
+	};
+	d.insert(schema.syncResetState).values(created).run();
+	return {
+		generation: created.generation,
+		snapshot_id: created.snapshot_id,
+		baseline_cursor: created.baseline_cursor,
+		retained_floor_cursor: created.retained_floor_cursor,
+	};
+}
+
+export function setSyncResetState(
+	db: Database,
+	updates: Partial<SyncResetBoundary> & { generation?: number },
+): SyncResetBoundary {
+	const current = getSyncResetState(db);
+	const now = new Date().toISOString();
+	const next: SyncResetBoundary = {
+		generation: updates.generation ?? current.generation,
+		snapshot_id: updates.snapshot_id ?? current.snapshot_id,
+		baseline_cursor:
+			updates.baseline_cursor === undefined
+				? current.baseline_cursor
+				: normalizeCursor(updates.baseline_cursor),
+		retained_floor_cursor:
+			updates.retained_floor_cursor === undefined
+				? current.retained_floor_cursor
+				: normalizeCursor(updates.retained_floor_cursor),
+	};
+	const d = drizzle(db, { schema });
+	d.insert(schema.syncResetState)
+		.values({ id: 1, ...next, updated_at: now })
+		.onConflictDoUpdate({
+			target: schema.syncResetState.id,
+			set: {
+				generation: next.generation,
+				snapshot_id: next.snapshot_id,
+				baseline_cursor: next.baseline_cursor,
+				retained_floor_cursor: next.retained_floor_cursor,
+				updated_at: now,
+			},
+		})
+		.run();
+	return next;
+}
+
+function resetRequired(
+	boundary: SyncResetBoundary,
+	reason: SyncResetRequired["reason"],
+): LoadReplicationOpsForPeerResult {
+	return {
+		reset_required: true,
+		reset: {
+			reset_required: true,
+			reason,
+			...boundary,
+		},
 	};
 }
 
@@ -493,6 +628,55 @@ export function loadReplicationOpsSince(
 	}
 
 	return [ops, nextCursor];
+}
+
+export function loadReplicationOpsForPeer(
+	db: Database,
+	options: LoadReplicationOpsForPeerOptions,
+): LoadReplicationOpsForPeerResult {
+	const boundary = getSyncResetState(db);
+	const since = normalizeCursor(options.since);
+	const requestedGeneration = options.generation ?? null;
+	const requestedSnapshotId = normalizeCursor(options.snapshotId);
+	const requestedBaselineCursor = normalizeCursor(options.baselineCursor);
+	const hasAnyBoundaryField =
+		requestedGeneration != null || requestedSnapshotId != null || requestedBaselineCursor != null;
+
+	if (requestedGeneration != null && requestedGeneration !== boundary.generation) {
+		return resetRequired(boundary, "generation_mismatch");
+	}
+
+	const hasCompleteBoundary =
+		requestedGeneration != null &&
+		requestedSnapshotId != null &&
+		requestedBaselineCursor === boundary.baseline_cursor;
+
+	if (!hasAnyBoundaryField || !hasCompleteBoundary) {
+		return resetRequired(boundary, "boundary_mismatch");
+	}
+
+	if (
+		requestedSnapshotId !== boundary.snapshot_id ||
+		requestedBaselineCursor !== boundary.baseline_cursor
+	) {
+		return resetRequired(boundary, "boundary_mismatch");
+	}
+
+	if (
+		since != null &&
+		boundary.retained_floor_cursor != null &&
+		since < boundary.retained_floor_cursor
+	) {
+		return resetRequired(boundary, "stale_cursor");
+	}
+
+	const [ops, nextCursor] = loadReplicationOpsSince(db, since, options.limit, options.deviceId);
+	return {
+		reset_required: false,
+		boundary,
+		ops,
+		nextCursor,
+	};
 }
 
 function cleanList(values: unknown): string[] {
