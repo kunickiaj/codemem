@@ -9,6 +9,7 @@ import {
 	columnExists,
 	connect,
 	ensureAdditiveSchemaCompatibility,
+	ensurePlannerStats,
 	fromJson,
 	getSchemaVersion,
 	isEmbeddingDisabled,
@@ -377,6 +378,43 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 
 	it("is a no-op when raw_event_flush_batches does not exist", () => {
 		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
+	});
+});
+
+describe("ensurePlannerStats", () => {
+	let tmpDir: string;
+	let db: Database;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
+		db = connect(join(tmpDir, "test.sqlite"));
+	});
+
+	afterEach(() => {
+		db?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("is a no-op for fresh databases without search tables", () => {
+		expect(() => ensurePlannerStats(db)).not.toThrow();
+		expect(tableExists(db, "sqlite_stat1")).toBe(false);
+	});
+
+	it("bootstraps sqlite_stat1 once search tables exist", () => {
+		db.exec(
+			"CREATE TABLE memory_items (id INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1, created_at TEXT, title TEXT, body_text TEXT, tags_text TEXT)",
+		);
+		db.exec(
+			"CREATE VIRTUAL TABLE memory_fts USING fts5(title, body_text, tags_text, content='memory_items', content_rowid='id')",
+		);
+		db.exec("CREATE INDEX idx_memory_items_active_created ON memory_items(active, created_at)");
+
+		expect(tableExists(db, "sqlite_stat1")).toBe(false);
+
+		ensurePlannerStats(db);
+
+		expect(tableExists(db, "sqlite_stat1")).toBe(true);
+		expect(db.prepare("SELECT 1 FROM sqlite_stat1 LIMIT 1").pluck().get()).toBe(1);
 	});
 });
 
