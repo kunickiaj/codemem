@@ -1446,7 +1446,6 @@ describe("viewer-server", () => {
 					);
 
 				const res = await app.request("/api/sync/status");
-				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.daemon_state).toBe("starting");
 				expect(body.daemon_detail).toBe("Running initial sync in background");

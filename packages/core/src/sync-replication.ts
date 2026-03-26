@@ -15,7 +15,12 @@ import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
-import type { ReplicationOp, SyncDirtyLocalState, SyncMemorySnapshotItem } from "./types.js";
+import type {
+	ReplicationOp,
+	ReplicationOpsPruneResult,
+	SyncDirtyLocalState,
+	SyncMemorySnapshotItem,
+} from "./types.js";
 
 export interface SyncResetBoundary {
 	generation: number;
@@ -809,7 +814,6 @@ export function loadMemorySnapshotPageForPeer(
 
 		if (items.length >= limit || rows.length < scanBatchSize) break;
 	}
-
 	return {
 		boundary,
 		items,
@@ -845,6 +849,92 @@ export function hasUnsyncedSharedMemoryChanges(db: Database, limit = 25): SyncDi
 		if (count >= limit) break;
 	}
 	return { dirty: count > 0, count };
+}
+
+export function pruneReplicationOps(
+	db: Database,
+	options?: { maxAgeDays?: number; maxRows?: number },
+): ReplicationOpsPruneResult {
+	const maxAgeDays = Math.max(1, Math.floor(options?.maxAgeDays ?? 30));
+	const maxRows = Math.max(1, Math.floor(options?.maxRows ?? 50_000));
+	const d = drizzle(db, { schema });
+	const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+	let deleted = 0;
+	let lastDeletedCursor: string | null = null;
+
+	const totalRows = Number(
+		d.select({ c: sql<number>`COUNT(*)` }).from(schema.replicationOps).get()?.c ?? 0,
+	);
+
+	const ageCandidates = d
+		.select({ op_id: schema.replicationOps.op_id })
+		.from(schema.replicationOps)
+		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
+		.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
+		.all();
+	if (ageCandidates.length > 0) {
+		for (const row of ageCandidates) {
+			const opRow = d
+				.select({
+					created_at: schema.replicationOps.created_at,
+					op_id: schema.replicationOps.op_id,
+				})
+				.from(schema.replicationOps)
+				.where(eq(schema.replicationOps.op_id, row.op_id))
+				.limit(1)
+				.get();
+			if (opRow) {
+				lastDeletedCursor = computeCursor(String(opRow.created_at), String(opRow.op_id));
+			}
+			deleted +=
+				(
+					db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(row.op_id) as {
+						changes?: number;
+					}
+				).changes ?? 0;
+		}
+	}
+
+	const remainingRows = Number(
+		d.select({ c: sql<number>`COUNT(*)` }).from(schema.replicationOps).get()?.c ?? 0,
+	);
+	if (remainingRows > maxRows) {
+		const overflow = remainingRows - maxRows;
+		const overflowCandidates = d
+			.select({ op_id: schema.replicationOps.op_id })
+			.from(schema.replicationOps)
+			.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
+			.limit(overflow)
+			.all();
+		if (overflowCandidates.length > 0) {
+			for (const row of overflowCandidates) {
+				const opRow = d
+					.select({
+						created_at: schema.replicationOps.created_at,
+						op_id: schema.replicationOps.op_id,
+					})
+					.from(schema.replicationOps)
+					.where(eq(schema.replicationOps.op_id, row.op_id))
+					.limit(1)
+					.get();
+				if (opRow) {
+					lastDeletedCursor = computeCursor(String(opRow.created_at), String(opRow.op_id));
+				}
+				deleted +=
+					(
+						db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(row.op_id) as {
+							changes?: number;
+						}
+					).changes ?? 0;
+			}
+		}
+	}
+
+	const currentBoundary = getSyncResetState(db);
+	const retainedFloorCursor =
+		deleted > 0 ? lastDeletedCursor : currentBoundary.retained_floor_cursor;
+	setSyncResetState(db, { retained_floor_cursor: retainedFloorCursor });
+	return { deleted, retained_floor_cursor: retainedFloorCursor };
 }
 
 function cleanList(values: unknown): string[] {

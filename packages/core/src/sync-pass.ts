@@ -23,6 +23,7 @@ import {
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
+	pruneReplicationOps,
 	setReplicationCursor,
 } from "./sync-replication.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
@@ -36,6 +37,9 @@ const MAX_SYNC_BODY_BYTES = 1_048_576;
 
 /** Default op fetch/push limit per round. */
 const DEFAULT_LIMIT = 200;
+
+/** Current sync protocol version expected from peers. */
+const EXPECTED_SYNC_PROTOCOL_VERSION = "2";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -307,6 +311,7 @@ async function pushOps(
 export function syncPassPreflight(db: Database): void {
 	migrateLegacyImportKeys(db, 2000);
 	backfillReplicationOps(db, 200);
+	pruneReplicationOps(db, { maxAgeDays: 30, maxRows: 50_000 });
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +387,11 @@ export async function syncOnce(
 			}
 			if (statusPayload.fingerprint !== pinnedFingerprint) {
 				throw new Error("peer fingerprint mismatch");
+			}
+			if (String(statusPayload.protocol_version ?? "") !== EXPECTED_SYNC_PROTOCOL_VERSION) {
+				throw new Error(
+					`peer protocol mismatch (expected ${EXPECTED_SYNC_PROTOCOL_VERSION}, got ${String(statusPayload.protocol_version ?? "missing")})`,
+				);
 			}
 			const peerResetBoundary = parsePeerResetBoundary(statusPayload);
 			if (!peerResetBoundary) {

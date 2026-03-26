@@ -17,6 +17,7 @@ import {
 	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
 	migrateLegacyImportKeys,
+	pruneReplicationOps,
 	recordReplicationOp,
 	setReplicationCursor,
 	setSyncResetState,
@@ -713,6 +714,46 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		expect(page.items.map((item) => item.entity_id)).toEqual(["key-shared"]);
 	});
 
+	it("does not return has_more without a next page token when only skipped rows remain", () => {
+		insertMemory("key-a-shared", { visibility: "shared" });
+		insertMemory("key-z-private-a", { visibility: "private" });
+		insertMemory("key-z-private-b", { visibility: "private" });
+
+		const first = loadMemorySnapshotPageForPeer(db, {
+			limit: 1,
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		expect(first.items.map((item) => item.entity_id)).toEqual(["key-a-shared"]);
+		expect(first.hasMore).toBe(true);
+		expect(first.nextPageToken).toBeTruthy();
+
+		const second = loadMemorySnapshotPageForPeer(db, {
+			limit: 1,
+			pageToken: first.nextPageToken,
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		expect(second.items).toHaveLength(0);
+		expect(second.hasMore).toBe(false);
+		expect(second.nextPageToken).toBeNull();
+	});
+
+	it("uses the memory session project when applying project filters to snapshot pages", () => {
+		db.prepare("UPDATE sessions SET project = 'proj-a' WHERE id = ?").run(sessionId);
+		insertMemory("key-a", { visibility: "shared" });
+		process.env.CODEMEM_SYNC_PROJECTS_INCLUDE = "proj-a";
+		const page = loadMemorySnapshotPageForPeer(db, {
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		expect(page.items.map((item) => item.entity_id)).toEqual(["key-a"]);
+		delete process.env.CODEMEM_SYNC_PROJECTS_INCLUDE;
+	});
+
 	it("rejects boundary mismatches for snapshot pages", () => {
 		expect(() =>
 			loadMemorySnapshotPageForPeer(db, {
@@ -863,6 +904,72 @@ describe("hasUnsyncedSharedMemoryChanges", () => {
 
 		const result = hasUnsyncedSharedMemoryChanges(db);
 		expect(result).toEqual({ dirty: false, count: 0 });
+	});
+});
+
+describe("pruneReplicationOps", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		setSyncResetState(db, {
+			generation: 5,
+			snapshot_id: "snapshot-5",
+			baseline_cursor: "2026-01-01T00:00:01Z|base-op",
+			retained_floor_cursor: null,
+		} as any);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	function insertOp(opId: string, createdAt: string) {
+		db.prepare(
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at)
+			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, 'dev-a', 'dev-a', ?)`,
+		).run(opId, `ent-${opId}`, createdAt, createdAt);
+	}
+
+	it("prunes oldest ops beyond row budget and updates retained floor", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+
+		const result = pruneReplicationOps(db, { maxAgeDays: 3650, maxRows: 2 });
+		expect(result.deleted).toBe(1);
+		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:01Z|op-1");
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-2", "op-3"]);
+		expect(getSyncResetState(db).retained_floor_cursor).toBe("2026-01-01T00:00:01Z|op-1");
+	});
+
+	it("does not advance retained floor when nothing is pruned", () => {
+		setSyncResetState(db, { retained_floor_cursor: "2026-01-01T00:00:09Z|existing-floor" });
+		insertOp("op-1", "2026-01-01T00:00:10Z");
+
+		const result = pruneReplicationOps(db, { maxAgeDays: 3650, maxRows: 10 });
+		expect(result.deleted).toBe(0);
+		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:09Z|existing-floor");
+		expect(getSyncResetState(db).retained_floor_cursor).toBe("2026-01-01T00:00:09Z|existing-floor");
+	});
+
+	it("accepts a cursor equal to the retained floor as still replayable", () => {
+		insertOp("op-1", "2026-01-01T00:00:01Z");
+		insertOp("op-2", "2026-01-01T00:00:02Z");
+		insertOp("op-3", "2026-01-01T00:00:03Z");
+		pruneReplicationOps(db, { maxAgeDays: 3650, maxRows: 2 });
+
+		const result = loadReplicationOpsForPeer(db, {
+			since: "2026-01-01T00:00:01Z|op-1",
+			generation: 5,
+			snapshotId: "snapshot-5",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		expect(result.reset_required).toBe(false);
 	});
 });
 
