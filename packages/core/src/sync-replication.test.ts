@@ -932,26 +932,46 @@ describe("pruneReplicationOps", () => {
 		).run(opId, `ent-${opId}`, createdAt, createdAt);
 	}
 
-	it("prunes oldest ops beyond row budget and updates retained floor", () => {
+	it("prunes oldest ops beyond size budget and updates retained floor", () => {
 		insertOp("op-1", "2026-01-01T00:00:01Z");
 		insertOp("op-2", "2026-01-01T00:00:02Z");
 		insertOp("op-3", "2026-01-01T00:00:03Z");
 
-		const result = pruneReplicationOps(db, { maxAgeDays: 3650, maxRows: 2 });
-		expect(result.deleted).toBe(1);
-		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:01Z|op-1");
+		const estimatedBytes = Number(
+			(
+				db
+					.prepare(
+						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
+						 FROM dbstat
+						 WHERE name = 'replication_ops'
+						    OR name LIKE 'idx_replication_ops_%'
+						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+					)
+					.get() as { total_bytes: number }
+			).total_bytes,
+		);
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 3650,
+			maxSizeBytes: Math.max(1, estimatedBytes - 1),
+		});
+		expect(result.deleted).toBeGreaterThanOrEqual(1);
+		expect(result.retained_floor_cursor).toMatch(/^2026-01-01T00:00:0[1-3]Z\|op-[1-3]$/);
 		const remaining = db
 			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
 			.all() as Array<{ op_id: string }>;
-		expect(remaining.map((row) => row.op_id)).toEqual(["op-2", "op-3"]);
-		expect(getSyncResetState(db).retained_floor_cursor).toBe("2026-01-01T00:00:01Z|op-1");
+		expect(remaining.length).toBeLessThan(3);
+		expect(getSyncResetState(db).retained_floor_cursor).toBe(result.retained_floor_cursor);
 	});
 
 	it("does not advance retained floor when nothing is pruned", () => {
 		setSyncResetState(db, { retained_floor_cursor: "2026-01-01T00:00:09Z|existing-floor" });
 		insertOp("op-1", "2026-01-01T00:00:10Z");
 
-		const result = pruneReplicationOps(db, { maxAgeDays: 3650, maxRows: 10 });
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 3650,
+			maxSizeBytes: 1_000_000,
+		});
 		expect(result.deleted).toBe(0);
 		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:09Z|existing-floor");
 		expect(getSyncResetState(db).retained_floor_cursor).toBe("2026-01-01T00:00:09Z|existing-floor");
@@ -961,10 +981,23 @@ describe("pruneReplicationOps", () => {
 		insertOp("op-1", "2026-01-01T00:00:01Z");
 		insertOp("op-2", "2026-01-01T00:00:02Z");
 		insertOp("op-3", "2026-01-01T00:00:03Z");
-		pruneReplicationOps(db, { maxAgeDays: 3650, maxRows: 2 });
+		const estimatedBytes = Number(
+			(
+				db
+					.prepare(
+						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
+						 FROM dbstat
+						 WHERE name = 'replication_ops'
+						    OR name LIKE 'idx_replication_ops_%'
+						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+					)
+					.get() as { total_bytes: number }
+			).total_bytes,
+		);
+		pruneReplicationOps(db, { maxAgeDays: 3650, maxSizeBytes: Math.max(1, estimatedBytes - 1) });
 
 		const result = loadReplicationOpsForPeer(db, {
-			since: "2026-01-01T00:00:01Z|op-1",
+			since: getSyncResetState(db).retained_floor_cursor,
 			generation: 5,
 			snapshotId: "snapshot-5",
 			baselineCursor: "2026-01-01T00:00:01Z|base-op",

@@ -1387,8 +1387,14 @@ describe("viewer-server", () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			const prevEnabled = process.env.CODEMEM_SYNC_ENABLED;
+			const prevRetentionEnabled = process.env.CODEMEM_SYNC_RETENTION_ENABLED;
+			const prevRetentionAge = process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS;
+			const prevRetentionSize = process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB;
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_SYNC_ENABLED = "1";
+			process.env.CODEMEM_SYNC_RETENTION_ENABLED = "1";
+			process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS = "14";
+			process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB = "256";
 			writeFileSync(configPath, JSON.stringify({ sync_enabled: false }));
 			const { app, cleanup } = createTestApp();
 			try {
@@ -1396,12 +1402,24 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.enabled).toBe(true);
+				expect(body.retention).toEqual({
+					enabled: true,
+					max_age_days: 14,
+					max_size_mb: 256,
+					retained_floor_cursor: null,
+				});
 			} finally {
 				cleanup();
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = prevConfig;
 				if (prevEnabled == null) delete process.env.CODEMEM_SYNC_ENABLED;
 				else process.env.CODEMEM_SYNC_ENABLED = prevEnabled;
+				if (prevRetentionEnabled == null) delete process.env.CODEMEM_SYNC_RETENTION_ENABLED;
+				else process.env.CODEMEM_SYNC_RETENTION_ENABLED = prevRetentionEnabled;
+				if (prevRetentionAge == null) delete process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS;
+				else process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS = prevRetentionAge;
+				if (prevRetentionSize == null) delete process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB;
+				else process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB = prevRetentionSize;
 			}
 		});
 

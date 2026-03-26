@@ -489,10 +489,18 @@ export type ApiSyncDaemonState =
 	| "rebootstrapping"
 	| "needs_attention";
 
+export interface ApiSyncRetentionStatus {
+	enabled: boolean;
+	max_age_days: number;
+	max_size_mb: number;
+	retained_floor_cursor: string | null;
+}
+
 /** Status block nested in sync status response. */
 export interface ApiSyncStatusBlock {
 	enabled: boolean;
 	interval_s: number;
+	retention: ApiSyncRetentionStatus;
 	peer_count: number;
 	last_sync_at: string | null;
 	daemon_state: ApiSyncDaemonState;
@@ -514,6 +522,7 @@ export interface ApiSyncStatusResponse {
 	/* Top-level status fields */
 	enabled: boolean;
 	interval_s: number;
+	retention: ApiSyncRetentionStatus;
 	peer_count: number;
 	last_sync_at: string | null;
 	daemon_state: ApiSyncDaemonState;

@@ -303,6 +303,8 @@ export interface SyncMemorySnapshotItem {
 export interface ReplicationOpsPruneResult {
 	deleted: number;
 	retained_floor_cursor: string | null;
+	estimated_bytes_before?: number;
+	estimated_bytes_after?: number;
 }
 
 export interface SyncAttempt {
