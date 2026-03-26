@@ -18,6 +18,7 @@ import type {
 	ReplicationOp,
 	Session,
 	StoreStats,
+	SyncMemorySnapshotItem,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -744,3 +745,17 @@ export interface ApiSyncOpsResetRequiredResponse extends ApiSyncResetBoundary {
 }
 
 export type ApiSyncOpsResponse = ApiSyncOpsIncrementalResponse | ApiSyncOpsResetRequiredResponse;
+
+export interface ApiSyncMemorySnapshotPageRequestQuery {
+	limit: number;
+	page_token: string | null;
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+}
+
+export interface ApiSyncMemorySnapshotPageResponse extends ApiSyncResetBoundary {
+	items: SyncMemorySnapshotItem[];
+	next_page_token: string | null;
+	has_more: boolean;
+}

@@ -19,6 +19,7 @@ import {
 	fingerprintPublicKey,
 	getSyncResetState,
 	listCoordinatorJoinRequests,
+	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	readCoordinatorSyncConfig,
 	recordNonce,
@@ -557,6 +558,56 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 			...result,
 			skipped: result.skipped + filteredInbound.skipped,
 		});
+	});
+
+	// GET /v1/bootstrap/memories (peer snapshot bootstrap protocol)
+	app.get("/v1/bootstrap/memories", (c) => {
+		const store = getStore();
+		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+		const peerDeviceId = auth.deviceId;
+
+		try {
+			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
+			const rawGeneration = c.req.query("generation");
+			const generation =
+				rawGeneration != null && rawGeneration.trim().length > 0
+					? Number.parseInt(rawGeneration, 10)
+					: null;
+			const snapshotId = c.req.query("snapshot_id") ?? null;
+			const baselineCursor = c.req.query("baseline_cursor") ?? null;
+			const pageToken = c.req.query("page_token") ?? null;
+			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 1000)) : 200;
+			const page = loadMemorySnapshotPageForPeer(store.db, {
+				limit,
+				pageToken,
+				peerDeviceId,
+				generation: Number.isFinite(generation) ? generation : null,
+				snapshotId,
+				baselineCursor,
+			});
+			return c.json({
+				generation: page.boundary.generation,
+				snapshot_id: page.boundary.snapshot_id,
+				baseline_cursor: page.boundary.baseline_cursor,
+				retained_floor_cursor: page.boundary.retained_floor_cursor,
+				items: page.items,
+				next_page_token: page.nextPageToken,
+				has_more: page.hasMore,
+			});
+		} catch (err) {
+			if (
+				err instanceof Error &&
+				(err.message === "generation_mismatch" || err.message === "boundary_mismatch")
+			) {
+				const boundary = getSyncResetState(store.db);
+				return c.json(
+					{ error: "reset_required", reset_required: true, reason: err.message, ...boundary },
+					409,
+				);
+			}
+			return c.json({ error: "internal_error" }, 500);
+		}
 	});
 
 	return app;

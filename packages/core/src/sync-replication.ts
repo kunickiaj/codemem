@@ -15,7 +15,7 @@ import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
-import type { ReplicationOp } from "./types.js";
+import type { ReplicationOp, SyncMemorySnapshotItem } from "./types.js";
 
 export interface SyncResetBoundary {
 	generation: number;
@@ -49,6 +49,22 @@ export type LoadReplicationOpsForPeerResult =
 			reset_required: true;
 			reset: SyncResetRequired;
 	  };
+
+export interface LoadMemorySnapshotPageForPeerOptions {
+	limit?: number;
+	pageToken?: string | null;
+	peerDeviceId?: string | null;
+	generation?: number | null;
+	snapshotId?: string | null;
+	baselineCursor?: string | null;
+}
+
+export interface LoadMemorySnapshotPageForPeerResult {
+	boundary: SyncResetBoundary;
+	items: SyncMemorySnapshotItem[];
+	nextPageToken: string | null;
+	hasMore: boolean;
+}
 
 type MemoryItemRow = typeof schema.memoryItems.$inferSelect;
 
@@ -151,6 +167,23 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 function normalizeCursor(value: string | null | undefined): string | null {
 	const trimmed = String(value ?? "").trim();
 	return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseSnapshotPageToken(
+	token: string | null | undefined,
+): { importKey: string; id: number } | null {
+	const raw = normalizeCursor(token);
+	if (!raw) return null;
+	const idx = raw.lastIndexOf("|");
+	if (idx <= 0) return null;
+	const importKey = raw.slice(0, idx);
+	const id = Number(raw.slice(idx + 1));
+	if (!importKey || !Number.isFinite(id)) return null;
+	return { importKey, id };
+}
+
+function makeSnapshotPageToken(importKey: string, id: number): string {
+	return `${importKey}|${id}`;
 }
 
 function ensureSyncResetStateTable(db: Database): void {
@@ -676,6 +709,112 @@ export function loadReplicationOpsForPeer(
 		boundary,
 		ops,
 		nextCursor,
+	};
+}
+
+export function loadMemorySnapshotPageForPeer(
+	db: Database,
+	options: LoadMemorySnapshotPageForPeerOptions,
+): LoadMemorySnapshotPageForPeerResult {
+	const boundary = getSyncResetState(db);
+	if (options.generation !== boundary.generation) {
+		throw new Error("generation_mismatch");
+	}
+	if (normalizeCursor(options.snapshotId) !== boundary.snapshot_id) {
+		throw new Error("boundary_mismatch");
+	}
+	if (normalizeCursor(options.baselineCursor) !== boundary.baseline_cursor) {
+		throw new Error("boundary_mismatch");
+	}
+
+	const limit = Math.max(1, Math.min(options.limit ?? 200, 1000));
+	const pageToken = parseSnapshotPageToken(options.pageToken);
+	const d = drizzle(db, { schema });
+	const scanBatchSize = Math.min(Math.max(limit * 3, limit), 1000);
+	const rowsAfterToken = (token: { importKey: string; id: number } | null, batchLimit: number) =>
+		d
+			.select({
+				memory: schema.memoryItems,
+				sessionProject: schema.sessions.project,
+			})
+			.from(schema.memoryItems)
+			.innerJoin(schema.sessions, eq(schema.sessions.id, schema.memoryItems.session_id))
+			.where(
+				and(
+					isNotNull(schema.memoryItems.import_key),
+					token
+						? or(
+								gt(schema.memoryItems.import_key, token.importKey),
+								and(
+									eq(schema.memoryItems.import_key, token.importKey),
+									gt(schema.memoryItems.id, token.id),
+								),
+							)
+						: undefined,
+				),
+			)
+			.orderBy(schema.memoryItems.import_key, schema.memoryItems.id)
+			.limit(batchLimit)
+			.all();
+
+	const items: SyncMemorySnapshotItem[] = [];
+	let nextScanToken = pageToken;
+	let lastScannedToken: string | null = null;
+	let hasMore = false;
+
+	while (items.length < limit) {
+		const rows = rowsAfterToken(nextScanToken, scanBatchSize);
+		if (rows.length === 0) break;
+
+		for (let index = 0; index < rows.length; index += 1) {
+			const row = rows[index];
+			if (!row) continue;
+			const importKey = String(row.memory.import_key ?? "").trim();
+			if (!importKey) continue;
+			lastScannedToken = makeSnapshotPageToken(importKey, Number(row.memory.id));
+			nextScanToken = { importKey, id: Number(row.memory.id) };
+
+			const payload = buildPayloadFromMemoryRow(row.memory);
+			if (
+				!syncVisibilityAllowed(payload as unknown as Record<string, unknown>) &&
+				!peerClaimedLocalActor(db, options.peerDeviceId ?? null)
+			) {
+				continue;
+			}
+			if (!syncProjectAllowed(db, row.sessionProject, options.peerDeviceId ?? null)) continue;
+			const metadata =
+				payload.metadata_json && typeof payload.metadata_json === "object"
+					? payload.metadata_json
+					: {};
+			const clockDeviceId =
+				typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim()
+					? metadata.clock_device_id.trim()
+					: String(row.memory.origin_device_id ?? "local");
+			items.push({
+				entity_id: importKey,
+				op_type: row.memory.deleted_at || row.memory.active === 0 ? "delete" : "upsert",
+				payload_json: toJson(payload),
+				clock_rev: Number(row.memory.rev ?? 0),
+				clock_updated_at: String(
+					row.memory.updated_at ?? row.memory.created_at ?? new Date().toISOString(),
+				),
+				clock_device_id: clockDeviceId,
+			});
+
+			if (items.length >= limit) {
+				hasMore = index < rows.length - 1 || rowsAfterToken(nextScanToken, 1).length > 0;
+				break;
+			}
+		}
+
+		if (items.length >= limit || rows.length < scanBatchSize) break;
+	}
+
+	return {
+		boundary,
+		items,
+		nextPageToken: hasMore ? lastScannedToken : null,
+		hasMore: hasMore && lastScannedToken != null,
 	};
 }
 

@@ -12,6 +12,7 @@ import {
 	getReplicationCursor,
 	getSyncResetState,
 	isNewerClock,
+	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
 	migrateLegacyImportKeys,
@@ -617,6 +618,197 @@ describe("loadReplicationOpsForPeer", () => {
 			expect(result.ops.map((op) => op.op_id)).toEqual(["op-1"]);
 			expect(result.nextCursor).toBe("2026-01-01T00:00:03Z|op-1");
 		}
+	});
+});
+
+describe("loadMemorySnapshotPageForPeer", () => {
+	let db: InstanceType<typeof Database>;
+	let sessionId: number;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		sessionId = insertTestSession(db);
+		setSyncResetState(db, {
+			generation: 4,
+			snapshot_id: "snapshot-4",
+			baseline_cursor: "2026-01-01T00:00:01Z|base-op",
+			retained_floor_cursor: "2026-01-01T00:00:02Z|floor-op",
+		});
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	function insertMemory(importKey: string, opts?: { deleted?: boolean; visibility?: string }) {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, visibility, metadata_json)
+			 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			importKey,
+			now,
+			now,
+			importKey,
+			opts?.deleted ? 0 : 1,
+			opts?.deleted ? now : null,
+			opts?.visibility ?? "shared",
+			toJson({ clock_device_id: "dev-a" }),
+		);
+	}
+
+	function insertSessionWithProject(project: string): number {
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, user, tool_version) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(now, "/tmp/test", project, "test-user", "test");
+		return Number(info.lastInsertRowid);
+	}
+
+	it("returns deterministic memory snapshot pages with tombstones included", () => {
+		insertMemory("key-a");
+		insertMemory("key-b", { deleted: true });
+		insertMemory("key-c");
+
+		const first = loadMemorySnapshotPageForPeer(db, {
+			limit: 2,
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+
+		expect(first.boundary.generation).toBe(4);
+		expect(first.items.map((item) => item.entity_id)).toEqual(["key-a", "key-b"]);
+		expect(first.items[1]?.op_type).toBe("delete");
+		expect(first.hasMore).toBe(true);
+		expect(first.nextPageToken).toBeTruthy();
+
+		const second = loadMemorySnapshotPageForPeer(db, {
+			limit: 2,
+			pageToken: first.nextPageToken,
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+		expect(second.items.map((item) => item.entity_id)).toEqual(["key-c"]);
+		expect(second.hasMore).toBe(false);
+		expect(second.nextPageToken).toBeNull();
+	});
+
+	it("filters out private memories from snapshot pages", () => {
+		insertMemory("key-private", { visibility: "private" });
+		insertMemory("key-shared", { visibility: "shared" });
+
+		const page = loadMemorySnapshotPageForPeer(db, {
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+
+		expect(page.items.map((item) => item.entity_id)).toEqual(["key-shared"]);
+	});
+
+	it("rejects boundary mismatches for snapshot pages", () => {
+		expect(() =>
+			loadMemorySnapshotPageForPeer(db, {
+				generation: 4,
+				snapshotId: "wrong-snapshot",
+				baselineCursor: "2026-01-01T00:00:01Z|base-op",
+			}),
+		).toThrow("boundary_mismatch");
+	});
+
+	it("does not report hasMore when only skipped rows remain", () => {
+		db.prepare(
+			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, created_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", toJson(["allowed-project"]), toJson([]), "2026-01-01T00:00:00Z");
+		db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("allowed-project", sessionId);
+
+		insertMemory("key-allowed");
+
+		const blockedSessionId = insertSessionWithProject("blocked-project");
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, visibility, metadata_json)
+			 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, 1, 'shared', ?)`,
+		).run(
+			blockedSessionId,
+			"key-blocked-1",
+			now,
+			now,
+			"key-blocked-1",
+			toJson({ clock_device_id: "dev-a" }),
+		);
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, visibility, metadata_json)
+			 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, 1, 'shared', ?)`,
+		).run(
+			blockedSessionId,
+			"key-blocked-2",
+			now,
+			now,
+			"key-blocked-2",
+			toJson({ clock_device_id: "dev-a" }),
+		);
+
+		const first = loadMemorySnapshotPageForPeer(db, {
+			limit: 1,
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+			peerDeviceId: "peer-1",
+		});
+		expect(first.items.map((item) => item.entity_id)).toEqual(["key-allowed"]);
+		expect(first.hasMore).toBe(true);
+		expect(first.nextPageToken).toBeTruthy();
+
+		const second = loadMemorySnapshotPageForPeer(db, {
+			limit: 1,
+			pageToken: first.nextPageToken,
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+			peerDeviceId: "peer-1",
+		});
+		expect(second.items).toEqual([]);
+		expect(second.hasMore).toBe(false);
+		expect(second.nextPageToken).toBeNull();
+	});
+
+	it("filters snapshot pages by the memory session project", () => {
+		db.prepare(
+			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, created_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", toJson(["allowed-project"]), toJson([]), "2026-01-01T00:00:00Z");
+		db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("allowed-project", sessionId);
+
+		insertMemory("key-allowed");
+
+		const blockedSessionId = insertSessionWithProject("blocked-project");
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, visibility, metadata_json)
+			 VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, 1, 'shared', ?)`,
+		).run(
+			blockedSessionId,
+			"key-blocked",
+			now,
+			now,
+			"key-blocked",
+			toJson({ clock_device_id: "dev-a" }),
+		);
+
+		const page = loadMemorySnapshotPageForPeer(db, {
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+			peerDeviceId: "peer-1",
+		});
+
+		expect(page.items.map((item) => item.entity_id)).toEqual(["key-allowed"]);
 	});
 });
 
