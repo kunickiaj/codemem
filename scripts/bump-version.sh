@@ -24,6 +24,7 @@ FILES=(
 	packages/viewer-server/package.json
 	packages/core/src/index.ts
 	packages/core/src/index.test.ts
+	packages/cli/.opencode/plugins/codemem.js
 	packages/opencode-plugin/.opencode/plugins/codemem.js
 )
 
