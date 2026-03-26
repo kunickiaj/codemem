@@ -19,6 +19,44 @@ import {
 } from "./embeddings.js";
 import { projectClause } from "./project.js";
 
+function toSqlStringLiteral(value: string): string {
+	return `'${value.replaceAll("'", "''")}'`;
+}
+
+function toVecF32Literal(vector: Float32Array): string {
+	return `vec_f32(${toSqlStringLiteral(JSON.stringify(Array.from(vector)))})`;
+}
+
+function toSqlIntegerLiteral(value: number): string {
+	if (!Number.isFinite(value)) {
+		throw new TypeError(`Expected finite integer, received ${String(value)}`);
+	}
+	if (!Number.isInteger(value)) {
+		throw new TypeError(`Expected integer, received ${String(value)}`);
+	}
+	return String(value);
+}
+
+function insertMemoryVector(
+	db: Database,
+	vector: Float32Array,
+	memoryId: number,
+	chunkIndex: number,
+	contentHash: string,
+	model: string,
+): void {
+	db.exec(`
+		INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+		VALUES (
+			${toVecF32Literal(vector)},
+			${toSqlIntegerLiteral(memoryId)},
+			${toSqlIntegerLiteral(chunkIndex)},
+			${toSqlStringLiteral(contentHash)},
+			${toSqlStringLiteral(model)}
+		)
+	`);
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -64,14 +102,13 @@ export async function storeVectors(
 	if (embeddings.length === 0) return;
 
 	const model = client.model;
-	const stmt = db.prepare(
-		"INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, ?, ?, ?)",
-	);
 
 	for (let i = 0; i < chunks.length && i < embeddings.length; i++) {
 		const vector = embeddings[i];
+		const chunk = chunks[i];
 		if (!vector || vector.length === 0) continue;
-		stmt.run(serializeFloat32(vector), memoryId, i, hashText(chunks[i]!), model);
+		if (!chunk) continue;
+		insertMemoryVector(db, vector, memoryId, i, hashText(chunk), model);
 	}
 }
 
@@ -171,13 +208,12 @@ export async function backfillVectors(
 			continue;
 		}
 
-		const stmt = db.prepare(
-			"INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, ?, ?, ?)",
-		);
 		for (let i = 0; i < embeddings.length; i++) {
 			const vector = embeddings[i];
+			const contentHash = pendingHashes[i];
 			if (!vector || vector.length === 0) continue;
-			stmt.run(serializeFloat32(vector), row.id, i, pendingHashes[i], model);
+			if (!contentHash) continue;
+			insertMemoryVector(db, vector, row.id, i, contentHash, model);
 			inserted++;
 		}
 	}
