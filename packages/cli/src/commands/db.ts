@@ -9,6 +9,7 @@ import {
 	getRawEventStatus,
 	initDatabase,
 	MemoryStore,
+	planReplicationOpsAgePrune,
 	pruneReplicationOps,
 	rawEventsGate,
 	resolveDbPath,
@@ -130,6 +131,14 @@ dbCommand
 						p.log.info(
 							`Policy: approximately keep <= ${maxSizeMb} MB and <= ${maxAgeDays} day old history via oldest-first chunk pruning`,
 						);
+						const agePlan = planReplicationOpsAgePrune(db, maxAgeDays, batchOps);
+						if (agePlan.candidate_ops > 0) {
+							p.log.info(
+								`Age pass plan: ${agePlan.candidate_ops.toLocaleString()} ops, ~${formatBytes(agePlan.estimated_candidate_bytes)} in ~${agePlan.estimated_batches.toLocaleString()} batch(es), cutoff ${agePlan.cutoff_cursor}`,
+							);
+						} else {
+							p.log.info("Age pass plan: no ops older than cutoff");
+						}
 
 						if (opts.dryRun) {
 							p.outro("Dry run only; no changes made");
@@ -140,14 +149,14 @@ dbCommand
 						let batches = 0;
 						let lastFloor: string | null = null;
 						let afterBytes = beforeBytes;
-						const ageResult = bulkPruneReplicationOpsByAgeCutoff(db, maxAgeDays);
+						const ageResult = bulkPruneReplicationOpsByAgeCutoff(db, maxAgeDays, batchOps);
 						totalDeleted += ageResult.deleted;
 						lastFloor = ageResult.retained_floor_cursor;
 						afterBytes = ageResult.estimated_bytes_after ?? beforeBytes;
 						if (ageResult.deleted > 0) {
 							batches += 1;
 							p.log.step(
-								`Age pass: deleted ${ageResult.deleted.toLocaleString()} ops, remaining size ~${formatBytes(afterBytes)}`,
+								`Age pass batch: deleted ${ageResult.deleted.toLocaleString()} ops, remaining size ~${formatBytes(afterBytes)}`,
 							);
 						}
 						while (true) {

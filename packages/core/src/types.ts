@@ -308,6 +308,13 @@ export interface ReplicationOpsPruneResult {
 	stopped_by_budget?: boolean;
 }
 
+export interface ReplicationOpsAgePrunePlan {
+	candidate_ops: number;
+	estimated_candidate_bytes: number;
+	cutoff_cursor: string | null;
+	estimated_batches: number;
+}
+
 export interface SyncAttempt {
 	id: number;
 	peer_device_id: string;

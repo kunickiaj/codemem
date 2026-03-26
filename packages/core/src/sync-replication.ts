@@ -17,6 +17,7 @@ import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
 import type {
 	ReplicationOp,
+	ReplicationOpsAgePrunePlan,
 	ReplicationOpsPruneResult,
 	SyncDirtyLocalState,
 	SyncMemorySnapshotItem,
@@ -973,6 +974,7 @@ export function pruneReplicationOps(
 export function bulkPruneReplicationOpsByAgeCutoff(
 	db: Database,
 	maxAgeDays: number,
+	maxDeleteOps = Number.MAX_SAFE_INTEGER,
 ): ReplicationOpsPruneResult {
 	const d = drizzle(db, { schema });
 	const cutoff = new Date(
@@ -982,13 +984,14 @@ export function bulkPruneReplicationOpsByAgeCutoff(
 	if (estimatedBytesBefore == null) {
 		throw new Error("replication_ops_size_unavailable");
 	}
-	const boundary = d
+	const oldestEligible = d
 		.select({ op_id: schema.replicationOps.op_id, created_at: schema.replicationOps.created_at })
 		.from(schema.replicationOps)
 		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
-		.orderBy(desc(schema.replicationOps.created_at), desc(schema.replicationOps.op_id))
-		.limit(1)
-		.get();
+		.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
+		.limit(Math.max(1, maxDeleteOps))
+		.all();
+	const boundary = oldestEligible[oldestEligible.length - 1];
 	if (!boundary) {
 		const currentBoundary = getSyncResetState(db);
 		return {
@@ -1020,6 +1023,46 @@ export function bulkPruneReplicationOpsByAgeCutoff(
 		estimated_bytes_before: estimatedBytesBefore,
 		estimated_bytes_after: estimatedBytesAfter,
 		stopped_by_budget: false,
+	};
+}
+
+export function planReplicationOpsAgePrune(
+	db: Database,
+	maxAgeDays: number,
+	batchOps: number,
+): ReplicationOpsAgePrunePlan {
+	const d = drizzle(db, { schema });
+	const cutoff = new Date(
+		Date.now() - Math.max(1, Math.floor(maxAgeDays)) * 24 * 60 * 60 * 1000,
+	).toISOString();
+	const countRow = d
+		.select({ total: sql<number>`COUNT(*)` })
+		.from(schema.replicationOps)
+		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
+		.get();
+	const totalCountRow = d
+		.select({ total: sql<number>`COUNT(*)` })
+		.from(schema.replicationOps)
+		.get();
+	const boundary = d
+		.select({ op_id: schema.replicationOps.op_id, created_at: schema.replicationOps.created_at })
+		.from(schema.replicationOps)
+		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
+		.orderBy(desc(schema.replicationOps.created_at), desc(schema.replicationOps.op_id))
+		.limit(1)
+		.get();
+	const candidateOps = Number(countRow?.total ?? 0);
+	const totalOps = Number(totalCountRow?.total ?? 0);
+	const estimatedTotalBytes = estimateReplicationOpsStorageBytes(db) ?? 0;
+	const estimatedCandidateBytes =
+		totalOps > 0 ? Math.round((estimatedTotalBytes * candidateOps) / totalOps) : 0;
+	return {
+		candidate_ops: candidateOps,
+		estimated_candidate_bytes: Math.max(0, estimatedCandidateBytes),
+		cutoff_cursor: boundary
+			? computeCursor(String(boundary.created_at), String(boundary.op_id))
+			: null,
+		estimated_batches: candidateOps > 0 ? Math.ceil(candidateOps / Math.max(1, batchOps)) : 0,
 	};
 }
 
