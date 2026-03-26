@@ -101,6 +101,7 @@ dbCommand
 			.option("--max-size-mb <mb>", "target replication log budget in MB", "512")
 			.option("--batch-ops <n>", "max ops deleted per batch", "5000")
 			.option("--batch-runtime-ms <ms>", "max runtime per batch in ms", "2000")
+			.option("--vacuum", "run VACUUM explicitly after prune completes")
 			.action(
 				(opts: {
 					db?: string;
@@ -110,9 +111,11 @@ dbCommand
 					maxSizeMb: string;
 					batchOps: string;
 					batchRuntimeMs: string;
+					vacuum?: boolean;
 				}) => {
 					const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
 					const db = connect(dbPath);
+					let dbOpen = true;
 					try {
 						const maxAgeDays = Number.parseInt(opts.maxAgeDays, 10) || 30;
 						const maxSizeMb = Number.parseInt(opts.maxSizeMb, 10) || 512;
@@ -154,11 +157,21 @@ dbCommand
 						p.log.info(`Deleted ops: ${totalDeleted.toLocaleString()}`);
 						p.log.info(`Estimated replication ops size after prune: ${formatBytes(afterBytes)}`);
 						if (lastFloor) p.log.info(`Retained floor: ${lastFloor}`);
+						if (opts.vacuum) {
+							p.log.step("Running VACUUM as requested...");
+							db.close();
+							dbOpen = false;
+							const vacuumed = vacuumDatabase(dbPath);
+							p.outro(
+								`Done. VACUUM complete. File size is now ${formatBytes(vacuumed.sizeBytes)}.`,
+							);
+							return;
+						}
 						p.outro(
-							"Done. SQLite file size may not shrink until you run `codemem db vacuum` explicitly.",
+							"Done. SQLite file size may not shrink until you run `codemem db vacuum` explicitly (or re-run this command with --vacuum).",
 						);
 					} finally {
-						db.close();
+						if (dbOpen) db.close();
 					}
 				},
 			),
