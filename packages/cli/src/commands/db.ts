@@ -8,6 +8,7 @@ import {
 	getRawEventStatus,
 	initDatabase,
 	MemoryStore,
+	pruneReplicationOps,
 	rawEventsGate,
 	resolveDbPath,
 	resolveProject,
@@ -41,6 +42,23 @@ function parseKindsCsv(value: string | undefined): string[] | undefined {
 	return kinds.length > 0 ? kinds : undefined;
 }
 
+function estimateReplicationOpsBytes(db: ReturnType<typeof connect>): number {
+	try {
+		const row = db
+			.prepare(
+				`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
+				 FROM dbstat
+				 WHERE name = 'replication_ops'
+				    OR name LIKE 'idx_replication_ops_%'
+				    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+			)
+			.get() as { total_bytes?: number } | undefined;
+		return Number(row?.total_bytes ?? 0);
+	} catch {
+		return 0;
+	}
+}
+
 export const dbCommand = new Command("db")
 	.configureHelp(helpStyle)
 	.description("Database maintenance");
@@ -71,6 +89,79 @@ dbCommand
 				p.log.success(`Vacuumed: ${result.path}`);
 				p.outro(`Size: ${result.sizeBytes.toLocaleString()} bytes`);
 			}),
+	)
+	.addCommand(
+		new Command("prune-replication-ops")
+			.configureHelp(helpStyle)
+			.description("Prune replication op history with dry-run and progress reporting")
+			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+			.option("--dry-run", "show current size/targets without deleting")
+			.option("--max-age-days <days>", "retention age threshold in days", "30")
+			.option("--max-size-mb <mb>", "target replication log budget in MB", "512")
+			.option("--batch-ops <n>", "max ops deleted per batch", "5000")
+			.option("--batch-runtime-ms <ms>", "max runtime per batch in ms", "2000")
+			.action(
+				(opts: {
+					db?: string;
+					dbPath?: string;
+					dryRun?: boolean;
+					maxAgeDays: string;
+					maxSizeMb: string;
+					batchOps: string;
+					batchRuntimeMs: string;
+				}) => {
+					const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
+					const db = connect(dbPath);
+					try {
+						const maxAgeDays = Number.parseInt(opts.maxAgeDays, 10) || 30;
+						const maxSizeMb = Number.parseInt(opts.maxSizeMb, 10) || 512;
+						const batchOps = Number.parseInt(opts.batchOps, 10) || 5000;
+						const batchRuntimeMs = Number.parseInt(opts.batchRuntimeMs, 10) || 2000;
+						const beforeBytes = estimateReplicationOpsBytes(db);
+						p.intro("codemem db prune-replication-ops");
+						p.log.info(`Replication ops size: ${formatBytes(beforeBytes)}`);
+						p.log.info(
+							`Policy: keep <= ${maxSizeMb} MB and <= ${maxAgeDays} day old history (oldest-first pruning)`,
+						);
+
+						if (opts.dryRun) {
+							p.outro("Dry run only; no changes made");
+							return;
+						}
+
+						let totalDeleted = 0;
+						let batches = 0;
+						let lastFloor: string | null = null;
+						let afterBytes = beforeBytes;
+						while (true) {
+							const result = pruneReplicationOps(db, {
+								maxAgeDays,
+								maxSizeBytes: maxSizeMb * 1024 * 1024,
+								maxDeleteOps: batchOps,
+								maxRuntimeMs: batchRuntimeMs,
+							});
+							batches += 1;
+							totalDeleted += result.deleted;
+							lastFloor = result.retained_floor_cursor;
+							afterBytes = result.estimated_bytes_after ?? estimateReplicationOpsBytes(db);
+							p.log.step(
+								`Batch ${batches}: deleted ${result.deleted.toLocaleString()} ops, remaining size ~${formatBytes(afterBytes)}`,
+							);
+							if (result.deleted === 0 || !result.stopped_by_budget) break;
+						}
+
+						p.log.info(`Deleted ops: ${totalDeleted.toLocaleString()}`);
+						p.log.info(`Estimated replication ops size after prune: ${formatBytes(afterBytes)}`);
+						if (lastFloor) p.log.info(`Retained floor: ${lastFloor}`);
+						p.outro(
+							"Done. SQLite file size may not shrink until you run `codemem db vacuum` explicitly.",
+						);
+					} finally {
+						db.close();
+					}
+				},
+			),
 	)
 	.addCommand(
 		new Command("raw-events-status")
