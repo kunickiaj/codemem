@@ -81,7 +81,7 @@ export function renderSyncStatus() {
     if (retentionEnabled) {
       parts.push(
         retentionLastRunAt
-          ? `Retention last ran ${formatAgeShort(secondsSince(retentionLastRunAt))} ago`
+          ? `Retention last ran ${formatAgeShort(secondsSince(retentionLastRunAt))} ago (approx oldest-first)`
           : 'Retention enabled',
       );
     }
@@ -118,7 +118,7 @@ export function renderSyncStatus() {
             label: 'Retention',
             value: retentionEnabled
               ? retentionLastRunAt
-                ? `${retentionDeleted.toLocaleString()} ops last run`
+                ? `${retentionDeleted.toLocaleString()} ops last run (approx)`
                 : 'Enabled'
               : 'Disabled',
           },

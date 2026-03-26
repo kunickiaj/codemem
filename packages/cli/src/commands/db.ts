@@ -93,7 +93,9 @@ dbCommand
 	.addCommand(
 		new Command("prune-replication-ops")
 			.configureHelp(helpStyle)
-			.description("Prune replication op history with dry-run and progress reporting")
+			.description(
+				"Prune replication op history with approximate oldest-first retention, dry-run, and progress reporting",
+			)
 			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 			.option("--dry-run", "show current size/targets without deleting")
@@ -125,7 +127,7 @@ dbCommand
 						p.intro("codemem db prune-replication-ops");
 						p.log.info(`Replication ops size: ${formatBytes(beforeBytes)}`);
 						p.log.info(
-							`Policy: keep <= ${maxSizeMb} MB and <= ${maxAgeDays} day old history (oldest-first pruning)`,
+							`Policy: approximately keep <= ${maxSizeMb} MB and <= ${maxAgeDays} day old history via oldest-first chunk pruning`,
 						);
 
 						if (opts.dryRun) {
@@ -155,7 +157,9 @@ dbCommand
 						}
 
 						p.log.info(`Deleted ops: ${totalDeleted.toLocaleString()}`);
-						p.log.info(`Estimated replication ops size after prune: ${formatBytes(afterBytes)}`);
+						p.log.info(
+							`Estimated replication ops size after prune: ${formatBytes(afterBytes)} (approximate)`,
+						);
 						if (lastFloor) p.log.info(`Retained floor: ${lastFloor}`);
 						if (opts.vacuum) {
 							p.log.step("Running VACUUM as requested...");
@@ -168,7 +172,7 @@ dbCommand
 							return;
 						}
 						p.outro(
-							"Done. SQLite file size may not shrink until you run `codemem db vacuum` explicitly (or re-run this command with --vacuum).",
+							"Done. Retention is approximate oldest-first pruning. SQLite file size may not shrink until you run `codemem db vacuum` explicitly (or re-run this command with --vacuum).",
 						);
 					} finally {
 						if (dbOpen) db.close();
