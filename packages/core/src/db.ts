@@ -212,6 +212,31 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 	return db;
 }
 
+function hasPlannerStats(db: DatabaseType): boolean {
+	try {
+		return !!db.prepare("SELECT 1 FROM sqlite_stat1 LIMIT 1").pluck().get();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Keep SQLite planner statistics healthy for FTS-heavy queries.
+ *
+ * We always run PRAGMA optimize as a cheap maintenance hint. If planner
+ * statistics have never been collected and the core search tables exist,
+ * bootstrap them with ANALYZE so Node SQLite picks stable FTS query plans.
+ */
+export function ensurePlannerStats(db: DatabaseType): void {
+	db.pragma("optimize");
+
+	if (hasPlannerStats(db)) return;
+	if (!tableExists(db, "memory_items") || !tableExists(db, "memory_fts")) return;
+
+	db.exec("ANALYZE");
+	db.pragma("optimize");
+}
+
 /**
  * Load the sqlite-vec extension into an open database connection.
  *
