@@ -264,7 +264,42 @@ export function renderTeamSync() {
       } else if (!pairedPeer && device.stale) {
         rowActions.appendChild(el('div', 'peer-meta', 'Wait for a fresh coordinator presence update.'));
       } else if (hasConflict) {
-        rowActions.appendChild(el('div', 'peer-meta', 'Remove or repair the conflicting local peer in People first.'));
+        const inspectBtn = el('button', 'settings-button', 'Jump to local peer') as HTMLButtonElement;
+        inspectBtn.addEventListener('click', () => {
+          const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
+          if (peerCard instanceof HTMLElement) {
+            peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            showGlobalNotice(`Jumped to the conflicting local peer for ${displayName}.`, 'warning');
+            return;
+          }
+          showGlobalNotice('Conflicting local peer is not visible yet. Scroll to the People area and try again.', 'warning');
+        });
+        const removeConflictBtn = el('button', 'settings-button', 'Remove conflicting peer') as HTMLButtonElement;
+        removeConflictBtn.addEventListener('click', async () => {
+          if (!pairedPeer) return;
+          const confirmed = window.confirm(
+            `Remove the conflicting local peer for ${displayName}? You can accept the discovered device again after this refreshes.`,
+          );
+          if (!confirmed) return;
+          removeConflictBtn.disabled = true;
+          inspectBtn.disabled = true;
+          removeConflictBtn.textContent = 'Removing…';
+          try {
+            await api.deletePeer(deviceId);
+            showGlobalNotice(`Removed the conflicting local peer for ${displayName}. If it is still fresh, you can now accept it from Team sync.`);
+            await _loadSyncData();
+          } catch (error) {
+            showGlobalNotice(friendlyError(error, 'Failed to remove the conflicting local peer.'), 'warning');
+            removeConflictBtn.textContent = 'Retry remove';
+          } finally {
+            removeConflictBtn.disabled = false;
+            inspectBtn.disabled = false;
+            if (removeConflictBtn.textContent === 'Removing…') {
+              removeConflictBtn.textContent = 'Remove conflicting peer';
+            }
+          }
+        });
+        rowActions.append(inspectBtn, removeConflictBtn);
       } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
         rowActions.appendChild(el('div', 'peer-meta', 'Review this peer\'s scope in People next.'));
       } else if (pairedPeer) {
