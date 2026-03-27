@@ -9,6 +9,7 @@ the network boundary you care about (for example VPNs).
 - lets devices publish current dialable addresses
 - lets peers look up fresh addresses before direct sync
 - keeps direct peer-to-peer sync as the data path
+- can make same-group devices visible for operator review and future onboarding flows
 
 ## What it does not do
 
@@ -16,6 +17,8 @@ the network boundary you care about (for example VPNs).
 - it does not queue offline sync data
 - it does not replace local SQLite as the source of truth
 - it is not a codemem-hosted public service
+- it does not automatically create or repair `sync_peers`
+- joining a coordinator group does not, by itself, create an active sync relationship
 
 ## Config
 
@@ -70,25 +73,41 @@ Backward compatibility:
 
 ## Built-in coordinator service
 
-The preferred self-hosted deployment path is a first-party `codemem` coordinator service.
+The preferred self-hosted deployment path is the first-party TypeScript coordinator service shipped in the main
+`codemem` CLI. Its HTTP surface is implemented with Hono and exposed through `codemem sync coordinator serve`.
 
-Basic flow:
+Current shipped coordinator CLI surface:
 
 ```fish
-codemem sync coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/id_ed25519.pub --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
+codemem sync coordinator create-invite team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator import-invite <invite>
+codemem sync coordinator list-join-requests team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator approve-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator deny-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
 ```
 
-This keeps the primary deployment path inside the main `codemem` artifact and reuses the existing signature
-verification code directly.
+This keeps the primary deployment path inside the main `codemem` artifact and reuses the current TypeScript sync
+auth/signature verification code directly.
 
-These management commands operate on the built-in local coordinator store only. Remote coordinator admin flows require a
-separate access-control model before they should be exposed over HTTP.
+Current limitation:
+
+- local coordinator admin parity is incomplete in the shipped TS CLI
+- direct group/device administration commands are planned but not all available yet
+
+These management commands operate on the built-in local coordinator store only. Remote coordinator admin flows require
+a separate access-control model before they should be exposed over HTTP.
+
+## Discovery groups vs sync peers
+
+Coordinator group membership and sync peer relationships are not the same thing.
+
+- **Coordinator group membership** means a device is enrolled and can participate in coordinator-backed discovery.
+- **Sync peer** means a local device has an explicit `sync_peers` relationship it will use for direct replication.
+
+Today, coordinator-backed discovery refreshes dialable addresses for sync, but it does not automatically create, repair,
+or remove local `sync_peers` entries. That means a same-group device can be enrolled and discoverable without becoming
+an active sync peer.
 
 ## How discovery works
 
@@ -121,10 +140,10 @@ not accumulate as mixed `host:port` and `http://host:port` variants in local pee
 Built-in local coordinator management commands operate directly on the local SQLite store.
 
 For remote coordinators, the first admin model uses a separate operator-managed admin secret. Remote management commands
-reuse the same `codemem sync coordinator ...` verbs, but target a remote coordinator when you pass `--remote-url` and
-an admin secret (or configure `sync_coordinator_admin_secret`).
+reuse the same `codemem sync coordinator ...` verbs once those admin commands ship in the TS CLI, targeting a remote
+coordinator when you pass `--remote-url` and an admin secret (or configure `sync_coordinator_admin_secret`).
 
-Examples:
+Planned examples once admin parity ships:
 
 ```fish
 codemem sync coordinator list-devices nerdworld --remote-url "https://coord.codemem.sh"
@@ -137,8 +156,8 @@ is only for remote mutation/listing endpoints.
 
 ## Canonical deployment target
 
-The built-in coordinator (`codemem sync coordinator serve`) is the canonical deployment target for ongoing
-product development and dogfooding.
+The built-in coordinator (`codemem sync coordinator serve`) is the canonical deployment target for ongoing product
+development, E2E validation, and dogfooding.
 
 Recommended deployment patterns:
 
@@ -147,16 +166,24 @@ Recommended deployment patterns:
 - **Exposure**: use Tailscale Funnel or Cloudflare Tunnel to make the coordinator reachable from outside a local network
 
 This keeps the deployment path inside the main `codemem` artifact and ensures new coordinator features (invites, join
-requests, admin flows) are immediately available.
+requests, admin flows) are immediately available. It is also the fastest path to validate coordinator behavior before
+introducing Cloudflare-specific runtime/storage constraints.
 
 ## Cloudflare Worker reference deployment
 
-A Cloudflare Worker reference implementation exists in `examples/cloudflare-coordinator/`. It implements the same HTTP
-contract against D1, but is secondary to the built-in coordinator for ongoing feature development.
+A Cloudflare Worker reference implementation exists in `examples/cloudflare-coordinator/`. It was built as a separate
+Worker/D1 implementation of the coordinator contract and remains useful for experimentation, but it is not the
+canonical runtime for current product development.
 
-Use the Cloudflare Worker path when you specifically want a serverless/edge deployment and are comfortable with the
-feature lag — new coordinator capabilities (invite/join flows, admin endpoints) land in the built-in coordinator first
-and may not be ported to the Worker immediately.
+The long-term Cloudflare direction should build from the TypeScript coordinator contract rather than from the old Python
+era deployment story. Today, the practical sequence is:
+
+1. validate the built-in TS coordinator on Node/Linux with `codemem sync coordinator serve`
+2. adapt/package that validated coordinator surface for Cloudflare
+
+Use the Worker reference path only when you specifically want a serverless/edge experiment and are comfortable with
+feature lag — new coordinator capabilities may land in the built-in coordinator first and may not be ported to the
+reference Worker immediately.
 
 ## Current limitations
 

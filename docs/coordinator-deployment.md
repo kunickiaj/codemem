@@ -1,7 +1,12 @@
 # Deploying the coordinator
 
-The built-in coordinator is the canonical deployment target for team sync. This guide covers how to run it
+The built-in TypeScript coordinator is the canonical deployment target for team sync. This guide covers how to run it
 natively, in a container, and how to expose it to teammates outside your local network.
+
+The coordinator HTTP service is Hono-based, but the supported deployment path today is still the built-in
+`codemem sync coordinator serve` runtime on Node/Linux with a local SQLite database. If your end goal is Cloudflare,
+the recommended sequence is to validate E2E flows here first, then adapt that proven coordinator surface to the target
+Cloudflare runtime.
 
 ## Quick start (native)
 
@@ -9,8 +14,8 @@ natively, in a container, and how to expose it to teammates outside your local n
 # Install codemem CLI (makes the `codemem` command available)
 npm install -g codemem
 
-# Create a coordinator group
-codemem sync coordinator group-create my-team --db-path ~/.codemem/coordinator.sqlite
+# Bootstrap a coordinator group in the local DB
+sqlite3 ~/.codemem/coordinator.sqlite "insert into groups (group_id, display_name, created_at) values ('my-team', 'my-team', datetime('now')) on conflict(group_id) do nothing;"
 
 # Set an admin secret (required for creating invites via the API)
 set -x CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET (openssl rand -base64 32)
@@ -40,22 +45,19 @@ codemem sync coordinator serve [OPTIONS]
 
 ### Team management
 
+Current status: the shipped TS CLI only exposes the invite/join-request management surface today. Full local
+group/device admin verbs are planned but not all shipped yet.
+
 ```fish
-# Create a group
-codemem sync coordinator group-create <group-id> --db-path <path>
-
-# Enroll a device directly (admin)
-codemem sync coordinator enroll-device <group-id> <device-id> \
-  --fingerprint <fingerprint> --public-key-file <path> --db-path <path>
-
-# List enrolled devices
-codemem sync coordinator list-devices <group-id> --db-path <path>
-
-# Rename, disable, or remove a device
-codemem sync coordinator rename-device <group-id> <device-id> --name "work-laptop" --db-path <path>
-codemem sync coordinator disable-device <group-id> <device-id> --db-path <path>
-codemem sync coordinator remove-device <group-id> <device-id> --db-path <path>
+# Current shipped commands
+codemem sync coordinator create-invite <group-id> --db-path <path>
+codemem sync coordinator list-join-requests <group-id> --db-path <path>
+codemem sync coordinator approve-join-request <request-id> --db-path <path>
+codemem sync coordinator deny-join-request <request-id> --db-path <path>
 ```
+
+Until local coordinator admin parity lands, group bootstrap and direct DB-backed inspection may still require `sqlite3`
+on the coordinator machine.
 
 ### Invite and join flow
 
@@ -102,7 +104,7 @@ docker run -d --name coordinator -p 7347:7347 -v coordinator-data:/data codemem-
 Initialize the group from the host:
 
 ```fish
-docker exec coordinator codemem sync coordinator group-create my-team --db-path /data/coordinator.sqlite
+docker exec coordinator sqlite3 /data/coordinator.sqlite "insert into groups (group_id, display_name, created_at) values ('my-team', 'my-team', datetime('now')) on conflict(group_id) do nothing;"
 ```
 
 ## Exposing the coordinator
@@ -126,6 +128,8 @@ Teammates configure their client with the Funnel URL (e.g. `https://your-machine
 ### Cloudflare Tunnel
 
 Cloudflare Tunnel exposes a local port through Cloudflare's network, giving you a stable public hostname with TLS.
+This is the simplest way to put the built-in TS coordinator behind Cloudflare without changing the coordinator runtime
+itself.
 
 ```fish
 # Start the coordinator
@@ -177,11 +181,15 @@ Or through the viewer UI: Settings → Device Sync → Coordinator URL / Group.
 **Note:** Teammates who join via an invite link don't need to configure anything manually — the invite import
 auto-configures `sync_coordinator_url` and `sync_coordinator_group`.
 
+Joining the coordinator team enrolls the device for coordinator-backed discovery, but it does not automatically create a
+local sync peer relationship. Direct sync still depends on explicit `sync_peers` state.
+
 ## Onboarding teammates
 
 ### Admin-driven enrollment
 
-The admin enrolls a teammate's device directly:
+The admin enrolls a teammate's device directly once the missing local admin CLI verbs land. Today, the practical TS
+path is invite-driven enrollment.
 
 ```fish
 codemem sync coordinator enroll-device my-team <device-id> \
@@ -226,8 +234,9 @@ peer-to-peer sync remains the data path.
 **Coordinator not reachable**: verify the `--host` binding. Use `0.0.0.0` to listen on all interfaces. Check firewall
 rules and that the tunnel/funnel is active.
 
-**Device not enrolled**: run `codemem sync coordinator list-devices <group> --db-path <path>` to confirm enrollment.
-Use the invite flow for self-service enrollment.
+**Device not enrolled**: use the invite flow for self-service enrollment. Until local coordinator admin parity lands,
+confirm coordinator enrollment from the coordinator machine with `sqlite3` or the pending join-request flow rather than
+assuming `list-devices` is already available in the TS CLI.
 
 **Presence not refreshing**: check that the client's `sync_coordinator_url` matches the coordinator's reachable address
 and that `sync_coordinator_group` matches a group the device is enrolled in.

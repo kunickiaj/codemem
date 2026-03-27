@@ -149,9 +149,11 @@ describe("formatSyncAttempt", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		const serve = coordinator?.commands.find((command) => command.name() === "serve");
 		expect(serve?.options.find((opt) => opt.long === "--db")?.defaultValue).toBeUndefined();
+		expect(serve?.options.find((opt) => opt.long === "--port")?.defaultValue).toBe("7347");
 		// runtime default is enforced in action code, not commander metadata
 		const help = serve?.helpInformation() ?? "";
 		expect(help).toContain("coordinator database path");
+		expect(help).toContain("7347");
 	});
 
 	it("allows positional group ids for create-invite and list-join-requests", () => {
