@@ -809,10 +809,10 @@ coordinatorCommand.addCommand(
 		.option("--db <path>", "coordinator database path")
 		.option("--db-path <path>", "coordinator database path")
 		.option("--host <host>", "bind host", "127.0.0.1")
-		.option("--port <port>", "bind port", "7340")
+		.option("--port <port>", "bind port", "7347")
 		.action(async (opts: { db?: string; dbPath?: string; host?: string; port?: string }) => {
 			const host = String(opts.host ?? "127.0.0.1").trim() || "127.0.0.1";
-			const port = Number.parseInt(String(opts.port ?? "7340"), 10);
+			const port = Number.parseInt(String(opts.port ?? "7347"), 10);
 			const dbPath = opts.db ?? opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH;
 			const app = createCoordinatorApp({ dbPath });
 			p.intro("codemem sync coordinator serve");

@@ -1,8 +1,11 @@
 # Cloudflare Worker reference coordinator
 
 This is a secondary reference deployment for the coordinator-backed discovery contract. The canonical deployment target
-is the built-in Python coordinator (`codemem sync coordinator serve`). See `docs/coordinator-discovery.md` for the
+is the built-in TypeScript coordinator (`codemem sync coordinator serve`). See `docs/coordinator-discovery.md` for the
 recommended deployment path.
+
+The product is now TS-first. This Worker example remains useful for experimenting with Workers + D1, but it is not the
+mainline coordinator runtime and should not be assumed to have feature parity with the built-in coordinator.
 
 It is intentionally narrow:
 
