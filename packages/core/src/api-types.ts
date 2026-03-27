@@ -689,6 +689,22 @@ export interface ApiPeerIdentityResponse {
 	claimed_local_actor: boolean;
 }
 
+/** POST /api/sync/peers/accept-discovered — request. */
+export interface ApiAcceptDiscoveredPeerRequest {
+	peer_device_id: string;
+	fingerprint: string;
+}
+
+/** POST /api/sync/peers/accept-discovered — response. */
+export interface ApiAcceptDiscoveredPeerResponse {
+	ok: true;
+	peer_device_id: string;
+	created: boolean;
+	updated: boolean;
+	name: string | null;
+	needs_scope_review: true;
+}
+
 /** POST /api/sync/legacy-devices/claim — request. */
 export interface ApiClaimLegacyDeviceRequest {
 	origin_device_id: string;
