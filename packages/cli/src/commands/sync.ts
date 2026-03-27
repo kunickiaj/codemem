@@ -10,9 +10,16 @@ import { dirname, join } from "node:path";
 
 import * as p from "@clack/prompts";
 import {
+	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
+	coordinatorDisableDeviceAction,
+	coordinatorEnrollDeviceAction,
 	coordinatorImportInviteAction,
+	coordinatorListDevicesAction,
+	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
+	coordinatorRemoveDeviceAction,
+	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
 	createCoordinatorApp,
 	DEFAULT_COORDINATOR_DB_PATH,
@@ -67,6 +74,19 @@ interface SyncPairOptions {
 	all?: boolean;
 	default?: boolean;
 	dbPath?: string;
+}
+
+function readCoordinatorPublicKey(opts: { publicKey?: string; publicKeyFile?: string }): string {
+	const inline = String(opts.publicKey ?? "").trim();
+	const filePath = String(opts.publicKeyFile ?? "").trim();
+	if (inline && filePath) throw new Error("Use only one of --public-key or --public-key-file");
+	if (filePath) {
+		const text = readFileSync(filePath, "utf8").trim();
+		if (!text) throw new Error(`Public key file is empty: ${filePath}`);
+		return text;
+	}
+	if (!inline) throw new Error("Public key required via --public-key or --public-key-file");
+	return inline;
 }
 
 async function portOpen(host: string, port: number): Promise<boolean> {
@@ -801,6 +821,283 @@ syncCommand.addCommand(
 const coordinatorCommand = new Command("coordinator")
 	.configureHelp(helpStyle)
 	.description("Manage coordinator invites, join requests, and relay server");
+
+coordinatorCommand.addCommand(
+	new Command("group-create")
+		.configureHelp(helpStyle)
+		.description("Create a coordinator group in the local store")
+		.argument("<group>", "group id")
+		.option("--name <name>", "display name override")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--json", "output as JSON")
+		.action(
+			async (
+				groupId: string,
+				opts: { name?: string; db?: string; dbPath?: string; json?: boolean },
+			) => {
+				const group = coordinatorCreateGroupAction({
+					groupId,
+					displayName: opts.name?.trim() || null,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(group, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator group-create");
+				p.log.success(`Group ready: ${groupId.trim()}`);
+				p.outro(String(group.display_name ?? group.group_id ?? groupId.trim()));
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("list-groups")
+		.configureHelp(helpStyle)
+		.description("List coordinator groups from the local store")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--json", "output as JSON")
+		.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
+			const groups = coordinatorListGroupsAction({ dbPath: opts.db ?? opts.dbPath ?? null });
+			if (opts.json) {
+				console.log(JSON.stringify(groups, null, 2));
+				return;
+			}
+			p.intro("codemem sync coordinator list-groups");
+			if (groups.length === 0) {
+				p.outro("No coordinator groups found");
+				return;
+			}
+			for (const group of groups) {
+				p.log.message(
+					`- ${String(group.group_id ?? "")}${group.display_name ? ` (${String(group.display_name)})` : ""}`,
+				);
+			}
+			p.outro(`${groups.length} group(s)`);
+		}),
+);
+
+coordinatorCommand.addCommand(
+	new Command("enroll-device")
+		.configureHelp(helpStyle)
+		.description("Enroll a device in a local coordinator group")
+		.argument("<group>", "group id")
+		.argument("<device-id>", "device id")
+		.option("--fingerprint <fingerprint>", "device fingerprint")
+		.option("--public-key <key>", "device public key")
+		.option("--public-key-file <path>", "path to device public key")
+		.option("--name <name>", "display name")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--json", "output as JSON")
+		.action(
+			async (
+				groupId: string,
+				deviceId: string,
+				opts: {
+					fingerprint?: string;
+					publicKey?: string;
+					publicKeyFile?: string;
+					name?: string;
+					db?: string;
+					dbPath?: string;
+					json?: boolean;
+				},
+			) => {
+				const publicKey = readCoordinatorPublicKey(opts);
+				const fingerprint = String(opts.fingerprint ?? "").trim();
+				if (!fingerprint) {
+					p.log.error("Fingerprint required via --fingerprint");
+					process.exitCode = 1;
+					return;
+				}
+				const actualFingerprint = fingerprintPublicKey(publicKey);
+				if (actualFingerprint !== fingerprint) {
+					p.log.error("Fingerprint does not match the provided public key");
+					process.exitCode = 1;
+					return;
+				}
+				const enrollment = coordinatorEnrollDeviceAction({
+					groupId,
+					deviceId,
+					fingerprint,
+					publicKey,
+					displayName: opts.name?.trim() || null,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(enrollment, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator enroll-device");
+				p.log.success(`Enrolled ${deviceId.trim()} in ${groupId.trim()}`);
+				p.outro(String(enrollment.display_name ?? enrollment.device_id ?? deviceId.trim()));
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("list-devices")
+		.configureHelp(helpStyle)
+		.description("List enrolled devices in a local coordinator group")
+		.argument("<group>", "group id")
+		.option("--include-disabled", "include disabled devices")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--json", "output as JSON")
+		.action(
+			(
+				groupId: string,
+				opts: { includeDisabled?: boolean; db?: string; dbPath?: string; json?: boolean },
+			) => {
+				const rows = coordinatorListDevicesAction({
+					groupId,
+					includeDisabled: opts.includeDisabled === true,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(rows, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator list-devices");
+				if (rows.length === 0) {
+					p.outro(`No enrolled devices for ${groupId.trim()}`);
+					return;
+				}
+				for (const row of rows) {
+					const label =
+						String(row.display_name ?? row.device_id ?? "").trim() || String(row.device_id ?? "");
+					const enabled = Number(row.enabled ?? 1) === 1 ? "enabled" : "disabled";
+					p.log.message(`- ${label} (${String(row.device_id ?? "")}) ${enabled}`);
+				}
+				p.outro(`${rows.length} device(s)`);
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("rename-device")
+		.configureHelp(helpStyle)
+		.description("Rename an enrolled device in the local coordinator store")
+		.argument("<group>", "group id")
+		.argument("<device-id>", "device id")
+		.requiredOption("--name <name>", "display name")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--json", "output as JSON")
+		.action(
+			(
+				groupId: string,
+				deviceId: string,
+				opts: { name: string; db?: string; dbPath?: string; json?: boolean },
+			) => {
+				const result = coordinatorRenameDeviceAction({
+					groupId,
+					deviceId,
+					displayName: opts.name.trim(),
+					dbPath: opts.db ?? opts.dbPath ?? null,
+				});
+				if (!result) {
+					p.log.error(`Device not found: ${deviceId.trim()}`);
+					process.exitCode = 1;
+					return;
+				}
+				if (opts.json) {
+					console.log(JSON.stringify(result, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator rename-device");
+				p.log.success(`Renamed ${deviceId.trim()} in ${groupId.trim()}`);
+				p.outro(String(result.display_name ?? result.device_id ?? deviceId.trim()));
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("disable-device")
+		.configureHelp(helpStyle)
+		.description("Disable an enrolled device in the local coordinator store")
+		.argument("<group>", "group id")
+		.argument("<device-id>", "device id")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--json", "output as JSON")
+		.action(
+			(
+				groupId: string,
+				deviceId: string,
+				opts: { db?: string; dbPath?: string; json?: boolean },
+			) => {
+				const ok = coordinatorDisableDeviceAction({
+					groupId,
+					deviceId,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+				});
+				if (!ok) {
+					p.log.error(`Device not found: ${deviceId.trim()}`);
+					process.exitCode = 1;
+					return;
+				}
+				if (opts.json) {
+					console.log(
+						JSON.stringify(
+							{ ok: true, group_id: groupId.trim(), device_id: deviceId.trim() },
+							null,
+							2,
+						),
+					);
+					return;
+				}
+				p.intro("codemem sync coordinator disable-device");
+				p.log.success(`Disabled ${deviceId.trim()} in ${groupId.trim()}`);
+				p.outro("disabled");
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("remove-device")
+		.configureHelp(helpStyle)
+		.description("Remove an enrolled device from the local coordinator store")
+		.argument("<group>", "group id")
+		.argument("<device-id>", "device id")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--json", "output as JSON")
+		.action(
+			(
+				groupId: string,
+				deviceId: string,
+				opts: { db?: string; dbPath?: string; json?: boolean },
+			) => {
+				const ok = coordinatorRemoveDeviceAction({
+					groupId,
+					deviceId,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+				});
+				if (!ok) {
+					p.log.error(`Device not found: ${deviceId.trim()}`);
+					process.exitCode = 1;
+					return;
+				}
+				if (opts.json) {
+					console.log(
+						JSON.stringify(
+							{ ok: true, group_id: groupId.trim(), device_id: deviceId.trim() },
+							null,
+							2,
+						),
+					);
+					return;
+				}
+				p.intro("codemem sync coordinator remove-device");
+				p.log.success(`Removed ${deviceId.trim()} from ${groupId.trim()}`);
+				p.outro("removed");
+			},
+		),
+);
 
 coordinatorCommand.addCommand(
 	new Command("serve")

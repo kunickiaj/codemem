@@ -14,8 +14,8 @@ Cloudflare runtime.
 # Install codemem CLI (makes the `codemem` command available)
 npm install -g codemem
 
-# Bootstrap a coordinator group in the local DB
-sqlite3 ~/.codemem/coordinator.sqlite "insert into groups (group_id, display_name, created_at) values ('my-team', 'my-team', datetime('now')) on conflict(group_id) do nothing;"
+# Create a coordinator group
+codemem sync coordinator group-create my-team --db-path ~/.codemem/coordinator.sqlite
 
 # Set an admin secret (required for creating invites via the API)
 set -x CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET (openssl rand -base64 32)
@@ -39,25 +39,37 @@ codemem sync coordinator serve [OPTIONS]
 
 | Option      | Default       | Description                            |
 |-------------|---------------|----------------------------------------|
-| `--db-path` | (required)    | Path to coordinator SQLite database    |
+| `--db-path` | `~/.codemem/coordinator.sqlite` | Path to coordinator SQLite database    |
 | `--host`    | `127.0.0.1`   | Bind address (`0.0.0.0` for all interfaces) |
 | `--port`    | `7347`        | Listen port                            |
 
 ### Team management
 
-Current status: the shipped TS CLI only exposes the invite/join-request management surface today. Full local
-group/device admin verbs are planned but not all shipped yet.
-
 ```fish
-# Current shipped commands
+# Create a group
+codemem sync coordinator group-create <group-id> --db-path <path>
+
+# List groups
+codemem sync coordinator list-groups --db-path <path>
+
+# Enroll a device directly (admin)
+codemem sync coordinator enroll-device <group-id> <device-id> \
+  --fingerprint <fingerprint> --public-key-file <path> --db-path <path>
+
+# List enrolled devices
+codemem sync coordinator list-devices <group-id> --db-path <path>
+
+# Rename, disable, or remove a device
+codemem sync coordinator rename-device <group-id> <device-id> --name "work-laptop" --db-path <path>
+codemem sync coordinator disable-device <group-id> <device-id> --db-path <path>
+codemem sync coordinator remove-device <group-id> <device-id> --db-path <path>
+
+# Invite / join-request commands
 codemem sync coordinator create-invite <group-id> --db-path <path>
 codemem sync coordinator list-join-requests <group-id> --db-path <path>
 codemem sync coordinator approve-join-request <request-id> --db-path <path>
 codemem sync coordinator deny-join-request <request-id> --db-path <path>
 ```
-
-Until local coordinator admin parity lands, group bootstrap and direct DB-backed inspection may still require `sqlite3`
-on the coordinator machine.
 
 ### Invite and join flow
 
@@ -104,7 +116,7 @@ docker run -d --name coordinator -p 7347:7347 -v coordinator-data:/data codemem-
 Initialize the group from the host:
 
 ```fish
-docker exec coordinator sqlite3 /data/coordinator.sqlite "insert into groups (group_id, display_name, created_at) values ('my-team', 'my-team', datetime('now')) on conflict(group_id) do nothing;"
+docker exec coordinator codemem sync coordinator group-create my-team --db-path /data/coordinator.sqlite
 ```
 
 ## Exposing the coordinator
@@ -188,8 +200,7 @@ local sync peer relationship. Direct sync still depends on explicit `sync_peers`
 
 ### Admin-driven enrollment
 
-The admin enrolls a teammate's device directly once the missing local admin CLI verbs land. Today, the practical TS
-path is invite-driven enrollment.
+The admin can enroll a teammate's device directly from the local coordinator machine:
 
 ```fish
 codemem sync coordinator enroll-device my-team <device-id> \
@@ -234,9 +245,8 @@ peer-to-peer sync remains the data path.
 **Coordinator not reachable**: verify the `--host` binding. Use `0.0.0.0` to listen on all interfaces. Check firewall
 rules and that the tunnel/funnel is active.
 
-**Device not enrolled**: use the invite flow for self-service enrollment. Until local coordinator admin parity lands,
-confirm coordinator enrollment from the coordinator machine with `sqlite3` or the pending join-request flow rather than
-assuming `list-devices` is already available in the TS CLI.
+**Device not enrolled**: run `codemem sync coordinator list-devices <group> --db-path <path>` to confirm enrollment.
+Use the invite flow for self-service enrollment.
 
 **Presence not refreshing**: check that the client's `sync_coordinator_url` matches the coordinator's reachable address
 and that `sync_coordinator_group` matches a group the device is enrolled in.
