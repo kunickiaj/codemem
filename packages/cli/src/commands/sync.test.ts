@@ -125,6 +125,13 @@ describe("formatSyncAttempt", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		expect(coordinator).toBeDefined();
 		expect(coordinator?.commands.map((command) => command.name())).toEqual([
+			"group-create",
+			"list-groups",
+			"enroll-device",
+			"list-devices",
+			"rename-device",
+			"disable-device",
+			"remove-device",
 			"serve",
 			"create-invite",
 			"import-invite",
@@ -137,6 +144,13 @@ describe("formatSyncAttempt", () => {
 	it("documents the coordinator command surface in help output", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		const help = coordinator?.helpInformation() ?? "";
+		expect(help).toContain("group-create");
+		expect(help).toContain("list-groups");
+		expect(help).toContain("enroll-device");
+		expect(help).toContain("list-devices");
+		expect(help).toContain("rename-device");
+		expect(help).toContain("disable-device");
+		expect(help).toContain("remove-device");
 		expect(help).toContain("serve");
 		expect(help).toContain("create-invite");
 		expect(help).toContain("import-invite");

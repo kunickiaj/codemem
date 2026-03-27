@@ -18,9 +18,16 @@ export {
 	resolveHookProject,
 } from "./claude-hooks.js";
 export {
+	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
+	coordinatorDisableDeviceAction,
+	coordinatorEnrollDeviceAction,
 	coordinatorImportInviteAction,
+	coordinatorListDevicesAction,
+	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
+	coordinatorRemoveDeviceAction,
+	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
 } from "./coordinator-actions.js";
 export { createCoordinatorApp } from "./coordinator-api.js";

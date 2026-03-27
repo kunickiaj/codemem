@@ -49,6 +49,131 @@ async function remoteRequest(
 	return payload;
 }
 
+export function coordinatorCreateGroupAction(opts: {
+	groupId: string;
+	displayName?: string | null;
+	dbPath?: string | null;
+}): Record<string, unknown> {
+	const groupId = String(opts.groupId ?? "").trim();
+	if (!groupId) throw new Error("Group id required.");
+	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		store.createGroup(groupId, opts.displayName ?? null);
+		return store.getGroup(groupId) ?? {};
+	} finally {
+		store.close();
+	}
+}
+
+export function coordinatorListGroupsAction(opts?: {
+	dbPath?: string | null;
+}): Record<string, unknown>[] {
+	const store = new CoordinatorStore(opts?.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return store.listGroups();
+	} finally {
+		store.close();
+	}
+}
+
+export function coordinatorEnrollDeviceAction(opts: {
+	groupId: string;
+	deviceId: string;
+	fingerprint: string;
+	publicKey: string;
+	displayName?: string | null;
+	dbPath?: string | null;
+}): Record<string, unknown> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	const fingerprint = String(opts.fingerprint ?? "").trim();
+	const publicKey = String(opts.publicKey ?? "").trim();
+	if (!groupId || !deviceId || !fingerprint || !publicKey) {
+		throw new Error("group_id, device_id, fingerprint, and public_key are required.");
+	}
+	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		if (!store.getGroup(groupId)) throw new Error(`Group not found: ${groupId}`);
+		store.enrollDevice(groupId, {
+			deviceId,
+			fingerprint,
+			publicKey,
+			displayName: opts.displayName ?? null,
+		});
+		return store.getEnrollment(groupId, deviceId) ?? {};
+	} finally {
+		store.close();
+	}
+}
+
+export function coordinatorListDevicesAction(opts: {
+	groupId: string;
+	includeDisabled?: boolean;
+	dbPath?: string | null;
+}): Record<string, unknown>[] {
+	const groupId = String(opts.groupId ?? "").trim();
+	if (!groupId) throw new Error("Group id required.");
+	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return store.listEnrolledDevices(groupId, opts.includeDisabled === true);
+	} finally {
+		store.close();
+	}
+}
+
+export function coordinatorRenameDeviceAction(opts: {
+	groupId: string;
+	deviceId: string;
+	displayName: string;
+	dbPath?: string | null;
+}): Record<string, unknown> | null {
+	const groupId = String(opts.groupId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	const displayName = String(opts.displayName ?? "").trim();
+	if (!groupId || !deviceId || !displayName) {
+		throw new Error("group_id, device_id, and display_name are required.");
+	}
+	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		const ok = store.renameDevice(groupId, deviceId, displayName);
+		return ok ? (store.getEnrollment(groupId, deviceId) ?? {}) : null;
+	} finally {
+		store.close();
+	}
+}
+
+export function coordinatorDisableDeviceAction(opts: {
+	groupId: string;
+	deviceId: string;
+	dbPath?: string | null;
+}): boolean {
+	const groupId = String(opts.groupId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
+	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return store.setDeviceEnabled(groupId, deviceId, false);
+	} finally {
+		store.close();
+	}
+}
+
+export function coordinatorRemoveDeviceAction(opts: {
+	groupId: string;
+	deviceId: string;
+	dbPath?: string | null;
+}): boolean {
+	const groupId = String(opts.groupId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
+	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return store.removeDevice(groupId, deviceId);
+	} finally {
+		store.close();
+	}
+}
+
 export async function coordinatorCreateInviteAction(opts: {
 	groupId: string;
 	coordinatorUrl?: string | null;

@@ -76,9 +76,16 @@ Backward compatibility:
 The preferred self-hosted deployment path is the first-party TypeScript coordinator service shipped in the main
 `codemem` CLI. Its HTTP surface is implemented with Hono and exposed through `codemem sync coordinator serve`.
 
-Current shipped coordinator CLI surface:
+Current shipped local coordinator CLI surface:
 
 ```fish
+codemem sync coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator list-groups --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem sync coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
 codemem sync coordinator create-invite team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem sync coordinator import-invite <invite>
@@ -90,13 +97,9 @@ codemem sync coordinator deny-join-request <request-id> --db-path ~/.codemem/coo
 This keeps the primary deployment path inside the main `codemem` artifact and reuses the current TypeScript sync
 auth/signature verification code directly.
 
-Current limitation:
-
-- local coordinator admin parity is incomplete in the shipped TS CLI
-- direct group/device administration commands are planned but not all available yet
-
-These management commands operate on the built-in local coordinator store only. Remote coordinator admin flows require
-a separate access-control model before they should be exposed over HTTP.
+These group/device management commands operate on the built-in local coordinator store only in the current TS CLI.
+Remote coordinator admin for invites and join-request review exists separately; remote device-admin parity remains a
+follow-up.
 
 ## Discovery groups vs sync peers
 
@@ -139,17 +142,8 @@ not accumulate as mixed `host:port` and `http://host:port` variants in local pee
 
 Built-in local coordinator management commands operate directly on the local SQLite store.
 
-For remote coordinators, the first admin model uses a separate operator-managed admin secret. Remote management commands
-reuse the same `codemem sync coordinator ...` verbs once those admin commands ship in the TS CLI, targeting a remote
-coordinator when you pass `--remote-url` and an admin secret (or configure `sync_coordinator_admin_secret`).
-
-Planned examples once admin parity ships:
-
-```fish
-codemem sync coordinator list-devices nerdworld --remote-url "https://coord.codemem.sh"
-codemem sync coordinator enroll-device nerdworld <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --remote-url "https://coord.codemem.sh"
-codemem sync coordinator rename-device nerdworld <device-id> --name "work-laptop" --remote-url "https://coord.codemem.sh"
-```
+For remote coordinators, the first admin model uses a separate operator-managed admin secret. The currently shipped TS
+CLI uses that remote admin path for invite creation and join-request review; remote device-admin parity is deferred.
 
 Device participation auth still uses the enrolled device keypair for `presence` and `peers` endpoints; the admin secret
 is only for remote mutation/listing endpoints.
