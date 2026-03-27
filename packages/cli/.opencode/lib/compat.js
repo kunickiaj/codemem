@@ -37,8 +37,8 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
 
   if (normalizedRunner === "uv") {
     return {
-      mode: "uv-dev",
-      action: "In your codemem repo, pull latest changes and run `uv sync`, then restart OpenCode.",
+      mode: "repo-dev",
+      action: "In your codemem repo, pull latest changes and run `pnpm install` and `pnpm build`, then restart OpenCode.",
       note: "detected dev repo mode",
     };
   }
@@ -60,7 +60,7 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
 
   return {
     mode: "generic",
-    action: "Run `uv tool install --upgrade codemem`, then restart OpenCode.",
+    action: "Update codemem using your normal install method, then restart OpenCode.",
     note: "fallback guidance",
   };
 };
@@ -138,34 +138,18 @@ export const resolveAutoUpdatePlan = ({ runner, runnerFrom }) => {
   }
 
   if (normalizedRunner === "uvx") {
-    if (!source) {
-      return {
-        allowed: false,
-        reason: "missing-source",
-        command: null,
-        commandText: null,
-      };
-    }
-    if (isPinnedGitSource(source)) {
-      return {
-        allowed: false,
-        reason: "pinned-source",
-        command: null,
-        commandText: null,
-      };
-    }
     return {
-      allowed: true,
-      reason: null,
-      command: ["uvx", "--refresh", "--from", source, "codemem", "version"],
-      commandText: "uvx --refresh --from <source> codemem version",
+      allowed: false,
+      reason: !source ? "missing-source" : isPinnedGitSource(source) ? "pinned-source" : "custom-source",
+      command: null,
+      commandText: null,
     };
   }
 
   return {
     allowed: true,
     reason: null,
-    command: ["uv", "tool", "install", "--upgrade", "codemem"],
-    commandText: "uv tool install --upgrade codemem",
+    command: ["npm", "install", "-g", "codemem@latest"],
+    commandText: "npm install -g codemem@latest",
   };
 };

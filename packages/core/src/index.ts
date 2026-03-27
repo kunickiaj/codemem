@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.21.2";
+export const VERSION = "0.22.0-alpha.0";
 
 export * as Api from "./api-types.js";
 export type { ClaudeHookAdapterEvent, ClaudeHookRawEventEnvelope } from "./claude-hooks.js";
