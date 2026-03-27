@@ -304,9 +304,17 @@ export async function loadProjects(): Promise<string[]> {
 
 export async function triggerSync(address?: string): Promise<void> {
   const payload = address ? { address } : {};
-  await fetch('/api/sync/run', {
+  const resp = await fetch('/api/sync/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  const text = await resp.text();
+  let body: any = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = {};
+  }
+  if (!resp.ok) throw new Error(body?.error || text || 'request failed');
 }

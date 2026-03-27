@@ -217,13 +217,28 @@ export function renderSyncPeers() {
     const syncBtn = el('button', null, 'Sync now') as HTMLButtonElement;
     syncBtn.disabled = !primaryAddress;
     syncBtn.addEventListener('click', async () => {
+      if (pendingScopeReview) {
+        const proceed = window.confirm(
+          `Sync scope review is still pending for ${displayName}. Continue with a manual sync anyway?`,
+        );
+        if (!proceed) return;
+      }
       syncBtn.disabled = true;
       syncBtn.textContent = 'Syncing\u2026';
       try {
         await api.triggerSync(primaryAddress);
-      } catch {}
-      syncBtn.disabled = false;
-      syncBtn.textContent = 'Sync now';
+        if (pendingScopeReview) {
+          showGlobalNotice(
+            `Triggered sync for ${displayName} before scope review was finished. Review scope in this card if you want tighter sharing rules.`,
+            'warning',
+          );
+        }
+      } catch (error) {
+        showGlobalNotice(friendlyError(error, 'Failed to trigger sync.'), 'warning');
+      } finally {
+        syncBtn.disabled = false;
+        syncBtn.textContent = 'Sync now';
+      }
     });
     actions.appendChild(syncBtn);
     const removeBtn = el('button', null, 'Remove peer') as HTMLButtonElement;
@@ -407,7 +422,7 @@ export function renderSyncPeers() {
         el(
           'div',
           'peer-meta',
-          'Scope review still pending. Save an override here or reset to global scope when you are done reviewing.',
+          'Scope review still pending. Save an override here or reset to global scope when you are done reviewing. Manual syncs can proceed, but they will use the current effective scope until you change it.',
         ),
       );
     }
