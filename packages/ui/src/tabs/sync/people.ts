@@ -196,6 +196,7 @@ export function renderSyncPeers() {
     const titleRow = el('div', 'peer-title');
     const peerId = peer.peer_device_id ? String(peer.peer_device_id) : '';
     const displayName = peer.name || (peerId ? peerId.slice(0, 8) : 'unknown');
+    const destructiveLabel = peer.name || peerId || displayName;
     const name = el('strong', null, displayName);
     if (peerId) name.title = peerId;
 
@@ -218,6 +219,25 @@ export function renderSyncPeers() {
       syncBtn.textContent = 'Sync now';
     });
     actions.appendChild(syncBtn);
+    const removeBtn = el('button', null, 'Remove peer') as HTMLButtonElement;
+    removeBtn.addEventListener('click', async () => {
+      if (!peerId) return;
+      if (!window.confirm(`Remove peer ${destructiveLabel}? This deletes the local sync peer entry.`)) return;
+      removeBtn.disabled = true;
+      removeBtn.textContent = 'Removing…';
+      try {
+        await api.deletePeer(peerId);
+        showGlobalNotice(`Removed peer ${destructiveLabel}.`);
+        await _loadSyncData();
+      } catch (error) {
+        showGlobalNotice(friendlyError(error, 'Failed to remove peer.'), 'warning');
+        removeBtn.textContent = 'Retry remove';
+      } finally {
+        removeBtn.disabled = false;
+        if (removeBtn.textContent === 'Removing…') removeBtn.textContent = 'Remove peer';
+      }
+    });
+    actions.appendChild(removeBtn);
     const toggleScopeBtn = el('button', null, 'Edit scope') as HTMLButtonElement;
     actions.appendChild(toggleScopeBtn);
 

@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { connect, initTestSchema, MemoryStore } from "@codemem/core";
+import { describe, expect, it, vi } from "vitest";
 import { syncCommand } from "./sync.js";
 import {
 	buildServeLifecycleArgs,
@@ -182,5 +186,53 @@ describe("formatSyncAttempt", () => {
 		expect(listRequests?.registeredArguments[0]?.required).toBe(false);
 		expect(createInvite?.helpInformation()).toContain("[group]");
 		expect(listRequests?.helpInformation()).toContain("[group]");
+	});
+
+	it("registers peer repair subcommands", () => {
+		const peers = syncCommand.commands.find((command) => command.name() === "peers");
+		expect(peers?.commands.map((command) => command.name())).toEqual(["remove"]);
+		expect(peers?.helpInformation()).toContain("remove");
+	});
+
+	it("removes a peer by exact name", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const rawDb = connect(dbPath);
+		initTestSchema(rawDb);
+		rawDb.close();
+		const store = new MemoryStore(dbPath);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const prevExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			store.db
+				.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
+				.run("peer-1", "work", new Date().toISOString());
+			store.db
+				.prepare(
+					"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-1", "cursor-1", "cursor-1", new Date().toISOString());
+			const peers = syncCommand.commands.find((command) => command.name() === "peers");
+			const remove = peers?.commands.find((command) => command.name() === "remove");
+			await remove?.parseAsync(["work", "--db-path", dbPath, "--json"], { from: "user" });
+			expect(logSpy).toHaveBeenCalledWith(
+				JSON.stringify({ ok: true, peer_device_id: "peer-1", name: "work" }, null, 2),
+			);
+			const row = store.db
+				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+				.get("peer-1");
+			const cursor = store.db
+				.prepare("SELECT peer_device_id FROM replication_cursors WHERE peer_device_id = ?")
+				.get("peer-1");
+			expect(row).toBeUndefined();
+			expect(cursor).toBeUndefined();
+			expect(process.exitCode).toBeUndefined();
+		} finally {
+			logSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+			process.exitCode = prevExitCode;
+		}
 	});
 });
