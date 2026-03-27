@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	coordinatorCreateGroupAction,
+	coordinatorCreateInviteAction,
 	coordinatorDisableDeviceAction,
 	coordinatorEnrollDeviceAction,
 	coordinatorListDevicesAction,
@@ -15,13 +16,18 @@ import {
 describe("coordinator local admin actions", () => {
 	let tmpDir: string;
 	let dbPath: string;
+	let prevConfigPath: string | undefined;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "coord-actions-test-"));
 		dbPath = join(tmpDir, "coordinator.sqlite");
+		prevConfigPath = process.env.CODEMEM_CONFIG;
+		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
 	});
 
 	afterEach(() => {
+		if (prevConfigPath == null) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = prevConfigPath;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -95,5 +101,59 @@ describe("coordinator local admin actions", () => {
 				dbPath,
 			}),
 		).toThrow("Group not found: missing");
+	});
+
+	it("warns when local invite coordinator URL looks private-only", async () => {
+		coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		const invite = await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "http://100.103.98.49:7347",
+			policy: "auto_admit",
+			ttlHours: 24,
+			dbPath,
+		});
+		expect(invite.warnings).toEqual([
+			"Invite uses a CGNAT/Tailscale-style coordinator IP address. This can be correct for Tailnet-only teams, but other teammates may not be able to join unless they share that network.",
+		]);
+	});
+
+	it("does not warn for public-looking invite coordinator URLs", async () => {
+		coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		const invite = await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "https://coord.example.test",
+			policy: "auto_admit",
+			ttlHours: 24,
+			dbPath,
+		});
+		expect(invite.warnings).toEqual([]);
+	});
+
+	it("warns when local invite coordinator URL uses private IPv6 space", async () => {
+		coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		const invite = await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "http://[fd7a:115c:a1e0::1234]:7347",
+			policy: "auto_admit",
+			ttlHours: 24,
+			dbPath,
+		});
+		expect(invite.warnings).toEqual([
+			"Invite uses a ULA/Tailnet-style coordinator IPv6 address. This can be correct for private-network teams, but other teammates may not be able to join unless they share that network.",
+		]);
+	});
+
+	it("warns when local invite coordinator URL uses link-local IPv6 space", async () => {
+		coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		const invite = await coordinatorCreateInviteAction({
+			groupId: "team-a",
+			coordinatorUrl: "http://[fe80::1]:7347",
+			policy: "auto_admit",
+			ttlHours: 24,
+			dbPath,
+		});
+		expect(invite.warnings).toEqual([
+			"Invite uses a link-local coordinator IPv6 address. It usually only works on the same local network segment.",
+		]);
 	});
 });

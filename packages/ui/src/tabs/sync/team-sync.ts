@@ -424,6 +424,8 @@ export function initTeamSyncEvents(
       syncInviteOutput.focus();
       syncInviteOutput.select();
       showGlobalNotice('Invite created. Copy the text above and share it with your teammate.');
+      const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+      warnings.forEach((warning) => showGlobalNotice(String(warning), 'warning'));
     } catch (error) {
       showGlobalNotice(friendlyError(error, 'Failed to create invite.'), 'warning');
     } finally {
