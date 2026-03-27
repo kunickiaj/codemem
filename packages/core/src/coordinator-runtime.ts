@@ -294,6 +294,7 @@ export async function coordinatorStatusSnapshot(
 		fresh_peer_count: 0,
 		stale_peer_count: 0,
 		discovered_peer_count: 0,
+		discovered_devices: [],
 	};
 	const cacheKey = presenceCacheKey(store, config);
 	const now = Date.now();
@@ -337,6 +338,16 @@ export async function coordinatorStatusSnapshot(
 		snapshot.discovered_peer_count = peers.length;
 		snapshot.fresh_peer_count = peers.filter((peer) => !peer.stale).length;
 		snapshot.stale_peer_count = peers.filter((peer) => Boolean(peer.stale)).length;
+		snapshot.discovered_devices = peers.map((peer) => ({
+			device_id: peer.device_id,
+			display_name: peer.display_name ?? null,
+			fingerprint: peer.fingerprint ?? null,
+			addresses: Array.isArray(peer.addresses) ? peer.addresses : [],
+			groups: Array.isArray(peer.groups) ? peer.groups : [],
+			last_seen_at: peer.last_seen_at ?? null,
+			expires_at: peer.expires_at ?? null,
+			stale: Boolean(peer.stale),
+		}));
 	} catch (error) {
 		snapshot.lookup_error = error instanceof Error ? error.message : String(error);
 	}

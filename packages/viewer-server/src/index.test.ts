@@ -1618,6 +1618,167 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns read-only coordinator discovered devices and counts", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://1.2.3.4:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									addresses: ["http://10.0.0.5:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+								{
+									device_id: "peer-stale",
+									display_name: "Stale Device",
+									fingerprint: "fp-stale",
+									addresses: [],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() - 60_000).toISOString(),
+									stale: true,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, any>;
+				expect(body.coordinator.discovered_peer_count).toBe(2);
+				expect(body.coordinator.fresh_peer_count).toBe(1);
+				expect(body.coordinator.stale_peer_count).toBe(1);
+				expect(body.coordinator.discovered_devices).toEqual([
+					expect.objectContaining({
+						device_id: "peer-fresh",
+						display_name: "Fresh Device",
+						stale: false,
+					}),
+					expect.objectContaining({
+						device_id: "peer-stale",
+						display_name: "Stale Device",
+						stale: true,
+					}),
+				]);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("redacts discovered coordinator device metadata without diagnostics", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://1.2.3.4:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									groups: ["team-a"],
+									addresses: ["http://10.0.0.5:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, any>;
+				expect(body.coordinator.discovered_devices).toEqual([
+					expect.objectContaining({
+						device_id: "peer-fresh",
+						display_name: "Fresh Device",
+						groups: ["team-a"],
+						stale: false,
+						fingerprint: null,
+						addresses: [],
+					}),
+				]);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
 		it("returns real legacy device and sharing review summaries", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
