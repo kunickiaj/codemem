@@ -17,6 +17,7 @@ import {
   actorMergeNote,
   createChipEditor,
   openPeerScopeEditors,
+  consumePeerScopeReviewRequest,
   hideSkeleton,
 } from './helpers';
 
@@ -328,6 +329,7 @@ export function renderSyncPeers() {
     const includeEditor = createChipEditor(includeList, 'Add included project', 'All projects');
     const excludeEditor = createChipEditor(excludeList, 'Add excluded project', 'No exclusions');
     const scopeEditorOpen = openPeerScopeEditors.has(peerId);
+    const scopeReviewRequested = consumePeerScopeReviewRequest(peerId);
     const editorWrap = el('div', `peer-scope-editor-wrap${scopeEditorOpen ? '' : ' collapsed'}`);
     if (!scopeEditorOpen) editorWrap.inert = true;
     const inputRow = el('div', 'peer-scope-row');
@@ -383,6 +385,16 @@ export function renderSyncPeers() {
       toggleScopeBtn.setAttribute('aria-expanded', String(isCollapsed));
       toggleScopeBtn.textContent = isCollapsed ? 'Hide scope editor' : 'Edit scope';
     });
+    if (scopeReviewRequested) {
+      scopePanel.prepend(
+        el(
+          'div',
+          'peer-meta',
+          'Review this device\'s sync scope now. Global defaults apply until you save an override here.',
+        ),
+      );
+      queueMicrotask(() => card.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+    }
     scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);
 
     titleRow.append(name, actions);

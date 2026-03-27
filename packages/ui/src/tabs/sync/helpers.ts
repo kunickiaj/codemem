@@ -23,6 +23,21 @@ export function setTeamInvitePanelOpen(v: boolean) {
 }
 
 export const openPeerScopeEditors = new Set<string>();
+const pendingPeerScopeReviewIds = new Set<string>();
+
+export function requestPeerScopeReview(peerDeviceId: string) {
+  const value = String(peerDeviceId || '').trim();
+  if (!value) return;
+  pendingPeerScopeReviewIds.add(value);
+  openPeerScopeEditors.add(value);
+}
+
+export function consumePeerScopeReviewRequest(peerDeviceId: string): boolean {
+  const value = String(peerDeviceId || '').trim();
+  if (!value || !pendingPeerScopeReviewIds.has(value)) return false;
+  pendingPeerScopeReviewIds.delete(value);
+  return true;
+}
 
 /* ── Text helpers ────────────────────────────────────────── */
 

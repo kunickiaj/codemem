@@ -12,6 +12,7 @@ import {
   setTeamInvitePanelOpen,
   hideSkeleton,
   redactAddress,
+  requestPeerScopeReview,
 } from './helpers';
 
 /* ── DOM placement helpers ───────────────────────────────── */
@@ -195,9 +196,14 @@ export function renderTeamSync() {
       const row = el('div', 'actor-row');
       const details = el('div', 'actor-details');
       const title = el('div', 'actor-title');
+      const rowActions = el('div', 'actor-actions');
       const deviceId = String(device.device_id || '').trim();
       const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
+      const fingerprint = String(device.fingerprint || '').trim();
       const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || '') === deviceId);
+      const pairedFingerprint = String(pairedPeer?.fingerprint || '').trim();
+      const hasConflict = Boolean(pairedPeer) && Boolean(fingerprint) && Boolean(pairedFingerprint) && pairedFingerprint !== fingerprint;
+      const canAccept = Boolean(deviceId) && Boolean(fingerprint) && !pairedPeer && !device.stale;
       title.append(el('strong', null, displayName));
       title.appendChild(
         el(
@@ -207,7 +213,11 @@ export function renderTeamSync() {
         ),
       );
       title.appendChild(
-        el('span', 'badge actor-badge', pairedPeer ? 'Paired locally' : 'Not paired locally'),
+        el(
+          'span',
+          'badge actor-badge',
+          hasConflict ? 'Conflicts with local peer' : pairedPeer ? 'Paired locally' : 'Not paired locally',
+        ),
       );
       const addresses = Array.isArray(device.addresses) ? device.addresses : [];
       const addressLabel = addresses.length
@@ -219,13 +229,43 @@ export function renderTeamSync() {
             .join(' · ')
         : 'No fresh addresses';
       const noteParts = [deviceId, addressLabel];
-      if (pairedPeer?.last_error) {
+      if (hasConflict) {
+        noteParts.push('repair the local peer before accepting this discovered device');
+      } else if (pairedPeer?.last_error) {
         noteParts.push(`paired error: ${String(pairedPeer.last_error)}`);
       } else if (pairedPeer?.status?.peer_state) {
         noteParts.push(`paired status: ${String(pairedPeer.status.peer_state)}`);
       }
       details.append(title, el('div', 'peer-meta', noteParts.join(' · ')));
-      row.appendChild(details);
+      if (canAccept) {
+        const acceptBtn = el('button', 'settings-button', 'Accept peer') as HTMLButtonElement;
+        acceptBtn.addEventListener('click', async () => {
+          acceptBtn.disabled = true;
+          acceptBtn.textContent = 'Accepting…';
+          try {
+            await api.acceptDiscoveredPeer(deviceId, fingerprint);
+            requestPeerScopeReview(deviceId);
+            showGlobalNotice(
+              `Accepted ${displayName}. Its scope editor is now open in People so you can review sync scope next.`,
+            );
+            await _loadSyncData();
+          } catch (error) {
+            showGlobalNotice(friendlyError(error, 'Failed to accept discovered peer.'), 'warning');
+            acceptBtn.textContent = 'Retry accept';
+          } finally {
+            acceptBtn.disabled = false;
+            if (acceptBtn.textContent === 'Accepting…') acceptBtn.textContent = 'Accept peer';
+          }
+        });
+        rowActions.appendChild(acceptBtn);
+      } else if (!pairedPeer && device.stale) {
+        rowActions.appendChild(el('div', 'peer-meta', 'Wait for a fresh coordinator presence update.'));
+      } else if (hasConflict) {
+        rowActions.appendChild(el('div', 'peer-meta', 'Remove or repair the conflicting local peer in People first.'));
+      } else if (pairedPeer) {
+        rowActions.appendChild(el('div', 'peer-meta', 'Manage this peer in People.'));
+      }
+      row.append(details, rowActions);
       discoveredList.appendChild(row);
     });
   }

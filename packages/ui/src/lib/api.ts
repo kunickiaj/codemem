@@ -226,6 +226,26 @@ export async function deletePeer(peerDeviceId: string): Promise<any> {
   return payload;
 }
 
+export async function acceptDiscoveredPeer(peerDeviceId: string, fingerprint: string): Promise<any> {
+  const resp = await fetch('/api/sync/peers/accept-discovered', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      peer_device_id: peerDeviceId,
+      fingerprint,
+    }),
+  });
+  const text = await resp.text();
+  let payload: any = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = {};
+  }
+  if (!resp.ok) throw new Error(payload?.detail || payload?.error || text || 'request failed');
+  return payload;
+}
+
 export async function createActor(displayName: string): Promise<any> {
   const resp = await fetch('/api/sync/actors', {
     method: 'POST',
