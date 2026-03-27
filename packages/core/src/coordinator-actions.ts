@@ -15,6 +15,7 @@ import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
 const VALID_INVITE_POLICIES = new Set(["auto_admit", "approval_required"]);
+const INVITE_IMPORT_TIMEOUT_S = 10;
 
 function coordinatorRemoteTarget(config = readCodememConfigFile()): {
 	remoteUrl: string | null;
@@ -127,6 +128,23 @@ function inviteUrlWarnings(rawUrl: string | null | undefined): string[] {
 		];
 	}
 	return [];
+}
+
+function inviteImportTransportError(error: unknown, coordinatorUrl: string): Error {
+	const name = typeof error === "object" && error && "name" in error ? String(error.name) : "";
+	const message = error instanceof Error ? error.message : String(error ?? "");
+	const base = buildBaseUrl(coordinatorUrl);
+	if (name === "TimeoutError" || /timed? out/i.test(message)) {
+		return new Error(
+			`Invite import timed out contacting the coordinator at ${base}. Check that this machine can reach that URL and try again.`,
+		);
+	}
+	if (name === "TypeError" || /fetch failed|network/i.test(message)) {
+		return new Error(
+			`Invite import could not reach the coordinator at ${base}. Check the invite URL and this machine's network access before retrying.`,
+		);
+	}
+	return error instanceof Error ? error : new Error(message);
 }
 
 export function coordinatorCreateGroupAction(opts: {
@@ -353,20 +371,26 @@ export async function coordinatorImportInviteAction(opts: {
 	if (!coordinatorUrl) throw new Error("Invite is missing a coordinator URL.");
 	const config = readCodememConfigFile();
 	const displayName = String(config.actor_display_name ?? deviceId).trim() || deviceId;
-	const [status, response] = await requestJson(
-		"POST",
-		`${coordinatorUrl.replace(/\/+$/, "")}/v1/join`,
-		{
-			body: {
-				token: String(payload.token),
-				device_id: deviceId,
-				public_key: publicKey,
-				fingerprint,
-				display_name: displayName,
+	let status = 0;
+	let response: Record<string, unknown> | null = null;
+	try {
+		[status, response] = await requestJson(
+			"POST",
+			`${coordinatorUrl.replace(/\/+$/, "")}/v1/join`,
+			{
+				body: {
+					token: String(payload.token),
+					device_id: deviceId,
+					public_key: publicKey,
+					fingerprint,
+					display_name: displayName,
+				},
+				timeoutS: INVITE_IMPORT_TIMEOUT_S,
 			},
-			timeoutS: 3,
-		},
-	);
+		);
+	} catch (error) {
+		throw inviteImportTransportError(error, coordinatorUrl);
+	}
 	if (status < 200 || status >= 300) {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
 		throw new Error(`Invite import failed (${status}): ${detail}`);

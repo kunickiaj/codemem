@@ -2001,6 +2001,109 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns a clearer timeout error when invite import cannot reach the coordinator in time", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const invitePayload = {
+				v: 1,
+				kind: "coordinator_team_invite",
+				coordinator_url: "https://coord.example.test",
+				group_id: "team-a",
+				policy: "approval_required",
+				token: "tok-123",
+				expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+				team_name: "Team A",
+			};
+			const invite = Buffer.from(JSON.stringify(invitePayload), "utf8").toString("base64url");
+			const fetchMock = vi.fn(async () => {
+				const error = new Error("The operation was aborted due to timeout");
+				Object.assign(error, { name: "TimeoutError" });
+				throw error;
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Adam" }));
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite }),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					error:
+						"Invite import timed out contacting the coordinator at https://coord.example.test. Check that this machine can reach that URL and try again.",
+				});
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("returns a clearer reachability error when invite import cannot contact the coordinator", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const invitePayload = {
+				v: 1,
+				kind: "coordinator_team_invite",
+				coordinator_url: "https://coord.example.test",
+				group_id: "team-a",
+				policy: "approval_required",
+				token: "tok-123",
+				expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+				team_name: "Team A",
+			};
+			const invite = Buffer.from(JSON.stringify(invitePayload), "utf8").toString("base64url");
+			const fetchMock = vi.fn(async () => {
+				const error = new TypeError("fetch failed");
+				throw error;
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Adam" }));
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite }),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					error:
+						"Invite import could not reach the coordinator at https://coord.example.test. Check the invite URL and this machine's network access before retrying.",
+				});
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
 		it("reviews join requests through the viewer route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
