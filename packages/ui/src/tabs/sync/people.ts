@@ -233,9 +233,19 @@ export function renderSyncPeers() {
             `Triggered sync for ${displayName} before scope review was finished. Review scope in this card if you want tighter sharing rules.`,
             'warning',
           );
+        } else {
+          showGlobalNotice(`Started sync with ${displayName}.`);
         }
       } catch (error) {
         showGlobalNotice(friendlyError(error, 'Failed to trigger sync.'), 'warning');
+        syncBtn.disabled = false;
+        syncBtn.textContent = 'Sync now';
+        return;
+      }
+      try {
+        await _loadSyncData();
+      } catch {
+        showGlobalNotice('Sync started, but the local status view did not refresh yet.', 'warning');
       } finally {
         syncBtn.disabled = false;
         syncBtn.textContent = 'Sync now';
