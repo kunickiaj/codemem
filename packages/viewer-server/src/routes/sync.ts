@@ -21,6 +21,8 @@ import {
 	listCoordinatorJoinRequests,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
+	lookupCoordinatorPeers,
+	mergeAddresses,
 	readCoordinatorSyncConfig,
 	recordNonce,
 	schema,
@@ -231,6 +233,116 @@ function redactCoordinatorStatus(
 		...coordinator,
 		discovered_devices: discovered,
 	};
+}
+
+async function acceptDiscoveredPeer(
+	store: MemoryStore,
+	input: { peerDeviceId: string; fingerprint: string },
+): Promise<
+	| { ok: true; peer_device_id: string; created: boolean; updated: boolean; name: string | null }
+	| { ok: false; status: number; error: string; detail: string }
+> {
+	const config = readCoordinatorSyncConfig();
+	if (
+		!config.syncEnabled ||
+		!config.syncCoordinatorUrl ||
+		config.syncCoordinatorGroups.length === 0
+	) {
+		return {
+			ok: false,
+			status: 400,
+			error: "coordinator_not_configured",
+			detail: "Coordinator must be configured before accepting discovered peers.",
+		};
+	}
+	const discovered = await lookupCoordinatorPeers(store, config);
+	const match = discovered.find(
+		(peer) =>
+			String(peer.device_id ?? "").trim() === input.peerDeviceId &&
+			String(peer.fingerprint ?? "").trim() === input.fingerprint,
+	);
+	if (!match) {
+		return {
+			ok: false,
+			status: 404,
+			error: "discovered_peer_not_found",
+			detail: "That discovered device is no longer available. Refresh sync status and try again.",
+		};
+	}
+	const nextFingerprint = String(match.fingerprint ?? "").trim();
+	const nextName = String(match.display_name ?? "").trim() || null;
+	const nextAddresses = Array.isArray(match.addresses)
+		? match.addresses.filter((value): value is string => typeof value === "string")
+		: [];
+	const d = drizzle(store.db, { schema });
+	const now = new Date().toISOString();
+	return store.db.transaction(() => {
+		const existing = d
+			.select({
+				peer_device_id: schema.syncPeers.peer_device_id,
+				pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
+				addresses_json: schema.syncPeers.addresses_json,
+			})
+			.from(schema.syncPeers)
+			.where(eq(schema.syncPeers.peer_device_id, input.peerDeviceId))
+			.get();
+		const existingFingerprint = String(existing?.pinned_fingerprint ?? "").trim();
+		if (existing && existingFingerprint && existingFingerprint !== nextFingerprint) {
+			return {
+				ok: false as const,
+				status: 409,
+				error: "peer_conflict",
+				detail:
+					"An existing peer with this device id is pinned to a different fingerprint. Remove or repair the old peer before accepting this discovered device.",
+			};
+		}
+		const existingAddresses = (() => {
+			try {
+				const raw = JSON.parse(String(existing?.addresses_json ?? "[]"));
+				return Array.isArray(raw)
+					? raw.filter((value): value is string => typeof value === "string")
+					: [];
+			} catch {
+				return [];
+			}
+		})();
+		const addressesJson = JSON.stringify(mergeAddresses(existingAddresses, nextAddresses));
+		if (!existing) {
+			d.insert(schema.syncPeers)
+				.values({
+					peer_device_id: input.peerDeviceId,
+					name: nextName,
+					pinned_fingerprint: nextFingerprint || null,
+					addresses_json: addressesJson,
+					created_at: now,
+					last_seen_at: now,
+				})
+				.run();
+			return {
+				ok: true as const,
+				peer_device_id: input.peerDeviceId,
+				created: true,
+				updated: false,
+				name: nextName,
+			};
+		}
+		d.update(schema.syncPeers)
+			.set({
+				name: nextName,
+				pinned_fingerprint: nextFingerprint || existing.pinned_fingerprint || null,
+				addresses_json: addressesJson,
+				last_seen_at: now,
+			})
+			.where(eq(schema.syncPeers.peer_device_id, input.peerDeviceId))
+			.run();
+		return {
+			ok: true as const,
+			peer_device_id: input.peerDeviceId,
+			created: false,
+			updated: true,
+			name: nextName,
+		};
+	})();
 }
 
 function isSharedVisibility(payload: Record<string, unknown> | null): boolean {
@@ -1052,6 +1164,45 @@ export function syncRoutes(
 				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 				.run();
 			return c.json({ ok: true });
+		}
+	});
+
+	app.post("/api/sync/peers/accept-discovered", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const peerDeviceId = String(body.peer_device_id ?? "").trim();
+		const fingerprint = String(body.fingerprint ?? "").trim();
+		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
+		if (!fingerprint) return c.json({ error: "fingerprint required" }, 400);
+		try {
+			const result = await acceptDiscoveredPeer(store, { peerDeviceId, fingerprint });
+			if (!result.ok) {
+				return c.json(
+					{ error: result.error, detail: result.detail },
+					{ status: result.status as 400 | 404 | 409 },
+				);
+			}
+			return c.json({
+				ok: true,
+				peer_device_id: result.peer_device_id,
+				created: result.created,
+				updated: result.updated,
+				name: result.name,
+				needs_scope_review: true,
+			});
+		} catch (error) {
+			return c.json(
+				{
+					error: "coordinator_lookup_failed",
+					detail: error instanceof Error ? error.message : String(error),
+				},
+				{ status: 502 },
+			);
 		}
 	});
 
