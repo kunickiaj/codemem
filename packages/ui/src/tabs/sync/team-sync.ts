@@ -1,7 +1,7 @@
 /* Team sync card — coordinator onboarding, invites, join requests. */
 
 import { el, copyToClipboard } from '../../lib/dom';
-import { state, setFeedScopeFilter } from '../../lib/state';
+import { state, setFeedScopeFilter, isSyncRedactionEnabled } from '../../lib/state';
 import * as api from '../../lib/api';
 import { showGlobalNotice } from '../../lib/notice';
 import { markFieldError, clearFieldError, friendlyError } from '../../lib/form';
@@ -11,6 +11,7 @@ import {
   teamInvitePanelOpen,
   setTeamInvitePanelOpen,
   hideSkeleton,
+  redactAddress,
 } from './helpers';
 
 /* ── DOM placement helpers ───────────────────────────────── */
@@ -105,6 +106,9 @@ export function renderTeamSync() {
   const toggleAdmin = document.getElementById('syncToggleAdmin') as HTMLButtonElement | null;
   const joinPanel = document.getElementById('syncJoinPanel');
   const joinRequests = document.getElementById('syncJoinRequests');
+  const discoveredPanel = document.getElementById('syncCoordinatorDiscovered');
+  const discoveredMeta = document.getElementById('syncCoordinatorDiscoveredMeta');
+  const discoveredList = document.getElementById('syncCoordinatorDiscoveredList');
   if (!meta || !setupPanel || !list || !actions) return;
   hideSkeleton('syncTeamSkeleton');
   // Move panels back to their home sections BEFORE clearing, so they survive the wipe
@@ -113,6 +117,7 @@ export function renderTeamSync() {
   list.textContent = '';
   actions.textContent = '';
   if (joinRequests) joinRequests.textContent = '';
+  if (discoveredList) discoveredList.textContent = '';
   setInviteOutputVisibility();
   const coordinator = state.lastSyncCoordinator;
   const configured = Boolean(coordinator && coordinator.configured);
@@ -124,6 +129,7 @@ export function renderTeamSync() {
     list.hidden = true;
     actions.hidden = true;
     if (joinRequests) joinRequests.hidden = true;
+    if (discoveredPanel) discoveredPanel.hidden = true;
     if (invitePanel) invitePanel.hidden = !adminSetupExpanded;
     if (toggleAdmin) {
       toggleAdmin.textContent = adminSetupExpanded
@@ -136,6 +142,7 @@ export function renderTeamSync() {
   list.hidden = false;
   actions.hidden = false;
   if (joinRequests) joinRequests.hidden = false;
+  if (discoveredPanel) discoveredPanel.hidden = true;
   const presenceLabel =
     coordinator.presence_status === 'posted'
       ? 'Connected'
@@ -152,7 +159,7 @@ export function renderTeamSync() {
   );
   const metricParts = [
     `Paired devices: ${Number(coordinator.paired_peer_count || 0)}`,
-    `Discovered: ${Number(coordinator.fresh_peer_count || 0)}`,
+    `Fresh discovered: ${Number(coordinator.fresh_peer_count || 0)}`,
   ];
   if (Number(coordinator.stale_peer_count || 0) > 0) {
     metricParts.push(`Inactive: ${Number(coordinator.stale_peer_count || 0)}`);
@@ -160,6 +167,68 @@ export function renderTeamSync() {
   statusLine.append(statusLabel, statusBadge);
   statusRow.append(statusLine, el('div', 'sync-team-metrics', metricParts.join(' \u00b7 ')));
   list.appendChild(statusRow);
+
+  const localPeers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
+  const unhealthyPeers = localPeers.filter((peer) => {
+    const status = peer?.status || {};
+    return Boolean(peer?.has_error) || ['offline', 'stale', 'degraded'].includes(String(status.peer_state || ''));
+  });
+  if (unhealthyPeers.length) {
+    const row = el('div', 'sync-action');
+    const textWrap = el('div', 'sync-action-text');
+    textWrap.textContent = `${unhealthyPeers.length} paired device${unhealthyPeers.length === 1 ? '' : 's'} look stale or unhealthy.`;
+    textWrap.appendChild(
+      el('span', 'sync-action-command', 'Use Remove peer in People or codemem sync peers remove <peer> before re-pairing.'),
+    );
+    row.appendChild(textWrap);
+    actions.appendChild(row);
+  }
+
+  const discoveredDevices = Array.isArray(coordinator.discovered_devices)
+    ? coordinator.discovered_devices
+    : [];
+  if (discoveredPanel && discoveredMeta && discoveredList && discoveredDevices.length) {
+    discoveredPanel.hidden = false;
+    discoveredMeta.textContent =
+      'These devices are visible through coordinator discovery only. They are not active sync peers unless you pair them.';
+    discoveredDevices.forEach((device) => {
+      const row = el('div', 'actor-row');
+      const details = el('div', 'actor-details');
+      const title = el('div', 'actor-title');
+      const deviceId = String(device.device_id || '').trim();
+      const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
+      const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || '') === deviceId);
+      title.append(el('strong', null, displayName));
+      title.appendChild(
+        el(
+          'span',
+          `badge actor-badge${device.stale ? '' : ' local'}`,
+          device.stale ? 'Inactive' : 'Fresh',
+        ),
+      );
+      title.appendChild(
+        el('span', 'badge actor-badge', pairedPeer ? 'Paired locally' : 'Not paired locally'),
+      );
+      const addresses = Array.isArray(device.addresses) ? device.addresses : [];
+      const addressLabel = addresses.length
+        ? addresses
+            .map((address) =>
+              isSyncRedactionEnabled() ? redactAddress(String(address || '')) : String(address || ''),
+            )
+            .filter(Boolean)
+            .join(' · ')
+        : 'No fresh addresses';
+      const noteParts = [deviceId, addressLabel];
+      if (pairedPeer?.last_error) {
+        noteParts.push(`paired error: ${String(pairedPeer.last_error)}`);
+      } else if (pairedPeer?.status?.peer_state) {
+        noteParts.push(`paired status: ${String(pairedPeer.status.peer_state)}`);
+      }
+      details.append(title, el('div', 'peer-meta', noteParts.join(' · ')));
+      row.appendChild(details);
+      discoveredList.appendChild(row);
+    });
+  }
 
   const inviteToggleRow = el('div', 'sync-action');
   const inviteToggleText = el('div', 'sync-action-text');

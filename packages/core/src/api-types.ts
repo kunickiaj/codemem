@@ -457,12 +457,32 @@ export interface ApiLegacyDeviceItem {
  * Coordinator status snapshot (from coordinator.status_snapshot()).
  * Shape varies by state — fields are optional to cover enabled/disabled modes.
  */
+export interface ApiCoordinatorDiscoveredDevice {
+	device_id: string;
+	display_name?: string | null;
+	fingerprint?: string | null;
+	addresses?: string[];
+	groups?: string[];
+	last_seen_at?: string | null;
+	expires_at?: string | null;
+	stale?: boolean;
+}
+
 export interface ApiCoordinatorStatus {
 	enabled: boolean;
 	configured: boolean;
 	coordinator_url?: string | null;
 	groups?: string[];
 	group_id?: string | null;
+	presence_status?: string | null;
+	presence_error?: string | null;
+	lookup_error?: string | null;
+	advertised_addresses?: string[];
+	paired_peer_count?: number;
+	fresh_peer_count?: number;
+	stale_peer_count?: number;
+	discovered_peer_count?: number;
+	discovered_devices?: ApiCoordinatorDiscoveredDevice[];
 	last_sync_at?: string | null;
 	last_error?: string | null;
 }

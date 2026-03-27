@@ -206,6 +206,33 @@ function parseOpPayload(op: { payload_json: string | null }): Record<string, unk
 	}
 }
 
+function redactCoordinatorStatus(
+	coordinator: Record<string, unknown>,
+	showDiag: boolean,
+): Record<string, unknown> {
+	if (showDiag) return coordinator;
+	const discovered = Array.isArray(coordinator.discovered_devices)
+		? coordinator.discovered_devices.map((item) => {
+				if (!item || typeof item !== "object") return item;
+				const record = item as Record<string, unknown>;
+				return {
+					device_id: record.device_id,
+					display_name: record.display_name ?? null,
+					groups: Array.isArray(record.groups) ? record.groups : [],
+					last_seen_at: record.last_seen_at ?? null,
+					expires_at: record.expires_at ?? null,
+					stale: Boolean(record.stale),
+					fingerprint: null,
+					addresses: [],
+				};
+			})
+		: [];
+	return {
+		...coordinator,
+		discovered_devices: discovered,
+	};
+}
+
 function isSharedVisibility(payload: Record<string, unknown> | null): boolean {
 	if (!payload) return false;
 	let visibility = String(payload.visibility ?? "")
@@ -817,7 +844,10 @@ export function syncRoutes(
 			};
 			const legacyDevices = store.claimableLegacyDeviceIds();
 			const sharingReview = store.sharingReviewSummary(project);
-			const coordinator = await coordinatorStatusSnapshot(store, config);
+			const coordinator = redactCoordinatorStatus(
+				await coordinatorStatusSnapshot(store, config),
+				showDiag,
+			);
 			let joinRequests: Record<string, unknown>[] = [];
 			if (includeJoinRequests && config.syncCoordinatorAdminSecret) {
 				try {
