@@ -8,6 +8,8 @@ The coordinator HTTP service is Hono-based, but the supported deployment path to
 the recommended sequence is to validate E2E flows here first, then adapt that proven coordinator surface to the target
 Cloudflare runtime.
 
+If you want the fastest clean validation path, use `docs/coordinator-e2e-runbook.md` alongside this guide.
+
 ## Quick start (native)
 
 ```fish
