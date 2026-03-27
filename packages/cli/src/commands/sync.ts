@@ -76,6 +76,27 @@ interface SyncPairOptions {
 	dbPath?: string;
 }
 
+function resolvePeerMatch(
+	db: ReturnType<typeof drizzle>,
+	peerRef: string,
+): { peer_device_id: string; name: string | null } | null | "ambiguous" {
+	const trimmed = peerRef.trim();
+	if (!trimmed) return null;
+	const byId = db
+		.select({ peer_device_id: schema.syncPeers.peer_device_id, name: schema.syncPeers.name })
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, trimmed))
+		.get();
+	if (byId) return byId;
+	const byName = db
+		.select({ peer_device_id: schema.syncPeers.peer_device_id, name: schema.syncPeers.name })
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.name, trimmed))
+		.all();
+	if (byName.length > 1) return "ambiguous";
+	return byName[0] ?? null;
+}
+
 function readCoordinatorPublicKey(opts: { publicKey?: string; publicKeyFile?: string }): string {
 	const inline = String(opts.publicKey ?? "").trim();
 	const filePath = String(opts.publicKeyFile ?? "").trim();
@@ -152,7 +173,7 @@ async function runServeLifecycle(
 	}
 	const args = buildServeLifecycleArgs(action, opts, process.argv[1] ?? "", process.execArgv);
 	await new Promise<void>((resolve, reject) => {
-		const child = spawn(process.execPath, args, {
+		const child: ReturnType<typeof spawn> = spawn(process.execPath, args, {
 			cwd: process.cwd(),
 			stdio: "inherit",
 			env: {
@@ -161,7 +182,7 @@ async function runServeLifecycle(
 			},
 		});
 		child.once("error", reject);
-		child.once("exit", (code) => {
+		child.once("exit", (code: number | null) => {
 			if (code && code !== 0) {
 				process.exitCode = code;
 			}
@@ -752,52 +773,99 @@ syncCommand.addCommand(
 );
 
 // codemem sync peers
-syncCommand.addCommand(
-	new Command("peers")
+const peersCommand = new Command("peers")
+	.configureHelp(helpStyle)
+	.description("List known sync peers")
+	.option("--db <path>", "database path")
+	.option("--db-path <path>", "database path")
+	.option("--json", "output as JSON")
+	.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
+		const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+		try {
+			const d = drizzle(store.db, { schema });
+			const peers = d
+				.select({
+					peer_device_id: schema.syncPeers.peer_device_id,
+					name: schema.syncPeers.name,
+					addresses: schema.syncPeers.addresses_json,
+					last_sync_at: schema.syncPeers.last_sync_at,
+					last_error: schema.syncPeers.last_error,
+				})
+				.from(schema.syncPeers)
+				.orderBy(desc(schema.syncPeers.last_sync_at))
+				.all();
+
+			if (opts.json) {
+				console.log(JSON.stringify(peers, null, 2));
+				return;
+			}
+
+			p.intro("codemem sync peers");
+			if (peers.length === 0) {
+				p.outro("No peers configured");
+				return;
+			}
+			for (const peer of peers) {
+				const label = peer.name || peer.peer_device_id;
+				const addrs = peer.addresses || "(no addresses)";
+				p.log.message(
+					`${label}\n  addresses: ${addrs}\n  last_sync: ${peer.last_sync_at ?? "never"}\n  status: ${peer.last_error ?? "ok"}`,
+				);
+			}
+			p.outro(`${peers.length} peer(s)`);
+		} finally {
+			store.close();
+		}
+	});
+
+peersCommand.addCommand(
+	new Command("remove")
 		.configureHelp(helpStyle)
-		.description("List known sync peers")
+		.description("Remove a sync peer by device id or exact name")
+		.argument("<peer>", "peer device id or exact name")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
 		.option("--json", "output as JSON")
-		.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
+		.action((peerRef: string, opts: { db?: string; dbPath?: string; json?: boolean }) => {
 			const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 			try {
 				const d = drizzle(store.db, { schema });
-				const peers = d
-					.select({
-						peer_device_id: schema.syncPeers.peer_device_id,
-						name: schema.syncPeers.name,
-						addresses: schema.syncPeers.addresses_json,
-						last_sync_at: schema.syncPeers.last_sync_at,
-						last_error: schema.syncPeers.last_error,
-					})
-					.from(schema.syncPeers)
-					.orderBy(desc(schema.syncPeers.last_sync_at))
-					.all();
-
+				const match = resolvePeerMatch(d, peerRef);
+				if (match === "ambiguous") {
+					p.log.error(`Peer name is ambiguous: ${peerRef.trim()}`);
+					process.exitCode = 1;
+					return;
+				}
+				if (!match) {
+					p.log.error(`Peer not found: ${peerRef.trim()}`);
+					process.exitCode = 1;
+					return;
+				}
+				d.delete(schema.replicationCursors)
+					.where(eq(schema.replicationCursors.peer_device_id, match.peer_device_id))
+					.run();
+				d.delete(schema.syncPeers)
+					.where(eq(schema.syncPeers.peer_device_id, match.peer_device_id))
+					.run();
+				const payload = {
+					ok: true,
+					peer_device_id: match.peer_device_id,
+					name: match.name,
+				};
 				if (opts.json) {
-					console.log(JSON.stringify(peers, null, 2));
+					console.log(JSON.stringify(payload, null, 2));
 					return;
 				}
-
-				p.intro("codemem sync peers");
-				if (peers.length === 0) {
-					p.outro("No peers configured");
-					return;
-				}
-				for (const peer of peers) {
-					const label = peer.name || peer.peer_device_id;
-					const addrs = peer.addresses || "(no addresses)";
-					p.log.message(
-						`${label}\n  addresses: ${addrs}\n  last_sync: ${peer.last_sync_at ?? "never"}\n  status: ${peer.last_error ?? "ok"}`,
-					);
-				}
-				p.outro(`${peers.length} peer(s)`);
+				p.intro("codemem sync peers remove");
+				p.log.success(`Removed peer ${match.name || match.peer_device_id}`);
+				p.outro(match.peer_device_id);
 			} finally {
 				store.close();
 			}
 		}),
 );
+
+syncCommand.addCommand(peersCommand);
 
 // codemem sync connect <coordinator-url>
 syncCommand.addCommand(

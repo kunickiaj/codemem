@@ -1849,5 +1849,46 @@ describe("viewer-server", () => {
 				else process.env.CODEMEM_CONFIG = prevConfig;
 			}
 		});
+
+		it("deletes sync peers through the viewer route", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
+					.run("peer-delete-me", "Old Peer", new Date().toISOString());
+				store.db
+					.prepare(
+						"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+					)
+					.run("peer-delete-me", "cursor-1", "cursor-1", new Date().toISOString());
+				const res = await app.request("/api/sync/peers/peer-delete-me", { method: "DELETE" });
+				expect(res.status).toBe(200);
+				expect(await res.json()).toEqual({ ok: true });
+				const remaining = store.db
+					.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+					.get("peer-delete-me");
+				const cursor = store.db
+					.prepare("SELECT peer_device_id FROM replication_cursors WHERE peer_device_id = ?")
+					.get("peer-delete-me");
+				expect(remaining).toBeUndefined();
+				expect(cursor).toBeUndefined();
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns 404 when deleting a missing sync peer", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/peers/missing-peer", { method: "DELETE" });
+				expect(res.status).toBe(404);
+				expect(await res.json()).toEqual({ error: "peer not found" });
+			} finally {
+				cleanup();
+			}
+		});
 	});
 });

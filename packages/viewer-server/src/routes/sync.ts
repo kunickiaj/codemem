@@ -1125,6 +1125,9 @@ export function syncRoutes(
 				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 				.get();
 			if (!exists) return c.json({ error: "peer not found" }, 404);
+			d.delete(schema.replicationCursors)
+				.where(eq(schema.replicationCursors.peer_device_id, peerDeviceId))
+				.run();
 			d.delete(schema.syncPeers).where(eq(schema.syncPeers.peer_device_id, peerDeviceId)).run();
 			return c.json({ ok: true });
 		}

@@ -409,13 +409,13 @@ export function assertSchemaReady(db: DatabaseType): void {
 	if (version === 0) {
 		throw new Error(
 			"Database schema is not initialized. " +
-				"Run the Python runtime to initialize: uv run codemem stats",
+				"Initialize the SQLite database with the current TypeScript runtime before retrying.",
 		);
 	}
 	if (version < MIN_COMPATIBLE_SCHEMA) {
 		throw new Error(
 			`Database schema version ${version} is older than minimum compatible (${MIN_COMPATIBLE_SCHEMA}). ` +
-				"Run the Python runtime to complete migrations: uv run codemem stats",
+				"Upgrade the database schema with the current TypeScript runtime before retrying.",
 		);
 	}
 	if (version > SCHEMA_VERSION) {
@@ -438,7 +438,7 @@ export function assertSchemaReady(db: DatabaseType): void {
 	if (!tableExists(db, "memory_fts")) {
 		throw new Error(
 			"FTS5 index (memory_fts) is missing. " +
-				"Run the Python runtime to rebuild: uv run codemem stats",
+				"Rebuild the database schema with the current TypeScript runtime before retrying.",
 		);
 	}
 }

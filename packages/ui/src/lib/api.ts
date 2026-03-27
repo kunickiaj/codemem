@@ -216,6 +216,16 @@ export async function assignPeerActor(peerDeviceId: string, actorId: string | nu
   return payload;
 }
 
+export async function deletePeer(peerDeviceId: string): Promise<any> {
+  const resp = await fetch(`/api/sync/peers/${encodeURIComponent(peerDeviceId)}`, {
+    method: 'DELETE',
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
 export async function createActor(displayName: string): Promise<any> {
   const resp = await fetch('/api/sync/actors', {
     method: 'POST',
