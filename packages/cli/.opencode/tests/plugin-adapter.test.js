@@ -312,7 +312,7 @@ describe("opencode adapter event mapping", () => {
     expect(args).toEqual(["-y", `codemem@${__testUtils.PINNED_BACKEND_VERSION}`]);
   });
 
-  test("pinned backend version matches package version", () => {
+  test("pinned backend version remains on the latest stable backend during alpha releases", () => {
     const packageJsonPath = resolve(
       fileURLToPath(new URL(".", import.meta.url)),
       "..",
@@ -321,6 +321,7 @@ describe("opencode adapter event mapping", () => {
     );
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 
-    expect(__testUtils.PINNED_BACKEND_VERSION).toBe(packageJson.version);
+    expect(packageJson.version).toBe("0.22.0-alpha.0");
+    expect(__testUtils.PINNED_BACKEND_VERSION).toBe("0.21.2");
   });
 });

@@ -33,13 +33,14 @@ describe("isVersionAtLeast", () => {
 });
 
 describe("resolveUpgradeGuidance", () => {
-  test("returns uv-dev guidance", () => {
+  test("returns repo-dev guidance for local dev runner", () => {
     const guidance = resolveUpgradeGuidance({
       runner: "uv",
       runnerFrom: "/tmp/codemem",
     });
-    expect(guidance.mode).toBe("uv-dev");
-    expect(guidance.action).toContain("uv sync");
+    expect(guidance.mode).toBe("repo-dev");
+    expect(guidance.action).toContain("pnpm install");
+    expect(guidance.action).toContain("pnpm build");
   });
 
   test("returns uvx-git guidance", () => {
@@ -61,11 +62,11 @@ describe("resolveUpgradeGuidance", () => {
 
   test("returns generic fallback guidance", () => {
     const guidance = resolveUpgradeGuidance({
-      runner: "node",
+      runner: "other",
       runnerFrom: "",
     });
-    expect(guidance.mode).toBe("node-dev");
-    expect(guidance.action).toContain("pnpm build");
+    expect(guidance.mode).toBe("generic");
+    expect(guidance.action).toContain("normal install method");
   });
 });
 
@@ -96,20 +97,14 @@ describe("resolveAutoUpdatePlan", () => {
     expect(plan.reason).toBe("dev-runner");
   });
 
-  test("returns uvx refresh command for unpinned git source", () => {
+  test("blocks auto-update for unpinned git source", () => {
     const plan = resolveAutoUpdatePlan({
       runner: "uvx",
       runnerFrom: "git+https://github.com/kunickiaj/codemem.git",
     });
-    expect(plan.allowed).toBe(true);
-    expect(plan.command).toEqual([
-      "uvx",
-      "--refresh",
-      "--from",
-      "git+https://github.com/kunickiaj/codemem.git",
-      "codemem",
-      "version",
-    ]);
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("custom-source");
+    expect(plan.command).toBeNull();
   });
 
   test("blocks auto-update for pinned git source", () => {
@@ -121,12 +116,13 @@ describe("resolveAutoUpdatePlan", () => {
     expect(plan.reason).toBe("pinned-source");
   });
 
-  test("allows unpinned ssh git source", () => {
+  test("blocks unpinned ssh git source", () => {
     const plan = resolveAutoUpdatePlan({
       runner: "uvx",
       runnerFrom: "git+ssh://git@github.com/kunickiaj/codemem.git",
     });
-    expect(plan.allowed).toBe(true);
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("custom-source");
   });
 
   test("blocks pinned ssh git source", () => {
@@ -144,12 +140,13 @@ describe("resolveAutoUpdatePlan", () => {
     expect(plan.reason).toBe("missing-source");
   });
 
-  test("allows unpinned git source with query string", () => {
+  test("blocks unpinned git source with query string", () => {
     const plan = resolveAutoUpdatePlan({
       runner: "uvx",
       runnerFrom: "git+https://github.com/kunickiaj/codemem.git?subdirectory=plugin",
     });
-    expect(plan.allowed).toBe(true);
+    expect(plan.allowed).toBe(false);
+    expect(plan.reason).toBe("custom-source");
   });
 
   test("blocks pinned git source with fragment", () => {
