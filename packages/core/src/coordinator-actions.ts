@@ -11,7 +11,7 @@ import { CoordinatorStore, DEFAULT_COORDINATOR_DB_PATH } from "./coordinator-sto
 import { connect } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import { readCodememConfigFile, writeCodememConfigFile } from "./observer-config.js";
-import { requestJson } from "./sync-http-client.js";
+import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
 const VALID_INVITE_POLICIES = new Set(["auto_admit", "approval_required"]);
@@ -47,6 +47,86 @@ async function remoteRequest(
 		throw new Error(`Remote coordinator request failed (${status}): ${detail}`);
 	}
 	return payload;
+}
+
+function inviteUrlWarnings(rawUrl: string | null | undefined): string[] {
+	const value = String(rawUrl ?? "").trim();
+	if (!value) return [];
+	let hostname = "";
+	try {
+		hostname = new URL(buildBaseUrl(value)).hostname.trim().toLowerCase();
+	} catch {
+		return [
+			"Coordinator URL could not be parsed. Double-check that teammates can reach it before sharing this invite.",
+		];
+	}
+	hostname = hostname.replace(/^\[/, "").replace(/\]$/, "");
+	if (!hostname) return [];
+	if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+		return [
+			"Invite uses a localhost coordinator URL. It will only work on the same machine unless you replace it with a reachable hostname or IP.",
+		];
+	}
+	if (hostname.endsWith(".local")) {
+		return [
+			"Invite uses a local-network coordinator hostname. Teammates outside that network may not be able to join.",
+		];
+	}
+	if (hostname.includes(":")) {
+		const normalized = hostname.toLowerCase();
+		if (normalized === "::1") {
+			return [
+				"Invite uses a localhost coordinator URL. It will only work on the same machine unless you replace it with a reachable hostname or IP.",
+			];
+		}
+		if (normalized.startsWith("fd7a:115c:a1e0:")) {
+			return [
+				"Invite uses a ULA/Tailnet-style coordinator IPv6 address. This can be correct for private-network teams, but other teammates may not be able to join unless they share that network.",
+			];
+		}
+		if (normalized.startsWith("fc") || normalized.startsWith("fd")) {
+			return [
+				"Invite uses a private-network coordinator IPv6 address. This is fine for LAN-only or VPN-only teams, but teammates outside that network may not be able to join.",
+			];
+		}
+		if (
+			normalized.startsWith("fe8") ||
+			normalized.startsWith("fe9") ||
+			normalized.startsWith("fea") ||
+			normalized.startsWith("feb")
+		) {
+			return [
+				"Invite uses a link-local coordinator IPv6 address. It usually only works on the same local network segment.",
+			];
+		}
+	}
+	const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	if (!ipv4Match) return [];
+	const octets = ipv4Match.slice(1).map((part) => Number.parseInt(part, 10));
+	if (octets.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) {
+		return [
+			"Invite uses an unusual coordinator IP address. Double-check that teammates can reach it before sharing this invite.",
+		];
+	}
+	const a = octets[0] ?? -1;
+	const b = octets[1] ?? -1;
+	const isPrivate =
+		a === 10 ||
+		(a === 172 && b >= 16 && b <= 31) ||
+		(a === 192 && b === 168) ||
+		a === 127 ||
+		(a === 169 && b === 254);
+	if (isPrivate) {
+		return [
+			"Invite uses a private-network coordinator IP address. This is fine for LAN-only teams, but teammates outside that network may not be able to join.",
+		];
+	}
+	if (a === 100 && b >= 64 && b <= 127) {
+		return [
+			"Invite uses a CGNAT/Tailscale-style coordinator IP address. This can be correct for Tailnet-only teams, but other teammates may not be able to join unless they share that network.",
+		];
+	}
+	return [];
 }
 
 export function coordinatorCreateGroupAction(opts: {
@@ -208,6 +288,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			encoded: payload?.encoded,
 			link: payload?.link,
 			payload: payload?.payload,
+			warnings: inviteUrlWarnings(String(opts.coordinatorUrl || remote)),
 			mode: "remote",
 		};
 	}
@@ -241,6 +322,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			encoded,
 			link: inviteLink(encoded),
 			payload,
+			warnings: inviteUrlWarnings(resolvedCoordinatorUrl),
 			mode: "local",
 		};
 	} finally {

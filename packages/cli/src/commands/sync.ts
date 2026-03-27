@@ -1236,6 +1236,9 @@ coordinatorCommand.addCommand(
 				p.log.success(`Invite created for ${groupId}`);
 				if (typeof result.link === "string") p.log.message(`- link: ${result.link}`);
 				if (typeof result.encoded === "string") p.log.message(`- invite: ${result.encoded}`);
+				for (const warning of Array.isArray(result.warnings) ? result.warnings : []) {
+					p.log.warn(String(warning));
+				}
 				p.outro("Invite ready");
 			},
 		),

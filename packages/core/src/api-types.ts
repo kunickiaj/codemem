@@ -710,8 +710,13 @@ export interface ApiCreateInviteRequest {
 }
 
 /** POST /api/sync/invites/create — response. */
-export interface ApiCreateInviteResponse extends ApiOkResponse {
-	invite: string;
+export interface ApiCreateInviteResponse {
+	group_id: string;
+	encoded: string;
+	link: string;
+	payload: Record<string, unknown>;
+	warnings?: string[];
+	mode?: "local" | "remote";
 }
 
 /** POST /api/sync/invites/import — request. */

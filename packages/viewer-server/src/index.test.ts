@@ -1885,6 +1885,55 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.encoded).toBe("invite-blob");
 				expect(body.link).toBe("https://example.test/invite");
+				expect(body.warnings).toEqual([]);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("returns invite warnings for private-looking coordinator URLs", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/invites")) {
+					return new Response(
+						JSON.stringify({
+							encoded: "invite-blob",
+							link: "https://example.test/invite",
+							payload: { group_id: "team-a" },
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "http://100.103.98.49:7347",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/invites/create", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ group_id: "team-a", policy: "auto_admit", ttl_hours: 24 }),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.warnings).toEqual([
+					"Invite uses a CGNAT/Tailscale-style coordinator IP address. This can be correct for Tailnet-only teams, but other teammates may not be able to join unless they share that network.",
+				]);
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
