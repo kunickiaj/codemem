@@ -45,6 +45,7 @@ import {
 import type {
 	IngestPayload,
 	ObserverContext,
+	ParsedOutput,
 	ParsedSummary,
 	SessionContext,
 	ToolEvent,
@@ -158,6 +159,44 @@ export interface IngestOptions {
 	storeSummary?: boolean;
 	/** Whether to store typed observations. Default true. */
 	storeTyped?: boolean;
+}
+
+function hasStructuredObserverOutput(parsed: ParsedOutput): boolean {
+	return (
+		parsed.observations.length > 0 || parsed.summary !== null || parsed.skipSummaryReason !== null
+	);
+}
+
+async function observeStructuredOutput(
+	observer: ObserverClient,
+	system: string,
+	user: string,
+): Promise<{ raw: string | null; parsed: ParsedOutput; provider: string; model: string }> {
+	const first = await observer.observe(system, user);
+	const firstParsed = first.raw
+		? parseObserverResponse(first.raw)
+		: { observations: [], summary: null, skipSummaryReason: null };
+	if (!first.raw || hasStructuredObserverOutput(firstParsed)) {
+		return {
+			raw: first.raw,
+			parsed: firstParsed,
+			provider: first.provider,
+			model: first.model,
+		};
+	}
+
+	const repairSystem = `${system}\n\nYour previous reply was invalid because it did not follow the required XML-only schema. Rewrite the same analysis as valid XML only. Do not include prose outside XML.`;
+	const repairUser = `${user}\n\nPrevious invalid response to rewrite as valid XML:\n${first.raw}`;
+	const repaired = await observer.observe(repairSystem, repairUser);
+	const repairedParsed = repaired.raw
+		? parseObserverResponse(repaired.raw)
+		: { observations: [], summary: null, skipSummaryReason: null };
+	return {
+		raw: repaired.raw,
+		parsed: repairedParsed,
+		provider: repaired.provider,
+		model: repaired.model,
+	};
 }
 
 /**
@@ -305,7 +344,7 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		// Call observer LLM
 		// ------------------------------------------------------------------
-		const response = await options.observer.observe(system, user);
+		const response = await observeStructuredOutput(options.observer, system, user);
 
 		if (!response.raw) {
 			// Raw-event flushes must be lossless: if the observer returns no output,
@@ -328,7 +367,7 @@ export async function ingest(
 		// Parse response
 		// ------------------------------------------------------------------
 		const rawText = response.raw;
-		const parsed = parseObserverResponse(rawText);
+		const parsed = response.parsed;
 
 		const observationsToStore: typeof parsed.observations = [];
 		if (storeTyped && hasMeaningfulObservation(parsed.observations)) {

@@ -8,7 +8,9 @@
  * and updates flush state on success (or records failure details).
  */
 
+import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
+import { normalizeAdapterEvents } from "./ingest-transcript.js";
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
 import { ObserverAuthError } from "./observer-client.js";
 import type { MemoryStore } from "./store.js";
@@ -86,10 +88,14 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 	}
 	let durationMs = 0;
 	if (tsValues.length > 0) {
-		let minTs = tsValues[0]!;
-		let maxTs = tsValues[0]!;
-		for (let i = 1; i < tsValues.length; i++) {
-			const v = tsValues[i]!;
+		const firstTs = tsValues[0];
+		if (firstTs == null) {
+			throw new Error("Expected timestamp when tsValues is non-empty");
+		}
+		const restTs = tsValues.slice(1);
+		let minTs = firstTs;
+		let maxTs = firstTs;
+		for (const v of restTs) {
 			if (v < minTs) minTs = v;
 			if (v > maxTs) maxTs = v;
 		}
@@ -130,6 +136,42 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 	};
 }
 
+function isTerminalLowSignalSession(
+	events: Record<string, unknown>[],
+	sessionContext: SessionContext,
+): boolean {
+	const promptCount = sessionContext.promptCount ?? 0;
+	const toolCount = sessionContext.toolCount ?? 0;
+	if (promptCount > 0 || toolCount > 0 || sessionContext.firstPrompt) {
+		return false;
+	}
+	if (events.length > 4) return false;
+
+	const normalizedEvents = normalizeAdapterEvents(events);
+	const hasPromptOrAssistant = normalizedEvents.some((event) => {
+		const type = String(event.type ?? "");
+		return type === "user_prompt" || type === "assistant_message";
+	});
+	if (hasPromptOrAssistant) return false;
+
+	const hasToolSignal = events.some((event) => {
+		const adapter = extractAdapterEvent(event);
+		if (adapter) return projectAdapterToolEvent(adapter, event) != null;
+		return String(event.type ?? "") === "tool.execute.after";
+	});
+	if (hasToolSignal) return false;
+
+	const allowedTopLevelTypes = new Set(["session.started", "session.idle", "session.ended"]);
+	const allowedAdapterTypes = new Set(["session_start", "session_end", "error"]);
+	return events.every((event) => {
+		const adapter = extractAdapterEvent(event);
+		if (adapter) {
+			return allowedAdapterTypes.has(String(adapter.event_type ?? ""));
+		}
+		return allowedTopLevelTypes.has(String(event.type ?? ""));
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Main flush function
 // ---------------------------------------------------------------------------
@@ -141,7 +183,6 @@ export interface FlushRawEventsOptions {
 	project?: string | null;
 	startedAt?: string | null;
 	maxEvents?: number | null;
-	allowEmptyFlush?: boolean;
 }
 
 /**
@@ -162,7 +203,6 @@ export async function flushRawEvents(
 ): Promise<{ flushed: number; updatedState: number }> {
 	let { source = "opencode", cwd, project, startedAt } = opts;
 	const { opencodeSessionId, maxEvents } = opts;
-	const allowEmptyFlush = opts.allowEmptyFlush ?? false;
 
 	source = (source ?? "").trim().toLowerCase() || "opencode";
 
@@ -191,10 +231,14 @@ export async function flushRawEvents(
 		return { flushed: 0, updatedState: 0 };
 	}
 
-	let startEventSeq = eventSeqs[0]!;
-	let lastEventSeq = eventSeqs[0]!;
-	for (let i = 1; i < eventSeqs.length; i++) {
-		const v = eventSeqs[i]!;
+	const firstEventSeq = eventSeqs[0];
+	if (firstEventSeq == null) {
+		return { flushed: 0, updatedState: 0 };
+	}
+	const restEventSeqs = eventSeqs.slice(1);
+	let startEventSeq = firstEventSeq;
+	let lastEventSeq = firstEventSeq;
+	for (const v of restEventSeqs) {
 		if (v < startEventSeq) startEventSeq = v;
 		if (v > lastEventSeq) lastEventSeq = v;
 	}
@@ -234,6 +278,12 @@ export async function flushRawEvents(
 		end_event_seq: lastEventSeq,
 	};
 
+	if (isTerminalLowSignalSession(events, sessionContext)) {
+		store.updateRawEventFlushBatchStatus(batchId, "completed");
+		store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+		return { flushed: events.length, updatedState: 1 };
+	}
+
 	// Build ingest payload
 	const payload: IngestPayload = {
 		cwd: cwd ?? undefined,
@@ -249,14 +299,6 @@ export async function flushRawEvents(
 	} catch (exc) {
 		// Record failure details on the batch
 		const err = exc instanceof Error ? exc : new Error(String(exc));
-		if (
-			allowEmptyFlush &&
-			err.message === "observer produced no storable output for raw-event flush"
-		) {
-			store.updateRawEventFlushBatchStatus(batchId, "completed");
-			store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
-			return { flushed: events.length, updatedState: 1 };
-		}
 		const provider = ingestOpts.observer?.getStatus?.()?.provider as string | undefined;
 		const message = truncateErrorMessage(summarizeFlushFailure(err, provider));
 		store.recordRawEventFlushBatchFailure(batchId, {

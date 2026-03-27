@@ -67,6 +67,86 @@ describe("RawEventSweeper auto flush", () => {
 		});
 	}
 
+	function seedLifecycleOnlySession(sessionId: string) {
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-0",
+			eventType: "session.started",
+			payload: { type: "session.started" },
+			tsWallMs: 100,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-1",
+			eventType: "session.idle",
+			payload: { type: "session.idle" },
+			tsWallMs: 150,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-2",
+			eventType: "session.ended",
+			payload: { type: "session.ended" },
+			tsWallMs: 200,
+		});
+		store.updateRawEventSessionMeta({
+			opencodeSessionId: sessionId,
+			cwd: tmpDir,
+			project: "codemem",
+			startedAt: "2026-01-01T00:00:00Z",
+			lastSeenTsWallMs: 200,
+		});
+	}
+
+	function seedAdapterPromptSession(sessionId: string) {
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			source: "claude",
+			eventId: "evt-0",
+			eventType: "claude.hook",
+			payload: {
+				type: "claude.hook",
+				_adapter: {
+					schema_version: "1.0",
+					source: "claude",
+					session_id: sessionId,
+					event_id: "evt-0",
+					event_type: "prompt",
+					payload: { text: "Investigate a real issue", prompt_number: 1 },
+					ts: "2026-01-01T00:00:00Z",
+				},
+			},
+			tsWallMs: 100,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			source: "claude",
+			eventId: "evt-1",
+			eventType: "claude.hook",
+			payload: {
+				type: "claude.hook",
+				_adapter: {
+					schema_version: "1.0",
+					source: "claude",
+					session_id: sessionId,
+					event_id: "evt-1",
+					event_type: "assistant",
+					payload: { text: "I found the likely root cause." },
+					ts: "2026-01-01T00:00:01Z",
+				},
+			},
+			tsWallMs: 150,
+		});
+		store.updateRawEventSessionMeta({
+			opencodeSessionId: sessionId,
+			source: "claude",
+			cwd: tmpDir,
+			project: "codemem",
+			startedAt: "2026-01-01T00:00:00Z",
+			lastSeenTsWallMs: 150,
+		});
+	}
+
 	const ingestOpts: IngestOptions = {
 		observer: {
 			observe: async () => ({
@@ -225,7 +305,7 @@ describe("RawEventSweeper auto flush", () => {
 		expect(store.rawEventFlushState("sess-auto")).toBe(1);
 	});
 
-	it("advances flush cursor when observer output has no storable memories", async () => {
+	it("records a failed batch and keeps the flush cursor when observer output has no storable memories", async () => {
 		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
 		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
 		seedSession("sess-low-signal");
@@ -250,7 +330,77 @@ describe("RawEventSweeper auto flush", () => {
 		sweeper.nudge("sess-low-signal");
 		await sleep(150);
 
-		expect(store.rawEventFlushState("sess-low-signal")).toBe(1);
-		expect(store.latestRawEventFlushFailure("opencode")).toBeNull();
+		expect(store.rawEventFlushState("sess-low-signal")).toBe(-1);
+		expect(store.latestRawEventFlushFailure("opencode")).toMatchObject({
+			stream_id: "sess-low-signal",
+			error_message: "Test returned no usable output for raw-event processing.",
+		});
+	});
+
+	it("terminally skips tiny lifecycle-only sessions without calling the observer", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		seedLifecycleOnlySession("sess-lifecycle-only");
+
+		let observerCalls = 0;
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					observerCalls += 1;
+					return {
+						raw: '<skip_summary reason="low-signal"/>',
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		sweeper.nudge("sess-lifecycle-only");
+		await sleep(150);
+
+		expect(observerCalls).toBe(0);
+		expect(store.rawEventFlushState("sess-lifecycle-only")).toBe(2);
+		expect(store.latestRawEventFlushFailure("opencode")?.stream_id).not.toBe("sess-lifecycle-only");
+	});
+
+	it("does not terminally skip adapter-wrapped prompt sessions", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		seedAdapterPromptSession("sess-adapter-prompt");
+
+		let observerCalls = 0;
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => {
+					observerCalls += 1;
+					return {
+						raw: `<summary><request>Investigate a real issue</request><completed>Captured adapter wrapped session.</completed></summary>`,
+						parsed: null,
+						provider: "test",
+						model: "test",
+					};
+				},
+				getStatus: () => ({
+					provider: "test",
+					model: "test",
+					runtime: "api_http",
+					auth: { source: "test", type: "api_direct", hasToken: true },
+				}),
+			} as never,
+		});
+
+		sweeper.nudge("sess-adapter-prompt", "claude");
+		await sleep(150);
+
+		expect(observerCalls).toBe(1);
+		expect(store.rawEventFlushState("sess-adapter-prompt", "claude")).toBe(1);
 	});
 });
