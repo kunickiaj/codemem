@@ -11,6 +11,7 @@ import {
   teamInvitePanelOpen,
   setTeamInvitePanelOpen,
   hideSkeleton,
+  isPeerScopeReviewPending,
   redactAddress,
   requestPeerScopeReview,
 } from './helpers';
@@ -231,6 +232,8 @@ export function renderTeamSync() {
       const noteParts = [deviceId, addressLabel];
       if (hasConflict) {
         noteParts.push('repair the local peer before accepting this discovered device');
+      } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
+        noteParts.push('scope review pending in People');
       } else if (pairedPeer?.last_error) {
         noteParts.push(`paired error: ${String(pairedPeer.last_error)}`);
       } else if (pairedPeer?.status?.peer_state) {
@@ -262,6 +265,8 @@ export function renderTeamSync() {
         rowActions.appendChild(el('div', 'peer-meta', 'Wait for a fresh coordinator presence update.'));
       } else if (hasConflict) {
         rowActions.appendChild(el('div', 'peer-meta', 'Remove or repair the conflicting local peer in People first.'));
+      } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
+        rowActions.appendChild(el('div', 'peer-meta', 'Review this peer\'s scope in People next.'));
       } else if (pairedPeer) {
         rowActions.appendChild(el('div', 'peer-meta', 'Manage this peer in People.'));
       }

@@ -16,6 +16,8 @@ import {
   mergeTargetActors,
   actorMergeNote,
   createChipEditor,
+  clearPeerScopeReview,
+  isPeerScopeReviewPending,
   openPeerScopeEditors,
   consumePeerScopeReviewRequest,
   hideSkeleton,
@@ -198,6 +200,7 @@ export function renderSyncPeers() {
     const peerId = peer.peer_device_id ? String(peer.peer_device_id) : '';
     const displayName = peer.name || (peerId ? peerId.slice(0, 8) : 'unknown');
     const destructiveLabel = peer.name || peerId || displayName;
+    const pendingScopeReview = isPeerScopeReviewPending(peerId);
     const name = el('strong', null, displayName);
     if (peerId) name.title = peerId;
 
@@ -205,6 +208,9 @@ export function renderSyncPeers() {
     const online = peerStatus.sync_status === 'ok' || peerStatus.ping_status === 'ok';
     const badge = el('span', `badge ${online ? 'badge-online' : 'badge-offline'}`, online ? 'Online' : 'Offline');
     name.append(' ', badge);
+    if (pendingScopeReview) {
+      name.append(' ', el('span', 'badge actor-badge', 'Needs scope review'));
+    }
 
     const actions = el('div', 'peer-actions');
     const primaryAddress = pickPrimaryAddress(peer.addresses);
@@ -346,6 +352,7 @@ export function renderSyncPeers() {
       saveScopeBtn.textContent = 'Saving\u2026';
       try {
         await api.updatePeerScope(peerId, includeEditor.values(), excludeEditor.values());
+        clearPeerScopeReview(peerId);
         showGlobalNotice('Device sync scope saved.');
         await _loadSyncData();
       } catch (error) {
@@ -361,6 +368,7 @@ export function renderSyncPeers() {
       inheritBtn.textContent = 'Resetting\u2026';
       try {
         await api.updatePeerScope(peerId, null, null, true);
+        clearPeerScopeReview(peerId);
         showGlobalNotice('Device sync scope reset to global defaults.');
         await _loadSyncData();
       } catch (error) {
@@ -394,6 +402,14 @@ export function renderSyncPeers() {
         ),
       );
       queueMicrotask(() => card.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+    } else if (pendingScopeReview) {
+      scopePanel.prepend(
+        el(
+          'div',
+          'peer-meta',
+          'Scope review still pending. Save an override here or reset to global scope when you are done reviewing.',
+        ),
+      );
     }
     scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);
 

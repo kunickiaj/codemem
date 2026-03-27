@@ -24,18 +24,31 @@ export function setTeamInvitePanelOpen(v: boolean) {
 
 export const openPeerScopeEditors = new Set<string>();
 const pendingPeerScopeReviewIds = new Set<string>();
+const freshPeerScopeReviewIds = new Set<string>();
 
 export function requestPeerScopeReview(peerDeviceId: string) {
   const value = String(peerDeviceId || '').trim();
   if (!value) return;
   pendingPeerScopeReviewIds.add(value);
+  freshPeerScopeReviewIds.add(value);
   openPeerScopeEditors.add(value);
+}
+
+export function isPeerScopeReviewPending(peerDeviceId: string): boolean {
+  const value = String(peerDeviceId || '').trim();
+  return Boolean(value) && pendingPeerScopeReviewIds.has(value);
+}
+
+export function clearPeerScopeReview(peerDeviceId: string) {
+  const value = String(peerDeviceId || '').trim();
+  if (!value) return;
+  pendingPeerScopeReviewIds.delete(value);
 }
 
 export function consumePeerScopeReviewRequest(peerDeviceId: string): boolean {
   const value = String(peerDeviceId || '').trim();
-  if (!value || !pendingPeerScopeReviewIds.has(value)) return false;
-  pendingPeerScopeReviewIds.delete(value);
+  if (!value || !freshPeerScopeReviewIds.has(value)) return false;
+  freshPeerScopeReviewIds.delete(value);
   return true;
 }
 
