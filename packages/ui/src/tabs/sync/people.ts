@@ -198,6 +198,7 @@ export function renderSyncPeers() {
     const card = el('div', 'peer-card');
     const titleRow = el('div', 'peer-title');
     const peerId = peer.peer_device_id ? String(peer.peer_device_id) : '';
+    if (peerId) card.dataset.peerDeviceId = peerId;
     const displayName = peer.name || (peerId ? peerId.slice(0, 8) : 'unknown');
     const destructiveLabel = peer.name || peerId || displayName;
     const pendingScopeReview = isPeerScopeReviewPending(peerId);
