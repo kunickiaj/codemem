@@ -46,7 +46,23 @@ export {
 	readCoordinatorSyncConfig,
 	registerCoordinatorPresence,
 } from "./coordinator-runtime.js";
+export type {
+	CoordinatorCreateInviteInput,
+	CoordinatorCreateJoinRequestInput,
+	CoordinatorEnrollDeviceInput,
+	CoordinatorEnrollment,
+	CoordinatorGroup,
+	CoordinatorInvite,
+	CoordinatorJoinRequest,
+	CoordinatorJoinRequestReviewResult,
+	CoordinatorPeerRecord,
+	CoordinatorPresenceRecord,
+	CoordinatorReviewJoinRequestInput,
+	CoordinatorStore as CoordinatorStoreInterface,
+	CoordinatorUpsertPresenceInput,
+} from "./coordinator-store.js";
 export {
+	BetterSqliteCoordinatorStore,
 	CoordinatorStore,
 	connectCoordinator,
 	DEFAULT_COORDINATOR_DB_PATH,

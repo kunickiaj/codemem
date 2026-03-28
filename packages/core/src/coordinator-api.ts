@@ -9,7 +9,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
-import { CoordinatorStore } from "./coordinator-store.js";
+import { type CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store.js";
 import { DEFAULT_TIME_WINDOW_S, verifySignature } from "./sync-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -43,33 +43,26 @@ function pathWithQuery(url: string): string {
 	return parsed.search ? `${parsed.pathname}${parsed.search}` : parsed.pathname;
 }
 
-function recordNonce(
+async function recordNonce(
 	store: CoordinatorStore,
 	deviceId: string,
 	nonce: string,
 	createdAt: string,
-): boolean {
-	try {
-		store.db
-			.prepare("INSERT INTO request_nonces(device_id, nonce, created_at) VALUES (?, ?, ?)")
-			.run(deviceId, nonce, createdAt);
-		return true;
-	} catch {
-		return false;
-	}
+): Promise<boolean> {
+	return await store.recordNonce(deviceId, nonce, createdAt);
 }
 
-function cleanupNonces(store: CoordinatorStore, cutoff: string): void {
-	store.db.prepare("DELETE FROM request_nonces WHERE created_at < ?").run(cutoff);
+async function cleanupNonces(store: CoordinatorStore, cutoff: string): Promise<void> {
+	await store.cleanupNonces(cutoff);
 }
 
 interface AuthResult {
 	ok: boolean;
 	error: string;
-	enrollment: Record<string, unknown> | null;
+	enrollment: CoordinatorEnrollment | null;
 }
 
-function authorizeRequest(
+async function authorizeRequest(
 	store: CoordinatorStore,
 	opts: {
 		method: string;
@@ -81,13 +74,13 @@ function authorizeRequest(
 		timestamp: string | null;
 		nonce: string | null;
 	},
-): AuthResult {
+): Promise<AuthResult> {
 	const { deviceId, signature, timestamp, nonce } = opts;
 	if (!deviceId || !signature || !timestamp || !nonce) {
 		return { ok: false, error: "missing_headers", enrollment: null };
 	}
 
-	const enrollment = store.getEnrollment(opts.groupId, deviceId);
+	const enrollment = await store.getEnrollment(opts.groupId, deviceId);
 	if (!enrollment) {
 		return { ok: false, error: "unknown_device", enrollment: null };
 	}
@@ -113,12 +106,12 @@ function authorizeRequest(
 	}
 
 	const createdAt = new Date().toISOString();
-	if (!recordNonce(store, deviceId, nonce, createdAt)) {
+	if (!(await recordNonce(store, deviceId, nonce, createdAt))) {
 		return { ok: false, error: "nonce_replay", enrollment: null };
 	}
 
 	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
-	cleanupNonces(store, cutoff);
+	await cleanupNonces(store, cutoff);
 
 	return { ok: true, error: "ok", enrollment };
 }
@@ -158,7 +151,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 		const store = new CoordinatorStore(dbPath);
 		try {
-			const auth = authorizeRequest(store, {
+			const auth = await authorizeRequest(store, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
@@ -191,7 +184,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 				return c.json({ error: "ttl_s_must_be_int" }, 400);
 			}
 
-			const response = store.upsertPresence({
+			const response = await store.upsertPresence({
 				groupId,
 				deviceId: String(auth.enrollment.device_id),
 				addresses: rawAddresses as string[],
@@ -214,7 +207,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 	// GET /v1/peers — list group peers (authenticated)
 	// -----------------------------------------------------------------------
 
-	app.get("/v1/peers", (c) => {
+	app.get("/v1/peers", async (c) => {
 		const groupId = (c.req.query("group_id") ?? "").trim();
 		if (!groupId) {
 			return c.json({ error: "group_id_required" }, 400);
@@ -222,7 +215,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 		const store = new CoordinatorStore(dbPath);
 		try {
-			const auth = authorizeRequest(store, {
+			const auth = await authorizeRequest(store, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
@@ -236,7 +229,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 				return c.json({ error: auth.error }, 401);
 			}
 
-			const items = store.listGroupPeers(groupId, String(auth.enrollment.device_id));
+			const items = await store.listGroupPeers(groupId, String(auth.enrollment.device_id));
 			return c.json({ items });
 		} finally {
 			store.close();
@@ -277,8 +270,8 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 		const store = new CoordinatorStore(dbPath);
 		try {
-			store.createGroup(groupId);
-			store.enrollDevice(groupId, {
+			await store.createGroup(groupId);
+			await store.enrollDevice(groupId, {
 				deviceId,
 				fingerprint,
 				publicKey,
@@ -449,10 +442,10 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 		const store = new CoordinatorStore(dbPath);
 		try {
-			const group = store.getGroup(groupId);
+			const group = await store.getGroup(groupId);
 			if (!group) return c.json({ error: "group_not_found" }, 404);
 
-			const invite = store.createInvite({
+			const invite = await store.createInvite({
 				groupId,
 				policy,
 				expiresAt,
@@ -487,7 +480,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 	});
 
 	// GET /v1/admin/invites — list invites
-	app.get("/v1/admin/invites", (c) => {
+	app.get("/v1/admin/invites", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
@@ -496,14 +489,9 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 		const store = new CoordinatorStore(dbPath);
 		try {
-			const rows = store.db
-				.prepare(
-					`SELECT invite_id, group_id, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
-					 FROM coordinator_invites
-					 WHERE group_id = ?
-					 ORDER BY created_at DESC`,
-				)
-				.all(groupId) as Record<string, unknown>[];
+			const rows = (await store.listInvites(groupId)).map(
+				({ token: _token, ...inviteWithoutToken }) => inviteWithoutToken,
+			);
 			return c.json({ items: rows });
 		} finally {
 			store.close();
@@ -521,7 +509,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 	});
 
 	// GET /v1/admin/join-requests — list join requests
-	app.get("/v1/admin/join-requests", (c) => {
+	app.get("/v1/admin/join-requests", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
@@ -530,7 +518,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 		const store = new CoordinatorStore(dbPath);
 		try {
-			return c.json({ items: store.listJoinRequests(groupId) });
+			return c.json({ items: await store.listJoinRequests(groupId) });
 		} finally {
 			store.close();
 		}
@@ -566,7 +554,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 		const store = new CoordinatorStore(dbPath);
 		try {
-			const invite = store.getInviteByToken(token);
+			const invite = await store.getInviteByToken(token);
 			if (!invite) return c.json({ error: "invalid_token" }, 404);
 
 			if (invite.revoked_at) return c.json({ error: "revoked_token" }, 400);
@@ -580,7 +568,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			}
 
 			const inviteGroupId = String(invite.group_id);
-			const existing = store.getEnrollment(inviteGroupId, deviceId);
+			const existing = await store.getEnrollment(inviteGroupId, deviceId);
 			if (existing) {
 				return c.json({
 					ok: true,
@@ -596,7 +584,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			}
 
 			if (invitePolicy === "approval_required") {
-				const request = store.createJoinRequest({
+				const request = await store.createJoinRequest({
 					groupId: inviteGroupId,
 					deviceId,
 					publicKey,
@@ -613,7 +601,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 				});
 			}
 
-			store.enrollDevice(inviteGroupId, {
+			await store.enrollDevice(inviteGroupId, {
 				deviceId,
 				fingerprint,
 				publicKey,
@@ -662,7 +650,7 @@ async function handleJoinRequestReview(c: Context, approved: boolean, dbPath: st
 
 	const store = new CoordinatorStore(dbPath);
 	try {
-		const request = store.reviewJoinRequest({
+		const request = await store.reviewJoinRequest({
 			requestId,
 			approved,
 			reviewedBy,
