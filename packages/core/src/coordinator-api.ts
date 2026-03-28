@@ -7,7 +7,6 @@
 
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
@@ -26,7 +25,6 @@ export interface CoordinatorRuntimeDeps {
 }
 
 export interface CreateCoordinatorAppOptions {
-	dbPath?: string;
 	storeFactory?: () => CoordinatorStore;
 	runtime?: CoordinatorRuntimeDeps;
 }
@@ -141,12 +139,14 @@ async function authorizeRequest(
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
-	const dbPath = opts?.dbPath;
 	const runtime: CoordinatorRuntimeDeps = opts?.runtime ?? {
 		adminSecret: defaultAdminSecret,
 		now: () => new Date().toISOString(),
 	};
-	const createStore = opts?.storeFactory ?? (() => new BetterSqliteCoordinatorStore(dbPath));
+	if (!opts?.storeFactory) {
+		throw new Error("createCoordinatorApp requires a storeFactory.");
+	}
+	const createStore = opts.storeFactory;
 	const app = new Hono();
 
 	// -----------------------------------------------------------------------

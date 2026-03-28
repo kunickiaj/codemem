@@ -21,7 +21,7 @@ import {
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
-	createCoordinatorApp,
+	createBetterSqliteCoordinatorApp,
 	DEFAULT_COORDINATOR_DB_PATH,
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
@@ -1179,7 +1179,7 @@ coordinatorCommand.addCommand(
 			const host = String(opts.host ?? "127.0.0.1").trim() || "127.0.0.1";
 			const port = Number.parseInt(String(opts.port ?? "7347"), 10);
 			const dbPath = opts.db ?? opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH;
-			const app = createCoordinatorApp({ dbPath });
+			const app = createBetterSqliteCoordinatorApp({ dbPath });
 			p.intro("codemem sync coordinator serve");
 			p.log.success(`Coordinator listening at http://${host}:${port}`);
 			p.log.info(`DB: ${dbPath}`);

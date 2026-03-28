@@ -20,34 +20,46 @@ function createMockStore(
 	overrides?: Partial<CoordinatorStoreInterface>,
 ): CoordinatorStoreInterface {
 	const defaultStore: CoordinatorStoreInterface = {
-		close: vi.fn(),
-		createGroup: vi.fn(),
-		getGroup: vi.fn((): CoordinatorGroup | null => null),
-		listGroups: vi.fn((): CoordinatorGroup[] => []),
-		enrollDevice: vi.fn((_: string, __: CoordinatorEnrollDeviceInput) => undefined),
-		listEnrolledDevices: vi.fn((_: string, __?: boolean): CoordinatorEnrollment[] => []),
-		getEnrollment: vi.fn((_: string, __: string): CoordinatorEnrollment | null => null),
-		renameDevice: vi.fn(() => false),
-		setDeviceEnabled: vi.fn(() => false),
-		removeDevice: vi.fn(() => false),
-		recordNonce: vi.fn(() => true),
-		cleanupNonces: vi.fn(),
-		createInvite: vi.fn((_: CoordinatorCreateInviteInput): CoordinatorInvite => {
-			throw new Error("not implemented");
-		}),
-		getInviteByToken: vi.fn((_: string): CoordinatorInvite | null => null),
-		listInvites: vi.fn((_: string): CoordinatorInvite[] => []),
-		createJoinRequest: vi.fn((_: CoordinatorCreateJoinRequestInput): CoordinatorJoinRequest => {
-			throw new Error("not implemented");
-		}),
-		listJoinRequests: vi.fn((_: string, __?: string): CoordinatorJoinRequest[] => []),
-		reviewJoinRequest: vi.fn(
-			(_: CoordinatorReviewJoinRequestInput): CoordinatorJoinRequestReviewResult | null => null,
+		close: vi.fn(async () => undefined),
+		createGroup: vi.fn(async () => undefined),
+		getGroup: vi.fn(async (): Promise<CoordinatorGroup | null> => null),
+		listGroups: vi.fn(async (): Promise<CoordinatorGroup[]> => []),
+		enrollDevice: vi.fn(async (_: string, __: CoordinatorEnrollDeviceInput) => undefined),
+		listEnrolledDevices: vi.fn(
+			async (_: string, __?: boolean): Promise<CoordinatorEnrollment[]> => [],
 		),
-		upsertPresence: vi.fn((_: CoordinatorUpsertPresenceInput): CoordinatorPresenceRecord => {
+		getEnrollment: vi.fn(
+			async (_: string, __: string): Promise<CoordinatorEnrollment | null> => null,
+		),
+		renameDevice: vi.fn(async () => false),
+		setDeviceEnabled: vi.fn(async () => false),
+		removeDevice: vi.fn(async () => false),
+		recordNonce: vi.fn(async () => true),
+		cleanupNonces: vi.fn(async () => undefined),
+		createInvite: vi.fn(async (_: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> => {
 			throw new Error("not implemented");
 		}),
-		listGroupPeers: vi.fn((_: string, __: string): CoordinatorPeerRecord[] => []),
+		getInviteByToken: vi.fn(async (_: string): Promise<CoordinatorInvite | null> => null),
+		listInvites: vi.fn(async (_: string): Promise<CoordinatorInvite[]> => []),
+		createJoinRequest: vi.fn(
+			async (_: CoordinatorCreateJoinRequestInput): Promise<CoordinatorJoinRequest> => {
+				throw new Error("not implemented");
+			},
+		),
+		listJoinRequests: vi.fn(
+			async (_: string, __?: string): Promise<CoordinatorJoinRequest[]> => [],
+		),
+		reviewJoinRequest: vi.fn(
+			async (
+				_: CoordinatorReviewJoinRequestInput,
+			): Promise<CoordinatorJoinRequestReviewResult | null> => null,
+		),
+		upsertPresence: vi.fn(
+			async (_: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> => {
+				throw new Error("not implemented");
+			},
+		),
+		listGroupPeers: vi.fn(async (_: string, __: string): Promise<CoordinatorPeerRecord[]> => []),
 	};
 	return { ...defaultStore, ...overrides };
 }
@@ -55,7 +67,7 @@ function createMockStore(
 describe("createCoordinatorApp dependency injection", () => {
 	it("uses injected admin secret and store factory for admin routes", async () => {
 		const store = createMockStore({
-			listEnrolledDevices: vi.fn(() => [
+			listEnrolledDevices: vi.fn(async () => [
 				{
 					group_id: "g1",
 					device_id: "d1",
