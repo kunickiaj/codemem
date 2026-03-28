@@ -6,17 +6,21 @@
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm --filter @codemem/core build && pnpm exec vite build && pnpm exec tsc --noEmit",
-		"typecheck": "pnpm --filter @codemem/core build && pnpm exec tsc --noEmit"
+		"typecheck": "pnpm --filter @codemem/core build && pnpm exec tsc --noEmit",
+		"test:worker": "pnpm --filter @codemem/core build && pnpm exec vitest run --config vitest.config.ts test/worker.integration.test.ts"
 	},
 	"dependencies": {
 		"@codemem/core": "workspace:^"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",
+		"@cloudflare/workers-types": "^4.20260317.1",
+		"@cloudflare/vitest-pool-workers": "^0.13.5",
 		"better-sqlite3": "^12.8.0",
 		"typescript": "catalog:",
 		"vite": "8.0.1",
-		"vitest": "4.0.17"
+		"vitest": "^4.1.0",
+		"wrangler": "^4.41.0"
 	},
 	"repository": {
 		"type": "git",
