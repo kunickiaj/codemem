@@ -230,7 +230,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorEnrollment[]> {
 		const where = includeDisabled ? "" : "AND enabled = 1";
 		return this.db
-			.prepare(`SELECT group_id, device_id, fingerprint, display_name, enabled, created_at
+			.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
 				 FROM enrolled_devices
 				 WHERE group_id = ? ${where}
 				 ORDER BY created_at ASC, device_id ASC`)
@@ -240,7 +240,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null> {
 		const row = this.db
-			.prepare(`SELECT device_id, public_key, fingerprint, display_name
+			.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
 				 FROM enrolled_devices
 				 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 			.get(groupId, deviceId);
@@ -354,7 +354,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				now,
 			);
 		const row = this.db
-			.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+			.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 				 FROM coordinator_join_requests WHERE request_id = ?`)
 			.get(requestId);
 		return rowToRecord<CoordinatorJoinRequest>(row);
@@ -362,7 +362,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async listJoinRequests(groupId: string, status = "pending"): Promise<CoordinatorJoinRequest[]> {
 		return this.db
-			.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+			.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 				 FROM coordinator_join_requests
 				 WHERE group_id = ? AND status = ?
 				 ORDER BY created_at ASC, device_id ASC`)
@@ -398,7 +398,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					 WHERE request_id = ?`)
 				.run(nextStatus, reviewedAt, opts.reviewedBy ?? null, opts.requestId);
 			const updated = this.db
-				.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+				.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 					 FROM coordinator_join_requests WHERE request_id = ?`)
 				.get(opts.requestId);
 			return updated ? rowToRecord<CoordinatorJoinRequestReviewResult>(updated) : null;

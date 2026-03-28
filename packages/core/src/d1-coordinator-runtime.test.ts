@@ -108,6 +108,7 @@ describe("createD1CoordinatorApp", () => {
 				{
 					group_id: "g1",
 					device_id: "d1",
+					public_key: "pk1",
 					fingerprint: "fp1",
 					display_name: "Laptop",
 					enabled: 1,

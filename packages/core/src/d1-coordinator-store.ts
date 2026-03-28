@@ -189,10 +189,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return (
 			await allRows<CoordinatorEnrollment>(
 				this.db
-					.prepare(`SELECT group_id, device_id, fingerprint, display_name, enabled, created_at
-					 FROM enrolled_devices
-					 WHERE group_id = ? ${where}
-					 ORDER BY created_at ASC, device_id ASC`)
+					.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
+						 FROM enrolled_devices
+						 WHERE group_id = ? ${where}
+						 ORDER BY created_at ASC, device_id ASC`)
 					.bind(_groupId),
 			)
 		).map((row) => rowToRecord<CoordinatorEnrollment>(row));
@@ -201,7 +201,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	async getEnrollment(_groupId: string, _deviceId: string): Promise<CoordinatorEnrollment | null> {
 		const row = await firstRow<CoordinatorEnrollment>(
 			this.db
-				.prepare(`SELECT device_id, public_key, fingerprint, display_name
+				.prepare(`SELECT group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
 					 FROM enrolled_devices
 					 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
 				.bind(_groupId, _deviceId),
@@ -337,7 +337,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			.run();
 		const row = await firstRow<CoordinatorJoinRequest>(
 			this.db
-				.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+				.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 					 FROM coordinator_join_requests WHERE request_id = ?`)
 				.bind(requestId),
 		);
@@ -349,10 +349,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return (
 			await allRows<CoordinatorJoinRequest>(
 				this.db
-					.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
-					 FROM coordinator_join_requests
-					 WHERE group_id = ? AND status = ?
-					 ORDER BY created_at ASC, device_id ASC`)
+					.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+						 FROM coordinator_join_requests
+						 WHERE group_id = ? AND status = ?
+						 ORDER BY created_at ASC, device_id ASC`)
 					.bind(_groupId, status),
 			)
 		).map((row) => rowToRecord<CoordinatorJoinRequest>(row));
@@ -414,7 +414,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			if (changes === 0) {
 				const latest = await firstRow<CoordinatorJoinRequestReviewResult>(
 					this.db
-						.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+						.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 							 FROM coordinator_join_requests WHERE request_id = ?`)
 						.bind(_opts.requestId),
 				);
@@ -433,7 +433,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		}
 		const updated = await firstRow<CoordinatorJoinRequestReviewResult>(
 			this.db
-				.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
+				.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 					 FROM coordinator_join_requests WHERE request_id = ?`)
 				.bind(_opts.requestId),
 		);
