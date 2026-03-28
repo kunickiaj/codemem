@@ -5,13 +5,13 @@ export interface CoordinatorGroup {
 }
 
 export interface CoordinatorEnrollment {
-	group_id?: string;
+	group_id: string;
 	device_id: string;
-	public_key?: string;
+	public_key: string;
 	fingerprint: string;
 	display_name: string | null;
-	enabled?: number;
-	created_at?: string;
+	enabled: number;
+	created_at: string;
 }
 
 export interface CoordinatorInvite {
@@ -30,7 +30,7 @@ export interface CoordinatorJoinRequest {
 	request_id: string;
 	group_id: string;
 	device_id: string;
-	public_key?: string;
+	public_key: string;
 	fingerprint: string;
 	display_name: string | null;
 	token: string;
