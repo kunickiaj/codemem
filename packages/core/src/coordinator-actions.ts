@@ -7,7 +7,14 @@ import {
 	type InvitePayload,
 	inviteLink,
 } from "./coordinator-invites.js";
-import { CoordinatorStore, DEFAULT_COORDINATOR_DB_PATH } from "./coordinator-store.js";
+import {
+	type CoordinatorEnrollment,
+	type CoordinatorGroup,
+	type CoordinatorJoinRequest,
+	type CoordinatorJoinRequestReviewResult,
+	CoordinatorStore,
+	DEFAULT_COORDINATOR_DB_PATH,
+} from "./coordinator-store.js";
 import { connect } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import { readCodememConfigFile, writeCodememConfigFile } from "./observer-config.js";
@@ -147,41 +154,43 @@ function inviteImportTransportError(error: unknown, coordinatorUrl: string): Err
 	return error instanceof Error ? error : new Error(message);
 }
 
-export function coordinatorCreateGroupAction(opts: {
+export async function coordinatorCreateGroupAction(opts: {
 	groupId: string;
 	displayName?: string | null;
 	dbPath?: string | null;
-}): Record<string, unknown> {
+}): Promise<CoordinatorGroup> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		store.createGroup(groupId, opts.displayName ?? null);
-		return store.getGroup(groupId) ?? {};
+		await store.createGroup(groupId, opts.displayName ?? null);
+		const group = await store.getGroup(groupId);
+		if (!group) throw new Error(`Failed to create group: ${groupId}`);
+		return group;
 	} finally {
 		store.close();
 	}
 }
 
-export function coordinatorListGroupsAction(opts?: {
+export async function coordinatorListGroupsAction(opts?: {
 	dbPath?: string | null;
-}): Record<string, unknown>[] {
+}): Promise<CoordinatorGroup[]> {
 	const store = new CoordinatorStore(opts?.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		return store.listGroups();
+		return await store.listGroups();
 	} finally {
 		store.close();
 	}
 }
 
-export function coordinatorEnrollDeviceAction(opts: {
+export async function coordinatorEnrollDeviceAction(opts: {
 	groupId: string;
 	deviceId: string;
 	fingerprint: string;
 	publicKey: string;
 	displayName?: string | null;
 	dbPath?: string | null;
-}): Record<string, unknown> {
+}): Promise<CoordinatorEnrollment> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	const fingerprint = String(opts.fingerprint ?? "").trim();
@@ -191,40 +200,42 @@ export function coordinatorEnrollDeviceAction(opts: {
 	}
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		if (!store.getGroup(groupId)) throw new Error(`Group not found: ${groupId}`);
-		store.enrollDevice(groupId, {
+		if (!(await store.getGroup(groupId))) throw new Error(`Group not found: ${groupId}`);
+		await store.enrollDevice(groupId, {
 			deviceId,
 			fingerprint,
 			publicKey,
 			displayName: opts.displayName ?? null,
 		});
-		return store.getEnrollment(groupId, deviceId) ?? {};
+		const enrollment = await store.getEnrollment(groupId, deviceId);
+		if (!enrollment) throw new Error(`Failed to enroll device: ${deviceId}`);
+		return enrollment;
 	} finally {
 		store.close();
 	}
 }
 
-export function coordinatorListDevicesAction(opts: {
+export async function coordinatorListDevicesAction(opts: {
 	groupId: string;
 	includeDisabled?: boolean;
 	dbPath?: string | null;
-}): Record<string, unknown>[] {
+}): Promise<CoordinatorEnrollment[]> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		return store.listEnrolledDevices(groupId, opts.includeDisabled === true);
+		return await store.listEnrolledDevices(groupId, opts.includeDisabled === true);
 	} finally {
 		store.close();
 	}
 }
 
-export function coordinatorRenameDeviceAction(opts: {
+export async function coordinatorRenameDeviceAction(opts: {
 	groupId: string;
 	deviceId: string;
 	displayName: string;
 	dbPath?: string | null;
-}): Record<string, unknown> | null {
+}): Promise<CoordinatorEnrollment | null> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	const displayName = String(opts.displayName ?? "").trim();
@@ -233,40 +244,44 @@ export function coordinatorRenameDeviceAction(opts: {
 	}
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		const ok = store.renameDevice(groupId, deviceId, displayName);
-		return ok ? (store.getEnrollment(groupId, deviceId) ?? {}) : null;
+		const ok = await store.renameDevice(groupId, deviceId, displayName);
+		if (!ok) return null;
+		const active = await store.getEnrollment(groupId, deviceId);
+		if (active) return active;
+		const all = await store.listEnrolledDevices(groupId, true);
+		return all.find((device) => device.device_id === deviceId) ?? null;
 	} finally {
 		store.close();
 	}
 }
 
-export function coordinatorDisableDeviceAction(opts: {
+export async function coordinatorDisableDeviceAction(opts: {
 	groupId: string;
 	deviceId: string;
 	dbPath?: string | null;
-}): boolean {
+}): Promise<boolean> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		return store.setDeviceEnabled(groupId, deviceId, false);
+		return await store.setDeviceEnabled(groupId, deviceId, false);
 	} finally {
 		store.close();
 	}
 }
 
-export function coordinatorRemoveDeviceAction(opts: {
+export async function coordinatorRemoveDeviceAction(opts: {
 	groupId: string;
 	deviceId: string;
 	dbPath?: string | null;
-}): boolean {
+}): Promise<boolean> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		return store.removeDevice(groupId, deviceId);
+		return await store.removeDevice(groupId, deviceId);
 	} finally {
 		store.close();
 	}
@@ -318,7 +333,7 @@ export async function coordinatorCreateInviteAction(opts: {
 	try {
 		const group = store.getGroup(opts.groupId);
 		if (!group) throw new Error(`Group not found: ${opts.groupId}`);
-		const invite = store.createInvite({
+		const invite = await store.createInvite({
 			groupId: opts.groupId,
 			policy: opts.policy,
 			expiresAt,
@@ -412,7 +427,7 @@ export async function coordinatorListJoinRequestsAction(opts: {
 	dbPath?: string | null;
 	remoteUrl?: string | null;
 	adminSecret?: string | null;
-}): Promise<Record<string, unknown>[]> {
+}): Promise<CoordinatorJoinRequest[]> {
 	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
 	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
 	if (remote) {
@@ -424,13 +439,13 @@ export async function coordinatorListJoinRequestsAction(opts: {
 		);
 		return Array.isArray(payload?.items)
 			? payload.items.filter(
-					(row): row is Record<string, unknown> => Boolean(row) && typeof row === "object",
+					(row): row is CoordinatorJoinRequest => Boolean(row) && typeof row === "object",
 				)
 			: [];
 	}
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		return store.listJoinRequests(opts.groupId);
+		return await store.listJoinRequests(opts.groupId);
 	} finally {
 		store.close();
 	}
@@ -443,7 +458,7 @@ export async function coordinatorReviewJoinRequestAction(opts: {
 	dbPath?: string | null;
 	remoteUrl?: string | null;
 	adminSecret?: string | null;
-}): Promise<Record<string, unknown> | null> {
+}): Promise<CoordinatorJoinRequestReviewResult | null> {
 	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
 	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
 	if (remote) {
@@ -461,11 +476,13 @@ export async function coordinatorReviewJoinRequestAction(opts: {
 			},
 		);
 		const request = payload?.request;
-		return request && typeof request === "object" ? (request as Record<string, unknown>) : null;
+		return request && typeof request === "object"
+			? (request as CoordinatorJoinRequestReviewResult)
+			: null;
 	}
 	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		return store.reviewJoinRequest({
+		return await store.reviewJoinRequest({
 			requestId: opts.requestId,
 			approved: opts.approve,
 			reviewedBy: opts.reviewedBy ?? null,

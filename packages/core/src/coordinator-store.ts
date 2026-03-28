@@ -19,6 +19,132 @@ import Database from "better-sqlite3";
 
 export const DEFAULT_COORDINATOR_DB_PATH = join(homedir(), ".codemem", "coordinator.sqlite");
 
+export interface CoordinatorGroup {
+	group_id: string;
+	display_name: string | null;
+	created_at: string;
+}
+
+export interface CoordinatorEnrollment {
+	group_id?: string;
+	device_id: string;
+	public_key?: string;
+	fingerprint: string;
+	display_name: string | null;
+	enabled?: number;
+	created_at?: string;
+}
+
+export interface CoordinatorInvite {
+	invite_id: string;
+	group_id: string;
+	token: string;
+	policy: string;
+	expires_at: string;
+	created_at: string;
+	created_by: string | null;
+	team_name_snapshot: string | null;
+	revoked_at: string | null;
+}
+
+export interface CoordinatorJoinRequest {
+	request_id: string;
+	group_id: string;
+	device_id: string;
+	public_key?: string;
+	fingerprint: string;
+	display_name: string | null;
+	token: string;
+	status: string;
+	created_at: string;
+	reviewed_at: string | null;
+	reviewed_by: string | null;
+}
+
+export interface CoordinatorJoinRequestReviewResult extends CoordinatorJoinRequest {
+	_no_transition?: boolean;
+}
+
+export interface CoordinatorPresenceRecord {
+	group_id: string;
+	device_id: string;
+	addresses: string[];
+	expires_at: string;
+}
+
+export interface CoordinatorPeerRecord {
+	device_id: string;
+	fingerprint: string;
+	display_name: string | null;
+	addresses: string[];
+	last_seen_at: string | null;
+	expires_at: string | null;
+	stale: boolean;
+	capabilities: Record<string, unknown>;
+}
+
+export interface CoordinatorEnrollDeviceInput {
+	deviceId: string;
+	fingerprint: string;
+	publicKey: string;
+	displayName?: string | null;
+}
+
+export interface CoordinatorCreateInviteInput {
+	groupId: string;
+	policy: string;
+	expiresAt: string;
+	createdBy?: string | null;
+}
+
+export interface CoordinatorCreateJoinRequestInput {
+	groupId: string;
+	deviceId: string;
+	publicKey: string;
+	fingerprint: string;
+	displayName?: string | null;
+	token: string;
+}
+
+export interface CoordinatorReviewJoinRequestInput {
+	requestId: string;
+	approved: boolean;
+	reviewedBy?: string | null;
+}
+
+export interface CoordinatorUpsertPresenceInput {
+	groupId: string;
+	deviceId: string;
+	addresses: string[];
+	ttlS: number;
+	capabilities?: Record<string, unknown> | null;
+}
+
+export interface CoordinatorStore {
+	close(): Promise<void>;
+	createGroup(groupId: string, displayName?: string | null): Promise<void>;
+	getGroup(groupId: string): Promise<CoordinatorGroup | null>;
+	listGroups(): Promise<CoordinatorGroup[]>;
+	enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void>;
+	listEnrolledDevices(groupId: string, includeDisabled?: boolean): Promise<CoordinatorEnrollment[]>;
+	getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null>;
+	renameDevice(groupId: string, deviceId: string, displayName: string): Promise<boolean>;
+	setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): Promise<boolean>;
+	removeDevice(groupId: string, deviceId: string): Promise<boolean>;
+	recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean>;
+	cleanupNonces(cutoff: string): Promise<void>;
+	createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite>;
+	getInviteByToken(token: string): Promise<CoordinatorInvite | null>;
+	listInvites(groupId: string): Promise<CoordinatorInvite[]>;
+	createJoinRequest(opts: CoordinatorCreateJoinRequestInput): Promise<CoordinatorJoinRequest>;
+	listJoinRequests(groupId: string, status?: string): Promise<CoordinatorJoinRequest[]>;
+	reviewJoinRequest(
+		opts: CoordinatorReviewJoinRequestInput,
+	): Promise<CoordinatorJoinRequestReviewResult | null>;
+	upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord>;
+	listGroupPeers(groupId: string, requestingDeviceId: string): Promise<CoordinatorPeerRecord[]>;
+}
+
 // ---------------------------------------------------------------------------
 // Address helpers (subset of sync/discovery.py, inlined to avoid circular deps)
 // ---------------------------------------------------------------------------
@@ -87,10 +213,10 @@ function tokenUrlSafe(bytes: number): string {
 	return randomBytes(bytes).toString("base64url").replace(/=+$/, "");
 }
 
-function rowToRecord(row: unknown): Record<string, unknown> {
-	if (row == null) return {};
+function rowToRecord<T>(row: unknown): T {
+	if (row == null) throw new Error("expected row");
 	// better-sqlite3 returns plain objects when using .get()/.all()
-	return row as Record<string, unknown>;
+	return row as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +307,7 @@ export function connectCoordinator(path?: string): DatabaseType {
 // CoordinatorStore
 // ---------------------------------------------------------------------------
 
-export class CoordinatorStore {
+export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly path: string;
 	readonly db: DatabaseType;
 
@@ -190,43 +316,35 @@ export class CoordinatorStore {
 		this.db = connectCoordinator(this.path);
 	}
 
-	close(): void {
+	async close(): Promise<void> {
 		this.db.close();
 	}
 
 	// -- Groups -------------------------------------------------------------
 
-	createGroup(groupId: string, displayName?: string | null): void {
+	async createGroup(groupId: string, displayName?: string | null): Promise<void> {
 		this.db
 			.prepare("INSERT OR IGNORE INTO groups(group_id, display_name, created_at) VALUES (?, ?, ?)")
 			.run(groupId, displayName ?? null, nowISO());
 	}
 
-	getGroup(groupId: string): Record<string, unknown> | null {
+	async getGroup(groupId: string): Promise<CoordinatorGroup | null> {
 		const row = this.db
 			.prepare("SELECT group_id, display_name, created_at FROM groups WHERE group_id = ?")
 			.get(groupId);
-		return row ? rowToRecord(row) : null;
+		return row ? rowToRecord<CoordinatorGroup>(row) : null;
 	}
 
-	listGroups(): Record<string, unknown>[] {
+	async listGroups(): Promise<CoordinatorGroup[]> {
 		return this.db
 			.prepare("SELECT group_id, display_name, created_at FROM groups ORDER BY created_at ASC")
 			.all()
-			.map(rowToRecord);
+			.map((row) => rowToRecord<CoordinatorGroup>(row));
 	}
 
 	// -- Devices ------------------------------------------------------------
 
-	enrollDevice(
-		groupId: string,
-		opts: {
-			deviceId: string;
-			fingerprint: string;
-			publicKey: string;
-			displayName?: string | null;
-		},
-	): void {
+	async enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void> {
 		this.db
 			.prepare(
 				`INSERT INTO enrolled_devices(
@@ -248,7 +366,10 @@ export class CoordinatorStore {
 			);
 	}
 
-	listEnrolledDevices(groupId: string, includeDisabled = false): Record<string, unknown>[] {
+	async listEnrolledDevices(
+		groupId: string,
+		includeDisabled = false,
+	): Promise<CoordinatorEnrollment[]> {
 		const where = includeDisabled ? "" : "AND enabled = 1";
 		return this.db
 			.prepare(
@@ -258,10 +379,10 @@ export class CoordinatorStore {
 				 ORDER BY created_at ASC, device_id ASC`,
 			)
 			.all(groupId)
-			.map(rowToRecord);
+			.map((row) => rowToRecord<CoordinatorEnrollment>(row));
 	}
 
-	getEnrollment(groupId: string, deviceId: string): Record<string, unknown> | null {
+	async getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null> {
 		const row = this.db
 			.prepare(
 				`SELECT device_id, public_key, fingerprint, display_name
@@ -269,10 +390,10 @@ export class CoordinatorStore {
 				 WHERE group_id = ? AND device_id = ? AND enabled = 1`,
 			)
 			.get(groupId, deviceId);
-		return row ? rowToRecord(row) : null;
+		return row ? rowToRecord<CoordinatorEnrollment>(row) : null;
 	}
 
-	renameDevice(groupId: string, deviceId: string, displayName: string): boolean {
+	async renameDevice(groupId: string, deviceId: string, displayName: string): Promise<boolean> {
 		const result = this.db
 			.prepare(
 				`UPDATE enrolled_devices SET display_name = ?
@@ -282,7 +403,7 @@ export class CoordinatorStore {
 		return result.changes > 0;
 	}
 
-	setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): boolean {
+	async setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): Promise<boolean> {
 		const result = this.db
 			.prepare(
 				`UPDATE enrolled_devices SET enabled = ?
@@ -292,7 +413,7 @@ export class CoordinatorStore {
 		return result.changes > 0;
 	}
 
-	removeDevice(groupId: string, deviceId: string): boolean {
+	async removeDevice(groupId: string, deviceId: string): Promise<boolean> {
 		this.db
 			.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
 			.run(groupId, deviceId);
@@ -302,18 +423,30 @@ export class CoordinatorStore {
 		return result.changes > 0;
 	}
 
+	// -- Nonces -------------------------------------------------------------
+
+	async recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean> {
+		try {
+			this.db
+				.prepare("INSERT INTO request_nonces(device_id, nonce, created_at) VALUES (?, ?, ?)")
+				.run(deviceId, nonce, createdAt);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	async cleanupNonces(cutoff: string): Promise<void> {
+		this.db.prepare("DELETE FROM request_nonces WHERE created_at < ?").run(cutoff);
+	}
+
 	// -- Invites ------------------------------------------------------------
 
-	createInvite(opts: {
-		groupId: string;
-		policy: string;
-		expiresAt: string;
-		createdBy?: string | null;
-	}): Record<string, unknown> {
+	async createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
 		const now = nowISO();
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
-		const group = this.getGroup(opts.groupId);
+		const group = await this.getGroup(opts.groupId);
 
 		this.db
 			.prepare(
@@ -338,10 +471,10 @@ export class CoordinatorStore {
 				 FROM coordinator_invites WHERE invite_id = ?`,
 			)
 			.get(inviteId);
-		return row ? rowToRecord(row) : {};
+		return rowToRecord<CoordinatorInvite>(row);
 	}
 
-	getInviteByToken(token: string): Record<string, unknown> | null {
+	async getInviteByToken(token: string): Promise<CoordinatorInvite | null> {
 		const row = this.db
 			.prepare(
 				`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
@@ -351,30 +484,25 @@ export class CoordinatorStore {
 				   AND expires_at > ?`,
 			)
 			.get(token, new Date().toISOString());
-		return row ? rowToRecord(row) : null;
+		return row ? rowToRecord<CoordinatorInvite>(row) : null;
 	}
 
-	listInvites(groupId: string): Record<string, unknown>[] {
+	async listInvites(groupId: string): Promise<CoordinatorInvite[]> {
 		return this.db
 			.prepare(
 				`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
 				 FROM coordinator_invites WHERE group_id = ?
-				 ORDER BY created_at ASC`,
+				 ORDER BY created_at DESC`,
 			)
 			.all(groupId)
-			.map(rowToRecord);
+			.map((row) => rowToRecord<CoordinatorInvite>(row));
 	}
 
 	// -- Join requests ------------------------------------------------------
 
-	createJoinRequest(opts: {
-		groupId: string;
-		deviceId: string;
-		publicKey: string;
-		fingerprint: string;
-		displayName?: string | null;
-		token: string;
-	}): Record<string, unknown> {
+	async createJoinRequest(
+		opts: CoordinatorCreateJoinRequestInput,
+	): Promise<CoordinatorJoinRequest> {
 		const now = nowISO();
 		const requestId = tokenUrlSafe(12);
 
@@ -401,10 +529,10 @@ export class CoordinatorStore {
 				 FROM coordinator_join_requests WHERE request_id = ?`,
 			)
 			.get(requestId);
-		return row ? rowToRecord(row) : {};
+		return rowToRecord<CoordinatorJoinRequest>(row);
 	}
 
-	listJoinRequests(groupId: string, status = "pending"): Record<string, unknown>[] {
+	async listJoinRequests(groupId: string, status = "pending"): Promise<CoordinatorJoinRequest[]> {
 		return this.db
 			.prepare(
 				`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
@@ -413,25 +541,24 @@ export class CoordinatorStore {
 				 ORDER BY created_at ASC, device_id ASC`,
 			)
 			.all(groupId, status)
-			.map(rowToRecord);
+			.map((row) => rowToRecord<CoordinatorJoinRequest>(row));
 	}
 
-	reviewJoinRequest(opts: {
-		requestId: string;
-		approved: boolean;
-		reviewedBy?: string | null;
-	}): (Record<string, unknown> & { _no_transition?: boolean }) | null {
+	async reviewJoinRequest(
+		opts: CoordinatorReviewJoinRequestInput,
+	): Promise<CoordinatorJoinRequestReviewResult | null> {
 		const row = this.db
 			.prepare(
-				`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status
+				`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status,
+				        created_at, reviewed_at, reviewed_by
 				 FROM coordinator_join_requests WHERE request_id = ?`,
 			)
-			.get(opts.requestId) as Record<string, unknown> | undefined;
+			.get(opts.requestId) as (CoordinatorJoinRequest & { public_key: string }) | undefined;
 
 		if (!row) return null;
 
 		if (row.status !== "pending") {
-			return { ...rowToRecord(row), _no_transition: true };
+			return { ...rowToRecord<CoordinatorJoinRequest>(row), _no_transition: true };
 		}
 
 		// Wrap enroll + status update in a transaction for atomicity
@@ -440,11 +567,11 @@ export class CoordinatorStore {
 			const nextStatus = opts.approved ? "approved" : "denied";
 
 			if (opts.approved) {
-				this.enrollDevice(row.group_id as string, {
-					deviceId: row.device_id as string,
-					fingerprint: row.fingerprint as string,
-					publicKey: row.public_key as string,
-					displayName: ((row.display_name as string) ?? "").trim() || null,
+				void this.enrollDevice(row.group_id, {
+					deviceId: row.device_id,
+					fingerprint: row.fingerprint,
+					publicKey: row.public_key,
+					displayName: (row.display_name ?? "").trim() || null,
 				});
 			}
 
@@ -462,19 +589,13 @@ export class CoordinatorStore {
 					 FROM coordinator_join_requests WHERE request_id = ?`,
 				)
 				.get(opts.requestId);
-			return updated ? rowToRecord(updated) : null;
+			return updated ? rowToRecord<CoordinatorJoinRequestReviewResult>(updated) : null;
 		})();
 	}
 
 	// -- Presence -----------------------------------------------------------
 
-	upsertPresence(opts: {
-		groupId: string;
-		deviceId: string;
-		addresses: string[];
-		ttlS: number;
-		capabilities?: Record<string, unknown> | null;
-	}): Record<string, unknown> {
+	async upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {
 		const now = new Date();
 		const expiresAt = new Date(now.getTime() + opts.ttlS * 1000).toISOString();
 		const normalized = mergeAddresses([], opts.addresses);
@@ -506,7 +627,10 @@ export class CoordinatorStore {
 		};
 	}
 
-	listGroupPeers(groupId: string, requestingDeviceId: string): Record<string, unknown>[] {
+	async listGroupPeers(
+		groupId: string,
+		requestingDeviceId: string,
+	): Promise<CoordinatorPeerRecord[]> {
 		const now = new Date();
 		const rows = this.db
 			.prepare(
@@ -537,15 +661,20 @@ export class CoordinatorStore {
 				: mergeAddresses([], JSON.parse((row.addresses_json as string) || "[]") as string[]);
 
 			return {
-				device_id: row.device_id,
-				fingerprint: row.fingerprint,
-				display_name: row.display_name,
+				device_id: String(row.device_id ?? ""),
+				fingerprint: String(row.fingerprint ?? ""),
+				display_name: (row.display_name as string | null) ?? null,
 				addresses,
-				last_seen_at: row.last_seen_at,
-				expires_at: row.expires_at,
+				last_seen_at: (row.last_seen_at as string | null) ?? null,
+				expires_at: (row.expires_at as string | null) ?? null,
 				stale,
-				capabilities: JSON.parse((row.capabilities_json as string) || "{}"),
-			};
+				capabilities: JSON.parse((row.capabilities_json as string) || "{}") as Record<
+					string,
+					unknown
+				>,
+			} satisfies CoordinatorPeerRecord;
 		});
 	}
 }
+
+export const CoordinatorStore = BetterSqliteCoordinatorStore;
