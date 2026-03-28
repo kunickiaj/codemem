@@ -86,6 +86,10 @@ importers:
         version: 4.0.17(@types/node@25.5.0)(lightningcss@1.32.0)(tsx@4.21.0)
 
   packages/cloudflare-coordinator-worker:
+    dependencies:
+      '@codemem/core':
+        specifier: workspace:^
+        version: link:../core
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13

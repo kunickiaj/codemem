@@ -1,5 +1,5 @@
-import { createD1CoordinatorApp } from "../../core/src/d1-coordinator-runtime.js";
-import type { D1DatabaseLike } from "../../core/src/d1-coordinator-store.js";
+import type { D1DatabaseLike } from "@codemem/core/internal/cloudflare-coordinator";
+import { createD1CoordinatorApp } from "@codemem/core/internal/cloudflare-coordinator";
 
 export interface CloudflareCoordinatorEnv {
 	COORDINATOR_DB?: D1DatabaseLike;
