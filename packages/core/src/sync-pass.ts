@@ -438,6 +438,7 @@ export async function syncOnce(
 							? getPayload.retained_floor_cursor.trim()
 							: null,
 				};
+
 				recordSyncAttempt(db, peerDeviceId, {
 					ok: false,
 					error: dirtyLocal.dirty

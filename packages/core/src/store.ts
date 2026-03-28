@@ -222,6 +222,26 @@ export class MemoryStore {
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 	}
 
+	/**
+	 * Throw if sync is in a blocking phase and the memory has shared visibility.
+	 * Private memories are always safe to write regardless of sync state.
+	 *
+	 * Uses the store's existing Drizzle instance to avoid re-instantiation on
+	 * every mutation. The underlying query is a PK lookup on a 0-or-1-row table,
+	 * so the cost is negligible.
+	 */
+	private assertSharedMutationAllowed(visibility: string | null | undefined): void {
+		if (!visibility || visibility === "private") return;
+		const row = this.d
+			.select({ phase: schema.syncDaemonState.phase })
+			.from(schema.syncDaemonState)
+			.where(eq(schema.syncDaemonState.id, 1))
+			.get();
+		if (row?.phase === "needs_attention") {
+			throw new Error("sync_rebootstrap_in_progress");
+		}
+	}
+
 	private enqueueVectorWrite(memoryId: number, title: string, bodyText: string): void {
 		if (this.db.inTransaction) return;
 		let op: Promise<void> | null = null;
@@ -363,6 +383,9 @@ export class MemoryStore {
 
 		// Resolve provenance fields
 		const provenance = this.resolveProvenance(metaPayload);
+
+		// Block shared-memory writes while sync requires attention.
+		this.assertSharedMutationAllowed(provenance.visibility);
 
 		const rows = this.d
 			.insert(schema.memoryItems)
@@ -531,11 +554,15 @@ export class MemoryStore {
 					.select({
 						rev: schema.memoryItems.rev,
 						metadata_json: schema.memoryItems.metadata_json,
+						visibility: schema.memoryItems.visibility,
 					})
 					.from(schema.memoryItems)
 					.where(eq(schema.memoryItems.id, memoryId))
 					.get();
 				if (!row) return;
+
+				// Block shared-memory deletes while sync requires attention.
+				this.assertSharedMutationAllowed(row.visibility);
 
 				const meta = fromJson(row.metadata_json);
 				meta.clock_device_id = this.deviceId;
@@ -744,6 +771,9 @@ export class MemoryStore {
 		if (cleaned !== "private" && cleaned !== "shared") {
 			throw new Error("visibility must be private or shared");
 		}
+
+		// Block promoting to shared while sync requires attention.
+		this.assertSharedMutationAllowed(cleaned);
 
 		return this.db
 			.transaction(() => {

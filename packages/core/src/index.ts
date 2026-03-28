@@ -254,11 +254,13 @@ export {
 	signRequest,
 	verifySignature,
 } from "./sync-auth.js";
-export type { SyncDaemonOptions, SyncTickResult } from "./sync-daemon.js";
+export type { SyncDaemonOptions, SyncDaemonPhase, SyncTickResult } from "./sync-daemon.js";
 export {
+	getSyncDaemonPhase,
 	runSyncDaemon,
 	setSyncDaemonError,
 	setSyncDaemonOk,
+	setSyncDaemonPhase,
 	syncDaemonTick,
 } from "./sync-daemon.js";
 export type { MdnsEntry } from "./sync-discovery.js";
