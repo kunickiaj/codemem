@@ -5,8 +5,11 @@
 	"type": "module",
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build && pnpm exec tsc --noEmit",
-		"typecheck": "pnpm exec tsc --noEmit"
+		"build": "pnpm --filter @codemem/core build && pnpm exec vite build && pnpm exec tsc --noEmit",
+		"typecheck": "pnpm --filter @codemem/core build && pnpm exec tsc --noEmit"
+	},
+	"dependencies": {
+		"@codemem/core": "workspace:^"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",

@@ -1,17 +1,20 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	buildAuthHeaders,
+	connect,
+	connectCoordinator,
+	ensureDeviceIdentity,
+	initTestSchema,
+	loadPublicKey,
+} from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { connectCoordinator } from "../../core/src/better-sqlite-coordinator-store.js";
 import {
 	D1CoordinatorStore,
 	type D1DatabaseLike,
 	type D1PreparedStatementLike,
-} from "../../core/src/d1-coordinator-store.js";
-import { connect } from "../../core/src/db.js";
-import { buildAuthHeaders } from "../../core/src/sync-auth.js";
-import { ensureDeviceIdentity, loadPublicKey } from "../../core/src/sync-identity.js";
-import { initTestSchema } from "../../core/src/test-utils.js";
+} from "../../core/src/internal/cloudflare-coordinator.js";
 import { createCloudflareCoordinatorWorker } from "./index.js";
 
 type SqliteDatabase = ReturnType<typeof connectCoordinator>;
