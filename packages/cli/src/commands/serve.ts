@@ -474,8 +474,22 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		process.exit(1);
 	});
 
+	// Periodic WAL checkpoint — keeps the WAL file bounded.
+	// Without this, long-running viewer processes accumulate a WAL that can
+	// grow to match the main DB size when concurrent readers hold it open.
+	const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+	const walCheckpointTimer = setInterval(() => {
+		try {
+			store.db.pragma("wal_checkpoint(TRUNCATE)");
+		} catch (err) {
+			p.log.warn(`WAL checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}, WAL_CHECKPOINT_INTERVAL_MS);
+	walCheckpointTimer.unref();
+
 	const shutdown = async () => {
 		p.outro("shutting down");
+		clearInterval(walCheckpointTimer);
 		syncAbort.abort();
 		retentionAbort.abort();
 		await sweeper.stop();
