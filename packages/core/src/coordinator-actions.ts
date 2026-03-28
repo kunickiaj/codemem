@@ -1,20 +1,22 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	BetterSqliteCoordinatorStore,
+	DEFAULT_COORDINATOR_DB_PATH,
+} from "./better-sqlite-coordinator-store.js";
+import {
 	decodeInvitePayload,
 	encodeInvitePayload,
 	extractInvitePayload,
 	type InvitePayload,
 	inviteLink,
 } from "./coordinator-invites.js";
-import {
-	type CoordinatorEnrollment,
-	type CoordinatorGroup,
-	type CoordinatorJoinRequest,
-	type CoordinatorJoinRequestReviewResult,
-	CoordinatorStore,
-	DEFAULT_COORDINATOR_DB_PATH,
-} from "./coordinator-store.js";
+import type {
+	CoordinatorEnrollment,
+	CoordinatorGroup,
+	CoordinatorJoinRequest,
+	CoordinatorJoinRequestReviewResult,
+} from "./coordinator-store-contract.js";
 import { connect } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import { readCodememConfigFile, writeCodememConfigFile } from "./observer-config.js";
@@ -161,7 +163,7 @@ export async function coordinatorCreateGroupAction(opts: {
 }): Promise<CoordinatorGroup> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		await store.createGroup(groupId, opts.displayName ?? null);
 		const group = await store.getGroup(groupId);
@@ -175,7 +177,7 @@ export async function coordinatorCreateGroupAction(opts: {
 export async function coordinatorListGroupsAction(opts?: {
 	dbPath?: string | null;
 }): Promise<CoordinatorGroup[]> {
-	const store = new CoordinatorStore(opts?.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts?.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.listGroups();
 	} finally {
@@ -198,7 +200,7 @@ export async function coordinatorEnrollDeviceAction(opts: {
 	if (!groupId || !deviceId || !fingerprint || !publicKey) {
 		throw new Error("group_id, device_id, fingerprint, and public_key are required.");
 	}
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		if (!(await store.getGroup(groupId))) throw new Error(`Group not found: ${groupId}`);
 		await store.enrollDevice(groupId, {
@@ -222,7 +224,7 @@ export async function coordinatorListDevicesAction(opts: {
 }): Promise<CoordinatorEnrollment[]> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.listEnrolledDevices(groupId, opts.includeDisabled === true);
 	} finally {
@@ -242,7 +244,7 @@ export async function coordinatorRenameDeviceAction(opts: {
 	if (!groupId || !deviceId || !displayName) {
 		throw new Error("group_id, device_id, and display_name are required.");
 	}
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		const ok = await store.renameDevice(groupId, deviceId, displayName);
 		if (!ok) return null;
@@ -263,7 +265,7 @@ export async function coordinatorDisableDeviceAction(opts: {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.setDeviceEnabled(groupId, deviceId, false);
 	} finally {
@@ -279,7 +281,7 @@ export async function coordinatorRemoveDeviceAction(opts: {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.removeDevice(groupId, deviceId);
 	} finally {
@@ -329,7 +331,7 @@ export async function coordinatorCreateInviteAction(opts: {
 		opts.coordinatorUrl ?? readCodememConfigFile().sync_coordinator_url ?? "",
 	).trim();
 	if (!resolvedCoordinatorUrl) throw new Error("Coordinator URL required.");
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		const group = store.getGroup(opts.groupId);
 		if (!group) throw new Error(`Group not found: ${opts.groupId}`);
@@ -443,7 +445,7 @@ export async function coordinatorListJoinRequestsAction(opts: {
 				)
 			: [];
 	}
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.listJoinRequests(opts.groupId);
 	} finally {
@@ -480,7 +482,7 @@ export async function coordinatorReviewJoinRequestAction(opts: {
 			? (request as CoordinatorJoinRequestReviewResult)
 			: null;
 	}
-	const store = new CoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.reviewJoinRequest({
 			requestId: opts.requestId,
