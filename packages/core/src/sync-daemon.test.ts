@@ -1,6 +1,12 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setSyncDaemonError, setSyncDaemonOk, syncDaemonTick } from "./sync-daemon.js";
+import {
+	getSyncDaemonPhase,
+	setSyncDaemonError,
+	setSyncDaemonOk,
+	setSyncDaemonPhase,
+	syncDaemonTick,
+} from "./sync-daemon.js";
 import { initTestSchema } from "./test-utils.js";
 
 // Mock sync-pass to avoid needing real keys/network
@@ -159,5 +165,48 @@ describe("setSyncDaemonError", () => {
 		// Should only have 1 row
 		const count = db.prepare("SELECT COUNT(*) as n FROM sync_daemon_state").get() as { n: number };
 		expect(count.n).toBe(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Sync daemon phase (rebootstrap safety gate)
+// ---------------------------------------------------------------------------
+
+describe("getSyncDaemonPhase / setSyncDaemonPhase", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	it("returns null when no phase is set", () => {
+		expect(getSyncDaemonPhase(db)).toBeNull();
+	});
+
+	it("returns null when daemon state row exists but phase is null", () => {
+		setSyncDaemonOk(db);
+		expect(getSyncDaemonPhase(db)).toBeNull();
+	});
+
+	it("persists and retrieves needs_attention phase", () => {
+		setSyncDaemonPhase(db, "needs_attention");
+		expect(getSyncDaemonPhase(db)).toBe("needs_attention");
+	});
+
+	it("clears phase when set to null", () => {
+		setSyncDaemonPhase(db, "needs_attention");
+		setSyncDaemonPhase(db, null);
+		expect(getSyncDaemonPhase(db)).toBeNull();
+	});
+
+	it("setSyncDaemonOk clears an active phase", () => {
+		setSyncDaemonPhase(db, "needs_attention");
+		setSyncDaemonOk(db);
+		expect(getSyncDaemonPhase(db)).toBeNull();
 	});
 });

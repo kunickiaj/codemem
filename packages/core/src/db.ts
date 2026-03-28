@@ -483,6 +483,15 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		// Keep compatibility shim fail-open for optional additive tables.
 	}
 
+	// Add phase column to sync_daemon_state for rebootstrap safety gate.
+	if (tableExists(db, "sync_daemon_state") && !columnExists(db, "sync_daemon_state", "phase")) {
+		try {
+			db.exec("ALTER TABLE sync_daemon_state ADD COLUMN phase TEXT");
+		} catch {
+			// Race-safe: another process may have added it first.
+		}
+	}
+
 	if (!tableExists(db, "raw_event_flush_batches")) return;
 
 	const additiveColumns: Array<{ name: string; ddl: string }> = [
