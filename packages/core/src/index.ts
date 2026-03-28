@@ -30,6 +30,7 @@ export {
 	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
 } from "./coordinator-actions.js";
+export type { CoordinatorRuntimeDeps, CreateCoordinatorAppOptions } from "./coordinator-api.js";
 export { createCoordinatorApp } from "./coordinator-api.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {

@@ -19,17 +19,31 @@ import { DEFAULT_TIME_WINDOW_S, verifySignature } from "./sync-auth.js";
 const MAX_BODY_BYTES = 64 * 1024;
 const ADMIN_HEADER = "X-Codemem-Coordinator-Admin";
 
+export interface CoordinatorRuntimeDeps {
+	adminSecret(): string | null;
+	now(): string;
+}
+
+export interface CreateCoordinatorAppOptions {
+	dbPath?: string;
+	storeFactory?: () => CoordinatorStore;
+	runtime?: CoordinatorRuntimeDeps;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function adminSecret(): string | null {
+function defaultAdminSecret(): string | null {
 	const value = (process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim();
 	return value || null;
 }
 
-function authorizeAdmin(headerValue: string | null | undefined): { ok: boolean; error: string } {
-	const expected = adminSecret();
+function authorizeAdmin(
+	headerValue: string | null | undefined,
+	runtime: CoordinatorRuntimeDeps,
+): { ok: boolean; error: string } {
+	const expected = runtime.adminSecret();
 	if (!expected) return { ok: false, error: "admin_not_configured" };
 	const provided = (headerValue ?? "").trim();
 	if (!provided) return { ok: false, error: "missing_admin_header" };
@@ -64,6 +78,7 @@ interface AuthResult {
 
 async function authorizeRequest(
 	store: CoordinatorStore,
+	runtime: CoordinatorRuntimeDeps,
 	opts: {
 		method: string;
 		url: string;
@@ -105,12 +120,14 @@ async function authorizeRequest(
 		return { ok: false, error: "invalid_signature", enrollment: null };
 	}
 
-	const createdAt = new Date().toISOString();
+	const createdAt = runtime.now();
 	if (!(await recordNonce(store, deviceId, nonce, createdAt))) {
 		return { ok: false, error: "nonce_replay", enrollment: null };
 	}
 
-	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
+	const cutoff = new Date(
+		new Date(createdAt).getTime() - DEFAULT_TIME_WINDOW_S * 2 * 1000,
+	).toISOString();
 	await cleanupNonces(store, cutoff);
 
 	return { ok: true, error: "ok", enrollment };
@@ -120,8 +137,15 @@ async function authorizeRequest(
 // App factory
 // ---------------------------------------------------------------------------
 
-export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<typeof Hono> {
+export function createCoordinatorApp(
+	opts?: CreateCoordinatorAppOptions,
+): InstanceType<typeof Hono> {
 	const dbPath = opts?.dbPath;
+	const runtime: CoordinatorRuntimeDeps = opts?.runtime ?? {
+		adminSecret: defaultAdminSecret,
+		now: () => new Date().toISOString(),
+	};
+	const createStore = opts?.storeFactory ?? (() => new CoordinatorStore(dbPath));
 	const app = new Hono();
 
 	// -----------------------------------------------------------------------
@@ -149,9 +173,9 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "group_id_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
-			const auth = await authorizeRequest(store, {
+			const auth = await authorizeRequest(store, runtime, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
@@ -213,9 +237,9 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "group_id_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
-			const auth = await authorizeRequest(store, {
+			const auth = await authorizeRequest(store, runtime, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
@@ -242,7 +266,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// POST /v1/admin/devices — enroll a device
 	app.post("/v1/admin/devices", async (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = Buffer.from(await c.req.arrayBuffer());
@@ -268,7 +292,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "group_id_device_id_fingerprint_public_key_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			await store.createGroup(groupId);
 			await store.enrollDevice(groupId, {
@@ -286,7 +310,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// GET /v1/admin/devices — list enrolled devices
 	app.get("/v1/admin/devices", (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const groupId = (c.req.query("group_id") ?? "").trim();
@@ -296,7 +320,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			(c.req.query("include_disabled") ?? "0").trim().toLowerCase(),
 		);
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			return c.json({ items: store.listEnrolledDevices(groupId, includeDisabled) });
 		} finally {
@@ -306,7 +330,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// POST /v1/admin/devices/rename
 	app.post("/v1/admin/devices/rename", async (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = Buffer.from(await c.req.arrayBuffer());
@@ -333,7 +357,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "display_name_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			const ok = store.renameDevice(groupId, deviceId, displayName);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
@@ -345,7 +369,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// POST /v1/admin/devices/disable
 	app.post("/v1/admin/devices/disable", async (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = Buffer.from(await c.req.arrayBuffer());
@@ -368,7 +392,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "group_id_and_device_id_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			const ok = store.setDeviceEnabled(groupId, deviceId, false);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
@@ -380,7 +404,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// POST /v1/admin/devices/remove
 	app.post("/v1/admin/devices/remove", async (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = Buffer.from(await c.req.arrayBuffer());
@@ -403,7 +427,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "group_id_and_device_id_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			const ok = store.removeDevice(groupId, deviceId);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
@@ -415,7 +439,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// POST /v1/admin/invites — create an invite
 	app.post("/v1/admin/invites", async (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = Buffer.from(await c.req.arrayBuffer());
@@ -440,7 +464,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "group_id_policy_and_expires_at_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			const group = await store.getGroup(groupId);
 			if (!group) return c.json({ error: "group_not_found" }, 404);
@@ -481,13 +505,13 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// GET /v1/admin/invites — list invites
 	app.get("/v1/admin/invites", async (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const groupId = (c.req.query("group_id") ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id_required" }, 400);
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			const rows = (await store.listInvites(groupId)).map(
 				({ token: _token, ...inviteWithoutToken }) => inviteWithoutToken,
@@ -500,23 +524,23 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 
 	// POST /v1/admin/join-requests/approve
 	app.post("/v1/admin/join-requests/approve", async (c) => {
-		return handleJoinRequestReview(c, true, dbPath);
+		return handleJoinRequestReview(c, true, { createStore, runtime });
 	});
 
 	// POST /v1/admin/join-requests/deny
 	app.post("/v1/admin/join-requests/deny", async (c) => {
-		return handleJoinRequestReview(c, false, dbPath);
+		return handleJoinRequestReview(c, false, { createStore, runtime });
 	});
 
 	// GET /v1/admin/join-requests — list join requests
 	app.get("/v1/admin/join-requests", async (c) => {
-		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const groupId = (c.req.query("group_id") ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id_required" }, 400);
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			return c.json({ items: await store.listJoinRequests(groupId) });
 		} finally {
@@ -552,7 +576,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			return c.json({ error: "token_device_id_fingerprint_public_key_required" }, 400);
 		}
 
-		const store = new CoordinatorStore(dbPath);
+		const store = createStore();
 		try {
 			const invite = await store.getInviteByToken(token);
 			if (!invite) return c.json({ error: "invalid_token" }, 404);
@@ -562,7 +586,7 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 			const expiresAtStr = String(invite.expires_at ?? "");
 			if (expiresAtStr) {
 				const expiresAt = new Date(expiresAtStr.replace("Z", "+00:00"));
-				if (expiresAt <= new Date()) {
+				if (expiresAt <= new Date(runtime.now())) {
 					return c.json({ error: "expired_token" }, 400);
 				}
 			}
@@ -626,8 +650,12 @@ export function createCoordinatorApp(opts?: { dbPath?: string }): InstanceType<t
 // Shared handler for approve/deny
 // ---------------------------------------------------------------------------
 
-async function handleJoinRequestReview(c: Context, approved: boolean, dbPath: string | undefined) {
-	const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER));
+async function handleJoinRequestReview(
+	c: Context,
+	approved: boolean,
+	deps: { createStore: () => CoordinatorStore; runtime: CoordinatorRuntimeDeps },
+) {
+	const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), deps.runtime);
 	if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 	const raw = Buffer.from(await c.req.arrayBuffer());
@@ -648,7 +676,7 @@ async function handleJoinRequestReview(c: Context, approved: boolean, dbPath: st
 
 	if (!requestId) return c.json({ error: "request_id_required" }, 400);
 
-	const store = new CoordinatorStore(dbPath);
+	const store = deps.createStore();
 	try {
 		const request = await store.reviewJoinRequest({
 			requestId,
