@@ -50,6 +50,50 @@ function rowToRecord<T>(row: unknown): T {
 	return row as T;
 }
 
+function normalizeAddress(address: string): string {
+	const value = address.trim();
+	if (!value) return "";
+	const withScheme = value.includes("://") ? value : `http://${value}`;
+	try {
+		const url = new URL(withScheme);
+		if (!url.hostname) return "";
+		if (url.port && (Number(url.port) <= 0 || Number(url.port) > 65535)) return "";
+		return url.origin + url.pathname.replace(/\/+$/, "");
+	} catch {
+		return "";
+	}
+}
+
+function addressDedupeKey(address: string): string {
+	if (!address) return "";
+	try {
+		const parsed = new URL(address);
+		const host = parsed.hostname.toLowerCase();
+		if (
+			(parsed.protocol === "http:" || parsed.protocol === "") &&
+			host &&
+			parsed.port &&
+			parsed.pathname === "/"
+		) {
+			return `${host}:${parsed.port}`;
+		}
+	} catch {}
+	return address;
+}
+
+function mergeAddresses(existing: string[], candidates: string[]): string[] {
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const address of [...existing, ...candidates]) {
+		const cleaned = normalizeAddress(address);
+		const key = addressDedupeKey(cleaned);
+		if (!cleaned || seen.has(key)) continue;
+		seen.add(key);
+		normalized.push(cleaned);
+	}
+	return normalized;
+}
+
 function nowISO(): string {
 	return new Date().toISOString();
 }
@@ -202,11 +246,19 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async recordNonce(_deviceId: string, _nonce: string, _createdAt: string): Promise<boolean> {
-		notImplemented("recordNonce");
+		return (
+			(await runChanges(
+				this.db
+					.prepare(
+						"INSERT OR IGNORE INTO request_nonces(device_id, nonce, created_at) VALUES (?, ?, ?)",
+					)
+					.bind(_deviceId, _nonce, _createdAt),
+			)) > 0
+		);
 	}
 
 	async cleanupNonces(_cutoff: string): Promise<void> {
-		notImplemented("cleanupNonces");
+		await this.db.prepare("DELETE FROM request_nonces WHERE created_at < ?").bind(_cutoff).run();
 	}
 
 	async createInvite(_opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
@@ -389,13 +441,74 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async upsertPresence(_opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {
-		notImplemented("upsertPresence");
+		const now = new Date();
+		const expiresAt = new Date(now.getTime() + _opts.ttlS * 1000).toISOString();
+		const normalized = mergeAddresses([], _opts.addresses);
+		await this.db
+			.prepare(`INSERT INTO presence_records(group_id, device_id, addresses_json, last_seen_at, expires_at, capabilities_json)
+				 VALUES (?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(group_id, device_id) DO UPDATE SET
+					addresses_json = excluded.addresses_json,
+					last_seen_at = excluded.last_seen_at,
+					expires_at = excluded.expires_at,
+					capabilities_json = excluded.capabilities_json`)
+			.bind(
+				_opts.groupId,
+				_opts.deviceId,
+				JSON.stringify(normalized),
+				now.toISOString(),
+				expiresAt,
+				JSON.stringify(_opts.capabilities ?? {}),
+			)
+			.run();
+		return {
+			group_id: _opts.groupId,
+			device_id: _opts.deviceId,
+			addresses: normalized,
+			expires_at: expiresAt,
+		};
 	}
 
 	async listGroupPeers(
 		_groupId: string,
 		_requestingDeviceId: string,
 	): Promise<CoordinatorPeerRecord[]> {
-		notImplemented("listGroupPeers");
+		const now = nowISO();
+		const rows = await allRows<Record<string, unknown>>(
+			this.db
+				.prepare(`SELECT enrolled_devices.device_id, enrolled_devices.fingerprint, enrolled_devices.display_name,
+						presence_records.addresses_json, presence_records.last_seen_at, presence_records.expires_at,
+						presence_records.capabilities_json
+					 FROM enrolled_devices
+					 LEFT JOIN presence_records
+					   ON presence_records.group_id = enrolled_devices.group_id
+					  AND presence_records.device_id = enrolled_devices.device_id
+					 WHERE enrolled_devices.group_id = ?
+					   AND enrolled_devices.enabled = 1
+					   AND enrolled_devices.device_id != ?
+					 ORDER BY enrolled_devices.device_id ASC`)
+				.bind(_groupId, _requestingDeviceId),
+		);
+		return rows.map((row) => {
+			const expiresRaw = String(row.expires_at ?? "").trim();
+			let stale = true;
+			if (expiresRaw) {
+				const expiresAt = new Date(expiresRaw);
+				stale = Number.isNaN(expiresAt.getTime()) || expiresAt.toISOString() <= now;
+			}
+			const addresses = stale
+				? []
+				: mergeAddresses([], JSON.parse(String(row.addresses_json ?? "[]")) as string[]);
+			return {
+				device_id: String(row.device_id ?? ""),
+				fingerprint: String(row.fingerprint ?? ""),
+				display_name: (row.display_name as string | null) ?? null,
+				addresses,
+				last_seen_at: (row.last_seen_at as string | null) ?? null,
+				expires_at: (row.expires_at as string | null) ?? null,
+				stale,
+				capabilities: JSON.parse(String(row.capabilities_json ?? "{}")) as Record<string, unknown>,
+			} satisfies CoordinatorPeerRecord;
+		});
 	}
 }
