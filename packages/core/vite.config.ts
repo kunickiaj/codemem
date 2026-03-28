@@ -4,9 +4,15 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
 	build: {
 		lib: {
-			entry: resolve(import.meta.dirname, "src/index.ts"),
+			entry: {
+				index: resolve(import.meta.dirname, "src/index.ts"),
+				"internal/cloudflare-coordinator": resolve(
+					import.meta.dirname,
+					"src/internal/cloudflare-coordinator.ts",
+				),
+			},
 			formats: ["es"],
-			fileName: "index",
+			fileName: (_format, entryName) => `${entryName}.js`,
 		},
 		rollupOptions: {
 			external: [

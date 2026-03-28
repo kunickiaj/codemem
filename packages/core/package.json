@@ -8,6 +8,11 @@
 			"source": "./src/index.ts",
 			"import": "./dist/index.js",
 			"types": "./dist/index.d.ts"
+		},
+		"./internal/cloudflare-coordinator": {
+			"source": "./src/internal/cloudflare-coordinator.ts",
+			"import": "./dist/internal/cloudflare-coordinator.js",
+			"types": "./dist/internal/cloudflare-coordinator.d.ts"
 		}
 	},
 	"files": [
