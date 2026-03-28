@@ -621,6 +621,14 @@ export const OpencodeMemPlugin = async ({
   let fallbackFailureNoted = false;
   let lastStatusCheckAt = 0;
   let lastStatusAvailable = true;
+
+  // Viewer health-check state
+  const HEALTH_CHECK_INTERVAL_MS = 60_000;
+  const HEALTH_CONSECUTIVE_FAILURES_BEFORE_RESTART = 3;
+  const HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
+  let healthCheckTimer = null;
+  let healthConsecutiveFailures = 0;
+  let healthLastRestartAttempt = 0;
   const nextEventId = () => {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
       return crypto.randomUUID();
@@ -1081,6 +1089,7 @@ export const OpencodeMemPlugin = async ({
     } catch (err) {
       logLine(`viewer spawn failed: ${err}`).catch(() => {});
     }
+    startHealthCheck();
   };
 
   const runCommand = async (cmd, options = {}) => {
@@ -1399,8 +1408,66 @@ export const OpencodeMemPlugin = async ({
       return;
     }
     viewerStarted = false;
+    stopHealthCheck();
     await logLine("viewer stop requested");
     await runCli(["serve", "stop"]);
+  };
+
+  const checkViewerHealth = async () => {
+    if (!viewerStarted || !viewerEnabled) return;
+    try {
+      const resp = await fetch(rawEventsStatusUrl, {
+        method: "GET",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (resp.ok) {
+        if (healthConsecutiveFailures > 0) {
+          await logLine(`viewer.health recovered after ${healthConsecutiveFailures} failure(s)`);
+        }
+        healthConsecutiveFailures = 0;
+        return;
+      }
+      healthConsecutiveFailures++;
+      await logLine(`viewer.health check failed (status=${resp.status}, consecutive=${healthConsecutiveFailures})`);
+    } catch (err) {
+      healthConsecutiveFailures++;
+      await logLine(`viewer.health check error (consecutive=${healthConsecutiveFailures}): ${String(err).slice(0, 200)}`);
+    }
+
+    if (
+      healthConsecutiveFailures >= HEALTH_CONSECUTIVE_FAILURES_BEFORE_RESTART &&
+      Date.now() - healthLastRestartAttempt >= HEALTH_RESTART_COOLDOWN_MS
+    ) {
+      healthLastRestartAttempt = Date.now();
+      await logLine(`viewer.health restarting viewer after ${healthConsecutiveFailures} consecutive failures`);
+      try {
+        const result = await runCli(["serve", "restart"]);
+        const ok = result?.exitCode === 0;
+        await logLine(`viewer.health restart ${ok ? "succeeded" : "failed"} (exit=${result?.exitCode ?? "unknown"})`);
+        if (ok) {
+          healthConsecutiveFailures = 0;
+        }
+      } catch (restartErr) {
+        await logLine(`viewer.health restart error: ${String(restartErr).slice(0, 200)}`);
+      }
+    }
+  };
+
+  const startHealthCheck = () => {
+    if (healthCheckTimer) return;
+    healthConsecutiveFailures = 0;
+    healthCheckTimer = setInterval(() => {
+      checkViewerHealth().catch(() => {});
+    }, HEALTH_CHECK_INTERVAL_MS);
+    if (healthCheckTimer.unref) healthCheckTimer.unref();
+  };
+
+  const stopHealthCheck = () => {
+    if (healthCheckTimer) {
+      clearInterval(healthCheckTimer);
+      healthCheckTimer = null;
+    }
+    healthConsecutiveFailures = 0;
   };
 
   // Get version info (commit hash) for debugging
