@@ -176,31 +176,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		this.db = connectCoordinator(this.path);
 	}
 
-	close(): void {
-		this.db.close();
-	}
-
-	createGroup(groupId: string, displayName?: string | null): void {
-		this.db
-			.prepare("INSERT OR IGNORE INTO groups(group_id, display_name, created_at) VALUES (?, ?, ?)")
-			.run(groupId, displayName ?? null, nowISO());
-	}
-
-	getGroup(groupId: string): CoordinatorGroup | null {
-		const row = this.db
-			.prepare("SELECT group_id, display_name, created_at FROM groups WHERE group_id = ?")
-			.get(groupId);
-		return row ? rowToRecord<CoordinatorGroup>(row) : null;
-	}
-
-	listGroups(): CoordinatorGroup[] {
-		return this.db
-			.prepare("SELECT group_id, display_name, created_at FROM groups ORDER BY created_at ASC")
-			.all()
-			.map((row) => rowToRecord<CoordinatorGroup>(row));
-	}
-
-	enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): void {
+	private enrollDeviceSync(groupId: string, opts: CoordinatorEnrollDeviceInput): void {
 		this.db
 			.prepare(`INSERT INTO enrolled_devices(
 					group_id, device_id, public_key, fingerprint, display_name, enabled, created_at
@@ -220,7 +196,38 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			);
 	}
 
-	listEnrolledDevices(groupId: string, includeDisabled = false): CoordinatorEnrollment[] {
+	async close(): Promise<void> {
+		this.db.close();
+	}
+
+	async createGroup(groupId: string, displayName?: string | null): Promise<void> {
+		this.db
+			.prepare("INSERT OR IGNORE INTO groups(group_id, display_name, created_at) VALUES (?, ?, ?)")
+			.run(groupId, displayName ?? null, nowISO());
+	}
+
+	async getGroup(groupId: string): Promise<CoordinatorGroup | null> {
+		const row = this.db
+			.prepare("SELECT group_id, display_name, created_at FROM groups WHERE group_id = ?")
+			.get(groupId);
+		return row ? rowToRecord<CoordinatorGroup>(row) : null;
+	}
+
+	async listGroups(): Promise<CoordinatorGroup[]> {
+		return this.db
+			.prepare("SELECT group_id, display_name, created_at FROM groups ORDER BY created_at ASC")
+			.all()
+			.map((row) => rowToRecord<CoordinatorGroup>(row));
+	}
+
+	async enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void> {
+		this.enrollDeviceSync(groupId, opts);
+	}
+
+	async listEnrolledDevices(
+		groupId: string,
+		includeDisabled = false,
+	): Promise<CoordinatorEnrollment[]> {
 		const where = includeDisabled ? "" : "AND enabled = 1";
 		return this.db
 			.prepare(`SELECT group_id, device_id, fingerprint, display_name, enabled, created_at
@@ -231,7 +238,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.map((row) => rowToRecord<CoordinatorEnrollment>(row));
 	}
 
-	getEnrollment(groupId: string, deviceId: string): CoordinatorEnrollment | null {
+	async getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null> {
 		const row = this.db
 			.prepare(`SELECT device_id, public_key, fingerprint, display_name
 				 FROM enrolled_devices
@@ -240,7 +247,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return row ? rowToRecord<CoordinatorEnrollment>(row) : null;
 	}
 
-	renameDevice(groupId: string, deviceId: string, displayName: string): boolean {
+	async renameDevice(groupId: string, deviceId: string, displayName: string): Promise<boolean> {
 		const result = this.db
 			.prepare(`UPDATE enrolled_devices SET display_name = ?
 				 WHERE group_id = ? AND device_id = ?`)
@@ -248,7 +255,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return result.changes > 0;
 	}
 
-	setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): boolean {
+	async setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): Promise<boolean> {
 		const result = this.db
 			.prepare(`UPDATE enrolled_devices SET enabled = ?
 				 WHERE group_id = ? AND device_id = ?`)
@@ -256,7 +263,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return result.changes > 0;
 	}
 
-	removeDevice(groupId: string, deviceId: string): boolean {
+	async removeDevice(groupId: string, deviceId: string): Promise<boolean> {
 		this.db
 			.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
 			.run(groupId, deviceId);
@@ -266,7 +273,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return result.changes > 0;
 	}
 
-	recordNonce(deviceId: string, nonce: string, createdAt: string): boolean {
+	async recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean> {
 		try {
 			this.db
 				.prepare("INSERT INTO request_nonces(device_id, nonce, created_at) VALUES (?, ?, ?)")
@@ -277,15 +284,15 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		}
 	}
 
-	cleanupNonces(cutoff: string): void {
+	async cleanupNonces(cutoff: string): Promise<void> {
 		this.db.prepare("DELETE FROM request_nonces WHERE created_at < ?").run(cutoff);
 	}
 
-	createInvite(opts: CoordinatorCreateInviteInput): CoordinatorInvite {
+	async createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
 		const now = nowISO();
 		const inviteId = tokenUrlSafe(12);
 		const token = tokenUrlSafe(24);
-		const group = this.getGroup(opts.groupId);
+		const group = await this.getGroup(opts.groupId);
 		this.db
 			.prepare(`INSERT INTO coordinator_invites(
 					invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
@@ -307,7 +314,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return rowToRecord<CoordinatorInvite>(row);
 	}
 
-	getInviteByToken(token: string): CoordinatorInvite | null {
+	async getInviteByToken(token: string): Promise<CoordinatorInvite | null> {
 		const row = this.db
 			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
 				 FROM coordinator_invites
@@ -318,7 +325,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return row ? rowToRecord<CoordinatorInvite>(row) : null;
 	}
 
-	listInvites(groupId: string): CoordinatorInvite[] {
+	async listInvites(groupId: string): Promise<CoordinatorInvite[]> {
 		return this.db
 			.prepare(`SELECT invite_id, group_id, token, policy, expires_at, created_at, created_by, team_name_snapshot, revoked_at
 				 FROM coordinator_invites WHERE group_id = ?
@@ -327,7 +334,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.map((row) => rowToRecord<CoordinatorInvite>(row));
 	}
 
-	createJoinRequest(opts: CoordinatorCreateJoinRequestInput): CoordinatorJoinRequest {
+	async createJoinRequest(
+		opts: CoordinatorCreateJoinRequestInput,
+	): Promise<CoordinatorJoinRequest> {
 		const now = nowISO();
 		const requestId = tokenUrlSafe(12);
 		this.db
@@ -351,7 +360,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return rowToRecord<CoordinatorJoinRequest>(row);
 	}
 
-	listJoinRequests(groupId: string, status = "pending"): CoordinatorJoinRequest[] {
+	async listJoinRequests(groupId: string, status = "pending"): Promise<CoordinatorJoinRequest[]> {
 		return this.db
 			.prepare(`SELECT request_id, group_id, device_id, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 				 FROM coordinator_join_requests
@@ -361,9 +370,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.map((row) => rowToRecord<CoordinatorJoinRequest>(row));
 	}
 
-	reviewJoinRequest(
+	async reviewJoinRequest(
 		opts: CoordinatorReviewJoinRequestInput,
-	): CoordinatorJoinRequestReviewResult | null {
+	): Promise<CoordinatorJoinRequestReviewResult | null> {
 		const row = this.db
 			.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status,
 				        created_at, reviewed_at, reviewed_by
@@ -376,7 +385,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			const reviewedAt = nowISO();
 			const nextStatus = opts.approved ? "approved" : "denied";
 			if (opts.approved) {
-				this.enrollDevice(row.group_id, {
+				this.enrollDeviceSync(row.group_id, {
 					deviceId: row.device_id,
 					fingerprint: row.fingerprint,
 					publicKey: row.public_key,
@@ -396,7 +405,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		})();
 	}
 
-	upsertPresence(opts: CoordinatorUpsertPresenceInput): CoordinatorPresenceRecord {
+	async upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {
 		const now = new Date();
 		const expiresAt = new Date(now.getTime() + opts.ttlS * 1000).toISOString();
 		const normalized = mergeAddresses([], opts.addresses);
@@ -424,7 +433,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		};
 	}
 
-	listGroupPeers(groupId: string, requestingDeviceId: string): CoordinatorPeerRecord[] {
+	async listGroupPeers(
+		groupId: string,
+		requestingDeviceId: string,
+	): Promise<CoordinatorPeerRecord[]> {
 		const now = new Date();
 		const rows = this.db
 			.prepare(`SELECT enrolled_devices.device_id, enrolled_devices.fingerprint, enrolled_devices.display_name,
