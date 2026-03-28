@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +8,10 @@ import {
 	type D1DatabaseLike,
 	type D1PreparedStatementLike,
 } from "../../core/src/d1-coordinator-store.js";
+import { connect } from "../../core/src/db.js";
+import { buildAuthHeaders } from "../../core/src/sync-auth.js";
+import { ensureDeviceIdentity, loadPublicKey } from "../../core/src/sync-identity.js";
+import { initTestSchema } from "../../core/src/test-utils.js";
 import { createCloudflareCoordinatorWorker } from "./index.js";
 
 type SqliteDatabase = ReturnType<typeof connectCoordinator>;
@@ -76,10 +80,21 @@ describe("createCloudflareCoordinatorWorker", () => {
 	let tmpDir: string;
 	let db: SqliteDatabase;
 	let d1db: D1DatabaseLike;
+	let schemaSql: string;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "cloudflare-coord-worker-test-"));
 		db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
+		db.exec(`
+			DROP TABLE IF EXISTS coordinator_join_requests;
+			DROP TABLE IF EXISTS coordinator_invites;
+			DROP TABLE IF EXISTS request_nonces;
+			DROP TABLE IF EXISTS presence_records;
+			DROP TABLE IF EXISTS enrolled_devices;
+			DROP TABLE IF EXISTS groups;
+		`);
+		schemaSql = readFileSync(join(import.meta.dirname, "../schema.sql"), "utf8");
+		db.exec(schemaSql);
 		d1db = new SqliteD1Database(db);
 	});
 
@@ -133,5 +148,170 @@ describe("createCloudflareCoordinatorWorker", () => {
 				},
 			],
 		});
+	});
+
+	it("supports invite, join approval, signed presence, and signed peer lookup through the worker entrypoint", async () => {
+		const worker = createCloudflareCoordinatorWorker({
+			now: () => "2026-03-28T00:00:00Z",
+		});
+		const adminStore = new D1CoordinatorStore(d1db);
+		await adminStore.createGroup("g1", "Team Alpha");
+
+		function createIdentity(name: string) {
+			const dbPath = join(tmpDir, `${name}.sqlite`);
+			const keysDir = join(tmpDir, `${name}-keys`);
+			const localDb = connect(dbPath);
+			initTestSchema(localDb);
+			const [deviceId, fingerprint] = ensureDeviceIdentity(localDb, { keysDir });
+			const publicKey = loadPublicKey(keysDir)!;
+			return { localDb, keysDir, deviceId, fingerprint, publicKey };
+		}
+
+		const inviter = createIdentity("inviter");
+		const joiner = createIdentity("joiner");
+		const peer = createIdentity("peer");
+		try {
+			await adminStore.enrollDevice("g1", {
+				deviceId: peer.deviceId,
+				fingerprint: peer.fingerprint,
+				publicKey: peer.publicKey,
+				displayName: "Peer Device",
+			});
+
+			const inviteRes = await worker.fetch(
+				new Request("https://coord.example.test/v1/admin/invites", {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						"X-Codemem-Coordinator-Admin": "test-secret",
+					},
+					body: JSON.stringify({
+						group_id: "g1",
+						policy: "approval_required",
+						expires_at: "2099-01-01T00:00:00Z",
+						coordinator_url: "https://coord.example.test",
+					}),
+				}),
+				{ COORDINATOR_DB: d1db, CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret" },
+			);
+			expect(inviteRes.status).toBe(200);
+			const inviteJson = (await inviteRes.json()) as { payload: { token: string } };
+
+			const joinRes = await worker.fetch(
+				new Request("https://coord.example.test/v1/join", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						token: inviteJson.payload.token,
+						device_id: joiner.deviceId,
+						public_key: joiner.publicKey,
+						fingerprint: joiner.fingerprint,
+						display_name: "Joiner Device",
+					}),
+				}),
+				{ COORDINATOR_DB: d1db, CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret" },
+			);
+			expect(joinRes.status).toBe(200);
+			const joinJson = (await joinRes.json()) as { request_id: string; status: string };
+			expect(joinJson.status).toBe("pending");
+
+			const approveRes = await worker.fetch(
+				new Request("https://coord.example.test/v1/admin/join-requests/approve", {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						"X-Codemem-Coordinator-Admin": "test-secret",
+					},
+					body: JSON.stringify({ request_id: joinJson.request_id, reviewed_by: inviter.deviceId }),
+				}),
+				{ COORDINATOR_DB: d1db, CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret" },
+			);
+			expect(approveRes.status).toBe(200);
+
+			const peerPresenceBody = JSON.stringify({
+				group_id: "g1",
+				fingerprint: peer.fingerprint,
+				addresses: ["http://10.0.0.5:7337"],
+				ttl_s: 180,
+			});
+			const peerPresenceReq = new Request("https://coord.example.test/v1/presence", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					...buildAuthHeaders({
+						deviceId: peer.deviceId,
+						method: "POST",
+						url: "https://coord.example.test/v1/presence",
+						bodyBytes: Buffer.from(peerPresenceBody),
+						keysDir: peer.keysDir,
+					}),
+				},
+				body: peerPresenceBody,
+			});
+			expect(
+				await worker.fetch(peerPresenceReq, {
+					COORDINATOR_DB: d1db,
+					CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+				}),
+			).toHaveProperty("status", 200);
+
+			const joinerPresenceBody = JSON.stringify({
+				group_id: "g1",
+				fingerprint: joiner.fingerprint,
+				addresses: ["http://10.0.0.6:7337"],
+				ttl_s: 180,
+			});
+			const joinerPresenceReq = new Request("https://coord.example.test/v1/presence", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					...buildAuthHeaders({
+						deviceId: joiner.deviceId,
+						method: "POST",
+						url: "https://coord.example.test/v1/presence",
+						bodyBytes: Buffer.from(joinerPresenceBody),
+						keysDir: joiner.keysDir,
+					}),
+				},
+				body: joinerPresenceBody,
+			});
+			expect(
+				await worker.fetch(joinerPresenceReq, {
+					COORDINATOR_DB: d1db,
+					CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+				}),
+			).toHaveProperty("status", 200);
+
+			const peersReq = new Request("https://coord.example.test/v1/peers?group_id=g1", {
+				method: "GET",
+				headers: {
+					...buildAuthHeaders({
+						deviceId: joiner.deviceId,
+						method: "GET",
+						url: "https://coord.example.test/v1/peers?group_id=g1",
+						bodyBytes: Buffer.from(""),
+						keysDir: joiner.keysDir,
+					}),
+				},
+			});
+			const peersRes = await worker.fetch(peersReq, {
+				COORDINATOR_DB: d1db,
+				CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
+			});
+			expect(peersRes.status).toBe(200);
+			const peersJson = (await peersRes.json()) as { items: Array<Record<string, unknown>> };
+			expect(peersJson.items).toEqual([
+				expect.objectContaining({
+					device_id: peer.deviceId,
+					fingerprint: peer.fingerprint,
+					stale: false,
+					addresses: ["http://10.0.0.5:7337"],
+				}),
+			]);
+		} finally {
+			inviter.localDb.close();
+			joiner.localDb.close();
+			peer.localDb.close();
+		}
 	});
 });
