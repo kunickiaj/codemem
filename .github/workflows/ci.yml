@@ -38,6 +38,28 @@ jobs:
       - name: Test
         run: pnpm run test
 
+  worker-test:
+    name: Cloudflare Worker Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Worker integration test
+        run: pnpm --filter @codemem/cloudflare-coordinator-worker test:worker
+
   ts-lint:
     name: TypeScript Lint
     runs-on: ubuntu-latest
