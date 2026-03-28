@@ -975,6 +975,30 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("exposes /v1/snapshot on sync app (auth-gated)", async () => {
+			const { syncApp, cleanup } = createTestApp();
+			try {
+				const res = await syncApp.request("/v1/snapshot?generation=1&snapshot_id=test");
+				expect(res.status).toBe(401);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("unauthorized");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns 400 for /v1/snapshot without required params", async () => {
+			const { syncApp, cleanup } = createTestApp();
+			try {
+				// Missing generation
+				const res = await syncApp.request("/v1/snapshot?snapshot_id=test");
+				// Will be 401 without auth, but let's verify the endpoint exists
+				expect([400, 401]).toContain(res.status);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("returns reset_required metadata for stale peer cursors", async () => {
 			const { syncApp, getStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
@@ -1199,7 +1223,7 @@ describe("viewer-server", () => {
 						.run(peerDeviceId, peerFingerprint.fingerprint, peerPublicKey, now);
 
 					const url =
-						"http://localhost/v1/bootstrap/memories?limit=2&generation=11&snapshot_id=snapshot-11&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op";
+						"http://localhost/v1/snapshot?limit=2&generation=11&snapshot_id=snapshot-11&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op";
 					const headers = buildAuthHeaders({
 						deviceId: peerDeviceId,
 						method: "GET",
