@@ -59,12 +59,12 @@ export type {
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
 	CoordinatorReviewJoinRequestInput,
-	CoordinatorStore as CoordinatorStoreInterface,
+	CoordinatorStore,
+	CoordinatorStoreInterface,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store.js";
 export {
 	BetterSqliteCoordinatorStore,
-	CoordinatorStore,
 	connectCoordinator,
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./coordinator-store.js";

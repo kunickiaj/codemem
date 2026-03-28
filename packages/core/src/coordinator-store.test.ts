@@ -18,8 +18,6 @@ describe("CoordinatorStore", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	// -- Schema -------------------------------------------------------------
-
 	describe("schema", () => {
 		it("creates all expected tables", async () => {
 			const tables = store.db
@@ -38,8 +36,6 @@ describe("CoordinatorStore", () => {
 			]);
 		});
 	});
-
-	// -- Groups -------------------------------------------------------------
 
 	describe("groups", () => {
 		it("creates and retrieves a group", async () => {
@@ -69,8 +65,6 @@ describe("CoordinatorStore", () => {
 			expect(groups).toHaveLength(2);
 		});
 	});
-
-	// -- Devices ------------------------------------------------------------
 
 	describe("devices", () => {
 		beforeEach(async () => {
@@ -113,52 +107,29 @@ describe("CoordinatorStore", () => {
 		});
 
 		it("lists enrolled devices", async () => {
-			await store.enrollDevice("g1", {
-				deviceId: "d1",
-				fingerprint: "fp1",
-				publicKey: "pk1",
-			});
-			await store.enrollDevice("g1", {
-				deviceId: "d2",
-				fingerprint: "fp2",
-				publicKey: "pk2",
-			});
+			await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
+			await store.enrollDevice("g1", { deviceId: "d2", fingerprint: "fp2", publicKey: "pk2" });
 			expect(await store.listEnrolledDevices("g1")).toHaveLength(2);
 		});
 
 		it("renames a device", async () => {
-			await store.enrollDevice("g1", {
-				deviceId: "d1",
-				fingerprint: "fp1",
-				publicKey: "pk1",
-			});
+			await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
 			expect(await store.renameDevice("g1", "d1", "Desktop")).toBe(true);
 			const enrollment = await store.getEnrollment("g1", "d1");
 			expect(enrollment?.display_name).toBe("Desktop");
 		});
 
 		it("disables and re-enables a device", async () => {
-			await store.enrollDevice("g1", {
-				deviceId: "d1",
-				fingerprint: "fp1",
-				publicKey: "pk1",
-			});
+			await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
 			await store.setDeviceEnabled("g1", "d1", false);
-			// Disabled device not returned by default
 			expect(await store.listEnrolledDevices("g1")).toHaveLength(0);
-			// But shows up with includeDisabled
 			expect(await store.listEnrolledDevices("g1", true)).toHaveLength(1);
-			// Re-enable
 			await store.setDeviceEnabled("g1", "d1", true);
 			expect(await store.listEnrolledDevices("g1")).toHaveLength(1);
 		});
 
 		it("removes a device and its presence", async () => {
-			await store.enrollDevice("g1", {
-				deviceId: "d1",
-				fingerprint: "fp1",
-				publicKey: "pk1",
-			});
+			await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
 			await store.upsertPresence({
 				groupId: "g1",
 				deviceId: "d1",
@@ -167,7 +138,6 @@ describe("CoordinatorStore", () => {
 			});
 			expect(await store.removeDevice("g1", "d1")).toBe(true);
 			expect(await store.getEnrollment("g1", "d1")).toBeNull();
-			// Verify presence was also cleaned up
 			const presence = store.db
 				.prepare("SELECT * FROM presence_records WHERE group_id = ? AND device_id = ?")
 				.get("g1", "d1");
@@ -179,21 +149,11 @@ describe("CoordinatorStore", () => {
 		});
 	});
 
-	// -- Presence -----------------------------------------------------------
-
 	describe("presence", () => {
 		beforeEach(async () => {
 			await store.createGroup("g1");
-			await store.enrollDevice("g1", {
-				deviceId: "d1",
-				fingerprint: "fp1",
-				publicKey: "pk1",
-			});
-			await store.enrollDevice("g1", {
-				deviceId: "d2",
-				fingerprint: "fp2",
-				publicKey: "pk2",
-			});
+			await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
+			await store.enrollDevice("g1", { deviceId: "d2", fingerprint: "fp2", publicKey: "pk2" });
 		});
 
 		it("upserts presence and returns normalized data", async () => {
@@ -222,16 +182,14 @@ describe("CoordinatorStore", () => {
 				addresses: ["http://localhost:9001"],
 				ttlS: 300,
 			});
-			// d1 asks for peers — should only see d2
 			const peers = await store.listGroupPeers("g1", "d1");
 			expect(peers).toHaveLength(1);
-			expect(peers[0].device_id).toBe("d2");
-			expect(peers[0].stale).toBe(false);
-			expect(peers[0].addresses).toEqual(["http://localhost:9001"]);
+			expect(peers[0]?.device_id).toBe("d2");
+			expect(peers[0]?.stale).toBe(false);
+			expect(peers[0]?.addresses).toEqual(["http://localhost:9001"]);
 		});
 
 		it("marks stale presence with empty addresses", async () => {
-			// Set presence with 0 TTL so it expires immediately
 			await store.upsertPresence({
 				groupId: "g1",
 				deviceId: "d2",
@@ -240,21 +198,18 @@ describe("CoordinatorStore", () => {
 			});
 			const peers = await store.listGroupPeers("g1", "d1");
 			expect(peers).toHaveLength(1);
-			expect(peers[0].stale).toBe(true);
-			expect(peers[0].addresses).toEqual([]);
+			expect(peers[0]?.stale).toBe(true);
+			expect(peers[0]?.addresses).toEqual([]);
 		});
 
 		it("shows enrolled peers with no presence record", async () => {
-			// d2 never reported presence
 			const peers = await store.listGroupPeers("g1", "d1");
 			expect(peers).toHaveLength(1);
-			expect(peers[0].device_id).toBe("d2");
-			expect(peers[0].stale).toBe(true);
-			expect(peers[0].addresses).toEqual([]);
+			expect(peers[0]?.device_id).toBe("d2");
+			expect(peers[0]?.stale).toBe(true);
+			expect(peers[0]?.addresses).toEqual([]);
 		});
 	});
-
-	// -- Invites ------------------------------------------------------------
 
 	describe("invites", () => {
 		beforeEach(async () => {
@@ -272,7 +227,6 @@ describe("CoordinatorStore", () => {
 			expect(invite.group_id).toBe("g1");
 			expect(invite.policy).toBe("auto_approve");
 			expect(invite.team_name_snapshot).toBe("Team Alpha");
-
 			const byToken = await store.getInviteByToken(invite.token as string);
 			expect(byToken).not.toBeNull();
 			expect(byToken?.invite_id).toBe(invite.invite_id);
@@ -296,8 +250,6 @@ describe("CoordinatorStore", () => {
 			expect(await store.listInvites("g1")).toHaveLength(2);
 		});
 	});
-
-	// -- Join requests ------------------------------------------------------
 
 	describe("join requests", () => {
 		let inviteToken: string;
@@ -362,8 +314,6 @@ describe("CoordinatorStore", () => {
 			expect(reviewed).not.toBeNull();
 			expect(reviewed?.status).toBe("approved");
 			expect(reviewed?.reviewed_by).toBe("admin");
-
-			// Device should now be enrolled
 			const enrollment = await store.getEnrollment("g1", "d-new");
 			expect(enrollment).not.toBeNull();
 			expect(enrollment?.fingerprint).toBe("fp-new");
@@ -397,10 +347,7 @@ describe("CoordinatorStore", () => {
 				fingerprint: "fp-new",
 				token: inviteToken,
 			});
-			await store.reviewJoinRequest({
-				requestId: req.request_id as string,
-				approved: true,
-			});
+			await store.reviewJoinRequest({ requestId: req.request_id as string, approved: true });
 			const again = await store.reviewJoinRequest({
 				requestId: req.request_id as string,
 				approved: false,
