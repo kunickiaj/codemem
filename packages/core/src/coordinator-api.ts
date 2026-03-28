@@ -7,9 +7,10 @@
 
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
-import { type CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store.js";
+import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 import { DEFAULT_TIME_WINDOW_S, verifySignature } from "./sync-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ export function createCoordinatorApp(
 		adminSecret: defaultAdminSecret,
 		now: () => new Date().toISOString(),
 	};
-	const createStore = opts?.storeFactory ?? (() => new CoordinatorStore(dbPath));
+	const createStore = opts?.storeFactory ?? (() => new BetterSqliteCoordinatorStore(dbPath));
 	const app = new Hono();
 
 	// -----------------------------------------------------------------------
