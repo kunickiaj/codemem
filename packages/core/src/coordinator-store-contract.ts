@@ -100,26 +100,26 @@ export interface CoordinatorUpsertPresenceInput {
 }
 
 export interface CoordinatorStore {
-	close(): void;
-	createGroup(groupId: string, displayName?: string | null): void;
-	getGroup(groupId: string): CoordinatorGroup | null;
-	listGroups(): CoordinatorGroup[];
-	enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): void;
-	listEnrolledDevices(groupId: string, includeDisabled?: boolean): CoordinatorEnrollment[];
-	getEnrollment(groupId: string, deviceId: string): CoordinatorEnrollment | null;
-	renameDevice(groupId: string, deviceId: string, displayName: string): boolean;
-	setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): boolean;
-	removeDevice(groupId: string, deviceId: string): boolean;
-	recordNonce(deviceId: string, nonce: string, createdAt: string): boolean;
-	cleanupNonces(cutoff: string): void;
-	createInvite(opts: CoordinatorCreateInviteInput): CoordinatorInvite;
-	getInviteByToken(token: string): CoordinatorInvite | null;
-	listInvites(groupId: string): CoordinatorInvite[];
-	createJoinRequest(opts: CoordinatorCreateJoinRequestInput): CoordinatorJoinRequest;
-	listJoinRequests(groupId: string, status?: string): CoordinatorJoinRequest[];
+	close(): Promise<void>;
+	createGroup(groupId: string, displayName?: string | null): Promise<void>;
+	getGroup(groupId: string): Promise<CoordinatorGroup | null>;
+	listGroups(): Promise<CoordinatorGroup[]>;
+	enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void>;
+	listEnrolledDevices(groupId: string, includeDisabled?: boolean): Promise<CoordinatorEnrollment[]>;
+	getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null>;
+	renameDevice(groupId: string, deviceId: string, displayName: string): Promise<boolean>;
+	setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): Promise<boolean>;
+	removeDevice(groupId: string, deviceId: string): Promise<boolean>;
+	recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean>;
+	cleanupNonces(cutoff: string): Promise<void>;
+	createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite>;
+	getInviteByToken(token: string): Promise<CoordinatorInvite | null>;
+	listInvites(groupId: string): Promise<CoordinatorInvite[]>;
+	createJoinRequest(opts: CoordinatorCreateJoinRequestInput): Promise<CoordinatorJoinRequest>;
+	listJoinRequests(groupId: string, status?: string): Promise<CoordinatorJoinRequest[]>;
 	reviewJoinRequest(
 		opts: CoordinatorReviewJoinRequestInput,
-	): CoordinatorJoinRequestReviewResult | null;
-	upsertPresence(opts: CoordinatorUpsertPresenceInput): CoordinatorPresenceRecord;
-	listGroupPeers(groupId: string, requestingDeviceId: string): CoordinatorPeerRecord[];
+	): Promise<CoordinatorJoinRequestReviewResult | null>;
+	upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord>;
+	listGroupPeers(groupId: string, requestingDeviceId: string): Promise<CoordinatorPeerRecord[]>;
 }

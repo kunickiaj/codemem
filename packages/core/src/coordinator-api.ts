@@ -224,7 +224,7 @@ export function createCoordinatorApp(
 
 			return c.json({ ok: true, ...response });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -257,7 +257,7 @@ export function createCoordinatorApp(
 			const items = await store.listGroupPeers(groupId, String(auth.enrollment.device_id));
 			return c.json({ items });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -303,14 +303,14 @@ export function createCoordinatorApp(
 				displayName,
 			});
 		} finally {
-			store.close();
+			await store.close();
 		}
 
 		return c.json({ ok: true });
 	});
 
 	// GET /v1/admin/devices — list enrolled devices
-	app.get("/v1/admin/devices", (c) => {
+	app.get("/v1/admin/devices", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
@@ -323,9 +323,9 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			return c.json({ items: store.listEnrolledDevices(groupId, includeDisabled) });
+			return c.json({ items: await store.listEnrolledDevices(groupId, includeDisabled) });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -360,11 +360,11 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const ok = store.renameDevice(groupId, deviceId, displayName);
+			const ok = await store.renameDevice(groupId, deviceId, displayName);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
 			return c.json({ ok: true });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -395,11 +395,11 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const ok = store.setDeviceEnabled(groupId, deviceId, false);
+			const ok = await store.setDeviceEnabled(groupId, deviceId, false);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
 			return c.json({ ok: true });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -430,11 +430,11 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const ok = store.removeDevice(groupId, deviceId);
+			const ok = await store.removeDevice(groupId, deviceId);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
 			return c.json({ ok: true });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -500,7 +500,7 @@ export function createCoordinatorApp(
 				link: inviteLink(encoded),
 			});
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -519,7 +519,7 @@ export function createCoordinatorApp(
 			);
 			return c.json({ items: rows });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -545,7 +545,7 @@ export function createCoordinatorApp(
 		try {
 			return c.json({ items: await store.listJoinRequests(groupId) });
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -640,7 +640,7 @@ export function createCoordinatorApp(
 				policy: invite.policy,
 			});
 		} finally {
-			store.close();
+			await store.close();
 		}
 	});
 
@@ -693,6 +693,6 @@ async function handleJoinRequestReview(
 
 		return c.json({ ok: true, request });
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
