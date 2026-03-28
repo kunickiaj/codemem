@@ -19,5 +19,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "cloudflare-coordinator-worker",
+		include: ["src/**/*.test.ts"],
 	},
 });
