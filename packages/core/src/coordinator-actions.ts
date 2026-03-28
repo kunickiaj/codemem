@@ -170,7 +170,7 @@ export async function coordinatorCreateGroupAction(opts: {
 		if (!group) throw new Error(`Failed to create group: ${groupId}`);
 		return group;
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -181,7 +181,7 @@ export async function coordinatorListGroupsAction(opts?: {
 	try {
 		return await store.listGroups();
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -213,7 +213,7 @@ export async function coordinatorEnrollDeviceAction(opts: {
 		if (!enrollment) throw new Error(`Failed to enroll device: ${deviceId}`);
 		return enrollment;
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -228,7 +228,7 @@ export async function coordinatorListDevicesAction(opts: {
 	try {
 		return await store.listEnrolledDevices(groupId, opts.includeDisabled === true);
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -253,7 +253,7 @@ export async function coordinatorRenameDeviceAction(opts: {
 		const all = await store.listEnrolledDevices(groupId, true);
 		return all.find((device) => device.device_id === deviceId) ?? null;
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -269,7 +269,7 @@ export async function coordinatorDisableDeviceAction(opts: {
 	try {
 		return await store.setDeviceEnabled(groupId, deviceId, false);
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -285,7 +285,7 @@ export async function coordinatorRemoveDeviceAction(opts: {
 	try {
 		return await store.removeDevice(groupId, deviceId);
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -333,7 +333,7 @@ export async function coordinatorCreateInviteAction(opts: {
 	if (!resolvedCoordinatorUrl) throw new Error("Coordinator URL required.");
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		const group = store.getGroup(opts.groupId);
+		const group = await store.getGroup(opts.groupId);
 		if (!group) throw new Error(`Group not found: ${opts.groupId}`);
 		const invite = await store.createInvite({
 			groupId: opts.groupId,
@@ -361,7 +361,7 @@ export async function coordinatorCreateInviteAction(opts: {
 			mode: "local",
 		};
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -449,7 +449,7 @@ export async function coordinatorListJoinRequestsAction(opts: {
 	try {
 		return await store.listJoinRequests(opts.groupId);
 	} finally {
-		store.close();
+		await store.close();
 	}
 }
 
@@ -490,6 +490,6 @@ export async function coordinatorReviewJoinRequestAction(opts: {
 			reviewedBy: opts.reviewedBy ?? null,
 		});
 	} finally {
-		store.close();
+		await store.close();
 	}
 }

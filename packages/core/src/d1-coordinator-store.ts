@@ -46,85 +46,93 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		this.db = db;
 	}
 
-	close(): void {
+	async close(): Promise<void> {
 		// No-op for D1 bindings.
 	}
 
-	createGroup(_groupId: string, _displayName?: string | null): void {
+	async createGroup(_groupId: string, _displayName?: string | null): Promise<void> {
 		notImplemented("createGroup");
 	}
 
-	getGroup(_groupId: string): CoordinatorGroup | null {
+	async getGroup(_groupId: string): Promise<CoordinatorGroup | null> {
 		notImplemented("getGroup");
 	}
 
-	listGroups(): CoordinatorGroup[] {
+	async listGroups(): Promise<CoordinatorGroup[]> {
 		notImplemented("listGroups");
 	}
 
-	enrollDevice(_groupId: string, _opts: CoordinatorEnrollDeviceInput): void {
+	async enrollDevice(_groupId: string, _opts: CoordinatorEnrollDeviceInput): Promise<void> {
 		notImplemented("enrollDevice");
 	}
 
-	listEnrolledDevices(_groupId: string, _includeDisabled?: boolean): CoordinatorEnrollment[] {
+	async listEnrolledDevices(
+		_groupId: string,
+		_includeDisabled?: boolean,
+	): Promise<CoordinatorEnrollment[]> {
 		notImplemented("listEnrolledDevices");
 	}
 
-	getEnrollment(_groupId: string, _deviceId: string): CoordinatorEnrollment | null {
+	async getEnrollment(_groupId: string, _deviceId: string): Promise<CoordinatorEnrollment | null> {
 		notImplemented("getEnrollment");
 	}
 
-	renameDevice(_groupId: string, _deviceId: string, _displayName: string): boolean {
+	async renameDevice(_groupId: string, _deviceId: string, _displayName: string): Promise<boolean> {
 		notImplemented("renameDevice");
 	}
 
-	setDeviceEnabled(_groupId: string, _deviceId: string, _enabled: boolean): boolean {
+	async setDeviceEnabled(_groupId: string, _deviceId: string, _enabled: boolean): Promise<boolean> {
 		notImplemented("setDeviceEnabled");
 	}
 
-	removeDevice(_groupId: string, _deviceId: string): boolean {
+	async removeDevice(_groupId: string, _deviceId: string): Promise<boolean> {
 		notImplemented("removeDevice");
 	}
 
-	recordNonce(_deviceId: string, _nonce: string, _createdAt: string): boolean {
+	async recordNonce(_deviceId: string, _nonce: string, _createdAt: string): Promise<boolean> {
 		notImplemented("recordNonce");
 	}
 
-	cleanupNonces(_cutoff: string): void {
+	async cleanupNonces(_cutoff: string): Promise<void> {
 		notImplemented("cleanupNonces");
 	}
 
-	createInvite(_opts: CoordinatorCreateInviteInput): CoordinatorInvite {
+	async createInvite(_opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {
 		notImplemented("createInvite");
 	}
 
-	getInviteByToken(_token: string): CoordinatorInvite | null {
+	async getInviteByToken(_token: string): Promise<CoordinatorInvite | null> {
 		notImplemented("getInviteByToken");
 	}
 
-	listInvites(_groupId: string): CoordinatorInvite[] {
+	async listInvites(_groupId: string): Promise<CoordinatorInvite[]> {
 		notImplemented("listInvites");
 	}
 
-	createJoinRequest(_opts: CoordinatorCreateJoinRequestInput): CoordinatorJoinRequest {
+	async createJoinRequest(
+		_opts: CoordinatorCreateJoinRequestInput,
+	): Promise<CoordinatorJoinRequest> {
 		notImplemented("createJoinRequest");
 	}
 
-	listJoinRequests(_groupId: string, _status?: string): CoordinatorJoinRequest[] {
+	async listJoinRequests(_groupId: string, _status?: string): Promise<CoordinatorJoinRequest[]> {
 		notImplemented("listJoinRequests");
 	}
 
-	reviewJoinRequest(
+	async reviewJoinRequest(
 		_opts: CoordinatorReviewJoinRequestInput,
-	): CoordinatorJoinRequestReviewResult | null {
+	): Promise<CoordinatorJoinRequestReviewResult | null> {
 		notImplemented("reviewJoinRequest");
 	}
 
-	upsertPresence(_opts: CoordinatorUpsertPresenceInput): CoordinatorPresenceRecord {
+	async upsertPresence(_opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {
 		notImplemented("upsertPresence");
 	}
 
-	listGroupPeers(_groupId: string, _requestingDeviceId: string): CoordinatorPeerRecord[] {
+	async listGroupPeers(
+		_groupId: string,
+		_requestingDeviceId: string,
+	): Promise<CoordinatorPeerRecord[]> {
 		notImplemented("listGroupPeers");
 	}
 }

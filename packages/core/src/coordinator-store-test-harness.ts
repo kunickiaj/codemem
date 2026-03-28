@@ -119,7 +119,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					await store.createGroup("g1");
 					await store.enrollDevice("g1", { deviceId: "d1", fingerprint: "fp1", publicKey: "pk1" });
 					expect(await store.renameDevice("g1", "d1", "Desktop")).toBe(true);
-					expect(await store.getEnrollment("g1", "d1")?.display_name).toBe("Desktop");
+					const enrollment = await store.getEnrollment("g1", "d1");
+					expect(enrollment?.display_name).toBe("Desktop");
 				});
 			});
 
@@ -354,7 +355,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(reviewed).not.toBeNull();
 					expect(reviewed?.status).toBe("approved");
 					expect(reviewed?.reviewed_by).toBe("admin");
-					expect(await store.getEnrollment("g1", "d-new")?.fingerprint).toBe("fp-new");
+					const enrollment = await store.getEnrollment("g1", "d-new");
+					expect(enrollment?.fingerprint).toBe("fp-new");
 				});
 			});
 
