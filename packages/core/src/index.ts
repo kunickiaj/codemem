@@ -254,6 +254,8 @@ export {
 	signRequest,
 	verifySignature,
 } from "./sync-auth.js";
+export type { BootstrapOptions, BootstrapResult } from "./sync-bootstrap.js";
+export { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
 export type { SyncDaemonOptions, SyncDaemonPhase, SyncTickResult } from "./sync-daemon.js";
 export {
 	getSyncDaemonPhase,
