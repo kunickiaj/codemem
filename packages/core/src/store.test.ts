@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 import { MemoryStore } from "./store.js";
+import { setSyncDaemonPhase } from "./sync-daemon.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import * as vectors from "./vectors.js";
 
@@ -352,6 +353,103 @@ describe("MemoryStore", () => {
 		it("is a no-op for non-existent memory", () => {
 			// Should not throw
 			store.forget(99999);
+		});
+	});
+
+	// -- rebootstrap mutation guard ------------------------------------------
+
+	describe("rebootstrap mutation guard", () => {
+		it("blocks remember() for shared-visibility memories when phase is needs_attention", () => {
+			setSyncDaemonPhase(store.db, "needs_attention");
+			const sessionId = insertTestSession(store.db);
+			expect(() =>
+				store.remember(sessionId, "discovery", "Shared", "Body", 0.5, [], {
+					visibility: "shared",
+				}),
+			).toThrow("sync_rebootstrap_in_progress");
+		});
+
+		it("allows remember() for private memories when phase is needs_attention", () => {
+			setSyncDaemonPhase(store.db, "needs_attention");
+			const sessionId = insertTestSession(store.db);
+			const id = store.remember(sessionId, "discovery", "Private", "Body", 0.5, [], {
+				visibility: "private",
+			});
+			expect(id).toBeGreaterThan(0);
+		});
+
+		it("allows remember() for shared memories when phase is null (normal)", () => {
+			const sessionId = insertTestSession(store.db);
+			const id = store.remember(sessionId, "discovery", "Shared", "Body", 0.5, [], {
+				visibility: "shared",
+			});
+			expect(id).toBeGreaterThan(0);
+		});
+
+		it("blocks forget() for shared-visibility memories when phase is needs_attention", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Shared", "Body", 0.5, [], {
+				visibility: "shared",
+			});
+			setSyncDaemonPhase(store.db, "needs_attention");
+			expect(() => store.forget(memId)).toThrow("sync_rebootstrap_in_progress");
+		});
+
+		it("allows forget() for private memories when phase is needs_attention", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Private", "Body", 0.5, [], {
+				visibility: "private",
+			});
+			setSyncDaemonPhase(store.db, "needs_attention");
+			store.forget(memId);
+			expect(store.get(memId)?.active).toBe(0);
+		});
+
+		it("blocks remember() with default visibility (shared) when phase is needs_attention", () => {
+			setSyncDaemonPhase(store.db, "needs_attention");
+			const sessionId = insertTestSession(store.db);
+			// No explicit visibility — defaults to "shared" via resolveProvenance
+			expect(() => store.remember(sessionId, "discovery", "Default", "Body")).toThrow(
+				"sync_rebootstrap_in_progress",
+			);
+		});
+
+		it("blocks updateMemoryVisibility() to shared when phase is needs_attention", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Private", "Body", 0.5, [], {
+				visibility: "private",
+			});
+			setSyncDaemonPhase(store.db, "needs_attention");
+			expect(() => store.updateMemoryVisibility(memId, "shared")).toThrow(
+				"sync_rebootstrap_in_progress",
+			);
+		});
+
+		it("allows updateMemoryVisibility() to private when phase is needs_attention", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Shared", "Body", 0.5, [], {
+				visibility: "shared",
+			});
+			setSyncDaemonPhase(store.db, "needs_attention");
+			// Demoting to private should always work
+			const updated = store.updateMemoryVisibility(memId, "private");
+			expect(updated.visibility).toBe("private");
+		});
+
+		it("unblocks mutations after phase is cleared", () => {
+			setSyncDaemonPhase(store.db, "needs_attention");
+			const sessionId = insertTestSession(store.db);
+			expect(() =>
+				store.remember(sessionId, "discovery", "Shared", "Body", 0.5, [], {
+					visibility: "shared",
+				}),
+			).toThrow("sync_rebootstrap_in_progress");
+
+			setSyncDaemonPhase(store.db, null);
+			const id = store.remember(sessionId, "discovery", "Shared", "Body", 0.5, [], {
+				visibility: "shared",
+			});
+			expect(id).toBeGreaterThan(0);
 		});
 	});
 

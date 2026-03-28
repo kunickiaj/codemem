@@ -6,7 +6,7 @@
  * to the viewer-server Hono routes.
  */
 
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
@@ -49,10 +49,10 @@ export function setSyncDaemonOk(db: Database): void {
 	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
 	d.insert(schema.syncDaemonState)
-		.values({ id: 1, last_ok_at: now })
+		.values({ id: 1, last_ok_at: now, phase: null })
 		.onConflictDoUpdate({
 			target: schema.syncDaemonState.id,
-			set: { last_ok_at: sql`excluded.last_ok_at` },
+			set: { last_ok_at: sql`excluded.last_ok_at`, phase: null },
 		})
 		.run();
 }
@@ -77,6 +77,39 @@ export function setSyncDaemonError(db: Database, error: string, traceback?: stri
 				last_traceback: sql`excluded.last_traceback`,
 				last_error_at: sql`excluded.last_error_at`,
 			},
+		})
+		.run();
+}
+
+/** Valid sync daemon phases for the rebootstrap safety gate. */
+export type SyncDaemonPhase = "needs_attention" | null;
+
+/**
+ * Get the current sync daemon phase from sync_daemon_state.
+ * Returns null when sync is operating normally.
+ */
+export function getSyncDaemonPhase(db: Database): SyncDaemonPhase {
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({ phase: schema.syncDaemonState.phase })
+		.from(schema.syncDaemonState)
+		.where(eq(schema.syncDaemonState.id, 1))
+		.get();
+	const phase = row?.phase;
+	if (phase === "needs_attention") return phase;
+	return null;
+}
+
+/**
+ * Set the sync daemon phase. Pass null to clear.
+ */
+export function setSyncDaemonPhase(db: Database, phase: SyncDaemonPhase): void {
+	const d = drizzle(db, { schema });
+	d.insert(schema.syncDaemonState)
+		.values({ id: 1, phase })
+		.onConflictDoUpdate({
+			target: schema.syncDaemonState.id,
+			set: { phase },
 		})
 		.run();
 }
@@ -214,8 +247,14 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 async function runTickOnce(dbPath: string, keysDir?: string): Promise<void> {
 	const db = connectDb(dbPath);
 	try {
-		await syncDaemonTick(db, keysDir);
-		setSyncDaemonOk(db);
+		const results = await syncDaemonTick(db, keysDir);
+		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
+		if (needsAttention) {
+			setSyncDaemonPhase(db, "needs_attention");
+		} else {
+			// Clear any prior needs_attention phase — all peers are healthy.
+			setSyncDaemonOk(db);
+		}
 	} catch (err: unknown) {
 		const message = err instanceof Error ? err.message : String(err);
 		const stack = err instanceof Error ? (err.stack ?? "") : "";

@@ -379,6 +379,7 @@ export const syncDaemonState = sqliteTable("sync_daemon_state", {
 	last_traceback: text("last_traceback"),
 	last_error_at: text("last_error_at"),
 	last_ok_at: text("last_ok_at"),
+	phase: text("phase"),
 });
 
 export type SyncDaemonState = typeof syncDaemonState.$inferSelect;
