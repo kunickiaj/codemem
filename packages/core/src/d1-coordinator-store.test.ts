@@ -29,6 +29,11 @@ class SqliteD1Statement implements D1PreparedStatementLike {
 		return { meta: { changes: result.changes } };
 	}
 
+	executeRunSync(): unknown {
+		const result = this.statement.run(...this.bound);
+		return { meta: { changes: result.changes } };
+	}
+
 	async all<T = unknown>(): Promise<{ results?: T[] }> {
 		return { results: this.statement.all(...this.bound) as T[] };
 	}
@@ -43,6 +48,19 @@ class SqliteD1Database implements D1DatabaseLike {
 
 	prepare(query: string): D1PreparedStatementLike {
 		return new SqliteD1Statement(this.db.prepare(query));
+	}
+
+	async batch(statements: D1PreparedStatementLike[]): Promise<unknown[]> {
+		return this.db.transaction(() => {
+			const results: unknown[] = [];
+			for (const statement of statements) {
+				if (!(statement instanceof SqliteD1Statement)) {
+					throw new Error("Unsupported D1 statement test double.");
+				}
+				results.push(statement.executeRunSync());
+			}
+			return results;
+		})();
 	}
 }
 
@@ -154,18 +172,67 @@ describe("D1CoordinatorStore", () => {
 		expect(await store.getEnrollment("g1", "d2")).toBeNull();
 	});
 
-	it("still throws for unimplemented presence and nonce operations", async () => {
-		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:00Z")).rejects.toThrow(
-			"D1CoordinatorStore.recordNonce is not implemented yet.",
+	it("implements nonce replay protection, presence upsert, and peer listing", async () => {
+		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:00Z")).resolves.toBe(true);
+		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:01Z")).resolves.toBe(false);
+		await store.cleanupNonces("2026-03-28T00:00:01Z");
+		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:02Z")).resolves.toBe(true);
+		await store.createGroup("g1");
+		await store.enrollDevice("g1", {
+			deviceId: "d1",
+			fingerprint: "fp1",
+			publicKey: "pk1",
+		});
+		await store.enrollDevice("g1", {
+			deviceId: "d2",
+			fingerprint: "fp2",
+			publicKey: "pk2",
+		});
+		const presence = await store.upsertPresence({
+			groupId: "g1",
+			deviceId: "d2",
+			addresses: ["http://localhost:9001", "localhost:9001/"],
+			ttlS: 60,
+			capabilities: { role: "peer" },
+		});
+		expect(presence).toEqual(
+			expect.objectContaining({
+				group_id: "g1",
+				device_id: "d2",
+				addresses: ["http://localhost:9001"],
+			}),
 		);
-		await expect(store.cleanupNonces("2026-03-28T00:00:00Z")).rejects.toThrow(
-			"D1CoordinatorStore.cleanupNonces is not implemented yet.",
-		);
-		await expect(
-			store.upsertPresence({ groupId: "g1", deviceId: "d1", addresses: [], ttlS: 60 }),
-		).rejects.toThrow("D1CoordinatorStore.upsertPresence is not implemented yet.");
-		await expect(store.listGroupPeers("g1", "d1")).rejects.toThrow(
-			"D1CoordinatorStore.listGroupPeers is not implemented yet.",
-		);
+		await expect(store.listGroupPeers("g1", "d1")).resolves.toEqual([
+			expect.objectContaining({
+				device_id: "d2",
+				fingerprint: "fp2",
+				stale: false,
+				addresses: ["http://localhost:9001"],
+				capabilities: { role: "peer" },
+			}),
+		]);
+	});
+
+	it("marks stale peers with empty addresses", async () => {
+		await store.createGroup("g1");
+		await store.enrollDevice("g1", {
+			deviceId: "d1",
+			fingerprint: "fp1",
+			publicKey: "pk1",
+		});
+		await store.enrollDevice("g1", {
+			deviceId: "d2",
+			fingerprint: "fp2",
+			publicKey: "pk2",
+		});
+		await store.upsertPresence({
+			groupId: "g1",
+			deviceId: "d2",
+			addresses: ["http://localhost:9001"],
+			ttlS: 0,
+		});
+		await expect(store.listGroupPeers("g1", "d1")).resolves.toEqual([
+			expect.objectContaining({ device_id: "d2", stale: true, addresses: [] }),
+		]);
 	});
 });
