@@ -904,7 +904,7 @@ coordinatorCommand.addCommand(
 				groupId: string,
 				opts: { name?: string; db?: string; dbPath?: string; json?: boolean },
 			) => {
-				const group = coordinatorCreateGroupAction({
+				const group = await coordinatorCreateGroupAction({
 					groupId,
 					displayName: opts.name?.trim() || null,
 					dbPath: opts.db ?? opts.dbPath ?? null,
@@ -927,8 +927,8 @@ coordinatorCommand.addCommand(
 		.option("--db <path>", "coordinator database path")
 		.option("--db-path <path>", "coordinator database path")
 		.option("--json", "output as JSON")
-		.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
-			const groups = coordinatorListGroupsAction({ dbPath: opts.db ?? opts.dbPath ?? null });
+		.action(async (opts: { db?: string; dbPath?: string; json?: boolean }) => {
+			const groups = await coordinatorListGroupsAction({ dbPath: opts.db ?? opts.dbPath ?? null });
 			if (opts.json) {
 				console.log(JSON.stringify(groups, null, 2));
 				return;
@@ -987,7 +987,7 @@ coordinatorCommand.addCommand(
 					process.exitCode = 1;
 					return;
 				}
-				const enrollment = coordinatorEnrollDeviceAction({
+				const enrollment = await coordinatorEnrollDeviceAction({
 					groupId,
 					deviceId,
 					fingerprint,
@@ -1016,11 +1016,11 @@ coordinatorCommand.addCommand(
 		.option("--db-path <path>", "coordinator database path")
 		.option("--json", "output as JSON")
 		.action(
-			(
+			async (
 				groupId: string,
 				opts: { includeDisabled?: boolean; db?: string; dbPath?: string; json?: boolean },
 			) => {
-				const rows = coordinatorListDevicesAction({
+				const rows = await coordinatorListDevicesAction({
 					groupId,
 					includeDisabled: opts.includeDisabled === true,
 					dbPath: opts.db ?? opts.dbPath ?? null,
@@ -1056,12 +1056,12 @@ coordinatorCommand.addCommand(
 		.option("--db-path <path>", "coordinator database path")
 		.option("--json", "output as JSON")
 		.action(
-			(
+			async (
 				groupId: string,
 				deviceId: string,
 				opts: { name: string; db?: string; dbPath?: string; json?: boolean },
 			) => {
-				const result = coordinatorRenameDeviceAction({
+				const result = await coordinatorRenameDeviceAction({
 					groupId,
 					deviceId,
 					displayName: opts.name.trim(),
@@ -1093,12 +1093,12 @@ coordinatorCommand.addCommand(
 		.option("--db-path <path>", "coordinator database path")
 		.option("--json", "output as JSON")
 		.action(
-			(
+			async (
 				groupId: string,
 				deviceId: string,
 				opts: { db?: string; dbPath?: string; json?: boolean },
 			) => {
-				const ok = coordinatorDisableDeviceAction({
+				const ok = await coordinatorDisableDeviceAction({
 					groupId,
 					deviceId,
 					dbPath: opts.db ?? opts.dbPath ?? null,
@@ -1135,12 +1135,12 @@ coordinatorCommand.addCommand(
 		.option("--db-path <path>", "coordinator database path")
 		.option("--json", "output as JSON")
 		.action(
-			(
+			async (
 				groupId: string,
 				deviceId: string,
 				opts: { db?: string; dbPath?: string; json?: boolean },
 			) => {
-				const ok = coordinatorRemoveDeviceAction({
+				const ok = await coordinatorRemoveDeviceAction({
 					groupId,
 					deviceId,
 					dbPath: opts.db ?? opts.dbPath ?? null,
