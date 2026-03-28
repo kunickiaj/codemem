@@ -1,0 +1,24 @@
+{
+	"name": "@codemem/cloudflare-coordinator-worker",
+	"version": "0.22.0-alpha.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"clean": "rm -rf dist tsconfig.tsbuildinfo",
+		"build": "pnpm exec vite build && pnpm exec tsc --noEmit",
+		"typecheck": "pnpm exec tsc --noEmit"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
+		"better-sqlite3": "^12.8.0",
+		"typescript": "catalog:",
+		"vite": "8.0.1",
+		"vitest": "4.0.17"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kunickiaj/codemem.git",
+		"directory": "packages/cloudflare-coordinator-worker"
+	},
+	"license": "MIT"
+}

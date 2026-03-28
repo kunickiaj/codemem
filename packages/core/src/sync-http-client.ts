@@ -61,11 +61,12 @@ export async function requestJson(
 	if (headers) {
 		Object.assign(requestHeaders, headers);
 	}
+	const requestBody = (bodyBytes ?? null) as RequestInit["body"] | null;
 
 	const response = await fetch(url, {
 		method,
 		headers: requestHeaders,
-		body: bodyBytes ?? null,
+		body: requestBody,
 		signal: AbortSignal.timeout(timeoutS * 1000),
 	});
 

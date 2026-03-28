@@ -1,0 +1,12 @@
+name = "codemem-coordinator-worker"
+main = "src/index.ts"
+compatibility_date = "2026-03-28"
+compatibility_flags = ["nodejs_compat"]
+
+# Set the coordinator admin secret separately:
+# wrangler secret put CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET
+
+[[d1_databases]]
+binding = "COORDINATOR_DB"
+database_name = "codemem-coordinator"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
