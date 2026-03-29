@@ -146,7 +146,7 @@ export function renderTeamSync() {
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
     ? `Connected to ${String(coordinator.coordinator_url || '')} \u00b7 group: ${(coordinator.groups || []).join(', ') || 'none'}`
-    : 'Create a team invite or join an existing team to start syncing memories with teammates.';
+    : 'Start here: join an existing team or create a new one before connecting devices and people.';
   if (!configured) {
     setupPanel.hidden = false;
     list.hidden = true;
@@ -207,6 +207,24 @@ export function renderTeamSync() {
       row.append(textWrap, actionButton);
       actions.appendChild(row);
     });
+  } else if (coordinator.presence_status === 'posted') {
+    const row = el('div', 'sync-action');
+    const textWrap = el('div', 'sync-action-text');
+    textWrap.textContent = 'No immediate issues';
+    textWrap.appendChild(
+      el('span', 'sync-action-command', 'Your devices and team records do not currently need review.'),
+    );
+    row.appendChild(textWrap);
+    actions.appendChild(row);
+  } else if (coordinator.presence_status === 'not_enrolled') {
+    const row = el('div', 'sync-action');
+    const textWrap = el('div', 'sync-action-text');
+    textWrap.textContent = 'This device still needs team enrollment';
+    textWrap.appendChild(
+      el('span', 'sync-action-command', 'Import an invite or ask your admin to enroll this device before expecting sync activity here.'),
+    );
+    row.appendChild(textWrap);
+    actions.appendChild(row);
   }
 
   const discoveredDevices = Array.isArray(coordinator.discovered_devices)
@@ -215,7 +233,7 @@ export function renderTeamSync() {
   if (discoveredPanel && discoveredMeta && discoveredList && discoveredDevices.length) {
     discoveredPanel.hidden = false;
     discoveredMeta.textContent =
-      'These devices are visible through coordinator discovery only. They are not active sync peers unless you pair them.';
+      'These devices are visible through team discovery. Review them before connecting them on this machine.';
     discoveredDevices.forEach((device) => {
       const row = el('div', 'actor-row');
       const details = el('div', 'actor-details');
@@ -234,7 +252,7 @@ export function renderTeamSync() {
         el(
           'span',
           `badge actor-badge${device.stale ? '' : ' local'}`,
-          device.stale ? 'Inactive' : 'Fresh',
+          device.stale ? 'Offline' : 'Available',
         ),
       );
       title.appendChild(
@@ -265,69 +283,69 @@ export function renderTeamSync() {
       }
       details.append(title, el('div', 'peer-meta', noteParts.join(' · ')));
       if (canAccept) {
-        const acceptBtn = el('button', 'settings-button', 'Accept peer') as HTMLButtonElement;
+        const acceptBtn = el('button', 'settings-button', 'Review device') as HTMLButtonElement;
         acceptBtn.addEventListener('click', async () => {
           acceptBtn.disabled = true;
-          acceptBtn.textContent = 'Accepting…';
+          acceptBtn.textContent = 'Opening…';
           try {
             await api.acceptDiscoveredPeer(deviceId, fingerprint);
             requestPeerScopeReview(deviceId);
             showGlobalNotice(
-              `Accepted ${displayName}. Its scope editor is now open in People so you can review sync scope next.`,
+              `Connected ${displayName}. Its device settings are now open in People & devices so you can review sync scope next.`,
             );
             await _loadSyncData();
           } catch (error) {
-            showGlobalNotice(friendlyError(error, 'Failed to accept discovered peer.'), 'warning');
-            acceptBtn.textContent = 'Retry accept';
+            showGlobalNotice(friendlyError(error, 'Failed to review this device.'), 'warning');
+            acceptBtn.textContent = 'Retry review';
           } finally {
             acceptBtn.disabled = false;
-            if (acceptBtn.textContent === 'Accepting…') acceptBtn.textContent = 'Accept peer';
+            if (acceptBtn.textContent === 'Opening…') acceptBtn.textContent = 'Review device';
           }
         });
         rowActions.appendChild(acceptBtn);
       } else if (!pairedPeer && device.stale) {
         rowActions.appendChild(el('div', 'peer-meta', 'Wait for a fresh coordinator presence update.'));
       } else if (hasConflict) {
-        const inspectBtn = el('button', 'settings-button', 'Jump to local peer') as HTMLButtonElement;
+        const inspectBtn = el('button', 'settings-button', 'Open device details') as HTMLButtonElement;
         inspectBtn.addEventListener('click', () => {
           const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
           if (peerCard instanceof HTMLElement) {
             peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
-            showGlobalNotice(`Jumped to the conflicting local peer for ${displayName}.`, 'warning');
+            showGlobalNotice(`Opened the conflicting local device record for ${displayName}.`, 'warning');
             return;
           }
-          showGlobalNotice('Conflicting local peer is not visible yet. Scroll to the People area and try again.', 'warning');
+          showGlobalNotice('The conflicting local device record is not visible yet. Scroll to People & devices and try again.', 'warning');
         });
-        const removeConflictBtn = el('button', 'settings-button', 'Remove conflicting peer') as HTMLButtonElement;
+        const removeConflictBtn = el('button', 'settings-button', 'Remove broken device record') as HTMLButtonElement;
         removeConflictBtn.addEventListener('click', async () => {
           if (!pairedPeer) return;
           const confirmed = window.confirm(
-            `Remove the conflicting local peer for ${displayName}? You can accept the discovered device again after this refreshes.`,
+            `Remove the broken local device record for ${displayName}? You can review this device again after the screen refreshes.`,
           );
           if (!confirmed) return;
           removeConflictBtn.disabled = true;
           inspectBtn.disabled = true;
-          removeConflictBtn.textContent = 'Removing…';
+            removeConflictBtn.textContent = 'Removing…';
           try {
             await api.deletePeer(deviceId);
-            showGlobalNotice(`Removed the conflicting local peer for ${displayName}. If it is still fresh, you can now accept it from Team sync.`);
+            showGlobalNotice(`Removed the broken local device record for ${displayName}. If it is still available, you can review it again from Needs attention.`);
             await _loadSyncData();
           } catch (error) {
-            showGlobalNotice(friendlyError(error, 'Failed to remove the conflicting local peer.'), 'warning');
+            showGlobalNotice(friendlyError(error, 'Failed to remove the broken local device record.'), 'warning');
             removeConflictBtn.textContent = 'Retry remove';
           } finally {
             removeConflictBtn.disabled = false;
             inspectBtn.disabled = false;
             if (removeConflictBtn.textContent === 'Removing…') {
-              removeConflictBtn.textContent = 'Remove conflicting peer';
+              removeConflictBtn.textContent = 'Remove broken device record';
             }
           }
         });
         rowActions.append(inspectBtn, removeConflictBtn);
       } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
-        rowActions.appendChild(el('div', 'peer-meta', 'Review this peer\'s scope in People next.'));
+        rowActions.appendChild(el('div', 'peer-meta', 'Review this device\'s scope in People & devices next.'));
       } else if (pairedPeer) {
-        rowActions.appendChild(el('div', 'peer-meta', 'Manage this peer in People.'));
+        rowActions.appendChild(el('div', 'peer-meta', 'Manage this device in People & devices.'));
       }
       row.append(details, rowActions);
       discoveredList.appendChild(row);
