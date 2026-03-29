@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   deriveDuplicatePeople,
+  derivePeerTrustSummary,
   derivePeerUiStatus,
   deriveSyncViewModel,
   deriveVisiblePeopleActors,
   deviceNeedsFriendlyName,
   resolveFriendlyDeviceName,
+  summarizeSyncRunResult,
 } from './view-model';
 
 describe('resolveFriendlyDeviceName', () => {
@@ -63,6 +65,71 @@ describe('derivePeerUiStatus', () => {
 
   it('maps stale peers to offline', () => {
     expect(derivePeerUiStatus({ status: { peer_state: 'stale' } })).toBe('offline');
+  });
+});
+
+describe('derivePeerTrustSummary', () => {
+  it('prioritizes current offline state over stale unauthorized history', () => {
+    expect(
+      derivePeerTrustSummary({
+        last_error: 'peer status failed (401: unauthorized)',
+        status: { peer_state: 'offline' },
+        has_error: false,
+      }).state,
+    ).toBe('offline');
+  });
+
+  it('surfaces one-way trust when the remote device rejects us with unauthorized', () => {
+    expect(
+      derivePeerTrustSummary({
+        last_error: 'peer status failed (401: unauthorized)',
+        status: { peer_state: 'degraded' },
+        has_error: true,
+      }),
+    ).toEqual({
+      state: 'trusted-by-you',
+      badgeLabel: 'Waiting for other device',
+      description:
+        'You accepted this device, but the other device still needs to trust this one before sync can work.',
+      isWarning: true,
+    });
+  });
+
+  it('surfaces two-way trust once sync or ping succeeds', () => {
+    expect(derivePeerTrustSummary({ status: { sync_status: 'ok', peer_state: 'online' } }).state).toBe(
+      'mutual-trust',
+    );
+  });
+});
+
+describe('summarizeSyncRunResult', () => {
+  it('summarizes mixed failures without pretending they are all one-way trust', () => {
+    expect(
+      summarizeSyncRunResult({
+        items: [
+          { peer_device_id: 'a', ok: false, error: 'peer status failed (401: unauthorized)', opsIn: 0, opsOut: 0, addressErrors: [] },
+          { peer_device_id: 'b', ok: false, error: 'connection refused', opsIn: 0, opsOut: 0, addressErrors: [] },
+          { peer_device_id: 'c', ok: true, opsIn: 2, opsOut: 1, addressErrors: [] },
+        ],
+      }),
+    ).toEqual({
+      ok: false,
+      message: '2 of 3 device sync attempts failed. Review device details for the specific errors.',
+      warning: true,
+    });
+  });
+
+  it('turns unauthorized sync failures into a directional trust message', () => {
+    expect(
+      summarizeSyncRunResult({
+        items: [{ peer_device_id: 'peer-a', ok: false, error: 'all addresses failed | http://x: peer status failed (401: unauthorized)', opsIn: 0, opsOut: 0, addressErrors: [] }],
+      }),
+    ).toEqual({
+      ok: false,
+      message:
+        'This device trusts the peer, but the other device still needs to trust this one before sync can work.',
+      warning: true,
+    });
   });
 });
 
