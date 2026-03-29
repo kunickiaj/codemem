@@ -16,6 +16,12 @@ function executableOutput() {
 }
 
 export default defineConfig({
+	resolve: {
+		alias: {
+			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
+		},
+		conditions: ["source"],
+	},
 	// CLI uses Vite SSR mode for build (--ssr flag in package.json build script).
 	// Library mode tree-shakes program.parse() away. This lib config is retained
 	// for vitest integration; actual build uses SSR via the CLI flag.
