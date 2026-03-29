@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.22.0-alpha.4";
+export const VERSION = "0.22.0-alpha.5";
 
 export * as Api from "./api-types.js";
 export type { CreateBetterSqliteCoordinatorAppOptions } from "./better-sqlite-coordinator-runtime.js";

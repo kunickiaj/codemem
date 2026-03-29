@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/opencode-plugin",
-	"version": "0.22.0-alpha.4",
+	"version": "0.22.0-alpha.5",
 	"description": "CodeMem plugin for OpenCode",
 	"type": "module",
 	"main": "./index.js",

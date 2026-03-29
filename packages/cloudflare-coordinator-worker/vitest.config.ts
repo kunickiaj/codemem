@@ -6,10 +6,20 @@ export default defineConfig(async () => {
 	const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
 
 	return {
+		resolve: {
+			alias: {
+				"@codemem/core": path.resolve(import.meta.dirname, "../core/src/index.ts"),
+				"@codemem/core/internal/cloudflare-coordinator": path.resolve(
+					import.meta.dirname,
+					"../core/src/internal/cloudflare-coordinator.ts",
+				),
+			},
+			conditions: ["source"],
+		},
 		plugins: [
 			cloudflareTest({
 				wrangler: {
-					configPath: "./wrangler.jsonc",
+					configPath: path.resolve(import.meta.dirname, "wrangler.jsonc"),
 				},
 				miniflare: {
 					bindings: {
