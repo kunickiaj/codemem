@@ -1723,15 +1723,15 @@
     <!-- ── Tab: Sync ───────────────────────────────────────── -->
     <div class="tab-panel" id="tab-sync" hidden>
 
-      <!-- 1. Team sync — primary, always visible -->
+      <!-- 1. Needs attention + team setup/status -->
       <div class="card" id="syncTeamCard">
         <div class="section-header">
-          <h2>Team sync</h2>
+          <h2>Needs attention</h2>
           <div class="section-actions">
             <button class="settings-button" id="syncNowButton">Sync now</button>
           </div>
         </div>
-        <div class="section-meta" id="syncTeamMeta"></div>
+        <div class="section-meta" id="syncTeamMeta">See what needs action first, then review the current team status below.</div>
         <div class="sync-skeleton" id="syncTeamSkeleton" role="status" aria-label="Loading team sync">
           <div class="sync-skeleton-line medium"></div>
           <div class="sync-skeleton-block"></div>
@@ -1772,26 +1772,27 @@
             </div>
           </div>
         </div>
+        <h3 class="settings-group-title" style="margin-top: 20px">Team status</h3>
         <div class="actor-list" id="syncTeamStatus" aria-live="polite"></div>
         <div class="actor-list" id="syncJoinRequests"></div>
         <div id="syncCoordinatorDiscovered" hidden>
-          <h3 class="settings-group-title" style="margin-top: 20px">Coordinator-discovered devices</h3>
+          <h3 class="settings-group-title" style="margin-top: 20px">Devices seen on team</h3>
           <div class="section-meta" id="syncCoordinatorDiscoveredMeta"></div>
           <div class="actor-list" id="syncCoordinatorDiscoveredList"></div>
         </div>
         <div class="sync-actions" id="syncTeamActions" hidden></div>
       </div>
 
-      <!-- 2. People — actors, devices, sharing, legacy claims -->
+      <!-- 2. People & devices -->
       <div class="card" style="animation-delay: 0.04s">
-        <h2>People</h2>
+        <h2>People &amp; devices</h2>
 
-        <h3 class="settings-group-title">Actors</h3>
-        <div class="section-meta" id="syncActorsMeta">Create and rename actors here. Assign each device below.</div>
+        <h3 class="settings-group-title">People</h3>
+        <div class="section-meta" id="syncActorsMeta">Create and rename people here. Assign each device below.</div>
         <div class="actor-create-row">
-          <label for="syncActorCreateInput" class="sr-only">Actor name</label>
-          <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named actor" />
-          <button class="settings-button" id="syncActorCreateButton">Create actor</button>
+          <label for="syncActorCreateInput" class="sr-only">Person name</label>
+          <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named person" />
+          <button class="settings-button" id="syncActorCreateButton">Create person</button>
         </div>
         <div class="actor-list" id="syncActorsList"></div>
         <div class="sync-skeleton" id="syncActorsSkeleton" role="status" aria-label="Loading actors">
