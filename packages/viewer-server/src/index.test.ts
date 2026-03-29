@@ -151,6 +151,30 @@ describe("viewer-server", () => {
 		}
 	});
 
+	it("sync UI api routes all exist in the viewer sync router", () => {
+		const apiSource = readFileSync(join(process.cwd(), "packages/ui/src/lib/api.ts"), "utf8");
+		const routeSource = readFileSync(
+			join(process.cwd(), "packages/viewer-server/src/routes/sync.ts"),
+			"utf8",
+		);
+		const uiRoutes = [
+			...apiSource.matchAll(/fetch\('(\/api\/sync\/[^']+)'/g),
+			...apiSource.matchAll(/fetchJson\('(\/api\/sync\/[^']+)'/g),
+		].map((match) => match[1]);
+		const concreteServerRoutes = [
+			...routeSource.matchAll(/app\.(?:get|post|delete)\("(\/api\/sync\/[^"]+)"/g),
+		].map((match) => match[1]);
+		const normalizedServerRoutes = new Set(
+			concreteServerRoutes.map((route) => route.replace(/:\w+/g, "__param__")),
+		);
+		expect(
+			uiRoutes
+				.map((route) => route.replace(/\?.*$/, ""))
+				.map((route) => route.replace(/`\$\{[^}]+\}`/g, "__param__"))
+				.every((route) => normalizedServerRoutes.has(route)),
+		).toBe(true);
+	});
+
 	describe("GET /api/stats", () => {
 		it("returns database stats", async () => {
 			const { app, cleanup } = createTestApp();
@@ -2001,6 +2025,76 @@ describe("viewer-server", () => {
 						effective_exclude: ["proj-b"],
 						inherits_global: false,
 					},
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("runs sync for all peers through the compatibility sync route", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(configPath, JSON.stringify({ sync_enabled: true }));
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?, ?)",
+					)
+					.run(
+						"peer-run",
+						"Peer Run",
+						"fp-run",
+						JSON.stringify(["http://127.0.0.1:65535"]),
+						new Date().toISOString(),
+					);
+				const res = await app.request("/api/sync/run", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					items: Array<{ peer_device_id: string; ok: boolean }>;
+				};
+				expect(body.items).toHaveLength(1);
+				expect(body.items[0]?.peer_device_id).toBe("peer-run");
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("claims a legacy device identity through the viewer route", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "legacy memory",
+					actorId: null,
+					originDeviceId: "legacy-device-a",
+					metadata: {},
+				});
+				const res = await app.request("/api/sync/legacy-devices/claim", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ origin_device_id: "legacy-device-a" }),
+				});
+				expect(res.status).toBe(200);
+				expect(await res.json()).toEqual({
+					ok: true,
+					origin_device_id: "legacy-device-a",
+					updated: 1,
 				});
 			} finally {
 				cleanup();
