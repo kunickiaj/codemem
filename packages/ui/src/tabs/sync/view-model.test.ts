@@ -4,6 +4,7 @@ import {
   deriveDuplicatePeople,
   derivePeerUiStatus,
   deriveSyncViewModel,
+  deriveVisiblePeopleActors,
   deviceNeedsFriendlyName,
   resolveFriendlyDeviceName,
 } from './view-model';
@@ -80,6 +81,59 @@ describe('deriveDuplicatePeople', () => {
         includesLocal: true,
       },
     ]);
+  });
+});
+
+describe('deriveVisiblePeopleActors', () => {
+  it('hides unresolved zero-device duplicates of the local person from the people list', () => {
+    expect(
+      deriveVisiblePeopleActors({
+        actors: [
+          { actor_id: 'actor-local', display_name: 'Adam', is_local: true },
+          { actor_id: 'actor-shadow', display_name: 'Adam', is_local: false },
+          { actor_id: 'actor-other', display_name: 'Pat', is_local: false },
+        ],
+        peers: [],
+        duplicatePeople: [
+          {
+            displayName: 'Adam',
+            actorIds: ['actor-local', 'actor-shadow'],
+            includesLocal: true,
+          },
+        ],
+      }),
+    ).toEqual({
+      visibleActors: [
+        { actor_id: 'actor-local', display_name: 'Adam', is_local: true },
+        { actor_id: 'actor-other', display_name: 'Pat', is_local: false },
+      ],
+      hiddenLocalDuplicateCount: 1,
+    });
+  });
+
+  it('keeps duplicate rows visible when the non-local duplicate already owns devices', () => {
+    expect(
+      deriveVisiblePeopleActors({
+        actors: [
+          { actor_id: 'actor-local', display_name: 'Adam', is_local: true },
+          { actor_id: 'actor-remote', display_name: 'Adam', is_local: false },
+        ],
+        peers: [{ actor_id: 'actor-remote' }],
+        duplicatePeople: [
+          {
+            displayName: 'Adam',
+            actorIds: ['actor-local', 'actor-remote'],
+            includesLocal: true,
+          },
+        ],
+      }),
+    ).toEqual({
+      visibleActors: [
+        { actor_id: 'actor-local', display_name: 'Adam', is_local: true },
+        { actor_id: 'actor-remote', display_name: 'Adam', is_local: false },
+      ],
+      hiddenLocalDuplicateCount: 0,
+    });
   });
 });
 
