@@ -134,6 +134,23 @@ function createTestApp(opts?: {
 // ---------------------------------------------------------------------------
 
 describe("viewer-server", () => {
+	it("createApp fails with a clear build hint when viewer assets are missing", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-missing-"));
+		const previousStaticDir = process.env.CODEMEM_VIEWER_STATIC_DIR;
+		process.env.CODEMEM_VIEWER_STATIC_DIR = tmpDir;
+		try {
+			expect(() =>
+				createApp({
+					storeFactory: () => createTestStore().store,
+				}),
+			).toThrow(/Run `pnpm build` from the repo root before starting the viewer\./);
+		} finally {
+			if (previousStaticDir == null) delete process.env.CODEMEM_VIEWER_STATIC_DIR;
+			else process.env.CODEMEM_VIEWER_STATIC_DIR = previousStaticDir;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	describe("GET /api/stats", () => {
 		it("returns database stats", async () => {
 			const { app, cleanup } = createTestApp();

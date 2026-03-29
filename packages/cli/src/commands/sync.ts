@@ -173,7 +173,7 @@ async function runServeLifecycle(
 	}
 	const args = buildServeLifecycleArgs(action, opts, process.argv[1] ?? "", process.execArgv);
 	await new Promise<void>((resolve, reject) => {
-		const child: ReturnType<typeof spawn> = spawn(process.execPath, args, {
+		const child = spawn(process.execPath, args, {
 			cwd: process.cwd(),
 			stdio: "inherit",
 			env: {

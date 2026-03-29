@@ -8,7 +8,7 @@
  * Entry: `codemem serve`
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ObserverClient } from "@codemem/core";
 import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@codemem/core";
@@ -103,7 +103,13 @@ export function createApp(opts?: AppOptions) {
 	);
 
 	// SPA — serve index.html for root and all client-side routes
-	const indexHtml = readFileSync(join(staticRoot, "index.html"), "utf-8");
+	const indexPath = join(staticRoot, "index.html");
+	if (!existsSync(indexPath)) {
+		throw new Error(
+			`Viewer assets missing at ${indexPath}. Run \`pnpm build\` from the repo root before starting the viewer.`,
+		);
+	}
+	const indexHtml = readFileSync(indexPath, "utf-8");
 	app.get("*", (c) => {
 		if (c.req.path.startsWith("/api/")) {
 			return c.json({ error: "not found" }, 404);
