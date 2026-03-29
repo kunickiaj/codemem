@@ -7,6 +7,8 @@ import * as api from '../../lib/api';
 import { showGlobalNotice } from '../../lib/notice';
 import { markFieldError, clearFieldError, friendlyError } from '../../lib/form';
 import {
+  derivePeerTrustSummary,
+  summarizeSyncRunResult,
   deriveVisiblePeopleActors,
   type VisiblePeopleResult,
 } from './view-model';
@@ -222,8 +224,12 @@ export function renderSyncPeers() {
     if (peerId) name.title = peerId;
 
     const peerStatus = peer.status || {};
-    const online = peerStatus.sync_status === 'ok' || peerStatus.ping_status === 'ok';
-    const badge = el('span', `badge ${online ? 'badge-online' : 'badge-offline'}`, online ? 'Online' : 'Offline');
+    const trustSummary = derivePeerTrustSummary(peer);
+    const badge = el(
+      'span',
+      `badge ${trustSummary.isWarning ? 'badge-offline' : 'badge-online'}`,
+      trustSummary.badgeLabel,
+    );
     name.append(' ', badge);
     if (pendingScopeReview) {
       name.append(' ', el('span', 'badge actor-badge', 'Needs scope review'));
@@ -275,14 +281,17 @@ export function renderSyncPeers() {
       syncBtn.disabled = true;
       syncBtn.textContent = 'Syncing\u2026';
       try {
-        await api.triggerSync(primaryAddress);
-        if (pendingScopeReview) {
+        const result = await api.triggerSync(primaryAddress);
+        const summary = summarizeSyncRunResult(result);
+        if (!summary.ok) {
+          showGlobalNotice(summary.message, 'warning');
+        } else if (pendingScopeReview) {
           showGlobalNotice(
             `Triggered sync for ${displayName} before scope review was finished. Review scope in this card if you want tighter sharing rules.`,
             'warning',
           );
         } else {
-          showGlobalNotice(`Started sync with ${displayName}.`);
+          showGlobalNotice(summary.message);
         }
       } catch (error) {
         showGlobalNotice(friendlyError(error, 'Failed to trigger sync.'), 'warning');
@@ -349,6 +358,7 @@ export function renderSyncPeers() {
         ? `Assigned to ${String(peer.actor_display_name)}${peer.claimed_local_actor ? ' \u00b7 you' : ''}`
         : 'Unassigned person',
     );
+    const trustMeta = el('div', 'peer-meta', trustSummary.description);
 
     const scope = peer.project_scope || {};
     const includeList = Array.isArray(scope.include) ? scope.include : [];
@@ -485,7 +495,7 @@ export function renderSyncPeers() {
         ),
       );
     }
-    scopePanel.append(identityRow, identityMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);
+    scopePanel.append(identityRow, identityMeta, trustMeta, actorRow, actorHint, scopeSummary, effectiveSummary, editorWrap);
 
     titleRow.append(name, actions);
     card.append(titleRow, addressLabel, meta, scopePanel);

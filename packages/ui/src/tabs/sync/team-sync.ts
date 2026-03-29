@@ -17,7 +17,7 @@ import {
   clearDuplicatePersonDecision,
   saveDuplicatePersonDecision,
 } from './helpers';
-import { SYNC_TERMINOLOGY } from './view-model';
+import { SYNC_TERMINOLOGY, summarizeSyncRunResult } from './view-model';
 
 /* ── DOM placement helpers ───────────────────────────────── */
 
@@ -370,7 +370,7 @@ export function renderTeamSync() {
             const result = await api.acceptDiscoveredPeer(deviceId, fingerprint);
             requestPeerScopeReview(deviceId);
             showGlobalNotice(
-              `Connected ${displayName}. Its device settings are now open in People & devices so you can review sync scope next.`,
+              `Step 1 complete on this device for ${displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
             );
             try {
               await promptForDeviceName(
@@ -442,7 +442,16 @@ export function renderTeamSync() {
       } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
         rowActions.appendChild(el('div', 'peer-meta', 'Review this device\'s scope in People & devices next.'));
       } else if (pairedPeer) {
-        rowActions.appendChild(el('div', 'peer-meta', 'Manage this device in People & devices.'));
+        const lowerError = String(pairedPeer?.last_error || '').toLowerCase();
+        rowActions.appendChild(
+          el(
+            'div',
+            'peer-meta',
+            lowerError.includes('401') && lowerError.includes('unauthorized')
+              ? 'Waiting for the other device to trust this one before sync can work.'
+              : 'Manage this device in People & devices.',
+          ),
+        );
       }
       row.append(details, rowActions);
       discoveredList.appendChild(row);
@@ -686,8 +695,9 @@ export function initTeamSyncEvents(
     syncNowButton.disabled = true;
     syncNowButton.textContent = 'Syncing\u2026';
     try {
-      await api.triggerSync();
-      showGlobalNotice('Sync pass started.');
+      const result = await api.triggerSync();
+      const summary = summarizeSyncRunResult(result);
+      showGlobalNotice(summary.message, summary.warning ? 'warning' : undefined);
     } catch (error) {
       showGlobalNotice(friendlyError(error, 'Failed to start sync.'), 'warning');
     }
