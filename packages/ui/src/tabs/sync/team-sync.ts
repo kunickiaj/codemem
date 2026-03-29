@@ -143,6 +143,21 @@ export function renderTeamSync() {
       discoveredRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
   };
+
+  const promptForDeviceName = async (deviceId: string, suggestedName: string) => {
+    const nextName = window.prompt(
+      'What should this device be called? You can change it later in People & devices.',
+      suggestedName,
+    );
+    const value = String(nextName || '').trim();
+    if (!value) {
+      showGlobalNotice('You can name this device later from People & devices.', 'warning');
+      return false;
+    }
+    await api.renamePeer(deviceId, value);
+    showGlobalNotice(`Saved device name: ${value}.`);
+    return true;
+  };
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
     ? `Connected to ${String(coordinator.coordinator_url || '')} \u00b7 group: ${(coordinator.groups || []).join(', ') || 'none'}`
@@ -288,12 +303,30 @@ export function renderTeamSync() {
           acceptBtn.disabled = true;
           acceptBtn.textContent = 'Opening…';
           try {
-            await api.acceptDiscoveredPeer(deviceId, fingerprint);
+            const result = await api.acceptDiscoveredPeer(deviceId, fingerprint);
             requestPeerScopeReview(deviceId);
             showGlobalNotice(
               `Connected ${displayName}. Its device settings are now open in People & devices so you can review sync scope next.`,
             );
-            await _loadSyncData();
+            try {
+              await promptForDeviceName(
+                deviceId,
+                String(result?.name || displayName || '').trim() || displayName,
+              );
+            } catch (error) {
+              showGlobalNotice(
+                friendlyError(error, 'Device connected, but naming did not finish.'),
+                'warning',
+              );
+            }
+            try {
+              await _loadSyncData();
+            } catch (error) {
+              showGlobalNotice(
+                friendlyError(error, 'Device connected, but the screen did not refresh yet.'),
+                'warning',
+              );
+            }
           } catch (error) {
             showGlobalNotice(friendlyError(error, 'Failed to review this device.'), 'warning');
             acceptBtn.textContent = 'Retry review';
