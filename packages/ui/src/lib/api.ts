@@ -226,6 +226,21 @@ export async function deletePeer(peerDeviceId: string): Promise<any> {
   return payload;
 }
 
+export async function renamePeer(peerDeviceId: string, name: string): Promise<any> {
+  const resp = await fetch('/api/sync/peers/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      peer_device_id: peerDeviceId,
+      name,
+    }),
+  });
+  const text = await resp.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
+  return payload;
+}
+
 export async function acceptDiscoveredPeer(peerDeviceId: string, fingerprint: string): Promise<any> {
   const resp = await fetch('/api/sync/peers/accept-discovered', {
     method: 'POST',
