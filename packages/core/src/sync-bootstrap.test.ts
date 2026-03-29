@@ -1,0 +1,170 @@
+import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { toJson } from "./db.js";
+import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
+import { getSyncResetState, setSyncResetState } from "./sync-replication.js";
+import { initTestSchema, insertTestSession } from "./test-utils.js";
+import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
+
+function makeResetInfo(overrides?: Partial<SyncResetRequired>): SyncResetRequired {
+	return {
+		reset_required: true,
+		reason: "generation_mismatch",
+		generation: 2,
+		snapshot_id: "snap-2",
+		baseline_cursor: "2026-01-01T00:00:05Z|base-op",
+		retained_floor_cursor: null,
+		...overrides,
+	};
+}
+
+function makeSnapshotItem(
+	entityId: string,
+	overrides?: Partial<SyncMemorySnapshotItem> & { payload?: Record<string, unknown> },
+): SyncMemorySnapshotItem {
+	const payload = overrides?.payload ?? {};
+	return {
+		entity_id: entityId,
+		op_type: overrides?.op_type ?? "upsert",
+		payload_json: JSON.stringify({
+			kind: "discovery",
+			title: `Title ${entityId}`,
+			body_text: `Body ${entityId}`,
+			visibility: "shared",
+			workspace_kind: "shared",
+			workspace_id: "shared:default",
+			created_at: "2026-01-01T00:00:01Z",
+			metadata_json: { clock_device_id: "peer-dev" },
+			...payload,
+		}),
+		clock_rev: overrides?.clock_rev ?? 1,
+		clock_updated_at: overrides?.clock_updated_at ?? "2026-01-01T00:00:02Z",
+		clock_device_id: overrides?.clock_device_id ?? "peer-dev",
+	};
+}
+
+describe("applyBootstrapSnapshot", () => {
+	let db: InstanceType<typeof Database>;
+	let sessionId: number;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		sessionId = insertTestSession(db);
+		// Set initial sync state so the function can bump it
+		setSyncResetState(db, {
+			generation: 1,
+			snapshot_id: "snap-1",
+			baseline_cursor: null,
+		});
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	it("replaces shared memories with snapshot items", () => {
+		// Insert existing shared memory
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
+			 VALUES (?, 'discovery', 'old-shared', 'old body', ?, ?, 'old-key', 1, 'shared', ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
+
+		const items = [makeSnapshotItem("new-key-a"), makeSnapshotItem("new-key-b")];
+		const result = applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+
+		expect(result.ok).toBe(true);
+		expect(result.deleted).toBe(1); // old-key deleted
+		expect(result.applied).toBe(2); // new-key-a, new-key-b inserted
+
+		// Verify old memory is gone
+		const old = db.prepare("SELECT * FROM memory_items WHERE import_key = 'old-key'").get();
+		expect(old).toBeUndefined();
+
+		// Verify new memories exist
+		const newA = db
+			.prepare("SELECT * FROM memory_items WHERE import_key = 'new-key-a'")
+			.get() as Record<string, unknown>;
+		expect(newA).toBeTruthy();
+		expect(newA.title).toBe("Title new-key-a");
+		expect(newA.visibility).toBe("shared");
+	});
+
+	it("preserves private memories during bootstrap", () => {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
+			 VALUES (?, 'discovery', 'my-private', 'private body', ?, ?, 'private-key', 1, 'private', ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
+
+		const items = [makeSnapshotItem("new-key")];
+		const result = applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+
+		expect(result.ok).toBe(true);
+		expect(result.deleted).toBe(0); // private not deleted
+
+		const priv = db
+			.prepare("SELECT * FROM memory_items WHERE import_key = 'private-key'")
+			.get() as Record<string, unknown>;
+		expect(priv).toBeTruthy();
+		expect(priv.title).toBe("my-private");
+	});
+
+	it("handles tombstoned snapshot items correctly", () => {
+		const items = [
+			makeSnapshotItem("alive-key"),
+			makeSnapshotItem("dead-key", { op_type: "delete" }),
+		];
+		const result = applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+
+		expect(result.ok).toBe(true);
+		expect(result.applied).toBe(2);
+
+		const alive = db
+			.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = 'alive-key'")
+			.get() as Record<string, unknown>;
+		expect(alive.active).toBe(1);
+		expect(alive.deleted_at).toBeNull();
+
+		const dead = db
+			.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = 'dead-key'")
+			.get() as Record<string, unknown>;
+		expect(dead.active).toBe(0);
+		expect(dead.deleted_at).toBeTruthy();
+	});
+
+	it("bumps generation and snapshot_id to match peer", () => {
+		const items = [makeSnapshotItem("key-a")];
+		applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+
+		const state = getSyncResetState(db);
+		expect(state.generation).toBe(2);
+		expect(state.snapshot_id).toBe("snap-2");
+		expect(state.baseline_cursor).toBe("2026-01-01T00:00:05Z|base-op");
+	});
+
+	it("updates replication cursor to baseline_cursor", () => {
+		const items = [makeSnapshotItem("key-a")];
+		applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+
+		const cursor = db
+			.prepare("SELECT last_applied_cursor FROM replication_cursors WHERE peer_device_id = ?")
+			.get("peer-1") as { last_applied_cursor: string } | undefined;
+		expect(cursor?.last_applied_cursor).toBe("2026-01-01T00:00:05Z|base-op");
+	});
+
+	it("applies empty snapshot (wipes shared, inserts nothing)", () => {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, visibility, metadata_json)
+			 VALUES (?, 'discovery', 'old-shared', 'body', ?, ?, 'old-key', 1, 'shared', ?)`,
+		).run(sessionId, now, now, toJson({ clock_device_id: "local" }));
+
+		const result = applyBootstrapSnapshot(db, "peer-1", [], makeResetInfo());
+
+		expect(result.ok).toBe(true);
+		expect(result.deleted).toBe(1);
+		expect(result.applied).toBe(0);
+	});
+});
