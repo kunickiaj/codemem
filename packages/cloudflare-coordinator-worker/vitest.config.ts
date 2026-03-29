@@ -8,11 +8,11 @@ export default defineConfig(async () => {
 	return {
 		resolve: {
 			alias: {
-				"@codemem/core": path.resolve(import.meta.dirname, "../core/src/index.ts"),
 				"@codemem/core/internal/cloudflare-coordinator": path.resolve(
 					import.meta.dirname,
 					"../core/src/internal/cloudflare-coordinator.ts",
 				),
+				"@codemem/core": path.resolve(import.meta.dirname, "../core/src/index.ts"),
 			},
 			conditions: ["source"],
 		},
