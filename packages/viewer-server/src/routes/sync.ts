@@ -2,6 +2,7 @@
  * Sync routes — status, peers, actors, attempts, pairing, mutations.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, join } from "node:path";
@@ -188,6 +189,43 @@ function readPeerProjectFilters(
 		include: parseJsonList(row.projects_include_json),
 		exclude: parseJsonList(row.projects_exclude_json),
 	};
+}
+
+function currentProjectScope(
+	row: Record<string, unknown>,
+	effective?: { include: string[]; exclude: string[] },
+): Record<string, unknown> {
+	return {
+		include: safeJsonList(row.projects_include_json as string | null),
+		exclude: safeJsonList(row.projects_exclude_json as string | null),
+		effective_include:
+			effective?.include ?? safeJsonList(row.projects_include_json as string | null),
+		effective_exclude:
+			effective?.exclude ?? safeJsonList(row.projects_exclude_json as string | null),
+		inherits_global: row.projects_include_json == null && row.projects_exclude_json == null,
+	};
+}
+
+function ensureLocalActorRecord(store: MemoryStore): void {
+	const d = drizzle(store.db, { schema });
+	const existing = d
+		.select({ actor_id: schema.actors.actor_id })
+		.from(schema.actors)
+		.where(eq(schema.actors.actor_id, store.actorId))
+		.get();
+	if (existing) return;
+	const now = new Date().toISOString();
+	d.insert(schema.actors)
+		.values({
+			actor_id: store.actorId,
+			display_name: store.actorDisplayName,
+			is_local: 1,
+			status: "active",
+			merged_into_actor_id: null,
+			created_at: now,
+			updated_at: now,
+		})
+		.run();
 }
 
 function peerClaimedLocalActor(store: MemoryStore, peerDeviceId: string): boolean {
@@ -438,7 +476,11 @@ function filterOpsForPeer(
  * When showDiag is false, sensitive fields (fingerprint, last_error, addresses)
  * are redacted.
  */
-function mapPeerRow(row: Record<string, unknown>, showDiag: boolean): Record<string, unknown> {
+function mapPeerRow(
+	store: MemoryStore,
+	row: Record<string, unknown>,
+	showDiag: boolean,
+): Record<string, unknown> {
 	return {
 		peer_device_id: row.peer_device_id,
 		name: row.name,
@@ -453,11 +495,7 @@ function mapPeerRow(row: Record<string, unknown>, showDiag: boolean): Record<str
 		actor_id: row.actor_id ?? null,
 		actor_display_name: row.actor_display_name ?? null,
 		project_scope: {
-			include: safeJsonList(row.projects_include_json as string | null),
-			exclude: safeJsonList(row.projects_exclude_json as string | null),
-			effective_include: safeJsonList(row.projects_include_json as string | null),
-			effective_exclude: safeJsonList(row.projects_exclude_json as string | null),
-			inherits_global: row.projects_include_json == null && row.projects_exclude_json == null,
+			...currentProjectScope(row, readPeerProjectFilters(store, String(row.peer_device_id ?? ""))),
 		},
 	};
 }
@@ -917,7 +955,7 @@ export function syncRoutes(
 			// Build peers list using deduplicated mapPeerRow
 			const peerRows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
 			const peersItems = peerRows.map((row) => {
-				const peer = mapPeerRow(row, showDiag);
+				const peer = mapPeerRow(store, row, showDiag);
 				peer.status = peerStatus(peer);
 				return peer;
 			});
@@ -1035,7 +1073,7 @@ export function syncRoutes(
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
 			const rows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
 			// Use deduplicated mapPeerRow helper (fix #4)
-			const peers = rows.map((row) => mapPeerRow(row, showDiag));
+			const peers = rows.map((row) => mapPeerRow(store, row, showDiag));
 			return c.json({ items: peers, redacted: !showDiag });
 		}
 	});
@@ -1044,6 +1082,7 @@ export function syncRoutes(
 	app.get("/api/sync/actors", (c) => {
 		const store = getStore();
 		{
+			ensureLocalActorRecord(store);
 			const d = drizzle(store.db, { schema });
 			const includeMerged = queryBool(c.req.query("includeMerged"));
 			const query = d.select().from(schema.actors);
@@ -1167,6 +1206,225 @@ export function syncRoutes(
 				.run();
 			return c.json({ ok: true });
 		}
+	});
+
+	app.post("/api/sync/peers/scope", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const peerDeviceId = String(body.peer_device_id ?? "").trim();
+		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
+		const include = Array.isArray(body.include)
+			? body.include
+					.filter((value): value is string => typeof value === "string")
+					.map((value) => value.trim())
+					.filter(Boolean)
+			: null;
+		const exclude = Array.isArray(body.exclude)
+			? body.exclude
+					.filter((value): value is string => typeof value === "string")
+					.map((value) => value.trim())
+					.filter(Boolean)
+			: null;
+		const inheritGlobal = Boolean(body.inherit_global);
+		const d = drizzle(store.db, { schema });
+		const exists = d
+			.select({ peer_device_id: schema.syncPeers.peer_device_id })
+			.from(schema.syncPeers)
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.get();
+		if (!exists) return c.json({ error: "peer not found" }, 404);
+		d.update(schema.syncPeers)
+			.set({
+				projects_include_json: inheritGlobal ? null : JSON.stringify(include ?? []),
+				projects_exclude_json: inheritGlobal ? null : JSON.stringify(exclude ?? []),
+			})
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.run();
+		const row = d
+			.select({
+				projects_include_json: schema.syncPeers.projects_include_json,
+				projects_exclude_json: schema.syncPeers.projects_exclude_json,
+			})
+			.from(schema.syncPeers)
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.get() as Record<string, unknown> | undefined;
+		if (!row) return c.json({ error: "peer not found" }, 404);
+		return c.json({
+			ok: true,
+			project_scope: currentProjectScope(row, readPeerProjectFilters(store, peerDeviceId)),
+		});
+	});
+
+	app.post("/api/sync/peers/identity", async (c) => {
+		const store = getStore();
+		ensureLocalActorRecord(store);
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const peerDeviceId = String(body.peer_device_id ?? "").trim();
+		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
+		const requestedActorId =
+			body.actor_id == null ? undefined : String(body.actor_id ?? "").trim() || null;
+		const claimedLocalActor =
+			typeof body.claimed_local_actor === "boolean" ? body.claimed_local_actor : undefined;
+		const d = drizzle(store.db, { schema });
+		const peer = d
+			.select({
+				peer_device_id: schema.syncPeers.peer_device_id,
+				actor_id: schema.syncPeers.actor_id,
+				claimed_local_actor: schema.syncPeers.claimed_local_actor,
+			})
+			.from(schema.syncPeers)
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.get();
+		if (!peer) return c.json({ error: "peer not found" }, 404);
+
+		let nextActorId = peer.actor_id ?? null;
+		let nextClaimedLocalActor = Boolean(peer.claimed_local_actor);
+		if (requestedActorId !== undefined) {
+			nextActorId = requestedActorId;
+			if (requestedActorId) {
+				const actor = d
+					.select({
+						actor_id: schema.actors.actor_id,
+						is_local: schema.actors.is_local,
+						status: schema.actors.status,
+					})
+					.from(schema.actors)
+					.where(eq(schema.actors.actor_id, requestedActorId))
+					.get();
+				if (!actor) return c.json({ error: "actor not found" }, 404);
+				if (actor.status !== "active") return c.json({ error: "actor not active" }, 409);
+				nextClaimedLocalActor = claimedLocalActor ?? Boolean(actor.is_local);
+			} else {
+				nextClaimedLocalActor = claimedLocalActor ?? false;
+			}
+		} else if (claimedLocalActor !== undefined) {
+			nextClaimedLocalActor = claimedLocalActor;
+			if (claimedLocalActor) {
+				nextActorId = store.actorId;
+			} else if (nextActorId === store.actorId) {
+				nextActorId = null;
+			}
+		}
+
+		d.update(schema.syncPeers)
+			.set({
+				actor_id: nextActorId,
+				claimed_local_actor: nextClaimedLocalActor ? 1 : 0,
+			})
+			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.run();
+		return c.json({ ok: true, actor_id: nextActorId, claimed_local_actor: nextClaimedLocalActor });
+	});
+
+	app.post("/api/sync/actors", async (c) => {
+		const store = getStore();
+		ensureLocalActorRecord(store);
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const displayName = String(body.display_name ?? "").trim();
+		if (!displayName) return c.json({ error: "display_name required" }, 400);
+		const d = drizzle(store.db, { schema });
+		const now = new Date().toISOString();
+		const actor = {
+			actor_id: randomUUID(),
+			display_name: displayName,
+			is_local: 0,
+			status: "active",
+			merged_into_actor_id: null,
+			created_at: now,
+			updated_at: now,
+		};
+		d.insert(schema.actors).values(actor).run();
+		return c.json(actor);
+	});
+
+	app.post("/api/sync/actors/rename", async (c) => {
+		const store = getStore();
+		ensureLocalActorRecord(store);
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const actorId = String(body.actor_id ?? "").trim();
+		const displayName = String(body.display_name ?? "").trim();
+		if (!actorId) return c.json({ error: "actor_id required" }, 400);
+		if (!displayName) return c.json({ error: "display_name required" }, 400);
+		const d = drizzle(store.db, { schema });
+		const actor = d.select().from(schema.actors).where(eq(schema.actors.actor_id, actorId)).get();
+		if (!actor) return c.json({ error: "actor not found" }, 404);
+		const updatedAt = new Date().toISOString();
+		d.update(schema.actors)
+			.set({ display_name: displayName, updated_at: updatedAt })
+			.where(eq(schema.actors.actor_id, actorId))
+			.run();
+		return c.json({ ...actor, display_name: displayName, updated_at: updatedAt });
+	});
+
+	app.post("/api/sync/actors/merge", async (c) => {
+		const store = getStore();
+		ensureLocalActorRecord(store);
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const primaryActorId = String(body.primary_actor_id ?? "").trim();
+		const secondaryActorId = String(body.secondary_actor_id ?? "").trim();
+		if (!primaryActorId) return c.json({ error: "primary_actor_id required" }, 400);
+		if (!secondaryActorId) return c.json({ error: "secondary_actor_id required" }, 400);
+		if (primaryActorId === secondaryActorId) return c.json({ error: "actor ids must differ" }, 400);
+		const d = drizzle(store.db, { schema });
+		const primary = d
+			.select()
+			.from(schema.actors)
+			.where(eq(schema.actors.actor_id, primaryActorId))
+			.get();
+		const secondary = d
+			.select()
+			.from(schema.actors)
+			.where(eq(schema.actors.actor_id, secondaryActorId))
+			.get();
+		if (!primary || !secondary) return c.json({ error: "actor not found" }, 404);
+		if (primary.status !== "active") return c.json({ error: "primary actor not active" }, 409);
+		if (secondary.status !== "active") return c.json({ error: "secondary actor not active" }, 409);
+		if (secondary.is_local) return c.json({ error: "cannot merge local actor" }, 409);
+		const now = new Date().toISOString();
+		const mergedCount = store.db.transaction(() => {
+			const peerUpdate = d
+				.update(schema.syncPeers)
+				.set({ actor_id: primaryActorId })
+				.where(eq(schema.syncPeers.actor_id, secondaryActorId))
+				.run();
+			if (primary.is_local) {
+				d.update(schema.syncPeers)
+					.set({ claimed_local_actor: 1 })
+					.where(eq(schema.syncPeers.actor_id, primaryActorId))
+					.run();
+			}
+			d.update(schema.actors)
+				.set({ status: "merged", merged_into_actor_id: primaryActorId, updated_at: now })
+				.where(eq(schema.actors.actor_id, secondaryActorId))
+				.run();
+			return Number(peerUpdate.changes ?? 0);
+		})();
+		return c.json({ merged_count: mergedCount });
 	});
 
 	app.post("/api/sync/peers/accept-discovered", async (c) => {
