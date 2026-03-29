@@ -15,6 +15,7 @@ import {
   redactAddress,
   requestPeerScopeReview,
 } from './helpers';
+import { SYNC_TERMINOLOGY } from './view-model';
 
 /* ── DOM placement helpers ───────────────────────────────── */
 
@@ -73,7 +74,7 @@ export function renderSyncSharingReview() {
       el(
         'span',
         'badge actor-badge',
-        `actor: ${String(item.actor_display_name || item.actor_id || 'unknown')}`,
+        `person: ${String(item.actor_display_name || item.actor_id || 'unknown')}`,
       ),
     );
     const note = el(
@@ -122,6 +123,26 @@ export function renderTeamSync() {
   if (discoveredList) discoveredList.textContent = '';
   setInviteOutputVisibility();
   const coordinator = state.lastSyncCoordinator;
+  const syncView = state.lastSyncViewModel || { summary: {}, attentionItems: [] };
+
+  const focusAttentionTarget = (item: any) => {
+    if (item.kind === 'possible-duplicate-person') {
+      const actorList = document.getElementById('syncActorsList');
+      if (actorList instanceof HTMLElement) actorList.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
+    const deviceId = String(item.deviceId || '').trim();
+    if (!deviceId) return;
+    const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
+    if (peerCard instanceof HTMLElement) {
+      peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
+    const discoveredRow = document.querySelector(`[data-discovered-device-id="${CSS.escape(deviceId)}"]`);
+    if (discoveredRow instanceof HTMLElement) {
+      discoveredRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  };
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
     ? `Connected to ${String(coordinator.coordinator_url || '')} \u00b7 group: ${(coordinator.groups || []).join(', ') || 'none'}`
@@ -160,30 +181,32 @@ export function renderTeamSync() {
     presenceLabel,
   );
   const metricParts = [
-    `Paired devices: ${Number(coordinator.paired_peer_count || 0)}`,
-    `Fresh discovered: ${Number(coordinator.fresh_peer_count || 0)}`,
+    `Connected devices: ${Number(syncView.summary?.connectedDeviceCount || 0)}`,
+    `Seen on team: ${Number(syncView.summary?.seenOnTeamCount || 0)}`,
   ];
-  if (Number(coordinator.stale_peer_count || 0) > 0) {
-    metricParts.push(`Inactive: ${Number(coordinator.stale_peer_count || 0)}`);
+  if (Number(syncView.summary?.offlineTeamDeviceCount || 0) > 0) {
+    metricParts.push(`Offline on team: ${Number(syncView.summary?.offlineTeamDeviceCount || 0)}`);
   }
   statusLine.append(statusLabel, statusBadge);
   statusRow.append(statusLine, el('div', 'sync-team-metrics', metricParts.join(' \u00b7 ')));
   list.appendChild(statusRow);
 
   const localPeers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
-  const unhealthyPeers = localPeers.filter((peer) => {
-    const status = peer?.status || {};
-    return Boolean(peer?.has_error) || ['offline', 'stale', 'degraded'].includes(String(status.peer_state || ''));
-  });
-  if (unhealthyPeers.length) {
-    const row = el('div', 'sync-action');
-    const textWrap = el('div', 'sync-action-text');
-    textWrap.textContent = `${unhealthyPeers.length} paired device${unhealthyPeers.length === 1 ? '' : 's'} look stale or unhealthy.`;
-    textWrap.appendChild(
-      el('span', 'sync-action-command', 'Use Remove peer in People or codemem sync peers remove <peer> before re-pairing.'),
-    );
-    row.appendChild(textWrap);
-    actions.appendChild(row);
+  const attentionItems = Array.isArray(syncView.attentionItems) ? syncView.attentionItems : [];
+  if (attentionItems.length) {
+    const heading = el('div', 'sync-action-text');
+    heading.textContent = 'Needs attention';
+    actions.appendChild(heading);
+    attentionItems.slice(0, 4).forEach((item: any) => {
+      const row = el('div', 'sync-action');
+      const textWrap = el('div', 'sync-action-text');
+      textWrap.textContent = item.title;
+      textWrap.appendChild(el('span', 'sync-action-command', item.summary));
+      const actionButton = el('button', 'settings-button', item.actionLabel || 'Review') as HTMLButtonElement;
+      actionButton.addEventListener('click', () => focusAttentionTarget(item));
+      row.append(textWrap, actionButton);
+      actions.appendChild(row);
+    });
   }
 
   const discoveredDevices = Array.isArray(coordinator.discovered_devices)
@@ -199,6 +222,7 @@ export function renderTeamSync() {
       const title = el('div', 'actor-title');
       const rowActions = el('div', 'actor-actions');
       const deviceId = String(device.device_id || '').trim();
+      if (deviceId) row.dataset.discoveredDeviceId = deviceId;
       const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
       const fingerprint = String(device.fingerprint || '').trim();
       const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || '') === deviceId);
@@ -217,7 +241,7 @@ export function renderTeamSync() {
         el(
           'span',
           'badge actor-badge',
-          hasConflict ? 'Conflicts with local peer' : pairedPeer ? 'Paired locally' : 'Not paired locally',
+          hasConflict ? SYNC_TERMINOLOGY.conflicts : pairedPeer ? SYNC_TERMINOLOGY.pairedLocally : 'Not connected on this device',
         ),
       );
       const addresses = Array.isArray(device.addresses) ? device.addresses : [];

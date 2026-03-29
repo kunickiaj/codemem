@@ -3,6 +3,7 @@
 import * as api from '../../lib/api';
 import { state } from '../../lib/state';
 import { renderHealthOverview } from '../health';
+import { deriveSyncViewModel } from './view-model';
 
 import { renderSyncStatus, renderSyncAttempts, renderPairing, initDiagnosticsEvents, setRenderSyncPeers } from './diagnostics';
 import { renderTeamSync, renderSyncSharingReview, initTeamSyncEvents, setLoadSyncData as setTeamSyncLoadData } from './team-sync';
@@ -92,6 +93,11 @@ export async function loadSyncData() {
     }
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
+    state.lastSyncViewModel = deriveSyncViewModel({
+      actors: state.lastSyncActors,
+      peers: state.lastSyncPeers,
+      coordinator: state.lastSyncCoordinator,
+    });
     renderSyncStatus();
     renderTeamSync();
     renderSyncActors();
@@ -105,7 +111,7 @@ export async function loadSyncData() {
       const actorMeta = document.getElementById('syncActorsMeta');
       if (actorMeta)
         actorMeta.textContent =
-          'Actor controls are temporarily unavailable. Peer status and sync health still loaded.';
+          'People controls are temporarily unavailable. Device status and sync health still loaded.';
     }
   } catch {
     // Clear all skeletons so the error state is visible, not masked by loading placeholders
