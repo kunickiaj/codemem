@@ -81,9 +81,9 @@ export function parseScopeList(value: string): string[] {
 /* ── Actor helpers ───────────────────────────────────────── */
 
 export function actorLabel(actor: any): string {
-  if (!actor || typeof actor !== 'object') return 'Unknown actor';
+  if (!actor || typeof actor !== 'object') return 'Unknown person';
   const displayName = String(actor.display_name || '').trim();
-  if (!displayName) return String(actor.actor_id || 'Unknown actor');
+  if (!displayName) return String(actor.actor_id || 'Unknown person');
   return displayName;
 }
 
@@ -93,20 +93,20 @@ export function assignedActorCount(actorId: string): number {
 }
 
 export function assignmentNote(actorId: string): string {
-  if (!actorId) return 'Unassigned devices keep legacy fallback attribution until you choose an actor.';
+  if (!actorId) return 'Unassigned devices keep legacy fallback attribution until you choose a person.';
   const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
   const actor = actors.find((item) => String(item?.actor_id || '') === actorId);
   if (actor?.is_local) {
-    return 'Local actor assignment keeps this device in your same-person continuity path, including private sync.';
+    return 'Assigning this device to you keeps it in your same-person continuity path, including private sync.';
   }
-  return 'This actor receives memories from allowed projects by default. Use Only me on a memory when it should stay local.';
+  return 'This person receives memories from allowed projects by default. Use Only me on a memory when it should stay local.';
 }
 
 export function buildActorOptions(selectedActorId: string): HTMLOptionElement[] {
   const options: HTMLOptionElement[] = [];
   const unassigned = document.createElement('option');
   unassigned.value = '';
-  unassigned.textContent = 'No actor assigned';
+  unassigned.textContent = 'No person assigned';
   options.push(unassigned);
 
   const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
@@ -131,7 +131,7 @@ export function actorMergeNote(targetActorId: string, secondaryActorId: string):
     (actor) => String(actor?.actor_id || '') === targetActorId,
   );
   if (!targetActorId || !target) {
-    return 'Choose where this duplicate actor should collapse.';
+    return 'Choose which person should keep these devices.';
   }
   return `Merge into ${actorLabel(target)}. Assigned devices move now; existing memories keep their current provenance.`;
 }

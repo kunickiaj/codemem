@@ -1,4 +1,4 @@
-/* People card — actors, devices/peers, sharing review, legacy device claims. */
+/* People card — people, devices, sharing review, legacy device claims. */
 
 import { el } from '../../lib/dom';
 import { formatTimestamp } from '../../lib/format';
@@ -42,13 +42,13 @@ export function renderSyncActors() {
   const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
   if (actorMeta) {
     actorMeta.textContent = actors.length
-      ? 'Create, rename, and merge actors here. Assign each device below. Non-local actors receive memories from allowed projects unless you mark them Only me.'
-      : 'No named actors yet. Create one here, then assign devices below.';
+      ? 'Create, rename, and combine people here. Assign each device below. Non-local people receive memories from allowed projects unless you mark them Only me.'
+      : 'No named people yet. Create one here, then assign devices below.';
   }
 
   if (!actors.length) {
     actorList.appendChild(
-      el('div', 'sync-empty-state', 'No actors yet. Create one to represent yourself or a teammate.'),
+      el('div', 'sync-empty-state', 'No people yet. Create one to represent yourself or a teammate.'),
     );
     return;
   }
@@ -105,10 +105,10 @@ export function renderSyncActors() {
       const mergeControls = el('div', 'actor-merge-controls');
       const mergeSelect = document.createElement('select');
       mergeSelect.className = 'sync-actor-select actor-merge-select';
-      mergeSelect.setAttribute('aria-label', `Merge ${actorLabel(actor)} into another actor`);
+      mergeSelect.setAttribute('aria-label', `Combine ${actorLabel(actor)} into another person`);
       const placeholder = document.createElement('option');
       placeholder.value = '';
-      placeholder.textContent = 'Merge into actor';
+      placeholder.textContent = 'Combine into person';
       placeholder.selected = true;
       mergeSelect.appendChild(placeholder);
       mergeTargets.forEach((target) => {
@@ -120,7 +120,7 @@ export function renderSyncActors() {
       const mergeBtn = el(
         'button',
         'settings-button',
-        'Merge into selected actor',
+        'Combine into selected person',
       ) as HTMLButtonElement;
       mergeBtn.disabled = mergeTargets.length === 0;
       const mergeNote = el(
@@ -128,7 +128,7 @@ export function renderSyncActors() {
         'peer-meta actor-merge-note',
         mergeTargets.length
           ? actorMergeNote('', actorId)
-          : 'No merge targets yet. Create another actor or use the local actor.',
+          : 'No people available to combine yet. Create another person or use You.',
       );
       mergeSelect.addEventListener('change', () => {
         mergeNote.textContent = actorMergeNote(mergeSelect.value, actorId);
@@ -140,7 +140,7 @@ export function renderSyncActors() {
         );
         if (
           !window.confirm(
-            `Merge ${actorLabel(actor)} into ${actorLabel(target)}? Assigned devices move now, but older memories keep their current stamped provenance for now.`,
+            `Combine ${actorLabel(actor)} into ${actorLabel(target)}? Assigned devices move now, but older memories keep their current stamped provenance for now.`,
           )
         ) {
           return;
@@ -152,10 +152,10 @@ export function renderSyncActors() {
         mergeBtn.textContent = 'Merging\u2026';
         try {
           await api.mergeActor(mergeSelect.value, actorId);
-          showGlobalNotice('Actor merged. Assigned devices moved to the selected actor.');
+          showGlobalNotice('People combined. Assigned devices moved to the selected person.');
           await _loadSyncData();
         } catch (error) {
-          showGlobalNotice(friendlyError(error, 'Failed to merge actor.'), 'warning');
+          showGlobalNotice(friendlyError(error, 'Failed to combine people.'), 'warning');
           mergeBtn.textContent = 'Retry merge';
         } finally {
           mergeBtn.disabled = mergeTargets.length === 0;
@@ -163,7 +163,7 @@ export function renderSyncActors() {
           input.disabled = false;
           renameBtn.disabled = false;
           if (mergeBtn.textContent === 'Merging\u2026')
-            mergeBtn.textContent = 'Merge into selected actor';
+            mergeBtn.textContent = 'Combine into selected person';
         }
       });
       mergeControls.append(mergeSelect, mergeBtn);
@@ -188,7 +188,7 @@ export function renderSyncPeers() {
       el(
         'div',
         'sync-empty-state',
-        'No devices paired yet. Use the pairing command in Diagnostics to connect another device.',
+        'No devices connected on this machine yet. Use the pairing command in Diagnostics to connect another device.',
       ),
     );
     return;
@@ -298,8 +298,8 @@ export function renderSyncPeers() {
       'div',
       'peer-meta',
       peer.actor_display_name
-        ? `Assigned to ${String(peer.actor_display_name)}${peer.claimed_local_actor ? ' \u00b7 local actor' : ''}`
-        : 'Unassigned actor',
+        ? `Assigned to ${String(peer.actor_display_name)}${peer.claimed_local_actor ? ' \u00b7 you' : ''}`
+        : 'Unassigned person',
     );
 
     const scope = peer.project_scope || {};
@@ -310,15 +310,15 @@ export function renderSyncPeers() {
     const inheritsGlobal = Boolean(scope.inherits_global);
     const scopePanel = el('div', 'peer-scope');
     const identityRow = el('div', 'peer-scope-summary');
-    identityRow.textContent = 'Assigned actor';
+    identityRow.textContent = 'Assigned person';
     const actorRow = el('div', 'peer-actor-row');
     const actorSelect = document.createElement('select');
     actorSelect.className = 'sync-actor-select';
-    actorSelect.setAttribute('aria-label', `Assigned actor for ${displayName}`);
+    actorSelect.setAttribute('aria-label', `Assigned person for ${displayName}`);
     buildActorOptions(String(peer.actor_id || '')).forEach((option) =>
       actorSelect.appendChild(option),
     );
-    const applyActorBtn = el('button', 'settings-button', 'Save actor') as HTMLButtonElement;
+    const applyActorBtn = el('button', 'settings-button', 'Save person') as HTMLButtonElement;
     const actorHint = el(
       'div',
       'peer-scope-effective',
@@ -333,16 +333,16 @@ export function renderSyncPeers() {
       applyActorBtn.textContent = 'Applying\u2026';
       try {
         await api.assignPeerActor(peerId, actorSelect.value || null);
-        showGlobalNotice(actorSelect.value ? 'Device actor updated.' : 'Device actor cleared.');
+          showGlobalNotice(actorSelect.value ? 'Device person updated.' : 'Device person cleared.');
         await _loadSyncData();
       } catch (error) {
-        showGlobalNotice(friendlyError(error, 'Failed to update device actor.'), 'warning');
+        showGlobalNotice(friendlyError(error, 'Failed to update device person.'), 'warning');
         applyActorBtn.textContent = 'Retry';
       } finally {
         actorSelect.disabled = false;
         applyActorBtn.disabled = false;
         if (applyActorBtn.textContent === 'Applying\u2026')
-          applyActorBtn.textContent = 'Save actor';
+          applyActorBtn.textContent = 'Save person';
       }
     });
     actorRow.append(actorSelect, applyActorBtn);
@@ -502,7 +502,7 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
     if (!syncActorCreateButton || !syncActorCreateInput) return;
     const displayName = String(syncActorCreateInput.value || '').trim();
     if (!displayName) {
-      markFieldError(syncActorCreateInput, 'Enter a name for the actor.');
+      markFieldError(syncActorCreateInput, 'Enter a name for the person.');
       return;
     }
     clearFieldError(syncActorCreateInput);
@@ -511,17 +511,17 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
     syncActorCreateButton.textContent = 'Creating\u2026';
     try {
       await api.createActor(displayName);
-      showGlobalNotice('Actor created.');
+      showGlobalNotice('Person created.');
       syncActorCreateInput.value = '';
       await loadSyncData();
     } catch (error) {
-      showGlobalNotice(friendlyError(error, 'Failed to create actor.'), 'warning');
+      showGlobalNotice(friendlyError(error, 'Failed to create person.'), 'warning');
       syncActorCreateButton.textContent = 'Retry';
       syncActorCreateButton.disabled = false;
       syncActorCreateInput.disabled = false;
       return;
     }
-    syncActorCreateButton.textContent = 'Create actor';
+    syncActorCreateButton.textContent = 'Create person';
     syncActorCreateButton.disabled = false;
     syncActorCreateInput.disabled = false;
   });
@@ -531,7 +531,7 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
     if (!originDeviceId || !syncLegacyClaimButton) return;
     if (
       !window.confirm(
-        `Attach old device history from ${originDeviceId} to your local actor? This updates legacy provenance for that device.`,
+        `Attach old device history from ${originDeviceId} to you? This updates legacy provenance for that device.`,
       )
     )
       return;
@@ -540,7 +540,7 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
     syncLegacyClaimButton.textContent = 'Attaching\u2026';
     try {
       await api.claimLegacyDeviceIdentity(originDeviceId);
-      showGlobalNotice('Old device history attached to your local actor.');
+      showGlobalNotice('Old device history attached to you.');
       await loadSyncData();
     } catch (error) {
       showGlobalNotice(friendlyError(error, 'Failed to attach old device history.'), 'warning');
