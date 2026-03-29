@@ -3,9 +3,9 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"clean": "rm -f ../viewer-server/static/app.js",
+		"clean": "rm -rf ../viewer-server/static",
 		"dev": "vite",
-		"build": "vite build --mode production",
+		"build": "vite build --mode production && node ./scripts/stage-viewer-static.mjs",
 		"build:watch": "vite build --watch --mode development",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
