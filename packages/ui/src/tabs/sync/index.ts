@@ -70,6 +70,7 @@ export async function loadSyncData() {
 
     let actorsPayload: any = null;
     let actorLoadError = false;
+    const duplicatePersonDecisions = readDuplicatePersonDecisions();
     try {
       actorsPayload = await api.loadSyncActors();
     } catch {
@@ -77,7 +78,7 @@ export async function loadSyncData() {
     }
 
     // Skip re-render if data hasn't changed since last poll
-    const hash = JSON.stringify([payload, actorsPayload]);
+    const hash = JSON.stringify([payload, actorsPayload, duplicatePersonDecisions]);
     if (hash === lastSyncHash) return;
     lastSyncHash = hash;
 
@@ -93,7 +94,7 @@ export async function loadSyncData() {
     }
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
-    state.lastSyncDuplicatePersonDecisions = readDuplicatePersonDecisions();
+    state.lastSyncDuplicatePersonDecisions = duplicatePersonDecisions;
     state.lastSyncViewModel = deriveSyncViewModel({
       actors: state.lastSyncActors,
       peers: state.lastSyncPeers,

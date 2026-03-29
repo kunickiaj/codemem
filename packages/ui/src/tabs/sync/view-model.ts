@@ -264,11 +264,12 @@ export function deriveSyncViewModel(input: {
     }
 
     if (
+      device.peer &&
       deviceNeedsFriendlyName({
         localName: device.localName,
         coordinatorName: device.coordinatorName,
         deviceId: device.deviceId,
-      }) && looksLikeDeviceId(name)
+      })
     ) {
       attentionItems.push(
         createNamingItem({

@@ -1888,6 +1888,36 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("renames an existing sync peer through the viewer route", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
+					)
+					.run("peer-rename", "Old Device", "fp-rename", new Date().toISOString());
+
+				const res = await app.request("/api/sync/peers/rename", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ peer_device_id: "peer-rename", name: "Desk Mini" }),
+				});
+
+				expect(res.status).toBe(200);
+				expect(await res.json()).toEqual({ ok: true });
+
+				const peerRow = store.db
+					.prepare("SELECT name FROM sync_peers WHERE peer_device_id = ?")
+					.get("peer-rename") as { name: string } | undefined;
+				expect(peerRow?.name).toBe("Desk Mini");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("updates an existing peer when the discovered fingerprint matches", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));

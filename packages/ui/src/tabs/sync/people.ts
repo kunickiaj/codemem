@@ -217,6 +217,7 @@ export function renderSyncPeers() {
     const renameInput = document.createElement('input');
     renameInput.className = 'peer-scope-input';
     renameInput.value = displayName;
+    if (peerId) renameInput.dataset.deviceNameInput = peerId;
     renameInput.setAttribute('aria-label', `Friendly name for ${displayName}`);
     renameInput.placeholder = 'Friendly device name';
     const renameBtn = el('button', null, 'Save name') as HTMLButtonElement;
