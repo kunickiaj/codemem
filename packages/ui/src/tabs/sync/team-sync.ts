@@ -135,6 +135,15 @@ export function renderTeamSync() {
     }
     const deviceId = String(item.deviceId || '').trim();
     if (!deviceId) return;
+    if (item.kind === 'name-device') {
+      const renameInput = document.querySelector(`[data-device-name-input="${CSS.escape(deviceId)}"]`);
+      if (renameInput instanceof HTMLInputElement) {
+        renameInput.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        renameInput.focus();
+        renameInput.select();
+        return;
+      }
+    }
     const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
     if (peerCard instanceof HTMLElement) {
       peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
