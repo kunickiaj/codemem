@@ -11,6 +11,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
 import { buildAuthHeaders } from "./sync-auth.js";
+import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import {
@@ -439,23 +440,80 @@ export async function syncOnce(
 							: null,
 				};
 
-				recordSyncAttempt(db, peerDeviceId, {
-					ok: false,
-					error: dirtyLocal.dirty
-						? `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`
-						: `reset_required:${resetRequired.reason}`,
-				});
-				return {
-					ok: false,
-					address: baseUrl,
-					error: dirtyLocal.dirty
-						? `needs attention: ${dirtyLocal.count} unsynced shared memory change(s) block automatic reset`
-						: `reset required: ${resetRequired.reason}`,
-					opsIn: 0,
-					opsOut: 0,
-					addressErrors: [],
-					resetRequired,
-				};
+				if (dirtyLocal.dirty) {
+					recordSyncAttempt(db, peerDeviceId, {
+						ok: false,
+						error: `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`,
+					});
+					return {
+						ok: false,
+						address: baseUrl,
+						error: `needs attention: ${dirtyLocal.count} unsynced shared memory change(s) block automatic reset`,
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+						resetRequired,
+					};
+				}
+
+				// No dirty local state — safe to auto-bootstrap from peer snapshot.
+				try {
+					const { items } = await fetchAllSnapshotPages(baseUrl, resetRequired, deviceId, {
+						keysDir,
+					});
+
+					// Re-check dirty state after network fetch to close the TOCTOU window.
+					// A user may have created shared memories while we were fetching pages.
+					const dirtyAfterFetch = hasUnsyncedSharedMemoryChanges(db);
+					if (dirtyAfterFetch.dirty) {
+						recordSyncAttempt(db, peerDeviceId, {
+							ok: false,
+							error: `needs_attention:local_unsynced_shared_memory:${dirtyAfterFetch.count}`,
+						});
+						return {
+							ok: false,
+							address: baseUrl,
+							error: `needs attention: ${dirtyAfterFetch.count} unsynced shared memory change(s) appeared during bootstrap fetch`,
+							opsIn: 0,
+							opsOut: 0,
+							addressErrors: [],
+							resetRequired,
+						};
+					}
+
+					const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetRequired);
+					if (!bootstrapResult.ok) {
+						throw new Error("bootstrap apply failed");
+					}
+					recordPeerSuccess(db, peerDeviceId);
+					recordSyncAttempt(db, peerDeviceId, {
+						ok: true,
+						opsIn: bootstrapResult.applied,
+						opsOut: 0,
+					});
+					return {
+						ok: true,
+						address: baseUrl,
+						opsIn: bootstrapResult.applied,
+						opsOut: 0,
+						addressErrors: [],
+					};
+				} catch (bootstrapErr) {
+					const msg = bootstrapErr instanceof Error ? bootstrapErr.message : String(bootstrapErr);
+					recordSyncAttempt(db, peerDeviceId, {
+						ok: false,
+						error: `bootstrap_failed:${msg}`,
+					});
+					return {
+						ok: false,
+						address: baseUrl,
+						error: `bootstrap failed: ${msg}`,
+						opsIn: 0,
+						opsOut: 0,
+						addressErrors: [],
+						resetRequired,
+					};
+				}
 			}
 			if (getStatus !== 200 || getPayload == null) {
 				const detail = errorDetail(getPayload);

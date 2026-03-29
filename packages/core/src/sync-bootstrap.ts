@@ -37,6 +37,8 @@ export interface BootstrapOptions {
 	pageSize?: number;
 	/** Timeout per HTTP request in seconds. Defaults to 10. */
 	timeoutS?: number;
+	/** Safety cap on total snapshot items. Defaults to 100,000. */
+	maxItems?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +46,10 @@ export interface BootstrapOptions {
 // ---------------------------------------------------------------------------
 
 interface SnapshotPageResponse {
-	boundary: { generation: number; snapshot_id: string; baseline_cursor: string | null };
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+	retained_floor_cursor: string | null;
 	items: SyncMemorySnapshotItem[];
 	next_page_token: string | null;
 	has_more: boolean;
@@ -59,14 +64,21 @@ export async function fetchAllSnapshotPages(
 	resetInfo: SyncResetRequired,
 	deviceId: string,
 	options?: BootstrapOptions,
-): Promise<{ items: SyncMemorySnapshotItem[]; boundary: SnapshotPageResponse["boundary"] }> {
+): Promise<{
+	items: SyncMemorySnapshotItem[];
+	generation: number;
+	snapshot_id: string;
+	baseline_cursor: string | null;
+}> {
 	const pageSize = options?.pageSize ?? 200;
 	const timeoutS = options?.timeoutS ?? 10;
 	const keysDir = options?.keysDir;
+	const maxItems = options?.maxItems ?? 100_000;
 
 	const allItems: SyncMemorySnapshotItem[] = [];
 	let pageToken: string | null = null;
-	let boundary: SnapshotPageResponse["boundary"] | null = null;
+	let boundary: { generation: number; snapshot_id: string; baseline_cursor: string | null } | null =
+		null;
 
 	for (;;) {
 		const params = new URLSearchParams({
@@ -97,12 +109,22 @@ export async function fetchAllSnapshotPages(
 		}
 
 		const page = payload as unknown as SnapshotPageResponse;
-		if (!page.boundary || !Array.isArray(page.items)) {
+		if (!Array.isArray(page.items) || page.generation == null) {
 			throw new Error("invalid snapshot response shape");
 		}
 
-		boundary = page.boundary;
+		boundary = {
+			generation: page.generation,
+			snapshot_id: page.snapshot_id,
+			baseline_cursor: page.baseline_cursor,
+		};
 		allItems.push(...page.items);
+
+		if (allItems.length > maxItems) {
+			throw new Error(
+				`snapshot too large: ${allItems.length} items exceeds safety limit of ${maxItems}`,
+			);
+		}
 
 		if (!page.has_more || !page.next_page_token) {
 			break;
@@ -114,7 +136,7 @@ export async function fetchAllSnapshotPages(
 		throw new Error("no snapshot pages returned");
 	}
 
-	return { items: allItems, boundary };
+	return { items: allItems, ...boundary };
 }
 
 // ---------------------------------------------------------------------------
@@ -180,14 +202,19 @@ export function applyBootstrapSnapshot(
 	db.transaction(() => {
 		const d = drizzle(db, { schema });
 
-		// 1. Delete all local shared-visibility memories.
-		// Private memories (visibility = 'private' or NULL) are preserved.
+		// 1. Delete all local sync-eligible memories that have been synced.
+		// - Only memories with import_key (i.e. previously synced) are deleted.
+		// - Only explicitly private memories are preserved; NULL visibility is
+		//   treated as sync-eligible (matching syncVisibilityAllowed semantics)
+		//   to avoid leaving stale rows that could create duplicate import_keys.
+		// - The dirty-local gate in sync-pass ensures we only reach here when
+		//   no unsynced shared changes exist.
 		const deleteResult = d
 			.delete(schema.memoryItems)
 			.where(
 				and(
 					isNotNull(schema.memoryItems.import_key),
-					ne(sql`COALESCE(${schema.memoryItems.visibility}, 'private')`, "private"),
+					ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
 				),
 			)
 			.run();
