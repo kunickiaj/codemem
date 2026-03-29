@@ -7,6 +7,10 @@ import * as api from '../../lib/api';
 import { showGlobalNotice } from '../../lib/notice';
 import { markFieldError, clearFieldError, friendlyError } from '../../lib/form';
 import {
+  deriveVisiblePeopleActors,
+  type VisiblePeopleResult,
+} from './view-model';
+import {
   redactAddress,
   pickPrimaryAddress,
   actorLabel,
@@ -39,11 +43,19 @@ export function renderSyncActors() {
   hideSkeleton('syncActorsSkeleton');
   actorList.textContent = '';
 
-  const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
+  const actorVisibility: VisiblePeopleResult = deriveVisiblePeopleActors({
+    actors: state.lastSyncActors,
+    peers: state.lastSyncPeers,
+    duplicatePeople: state.lastSyncViewModel?.duplicatePeople,
+  });
+  const actors = actorVisibility.visibleActors;
   if (actorMeta) {
     actorMeta.textContent = actors.length
       ? 'Create, rename, and combine people here. Assign each device below. Non-local people receive memories from allowed projects unless you mark them Only me.'
       : 'No named people yet. Create one here, then assign devices below.';
+    if (actorVisibility.hiddenLocalDuplicateCount > 0) {
+      actorMeta.textContent += ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden here until reviewed in Needs attention.`;
+    }
   }
 
   if (!actors.length) {
@@ -69,7 +81,11 @@ export function renderSyncActors() {
       'div',
       'peer-meta',
       actor.is_local
-        ? 'Used for this device and same-person devices.'
+        ? `Used for this device and same-person devices.${
+            actorVisibility.hiddenLocalDuplicateCount > 0
+              ? ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden until reviewed in Needs attention.`
+              : ''
+          }`
         : `${count} assigned device${count === 1 ? '' : 's'}`,
     );
     details.append(title, note);

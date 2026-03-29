@@ -41,6 +41,11 @@ export interface UiSyncViewModel {
   attentionItems: UiSyncAttentionItem[];
 }
 
+export interface VisiblePeopleResult {
+  visibleActors: any[];
+  hiddenLocalDuplicateCount: number;
+}
+
 interface MergedDevice {
   deviceId: string;
   localName: string;
@@ -117,6 +122,38 @@ export function deriveDuplicatePeople(actors: any[]): UiDuplicatePersonCandidate
   return [...groups.values()]
     .filter((item) => item.actorIds.length > 1)
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+export function deriveVisiblePeopleActors(input: {
+  actors?: any[];
+  peers?: any[];
+  duplicatePeople?: UiDuplicatePersonCandidate[];
+}): VisiblePeopleResult {
+  const actors = Array.isArray(input.actors) ? input.actors : [];
+  const peers = Array.isArray(input.peers) ? input.peers : [];
+  const duplicatePeople = Array.isArray(input.duplicatePeople) ? input.duplicatePeople : [];
+  const assignedCounts = new Map<string, number>();
+  peers.forEach((peer) => {
+    const actorId = cleanText(peer?.actor_id);
+    if (!actorId) return;
+    assignedCounts.set(actorId, (assignedCounts.get(actorId) ?? 0) + 1);
+  });
+
+  const hiddenIds = new Set<string>();
+  duplicatePeople.forEach((candidate) => {
+    if (!candidate.includesLocal) return;
+    candidate.actorIds.forEach((actorId) => {
+      const actor = actors.find((item) => cleanText(item?.actor_id) === actorId);
+      if (!actor || actor.is_local) return;
+      if ((assignedCounts.get(actorId) ?? 0) > 0) return;
+      hiddenIds.add(actorId);
+    });
+  });
+
+  return {
+    visibleActors: actors.filter((actor) => !hiddenIds.has(cleanText(actor?.actor_id))),
+    hiddenLocalDuplicateCount: hiddenIds.size,
+  };
 }
 
 function createRepairItem(device: { id: string; name: string; summary: string }): UiSyncAttentionItem {
