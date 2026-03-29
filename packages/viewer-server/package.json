@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/server",
-	"version": "0.22.0-alpha.0",
+	"version": "0.22.0-alpha.2",
 	"type": "module",
 	"types": "./dist/index.d.ts",
 	"exports": {
