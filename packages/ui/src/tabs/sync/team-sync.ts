@@ -14,6 +14,8 @@ import {
   isPeerScopeReviewPending,
   redactAddress,
   requestPeerScopeReview,
+  clearDuplicatePersonDecision,
+  saveDuplicatePersonDecision,
 } from './helpers';
 import { SYNC_TERMINOLOGY } from './view-model';
 
@@ -144,6 +146,53 @@ export function renderTeamSync() {
     }
   };
 
+  const reviewDuplicatePeople = async (item: any) => {
+    const actorIds = Array.isArray(item.actorIds) ? item.actorIds.map((value: unknown) => String(value || '').trim()).filter(Boolean) : [];
+    const actors = (Array.isArray(state.lastSyncActors) ? state.lastSyncActors : []).filter((actor) =>
+      actorIds.includes(String(actor?.actor_id || '').trim()),
+    );
+    if (actors.length < 2) {
+      showGlobalNotice('This possible duplicate no longer has enough people to review.', 'warning');
+      return;
+    }
+    const firstAnswer = window.prompt(
+      `Possible duplicate person: ${item.title.replace(/^Possible duplicate person:\s*/, '')}\n\nChoose an option:\n1 = These are both me\n2 = These are different people\n3 = Decide later`,
+      '1',
+    );
+    const choice = String(firstAnswer || '').trim();
+    if (choice === '2') {
+      saveDuplicatePersonDecision(actorIds, 'different-people');
+      showGlobalNotice('Okay. I will keep these people separate on this device.');
+      await _loadSyncData();
+      return;
+    }
+    if (choice !== '1') return;
+    clearDuplicatePersonDecision(actorIds);
+    const localIndex = actors.findIndex((actor) => Boolean(actor?.is_local));
+    const defaultChoice = localIndex >= 0 ? String(localIndex + 1) : '1';
+    const options = actors
+      .map((actor, index) => `${index + 1} = ${String(actor?.display_name || actor?.actor_id || `Person ${index + 1}`)}${actor?.is_local ? ' (You)' : ''}`)
+      .join('\n');
+    const keepAnswer = window.prompt(
+      `Which person should remain after combining them?\n\n${options}`,
+      defaultChoice,
+    );
+    const keepIndex = Number.parseInt(String(keepAnswer || defaultChoice), 10) - 1;
+    const primary = actors[keepIndex] ?? actors[0];
+    const secondary = actors.find((actor) => actor !== primary);
+    if (!primary?.actor_id || !secondary?.actor_id) {
+      showGlobalNotice('Could not determine which people to combine.', 'warning');
+      return;
+    }
+    try {
+      await api.mergeActor(String(primary.actor_id), String(secondary.actor_id));
+      showGlobalNotice(`Combined duplicate people into ${String(primary.display_name || primary.actor_id)}.`);
+      await _loadSyncData();
+    } catch (error) {
+      showGlobalNotice(friendlyError(error, 'Failed to combine these people.'), 'warning');
+    }
+  };
+
   const promptForDeviceName = async (deviceId: string, suggestedName: string) => {
     const nextName = window.prompt(
       'What should this device be called? You can change it later in People & devices.',
@@ -218,7 +267,13 @@ export function renderTeamSync() {
       textWrap.textContent = item.title;
       textWrap.appendChild(el('span', 'sync-action-command', item.summary));
       const actionButton = el('button', 'settings-button', item.actionLabel || 'Review') as HTMLButtonElement;
-      actionButton.addEventListener('click', () => focusAttentionTarget(item));
+      actionButton.addEventListener('click', async () => {
+        if (item.kind === 'possible-duplicate-person') {
+          await reviewDuplicatePeople(item);
+          return;
+        }
+        focusAttentionTarget(item);
+      });
       row.append(textWrap, actionButton);
       actions.appendChild(row);
     });

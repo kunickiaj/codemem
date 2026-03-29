@@ -25,6 +25,9 @@ export function setTeamInvitePanelOpen(v: boolean) {
 export const openPeerScopeEditors = new Set<string>();
 const pendingPeerScopeReviewIds = new Set<string>();
 const freshPeerScopeReviewIds = new Set<string>();
+const DUPLICATE_PERSON_DECISIONS_KEY = 'codemem-sync-duplicate-person-decisions';
+
+export type DuplicatePersonDecision = 'different-people';
 
 export function requestPeerScopeReview(peerDeviceId: string) {
   const value = String(peerDeviceId || '').trim();
@@ -50,6 +53,47 @@ export function consumePeerScopeReviewRequest(peerDeviceId: string): boolean {
   if (!value || !freshPeerScopeReviewIds.has(value)) return false;
   freshPeerScopeReviewIds.delete(value);
   return true;
+}
+
+function readDuplicatePersonDecisionStore(): Record<string, DuplicatePersonDecision> {
+  try {
+    const raw = localStorage.getItem(DUPLICATE_PERSON_DECISIONS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeDuplicatePersonDecisionStore(value: Record<string, DuplicatePersonDecision>) {
+  try {
+    localStorage.setItem(DUPLICATE_PERSON_DECISIONS_KEY, JSON.stringify(value));
+  } catch {}
+}
+
+export function duplicatePersonDecisionKey(actorIds: string[]): string {
+  return [...actorIds].map((value) => String(value || '').trim()).filter(Boolean).sort().join('::');
+}
+
+export function readDuplicatePersonDecisions(): Record<string, DuplicatePersonDecision> {
+  return readDuplicatePersonDecisionStore();
+}
+
+export function saveDuplicatePersonDecision(actorIds: string[], decision: DuplicatePersonDecision) {
+  const key = duplicatePersonDecisionKey(actorIds);
+  if (!key) return;
+  const next = readDuplicatePersonDecisionStore();
+  next[key] = decision;
+  writeDuplicatePersonDecisionStore(next);
+}
+
+export function clearDuplicatePersonDecision(actorIds: string[]) {
+  const key = duplicatePersonDecisionKey(actorIds);
+  if (!key) return;
+  const next = readDuplicatePersonDecisionStore();
+  delete next[key];
+  writeDuplicatePersonDecisionStore(next);
 }
 
 /* ── Text helpers ────────────────────────────────────────── */
