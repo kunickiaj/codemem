@@ -8,7 +8,7 @@ import { deriveSyncViewModel } from './view-model';
 import { renderSyncStatus, renderSyncAttempts, renderPairing, initDiagnosticsEvents, setRenderSyncPeers } from './diagnostics';
 import { renderTeamSync, renderSyncSharingReview, initTeamSyncEvents, setLoadSyncData as setTeamSyncLoadData } from './team-sync';
 import { renderSyncActors, renderSyncPeers, renderLegacyDeviceClaims, initPeopleEvents, setLoadSyncData as setPeopleLoadData } from './people';
-import { hideSkeleton } from './helpers';
+import { hideSkeleton, readDuplicatePersonDecisions } from './helpers';
 
 /* ── Re-exports consumed by app.ts ───────────────────────── */
 
@@ -93,10 +93,12 @@ export async function loadSyncData() {
     }
     state.lastSyncAttempts = payload.attempts || [];
     state.lastSyncLegacyDevices = payload.legacy_devices || [];
+    state.lastSyncDuplicatePersonDecisions = readDuplicatePersonDecisions();
     state.lastSyncViewModel = deriveSyncViewModel({
       actors: state.lastSyncActors,
       peers: state.lastSyncPeers,
       coordinator: state.lastSyncCoordinator,
+      duplicatePersonDecisions: state.lastSyncDuplicatePersonDecisions,
     });
     renderSyncStatus();
     renderTeamSync();

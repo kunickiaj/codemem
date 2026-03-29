@@ -129,4 +129,19 @@ describe('deriveSyncViewModel', () => {
       'review-team-device',
     ]);
   });
+
+  it('hides duplicate-person attention when the user already marked them as different people', () => {
+    const view = deriveSyncViewModel({
+      actors: [
+        { actor_id: 'actor-local', display_name: 'Adam', is_local: true },
+        { actor_id: 'actor-remote', display_name: 'Adam', is_local: false },
+      ],
+      duplicatePersonDecisions: {
+        'actor-local::actor-remote': 'different-people',
+      },
+    });
+
+    expect(view.duplicatePeople).toEqual([]);
+    expect(view.attentionItems).toEqual([]);
+  });
 });
