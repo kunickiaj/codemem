@@ -305,7 +305,7 @@ describe("RawEventSweeper auto flush", () => {
 		expect(store.rawEventFlushState("sess-auto")).toBe(1);
 	});
 
-	it("records a failed batch and keeps the flush cursor when observer output has no storable memories", async () => {
+	it("terminally completes low-signal skip_summary batches and advances the flush cursor", async () => {
 		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
 		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
 		seedSession("sess-low-signal");
@@ -330,11 +330,8 @@ describe("RawEventSweeper auto flush", () => {
 		sweeper.nudge("sess-low-signal");
 		await sleep(150);
 
-		expect(store.rawEventFlushState("sess-low-signal")).toBe(-1);
-		expect(store.latestRawEventFlushFailure("opencode")).toMatchObject({
-			stream_id: "sess-low-signal",
-			error_message: "Test returned no usable output for raw-event processing.",
-		});
+		expect(store.rawEventFlushState("sess-low-signal")).toBe(1);
+		expect(store.latestRawEventFlushFailure("opencode")?.stream_id).not.toBe("sess-low-signal");
 	});
 
 	it("terminally skips tiny lifecycle-only sessions without calling the observer", async () => {

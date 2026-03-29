@@ -602,7 +602,7 @@ describe("ingest() integration", () => {
 		expect(session.ended_at).not.toBeNull();
 	});
 
-	it("throws during direct raw-event flush when observer yields no storable memories", async () => {
+	it("treats skip_summary low-signal raw-event flushes as terminal no-op", async () => {
 		const lowSignalObserver = {
 			observe: async () => ({
 				raw: '<skip_summary reason="low-signal"/>',
@@ -629,8 +629,78 @@ describe("ingest() integration", () => {
 			},
 		});
 
+		await ingest(payload, store, { observer: lowSignalObserver } as unknown as IngestOptions);
+
+		expect(store.recent(10)).toHaveLength(0);
+		const session = store.db
+			.prepare("SELECT ended_at FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as { ended_at: string | null };
+		expect(session.ended_at).not.toBeNull();
+	});
+
+	it("still fails raw-event flush when skip_summary reason is not low-signal", async () => {
+		const oddSkipObserver = {
+			observe: async () => ({
+				raw: '<skip_summary reason="other"/>',
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-skip-other",
+				promptCount: 1,
+				toolCount: 1,
+				durationMs: 1000,
+				flusher: "raw_events",
+			},
+		});
+
 		await expect(
-			ingest(payload, store, { observer: lowSignalObserver } as unknown as IngestOptions),
+			ingest(payload, store, { observer: oddSkipObserver } as unknown as IngestOptions),
+		).rejects.toThrow("observer produced no storable output for raw-event flush");
+
+		expect(store.recent(10)).toHaveLength(0);
+	});
+
+	it("still fails raw-event flush when low-signal skip is mixed with summary output", async () => {
+		const mixedObserver = {
+			observe: async () => ({
+				raw: '<summary><request>Check logs</request></summary><skip_summary reason="low-signal"/>',
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-skip-mixed",
+				promptCount: 1,
+				toolCount: 1,
+				durationMs: 1000,
+				flusher: "raw_events",
+			},
+		});
+
+		await expect(
+			ingest(payload, store, { observer: mixedObserver } as unknown as IngestOptions),
 		).rejects.toThrow("observer produced no storable output for raw-event flush");
 
 		expect(store.recent(10)).toHaveLength(0);

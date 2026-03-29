@@ -415,6 +415,14 @@ export async function ingest(
 		if (sessionContext?.flusher === "raw_events") {
 			const storableCount = observationsToStore.length + (summaryToStore ? 1 : 0);
 			if (storableCount === 0) {
+				const pureLowSignalSkip =
+					parsed.skipSummaryReason?.trim().toLowerCase() === "low-signal" &&
+					parsed.observations.length === 0 &&
+					parsed.summary === null;
+				if (pureLowSignalSkip) {
+					endSession(store, sessionId, events.length, sessionContext);
+					return;
+				}
 				throw new Error("observer produced no storable output for raw-event flush");
 			}
 		}
