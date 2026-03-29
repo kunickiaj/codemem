@@ -192,6 +192,7 @@ export function deriveSyncViewModel(input: {
   actors?: any[];
   peers?: any[];
   coordinator?: any;
+  duplicatePersonDecisions?: Record<string, string>;
 }): UiSyncViewModel {
   const actors = Array.isArray(input.actors) ? input.actors : [];
   const peers = Array.isArray(input.peers) ? input.peers : [];
@@ -199,7 +200,10 @@ export function deriveSyncViewModel(input: {
     ? input.coordinator.discovered_devices
     : [];
   const mergedDevices = mergeDevices(peers, discoveredDevices);
-  const duplicatePeople = deriveDuplicatePeople(actors);
+  const duplicateDecisions = input.duplicatePersonDecisions ?? {};
+  const duplicatePeople = deriveDuplicatePeople(actors).filter(
+    (candidate) => !duplicateDecisions[[...candidate.actorIds].sort().join('::')],
+  );
   const attentionItems: UiSyncAttentionItem[] = [];
 
   duplicatePeople.forEach((candidate) => {

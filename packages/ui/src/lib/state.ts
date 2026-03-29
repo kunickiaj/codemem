@@ -60,6 +60,7 @@ export const state = {
   lastSyncAttempts: [] as any[],
   lastSyncLegacyDevices: [] as any[],
   lastSyncViewModel: null as any,
+  lastSyncDuplicatePersonDecisions: {} as Record<string, string>,
   pairingPayloadRaw: null as any,
   pairingCommandRaw: '',
 
