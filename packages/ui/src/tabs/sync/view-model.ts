@@ -13,6 +13,28 @@ export const SYNC_TERMINOLOGY = {
 } as const;
 
 export type UiSyncStatus = 'connected' | 'available' | 'needs-repair' | 'offline' | 'waiting';
+export type UiTrustState = 'available' | 'trusted-by-you' | 'mutual-trust' | 'needs-repair' | 'offline';
+
+interface SyncPeerStatusLike {
+  peer_state?: string;
+  sync_status?: string;
+  ping_status?: string;
+  fresh?: boolean;
+}
+
+export interface UiSyncRunItem {
+  peer_device_id: string;
+  ok: boolean;
+  error?: string;
+  address?: string;
+  opsIn: number;
+  opsOut: number;
+  addressErrors: Array<{ address: string; error: string }>;
+}
+
+export interface UiSyncRunResponse {
+  items: UiSyncRunItem[];
+}
 
 export interface UiSyncAttentionItem {
   id: string;
@@ -41,17 +63,47 @@ export interface UiSyncViewModel {
   attentionItems: UiSyncAttentionItem[];
 }
 
+export interface UiPeerTrustSummary {
+  state: UiTrustState;
+  badgeLabel: string;
+  description: string;
+  isWarning: boolean;
+}
+
 export interface VisiblePeopleResult {
-  visibleActors: any[];
+  visibleActors: ActorLike[];
   hiddenLocalDuplicateCount: number;
+}
+
+export interface ActorLike {
+  actor_id?: string;
+  display_name?: string;
+  is_local?: boolean;
+}
+
+export interface PeerLike {
+  peer_device_id?: string;
+  name?: string;
+  has_error?: boolean;
+  last_error?: string;
+  fingerprint?: string;
+  actor_id?: string;
+  status?: SyncPeerStatusLike;
+}
+
+export interface DiscoveredDeviceLike {
+  device_id?: string;
+  display_name?: string;
+  stale?: boolean;
+  fingerprint?: string;
 }
 
 interface MergedDevice {
   deviceId: string;
   localName: string;
   coordinatorName: string;
-  peer: any | null;
-  discovered: any | null;
+  peer: PeerLike | null;
+  discovered: DiscoveredDeviceLike | null;
 }
 
 function cleanText(value: unknown): string {
@@ -94,7 +146,7 @@ export function deviceNeedsFriendlyName(input: {
   return Boolean(cleanText(input.deviceId));
 }
 
-export function derivePeerUiStatus(peer: any): UiSyncStatus {
+export function derivePeerUiStatus(peer: PeerLike): UiSyncStatus {
   const peerState = cleanText(peer?.status?.peer_state);
   if (peer?.has_error || peerState === 'degraded') return 'needs-repair';
   if (peerState === 'online') return 'connected';
@@ -103,7 +155,95 @@ export function derivePeerUiStatus(peer: any): UiSyncStatus {
   return 'waiting';
 }
 
-export function deriveDuplicatePeople(actors: any[]): UiDuplicatePersonCandidate[] {
+function peerErrorText(peer: PeerLike): string {
+  return cleanText(peer?.last_error).toLowerCase();
+}
+
+export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
+  const peerStatus = peer?.status || {};
+  const peerState = cleanText(peerStatus.peer_state);
+  const lastError = peerErrorText(peer);
+  const syncOk = cleanText(peerStatus.sync_status) === 'ok' || cleanText(peerStatus.ping_status) === 'ok';
+  if (peerState === 'offline' || peerState === 'stale') {
+    return {
+      state: 'offline',
+      badgeLabel: 'Offline',
+      description: 'This device is known locally, but it is not reachable right now.',
+      isWarning: true,
+    };
+  }
+  if (lastError.includes('401') && lastError.includes('unauthorized')) {
+    return {
+      state: 'trusted-by-you',
+      badgeLabel: 'Waiting for other device',
+      description:
+        'You accepted this device, but the other device still needs to trust this one before sync can work.',
+      isWarning: true,
+    };
+  }
+  if (syncOk || peerState === 'online') {
+    return {
+      state: 'mutual-trust',
+      badgeLabel: 'Two-way trust',
+      description: 'Both devices trust each other and sync can run in both directions.',
+      isWarning: false,
+    };
+  }
+  if (peer?.has_error || peerState === 'degraded') {
+    return {
+      state: 'needs-repair',
+      badgeLabel: 'Needs repair',
+      description: 'This device has a sync problem that needs review before trust can be relied on.',
+      isWarning: true,
+    };
+  }
+  return {
+    state: 'trusted-by-you',
+    badgeLabel: 'Trusted on this device',
+    description:
+      'This device is trusted locally. Finish onboarding on the other device if sync is still blocked.',
+    isWarning: false,
+  };
+}
+
+export function summarizeSyncRunResult(payload: UiSyncRunResponse): { ok: boolean; message: string; warning: boolean } {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (!items.length) {
+    return { ok: true, message: 'Sync pass completed with no eligible devices.', warning: false };
+  }
+  const failedItems = items.filter((item) => item && item.ok === false);
+  if (!failedItems.length) {
+    return {
+      ok: true,
+      message: `Sync pass finished for ${items.length} device${items.length === 1 ? '' : 's'}.`,
+      warning: false,
+    };
+  }
+  const unauthorizedFailures = failedItems.filter((item) => cleanText(item.error).toLowerCase().includes('401') && cleanText(item.error).toLowerCase().includes('unauthorized'));
+  if (unauthorizedFailures.length === failedItems.length) {
+    return {
+      ok: false,
+      message:
+        'This device trusts the peer, but the other device still needs to trust this one before sync can work.',
+      warning: true,
+    };
+  }
+  if (failedItems.length < items.length) {
+    return {
+      ok: false,
+      message: `${failedItems.length} of ${items.length} device sync attempts failed. Review device details for the specific errors.`,
+      warning: true,
+    };
+  }
+  const error = cleanText(failedItems[0]?.error);
+  return {
+    ok: false,
+    message: error || 'Sync failed for at least one device.',
+    warning: true,
+  };
+}
+
+export function deriveDuplicatePeople(actors: ActorLike[]): UiDuplicatePersonCandidate[] {
   const groups = new Map<string, UiDuplicatePersonCandidate>();
   (Array.isArray(actors) ? actors : []).forEach((actor) => {
     const displayName = cleanText(actor?.display_name);
@@ -125,8 +265,8 @@ export function deriveDuplicatePeople(actors: any[]): UiDuplicatePersonCandidate
 }
 
 export function deriveVisiblePeopleActors(input: {
-  actors?: any[];
-  peers?: any[];
+  actors?: ActorLike[];
+  peers?: PeerLike[];
   duplicatePeople?: UiDuplicatePersonCandidate[];
 }): VisiblePeopleResult {
   const actors = Array.isArray(input.actors) ? input.actors : [];
@@ -192,7 +332,7 @@ function createNamingItem(device: { id: string; name: string; summary: string })
   };
 }
 
-function mergeDevices(peers: any[], discoveredDevices: any[]): MergedDevice[] {
+function mergeDevices(peers: PeerLike[], discoveredDevices: DiscoveredDeviceLike[]): MergedDevice[] {
   const devices = new Map<string, MergedDevice>();
   const getOrCreate = (deviceId: string): MergedDevice => {
     const current = devices.get(deviceId) ?? {
@@ -226,9 +366,9 @@ function mergeDevices(peers: any[], discoveredDevices: any[]): MergedDevice[] {
 }
 
 export function deriveSyncViewModel(input: {
-  actors?: any[];
-  peers?: any[];
-  coordinator?: any;
+  actors?: ActorLike[];
+  peers?: PeerLike[];
+  coordinator?: { discovered_devices?: DiscoveredDeviceLike[] };
   duplicatePersonDecisions?: Record<string, string>;
 }): UiSyncViewModel {
   const actors = Array.isArray(input.actors) ? input.actors : [];
@@ -264,6 +404,7 @@ export function deriveSyncViewModel(input: {
       deviceId: device.deviceId,
     });
     const peerStatus = device.peer ? derivePeerUiStatus(device.peer) : 'waiting';
+    const trustSummary = device.peer ? derivePeerTrustSummary(device.peer) : null;
     const discoveredFingerprint = cleanText(device.discovered?.fingerprint);
     const peerFingerprint = cleanText(device.peer?.fingerprint);
     const hasConflict = Boolean(device.peer) && Boolean(discoveredFingerprint) && Boolean(peerFingerprint) && discoveredFingerprint !== peerFingerprint;
@@ -280,7 +421,9 @@ export function deriveSyncViewModel(input: {
     }
 
     if (device.peer && peerStatus === 'needs-repair') {
-      const detail = cleanText(device.peer?.last_error) || 'Sync health is degraded or broken.';
+      const detail = trustSummary?.state === 'trusted-by-you'
+        ? trustSummary.description
+        : cleanText(device.peer?.last_error) || 'Sync health is degraded or broken.';
       attentionItems.push(createRepairItem({ id: device.deviceId, name, summary: detail }));
     } else if (device.peer && peerStatus === 'offline') {
       attentionItems.push(
@@ -296,6 +439,17 @@ export function deriveSyncViewModel(input: {
           id: device.deviceId,
           name,
           summary: 'This device is seen on the team and is ready for review or connection on this machine.',
+        }),
+      );
+    }
+
+    if (device.peer && trustSummary?.state === 'trusted-by-you') {
+      attentionItems.push(
+        createReviewItem({
+          id: device.deviceId,
+          name,
+          summary:
+            'You accepted this device. Finish onboarding on the other device so it trusts this one too.',
         }),
       );
     }
@@ -322,7 +476,7 @@ export function deriveSyncViewModel(input: {
     summary: {
       connectedDeviceCount: peers.filter((peer) => derivePeerUiStatus(peer) === 'connected').length,
       seenOnTeamCount: discoveredDevices.length,
-      offlineTeamDeviceCount: discoveredDevices.filter((device: any) => Boolean(device?.stale)).length,
+      offlineTeamDeviceCount: discoveredDevices.filter((device) => Boolean(device?.stale)).length,
     },
     duplicatePeople,
     attentionItems: attentionItems.sort((a, b) => a.priority - b.priority || a.title.localeCompare(b.title)),
