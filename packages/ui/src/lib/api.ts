@@ -6,6 +6,15 @@ async function fetchJson(url: string): Promise<any> {
   return resp.json();
 }
 
+async function readJsonPayload(resp: Response): Promise<{ text: string; payload: any }> {
+  const text = await resp.text();
+  try {
+    return { text, payload: text ? JSON.parse(text) : {} };
+  } catch {
+    return { text, payload: {} };
+  }
+}
+
 export async function loadStats(): Promise<any> {
   return fetchJson('/api/stats');
 }
@@ -54,8 +63,7 @@ export async function updateMemoryVisibility(memoryId: number, visibility: 'priv
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ memory_id: memoryId, visibility }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -124,8 +132,7 @@ export async function createCoordinatorInvite(payload: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  const text = await resp.text();
-  const data = text ? JSON.parse(text) : {};
+  const { text, payload: data } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(data?.error || text || 'request failed');
   return data;
 }
@@ -136,8 +143,7 @@ export async function importCoordinatorInvite(invite: string): Promise<any> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ invite }),
   });
-  const text = await resp.text();
-  const data = text ? JSON.parse(text) : {};
+  const { text, payload: data } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(data?.error || text || 'request failed');
   return data;
 }
@@ -148,8 +154,7 @@ export async function reviewJoinRequest(requestId: string, action: 'approve' | '
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ request_id: requestId, action }),
   });
-  const text = await resp.text();
-  const data = text ? JSON.parse(text) : {};
+  const { text, payload: data } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(data?.error || text || 'request failed');
   return data;
 }
@@ -178,8 +183,7 @@ export async function updatePeerScope(
       inherit_global: inheritGlobal,
     }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) {
     throw new Error(payload?.error || text || 'request failed');
   }
@@ -195,8 +199,7 @@ export async function updatePeerIdentity(peerDeviceId: string, claimedLocalActor
       claimed_local_actor: claimedLocalActor,
     }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -210,8 +213,7 @@ export async function assignPeerActor(peerDeviceId: string, actorId: string | nu
       actor_id: actorId,
     }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -220,8 +222,7 @@ export async function deletePeer(peerDeviceId: string): Promise<any> {
   const resp = await fetch(`/api/sync/peers/${encodeURIComponent(peerDeviceId)}`, {
     method: 'DELETE',
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -235,8 +236,7 @@ export async function renamePeer(peerDeviceId: string, name: string): Promise<an
       name,
     }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -267,8 +267,7 @@ export async function createActor(displayName: string): Promise<any> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ display_name: displayName }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -279,8 +278,7 @@ export async function renameActor(actorId: string, displayName: string): Promise
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ actor_id: actorId, display_name: displayName }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -294,8 +292,7 @@ export async function mergeActor(primaryActorId: string, secondaryActorId: strin
       secondary_actor_id: secondaryActorId,
     }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }
@@ -306,8 +303,7 @@ export async function claimLegacyDeviceIdentity(originDeviceId: string): Promise
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ origin_device_id: originDeviceId }),
   });
-  const text = await resp.text();
-  const payload = text ? JSON.parse(text) : {};
+  const { text, payload } = await readJsonPayload(resp);
   if (!resp.ok) throw new Error(payload?.error || text || 'request failed');
   return payload;
 }

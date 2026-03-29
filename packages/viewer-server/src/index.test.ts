@@ -1918,6 +1918,234 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("assigns a sync peer to the local actor through the identity route", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				await app.request("/api/sync/actors");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
+					)
+					.run("peer-local", "Peer", "fp-local", new Date().toISOString());
+				const localActor = store.db
+					.prepare("SELECT actor_id FROM actors WHERE is_local = 1 LIMIT 1")
+					.get() as { actor_id: string } | undefined;
+				if (!localActor) throw new Error("local actor missing");
+
+				const res = await app.request("/api/sync/peers/identity", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ peer_device_id: "peer-local", actor_id: localActor.actor_id }),
+				});
+
+				expect(res.status).toBe(200);
+				expect(await res.json()).toEqual({
+					ok: true,
+					actor_id: localActor.actor_id,
+					claimed_local_actor: true,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("updates peer project scope through the viewer route", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
+					)
+					.run("peer-scope", "Scoped Peer", "fp-scope", new Date().toISOString());
+
+				const res = await app.request("/api/sync/peers/scope", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						peer_device_id: "peer-scope",
+						include: ["proj-a"],
+						exclude: ["proj-b"],
+					}),
+				});
+
+				expect(res.status).toBe(200);
+				expect(await res.json()).toEqual({
+					ok: true,
+					project_scope: {
+						include: ["proj-a"],
+						exclude: ["proj-b"],
+						effective_include: ["proj-a"],
+						effective_exclude: ["proj-b"],
+						inherits_global: false,
+					},
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns effective global scope when a peer inherits global filters", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_projects_include: ["global-a"],
+					sync_projects_exclude: ["global-b"],
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
+					)
+					.run("peer-global", "Global Peer", "fp-global", new Date().toISOString());
+				const res = await app.request("/api/sync/peers?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					items: Array<{ project_scope: Record<string, unknown> }>;
+				};
+				expect(body.items[0]?.project_scope).toEqual({
+					include: [],
+					exclude: [],
+					effective_include: ["global-a"],
+					effective_exclude: ["global-b"],
+					inherits_global: true,
+				});
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("creates, renames, and merges actors through viewer routes", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				await app.request("/api/sync/actors");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const createRes = await app.request("/api/sync/actors", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ display_name: "Adam shadow" }),
+				});
+				expect(createRes.status).toBe(200);
+				const created = (await createRes.json()) as { actor_id: string; display_name: string };
+				expect(created.display_name).toBe("Adam shadow");
+
+				const renameRes = await app.request("/api/sync/actors/rename", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ actor_id: created.actor_id, display_name: "Adam remote" }),
+				});
+				expect(renameRes.status).toBe(200);
+				expect((await renameRes.json()).display_name).toBe("Adam remote");
+
+				const localActor = store.db
+					.prepare("SELECT actor_id FROM actors WHERE is_local = 1 LIMIT 1")
+					.get() as { actor_id: string } | undefined;
+				if (!localActor) throw new Error("local actor missing");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, actor_id, created_at) VALUES (?, ?, ?, ?, ?)",
+					)
+					.run("peer-merge", "Peer Merge", "fp-merge", created.actor_id, new Date().toISOString());
+
+				const mergeRes = await app.request("/api/sync/actors/merge", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						primary_actor_id: localActor.actor_id,
+						secondary_actor_id: created.actor_id,
+					}),
+				});
+				expect(mergeRes.status).toBe(200);
+				expect(await mergeRes.json()).toEqual({ merged_count: 1 });
+
+				const mergedActor = store.db
+					.prepare("SELECT status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+					.get(created.actor_id) as
+					| { status: string; merged_into_actor_id: string | null }
+					| undefined;
+				expect(mergedActor).toEqual({
+					status: "merged",
+					merged_into_actor_id: localActor.actor_id,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("maps claimed_local_actor=true to the local actor id when no actor id is provided", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				await app.request("/api/sync/actors");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
+					)
+					.run("peer-claim", "Peer Claim", "fp-claim", new Date().toISOString());
+				const res = await app.request("/api/sync/peers/identity", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ peer_device_id: "peer-claim", claimed_local_actor: true }),
+				});
+				expect(res.status).toBe(200);
+				expect(await res.json()).toEqual({
+					ok: true,
+					actor_id: store.actorId,
+					claimed_local_actor: true,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects merging the local actor into another actor", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				await app.request("/api/sync/actors");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const createRes = await app.request("/api/sync/actors", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ display_name: "Other Person" }),
+				});
+				const created = (await createRes.json()) as { actor_id: string };
+				const res = await app.request("/api/sync/actors/merge", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						primary_actor_id: created.actor_id,
+						secondary_actor_id: store.actorId,
+					}),
+				});
+				expect(res.status).toBe(409);
+				expect(await res.json()).toEqual({ error: "cannot merge local actor" });
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("updates an existing peer when the discovered fingerprint matches", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
