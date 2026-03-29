@@ -214,6 +214,37 @@ export function renderSyncPeers() {
     }
 
     const actions = el('div', 'peer-actions');
+    const renameInput = document.createElement('input');
+    renameInput.className = 'peer-scope-input';
+    renameInput.value = displayName;
+    renameInput.setAttribute('aria-label', `Friendly name for ${displayName}`);
+    renameInput.placeholder = 'Friendly device name';
+    const renameBtn = el('button', null, 'Save name') as HTMLButtonElement;
+    renameBtn.addEventListener('click', async () => {
+      if (!peerId) return;
+      const nextName = String(renameInput.value || '').trim();
+      if (!nextName) {
+        showGlobalNotice('Enter a friendly name for this device.', 'warning');
+        renameInput.focus();
+        return;
+      }
+      renameBtn.disabled = true;
+      renameInput.disabled = true;
+      renameBtn.textContent = 'Saving…';
+      try {
+        await api.renamePeer(peerId, nextName);
+        showGlobalNotice('Device name saved.');
+        await _loadSyncData();
+      } catch (error) {
+        showGlobalNotice(friendlyError(error, 'Failed to save device name.'), 'warning');
+        renameBtn.textContent = 'Retry save';
+      } finally {
+        renameBtn.disabled = false;
+        renameInput.disabled = false;
+        if (renameBtn.textContent === 'Saving…') renameBtn.textContent = 'Save name';
+      }
+    });
+    actions.append(renameInput, renameBtn);
     const primaryAddress = pickPrimaryAddress(peer.addresses);
     const syncBtn = el('button', null, 'Sync now') as HTMLButtonElement;
     syncBtn.disabled = !primaryAddress;
