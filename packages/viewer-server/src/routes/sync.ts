@@ -26,6 +26,7 @@ import {
 	mergeAddresses,
 	readCoordinatorSyncConfig,
 	recordNonce,
+	runSyncPass,
 	schema,
 	verifySignature,
 } from "@codemem/core";
@@ -50,6 +51,8 @@ type SyncRuntimeStatus = {
 
 const SYNC_STALE_AFTER_SECONDS = 10 * 60;
 const SYNC_PROTOCOL_VERSION = "2";
+const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
+const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
 
 function intEnvOr(name: string, fallback: number): number {
 	const value = Number.parseInt(process.env[name] ?? "", 10);
@@ -226,6 +229,63 @@ function ensureLocalActorRecord(store: MemoryStore): void {
 			updated_at: now,
 		})
 		.run();
+}
+
+function findPeerDeviceIdForAddress(store: MemoryStore, address: string): string | null {
+	const rows = store.db
+		.prepare("SELECT peer_device_id, addresses_json FROM sync_peers")
+		.all() as Array<{ peer_device_id: string; addresses_json: string | null }>;
+	for (const row of rows) {
+		const addresses = safeJsonList(row.addresses_json);
+		if (addresses.includes(address)) return String(row.peer_device_id ?? "").trim() || null;
+	}
+	return null;
+}
+
+function claimLegacyDeviceAsSelf(store: MemoryStore, originDeviceId: string): number {
+	const deviceId = String(originDeviceId || "").trim();
+	if (!deviceId || deviceId === "unknown" || deviceId === store.deviceId) return 0;
+	const personalWorkspaceId = `personal:${store.actorId}`;
+	const result = store.db
+		.prepare(
+			`UPDATE memory_items
+			 SET actor_id = ?,
+			     actor_display_name = ?,
+			     visibility = 'private',
+			     workspace_id = ?,
+			     workspace_kind = 'personal',
+			     trust_state = 'trusted'
+			 WHERE origin_device_id = ?
+			   AND origin_device_id NOT IN (
+			         SELECT peer_device_id FROM sync_peers WHERE peer_device_id IS NOT NULL
+			   )
+			   AND (
+			         (
+			             actor_id IS NULL
+			          OR TRIM(actor_id) = ''
+			          OR actor_id LIKE 'legacy-sync:%'
+			          OR actor_id = ?
+			         )
+			     AND (
+			             actor_id IS NULL
+			          OR TRIM(actor_id) = ''
+			          OR actor_id LIKE 'legacy-sync:%'
+			          OR actor_display_name = ?
+			          OR workspace_id = ?
+			          OR trust_state = 'legacy_unknown'
+			         )
+			     )`,
+		)
+		.run(
+			store.actorId,
+			store.actorDisplayName,
+			personalWorkspaceId,
+			deviceId,
+			store.actorId,
+			LEGACY_SYNC_ACTOR_DISPLAY_NAME,
+			LEGACY_SHARED_WORKSPACE_ID,
+		);
+	return Number(result.changes ?? 0);
 }
 
 function peerClaimedLocalActor(store: MemoryStore, peerDeviceId: string): boolean {
@@ -1208,6 +1268,50 @@ export function syncRoutes(
 		}
 	});
 
+	app.post("/api/sync/run", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown> = {};
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			body = {};
+		}
+		const config = readCoordinatorSyncConfig();
+		if (!config.syncEnabled) {
+			return c.json({ error: "sync_disabled" }, 403);
+		}
+		const address =
+			typeof body.address === "string" && body.address.trim() ? body.address.trim() : null;
+		const requestedPeerId =
+			typeof body.peer_device_id === "string" && body.peer_device_id.trim()
+				? body.peer_device_id.trim()
+				: null;
+		let peerIds: string[];
+		if (address) {
+			const peerId = findPeerDeviceIdForAddress(store, address);
+			if (!peerId) return c.json({ error: "unknown peer address" }, 404);
+			peerIds = [peerId];
+		} else if (requestedPeerId) {
+			peerIds = store.db
+				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+				.all(requestedPeerId)
+				.map((row: any) => String(row.peer_device_id ?? "").trim())
+				.filter(Boolean);
+		} else {
+			peerIds = store.db
+				.prepare("SELECT peer_device_id FROM sync_peers")
+				.all()
+				.map((row: any) => String(row.peer_device_id ?? "").trim())
+				.filter(Boolean);
+		}
+		const items = [] as Array<Record<string, unknown>>;
+		for (const peerId of peerIds) {
+			const result = await runSyncPass(store.db, peerId);
+			items.push({ peer_device_id: peerId, ...result });
+		}
+		return c.json({ items });
+	});
+
 	app.post("/api/sync/peers/scope", async (c) => {
 		const store = getStore();
 		let body: Record<string, unknown>;
@@ -1425,6 +1529,21 @@ export function syncRoutes(
 			return Number(peerUpdate.changes ?? 0);
 		})();
 		return c.json({ merged_count: mergedCount });
+	});
+
+	app.post("/api/sync/legacy-devices/claim", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const originDeviceId = String(body.origin_device_id ?? "").trim();
+		if (!originDeviceId) return c.json({ error: "origin_device_id required" }, 400);
+		const updated = claimLegacyDeviceAsSelf(store, originDeviceId);
+		if (updated <= 0) return c.json({ error: "legacy device not found" }, 404);
+		return c.json({ ok: true, origin_device_id: originDeviceId, updated });
 	});
 
 	app.post("/api/sync/peers/accept-discovered", async (c) => {
