@@ -2,8 +2,17 @@
 	"compilerOptions": {
 		"target": "ES2020",
 		"lib": ["ES2020", "DOM", "DOM.Iterable"],
+		"jsx": "react-jsx",
+		"jsxImportSource": "preact",
 		"module": "ESNext",
 		"moduleResolution": "Bundler",
+		"baseUrl": ".",
+		"paths": {
+			"react": ["./node_modules/preact/compat/"],
+			"react-dom": ["./node_modules/preact/compat/"],
+			"react-dom/*": ["./node_modules/preact/compat/*"],
+			"react/jsx-runtime": ["./node_modules/preact/jsx-runtime"]
+		},
 		"strict": false,
 		"skipLibCheck": true,
 		"noEmit": true

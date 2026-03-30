@@ -9,7 +9,16 @@
 		"build:watch": "vite build --watch --mode development",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
+	"dependencies": {
+		"@radix-ui/react-collapsible": "^1.1.12",
+		"@radix-ui/react-dialog": "^1.1.15",
+		"@radix-ui/react-select": "^2.2.6",
+		"@radix-ui/react-switch": "^1.2.6",
+		"@preact/signals": "^2.5.1",
+		"preact": "^10.27.2"
+	},
 	"devDependencies": {
+		"@preact/preset-vite": "^2.10.2",
 		"typescript": "catalog:",
 		"vite": "catalog:"
 	}

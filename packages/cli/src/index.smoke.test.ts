@@ -28,7 +28,7 @@ describe("cli smoke", () => {
 		const build = runCommand("pnpm", ["run", "build"], workspaceRoot);
 
 		expect(build.status).toBe(0);
-	});
+	}, 120_000);
 
 	it("prints top-level help", () => {
 		const result = runCli(["--help"]);
