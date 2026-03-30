@@ -14,6 +14,7 @@ export const SYNC_TERMINOLOGY = {
 
 export type UiSyncStatus = 'connected' | 'available' | 'needs-repair' | 'offline' | 'waiting';
 export type UiTrustState = 'available' | 'trusted-by-you' | 'mutual-trust' | 'needs-repair' | 'offline';
+export type UiCoordinatorApprovalState = 'none' | 'needs-your-approval' | 'waiting-for-other-device';
 
 interface SyncPeerStatusLike {
   peer_state?: string;
@@ -96,6 +97,15 @@ export interface DiscoveredDeviceLike {
   display_name?: string;
   stale?: boolean;
   fingerprint?: string;
+  needs_local_approval?: boolean;
+  waiting_for_peer_approval?: boolean;
+}
+
+export interface UiCoordinatorApprovalSummary {
+  state: UiCoordinatorApprovalState;
+  badgeLabel: string | null;
+  description: string | null;
+  actionLabel: string | null;
 }
 
 interface MergedDevice {
@@ -203,6 +213,36 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
     description:
       'This device is trusted locally. Finish onboarding on the other device if sync is still blocked.',
     isWarning: false,
+  };
+}
+
+export function deriveCoordinatorApprovalSummary(input: {
+  device: DiscoveredDeviceLike;
+  pairedLocally?: boolean;
+}): UiCoordinatorApprovalSummary {
+  if (Boolean(input.device?.needs_local_approval) && !input.pairedLocally) {
+    return {
+      state: 'needs-your-approval',
+      badgeLabel: 'Needs your approval',
+      description:
+        'Another device already trusted this one. Approve it on this device to finish reciprocal onboarding.',
+      actionLabel: 'Approve on this device',
+    };
+  }
+  if (Boolean(input.device?.waiting_for_peer_approval)) {
+    return {
+      state: 'waiting-for-other-device',
+      badgeLabel: 'Waiting on other device',
+      description:
+        'You already trusted this device here. The other device still needs to approve this one before sync can work both ways.',
+      actionLabel: null,
+    };
+  }
+  return {
+    state: 'none',
+    badgeLabel: null,
+    description: null,
+    actionLabel: null,
   };
 }
 
