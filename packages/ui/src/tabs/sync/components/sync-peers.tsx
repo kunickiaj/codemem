@@ -4,6 +4,7 @@ import { RadixSelect, type RadixSelectOption } from '../../../components/primiti
 import { formatTimestamp } from '../../../lib/format';
 import { showGlobalNotice } from '../../../lib/notice';
 import { state, isSyncRedactionEnabled } from '../../../lib/state';
+import { openSyncConfirmDialog } from '../sync-dialogs';
 import { PeerScopeCollapsible } from '../peer-scope-collapsible';
 import {
   assignmentNote,
@@ -199,9 +200,12 @@ function SyncPeerCard({
   async function sync() {
     if (!primaryAddress) return;
     if (pendingScopeReview) {
-      const proceed = window.confirm(
-        `Sync scope review is still pending for ${displayName}. Continue with a manual sync anyway?`,
-      );
+      const proceed = await openSyncConfirmDialog({
+        title: `Sync ${displayName} before scope review?`,
+        description: 'This manual sync will use the current effective scope until you finish reviewing and saving the device scope.',
+        confirmLabel: 'Sync anyway',
+        cancelLabel: 'Review scope first',
+      });
       if (!proceed) return;
     }
     setSyncBusy(true);
@@ -214,7 +218,14 @@ function SyncPeerCard({
 
   async function remove() {
     if (!peerId) return;
-    if (!window.confirm(`Remove peer ${destructiveLabel}? This deletes the local sync peer entry.`)) return;
+    const confirmed = await openSyncConfirmDialog({
+      title: `Remove peer ${destructiveLabel}?`,
+      description: 'This deletes the local sync peer entry on this device.',
+      confirmLabel: 'Remove peer',
+      cancelLabel: 'Keep peer',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setRemoveBusy(true);
     setRemoveLabel('Removing…');
     let ok = false;
