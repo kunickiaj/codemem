@@ -63,7 +63,13 @@ CREATE TABLE IF NOT EXISTS coordinator_reciprocal_approvals (
   group_id TEXT NOT NULL,
   requesting_device_id TEXT NOT NULL,
   requested_device_id TEXT NOT NULL,
+  pending_pair_low_device_id TEXT,
+  pending_pair_high_device_id TEXT,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   resolved_at TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_reciprocal_pending_pair
+ON coordinator_reciprocal_approvals(group_id, pending_pair_low_device_id, pending_pair_high_device_id)
+WHERE status = 'pending';
