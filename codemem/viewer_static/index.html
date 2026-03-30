@@ -1610,8 +1610,8 @@
     <div class="app-notice" id="globalNotice" hidden aria-live="polite"></div>
 
     <!-- ── Settings modal ──────────────────────────────────── -->
-    <div class="modal-backdrop" id="settingsBackdrop" hidden></div>
-    <div class="modal" id="settingsModal" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle" aria-describedby="settingsDescription" tabindex="-1">
+    <div id="settingsDialogMount"></div>
+    <template id="settingsDialogTemplate">
       <div class="modal-card">
         <div class="modal-header">
           <h2 id="settingsTitle">Memory & model settings</h2>
@@ -1790,7 +1790,7 @@
           <button class="settings-save" id="settingsSave">Save</button>
         </div>
       </div>
-    </div>
+    </template>
 
     <!-- ── Tab: Feed ───────────────────────────────────────── -->
     <div class="tab-panel" id="tab-feed">

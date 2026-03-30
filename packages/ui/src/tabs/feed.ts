@@ -1,6 +1,8 @@
 /* Feed tab — memory feed rendering, filtering, search. */
 
-import { el, highlightText } from '../lib/dom';
+import { Fragment, h, render, type ComponentChildren } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
+import { highlightText } from '../lib/dom';
 import {
   formatDate,
   formatFileList,
@@ -85,14 +87,29 @@ let feedScrollHandlerBound = false;
 let feedProjectGeneration = 0;
 let lastFeedScope = 'all';
 
+function markFeedMount(mount: HTMLElement) {
+  mount.dataset.feedRenderRoot = 'preact';
+}
+
+function ensureFeedRenderBoundary() {
+  const feedTab = document.getElementById('tab-feed');
+  if (!feedTab) return;
+  feedTab.dataset.feedRenderBoundary = 'preact-hybrid';
+}
+
+function renderIntoFeedMount(mount: HTMLElement, content: ComponentChildren) {
+  markFeedMount(mount);
+  render(content, mount);
+}
+
 function feedScopeLabel(scope: string): string {
   if (scope === 'mine') return ' · my memories';
   if (scope === 'theirs') return ' · other actors';
   return '';
 }
 
-function provenanceChip(label: string, variant = ''): HTMLElement {
-  return el('span', `provenance-chip ${variant}`.trim(), label);
+function ProvenanceChip({ label, variant = '' }: { label: string; variant?: string }) {
+  return h('span', { className: `provenance-chip ${variant}`.trim() }, label);
 }
 
 function trustStateLabel(trustState: string): string {
@@ -336,184 +353,118 @@ function renderMarkdownSafe(value: string): string {
 
 /* ── Rendering functions ─────────────────────────────────── */
 
-function renderSummaryObject(summary: Record<string, any>): HTMLElement | null {
+function renderSummarySections(summary: Record<string, any>) {
   const preferred = ['request', 'outcome', 'plan', 'completed', 'learned', 'investigated', 'next', 'next_steps', 'notes'];
   const keys = Object.keys(summary);
   const ordered = preferred.filter((k) => keys.includes(k));
-  const container = el('div', 'feed-body facts') as HTMLDivElement;
-  let wrote = false;
-  ordered.forEach((key) => {
-    const content = String(summary[key] || '').trim();
-    if (!content) return;
-    wrote = true;
-    const row = el('div', 'summary-section');
-    const label = el('div', 'summary-section-label', toTitleLabel(key));
-    const value = el('div', 'summary-section-content');
-    value.innerHTML = renderMarkdownSafe(content);
-    row.append(label, value);
-    container.appendChild(row);
-  });
-  return wrote ? container : null;
+  return ordered
+    .map((key) => {
+      const content = String(summary[key] || '').trim();
+      if (!content) return null;
+      return h(
+        'div',
+        { className: 'summary-section', key },
+        h('div', { className: 'summary-section-label' }, toTitleLabel(key)),
+        h('div', {
+          className: 'summary-section-content',
+          dangerouslySetInnerHTML: { __html: renderMarkdownSafe(content) },
+        }),
+      );
+    })
+    .filter(Boolean);
 }
 
-function renderFacts(facts: string[]): HTMLElement | null {
+function renderFactsContent(facts: string[]) {
   const trimmed = facts.map((f) => String(f || '').trim()).filter(Boolean);
   if (!trimmed.length) return null;
   const labeledFacts = trimmed.every((f) => /.+?:\s+.+/.test(f));
   if (labeledFacts) {
-    const container = el('div', 'feed-body facts') as HTMLDivElement;
-    trimmed.forEach((fact) => {
-      const splitAt = fact.indexOf(':');
-      const labelText = fact.slice(0, splitAt).trim();
-      const contentText = fact.slice(splitAt + 1).trim();
-      if (!labelText || !contentText) return;
-      const row = el('div', 'summary-section');
-      const label = el('div', 'summary-section-label', labelText);
-      const value = el('div', 'summary-section-content');
-      value.innerHTML = renderMarkdownSafe(contentText);
-      row.append(label, value);
-      container.appendChild(row);
-    });
-    if (container.childElementCount > 0) return container;
+    const rows = trimmed
+      .map((fact, index) => {
+        const splitAt = fact.indexOf(':');
+        const labelText = fact.slice(0, splitAt).trim();
+        const contentText = fact.slice(splitAt + 1).trim();
+        if (!labelText || !contentText) return null;
+        return h(
+          'div',
+          { className: 'summary-section', key: `${labelText}-${index}` },
+          h('div', { className: 'summary-section-label' }, labelText),
+          h('div', {
+            className: 'summary-section-content',
+            dangerouslySetInnerHTML: { __html: renderMarkdownSafe(contentText) },
+          }),
+        );
+      })
+      .filter(Boolean);
+    if (rows.length) return h('div', { className: 'feed-body facts' }, rows);
   }
-  const container = el('div', 'feed-body');
-  const list = document.createElement('ul');
-  trimmed.forEach((f) => { const li = document.createElement('li'); li.textContent = f; list.appendChild(li); });
-  container.appendChild(list);
-  return container;
+  return h(
+    'div',
+    { className: 'feed-body' },
+    h(
+      'ul',
+      null,
+      trimmed.map((fact, index) => h('li', { key: `${fact}-${index}` }, fact)),
+    ),
+  );
 }
 
-function renderNarrative(narrative: string): HTMLElement | null {
+function renderNarrativeContent(narrative: string, className = 'feed-body') {
   const content = String(narrative || '').trim();
   if (!content) return null;
-  const body = el('div', 'feed-body');
-  body.innerHTML = renderMarkdownSafe(content);
-  return body;
-}
-
-function renderObservationBody(data: { summary: string; narrative: string; facts: string[] }, mode: ItemViewMode): HTMLElement {
-  if (mode === 'facts') return renderFacts(data.facts) || el('div', 'feed-body');
-  if (mode === 'narrative') return renderNarrative(data.narrative) || el('div', 'feed-body');
-  return renderNarrative(data.summary) || el('div', 'feed-body');
-}
-
-function renderViewToggle(modes: Array<{ id: ItemViewMode; label: string }>, active: ItemViewMode, onSelect: (mode: ItemViewMode) => void): HTMLElement | null {
-  if (modes.length <= 1) return null;
-  const toggle = el('div', 'feed-toggle');
-  modes.forEach((mode) => {
-    const btn = el('button', 'toggle-button', mode.label) as HTMLButtonElement;
-    (btn as any).dataset.filter = mode.id;
-    btn.classList.toggle('active', mode.id === active);
-    btn.addEventListener('click', () => onSelect(mode.id));
-    toggle.appendChild(btn);
+  return h('div', {
+    className,
+    dangerouslySetInnerHTML: { __html: renderMarkdownSafe(content) },
   });
-  return toggle;
 }
 
-function createTagChip(tag: any): HTMLElement | null {
+function FeedViewToggle({
+  modes,
+  active,
+  onSelect,
+}: {
+  modes: Array<{ id: ItemViewMode; label: string }>;
+  active: ItemViewMode;
+  onSelect: (mode: ItemViewMode) => void;
+}) {
+  if (modes.length <= 1) return null;
+  return h(
+    'div',
+    { className: 'feed-toggle' },
+    modes.map((mode) =>
+      h(
+        'button',
+        {
+          key: mode.id,
+          className: `toggle-button${mode.id === active ? ' active' : ''}`,
+          'data-filter': mode.id,
+          onClick: () => onSelect(mode.id),
+          type: 'button',
+        },
+        mode.label,
+      ),
+    ),
+  );
+}
+
+function TagChip({ tag }: { tag: any }) {
   const display = formatTagLabel(tag);
   if (!display) return null;
-  const chip = el('span', 'tag-chip', display);
-  (chip as any).title = String(tag);
-  return chip;
+  return h('span', { className: 'tag-chip', title: String(tag) }, display);
 }
 
 /* ── Feed item card renderer ─────────────────────────────── */
 
-function renderFeedItem(item: any): HTMLElement {
+function FeedItemCard({ item }: { item: any }) {
   const kindValue = String(item.kind || 'session_summary').toLowerCase();
   const metadata = mergeMetadata(item?.metadata_json);
   const isSessionSummary = isSummaryLikeItem(item, metadata);
   const displayKindValue = isSessionSummary ? 'session_summary' : kindValue;
-
-  const card = el('div', `feed-item ${displayKindValue}`.trim());
   const rowKey = itemKey(item);
-  (card as any).dataset.key = rowKey;
-
-  if (state.newItemKeys.has(rowKey)) {
-    card.classList.add('new-item');
-    setTimeout(() => { card.classList.remove('new-item'); state.newItemKeys.delete(rowKey); }, 700);
-  }
-
-  // Header
-  const header = el('div', 'feed-card-header');
-  const titleWrap = el('div', 'feed-header');
   const defaultTitle = item.title || '(untitled)';
   const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;
-  const title = el('div', 'feed-title title');
-  title.innerHTML = highlightText(displayTitle, state.feedQuery);
-  const kind = el('span', `kind-pill ${displayKindValue}`.trim(), displayKindValue.replace(/_/g, ' '));
-  titleWrap.append(kind, title);
-
-  const rightWrap = el('div', 'feed-actions');
   const createdAtRaw = item.created_at || item.created_at_utc;
   const relative = formatRelativeTime(createdAtRaw);
-  const age = el('div', 'small feed-age', relative);
-  (age as any).title = formatDate(createdAtRaw);
-
-  const footerRight = el('div', 'feed-footer-right');
-  let bodyNode: HTMLElement = el('div', 'feed-body');
-
-  if (isSessionSummary) {
-    const summaryObj = getSummaryObject({ ...item, metadata_json: metadata });
-    const rendered = summaryObj ? renderSummaryObject(summaryObj) : null;
-    bodyNode = rendered || renderNarrative(String(item.body_text || '')) || bodyNode;
-  } else {
-    const data = observationViewData({ ...item, metadata_json: metadata });
-    const modes = observationViewModes(data);
-    const defaultView = defaultObservationView(data);
-    const key = itemKey(item);
-    const stored = state.itemViewState.get(key) as ItemViewMode | undefined;
-    let activeMode: ItemViewMode = stored && modes.some((m) => m.id === stored) ? stored : defaultView;
-    state.itemViewState.set(key, activeMode);
-
-    bodyNode = renderObservationBody(data, activeMode);
-
-    const setExpandControl = (mode: ItemViewMode) => {
-      footerRight.textContent = '';
-      const expandKey = `${key}:${mode}`;
-      const expanded = state.itemExpandState.get(expandKey) === true;
-      const canClamp = shouldClampBody(mode, data);
-      if (!canClamp) return;
-      const btn = el('button', 'feed-expand', expanded ? 'Collapse' : 'Expand') as HTMLButtonElement;
-      btn.addEventListener('click', () => {
-        const next = !(state.itemExpandState.get(expandKey) === true);
-        state.itemExpandState.set(expandKey, next);
-        if (next) { bodyNode.classList.remove('clamp', 'clamp-3', 'clamp-5'); btn.textContent = 'Collapse'; }
-        else { bodyNode.classList.add(...clampClass(mode)); btn.textContent = 'Expand'; }
-      });
-      footerRight.appendChild(btn);
-    };
-
-    const expandKey = `${key}:${activeMode}`;
-    const expanded = state.itemExpandState.get(expandKey) === true;
-    if (shouldClampBody(activeMode, data) && !expanded) bodyNode.classList.add(...clampClass(activeMode));
-    setExpandControl(activeMode);
-
-    const toggle = renderViewToggle(modes, activeMode, (mode) => {
-      activeMode = mode;
-      state.itemViewState.set(key, mode);
-      const nextBody = renderObservationBody(data, mode);
-      const nextExpandKey = `${key}:${mode}`;
-      const nextExpanded = state.itemExpandState.get(nextExpandKey) === true;
-      if (shouldClampBody(mode, data) && !nextExpanded) nextBody.classList.add(...clampClass(mode));
-      card.replaceChild(nextBody, bodyNode);
-      bodyNode = nextBody;
-      setExpandControl(mode);
-      if (toggle) {
-        toggle.querySelectorAll('.toggle-button').forEach((b) => {
-          b.classList.toggle('active', (b as HTMLButtonElement).dataset.filter === mode);
-        });
-      }
-    });
-    if (toggle) rightWrap.appendChild(toggle);
-  }
-
-  rightWrap.appendChild(age);
-  header.append(titleWrap, rightWrap);
-
-  // Meta line
-  const meta = el('div', 'feed-meta');
   const tags = parseJsonArray(item.tags || []);
   const files = parseJsonArray(item.files || []);
   const project = item.project || '';
@@ -525,88 +476,217 @@ function renderFeedItem(item: any): HTMLElement {
   const trustState = String(item.trust_state || metadata?.trust_state || '').trim();
   const tagContent = tags.length ? ` · ${tags.map((t: any) => formatTagLabel(t)).join(', ')}` : '';
   const fileContent = files.length ? ` · ${formatFileList(files)}` : '';
-  meta.textContent = `${project ? `Project: ${project}` : 'Project: n/a'}${tagContent}${fileContent}`;
-
-  const provenance = el('div', 'feed-provenance');
-  provenance.appendChild(
-    provenanceChip(actor, actor === 'You' ? 'mine' : 'author'),
-  );
-  provenance.appendChild(provenanceChip(visibility || 'private', visibility || 'private'));
-  if (workspaceKind && workspaceKind !== visibility) {
-    provenance.appendChild(provenanceChip(workspaceKind, 'workspace'));
-  }
-  if (originSource) provenance.appendChild(provenanceChip(originSource, 'source'));
-  if (originDeviceId && actor !== 'You') {
-    provenance.appendChild(provenanceChip(originDeviceId, 'device'));
-  }
-  if (trustState && trustState !== 'trusted') {
-    provenance.appendChild(provenanceChip(trustStateLabel(trustState), 'trust'));
-  }
-
-  // Footer
-  const footer = el('div', 'feed-footer');
-  const footerLeft = el('div', 'feed-footer-left');
-  const filesWrap = el('div', 'feed-files');
-  const tagsWrap = el('div', 'feed-tags');
-  files.forEach((f: any) => filesWrap.appendChild(el('span', 'feed-file', f)));
-  tags.forEach((t: any) => { const chip = createTagChip(t); if (chip) tagsWrap.appendChild(chip); });
-  if (filesWrap.childElementCount) footerLeft.appendChild(filesWrap);
-  if (tagsWrap.childElementCount) footerLeft.appendChild(tagsWrap);
   const memoryId = Number(item.id || 0);
-  if (Boolean(item.owned_by_self) && memoryId > 0) {
-    const visibilityControls = el('div', 'feed-visibility-controls');
-    const visibilitySelect = document.createElement('select');
-    visibilitySelect.className = 'feed-visibility-select';
-    [
-      { value: 'private', label: 'Only me' },
-      { value: 'shared', label: 'Share with peers' },
-    ].forEach((optionData) => {
-      const option = document.createElement('option');
-      option.value = optionData.value;
-      option.textContent = optionData.label;
-      option.selected = optionData.value === visibility;
-      visibilitySelect.appendChild(option);
-    });
-    visibilitySelect.setAttribute('aria-label', `Visibility for ${String(item.title || 'memory')}`);
-    const visibilityNote = el(
-      'div',
-      'feed-visibility-note',
-      visibility === 'shared'
-        ? 'This memory can sync to peers allowed by your project filters.'
-        : 'This memory stays local unless the peer is assigned to your local actor.',
-    );
-    visibilitySelect.addEventListener('change', () => {
-      visibilityNote.textContent = visibilitySelect.value === 'shared'
-        ? 'This memory can sync to peers allowed by your project filters.'
-        : 'This memory stays local unless the peer is assigned to your local actor.';
-    });
-    visibilitySelect.addEventListener('change', async () => {
-      const previousVisibility = visibility;
-      visibilitySelect.disabled = true;
-      try {
-        const payload = await api.updateMemoryVisibility(memoryId, visibilitySelect.value as 'private' | 'shared');
-        if (payload?.item) {
-          replaceFeedItem(payload.item);
-          updateFeedView(true);
-        }
-        showGlobalNotice(visibilitySelect.value === 'shared' ? 'Memory will now sync as shared context.' : 'Memory is private again.');
-      } catch (error) {
-        visibilitySelect.value = previousVisibility;
-        visibilityNote.textContent = previousVisibility === 'shared'
-          ? 'This memory can sync to peers allowed by your project filters.'
-          : 'This memory stays local unless the peer is assigned to your local actor.';
-        showGlobalNotice(error instanceof Error ? error.message : 'Failed to save visibility.', 'warning');
-      } finally {
-        visibilitySelect.disabled = false;
-      }
-    });
-    visibilityControls.append(visibilitySelect, visibilityNote);
-    footerLeft.appendChild(visibilityControls);
-  }
-  footer.append(footerLeft, footerRight);
+  const [isNew, setIsNew] = useState(state.newItemKeys.has(rowKey));
+  const summaryObj = isSessionSummary ? getSummaryObject({ ...item, metadata_json: metadata }) : null;
+  const observationData = !isSessionSummary ? observationViewData({ ...item, metadata_json: metadata }) : null;
+  const modes = observationData ? observationViewModes(observationData) : [];
+  const fallbackMode = observationData ? defaultObservationView(observationData) : 'summary';
+  const storedMode = state.itemViewState.get(rowKey) as ItemViewMode | undefined;
+  const initialMode = observationData && storedMode && modes.some((mode) => mode.id === storedMode)
+    ? storedMode
+    : (fallbackMode as ItemViewMode);
+  const [activeMode, setActiveMode] = useState<ItemViewMode>(initialMode);
+  const activeExpandKey = `${rowKey}:${activeMode}`;
+  const [expanded, setExpanded] = useState(state.itemExpandState.get(activeExpandKey) === true);
+  const [selectedVisibility, setSelectedVisibility] = useState<'private' | 'shared'>(
+    visibility === 'shared' ? 'shared' : 'private',
+  );
+  const [savingVisibility, setSavingVisibility] = useState(false);
+  const summarySections = summaryObj ? renderSummarySections(summaryObj) : [];
 
-  card.append(header, provenance, meta, bodyNode, footer);
-  return card;
+  useEffect(() => {
+    if (!observationData) return;
+    if (modes.some((mode) => mode.id === activeMode)) return;
+    setActiveMode(fallbackMode as ItemViewMode);
+  }, [activeMode, fallbackMode, modes, observationData]);
+
+  useEffect(() => {
+    state.itemViewState.set(rowKey, activeMode);
+  }, [activeMode, rowKey]);
+
+  useEffect(() => {
+    const nextExpandKey = `${rowKey}:${activeMode}`;
+    setExpanded(state.itemExpandState.get(nextExpandKey) === true);
+  }, [activeMode, rowKey]);
+
+  useEffect(() => {
+    setSelectedVisibility(visibility === 'shared' ? 'shared' : 'private');
+  }, [visibility]);
+
+  useEffect(() => {
+    if (!isNew) return;
+    const timer = window.setTimeout(() => {
+      state.newItemKeys.delete(rowKey);
+      setIsNew(false);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [isNew, rowKey]);
+
+  const currentVisibility = selectedVisibility;
+  const visibilityNote = currentVisibility === 'shared'
+    ? 'This memory can sync to peers allowed by your project filters.'
+    : 'This memory stays local unless the peer is assigned to your local actor.';
+
+  const canClamp = Boolean(observationData) && shouldClampBody(activeMode, observationData);
+  const bodyClassName = [
+    activeMode === 'facts' ? 'feed-body facts' : 'feed-body',
+    canClamp && !expanded ? clampClass(activeMode).join(' ') : '',
+  ].filter(Boolean).join(' ');
+
+  const bodyContent = isSessionSummary
+    ? summarySections.length
+      ? h('div', { className: 'feed-body facts' }, summarySections)
+      : renderNarrativeContent(String(item.body_text || '')) || h('div', { className: 'feed-body' })
+    : observationData
+      ? (activeMode === 'facts'
+          ? renderFactsContent(observationData.facts) || h('div', { className: bodyClassName })
+          : renderNarrativeContent(
+              activeMode === 'narrative' ? observationData.narrative : observationData.summary,
+              bodyClassName,
+            ) || h('div', { className: bodyClassName }))
+      : h('div', { className: 'feed-body' });
+
+  async function saveVisibility(nextVisibility: 'private' | 'shared') {
+    const previousVisibility = currentVisibility;
+    setSelectedVisibility(nextVisibility);
+    setSavingVisibility(true);
+    try {
+      const payload = await api.updateMemoryVisibility(memoryId, nextVisibility);
+      if (payload?.item) {
+        replaceFeedItem(payload.item);
+        updateFeedView(true);
+      }
+      showGlobalNotice(nextVisibility === 'shared' ? 'Memory will now sync as shared context.' : 'Memory is private again.');
+    } catch (error) {
+      setSelectedVisibility(previousVisibility);
+      showGlobalNotice(error instanceof Error ? error.message : 'Failed to save visibility.', 'warning');
+    } finally {
+      setSavingVisibility(false);
+    }
+  }
+
+  return h(
+    'div',
+    {
+      className: `feed-item ${displayKindValue}${isNew ? ' new-item' : ''}`.trim(),
+      'data-key': rowKey,
+    },
+    h(
+      'div',
+      { className: 'feed-card-header' },
+      h(
+        'div',
+        { className: 'feed-header' },
+        h('span', { className: `kind-pill ${displayKindValue}`.trim() }, displayKindValue.replace(/_/g, ' ')),
+        h('div', {
+          className: 'feed-title title',
+          dangerouslySetInnerHTML: { __html: highlightText(displayTitle, state.feedQuery) },
+        }),
+      ),
+      h(
+        'div',
+        { className: 'feed-actions' },
+        observationData
+          ? h(FeedViewToggle, {
+              active: activeMode,
+              modes,
+              onSelect: (mode) => setActiveMode(mode),
+            })
+          : null,
+        h('div', { className: 'small feed-age', title: formatDate(createdAtRaw) }, relative),
+      ),
+    ),
+    h(
+      'div',
+      { className: 'feed-provenance' },
+      h(ProvenanceChip, { label: actor, variant: actor === 'You' ? 'mine' : 'author' }),
+      h(ProvenanceChip, { label: visibility || 'private', variant: visibility || 'private' }),
+      workspaceKind && workspaceKind !== visibility ? h(ProvenanceChip, { label: workspaceKind, variant: 'workspace' }) : null,
+      originSource ? h(ProvenanceChip, { label: originSource, variant: 'source' }) : null,
+      originDeviceId && actor !== 'You' ? h(ProvenanceChip, { label: originDeviceId, variant: 'device' }) : null,
+      trustState && trustState !== 'trusted' ? h(ProvenanceChip, { label: trustStateLabel(trustState), variant: 'trust' }) : null,
+    ),
+    h('div', { className: 'feed-meta' }, `${project ? `Project: ${project}` : 'Project: n/a'}${tagContent}${fileContent}`),
+    bodyContent,
+    h(
+      'div',
+      { className: 'feed-footer' },
+      h(
+        'div',
+        { className: 'feed-footer-left' },
+        files.length
+          ? h(
+              'div',
+              { className: 'feed-files' },
+              files.map((file: any, index: number) => h('span', { className: 'feed-file', key: `${file}-${index}` }, file)),
+            )
+          : null,
+        tags.length
+          ? h(
+              'div',
+              { className: 'feed-tags' },
+              tags.map((tag: any, index: number) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
+            )
+          : null,
+        Boolean(item.owned_by_self) && memoryId > 0
+          ? h(
+              'div',
+              { className: 'feed-visibility-controls' },
+              h(
+                'select',
+                {
+                  'aria-label': `Visibility for ${String(item.title || 'memory')}`,
+                  className: 'feed-visibility-select',
+                  disabled: savingVisibility,
+                  onChange: (event) => {
+                    const nextValue = String((event.currentTarget as HTMLSelectElement).value) === 'shared' ? 'shared' : 'private';
+                    void saveVisibility(nextValue);
+                  },
+                  value: currentVisibility,
+                },
+                h('option', { value: 'private' }, 'Only me'),
+                h('option', { value: 'shared' }, 'Share with peers'),
+              ),
+              h('div', { className: 'feed-visibility-note' }, visibilityNote),
+            )
+          : null,
+      ),
+      h(
+        'div',
+        { className: 'feed-footer-right' },
+        canClamp
+          ? h(
+              'button',
+              {
+                className: 'feed-expand',
+                onClick: () => {
+                  const nextValue = !expanded;
+                  state.itemExpandState.set(activeExpandKey, nextValue);
+                  setExpanded(nextValue);
+                },
+                type: 'button',
+              },
+              expanded ? 'Collapse' : 'Expand',
+            )
+          : null,
+      ),
+    ),
+  );
+}
+
+function FeedList({ items, loadingText }: { items: any[]; loadingText?: string }) {
+  if (loadingText) {
+    return h('div', { className: 'small' }, loadingText);
+  }
+  if (!items.length) {
+    return h('div', { className: 'small' }, 'No memories yet.');
+  }
+  return h(
+    Fragment,
+    null,
+    items.map((item) => h(FeedItemCard, { item, key: itemKey(item) })),
+  );
 }
 
 /* ── Filtering ───────────────────────────────────────────── */
@@ -699,48 +779,121 @@ function maybeLoadMoreFeedPage() {
   void loadMoreFeedPage();
 }
 
+function feedMetaText(visibleCount: number): string {
+  const filterLabel = state.feedTypeFilter === 'observations' ? ' · observations' : state.feedTypeFilter === 'summaries' ? ' · session summaries' : '';
+  const scopeLabel = feedScopeLabel(state.feedScopeFilter);
+  const filteredLabel = !state.feedQuery.trim() && state.lastFeedFilteredCount ? ` · ${state.lastFeedFilteredCount} observations filtered` : '';
+  const queryLabel = state.feedQuery.trim() ? ` · matching "${state.feedQuery.trim()}"` : '';
+  const moreLabel = hasMorePages() ? ' · scroll for more' : '';
+  return `${visibleCount} items${filterLabel}${scopeLabel}${queryLabel}${filteredLabel}${moreLabel}`;
+}
+
+function FeedToggle({
+  id,
+  active,
+  options,
+  onSelect,
+}: {
+  id: string;
+  active: string;
+  options: Array<{ value: string; label: string }>;
+  onSelect: (value: string) => void;
+}) {
+  return h(
+    'div',
+    { className: 'feed-toggle', id },
+    options.map(({ value, label }) => {
+      const selected = value === active;
+      return h(
+        'button',
+        {
+          'aria-pressed': selected ? 'true' : 'false',
+          className: `toggle-button${selected ? ' active' : ''}`,
+          'data-filter': value,
+          key: value,
+          onClick: () => onSelect(value),
+          type: 'button',
+        },
+        label,
+      );
+    }),
+  );
+}
+
+function FeedTabView({ items, loadingText }: { items: any[]; loadingText?: string }) {
+  return h(
+    Fragment,
+    null,
+    h(
+      'div',
+      { className: 'feed-controls' },
+      h('div', { className: 'section-meta', id: 'feedMeta' }, loadingText || feedMetaText(items.length)),
+      h(
+        'div',
+        { className: 'feed-controls-right' },
+        h('input', {
+          className: 'feed-search',
+          id: 'feedSearch',
+          onInput: (event) => {
+            state.feedQuery = String((event.currentTarget as HTMLInputElement).value || '');
+            updateFeedView();
+          },
+          placeholder: 'Search title, body, tags…',
+          value: state.feedQuery,
+        }),
+        h(FeedToggle, {
+          active: state.feedScopeFilter,
+          id: 'feedScopeToggle',
+          onSelect: (value) => {
+            if (value === state.feedScopeFilter) return;
+            setFeedScopeFilter(value);
+            void loadFeedData();
+          },
+          options: [
+            { value: 'all', label: 'All' },
+            { value: 'mine', label: 'My memories' },
+            { value: 'theirs', label: 'Other actors' },
+          ],
+        }),
+        h(FeedToggle, {
+          active: state.feedTypeFilter,
+          id: 'feedTypeToggle',
+          onSelect: (value) => {
+            if (value === state.feedTypeFilter) return;
+            setFeedTypeFilter(value);
+            updateFeedView();
+          },
+          options: [
+            { value: 'all', label: 'All' },
+            { value: 'observations', label: 'Observations' },
+            { value: 'summaries', label: 'Summaries' },
+          ],
+        }),
+      ),
+    ),
+    h('div', { className: 'feed-list', id: 'feedList' }, h(FeedList, { items, loadingText })),
+  );
+}
+
+function renderFeedTab(items: any[], options?: { loadingText?: string }) {
+  const feedTab = document.getElementById('tab-feed');
+  if (!feedTab) return false;
+  renderIntoFeedMount(feedTab, h(FeedTabView, { items, loadingText: options?.loadingText }));
+  if (typeof (globalThis as any).lucide !== 'undefined' && !options?.loadingText) {
+    (globalThis as any).lucide.createIcons();
+  }
+  return true;
+}
+
 function renderProjectSwitchLoadingState() {
-  const feedList = document.getElementById('feedList');
-  const feedMeta = document.getElementById('feedMeta');
-  if (feedList) {
-    feedList.textContent = '';
-    feedList.appendChild(el('div', 'small', 'Loading selected project...'));
-  }
-  if (feedMeta) {
-    feedMeta.textContent = 'Loading selected project...';
-  }
+  renderFeedTab([], { loadingText: 'Loading selected project...' });
 }
 
 /* ── Public API ──────────────────────────────────────────── */
 
 export function initFeedTab() {
-  const feedTypeToggle = document.getElementById('feedTypeToggle');
-  const feedScopeToggle = document.getElementById('feedScopeToggle');
-  const feedSearch = document.getElementById('feedSearch') as HTMLInputElement | null;
-
-  updateFeedTypeToggle();
-  updateFeedScopeToggle();
-
-  feedTypeToggle?.addEventListener('click', (e) => {
-    const target = (e as any).target?.closest?.('button');
-    if (!target) return;
-    setFeedTypeFilter(target.dataset.filter || 'all');
-    updateFeedTypeToggle();
-    updateFeedView();
-  });
-
-  feedScopeToggle?.addEventListener('click', (e) => {
-    const target = (e as any).target?.closest?.('button');
-    if (!target) return;
-    setFeedScopeFilter(target.dataset.filter || 'all');
-    updateFeedScopeToggle();
-    void loadFeedData();
-  });
-
-  feedSearch?.addEventListener('input', () => {
-    state.feedQuery = feedSearch.value || '';
-    updateFeedView();
-  });
+  ensureFeedRenderBoundary();
+  renderFeedTab(state.lastFeedItems, state.lastFeedItems.length || state.lastFeedSignature ? undefined : { loadingText: 'Loading memories…' });
 
   if (!feedScrollHandlerBound) {
     window.addEventListener('scroll', () => {
@@ -751,57 +904,27 @@ export function initFeedTab() {
 }
 
 export function updateFeedTypeToggle() {
-  const toggle = document.getElementById('feedTypeToggle');
-  if (!toggle) return;
-  toggle.querySelectorAll('.toggle-button').forEach((btn) => {
-    const value = (btn as HTMLButtonElement).dataset?.filter || 'all';
-    const active = value === state.feedTypeFilter;
-    btn.classList.toggle('active', active);
-    (btn as HTMLButtonElement).setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
+  updateFeedView(true);
 }
 
 export function updateFeedScopeToggle() {
-  const toggle = document.getElementById('feedScopeToggle');
-  if (!toggle) return;
-  toggle.querySelectorAll('.toggle-button').forEach((btn) => {
-    const value = (btn as HTMLButtonElement).dataset?.filter || 'all';
-    const active = value === state.feedScopeFilter;
-    btn.classList.toggle('active', active);
-    (btn as HTMLButtonElement).setAttribute('aria-pressed', active ? 'true' : 'false');
-  });
+  updateFeedView(true);
 }
 
 export function updateFeedView(force = false) {
-  const feedList = document.getElementById('feedList');
-  const feedMeta = document.getElementById('feedMeta');
-  if (!feedList) return;
+  const feedTab = document.getElementById('tab-feed');
+  if (!feedTab) return;
 
   const scrollY = window.scrollY;
   const byType = filterByType(state.lastFeedItems);
   const visible = filterByQuery(byType);
-  const filterLabel = state.feedTypeFilter === 'observations' ? ' · observations' : state.feedTypeFilter === 'summaries' ? ' · session summaries' : '';
-  const scopeLabel = feedScopeLabel(state.feedScopeFilter);
 
   const sig = computeSignature(visible);
   const changed = force || sig !== state.lastFeedSignature;
   state.lastFeedSignature = sig;
 
-  if (feedMeta) {
-    const filteredLabel = !state.feedQuery.trim() && state.lastFeedFilteredCount ? ` · ${state.lastFeedFilteredCount} observations filtered` : '';
-    const queryLabel = state.feedQuery.trim() ? ` · matching "${state.feedQuery.trim()}"` : '';
-    const moreLabel = hasMorePages() ? ' · scroll for more' : '';
-    feedMeta.textContent = `${visible.length} items${filterLabel}${scopeLabel}${queryLabel}${filteredLabel}${moreLabel}`;
-  }
-
   if (changed) {
-    feedList.textContent = '';
-    if (!visible.length) {
-      feedList.appendChild(el('div', 'small', 'No memories yet.'));
-    } else {
-      visible.forEach((item) => feedList.appendChild(renderFeedItem(item)));
-    }
-    if (typeof (globalThis as any).lucide !== 'undefined') (globalThis as any).lucide.createIcons();
+    renderFeedTab(visible);
   }
 
   window.scrollTo({ top: scrollY });

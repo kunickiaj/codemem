@@ -1,6 +1,7 @@
 /* Health tab — system health, stats, session overview. */
 
-import { el, copyToClipboard } from '../lib/dom';
+import { Fragment, h, render } from 'preact';
+import { copyToClipboard } from '../lib/dom';
 import {
   formatAgeShort,
   formatMultiplier,
@@ -27,59 +28,202 @@ type HealthAction = {
 
 type HealthCardInput = {
   label: string;
-  value: any;
+  value: string;
   detail?: string;
   icon?: string;
   className?: string;
   title?: string;
 };
 
-function buildHealthCard({ label, value, detail, icon, className, title }: HealthCardInput): HTMLElement {
-  const card = el('div', `stat${className ? ` ${className}` : ''}`);
-  if (title) { (card as any).title = title; (card as any).style.cursor = 'help'; }
-  if (icon) {
-    const iconNode = document.createElement('i');
-    iconNode.setAttribute('data-lucide', icon);
-    iconNode.className = 'stat-icon';
-    card.appendChild(iconNode);
+type HealthActionRowProps = {
+  item: HealthAction;
+};
+
+type StatItem = {
+  label: string;
+  value: string | number | null | undefined;
+  icon: string;
+  tooltip?: string;
+};
+
+type UsageEvent = {
+  event?: string;
+  count?: number;
+};
+
+type LucideRuntime = {
+  createIcons: () => void;
+};
+
+function buildHealthCard(input: HealthCardInput): HealthCardInput {
+  return input;
+}
+
+function HealthCard({ label, value, detail, icon, className, title }: HealthCardInput) {
+  return (
+    h(
+      'div',
+      {
+        class: `stat${className ? ` ${className}` : ''}`,
+        title,
+        style: title ? 'cursor: help;' : undefined,
+      },
+      icon
+        ? h('i', {
+            'data-lucide': icon,
+            class: 'stat-icon',
+          })
+        : null,
+      h(
+        'div',
+        { class: 'stat-content' },
+        h('div', { class: 'value' }, value),
+        h('div', { class: 'label' }, label),
+        detail ? h('div', { class: 'small' }, detail) : null,
+      ),
+    )
+  );
+}
+
+function HealthActionRow({ item }: HealthActionRowProps) {
+  let actionButton: HTMLButtonElement | null = null;
+  let copyButton: HTMLButtonElement | null = null;
+  const actionLabel = item.actionLabel || 'Run';
+
+  async function handleAction() {
+    if (!item.action || !actionButton) return;
+    actionButton.disabled = true;
+    actionButton.textContent = 'Running…';
+    try {
+      await item.action();
+    } catch {}
+    actionButton.disabled = false;
+    actionButton.textContent = actionLabel;
   }
-  const content = el('div', 'stat-content');
-  content.append(el('div', 'value', value), el('div', 'label', label));
-  if (detail) content.appendChild(el('div', 'small', detail));
-  card.appendChild(content);
-  return card;
+
+  function handleCopy() {
+    if (!item.command || !copyButton) return;
+    copyToClipboard(item.command, copyButton);
+  }
+
+  return h(
+    'div',
+    { class: 'health-action' },
+    h(
+      'div',
+      { class: 'health-action-text' },
+      item.label,
+      item.command ? h('span', { class: 'health-action-command' }, item.command) : null,
+    ),
+    h(
+      'div',
+      { class: 'health-action-buttons' },
+      item.action
+        ? h(
+            'button',
+            {
+              class: 'settings-button',
+              onClick: handleAction,
+              ref: (node: HTMLButtonElement | null) => {
+                actionButton = node;
+              },
+            },
+            actionLabel,
+          )
+        : null,
+      item.command
+        ? h(
+            'button',
+            {
+              class: 'settings-button health-action-copy',
+              onClick: handleCopy,
+              ref: (node: HTMLButtonElement | null) => {
+                copyButton = node;
+              },
+            },
+            'Copy',
+          )
+        : null,
+    ),
+  );
+}
+
+function formatStatValue(value: StatItem['value']): string {
+  if (typeof value === 'number') return value.toLocaleString();
+  if (value == null) return 'n/a';
+  return String(value);
+}
+
+function StatBlock({ label, value, icon, tooltip }: StatItem) {
+  return h(
+    'div',
+    {
+      class: 'stat',
+      title: tooltip,
+      style: tooltip ? 'cursor: help;' : undefined,
+    },
+    h('i', {
+      'data-lucide': icon,
+      class: 'stat-icon',
+    }),
+    h(
+      'div',
+      { class: 'stat-content' },
+      h('div', { class: 'value' }, formatStatValue(value)),
+      h('div', { class: 'label' }, label),
+    ),
+  );
+}
+
+function renderStatBlocks(container: HTMLElement | null, items: StatItem[]) {
+  if (!container) return;
+  render(
+    h(Fragment, null, items.map((item) => h(StatBlock, { ...item, key: `${item.label}-${item.icon}` }))),
+    container,
+  );
+}
+
+function renderText(container: HTMLElement | null, value: string) {
+  if (!container) return;
+  render(h(Fragment, null, value), container);
+}
+
+function renderIcons() {
+  const lucide = (globalThis as typeof globalThis & { lucide?: LucideRuntime }).lucide;
+  if (lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
+}
+
+function renderHealthCards(container: HTMLElement | null, cards: HealthCardInput[]) {
+  if (!container) return;
+  render(
+    h(
+      Fragment,
+      null,
+      cards.map((card) => h(HealthCard, { ...card, key: `${card.label}-${card.value}` })),
+    ),
+    container,
+  );
 }
 
 function renderActionList(container: HTMLElement | null, actions: HealthAction[]) {
   if (!container) return;
-  container.textContent = '';
-  if (!actions.length) { (container as any).hidden = true; return; }
-  (container as any).hidden = false;
-  actions.slice(0, 3).forEach((item) => {
-    const row = el('div', 'health-action');
-    const textWrap = el('div', 'health-action-text');
-    textWrap.textContent = item.label;
-    if (item.command) textWrap.appendChild(el('span', 'health-action-command', item.command));
-    const btnWrap = el('div', 'health-action-buttons');
-    if (item.action) {
-      const actionBtn = el('button', 'settings-button', item.actionLabel || 'Run') as HTMLButtonElement;
-      actionBtn.addEventListener('click', async () => {
-        actionBtn.disabled = true;
-        actionBtn.textContent = 'Running…';
-        try { await item.action!(); } catch {}
-        actionBtn.disabled = false;
-        actionBtn.textContent = item.actionLabel || 'Run';
-      });
-      btnWrap.appendChild(actionBtn);
-    }
-    if (item.command) {
-      const copyBtn = el('button', 'settings-button health-action-copy', 'Copy') as HTMLButtonElement;
-      copyBtn.addEventListener('click', () => copyToClipboard(item.command, copyBtn));
-      btnWrap.appendChild(copyBtn);
-    }
-    row.append(textWrap, btnWrap);
-    container.appendChild(row);
-  });
+  if (!actions.length) {
+    container.hidden = true;
+    render(null, container);
+    return;
+  }
+
+  container.hidden = false;
+  render(
+    h(
+      Fragment,
+      null,
+      actions
+        .slice(0, 3)
+        .map((item, index) => h(HealthActionRow, { item, key: `${item.label}-${index}` })),
+    ),
+    container,
+  );
 }
 
 /* ── Health overview renderer ────────────────────────────── */
@@ -177,7 +321,7 @@ export function renderHealthOverview() {
     buildHealthCard({ label: 'Sync health', value: syncCardValue, detail: syncDetail, icon: 'refresh-cw', title: 'Daemon state and sync recency' }),
     buildHealthCard({ label: 'Data freshness', value: formatAgeShort(packAgeSeconds), detail: freshnessDetail, icon: 'clock-3', title: 'Recency of last memory pack activity' }),
   ];
-  cards.forEach((c) => healthGrid.appendChild(c));
+  renderHealthCards(healthGrid, cards);
 
   // Recommendations
   const triggerSync = async () => {
@@ -204,7 +348,7 @@ export function renderHealthOverview() {
     ? `Why this status: ${drivers.join(', ')}.`
     : 'Healthy right now. Diagnostics stay available if you want details.';
 
-  if (typeof (globalThis as any).lucide !== 'undefined') (globalThis as any).lucide.createIcons();
+  renderIcons();
 }
 
 /* ── Stats renderer ──────────────────────────────────────── */
@@ -230,7 +374,7 @@ export function renderStats() {
   const globalLineRead = isFiltered ? `\nGlobal: ${Number(totalsGlobal.tokens_read || 0).toLocaleString()} read` : '';
   const globalLineSaved = isFiltered ? `\nGlobal: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved` : '';
 
-  const items: Array<{ label: string; value: any; icon: string; tooltip?: string }> = [
+  const items: StatItem[] = [
     { label: isFiltered ? 'Savings (project)' : 'Savings', value: Number(usage.tokens_saved || 0), tooltip: 'Tokens saved by reusing compressed memories' + globalLineSaved, icon: 'trending-up' },
     { label: isFiltered ? 'Injected (project)' : 'Injected', value: Number(usage.tokens_read || 0), tooltip: 'Tokens injected into context (pack size)' + globalLineRead, icon: 'book-open' },
     { label: isFiltered ? 'Reduction (project)' : 'Reduction', value: formatReductionPercent(usage.tokens_saved, usage.tokens_read), tooltip: `Percent reduction from reuse. Factor: ${formatMultiplier(usage.tokens_saved, usage.tokens_read)}.` + globalLineRead + globalLineSaved, icon: 'percent' },
@@ -242,25 +386,13 @@ export function renderStats() {
   if (rawPending > 0) items.push({ label: 'Raw events pending', value: rawPending, tooltip: 'Pending raw events waiting to be flushed', icon: 'activity' });
   else if (rawSessions > 0) items.push({ label: 'Raw sessions', value: rawSessions, tooltip: 'Sessions with pending raw events', icon: 'inbox' });
 
-  statsGrid.textContent = '';
-  items.forEach((item) => {
-    const stat = el('div', 'stat');
-    if (item.tooltip) { (stat as any).title = item.tooltip; (stat as any).style.cursor = 'help'; }
-    const icon = document.createElement('i');
-    icon.setAttribute('data-lucide', item.icon);
-    icon.className = 'stat-icon';
-    const content = el('div', 'stat-content');
-    const displayValue = typeof item.value === 'number' ? item.value.toLocaleString() : item.value == null ? 'n/a' : String(item.value);
-    content.append(el('div', 'value', displayValue), el('div', 'label', item.label));
-    stat.append(icon, content);
-    statsGrid.appendChild(stat);
-  });
+  renderStatBlocks(statsGrid, items);
 
   if (metaLine) {
     const projectSuffix = project ? ` · project: ${project}` : '';
-    metaLine.textContent = `DB: ${db.path || 'unknown'} · ${Math.round((db.size_bytes || 0) / 1024)} KB${projectSuffix}`;
+    renderText(metaLine, `DB: ${db.path || 'unknown'} · ${Math.round((db.size_bytes || 0) / 1024)} KB${projectSuffix}`);
   }
-  if (typeof (globalThis as any).lucide !== 'undefined') (globalThis as any).lucide.createIcons();
+  renderIcons();
 }
 
 /* ── Session summary renderer ────────────────────────────── */
@@ -277,8 +409,8 @@ export function renderSessionSummary() {
   const totalsFiltered = usagePayload?.totals_filtered || null;
   const isFiltered = !!(project && totalsFiltered);
 
-  const events = Array.isArray(usagePayload?.events) ? usagePayload.events : [];
-  const packEvent = events.find((e: any) => e?.event === 'pack') || null;
+  const events: UsageEvent[] = Array.isArray(usagePayload?.events) ? usagePayload.events : [];
+  const packEvent = events.find((event) => event.event === 'pack') || null;
   const recentPacks = Array.isArray(usagePayload?.recent_packs) ? usagePayload.recent_packs : [];
   const latestPack = recentPacks.length ? recentPacks[0] : null;
   const latestPackMeta = latestPack?.metadata_json || {};
@@ -293,9 +425,7 @@ export function renderSessionSummary() {
   const packLine = packCount ? `${packCount} packs` : 'No packs yet';
   const lastPackLine = lastPackAt ? `Last pack: ${formatTimestamp(lastPackAt)}` : '';
   const scopeLabel = isFiltered ? 'Project' : 'All projects';
-  sessionMeta.textContent = [scopeLabel, packLine, lastPackLine].filter(Boolean).join(' · ');
-
-  const items = [
+  const items: StatItem[] = [
     { label: 'Last pack savings', value: latestPack ? `${savedTokens.toLocaleString()} (${reductionPercent})` : 'n/a', icon: 'trending-up' },
     { label: 'Last pack size', value: latestPack ? packTokens.toLocaleString() : 'n/a', icon: 'package' },
     { label: 'Last pack deduped', value: latestPack ? dedupedCount.toLocaleString() : 'n/a', icon: 'copy-check' },
@@ -303,19 +433,10 @@ export function renderSessionSummary() {
     { label: 'Packs', value: packCount || 0, icon: 'archive' },
   ];
 
-  items.forEach((item) => {
-    const block = el('div', 'stat');
-    const icon = document.createElement('i');
-    icon.setAttribute('data-lucide', item.icon);
-    icon.className = 'stat-icon';
-    const displayValue = typeof item.value === 'number' ? item.value.toLocaleString() : item.value == null ? 'n/a' : String(item.value);
-    const content = el('div', 'stat-content');
-    content.append(el('div', 'value', displayValue), el('div', 'label', item.label));
-    block.append(icon, content);
-    sessionGrid.appendChild(block);
-  });
+  renderText(sessionMeta, [scopeLabel, packLine, lastPackLine].filter(Boolean).join(' · '));
+  renderStatBlocks(sessionGrid, items);
 
-  if (typeof (globalThis as any).lucide !== 'undefined') (globalThis as any).lucide.createIcons();
+  renderIcons();
 }
 
 /* ── Data loading ────────────────────────────────────────── */
