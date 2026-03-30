@@ -15,6 +15,7 @@ import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
+import { deriveTags } from "./tags.js";
 import type {
 	ReplicationOp,
 	ReplicationOpsAgePrunePlan,
@@ -168,6 +169,28 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 		rev: asNumberOrNull(raw.rev) ?? 0,
 		import_key: asStringOrNull(raw.import_key),
 	};
+}
+
+/**
+ * Resolve tags_text for a replicated memory: use incoming tags if non-empty,
+ * otherwise derive tags from available metadata (kind, title, concepts, files).
+ */
+function resolveReplicatedTags(payload: MemoryPayload): string {
+	const incoming = (payload.tags_text ?? "").trim();
+	if (incoming) return incoming;
+	const concepts = Array.isArray(payload.concepts) ? payload.concepts.map(String) : [];
+	const filesRead = Array.isArray(payload.files_read) ? payload.files_read.map(String) : [];
+	const filesModified = Array.isArray(payload.files_modified)
+		? payload.files_modified.map(String)
+		: [];
+	const tags = deriveTags({
+		kind: payload.kind ?? "",
+		title: payload.title ?? undefined,
+		concepts,
+		filesRead,
+		filesModified,
+	});
+	return tags.join(" ");
 }
 
 function normalizeCursor(value: string | null | undefined): string | null {
@@ -1745,7 +1768,7 @@ export function applyReplicationOps(
 								subtitle: payload.subtitle,
 								body_text: sql`COALESCE(${payload.body_text}, ${schema.memoryItems.body_text})`,
 								confidence: sql`COALESCE(${payload.confidence != null ? Number(payload.confidence) : null}, ${schema.memoryItems.confidence})`,
-								tags_text: sql`COALESCE(${payload.tags_text}, ${schema.memoryItems.tags_text})`,
+								tags_text: sql`COALESCE(NULLIF(TRIM(${payload.tags_text}), ''), ${schema.memoryItems.tags_text})`,
 								active: sql`COALESCE(${payload.active != null ? Number(payload.active) : null}, ${schema.memoryItems.active})`,
 								updated_at: op.clock_updated_at,
 								metadata_json: toJson(metaObj),
@@ -1782,7 +1805,7 @@ export function applyReplicationOps(
 								subtitle: payload.subtitle,
 								body_text: payload.body_text ?? "",
 								confidence: payload.confidence != null ? Number(payload.confidence) : 0.5,
-								tags_text: payload.tags_text ?? "",
+								tags_text: resolveReplicatedTags(payload),
 								active: payload.active != null ? Number(payload.active) : 1,
 								created_at: payload.created_at ?? op.clock_updated_at,
 								updated_at: op.clock_updated_at,
