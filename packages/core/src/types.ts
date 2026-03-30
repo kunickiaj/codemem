@@ -135,6 +135,10 @@ export interface RawEventFlushBatch {
 	observer_provider: string | null;
 	observer_model: string | null;
 	observer_runtime: string | null;
+	observer_auth_source: string | null;
+	observer_auth_type: string | null;
+	observer_error_code: string | null;
+	observer_error_message: string | null;
 	attempt_count: number;
 	created_at: string;
 	updated_at: string;

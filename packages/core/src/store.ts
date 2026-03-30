@@ -1096,7 +1096,11 @@ export class MemoryStore {
             error_type = 'RawEventBatchStuck',
             observer_provider = NULL,
             observer_model = NULL,
-            observer_runtime = NULL
+            observer_runtime = NULL,
+            observer_auth_source = NULL,
+            observer_auth_type = NULL,
+            observer_error_code = NULL,
+            observer_error_message = NULL
         WHERE id IN (SELECT id FROM candidates)`,
 			)
 			.run(
@@ -1308,6 +1312,10 @@ export class MemoryStore {
 					observer_provider: null,
 					observer_model: null,
 					observer_runtime: null,
+					observer_auth_source: null,
+					observer_auth_type: null,
+					observer_error_code: null,
+					observer_error_message: null,
 				})
 				.where(eq(schema.rawEventFlushBatches.id, batchId))
 				.run();
@@ -1326,6 +1334,10 @@ export class MemoryStore {
 			observerProvider?: string | null;
 			observerModel?: string | null;
 			observerRuntime?: string | null;
+			observerAuthSource?: string | null;
+			observerAuthType?: string | null;
+			observerErrorCode?: string | null;
+			observerErrorMessage?: string | null;
 		},
 	): void {
 		const now = new Date().toISOString();
@@ -1339,6 +1351,10 @@ export class MemoryStore {
 				observer_provider: opts.observerProvider ?? null,
 				observer_model: opts.observerModel ?? null,
 				observer_runtime: opts.observerRuntime ?? null,
+				observer_auth_source: opts.observerAuthSource ?? null,
+				observer_auth_type: opts.observerAuthType ?? null,
+				observer_error_code: opts.observerErrorCode ?? null,
+				observer_error_message: opts.observerErrorMessage ?? null,
 			})
 			.where(eq(schema.rawEventFlushBatches.id, batchId))
 			.run();
@@ -1794,6 +1810,10 @@ export class MemoryStore {
 				observer_provider: schema.rawEventFlushBatches.observer_provider,
 				observer_model: schema.rawEventFlushBatches.observer_model,
 				observer_runtime: schema.rawEventFlushBatches.observer_runtime,
+				observer_auth_source: schema.rawEventFlushBatches.observer_auth_source,
+				observer_auth_type: schema.rawEventFlushBatches.observer_auth_type,
+				observer_error_code: schema.rawEventFlushBatches.observer_error_code,
+				observer_error_message: schema.rawEventFlushBatches.observer_error_message,
 			})
 			.from(schema.rawEventFlushBatches)
 			.where(and(...conditions))
