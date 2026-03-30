@@ -199,6 +199,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(peers).toHaveLength(1);
 					const peer = peers[0]!;
 					expect(peer.device_id).toBe("d2");
+					expect(peer.public_key).toBe("pk2");
 					expect(peer.stale).toBe(false);
 					expect(peer.addresses).toEqual(["http://localhost:9001"]);
 				});

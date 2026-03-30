@@ -373,10 +373,21 @@ async function acceptDiscoveredPeer(
 		};
 	}
 	const nextFingerprint = String(match.fingerprint ?? "").trim();
+	const nextPublicKey = String(match.public_key ?? "").trim();
 	const nextName = String(match.display_name ?? "").trim() || null;
 	const nextAddresses = Array.isArray(match.addresses)
 		? match.addresses.filter((value): value is string => typeof value === "string")
 		: [];
+	if (!nextPublicKey) {
+		return {
+			ok: false,
+			status: 409,
+			error: "discovered_peer_missing_public_key",
+			detail:
+				"This discovered device is missing its coordinator public key. Refresh sync status and try again.",
+		};
+	}
+
 	const groupIds = Array.isArray(match.groups)
 		? match.groups.map((value) => String(value ?? "").trim()).filter(Boolean)
 		: [];
@@ -397,6 +408,7 @@ async function acceptDiscoveredPeer(
 		.select({
 			peer_device_id: schema.syncPeers.peer_device_id,
 			pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
+			public_key: schema.syncPeers.public_key,
 			addresses_json: schema.syncPeers.addresses_json,
 		})
 		.from(schema.syncPeers)
@@ -435,6 +447,7 @@ async function acceptDiscoveredPeer(
 					peer_device_id: input.peerDeviceId,
 					name: nextName,
 					pinned_fingerprint: nextFingerprint || null,
+					public_key: nextPublicKey,
 					addresses_json: addressesJson,
 					created_at: now,
 					last_seen_at: now,
@@ -452,6 +465,7 @@ async function acceptDiscoveredPeer(
 			.set({
 				name: nextName,
 				pinned_fingerprint: nextFingerprint || existing.pinned_fingerprint || null,
+				public_key: nextPublicKey || existing.public_key || null,
 				addresses_json: addressesJson,
 				last_seen_at: now,
 			})

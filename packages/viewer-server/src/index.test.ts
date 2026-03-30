@@ -1703,6 +1703,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -1790,6 +1791,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									groups: ["team-a"],
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
@@ -1984,6 +1986,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -2054,7 +2057,7 @@ describe("viewer-server", () => {
 				});
 				const peerRow = store.db
 					.prepare(
-						"SELECT peer_device_id, name, pinned_fingerprint, addresses_json, last_error FROM sync_peers WHERE peer_device_id = ?",
+						"SELECT peer_device_id, name, pinned_fingerprint, public_key, addresses_json, last_error FROM sync_peers WHERE peer_device_id = ?",
 					)
 					.get("peer-fresh") as Record<string, unknown> | undefined;
 				expect(peerRow).toEqual(
@@ -2062,6 +2065,7 @@ describe("viewer-server", () => {
 						peer_device_id: "peer-fresh",
 						name: "Fresh Device",
 						pinned_fingerprint: "fp-fresh",
+						public_key: "peer-public-key",
 						last_error: null,
 					}),
 				);
@@ -2093,6 +2097,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									groups: ["team-a"],
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
@@ -2166,6 +2171,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -2184,6 +2190,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									addresses: ["http://10.0.0.6:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -2582,6 +2589,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -2703,6 +2711,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-new",
+									public_key: "peer-public-key",
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -2849,6 +2858,7 @@ describe("viewer-server", () => {
 									device_id: "peer-fresh",
 									display_name: "Fresh Device",
 									fingerprint: "fp-fresh",
+									public_key: "peer-public-key",
 									addresses: ["http://10.0.0.5:7337"],
 									last_seen_at: new Date().toISOString(),
 									expires_at: new Date(Date.now() + 60_000).toISOString(),

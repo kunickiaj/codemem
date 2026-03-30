@@ -535,7 +535,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorPeerRecord[]> {
 		const now = new Date();
 		const rows = this.db
-			.prepare(`SELECT enrolled_devices.device_id, enrolled_devices.fingerprint, enrolled_devices.display_name,
+			.prepare(`SELECT enrolled_devices.device_id, enrolled_devices.public_key, enrolled_devices.fingerprint, enrolled_devices.display_name,
 					presence_records.addresses_json, presence_records.last_seen_at, presence_records.expires_at,
 					presence_records.capabilities_json
 				 FROM enrolled_devices
@@ -559,6 +559,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				: mergeAddresses([], JSON.parse((row.addresses_json as string) || "[]") as string[]);
 			return {
 				device_id: String(row.device_id ?? ""),
+				public_key: String(row.public_key ?? ""),
 				fingerprint: String(row.fingerprint ?? ""),
 				display_name: (row.display_name as string | null) ?? null,
 				addresses,
