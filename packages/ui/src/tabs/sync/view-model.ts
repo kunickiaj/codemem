@@ -473,14 +473,6 @@ export function deriveSyncViewModel(input: {
           summary: 'This device is offline or stale. Review it before re-pairing or retrying sync.',
         }),
       );
-    } else if (!device.peer && device.discovered && !device.discovered?.stale) {
-      attentionItems.push(
-        createReviewItem({
-          id: device.deviceId,
-          name,
-          summary: 'This device is seen on the team and is ready for review or connection on this machine.',
-        }),
-      );
     }
 
     if (device.peer && trustSummary?.state === 'trusted-by-you') {
