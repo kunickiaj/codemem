@@ -27,6 +27,7 @@ import {
   type TeamSyncPendingJoinRequest,
   type TeamSyncStatusSummary,
 } from './components/team-sync-panel';
+import { openDuplicatePersonDialog, openSyncConfirmDialog, openSyncInputDialog } from './sync-dialogs';
 import { deriveCoordinatorApprovalSummary, SYNC_TERMINOLOGY, summarizeSyncRunResult } from './view-model';
 import { RadixSelect, type RadixSelectOption } from '../../components/primitives/radix-select';
 
@@ -87,7 +88,6 @@ function renderInvitePolicySelect() {
       contentClassName: 'sync-radix-select-content sync-actor-select-content',
       id: 'syncInvitePolicy',
       itemClassName: 'sync-radix-select-item',
-      name: 'syncInvitePolicy',
       onValueChange: (value) => {
         const nextValue = value === 'approval_required' ? 'approval_required' : 'auto_admit';
         if (nextValue === invitePolicyValue) return;
@@ -223,53 +223,51 @@ export function renderTeamSync() {
       showGlobalNotice('This possible duplicate no longer has enough people to review.', 'warning');
       return;
     }
-    const firstAnswer = window.prompt(
-      `Possible duplicate person: ${item.title.replace(/^Possible duplicate person:\s*/, '')}\n\nChoose an option:\n1 = These are both me\n2 = These are different people\n3 = Decide later`,
-      '1',
-    );
-    const choice = String(firstAnswer || '').trim();
-    if (choice === '2') {
+    const result = await openDuplicatePersonDialog({
+      title: 'Review possible duplicate people',
+      summary: item.title.replace(/^Possible duplicate person:\s*/, ''),
+      actors: actors.map((actor) => ({
+        actorId: String(actor?.actor_id || ''),
+        label: String(actor?.display_name || actor?.actor_id || 'Unknown person'),
+        isLocal: Boolean(actor?.is_local),
+      })),
+    });
+    if (result.action === 'different-people') {
       saveDuplicatePersonDecision(actorIds, 'different-people');
       showGlobalNotice('Okay. I will keep these people separate on this device.');
       await _loadSyncData();
       return;
     }
-    if (choice !== '1') return;
-    clearDuplicatePersonDecision(actorIds);
-    const localIndex = actors.findIndex((actor) => Boolean(actor?.is_local));
-    const defaultChoice = localIndex >= 0 ? String(localIndex + 1) : '1';
-    const options = actors
-      .map(
-        (actor, index) =>
-          `${index + 1} = ${String(actor?.display_name || actor?.actor_id || `Person ${index + 1}`)}${actor?.is_local ? ' (You)' : ''}`,
-      )
-      .join('\n');
-    const keepAnswer = window.prompt(
-      `Which person should remain after combining them?\n\n${options}`,
-      defaultChoice,
-    );
-    const keepIndex = Number.parseInt(String(keepAnswer || defaultChoice), 10) - 1;
-    const primary = actors[keepIndex] ?? actors[0];
-    const secondary = actors.find((actor) => actor !== primary);
+    if (result.action !== 'merge') return;
+    const primary = actors.find((actor) => String(actor?.actor_id || '') === result.primaryActorId);
+    const secondary = actors.find((actor) => String(actor?.actor_id || '') === result.secondaryActorId);
     if (!primary?.actor_id || !secondary?.actor_id) {
       showGlobalNotice('Could not determine which people to combine.', 'warning');
       return;
     }
     try {
       await api.mergeActor(String(primary.actor_id), String(secondary.actor_id));
+      clearDuplicatePersonDecision(actorIds);
       showGlobalNotice(`Combined duplicate people into ${String(primary.display_name || primary.actor_id)}.`);
       await _loadSyncData();
     } catch (error) {
+      try {
+        await _loadSyncData();
+      } catch {}
       showGlobalNotice(friendlyError(error, 'Failed to combine these people.'), 'warning');
     }
   };
 
   const promptForDeviceName = async (deviceId: string, suggestedName: string) => {
-    const nextName = window.prompt(
-      'What should this device be called? You can change it later in People & devices.',
-      suggestedName,
-    );
-    const value = String(nextName || '').trim();
+    const value = await openSyncInputDialog({
+      title: 'Name this device',
+      description: 'Choose a friendly device name. You can change it later in People & devices.',
+      initialValue: suggestedName,
+      placeholder: 'Desk Mini',
+      confirmLabel: 'Save name',
+      cancelLabel: 'Skip for now',
+      validate: (nextValue) => (nextValue.trim() ? null : 'Enter a device name or skip for now.'),
+    });
     if (!value) {
       showGlobalNotice('You can name this device later from People & devices.', 'warning');
       return false;
@@ -476,13 +474,14 @@ export function renderTeamSync() {
         focusAttentionTarget(item);
       },
       onDenyJoinRequest: async (request) => {
-        if (
-          !window.confirm(
-            `Deny join request from ${request.displayName}? They will need a new invite to try again.`,
-          )
-        ) {
-          return;
-        }
+        const confirmed = await openSyncConfirmDialog({
+          title: `Deny join request from ${request.displayName}?`,
+          description: 'They will need a new invite to try joining this team again.',
+          confirmLabel: 'Deny request',
+          cancelLabel: 'Keep request pending',
+          tone: 'danger',
+        });
+        if (!confirmed) return;
         try {
           await api.reviewJoinRequest(request.requestId, 'deny');
           showGlobalNotice(`Denied join request from ${request.displayName}.`);
@@ -505,9 +504,13 @@ export function renderTeamSync() {
         );
       },
       onRemoveConflict: async (row) => {
-        const confirmed = window.confirm(
-          `Remove the broken local device record for ${row.displayName}? You can review this device again after the screen refreshes.`,
-        );
+        const confirmed = await openSyncConfirmDialog({
+          title: `Remove ${row.displayName}?`,
+          description: 'This deletes the broken local device record. You can review this device again after the screen refreshes.',
+          confirmLabel: 'Remove device record',
+          cancelLabel: 'Keep device record',
+          tone: 'danger',
+        });
         if (!confirmed) return;
         try {
           await api.deletePeer(row.deviceId);

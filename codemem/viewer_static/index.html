@@ -540,10 +540,10 @@
       .sync-redact-switch {
         width: 34px;
         height: 20px;
-        border: 1px solid var(--control-border);
+        border: 1px solid color-mix(in srgb, var(--text-tertiary) 42%, var(--control-border));
         border-radius: var(--radius-pill);
-        background: var(--surface-1);
-        box-shadow: inset 0 0 0 1px transparent;
+        background: color-mix(in srgb, var(--surface-1) 82%, var(--surface-0));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-tertiary) 8%, transparent);
         cursor: pointer;
         flex-shrink: 0;
         padding: 1px;
@@ -551,7 +551,7 @@
       }
 
       .sync-redact-switch:hover {
-        border-color: var(--control-hover-border);
+        border-color: color-mix(in srgb, var(--accent) 38%, var(--control-hover-border));
       }
 
       .sync-redact-switch:focus-visible {
@@ -560,9 +560,9 @@
       }
 
       .sync-redact-switch[data-state="checked"] {
-        background: var(--control-bg);
-        border-color: var(--control-hover-border);
-        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+        background: color-mix(in srgb, var(--accent) 18%, var(--surface-1));
+        border-color: color-mix(in srgb, var(--accent) 54%, var(--control-hover-border));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
       }
 
       .sync-redact-switch-thumb {
@@ -570,15 +570,17 @@
         width: 16px;
         height: 16px;
         border-radius: 50%;
-        background: var(--surface-0);
-        box-shadow: var(--shadow-sm);
+        background: color-mix(in srgb, var(--surface-0) 88%, white);
+        border: 1px solid color-mix(in srgb, var(--text-tertiary) 24%, transparent);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
         transition: transform 0.15s ease, background 0.15s ease;
         transform: translateX(0);
       }
 
       .sync-redact-switch[data-state="checked"] .sync-redact-switch-thumb {
         transform: translateX(14px);
-        background: var(--accent);
+        background: color-mix(in srgb, var(--accent) 88%, white);
+        border-color: color-mix(in srgb, var(--accent) 42%, transparent);
       }
 
       /* ── Selects / inputs ──────────────────────────────────── */
@@ -1514,6 +1516,38 @@
         transition: background 0.15s ease;
       }
       .settings-save:hover { background: var(--control-hover-bg); }
+      .sync-dialog-card {
+        width: min(560px, 100%);
+      }
+      .sync-dialog-actions {
+        display: flex;
+        gap: var(--sp-2);
+        align-items: center;
+      }
+      .sync-dialog-input {
+        width: 100%;
+        padding: var(--sp-2) var(--sp-3);
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+      }
+      .sync-dialog-input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+      .sync-dialog-confirm.danger {
+        background: rgba(182, 75, 47, 0.12);
+        border-color: rgba(182, 75, 47, 0.28);
+        color: var(--accent-warm);
+      }
+      .sync-dialog-confirm.danger:hover {
+        background: rgba(182, 75, 47, 0.18);
+        border-color: rgba(182, 75, 47, 0.38);
+      }
       .settings-save:disabled { opacity: 0.6; cursor: not-allowed; }
       .settings-note { color: var(--text-tertiary); font-size: 12px; }
 
