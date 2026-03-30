@@ -334,6 +334,49 @@ describe("RawEventSweeper auto flush", () => {
 		expect(store.latestRawEventFlushFailure("opencode")?.stream_id).not.toBe("sess-low-signal");
 	});
 
+	it("records observer diagnostics for failed raw-event flushes", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		seedSession("sess-failed-diagnostics");
+
+		const sweeper = new RawEventSweeper(store, {
+			observer: {
+				observe: async () => ({
+					raw: null,
+					parsed: null,
+					provider: "openai",
+					model: "gpt-5.4-mini",
+				}),
+				getStatus: () => ({
+					provider: "openai",
+					model: "gpt-5.4-mini",
+					runtime: "api_http",
+					auth: { source: "oauth", type: "codex_consumer", hasToken: true },
+					lastError: {
+						code: "empty_response",
+						message: "OpenAI returned 200 but response contained no extractable text.",
+					},
+				}),
+			} as never,
+		});
+
+		sweeper.nudge("sess-failed-diagnostics");
+		await sleep(150);
+
+		const failure = store.latestRawEventFlushFailure("opencode");
+		expect(failure?.stream_id).toBe("sess-failed-diagnostics");
+		expect(failure).toMatchObject({
+			observer_provider: "openai",
+			observer_model: "gpt-5.4-mini",
+			observer_runtime: "api_http",
+			observer_auth_source: "oauth",
+			observer_auth_type: "codex_consumer",
+			observer_error_code: "empty_response",
+			observer_error_message: "OpenAI returned 200 but response contained no extractable text.",
+			error_message: "OpenAI returned no usable output for raw-event processing.",
+		});
+	});
+
 	it("terminally skips tiny lifecycle-only sessions without calling the observer", async () => {
 		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
 		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";

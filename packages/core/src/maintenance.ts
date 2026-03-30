@@ -427,6 +427,10 @@ export function retryRawEventFailures(dbPath?: string, limit = 25): { retried: n
 					observer_provider: null,
 					observer_model: null,
 					observer_runtime: null,
+					observer_auth_source: null,
+					observer_auth_type: null,
+					observer_error_code: null,
+					observer_error_message: null,
 				})
 				.where(
 					and(
