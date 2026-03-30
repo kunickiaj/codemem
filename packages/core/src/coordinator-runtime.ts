@@ -1,5 +1,6 @@
 import { networkInterfaces } from "node:os";
 import { mergeAddresses } from "./address-utils.js";
+import type { CoordinatorReciprocalApproval } from "./coordinator-store-contract.js";
 import { getCodememEnvOverrides, readCodememConfigFile } from "./observer-config.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
@@ -263,6 +264,94 @@ export async function lookupCoordinatorPeers(
 	return [...merged.values()];
 }
 
+export async function listCoordinatorReciprocalApprovals(
+	store: MemoryStore,
+	config: CoordinatorSyncConfig,
+	options: { direction: "incoming" | "outgoing"; status?: string },
+): Promise<CoordinatorReciprocalApproval[]> {
+	if (!coordinatorEnabled(config)) return [];
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+	const baseUrl = buildBaseUrl(config.syncCoordinatorUrl);
+	const merged = new Map<string, CoordinatorReciprocalApproval>();
+	for (const groupId of config.syncCoordinatorGroups) {
+		const params = new URLSearchParams({
+			group_id: groupId,
+			direction: options.direction,
+			status: options.status?.trim() || "pending",
+		});
+		const url = `${baseUrl}/v1/reciprocal-approvals?${params.toString()}`;
+		const headers = buildAuthHeaders({
+			deviceId,
+			method: "GET",
+			url,
+			bodyBytes: Buffer.alloc(0),
+			keysDir,
+		});
+		const [status, response] = await requestJson("GET", url, {
+			headers,
+			timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+		});
+		if (status !== 200 || !response) {
+			const detail = typeof response?.error === "string" ? response.error : "unknown";
+			throw new Error(`coordinator reciprocal approval lookup failed (${status}: ${detail})`);
+		}
+		const items = Array.isArray(response.items) ? response.items : [];
+		for (const item of items) {
+			if (!item || typeof item !== "object") continue;
+			const record = item as CoordinatorReciprocalApproval;
+			const requestId = clean(record.request_id);
+			if (!requestId) continue;
+			merged.set(requestId, record);
+		}
+	}
+	return [...merged.values()];
+}
+
+export async function createCoordinatorReciprocalApproval(
+	store: MemoryStore,
+	config: CoordinatorSyncConfig,
+	options: { groupId: string; requestedDeviceId: string },
+): Promise<CoordinatorReciprocalApproval> {
+	if (!coordinatorEnabled(config)) throw new Error("Coordinator not configured.");
+	const groupId = options.groupId.trim();
+	const requestedDeviceId = options.requestedDeviceId.trim();
+	if (!groupId || !requestedDeviceId) {
+		throw new Error("groupId and requestedDeviceId are required.");
+	}
+	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+	const baseUrl = buildBaseUrl(config.syncCoordinatorUrl);
+	const url = `${baseUrl}/v1/reciprocal-approvals`;
+	const payload = { group_id: groupId, requested_device_id: requestedDeviceId };
+	const bodyBytes = Buffer.from(JSON.stringify(payload), "utf8");
+	const headers = buildAuthHeaders({ deviceId, method: "POST", url, bodyBytes, keysDir });
+	const [status, response] = await requestJson("POST", url, {
+		headers,
+		body: payload,
+		bodyBytes,
+		timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+	});
+	if (status !== 200 || !response || !response.request || typeof response.request !== "object") {
+		const detail = typeof response?.error === "string" ? response.error : "unknown";
+		throw new Error(`coordinator reciprocal approval create failed (${status}: ${detail})`);
+	}
+	return response.request as CoordinatorReciprocalApproval;
+}
+
+function indexReciprocalApprovalsByPeer(
+	items: CoordinatorReciprocalApproval[],
+	key: "requesting_device_id" | "requested_device_id",
+): Map<string, CoordinatorReciprocalApproval> {
+	const indexed = new Map<string, CoordinatorReciprocalApproval>();
+	for (const item of items) {
+		const deviceId = clean(item[key]);
+		if (!deviceId) continue;
+		indexed.set(deviceId, item);
+	}
+	return indexed;
+}
+
 export async function coordinatorStatusSnapshot(
 	store: MemoryStore,
 	config: CoordinatorSyncConfig,
@@ -335,9 +424,30 @@ export async function coordinatorStatusSnapshot(
 	}
 	try {
 		const peers = await lookupCoordinatorPeers(store, config);
+		let incomingApprovals: CoordinatorReciprocalApproval[] = [];
+		let outgoingApprovals: CoordinatorReciprocalApproval[] = [];
+		try {
+			incomingApprovals = await listCoordinatorReciprocalApprovals(store, config, {
+				direction: "incoming",
+			});
+			outgoingApprovals = await listCoordinatorReciprocalApprovals(store, config, {
+				direction: "outgoing",
+			});
+		} catch (error) {
+			snapshot.reciprocal_approval_error = error instanceof Error ? error.message : String(error);
+		}
+		const incomingByPeer = indexReciprocalApprovalsByPeer(
+			incomingApprovals,
+			"requesting_device_id",
+		);
+		const outgoingByPeer = indexReciprocalApprovalsByPeer(outgoingApprovals, "requested_device_id");
 		snapshot.discovered_peer_count = peers.length;
 		snapshot.fresh_peer_count = peers.filter((peer) => !peer.stale).length;
 		snapshot.stale_peer_count = peers.filter((peer) => Boolean(peer.stale)).length;
+		snapshot.reciprocal_approvals = {
+			incoming: incomingApprovals,
+			outgoing: outgoingApprovals,
+		};
 		snapshot.discovered_devices = peers.map((peer) => ({
 			device_id: peer.device_id,
 			display_name: peer.display_name ?? null,
@@ -347,6 +457,10 @@ export async function coordinatorStatusSnapshot(
 			last_seen_at: peer.last_seen_at ?? null,
 			expires_at: peer.expires_at ?? null,
 			stale: Boolean(peer.stale),
+			needs_local_approval: incomingByPeer.has(clean(peer.device_id)),
+			waiting_for_peer_approval: outgoingByPeer.has(clean(peer.device_id)),
+			incoming_reciprocal_request_id: incomingByPeer.get(clean(peer.device_id))?.request_id ?? null,
+			outgoing_reciprocal_request_id: outgoingByPeer.get(clean(peer.device_id))?.request_id ?? null,
 		}));
 	} catch (error) {
 		snapshot.lookup_error = error instanceof Error ? error.message : String(error);
