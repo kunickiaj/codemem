@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database as DatabaseType, Statement } from "better-sqlite3";
@@ -288,6 +288,71 @@ describe("D1CoordinatorStore", () => {
 			}),
 		);
 		await racingStore.close();
+	});
+
+	it("dedupes mirrored pending rows before creating the pending-pair unique index", async () => {
+		const migrationPath = join(
+			import.meta.dirname,
+			"../../cloudflare-coordinator-worker/migrations/0003_harden_reciprocal_approval_pending_pairs.sql",
+		);
+		if (!existsSync(migrationPath)) {
+			throw new Error(`missing migration fixture: ${migrationPath}`);
+		}
+		db.exec("DROP TABLE IF EXISTS coordinator_reciprocal_approvals");
+		db.exec(`
+			CREATE TABLE coordinator_reciprocal_approvals (
+				request_id TEXT PRIMARY KEY,
+				group_id TEXT NOT NULL,
+				requesting_device_id TEXT NOT NULL,
+				requested_device_id TEXT NOT NULL,
+				status TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				resolved_at TEXT
+			)
+		`);
+		db.prepare(
+			`INSERT INTO coordinator_reciprocal_approvals(
+				request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).run("req-a", "g1", "d1", "d2", "pending", "2026-03-29T00:00:00Z", null);
+		db.prepare(
+			`INSERT INTO coordinator_reciprocal_approvals(
+				request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).run("req-b", "g1", "d2", "d1", "pending", "2026-03-29T00:00:01Z", null);
+
+		db.exec(readFileSync(migrationPath, "utf8"));
+
+		const migratedRows = db
+			.prepare(
+				`SELECT request_id, status, pending_pair_low_device_id, pending_pair_high_device_id, resolved_at
+				 FROM coordinator_reciprocal_approvals ORDER BY request_id ASC`,
+			)
+			.all() as Array<Record<string, unknown>>;
+		expect(migratedRows).toEqual([
+			expect.objectContaining({
+				request_id: "req-a",
+				status: "completed",
+				pending_pair_low_device_id: "d1",
+				pending_pair_high_device_id: "d2",
+				resolved_at: "2026-03-29T00:00:00Z",
+			}),
+			expect.objectContaining({
+				request_id: "req-b",
+				status: "completed",
+				pending_pair_low_device_id: "d1",
+				pending_pair_high_device_id: "d2",
+				resolved_at: "2026-03-29T00:00:01Z",
+			}),
+		]);
+		const indexInfo = db
+			.prepare(`PRAGMA index_list('coordinator_reciprocal_approvals')`)
+			.all() as Array<Record<string, unknown>>;
+		expect(indexInfo).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "idx_coordinator_reciprocal_pending_pair", unique: 1 }),
+			]),
+		);
 	});
 
 	it("implements nonce replay protection, presence upsert, and peer listing", async () => {
