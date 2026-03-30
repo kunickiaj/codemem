@@ -1,6 +1,7 @@
 import type { TargetedInputEvent } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { renderIntoSyncMount } from './render-root';
+import { openSyncConfirmDialog } from '../sync-dialogs';
 import {
   actorLabel,
   actorMergeNote,
@@ -77,11 +78,14 @@ function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: S
     if (!mergeTargetId) return;
     const target = mergeTargets.find((candidate) => String(candidate.actor_id || '') === mergeTargetId);
     if (!target) return;
-    if (
-      !window.confirm(
-        `Combine ${label} into ${actorLabel(target)}? Assigned devices move now, but older memories keep their current stamped provenance for now.`,
-      )
-    ) {
+    const confirmed = await openSyncConfirmDialog({
+      title: `Combine ${label} into ${actorLabel(target)}?`,
+      description: 'Assigned devices move now, but older memories keep their current stamped provenance for now.',
+      confirmLabel: 'Combine people',
+      cancelLabel: 'Keep separate',
+      tone: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     setMergeBusy(true);

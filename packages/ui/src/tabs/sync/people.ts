@@ -14,6 +14,7 @@ import {
   isPeerScopeReviewPending,
   hideSkeleton,
 } from './helpers';
+import { openSyncConfirmDialog } from './sync-dialogs';
 import { renderSyncActorsList } from './components/sync-actors';
 import { renderSyncPeersList } from './components/sync-peers';
 import { renderLegacyClaimsSlice } from './components/sync-legacy-claims';
@@ -229,12 +230,14 @@ export function initPeopleEvents(loadSyncData: () => Promise<void>) {
   syncLegacyClaimButton?.addEventListener('click', async () => {
     const originDeviceId = String(legacyDeviceValue || '').trim();
     if (!originDeviceId || !syncLegacyClaimButton) return;
-    if (
-      !window.confirm(
-        `Attach old device history from ${originDeviceId} to you? This updates legacy provenance for that device.`,
-      )
-    )
-      return;
+    const confirmed = await openSyncConfirmDialog({
+      title: `Attach history from ${originDeviceId}?`,
+      description: 'This updates legacy provenance so the older device history is attached to you on this device.',
+      confirmLabel: 'Attach history',
+      cancelLabel: 'Cancel',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     syncLegacyClaimButton.disabled = true;
     const originalText = syncLegacyClaimButton.textContent || 'Attach device history';
     syncLegacyClaimButton.textContent = 'Attaching\u2026';
