@@ -234,7 +234,6 @@ export function renderHealthOverview() {
   const healthActions = document.getElementById('healthActions');
   const healthDot = document.getElementById('healthDot');
   if (!healthGrid || !healthMeta) return;
-  healthGrid.textContent = '';
 
   const stats = state.lastStatsPayload || {};
   const usagePayload = state.lastUsagePayload || {};
@@ -401,7 +400,6 @@ export function renderSessionSummary() {
   const sessionGrid = document.getElementById('sessionGrid');
   const sessionMeta = document.getElementById('sessionMeta');
   if (!sessionGrid || !sessionMeta) return;
-  sessionGrid.textContent = '';
 
   const usagePayload = state.lastUsagePayload || {};
   const project = state.currentProject;
