@@ -7,7 +7,9 @@ import { state, isSyncRedactionEnabled } from '../../../lib/state';
 import { openSyncConfirmDialog } from '../sync-dialogs';
 import { PeerScopeCollapsible } from '../peer-scope-collapsible';
 import {
+  actorDisplayLabel,
   assignmentNote,
+  buildActorSelectOptions,
   consumePeerScopeReviewRequest,
   createChipEditor,
   isPeerScopeReviewPending,
@@ -53,20 +55,6 @@ type SyncPeerCardProps = {
 type SyncPeersListProps = Omit<SyncPeerCardProps, 'peer'> & {
   peers: SyncPeer[];
 };
-
-function actorOptions(): RadixSelectOption[] {
-  const actors = Array.isArray(state.lastSyncActors) ? state.lastSyncActors : [];
-  return [
-    { value: '', label: 'No person assigned' },
-    ...actors.map((actor) => {
-      const actorId = String(actor?.actor_id || '');
-      const label = actor.is_local
-        ? `${String(actor.display_name || actorId || 'Unknown person')} (local)`
-        : String(actor.display_name || actorId || 'Unknown person');
-      return { value: actorId, label };
-    }),
-  ].filter((option, index, all) => index === all.findIndex((candidate) => candidate.value === option.value));
-}
 
 function listText(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : [];
@@ -141,6 +129,17 @@ function SyncPeerCard({
   const [saveScopeLabel, setSaveScopeLabel] = useState('Save scope');
   const [resetScopeBusy, setResetScopeBusy] = useState(false);
   const [resetScopeLabel, setResetScopeLabel] = useState('Reset to global scope');
+  const actorSelectOptions = useMemo(() => {
+    const options = buildActorSelectOptions(selectedActorId);
+    const hasSelected = options.some((option) => option.value === selectedActorId);
+    if (selectedActorId && !hasSelected) {
+      options.push({
+        value: selectedActorId,
+        label: peer.claimed_local_actor ? 'You' : String(peer.actor_display_name || 'Current assignment'),
+      });
+    }
+    return options;
+  }, [peer.actor_display_name, peer.claimed_local_actor, selectedActorId, state.lastSyncActors, state.lastSyncPeers, state.lastSyncViewModel]);
 
   const includeEditor = useMemo(
     () => createChipEditor(includeList, 'Add included project', 'All projects'),
@@ -375,7 +374,7 @@ function SyncPeerCard({
         <div className="peer-scope-summary">Assigned person</div>
         <div className="peer-meta">
           {peer.actor_display_name
-            ? `Assigned to ${String(peer.actor_display_name)}${peer.claimed_local_actor ? ' · you' : ''}`
+            ? `Assigned to ${peer.claimed_local_actor ? 'You' : String(peer.actor_display_name)}`
             : 'Unassigned person'}
         </div>
         <div className="peer-meta">{trustSummary.description}</div>
@@ -387,7 +386,8 @@ function SyncPeerCard({
               disabled={applyActorBusy}
               itemClassName="sync-radix-select-item"
               onValueChange={setSelectedActorId}
-              options={actorOptions()}
+              options={actorSelectOptions}
+              placeholder="No person assigned"
               triggerClassName="sync-radix-select-trigger sync-actor-select"
               value={selectedActorId}
               viewportClassName="sync-radix-select-viewport"
