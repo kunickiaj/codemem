@@ -52,6 +52,7 @@ export const state = {
   lastSyncStatus: null as any,
   lastSyncActors: [] as any[],
   lastSyncPeers: [] as any[],
+  pendingAcceptedSyncPeers: [] as any[],
   lastSyncSharingReview: [] as any[],
   lastSyncCoordinator: null as any,
   lastSyncJoinRequests: [] as any[],

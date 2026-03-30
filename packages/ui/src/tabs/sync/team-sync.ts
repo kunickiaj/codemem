@@ -526,6 +526,25 @@ export function renderTeamSync() {
       onReviewDiscoveredDevice: async (row) => {
         try {
           const result = await api.acceptDiscoveredPeer(row.deviceId, row.fingerprint);
+          const optimisticName =
+            String(result?.name || row.displayName || '').trim() || row.displayName;
+          const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
+            ? state.pendingAcceptedSyncPeers.filter(
+                (peer) => String(peer?.peer_device_id || '').trim() !== row.deviceId,
+              )
+            : [];
+          state.pendingAcceptedSyncPeers = [
+            ...pendingPeers,
+            {
+              peer_device_id: row.deviceId,
+              name: optimisticName,
+              fingerprint: row.fingerprint,
+              addresses: [],
+              claimed_local_actor: false,
+              status: { peer_state: 'degraded' },
+              last_error: 'Waiting for the other device to approve this one.',
+            },
+          ];
           requestPeerScopeReview(row.deviceId);
           showGlobalNotice(
             row.approvalBadgeLabel === 'Needs your approval'
@@ -535,7 +554,7 @@ export function renderTeamSync() {
           try {
             await promptForDeviceName(
               row.deviceId,
-              String(result?.name || row.displayName || '').trim() || row.displayName,
+              optimisticName,
             );
           } catch (error) {
             showGlobalNotice(
