@@ -53,6 +53,7 @@ export interface CoordinatorPresenceRecord {
 
 export interface CoordinatorPeerRecord {
 	device_id: string;
+	public_key: string;
 	fingerprint: string;
 	display_name: string | null;
 	addresses: string[];
