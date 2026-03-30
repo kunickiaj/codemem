@@ -101,6 +101,22 @@ function nowISO(): string {
 	return new Date().toISOString();
 }
 
+function reciprocalPendingPair(
+	requestingDeviceId: string,
+	requestedDeviceId: string,
+): {
+	low: string;
+	high: string;
+} {
+	return requestingDeviceId <= requestedDeviceId
+		? { low: requestingDeviceId, high: requestedDeviceId }
+		: { low: requestedDeviceId, high: requestingDeviceId };
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+	return error instanceof Error && /unique|constraint/i.test(error.message);
+}
+
 function tokenUrlSafe(bytes: number): string {
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 	const random = new Uint8Array(bytes);
@@ -461,6 +477,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (requestingDeviceId === requestedDeviceId) {
 			throw new Error("requesting and requested device ids must differ.");
 		}
+		const pendingPair = reciprocalPendingPair(requestingDeviceId, requestedDeviceId);
 		const existing = await firstRow<CoordinatorReciprocalApproval>(
 			this.db
 				.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
@@ -496,12 +513,66 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		}
 		const requestId = tokenUrlSafe(12);
 		const createdAt = nowISO();
-		await this.db
-			.prepare(`INSERT INTO coordinator_reciprocal_approvals(
-					request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
-				) VALUES (?, ?, ?, ?, 'pending', ?, NULL)`)
-			.bind(requestId, groupId, requestingDeviceId, requestedDeviceId, createdAt)
-			.run();
+		try {
+			await this.db
+				.prepare(`INSERT INTO coordinator_reciprocal_approvals(
+						request_id,
+						group_id,
+						requesting_device_id,
+						requested_device_id,
+						pending_pair_low_device_id,
+						pending_pair_high_device_id,
+						status,
+						created_at,
+						resolved_at
+					) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`)
+				.bind(
+					requestId,
+					groupId,
+					requestingDeviceId,
+					requestedDeviceId,
+					pendingPair.low,
+					pendingPair.high,
+					createdAt,
+				)
+				.run();
+		} catch (error) {
+			if (!isUniqueConstraintError(error)) throw error;
+			const sameDirection = await firstRow<CoordinatorReciprocalApproval>(
+				this.db
+					.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+						 FROM coordinator_reciprocal_approvals
+						 WHERE group_id = ? AND requesting_device_id = ? AND requested_device_id = ? AND status = 'pending'
+						 ORDER BY created_at DESC LIMIT 1`)
+					.bind(groupId, requestingDeviceId, requestedDeviceId),
+			);
+			if (sameDirection) return rowToRecord<CoordinatorReciprocalApproval>(sameDirection);
+			const reverseAfterConflict = await firstRow<CoordinatorReciprocalApproval>(
+				this.db
+					.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+						 FROM coordinator_reciprocal_approvals
+						 WHERE group_id = ? AND requesting_device_id = ? AND requested_device_id = ? AND status = 'pending'
+						 ORDER BY created_at DESC LIMIT 1`)
+					.bind(groupId, requestedDeviceId, requestingDeviceId),
+			);
+			if (reverseAfterConflict) {
+				const resolvedAt = nowISO();
+				await this.db
+					.prepare(
+						`UPDATE coordinator_reciprocal_approvals SET status = 'completed', resolved_at = ? WHERE request_id = ?`,
+					)
+					.bind(resolvedAt, reverseAfterConflict.request_id)
+					.run();
+				const completed = await firstRow<CoordinatorReciprocalApproval>(
+					this.db
+						.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+							 FROM coordinator_reciprocal_approvals WHERE request_id = ?`)
+						.bind(reverseAfterConflict.request_id),
+				);
+				return rowToRecord<CoordinatorReciprocalApproval>(completed);
+			}
+			throw error;
+		}
 		const created = await firstRow<CoordinatorReciprocalApproval>(
 			this.db
 				.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
