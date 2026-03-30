@@ -66,7 +66,6 @@ export function renderLegacyClaimsSlice(input: {
       contentClassName="sync-radix-select-content sync-legacy-select-content"
       id="syncLegacyDeviceSelect"
       itemClassName="sync-radix-select-item"
-      name="syncLegacyDeviceSelect"
       onValueChange={input.onValueChange}
       options={options}
       triggerClassName="sync-radix-select-trigger sync-legacy-select"

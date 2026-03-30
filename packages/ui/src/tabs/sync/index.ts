@@ -9,6 +9,7 @@ import { renderSyncStatus, renderSyncAttempts, renderPairing, initDiagnosticsEve
 import { renderTeamSync, renderSyncSharingReview, initTeamSyncEvents, setLoadSyncData as setTeamSyncLoadData } from './team-sync';
 import { renderSyncActors, renderSyncPeers, renderLegacyDeviceClaims, initPeopleEvents, setLoadSyncData as setPeopleLoadData } from './people';
 import { ensureSyncRenderBoundary } from './components/render-root';
+import { ensureSyncDialogHost } from './sync-dialogs';
 import { hideSkeleton, readDuplicatePersonDecisions } from './helpers';
 
 /* ── Re-exports consumed by app.ts ───────────────────────── */
@@ -142,6 +143,7 @@ export async function loadPairingData() {
 
 export function initSyncTab(refreshCallback: () => void) {
   ensureSyncRenderBoundary();
+  ensureSyncDialogHost();
   // Wire cross-module callbacks to avoid circular imports
   setTeamSyncLoadData(loadSyncData);
   setPeopleLoadData(loadSyncData);

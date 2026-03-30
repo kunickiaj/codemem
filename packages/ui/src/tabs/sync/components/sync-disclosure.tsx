@@ -43,8 +43,8 @@ function SyncDisclosure({
   }, [contentId, triggerId, open]);
 
   const content = (
-    <Collapsible.Content forceMount asChild>
-      <div ref={contentRef} id={contentId} className={contentClassName}>
+    <Collapsible.Content asChild>
+      <div ref={contentRef} id={contentId} className={contentClassName} hidden={!open}>
         {children}
       </div>
     </Collapsible.Content>
@@ -155,13 +155,9 @@ function PairingDisclosure({ contentHost, open, onOpenChange }: PairingDisclosur
         </div>
       </div>
       <div className="pairing-body">
-        <pre id="pairingPayload" style={{ userSelect: 'all' }}>
-          Loading…
-        </pre>
+        <pre id="pairingPayload" style={{ userSelect: 'all' }} />
       </div>
-      <div className="peer-meta" id="pairingHint">
-        Copy and run on the other device. Use --include/--exclude to control which projects sync.
-      </div>
+      <div className="peer-meta" id="pairingHint" />
     </SyncDisclosure>
   );
 }

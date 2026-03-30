@@ -41,25 +41,34 @@ export function RadixDialog({
 }: RadixDialogProps) {
   return (
     <Dialog.Root modal={modal} open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal forceMount>
-        <Dialog.Overlay asChild forceMount>
-          <div className={overlayClassName} hidden={!open} id={overlayId} />
-        </Dialog.Overlay>
-        <Dialog.Content
-          aria-describedby={ariaDescribedby}
-          aria-labelledby={ariaLabelledby}
-          asChild
-          forceMount
-          onCloseAutoFocus={onCloseAutoFocus}
-          onEscapeKeyDown={onEscapeKeyDown}
-          onInteractOutside={onInteractOutside}
-          onOpenAutoFocus={onOpenAutoFocus}
-        >
-          <div className={contentClassName} hidden={!open} id={contentId} tabIndex={-1}>
-            {children ?? (slotId ? <div id={slotId} /> : null)}
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
+      {open ? (
+        <Dialog.Portal>
+          <Dialog.Overlay asChild>
+            <div className={overlayClassName} id={overlayId} />
+          </Dialog.Overlay>
+          <Dialog.Content
+            aria-describedby={ariaDescribedby}
+            aria-labelledby={ariaLabelledby}
+            asChild
+            onCloseAutoFocus={onCloseAutoFocus}
+            onEscapeKeyDown={onEscapeKeyDown}
+            onInteractOutside={onInteractOutside}
+            onOpenAutoFocus={onOpenAutoFocus}
+          >
+            <div
+              className={contentClassName}
+              id={contentId}
+              onClick={(event) => {
+                if (event.target !== event.currentTarget) return;
+                onOpenChange(false);
+              }}
+              tabIndex={-1}
+            >
+              {children ?? (slotId ? <div id={slotId} /> : null)}
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      ) : null}
     </Dialog.Root>
   );
 }
