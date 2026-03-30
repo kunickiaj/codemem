@@ -258,23 +258,16 @@ export function renderTeamSync() {
     }
   };
 
-  const promptForDeviceName = async (deviceId: string, suggestedName: string) => {
-    const value = await openSyncInputDialog({
-      title: 'Name this device',
-      description: 'Choose a friendly device name. You can change it later in People & devices.',
+  const reviewDiscoveredDeviceName = async (suggestedName: string) => {
+    return await openSyncInputDialog({
+      title: 'Review device',
+      description: 'Choose a friendly name for this device before connecting it on this machine.',
       initialValue: suggestedName,
       placeholder: 'Desk Mini',
-      confirmLabel: 'Save name',
-      cancelLabel: 'Skip for now',
-      validate: (nextValue) => (nextValue.trim() ? null : 'Enter a device name or skip for now.'),
+      confirmLabel: 'Connect device',
+      cancelLabel: 'Cancel',
+      validate: (nextValue) => (nextValue.trim() ? null : 'Enter a device name to connect this device.'),
     });
-    if (!value) {
-      showGlobalNotice('You can name this device later from People & devices.', 'warning');
-      return false;
-    }
-    await api.renamePeer(deviceId, value);
-    showGlobalNotice(`Saved device name: ${value}.`);
-    return true;
   };
 
   const configured = Boolean(coordinator && coordinator.configured);
@@ -525,9 +518,10 @@ export function renderTeamSync() {
       },
       onReviewDiscoveredDevice: async (row) => {
         try {
+          const reviewedName = await reviewDiscoveredDeviceName(row.displayName);
+          if (!reviewedName) return;
           const result = await api.acceptDiscoveredPeer(row.deviceId, row.fingerprint);
-          const optimisticName =
-            String(result?.name || row.displayName || '').trim() || row.displayName;
+          const optimisticName = String(result?.name || row.displayName || '').trim() || row.displayName;
           const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
             ? state.pendingAcceptedSyncPeers.filter(
                 (peer) => String(peer?.peer_device_id || '').trim() !== row.deviceId,
@@ -552,15 +546,12 @@ export function renderTeamSync() {
               : `Step 1 complete on this device for ${row.displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
           );
           try {
-            await promptForDeviceName(
-              row.deviceId,
-              optimisticName,
-            );
+            if (reviewedName.trim() !== optimisticName.trim()) {
+              await api.renamePeer(row.deviceId, reviewedName.trim());
+              showGlobalNotice(`Saved device name: ${reviewedName.trim()}.`);
+            }
           } catch (error) {
-            showGlobalNotice(
-              friendlyError(error, 'Device connected, but naming did not finish.'),
-              'warning',
-            );
+            showGlobalNotice(friendlyError(error, 'Device connected, but naming did not finish.'), 'warning');
           }
           try {
             await _loadSyncData();

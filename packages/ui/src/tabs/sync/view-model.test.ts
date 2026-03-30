@@ -280,7 +280,6 @@ describe('deriveSyncViewModel', () => {
     expect(view.attentionItems.map((item) => item.kind)).toEqual([
       'possible-duplicate-person',
       'device-needs-repair',
-      'review-team-device',
     ]);
   });
 
