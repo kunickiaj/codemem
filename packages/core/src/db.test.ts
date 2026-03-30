@@ -338,6 +338,10 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "raw_event_flush_batches", "observer_provider")).toBe(true);
 		expect(columnExists(db, "raw_event_flush_batches", "observer_model")).toBe(true);
 		expect(columnExists(db, "raw_event_flush_batches", "observer_runtime")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "observer_auth_source")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "observer_auth_type")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "observer_error_code")).toBe(true);
+		expect(columnExists(db, "raw_event_flush_batches", "observer_error_message")).toBe(true);
 		expect(columnExists(db, "raw_event_flush_batches", "attempt_count")).toBe(true);
 	});
 

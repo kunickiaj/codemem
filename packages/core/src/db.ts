@@ -500,6 +500,10 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		{ name: "observer_provider", ddl: "TEXT" },
 		{ name: "observer_model", ddl: "TEXT" },
 		{ name: "observer_runtime", ddl: "TEXT" },
+		{ name: "observer_auth_source", ddl: "TEXT" },
+		{ name: "observer_auth_type", ddl: "TEXT" },
+		{ name: "observer_error_code", ddl: "TEXT" },
+		{ name: "observer_error_message", ddl: "TEXT" },
 		{ name: "attempt_count", ddl: "INTEGER NOT NULL DEFAULT 0" },
 	];
 

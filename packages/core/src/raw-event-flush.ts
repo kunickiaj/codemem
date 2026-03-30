@@ -299,14 +299,19 @@ export async function flushRawEvents(
 	} catch (exc) {
 		// Record failure details on the batch
 		const err = exc instanceof Error ? exc : new Error(String(exc));
-		const provider = ingestOpts.observer?.getStatus?.()?.provider as string | undefined;
+		const status = ingestOpts.observer?.getStatus?.();
+		const provider = status?.provider as string | undefined;
 		const message = truncateErrorMessage(summarizeFlushFailure(err, provider));
 		store.recordRawEventFlushBatchFailure(batchId, {
 			message,
 			errorType: err instanceof ObserverAuthError ? "ObserverAuthError" : err.name,
 			observerProvider: provider ?? null,
-			observerModel: (ingestOpts.observer?.getStatus?.()?.model as string) ?? null,
-			observerRuntime: null,
+			observerModel: status?.model ?? null,
+			observerRuntime: status?.runtime ?? null,
+			observerAuthSource: status?.auth?.source ?? null,
+			observerAuthType: status?.auth?.type ?? null,
+			observerErrorCode: status?.lastError?.code ?? null,
+			observerErrorMessage: truncateErrorMessage(status?.lastError?.message ?? "", 400) || null,
 		});
 		throw exc;
 	}
