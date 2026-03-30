@@ -17,6 +17,10 @@ import type { MemoryStore } from "./store.js";
 
 const EXTRACTOR_VERSION = "raw_events_v1";
 
+/** Max flush attempts before a batch is permanently abandoned.
+ *  Override via CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS. */
+const DEFAULT_MAX_FLUSH_ATTEMPTS = 5;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -247,7 +251,7 @@ export async function flushRawEvents(
 	}
 
 	// Get or create flush batch (idempotency guard)
-	const { batchId, status } = store.getOrCreateRawEventFlushBatch(
+	const { batchId, status, attemptCount } = store.getOrCreateRawEventFlushBatch(
 		opencodeSessionId,
 		source,
 		startEventSeq,
@@ -257,6 +261,19 @@ export async function flushRawEvents(
 
 	// If already completed, just advance flush state
 	if (status === "completed") {
+		store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+		return { flushed: 0, updatedState: 1 };
+	}
+
+	// Give up after too many failed attempts — mark batch as permanently failed
+	// and advance the cursor so the pipeline isn't blocked forever.
+	// Only trigger from terminal failure states; if another worker has the batch
+	// claimed/running, fall through to the claim step which will correctly bail.
+	const maxAttempts = Number.parseInt(process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS ?? "", 10);
+	const effectiveMax =
+		Number.isFinite(maxAttempts) && maxAttempts > 0 ? maxAttempts : DEFAULT_MAX_FLUSH_ATTEMPTS;
+	if (attemptCount >= effectiveMax && (status === "failed" || status === "error")) {
+		store.updateRawEventFlushBatchStatus(batchId, "gave_up");
 		store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
 		return { flushed: 0, updatedState: 1 };
 	}
