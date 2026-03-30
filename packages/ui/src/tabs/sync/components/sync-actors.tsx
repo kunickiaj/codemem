@@ -3,6 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { renderIntoSyncMount } from './render-root';
 import { openSyncConfirmDialog } from '../sync-dialogs';
 import {
+  actorDisplayLabel,
   actorLabel,
   actorMergeNote,
   assignedActorCount,
@@ -26,9 +27,9 @@ type SyncActorsListProps = {
 
 function localActorNote(hiddenLocalDuplicateCount: number): string {
   if (hiddenLocalDuplicateCount <= 0) {
-    return 'Used for this device and same-person devices.';
+    return 'Represents you across your devices.';
   }
-  return `Used for this device and same-person devices. ${hiddenLocalDuplicateCount} unresolved duplicate ${hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden until reviewed in Needs attention.`;
+  return `Represents you across your devices. ${hiddenLocalDuplicateCount} unresolved duplicate ${hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden until reviewed in Needs attention.`;
 }
 
 function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: SyncActorRowProps) {
@@ -106,9 +107,9 @@ function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: S
     <div className="actor-row">
       <div className="actor-details">
         <div className="actor-title">
-          <strong>{label}</strong>
+          <strong>{actorDisplayLabel(actor)}</strong>
           <span className={`badge actor-badge${actor.is_local ? ' local' : ''}`}>
-            {actor.is_local ? 'Local' : `${count} device${count === 1 ? '' : 's'}`}
+            {actor.is_local ? 'You' : `${count} device${count === 1 ? '' : 's'}`}
           </span>
         </div>
         <div className="peer-meta">
@@ -146,7 +147,7 @@ function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: S
                   const targetId = String(target.actor_id || '');
                   return (
                     <option key={targetId} value={targetId}>
-                      {target.is_local ? `${actorLabel(target)} (local)` : actorLabel(target)}
+                      {target.is_local ? actorDisplayLabel(target) : actorLabel(target)}
                     </option>
                   );
                 })}

@@ -1,5 +1,15 @@
 import * as Select from '@radix-ui/react-select';
 
+const EMPTY_SENTINEL = '__codemem-empty-select__';
+
+function encodeValue(value: string): string {
+  return value === '' ? EMPTY_SENTINEL : value;
+}
+
+function decodeValue(value: string): string {
+  return value === EMPTY_SENTINEL ? '' : value;
+}
+
 export type RadixSelectOption = {
   value: string;
   label: string;
@@ -35,11 +45,13 @@ export function RadixSelect({
   value,
   viewportClassName,
 }: RadixSelectProps) {
+  const encodedValue = value ? encodeValue(value) : undefined;
+
   return (
     <Select.Root
       disabled={disabled}
-      onValueChange={onValueChange}
-      value={value || undefined}
+      onValueChange={(nextValue) => onValueChange(decodeValue(nextValue))}
+      value={encodedValue}
     >
       <Select.Trigger
         aria-label={ariaLabel ?? placeholder}
@@ -58,10 +70,10 @@ export function RadixSelect({
           <Select.Viewport className={viewportClassName}>
             {options.map((option) => (
               <Select.Item
-                key={option.value}
+                key={encodeValue(option.value)}
                 className={itemClassName}
                 disabled={option.disabled}
-                value={option.value}
+                value={encodeValue(option.value)}
               >
                 <Select.ItemText>{option.label}</Select.ItemText>
                 <Select.ItemIndicator className="sync-radix-select-indicator">✓</Select.ItemIndicator>

@@ -87,8 +87,21 @@ export async function loadSyncData() {
     const statusPayload =
       payload.status && typeof payload.status === 'object' ? payload.status : null;
     if (statusPayload) state.lastSyncStatus = statusPayload;
-    state.lastSyncActors = Array.isArray(actorsPayload?.items) ? actorsPayload.items : [];
-    state.lastSyncPeers = payload.peers || [];
+    if (Array.isArray(actorsPayload?.items)) {
+      state.lastSyncActors = actorsPayload.items;
+    } else if (!actorLoadError) {
+      state.lastSyncActors = [];
+    }
+    const payloadPeers = Array.isArray(payload.peers) ? payload.peers : [];
+    const realPeerIds = new Set(payloadPeers.map((peer: any) => String(peer?.peer_device_id || '').trim()).filter(Boolean));
+    const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
+      ? state.pendingAcceptedSyncPeers.filter((peer: any) => {
+          const peerId = String(peer?.peer_device_id || '').trim();
+          return peerId && !realPeerIds.has(peerId);
+        })
+      : [];
+    state.pendingAcceptedSyncPeers = pendingPeers;
+    state.lastSyncPeers = [...payloadPeers, ...pendingPeers];
     state.lastSyncSharingReview = payload.sharing_review || [];
     state.lastSyncCoordinator = payload.coordinator || null;
     if (Array.isArray(payload.join_requests)) {
