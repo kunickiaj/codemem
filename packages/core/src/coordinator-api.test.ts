@@ -2,19 +2,23 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type CoordinatorCreateInviteInput,
 	type CoordinatorCreateJoinRequestInput,
+	type CoordinatorCreateReciprocalApprovalInput,
 	type CoordinatorEnrollDeviceInput,
 	type CoordinatorEnrollment,
 	type CoordinatorGroup,
 	type CoordinatorInvite,
 	type CoordinatorJoinRequest,
 	type CoordinatorJoinRequestReviewResult,
+	type CoordinatorListReciprocalApprovalsInput,
 	type CoordinatorPeerRecord,
 	type CoordinatorPresenceRecord,
+	type CoordinatorReciprocalApproval,
 	type CoordinatorReviewJoinRequestInput,
 	type CoordinatorStoreInterface,
 	type CoordinatorUpsertPresenceInput,
 	createCoordinatorApp,
 } from "./index.js";
+import * as syncAuth from "./sync-auth.js";
 
 function createMockStore(
 	overrides?: Partial<CoordinatorStoreInterface>,
@@ -53,6 +57,18 @@ function createMockStore(
 			async (
 				_: CoordinatorReviewJoinRequestInput,
 			): Promise<CoordinatorJoinRequestReviewResult | null> => null,
+		),
+		createReciprocalApproval: vi.fn(
+			async (
+				_: CoordinatorCreateReciprocalApprovalInput,
+			): Promise<CoordinatorReciprocalApproval> => {
+				throw new Error("not implemented");
+			},
+		),
+		listReciprocalApprovals: vi.fn(
+			async (
+				_: CoordinatorListReciprocalApprovalsInput,
+			): Promise<CoordinatorReciprocalApproval[]> => [],
 		),
 		upsertPresence: vi.fn(
 			async (_: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> => {
@@ -126,5 +142,139 @@ describe("createCoordinatorApp dependency injection", () => {
 
 		expect(res.status).toBe(401);
 		expect(await res.json()).toEqual({ error: "admin_not_configured" });
+	});
+
+	it("lists reciprocal approvals for the authenticated device", async () => {
+		vi.spyOn(syncAuth, "verifySignature").mockReturnValue(true);
+		const store = createMockStore({
+			getEnrollment: vi.fn(async () => ({
+				group_id: "g1",
+				device_id: "local-device",
+				public_key: "pk1",
+				fingerprint: "fp1",
+				display_name: "Laptop",
+				enabled: 1,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			listReciprocalApprovals: vi.fn(async () => [
+				{
+					request_id: "req-1",
+					group_id: "g1",
+					requesting_device_id: "peer-a",
+					requested_device_id: "local-device",
+					status: "pending",
+					created_at: "2026-03-28T00:00:00Z",
+					resolved_at: null,
+				},
+			]),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+		});
+
+		const res = await app.request(
+			"/v1/reciprocal-approvals?group_id=g1&direction=incoming&status=pending",
+			{
+				headers: {
+					"X-Opencode-Device": "local-device",
+					"X-Opencode-Signature": "v1:test",
+					"X-Opencode-Timestamp": "123",
+					"X-Opencode-Nonce": "nonce-1",
+				},
+			},
+		);
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			items: [
+				{
+					request_id: "req-1",
+					group_id: "g1",
+					requesting_device_id: "peer-a",
+					requested_device_id: "local-device",
+					status: "pending",
+					created_at: "2026-03-28T00:00:00Z",
+					resolved_at: null,
+				},
+			],
+		});
+		expect(store.listReciprocalApprovals).toHaveBeenCalledWith({
+			groupId: "g1",
+			deviceId: "local-device",
+			direction: "incoming",
+			status: "pending",
+		});
+	});
+
+	it("creates a reciprocal approval for the authenticated device", async () => {
+		vi.spyOn(syncAuth, "verifySignature").mockReturnValue(true);
+		const store = createMockStore({
+			getEnrollment: vi.fn(async (groupId: string, deviceId: string) => {
+				if (groupId !== "g1") return null;
+				if (deviceId === "local-device" || deviceId === "peer-a") {
+					return {
+						group_id: "g1",
+						device_id: deviceId,
+						public_key: deviceId === "local-device" ? "pk1" : "pk2",
+						fingerprint: deviceId === "local-device" ? "fp1" : "fp2",
+						display_name: deviceId,
+						enabled: 1,
+						created_at: "2026-03-28T00:00:00Z",
+					};
+				}
+				return null;
+			}),
+			createReciprocalApproval: vi.fn(async () => ({
+				request_id: "req-2",
+				group_id: "g1",
+				requesting_device_id: "local-device",
+				requested_device_id: "peer-a",
+				status: "pending",
+				created_at: "2026-03-28T00:00:00Z",
+				resolved_at: null,
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+		});
+
+		const res = await app.request("/v1/reciprocal-approvals", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Opencode-Device": "local-device",
+				"X-Opencode-Signature": "v1:test",
+				"X-Opencode-Timestamp": "123",
+				"X-Opencode-Nonce": "nonce-2",
+			},
+			body: JSON.stringify({ group_id: "g1", requested_device_id: "peer-a" }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			ok: true,
+			request: {
+				request_id: "req-2",
+				group_id: "g1",
+				requesting_device_id: "local-device",
+				requested_device_id: "peer-a",
+				status: "pending",
+				created_at: "2026-03-28T00:00:00Z",
+				resolved_at: null,
+			},
+		});
+		expect(store.createReciprocalApproval).toHaveBeenCalledWith({
+			groupId: "g1",
+			requestingDeviceId: "local-device",
+			requestedDeviceId: "peer-a",
+		});
 	});
 });

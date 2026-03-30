@@ -1844,12 +1844,137 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("accepts a discovered coordinator device into sync peers", async () => {
+		it("surfaces reciprocal approval state on discovered coordinator devices", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
 			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://1.2.3.4:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-incoming",
+									display_name: "Needs Your Approval",
+									fingerprint: "fp-incoming",
+									groups: ["team-a"],
+									addresses: ["http://10.0.0.5:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+								{
+									device_id: "peer-outgoing",
+									display_name: "Waiting On Them",
+									fingerprint: "fp-outgoing",
+									groups: ["team-a"],
+									addresses: ["http://10.0.0.6:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("direction=incoming")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									request_id: "req-incoming",
+									group_id: "team-a",
+									requesting_device_id: "peer-incoming",
+									requested_device_id: "local-device",
+									status: "pending",
+									created_at: new Date().toISOString(),
+									resolved_at: null,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("direction=outgoing")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									request_id: "req-outgoing",
+									group_id: "team-a",
+									requesting_device_id: "local-device",
+									requested_device_id: "peer-outgoing",
+									status: "pending",
+									created_at: new Date().toISOString(),
+									resolved_at: null,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
+				expect(deviceId).toBeTruthy();
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, any>;
+				expect(body.coordinator.discovered_devices).toEqual([
+					expect.objectContaining({
+						device_id: "peer-incoming",
+						needs_local_approval: true,
+						waiting_for_peer_approval: false,
+						incoming_reciprocal_request_id: "req-incoming",
+					}),
+					expect.objectContaining({
+						device_id: "peer-outgoing",
+						needs_local_approval: false,
+						waiting_for_peer_approval: true,
+						outgoing_reciprocal_request_id: "req-outgoing",
+					}),
+				]);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("accepts a discovered coordinator device into sync peers", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
 				if (url.includes("/v1/peers")) {
 					return new Response(
@@ -1865,6 +1990,30 @@ describe("viewer-server", () => {
 									stale: false,
 								},
 							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.endsWith("/v1/reciprocal-approvals")) {
+					const requestBody = init?.body
+						? JSON.parse(new TextDecoder().decode(init.body as ArrayBufferView))
+						: {};
+					expect(requestBody).toEqual({
+						group_id: "team-a",
+						requested_device_id: "peer-fresh",
+					});
+					return new Response(
+						JSON.stringify({
+							ok: true,
+							request: {
+								request_id: "req-1",
+								group_id: "team-a",
+								requesting_device_id: "local-device",
+								requested_device_id: "peer-fresh",
+								status: "pending",
+								created_at: new Date().toISOString(),
+								resolved_at: null,
+							},
 						}),
 						{ status: 200 },
 					);
@@ -1919,6 +2068,167 @@ describe("viewer-server", () => {
 				expect(JSON.parse(String(peerRow?.addresses_json ?? "[]"))).toEqual([
 					"http://10.0.0.5:7337",
 				]);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("does not persist a local peer when reciprocal approval publish fails", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/peers")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									groups: ["team-a"],
+									addresses: ["http://10.0.0.5:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.endsWith("/v1/reciprocal-approvals")) {
+					return new Response(JSON.stringify({ error: "coordinator_down" }), { status: 503 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/peers/accept-discovered", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+				});
+				expect(res.status).toBe(502);
+				expect(await res.json()).toEqual({
+					error: "coordinator_lookup_failed",
+					detail: "coordinator reciprocal approval create failed (503: coordinator_down)",
+				});
+				const peerRow = store.db
+					.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+					.get("peer-fresh");
+				expect(peerRow).toBeUndefined();
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
+		it("rejects accepting a discovered device when multiple coordinator groups match", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/peers?group_id=team-a")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									addresses: ["http://10.0.0.5:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/peers?group_id=team-b")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									device_id: "peer-fresh",
+									display_name: "Fresh Device",
+									fingerprint: "fp-fresh",
+									addresses: ["http://10.0.0.6:7337"],
+									last_seen_at: new Date().toISOString(),
+									expires_at: new Date(Date.now() + 60_000).toISOString(),
+									stale: false,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_groups: ["team-a", "team-b"],
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/peers/accept-discovered", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ peer_device_id: "peer-fresh", fingerprint: "fp-fresh" }),
+				});
+				expect(res.status).toBe(409);
+				expect(await res.json()).toEqual({
+					error: "ambiguous_coordinator_group",
+					detail:
+						"This device is visible through multiple coordinator groups. Review the team setup before approving it here.",
+				});
+				expect(fetchMock).not.toHaveBeenCalledWith(
+					expect.stringMatching(/\/v1\/reciprocal-approvals$/),
+					expect.anything(),
+				);
 			} finally {
 				cleanup();
 				globalThis.fetch = prevFetch;
@@ -2262,7 +2572,7 @@ describe("viewer-server", () => {
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
-			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
 				if (url.includes("/v1/peers")) {
 					return new Response(
@@ -2278,6 +2588,30 @@ describe("viewer-server", () => {
 									stale: false,
 								},
 							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.endsWith("/v1/reciprocal-approvals")) {
+					const requestBody = init?.body
+						? JSON.parse(new TextDecoder().decode(init.body as ArrayBufferView))
+						: {};
+					expect(requestBody).toEqual({
+						group_id: "team-a",
+						requested_device_id: "peer-fresh",
+					});
+					return new Response(
+						JSON.stringify({
+							ok: true,
+							request: {
+								request_id: "req-update",
+								group_id: "team-a",
+								requesting_device_id: "local-device",
+								requested_device_id: "peer-fresh",
+								status: "pending",
+								created_at: new Date().toISOString(),
+								resolved_at: null,
+							},
 						}),
 						{ status: 200 },
 					);
@@ -2505,7 +2839,7 @@ describe("viewer-server", () => {
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
-			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
 				if (url.includes("/v1/peers?group_id=team-a")) {
 					return new Response(
@@ -2521,6 +2855,30 @@ describe("viewer-server", () => {
 									stale: false,
 								},
 							],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.endsWith("/v1/reciprocal-approvals")) {
+					const requestBody = init?.body
+						? JSON.parse(new TextDecoder().decode(init.body as ArrayBufferView))
+						: {};
+					expect(requestBody).toEqual({
+						group_id: "team-a",
+						requested_device_id: "peer-fresh",
+					});
+					return new Response(
+						JSON.stringify({
+							ok: true,
+							request: {
+								request_id: "req-2",
+								group_id: "team-a",
+								requesting_device_id: "local-device",
+								requested_device_id: "peer-fresh",
+								status: "pending",
+								created_at: new Date().toISOString(),
+								resolved_at: null,
+							},
 						}),
 						{ status: 200 },
 					);

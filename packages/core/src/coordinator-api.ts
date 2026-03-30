@@ -262,6 +262,107 @@ export function createCoordinatorApp(
 	});
 
 	// -----------------------------------------------------------------------
+	// GET /v1/reciprocal-approvals — list pending local approval state
+	// -----------------------------------------------------------------------
+
+	app.get("/v1/reciprocal-approvals", async (c) => {
+		const groupId = (c.req.query("group_id") ?? "").trim();
+		const direction = (c.req.query("direction") ?? "incoming").trim();
+		const status = (c.req.query("status") ?? "pending").trim() || "pending";
+		if (!groupId) {
+			return c.json({ error: "group_id_required" }, 400);
+		}
+		if (!["incoming", "outgoing"].includes(direction)) {
+			return c.json({ error: "direction_must_be_incoming_or_outgoing" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const auth = await authorizeRequest(store, runtime, {
+				method: c.req.method,
+				url: c.req.url,
+				groupId,
+				body: Buffer.alloc(0),
+				deviceId: c.req.header("X-Opencode-Device") ?? null,
+				signature: c.req.header("X-Opencode-Signature") ?? null,
+				timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
+				nonce: c.req.header("X-Opencode-Nonce") ?? null,
+			});
+			if (!auth.ok || !auth.enrollment) {
+				return c.json({ error: auth.error }, 401);
+			}
+			const items = await store.listReciprocalApprovals({
+				groupId,
+				deviceId: String(auth.enrollment.device_id),
+				direction: direction as "incoming" | "outgoing",
+				status,
+			});
+			return c.json({ items });
+		} finally {
+			await store.close();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// POST /v1/reciprocal-approvals — register a local trust action
+	// -----------------------------------------------------------------------
+
+	app.post("/v1/reciprocal-approvals", async (c) => {
+		const raw = Buffer.from(await c.req.arrayBuffer());
+		if (raw.length > MAX_BODY_BYTES) {
+			return c.json({ error: "body_too_large" }, 413);
+		}
+
+		let data: Record<string, unknown>;
+		try {
+			data = JSON.parse(raw.toString("utf-8"));
+			if (typeof data !== "object" || data === null || Array.isArray(data)) {
+				return c.json({ error: "invalid_json" }, 400);
+			}
+		} catch {
+			return c.json({ error: "invalid_json" }, 400);
+		}
+
+		const groupId = String(data.group_id ?? "").trim();
+		const requestedDeviceId = String(data.requested_device_id ?? "").trim();
+		if (!groupId || !requestedDeviceId) {
+			return c.json({ error: "group_id_and_requested_device_id_required" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const auth = await authorizeRequest(store, runtime, {
+				method: c.req.method,
+				url: c.req.url,
+				groupId,
+				body: raw,
+				deviceId: c.req.header("X-Opencode-Device") ?? null,
+				signature: c.req.header("X-Opencode-Signature") ?? null,
+				timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
+				nonce: c.req.header("X-Opencode-Nonce") ?? null,
+			});
+			if (!auth.ok || !auth.enrollment) {
+				return c.json({ error: auth.error }, 401);
+			}
+			if (requestedDeviceId === String(auth.enrollment.device_id)) {
+				return c.json({ error: "requested_device_must_differ" }, 400);
+			}
+			const targetEnrollment = await store.getEnrollment(groupId, requestedDeviceId);
+			if (!targetEnrollment) {
+				return c.json({ error: "requested_device_not_found" }, 404);
+			}
+			const request = await store.createReciprocalApproval({
+				groupId,
+				requestingDeviceId: String(auth.enrollment.device_id),
+				requestedDeviceId,
+			});
+			return c.json({ ok: true, request });
+		} finally {
+			await store.close();
+		}
+	});
+
+	// -----------------------------------------------------------------------
 	// Admin routes
 	// -----------------------------------------------------------------------
 

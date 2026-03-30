@@ -415,6 +415,80 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 			});
 		});
 
+		describe("reciprocal approvals", () => {
+			it("creates and lists a pending outgoing reciprocal approval", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					const request = await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d1",
+						requestedDeviceId: "d2",
+					});
+					expect(request.status).toBe("pending");
+					expect(
+						await store.listReciprocalApprovals({
+							groupId: "g1",
+							deviceId: "d1",
+							direction: "outgoing",
+						}),
+					).toEqual([
+						expect.objectContaining({ request_id: request.request_id, status: "pending" }),
+					]);
+				});
+			});
+
+			it("surfaces incoming pending reciprocal approvals for the requested device", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d1",
+						requestedDeviceId: "d2",
+					});
+					expect(
+						await store.listReciprocalApprovals({
+							groupId: "g1",
+							deviceId: "d2",
+							direction: "incoming",
+						}),
+					).toEqual([
+						expect.objectContaining({ requesting_device_id: "d1", requested_device_id: "d2" }),
+					]);
+				});
+			});
+
+			it("completes the reverse pending approval when the second device also approves", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d1",
+						requestedDeviceId: "d2",
+					});
+					const completed = await store.createReciprocalApproval({
+						groupId: "g1",
+						requestingDeviceId: "d2",
+						requestedDeviceId: "d1",
+					});
+					expect(completed.status).toBe("completed");
+					expect(
+						await store.listReciprocalApprovals({
+							groupId: "g1",
+							deviceId: "d1",
+							direction: "incoming",
+						}),
+					).toEqual([]);
+					expect(
+						await store.listReciprocalApprovals({
+							groupId: "g1",
+							deviceId: "d2",
+							direction: "incoming",
+						}),
+					).toEqual([]);
+				});
+			});
+		});
+
 		describe("nonces", () => {
 			it("records a nonce once and rejects replay", async () => {
 				await withContext(async ({ store }) => {

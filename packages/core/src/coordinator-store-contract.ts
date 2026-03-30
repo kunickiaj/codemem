@@ -62,6 +62,16 @@ export interface CoordinatorPeerRecord {
 	capabilities: Record<string, unknown>;
 }
 
+export interface CoordinatorReciprocalApproval {
+	request_id: string;
+	group_id: string;
+	requesting_device_id: string;
+	requested_device_id: string;
+	status: string;
+	created_at: string;
+	resolved_at: string | null;
+}
+
 export interface CoordinatorEnrollDeviceInput {
 	deviceId: string;
 	fingerprint: string;
@@ -99,6 +109,19 @@ export interface CoordinatorUpsertPresenceInput {
 	capabilities?: Record<string, unknown> | null;
 }
 
+export interface CoordinatorCreateReciprocalApprovalInput {
+	groupId: string;
+	requestingDeviceId: string;
+	requestedDeviceId: string;
+}
+
+export interface CoordinatorListReciprocalApprovalsInput {
+	groupId: string;
+	deviceId: string;
+	direction: "incoming" | "outgoing";
+	status?: string;
+}
+
 export interface CoordinatorStore {
 	close(): Promise<void>;
 	createGroup(groupId: string, displayName?: string | null): Promise<void>;
@@ -120,6 +143,12 @@ export interface CoordinatorStore {
 	reviewJoinRequest(
 		opts: CoordinatorReviewJoinRequestInput,
 	): Promise<CoordinatorJoinRequestReviewResult | null>;
+	createReciprocalApproval(
+		opts: CoordinatorCreateReciprocalApprovalInput,
+	): Promise<CoordinatorReciprocalApproval>;
+	listReciprocalApprovals(
+		opts: CoordinatorListReciprocalApprovalsInput,
+	): Promise<CoordinatorReciprocalApproval[]>;
 	upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord>;
 	listGroupPeers(groupId: string, requestingDeviceId: string): Promise<CoordinatorPeerRecord[]>;
 }

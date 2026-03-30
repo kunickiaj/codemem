@@ -31,6 +31,7 @@ describe("CoordinatorStore", () => {
 				expect(names).toEqual([
 					"coordinator_invites",
 					"coordinator_join_requests",
+					"coordinator_reciprocal_approvals",
 					"enrolled_devices",
 					"groups",
 					"presence_records",

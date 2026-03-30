@@ -172,6 +172,28 @@ describe("D1CoordinatorStore", () => {
 		expect(await store.getEnrollment("g1", "d2")).toBeNull();
 	});
 
+	it("completes reverse reciprocal approvals when both devices approve each other", async () => {
+		await store.createGroup("g1");
+		const first = await store.createReciprocalApproval({
+			groupId: "g1",
+			requestingDeviceId: "d1",
+			requestedDeviceId: "d2",
+		});
+		expect(first.status).toBe("pending");
+		expect(
+			await store.listReciprocalApprovals({ groupId: "g1", deviceId: "d2", direction: "incoming" }),
+		).toEqual([expect.objectContaining({ request_id: first.request_id, status: "pending" })]);
+		const second = await store.createReciprocalApproval({
+			groupId: "g1",
+			requestingDeviceId: "d2",
+			requestedDeviceId: "d1",
+		});
+		expect(second.status).toBe("completed");
+		expect(
+			await store.listReciprocalApprovals({ groupId: "g1", deviceId: "d1", direction: "incoming" }),
+		).toEqual([]);
+	});
+
 	it("implements nonce replay protection, presence upsert, and peer listing", async () => {
 		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:00Z")).resolves.toBe(true);
 		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:01Z")).resolves.toBe(false);

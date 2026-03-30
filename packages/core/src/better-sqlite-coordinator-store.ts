@@ -19,14 +19,17 @@ import Database from "better-sqlite3";
 import type {
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
+	CoordinatorCreateReciprocalApprovalInput,
 	CoordinatorEnrollDeviceInput,
 	CoordinatorEnrollment,
 	CoordinatorGroup,
 	CoordinatorInvite,
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
+	CoordinatorListReciprocalApprovalsInput,
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
+	CoordinatorReciprocalApproval,
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorStore,
 	CoordinatorUpsertPresenceInput,
@@ -152,6 +155,16 @@ function initializeSchema(db: DatabaseType): void {
 			reviewed_at TEXT,
 			reviewed_by TEXT
 		);
+
+		CREATE TABLE IF NOT EXISTS coordinator_reciprocal_approvals (
+			request_id TEXT PRIMARY KEY,
+			group_id TEXT NOT NULL,
+			requesting_device_id TEXT NOT NULL,
+			requested_device_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			resolved_at TEXT
+		);
 	`);
 }
 
@@ -267,6 +280,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		this.db
 			.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
 			.run(groupId, deviceId);
+		this.db
+			.prepare(
+				"DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
+			)
+			.run(groupId, deviceId, deviceId);
 		const result = this.db
 			.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
 			.run(groupId, deviceId);
@@ -403,6 +421,84 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				.get(opts.requestId);
 			return updated ? rowToRecord<CoordinatorJoinRequestReviewResult>(updated) : null;
 		})();
+	}
+
+	async createReciprocalApproval(
+		opts: CoordinatorCreateReciprocalApprovalInput,
+	): Promise<CoordinatorReciprocalApproval> {
+		const groupId = String(opts.groupId ?? "").trim();
+		const requestingDeviceId = String(opts.requestingDeviceId ?? "").trim();
+		const requestedDeviceId = String(opts.requestedDeviceId ?? "").trim();
+		if (!groupId || !requestingDeviceId || !requestedDeviceId) {
+			throw new Error("groupId, requestingDeviceId, and requestedDeviceId are required.");
+		}
+		if (requestingDeviceId === requestedDeviceId) {
+			throw new Error("requesting and requested device ids must differ.");
+		}
+		return this.db.transaction(() => {
+			const now = nowISO();
+			const existing = this.db
+				.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+					 FROM coordinator_reciprocal_approvals
+					 WHERE group_id = ?
+					   AND requesting_device_id = ?
+					   AND requested_device_id = ?
+					   AND status = 'pending'
+					 ORDER BY created_at DESC
+					 LIMIT 1`)
+				.get(groupId, requestingDeviceId, requestedDeviceId);
+			if (existing) {
+				return rowToRecord<CoordinatorReciprocalApproval>(existing);
+			}
+			const reverse = this.db
+				.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+					 FROM coordinator_reciprocal_approvals
+					 WHERE group_id = ?
+					   AND requesting_device_id = ?
+					   AND requested_device_id = ?
+					   AND status = 'pending'
+					 ORDER BY created_at DESC
+					 LIMIT 1`)
+				.get(groupId, requestedDeviceId, requestingDeviceId);
+			if (reverse) {
+				this.db
+					.prepare(`UPDATE coordinator_reciprocal_approvals
+						 SET status = 'completed', resolved_at = ?
+						 WHERE request_id = ?`)
+					.run(now, (reverse as CoordinatorReciprocalApproval).request_id);
+				const completed = this.db
+					.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+						 FROM coordinator_reciprocal_approvals WHERE request_id = ?`)
+					.get((reverse as CoordinatorReciprocalApproval).request_id);
+				return rowToRecord<CoordinatorReciprocalApproval>(completed);
+			}
+			const requestId = tokenUrlSafe(12);
+			this.db
+				.prepare(`INSERT INTO coordinator_reciprocal_approvals(
+						request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+					) VALUES (?, ?, ?, ?, 'pending', ?, NULL)`)
+				.run(requestId, groupId, requestingDeviceId, requestedDeviceId, now);
+			const created = this.db
+				.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+					 FROM coordinator_reciprocal_approvals WHERE request_id = ?`)
+				.get(requestId);
+			return rowToRecord<CoordinatorReciprocalApproval>(created);
+		})();
+	}
+
+	async listReciprocalApprovals(
+		opts: CoordinatorListReciprocalApprovalsInput,
+	): Promise<CoordinatorReciprocalApproval[]> {
+		const directionColumn =
+			opts.direction === "incoming" ? "requested_device_id" : "requesting_device_id";
+		const status = String(opts.status ?? "pending").trim() || "pending";
+		return this.db
+			.prepare(`SELECT request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+				 FROM coordinator_reciprocal_approvals
+				 WHERE group_id = ? AND ${directionColumn} = ? AND status = ?
+				 ORDER BY created_at ASC, request_id ASC`)
+			.all(opts.groupId, opts.deviceId, status)
+			.map((row) => rowToRecord<CoordinatorReciprocalApproval>(row));
 	}
 
 	async upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {
