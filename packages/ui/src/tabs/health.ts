@@ -180,7 +180,9 @@ export function renderHealthOverview() {
   cards.forEach((c) => healthGrid.appendChild(c));
 
   // Recommendations
-  const triggerSync = () => api.triggerSync();
+  const triggerSync = async () => {
+    await api.triggerSync();
+  };
   const recommendations: HealthAction[] = [];
   if (hasBacklog) {
     recommendations.push({ label: 'Pipeline needs attention. Check queue health first.', command: 'codemem db raw-events-status' });
