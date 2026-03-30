@@ -531,6 +531,56 @@
         outline-offset: 2px;
       }
 
+      .sync-redact-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .sync-redact-switch {
+        width: 34px;
+        height: 20px;
+        border: 1px solid var(--control-border);
+        border-radius: var(--radius-pill);
+        background: var(--surface-1);
+        box-shadow: inset 0 0 0 1px transparent;
+        cursor: pointer;
+        flex-shrink: 0;
+        padding: 1px;
+        transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      .sync-redact-switch:hover {
+        border-color: var(--control-hover-border);
+      }
+
+      .sync-redact-switch:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .sync-redact-switch[data-state="checked"] {
+        background: var(--control-bg);
+        border-color: var(--control-hover-border);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+      }
+
+      .sync-redact-switch-thumb {
+        display: block;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--surface-0);
+        box-shadow: var(--shadow-sm);
+        transition: transform 0.15s ease, background 0.15s ease;
+        transform: translateX(0);
+      }
+
+      .sync-redact-switch[data-state="checked"] .sync-redact-switch-thumb {
+        transform: translateX(14px);
+        background: var(--accent);
+      }
+
       /* ── Selects / inputs ──────────────────────────────────── */
 
       .project-filter,
@@ -1051,11 +1101,81 @@
         color: var(--text-secondary);
         font-feature-settings: 'tnum' 1;
       }
-      .sync-legacy-claim-row { margin-top: 12px; gap: 12px; align-items: center; flex-wrap: wrap; }
-      .sync-legacy-select {
+      .sync-radix-select-host {
+        min-width: 0;
+        max-width: 100%;
+      }
+      .sync-actor-select-host {
+        min-width: 220px;
+        max-width: 100%;
+        flex: 1 1 220px;
+      }
+      .sync-legacy-select-host {
         min-width: 320px;
         max-width: 100%;
         flex: 1 1 320px;
+      }
+      .sync-radix-select-trigger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+        text-align: left;
+      }
+      .sync-radix-select-trigger > span:first-child {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sync-radix-select-icon {
+        color: var(--text-tertiary);
+        flex: 0 0 auto;
+      }
+      .sync-radix-select-content {
+        z-index: 30;
+        min-width: var(--radix-select-trigger-width);
+        max-width: min(420px, calc(100vw - 24px));
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+        box-shadow: var(--shadow-lg);
+      }
+      .sync-radix-select-viewport {
+        padding: 6px;
+      }
+      .sync-radix-select-item {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 36px;
+        padding: 8px 12px;
+        border-radius: var(--radius-sm);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .sync-radix-select-item[data-highlighted] {
+        outline: none;
+        background: var(--accent-subtle);
+        color: var(--accent);
+      }
+      .sync-radix-select-item[data-disabled] {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .sync-radix-select-indicator {
+        color: var(--accent);
+        flex: 0 0 auto;
+      }
+      .sync-legacy-claim-row { margin-top: 12px; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .sync-legacy-select {
         padding: 8px 12px;
         border-radius: var(--radius-md);
         border: 1px solid var(--border);
@@ -1098,9 +1218,6 @@
         transform: none;
       }
       .sync-actor-select {
-        min-width: 220px;
-        max-width: 100%;
-        flex: 1 1 220px;
         padding: 8px 12px;
         border-radius: var(--radius-md);
         border: 1px solid var(--border);
@@ -1748,28 +1865,7 @@
             </div>
           </div>
           <div id="syncAdminSection">
-            <button class="sync-toggle-admin" id="syncToggleAdmin" aria-expanded="false" aria-controls="syncInvitePanel">Set up a new team instead…</button>
-            <div id="syncInvitePanel" hidden>
-              <h3 class="settings-group-title" style="margin-top:12px">Create a team</h3>
-              <div class="section-meta">Generate an invite to share with teammates.</div>
-              <div class="actor-create-row">
-                <label for="syncInviteGroup" class="sr-only">Team name</label>
-                <input class="peer-scope-input" id="syncInviteGroup" placeholder="Team name (e.g. my-team)" />
-                <label for="syncInvitePolicy" class="sr-only">Join policy</label>
-                <select class="sync-actor-select" id="syncInvitePolicy">
-                  <option value="auto_admit">Auto-admit</option>
-                  <option value="approval_required">Approval required</option>
-                </select>
-                <div class="sync-ttl-group">
-                  <label for="syncInviteTtl">Expires in</label>
-                  <input class="peer-scope-input" id="syncInviteTtl" type="number" min="1" value="24" style="width:64px" />
-                  <label>hours</label>
-                </div>
-                <button class="settings-button" id="syncCreateInviteButton">Create invite</button>
-              </div>
-              <label for="syncInviteOutput" class="sr-only">Generated invite</label>
-              <textarea class="feed-search" id="syncInviteOutput" placeholder="Invite will appear here" readonly hidden></textarea>
-            </div>
+            <div id="syncAdminDisclosureMount" style="display: contents"></div>
           </div>
         </div>
         <h3 class="settings-group-title" style="margin-top: 20px">Team status</h3>
@@ -1818,7 +1914,7 @@
           <div class="peer-meta" id="syncLegacyClaimsMeta"></div>
           <div class="peer-actions sync-legacy-claim-row">
             <label for="syncLegacyDeviceSelect" class="sr-only">Legacy device</label>
-            <select class="sync-legacy-select" id="syncLegacyDeviceSelect"></select>
+            <div class="sync-radix-select-host sync-legacy-select-host" id="syncLegacyDeviceSelectMount"></div>
             <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
           </div>
         </div>
@@ -1829,10 +1925,10 @@
         <div class="section-header">
           <h2>Advanced diagnostics</h2>
           <div class="section-actions">
-            <button class="settings-button" id="syncPairingToggle">Show pairing</button>
-            <label class="small" style="display:inline-flex;align-items:center;gap:6px;">
-              <input id="syncRedact" type="checkbox" checked />
-              Redact
+            <div id="syncPairingDisclosureMount" style="display: contents"></div>
+            <label class="small sync-redact-control">
+              <span id="syncRedactMount"></span>
+              <span id="syncRedactLabel">Redact</span>
             </label>
           </div>
         </div>
@@ -1845,16 +1941,7 @@
         <div class="sync-actions" id="syncActions"></div>
         <div class="grid-2" id="syncStatusGrid"></div>
 
-        <div class="pairing-card" id="syncPairing" hidden>
-          <div class="peer-title">
-            <strong>Pairing command</strong>
-            <div class="peer-actions"><button id="pairingCopy">Copy command</button></div>
-          </div>
-          <div class="pairing-body">
-            <pre id="pairingPayload" style="user-select:all">Loading…</pre>
-          </div>
-          <div class="peer-meta" id="pairingHint">Copy and run on the other device. Use --include/--exclude to control which projects sync.</div>
-        </div>
+        <div id="syncPairingPanelMount" style="display: contents"></div>
 
         <h3 class="settings-group-title" style="margin-top: 20px">Recent sync attempts</h3>
         <div class="attempts-list" id="syncAttempts"></div>
