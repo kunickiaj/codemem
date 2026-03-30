@@ -17,7 +17,7 @@ import {
   clearDuplicatePersonDecision,
   saveDuplicatePersonDecision,
 } from './helpers';
-import { SYNC_TERMINOLOGY, summarizeSyncRunResult } from './view-model';
+import { deriveCoordinatorApprovalSummary, SYNC_TERMINOLOGY, summarizeSyncRunResult } from './view-model';
 
 /* ── DOM placement helpers ───────────────────────────────── */
 
@@ -322,10 +322,23 @@ export function renderTeamSync() {
       if (deviceId) row.dataset.discoveredDeviceId = deviceId;
       const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
       const fingerprint = String(device.fingerprint || '').trim();
+      const groupIds = Array.isArray(device.groups)
+        ? device.groups.map((value) => String(value || '').trim()).filter(Boolean)
+        : [];
+      const hasAmbiguousCoordinatorGroup = groupIds.length > 1;
       const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || '') === deviceId);
+      const approvalSummary = deriveCoordinatorApprovalSummary({
+        device,
+        pairedLocally: Boolean(pairedPeer),
+      });
       const pairedFingerprint = String(pairedPeer?.fingerprint || '').trim();
       const hasConflict = Boolean(pairedPeer) && Boolean(fingerprint) && Boolean(pairedFingerprint) && pairedFingerprint !== fingerprint;
-      const canAccept = Boolean(deviceId) && Boolean(fingerprint) && !pairedPeer && !device.stale;
+      const canAccept =
+        Boolean(deviceId) &&
+        Boolean(fingerprint) &&
+        !pairedPeer &&
+        !device.stale &&
+        !hasAmbiguousCoordinatorGroup;
       title.append(el('strong', null, displayName));
       title.appendChild(
         el(
@@ -341,6 +354,9 @@ export function renderTeamSync() {
           hasConflict ? SYNC_TERMINOLOGY.conflicts : pairedPeer ? SYNC_TERMINOLOGY.pairedLocally : 'Not connected on this device',
         ),
       );
+      if (approvalSummary.badgeLabel) {
+        title.appendChild(el('span', 'badge actor-badge', approvalSummary.badgeLabel));
+      }
       const addresses = Array.isArray(device.addresses) ? device.addresses : [];
       const addressLabel = addresses.length
         ? addresses
@@ -353,6 +369,8 @@ export function renderTeamSync() {
       const noteParts = [deviceId, addressLabel];
       if (hasConflict) {
         noteParts.push('repair the local peer before accepting this discovered device');
+      } else if (hasAmbiguousCoordinatorGroup) {
+        noteParts.push('this device appears in multiple coordinator groups; review team setup before approving it here');
       } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
         noteParts.push('scope review pending in People');
       } else if (pairedPeer?.last_error) {
@@ -360,9 +378,14 @@ export function renderTeamSync() {
       } else if (pairedPeer?.status?.peer_state) {
         noteParts.push(`paired status: ${String(pairedPeer.status.peer_state)}`);
       }
+      if (approvalSummary.description) noteParts.push(approvalSummary.description);
       details.append(title, el('div', 'peer-meta', noteParts.join(' · ')));
       if (canAccept) {
-        const acceptBtn = el('button', 'settings-button', 'Review device') as HTMLButtonElement;
+        const acceptBtn = el(
+          'button',
+          'settings-button',
+          approvalSummary.actionLabel || 'Review device',
+        ) as HTMLButtonElement;
         acceptBtn.addEventListener('click', async () => {
           acceptBtn.disabled = true;
           acceptBtn.textContent = 'Opening…';
@@ -370,7 +393,9 @@ export function renderTeamSync() {
             const result = await api.acceptDiscoveredPeer(deviceId, fingerprint);
             requestPeerScopeReview(deviceId);
             showGlobalNotice(
-              `Step 1 complete on this device for ${displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
+              approvalSummary.state === 'needs-your-approval'
+                ? `Approved ${displayName} on this device. Two-way trust should be ready once both devices refresh.`
+                : `Step 1 complete on this device for ${displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
             );
             try {
               await promptForDeviceName(
@@ -396,12 +421,18 @@ export function renderTeamSync() {
             acceptBtn.textContent = 'Retry review';
           } finally {
             acceptBtn.disabled = false;
-            if (acceptBtn.textContent === 'Opening…') acceptBtn.textContent = 'Review device';
+            if (acceptBtn.textContent === 'Opening…') {
+              acceptBtn.textContent = approvalSummary.actionLabel || 'Review device';
+            }
           }
         });
         rowActions.appendChild(acceptBtn);
       } else if (!pairedPeer && device.stale) {
         rowActions.appendChild(el('div', 'peer-meta', 'Wait for a fresh coordinator presence update.'));
+      } else if (!pairedPeer && hasAmbiguousCoordinatorGroup) {
+        rowActions.appendChild(
+          el('div', 'peer-meta', 'This device is visible through multiple coordinator groups. Fix that team setup first, then approve it here.'),
+        );
       } else if (hasConflict) {
         const inspectBtn = el('button', 'settings-button', 'Open device details') as HTMLButtonElement;
         inspectBtn.addEventListener('click', () => {
@@ -442,14 +473,15 @@ export function renderTeamSync() {
       } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
         rowActions.appendChild(el('div', 'peer-meta', 'Review this device\'s scope in People & devices next.'));
       } else if (pairedPeer) {
-        const lowerError = String(pairedPeer?.last_error || '').toLowerCase();
         rowActions.appendChild(
           el(
             'div',
             'peer-meta',
-            lowerError.includes('401') && lowerError.includes('unauthorized')
-              ? 'Waiting for the other device to trust this one before sync can work.'
-              : 'Manage this device in People & devices.',
+            approvalSummary.state === 'waiting-for-other-device'
+              ? approvalSummary.description || 'Waiting on the other device.'
+              : String(pairedPeer?.last_error || '').toLowerCase().includes('401') && String(pairedPeer?.last_error || '').toLowerCase().includes('unauthorized')
+                ? 'Waiting for the other device to trust this one before sync can work.'
+                : 'Manage this device in People & devices.',
           ),
         );
       }
