@@ -1,21 +1,112 @@
 /* Diagnostics card — sync status grid, attempts log, pairing. */
 
-import { el, copyToClipboard } from '../../lib/dom';
+import { h } from 'preact';
+import { RadixSwitch } from '../../components/primitives/radix-switch';
+import { copyToClipboard } from '../../lib/dom';
 import { formatAgeShort, formatTimestamp, secondsSince, titleCase } from '../../lib/format';
+import { state, setSyncPairingOpen, isSyncRedactionEnabled, setSyncRedactionEnabled } from '../../lib/state';
+import { clearSyncMount, renderIntoSyncMount } from './components/render-root';
+import { renderPairingDisclosure } from './components/sync-disclosure';
 import {
-  state,
-  isSyncPairingOpen,
-  setSyncPairingOpen,
-  isSyncRedactionEnabled,
-  setSyncRedactionEnabled,
-} from '../../lib/state';
+  renderAttemptsList,
+  renderDiagnosticsGrid,
+  renderPairingView,
+  type PairingView,
+  type SyncAttemptItem,
+  type SyncStatItem,
+} from './components/sync-diagnostics';
 import { redactAddress, renderActionList, hideSkeleton } from './helpers';
+
+type SyncRetention = {
+  enabled?: boolean;
+  last_deleted_ops?: number | string;
+  last_error?: string;
+  last_run_at?: string | null;
+};
+
+type SyncPayloadState = {
+  seconds_since_last?: number;
+};
+
+type PingPayloadState = SyncPayloadState & {
+  last_ping_at?: string | null;
+};
+
+type SyncStatusState = {
+  daemon_detail?: string;
+  daemon_state?: string;
+  enabled?: boolean;
+  last_ping_at?: string | null;
+  last_ping_error?: string;
+  last_sync_at?: string | null;
+  last_sync_at_utc?: string | null;
+  last_sync_error?: string;
+  pending?: number | string;
+  peers?: Record<string, unknown>;
+  ping?: PingPayloadState;
+  retention?: SyncRetention;
+  sync?: SyncPayloadState;
+};
+
+type SyncAttemptState = {
+  address?: string;
+  started_at?: string;
+  started_at_utc?: string;
+  status?: string;
+};
+
+type PairingPayloadState = Record<string, unknown> & {
+  addresses?: unknown[];
+  redacted?: boolean;
+};
+
+const SYNC_REDACT_MOUNT_ID = 'syncRedactMount';
+const SYNC_REDACT_LABEL_ID = 'syncRedactLabel';
 
 /* ── Import render functions needed for redact toggle ────── */
 // These are set by the index module to avoid circular imports.
 let _renderSyncPeers: () => void = () => {};
 export function setRenderSyncPeers(fn: () => void) {
   _renderSyncPeers = fn;
+}
+
+let _refreshPairing: () => void = () => {};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function pairingView(payload: unknown): PairingView {
+  if (!isRecord(payload)) {
+    state.pairingCommandRaw = '';
+    return {
+      payloadText: 'Pairing not available',
+      hintText: 'Enable sync and retry.',
+    };
+  }
+
+  const pairingPayload = payload as PairingPayloadState;
+  if (pairingPayload.redacted) {
+    state.pairingCommandRaw = '';
+    return {
+      payloadText: 'Pairing payload hidden',
+      hintText: 'Diagnostics are required to view the pairing payload.',
+    };
+  }
+
+  const safePayload = {
+    ...pairingPayload,
+    addresses: Array.isArray(pairingPayload.addresses) ? pairingPayload.addresses : [],
+  };
+  const compact = JSON.stringify(safePayload);
+  const b64 = btoa(compact);
+  const command = `echo '${b64}' | base64 -d | codemem sync pair --accept-file -`;
+  state.pairingCommandRaw = command;
+  return {
+    payloadText: command,
+    hintText:
+      'Copy this command and run it on the other device. Use --include/--exclude to control which projects sync.',
+  };
 }
 
 /* ── Sync status renderer ────────────────────────────────── */
@@ -25,13 +116,14 @@ export function renderSyncStatus() {
   const syncMeta = document.getElementById('syncMeta');
   const syncActions = document.getElementById('syncActions');
   if (!syncStatusGrid) return;
-  hideSkeleton('syncDiagSkeleton');
-  syncStatusGrid.textContent = '';
 
-  const status = state.lastSyncStatus;
+  hideSkeleton('syncDiagSkeleton');
+
+  const status = state.lastSyncStatus as SyncStatusState | null;
   if (!status) {
+    clearSyncMount(syncStatusGrid);
     renderActionList(syncActions, []);
-    if (syncMeta) syncMeta.textContent = 'Loading sync status\u2026';
+    if (syncMeta) syncMeta.textContent = 'Loading sync status…';
     return;
   }
 
@@ -72,9 +164,12 @@ export function renderSyncStatus() {
             `Peers: ${peerCount}`,
             lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : 'Last sync: never',
           ];
-    if (daemonState === 'offline-peers')
+    if (daemonState === 'offline-peers') {
       parts.push('All peers are currently offline; sync will resume automatically');
-    if (daemonDetail && daemonState === 'stopped') parts.push(`Detail: ${daemonDetail}`);
+    }
+    if (daemonDetail && daemonState === 'stopped') {
+      parts.push(`Detail: ${daemonDetail}`);
+    }
     if (daemonDetail && (daemonState === 'needs_attention' || daemonState === 'rebootstrapping')) {
       parts.push(`Detail: ${daemonDetail}`);
     }
@@ -85,11 +180,10 @@ export function renderSyncStatus() {
           : 'Retention enabled',
       );
     }
-    syncMeta.textContent = parts.join(' \u00b7 ');
+    syncMeta.textContent = parts.join(' · ');
   }
 
-  // Status grid
-  const diagItems = syncDisabled
+  const items: SyncStatItem[] = syncDisabled
     ? [
         { label: 'State', value: 'Disabled' },
         { label: 'Mode', value: 'Optional' },
@@ -124,56 +218,36 @@ export function renderSyncStatus() {
           },
         ];
 
-  diagItems.forEach((item) => {
-    const block = el('div', 'stat');
-    const content = el('div', 'stat-content');
-    content.append(el('div', 'value', item.value), el('div', 'label', item.label));
-    block.appendChild(content);
-    syncStatusGrid.appendChild(block);
-  });
-
   if (!syncDisabled && !syncNoPeers && (syncError || pingError)) {
-    const block = el('div', 'stat');
-    const content = el('div', 'stat-content');
-    content.append(
-      el('div', 'value', 'Errors'),
-      el('div', 'label', [syncError, pingError].filter(Boolean).join(' \u00b7 ')),
-    );
-    block.appendChild(content);
-    syncStatusGrid.appendChild(block);
+    items.push({
+      label: [syncError, pingError].filter(Boolean).join(' · '),
+      value: 'Errors',
+    });
   }
 
-  if (!syncDisabled && !syncNoPeers && syncPayload?.seconds_since_last) {
-    const block = el('div', 'stat');
-    const content = el('div', 'stat-content');
-    content.append(
-      el('div', 'value', `${syncPayload.seconds_since_last}s`),
-      el('div', 'label', 'Since last sync'),
-    );
-    block.appendChild(content);
-    syncStatusGrid.appendChild(block);
+  if (!syncDisabled && !syncNoPeers && syncPayload.seconds_since_last) {
+    items.push({
+      label: 'Since last sync',
+      value: `${syncPayload.seconds_since_last}s`,
+    });
   }
 
-  if (!syncDisabled && !syncNoPeers && pingPayload?.seconds_since_last) {
-    const block = el('div', 'stat');
-    const content = el('div', 'stat-content');
-    content.append(
-      el('div', 'value', `${pingPayload.seconds_since_last}s`),
-      el('div', 'label', 'Since last ping'),
-    );
-    block.appendChild(content);
-    syncStatusGrid.appendChild(block);
+  if (!syncDisabled && !syncNoPeers && pingPayload.seconds_since_last) {
+    items.push({
+      label: 'Since last ping',
+      value: `${pingPayload.seconds_since_last}s`,
+    });
   }
 
   if (!syncDisabled && retentionEnabled && retentionLastError) {
-    const block = el('div', 'stat');
-    const content = el('div', 'stat-content');
-    content.append(el('div', 'value', 'Retention'), el('div', 'label', retentionLastError));
-    block.appendChild(content);
-    syncStatusGrid.appendChild(block);
+    items.push({
+      label: retentionLastError,
+      value: 'Retention',
+    });
   }
 
-  // Actions
+  renderDiagnosticsGrid(syncStatusGrid, items);
+
   const actions: Array<{ label: string; command: string }> = [];
   if (syncNoPeers) {
     /* no action */
@@ -212,112 +286,98 @@ export function renderSyncStatus() {
 export function renderSyncAttempts() {
   const syncAttempts = document.getElementById('syncAttempts');
   if (!syncAttempts) return;
-  syncAttempts.textContent = '';
-  const attempts = state.lastSyncAttempts;
-  if (!Array.isArray(attempts) || !attempts.length) return;
 
-  attempts.slice(0, 5).forEach((attempt) => {
-    const line = el('div', 'diag-line');
-    const left = el('div', 'left');
-    left.append(
-      el('div', null, attempt.status || 'unknown'),
-      el(
-        'div',
-        'small',
-        isSyncRedactionEnabled() ? redactAddress(attempt.address) : attempt.address || 'n/a',
-      ),
-    );
-    const right = el('div', 'right');
+  const attempts = state.lastSyncAttempts as SyncAttemptState[];
+  if (!Array.isArray(attempts) || !attempts.length) {
+    clearSyncMount(syncAttempts);
+    return;
+  }
+
+  const items: SyncAttemptItem[] = attempts.slice(0, 5).map((attempt) => {
     const time = attempt.started_at || attempt.started_at_utc || '';
-    right.textContent = time ? formatTimestamp(time) : '';
-    line.append(left, right);
-    syncAttempts.appendChild(line);
+    return {
+      status: attempt.status || 'unknown',
+      address: isSyncRedactionEnabled() ? redactAddress(attempt.address) : attempt.address || 'n/a',
+      startedAt: time ? formatTimestamp(time) : '',
+    };
   });
+
+  renderAttemptsList(syncAttempts, items);
 }
 
 /* ── Pairing renderer ────────────────────────────────────── */
 
+function renderPairingCollapsible() {
+  const mount = document.getElementById('syncPairingDisclosureMount') as HTMLElement | null;
+  const contentHost = document.getElementById('syncPairingPanelMount') as HTMLElement | null;
+  if (!mount || !contentHost) return;
+
+  renderPairingDisclosure(mount, {
+    contentHost,
+    open: state.syncPairingOpen,
+    onOpenChange: (open) => {
+      setSyncPairingOpen(open);
+      renderPairingCollapsible();
+      if (open) {
+        const pairingPayloadEl = document.getElementById('pairingPayload');
+        const pairingHint = document.getElementById('pairingHint');
+        if (pairingPayloadEl) {
+          renderPairingView(pairingPayloadEl, pairingHint, {
+            payloadText: 'Loading…',
+            hintText: 'Fetching pairing payload…',
+          });
+        }
+      }
+      _refreshPairing();
+    },
+  });
+
+  const pairingCopy = document.getElementById('pairingCopy') as HTMLButtonElement | null;
+  if (pairingCopy) {
+    pairingCopy.onclick = async () => {
+      const text = state.pairingCommandRaw || document.getElementById('pairingPayload')?.textContent || '';
+      if (text) await copyToClipboard(text, pairingCopy);
+    };
+  }
+}
+
 export function renderPairing() {
+  renderPairingCollapsible();
   const pairingPayloadEl = document.getElementById('pairingPayload');
   const pairingHint = document.getElementById('pairingHint');
   if (!pairingPayloadEl) return;
 
-  const payload = state.pairingPayloadRaw;
-  if (!payload || typeof payload !== 'object') {
-    pairingPayloadEl.textContent = 'Pairing not available';
-    if (pairingHint) pairingHint.textContent = 'Enable sync and retry.';
-    state.pairingCommandRaw = '';
-    return;
-  }
-  if (payload.redacted) {
-    pairingPayloadEl.textContent = 'Pairing payload hidden';
-    if (pairingHint)
-      pairingHint.textContent = 'Diagnostics are required to view the pairing payload.';
-    state.pairingCommandRaw = '';
-    return;
-  }
+  renderPairingView(pairingPayloadEl, pairingHint, pairingView(state.pairingPayloadRaw));
+}
 
-  const safePayload = {
-    ...payload,
-    addresses: Array.isArray(payload.addresses) ? payload.addresses : [],
-  };
-  const compact = JSON.stringify(safePayload);
-  const b64 = btoa(compact);
-  const command = `echo '${b64}' | base64 -d | codemem sync pair --accept-file -`;
-  pairingPayloadEl.textContent = command;
-  state.pairingCommandRaw = command;
-  if (pairingHint) {
-    pairingHint.textContent =
-      'Copy this command and run it on the other device. Use --include/--exclude to control which projects sync.';
-  }
+function renderRedactControl() {
+  const mount = document.getElementById(SYNC_REDACT_MOUNT_ID) as HTMLElement | null;
+  if (!mount) return;
+
+  renderIntoSyncMount(
+    mount,
+    h(RadixSwitch, {
+      'aria-labelledby': SYNC_REDACT_LABEL_ID,
+      checked: isSyncRedactionEnabled(),
+      className: 'sync-redact-switch',
+      id: 'syncRedact',
+      onCheckedChange: (checked: boolean) => {
+        setSyncRedactionEnabled(checked);
+        renderRedactControl();
+        renderSyncStatus();
+        _renderSyncPeers();
+        renderSyncAttempts();
+        renderPairing();
+      },
+      thumbClassName: 'sync-redact-switch-thumb',
+    }),
+  );
 }
 
 /* ── Event wiring ────────────────────────────────────────── */
 
 export function initDiagnosticsEvents(refreshCallback: () => void) {
-  const syncPairingToggle = document.getElementById(
-    'syncPairingToggle',
-  ) as HTMLButtonElement | null;
-  const syncRedact = document.getElementById('syncRedact') as HTMLInputElement | null;
-  const pairingCopy = document.getElementById('pairingCopy') as HTMLButtonElement | null;
-  const syncPairing = document.getElementById('syncPairing');
-
-  // Apply initial toggle states
-  if (syncPairing) syncPairing.hidden = !state.syncPairingOpen;
-  if (syncPairingToggle) {
-    syncPairingToggle.textContent = state.syncPairingOpen ? 'Hide pairing' : 'Show pairing';
-    syncPairingToggle.setAttribute('aria-expanded', String(state.syncPairingOpen));
-  }
-  if (syncRedact) syncRedact.checked = isSyncRedactionEnabled();
-
-  syncPairingToggle?.addEventListener('click', () => {
-    const next = !state.syncPairingOpen;
-    setSyncPairingOpen(next);
-    if (syncPairing) syncPairing.hidden = !next;
-    if (syncPairingToggle) {
-      syncPairingToggle.textContent = next ? 'Hide pairing' : 'Show pairing';
-      syncPairingToggle.setAttribute('aria-expanded', String(next));
-    }
-    if (next) {
-      const pairingPayloadEl = document.getElementById('pairingPayload');
-      const pairingHint = document.getElementById('pairingHint');
-      if (pairingPayloadEl) pairingPayloadEl.textContent = 'Loading\u2026';
-      if (pairingHint) pairingHint.textContent = 'Fetching pairing payload\u2026';
-    }
-    refreshCallback();
-  });
-
-  syncRedact?.addEventListener('change', () => {
-    setSyncRedactionEnabled(Boolean(syncRedact.checked));
-    renderSyncStatus();
-    _renderSyncPeers();
-    renderSyncAttempts();
-    renderPairing();
-  });
-
-  pairingCopy?.addEventListener('click', async () => {
-    const text =
-      state.pairingCommandRaw || document.getElementById('pairingPayload')?.textContent || '';
-    if (text && pairingCopy) await copyToClipboard(text, pairingCopy);
-  });
+  _refreshPairing = refreshCallback;
+  renderPairingCollapsible();
+  renderRedactControl();
 }

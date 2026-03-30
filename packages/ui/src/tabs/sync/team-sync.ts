@@ -1,6 +1,6 @@
 /* Team sync card — coordinator onboarding, invites, join requests. */
 
-import { el, copyToClipboard } from '../../lib/dom';
+import { h } from 'preact';
 import { state, setFeedScopeFilter, isSyncRedactionEnabled } from '../../lib/state';
 import * as api from '../../lib/api';
 import { showGlobalNotice } from '../../lib/notice';
@@ -17,15 +17,45 @@ import {
   clearDuplicatePersonDecision,
   saveDuplicatePersonDecision,
 } from './helpers';
+import { clearSyncMount, renderIntoSyncMount } from './components/render-root';
+import { renderTeamSetupDisclosure } from './components/sync-disclosure';
+import { SyncInviteJoinPanels } from './components/sync-invite-join-panels';
+import { SyncSharingReview, type SyncSharingReviewItem } from './components/sync-sharing-review';
+import {
+  TeamSyncPanel,
+  type TeamSyncDiscoveredRow,
+  type TeamSyncPendingJoinRequest,
+  type TeamSyncStatusSummary,
+} from './components/team-sync-panel';
 import { deriveCoordinatorApprovalSummary, SYNC_TERMINOLOGY, summarizeSyncRunResult } from './view-model';
+import { RadixSelect, type RadixSelectOption } from '../../components/primitives/radix-select';
+
+const TEAM_SYNC_ACTIONS_MOUNT_ID = 'syncTeamActionsMount';
+const INVITE_POLICY_OPTIONS: RadixSelectOption[] = [
+  { value: 'auto_admit', label: 'Auto-admit' },
+  { value: 'approval_required', label: 'Approval required' },
+];
+
+let invitePolicyValue: 'auto_admit' | 'approval_required' = 'auto_admit';
+
+function renderAdminSetupDisclosure() {
+  const mount = document.getElementById('syncAdminDisclosureMount') as HTMLElement | null;
+  if (!mount) return;
+  renderTeamSetupDisclosure(mount, {
+    open: adminSetupExpanded,
+    onOpenChange: (open) => {
+      setAdminSetupExpanded(open);
+      renderAdminSetupDisclosure();
+      renderInvitePolicySelect();
+      setInviteOutputVisibility();
+    },
+  });
+}
 
 /* ── DOM placement helpers ───────────────────────────────── */
 
 function ensureInvitePanelInAdminSection() {
-  const invitePanel = document.getElementById('syncInvitePanel');
-  const adminSection = document.getElementById('syncAdminSection');
-  if (!invitePanel || !adminSection) return;
-  if (invitePanel.parentElement !== adminSection) adminSection.appendChild(invitePanel);
+  // Team setup disclosure now renders in-place through Radix collapsible.
 }
 
 function ensureJoinPanelInSetupSection() {
@@ -43,6 +73,45 @@ function setInviteOutputVisibility() {
   syncInviteOutput.hidden = !encoded;
 }
 
+function clearContent(node: HTMLElement | null) {
+  if (node) node.textContent = '';
+}
+
+function renderInvitePolicySelect() {
+  const mount = document.getElementById('syncInvitePolicyMount') as HTMLElement | null;
+  if (!mount) return;
+  renderIntoSyncMount(
+    mount,
+    h(RadixSelect, {
+      ariaLabel: 'Join policy',
+      contentClassName: 'sync-radix-select-content sync-actor-select-content',
+      id: 'syncInvitePolicy',
+      itemClassName: 'sync-radix-select-item',
+      name: 'syncInvitePolicy',
+      onValueChange: (value) => {
+        const nextValue = value === 'approval_required' ? 'approval_required' : 'auto_admit';
+        if (nextValue === invitePolicyValue) return;
+        invitePolicyValue = nextValue;
+        renderInvitePolicySelect();
+      },
+      options: INVITE_POLICY_OPTIONS,
+      triggerClassName: 'sync-radix-select-trigger sync-actor-select',
+      value: invitePolicyValue,
+      viewportClassName: 'sync-radix-select-viewport',
+    }),
+  );
+}
+
+function teardownTeamSyncRender(actions: HTMLElement | null, targets: Array<HTMLElement | null>) {
+  const mount = document.getElementById(TEAM_SYNC_ACTIONS_MOUNT_ID) as HTMLElement | null;
+  if (mount) {
+    clearSyncMount(mount);
+    mount.remove();
+  }
+  clearContent(actions);
+  targets.forEach((target) => clearContent(target));
+}
+
 /* ── Sharing review renderer ─────────────────────────────── */
 
 function openFeedSharingReview() {
@@ -54,11 +123,11 @@ function openFeedSharingReview() {
 export function renderSyncSharingReview() {
   const panel = document.getElementById('syncSharingReview');
   const meta = document.getElementById('syncSharingReviewMeta');
-  const list = document.getElementById('syncSharingReviewList');
+  const list = document.getElementById('syncSharingReviewList') as HTMLElement | null;
   if (!panel || !meta || !list) return;
-  list.textContent = '';
   const items = Array.isArray(state.lastSyncSharingReview) ? state.lastSyncSharingReview : [];
   if (!items.length) {
+    clearSyncMount(list);
     panel.hidden = true;
     return;
   }
@@ -67,31 +136,15 @@ export function renderSyncSharingReview() {
     ? `current project (${state.currentProject})`
     : 'all allowed projects';
   meta.textContent = `Teammates receive memories from ${scopeLabel} by default. Use Only me on a memory when it should stay local.`;
-  items.forEach((item) => {
-    const row = el('div', 'actor-row');
-    const details = el('div', 'actor-details');
-    const title = el('div', 'actor-title');
-    title.append(
-      el('strong', null, String(item.peer_name || item.peer_device_id || 'Device')),
-      el(
-        'span',
-        'badge actor-badge',
-        `person: ${String(item.actor_display_name || item.actor_id || 'unknown')}`,
-      ),
-    );
-    const note = el(
-      'div',
-      'peer-meta',
-      `${Number(item.shareable_count || 0)} share by default \u00b7 ${Number(item.private_count || 0)} marked Only me \u00b7 ${String(item.scope_label || 'All allowed projects')}`,
-    );
-    details.append(title, note);
-    const actions = el('div', 'actor-actions');
-    const reviewBtn = el('button', 'settings-button', 'Review my memories in Feed') as HTMLButtonElement;
-    reviewBtn.addEventListener('click', () => openFeedSharingReview());
-    actions.appendChild(reviewBtn);
-    row.append(details, actions);
-    list.appendChild(row);
-  });
+  const reviewItems: SyncSharingReviewItem[] = items.map((item) => ({
+    actorDisplayName: String(item.actor_display_name || item.actor_id || 'unknown'),
+    actorId: String(item.actor_id || 'unknown'),
+    peerName: String(item.peer_name || item.peer_device_id || 'Device'),
+    privateCount: Number(item.private_count || 0),
+    scopeLabel: String(item.scope_label || 'All allowed projects'),
+    shareableCount: Number(item.shareable_count || 0),
+  }));
+  renderIntoSyncMount(list, h(SyncSharingReview, { items: reviewItems, onReview: openFeedSharingReview }));
 }
 
 /* ── Team sync renderer ──────────────────────────────────── */
@@ -107,30 +160,34 @@ export function renderTeamSync() {
   const setupPanel = document.getElementById('syncSetupPanel');
   const list = document.getElementById('syncTeamStatus');
   const actions = document.getElementById('syncTeamActions');
+  if (!meta || !setupPanel || !list || !actions) return;
+
+  renderAdminSetupDisclosure();
+  renderInvitePolicySelect();
+  setInviteOutputVisibility();
+
   const invitePanel = document.getElementById('syncInvitePanel');
-  const toggleAdmin = document.getElementById('syncToggleAdmin') as HTMLButtonElement | null;
+  const inviteRestoreParent = document.getElementById('syncAdminSection');
   const joinPanel = document.getElementById('syncJoinPanel');
+  const joinRestoreParent = document.getElementById('syncJoinSection');
   const joinRequests = document.getElementById('syncJoinRequests');
   const discoveredPanel = document.getElementById('syncCoordinatorDiscovered');
   const discoveredMeta = document.getElementById('syncCoordinatorDiscoveredMeta');
   const discoveredList = document.getElementById('syncCoordinatorDiscoveredList');
-  if (!meta || !setupPanel || !list || !actions) return;
+
   hideSkeleton('syncTeamSkeleton');
-  // Move panels back to their home sections BEFORE clearing, so they survive the wipe
   ensureInvitePanelInAdminSection();
   ensureJoinPanelInSetupSection();
-  list.textContent = '';
-  actions.textContent = '';
-  if (joinRequests) joinRequests.textContent = '';
-  if (discoveredList) discoveredList.textContent = '';
-  setInviteOutputVisibility();
+
   const coordinator = state.lastSyncCoordinator;
   const syncView = state.lastSyncViewModel || { summary: {}, attentionItems: [] };
 
-  const focusAttentionTarget = (item: any) => {
+  const focusAttentionTarget = (item: { kind?: string; deviceId?: string }) => {
     if (item.kind === 'possible-duplicate-person') {
       const actorList = document.getElementById('syncActorsList');
-      if (actorList instanceof HTMLElement) actorList.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (actorList instanceof HTMLElement) {
+        actorList.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
       return;
     }
     const deviceId = String(item.deviceId || '').trim();
@@ -155,8 +212,10 @@ export function renderTeamSync() {
     }
   };
 
-  const reviewDuplicatePeople = async (item: any) => {
-    const actorIds = Array.isArray(item.actorIds) ? item.actorIds.map((value: unknown) => String(value || '').trim()).filter(Boolean) : [];
+  const reviewDuplicatePeople = async (item: { actorIds?: unknown[]; title: string }) => {
+    const actorIds = Array.isArray(item.actorIds)
+      ? item.actorIds.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+      : [];
     const actors = (Array.isArray(state.lastSyncActors) ? state.lastSyncActors : []).filter((actor) =>
       actorIds.includes(String(actor?.actor_id || '').trim()),
     );
@@ -180,7 +239,10 @@ export function renderTeamSync() {
     const localIndex = actors.findIndex((actor) => Boolean(actor?.is_local));
     const defaultChoice = localIndex >= 0 ? String(localIndex + 1) : '1';
     const options = actors
-      .map((actor, index) => `${index + 1} = ${String(actor?.display_name || actor?.actor_id || `Person ${index + 1}`)}${actor?.is_local ? ' (You)' : ''}`)
+      .map(
+        (actor, index) =>
+          `${index + 1} = ${String(actor?.display_name || actor?.actor_id || `Person ${index + 1}`)}${actor?.is_local ? ' (You)' : ''}`,
+      )
       .join('\n');
     const keepAnswer = window.prompt(
       `Which person should remain after combining them?\n\n${options}`,
@@ -216,43 +278,33 @@ export function renderTeamSync() {
     showGlobalNotice(`Saved device name: ${value}.`);
     return true;
   };
+
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
-    ? `Connected to ${String(coordinator.coordinator_url || '')} \u00b7 group: ${(coordinator.groups || []).join(', ') || 'none'}`
+    ? `Connected to ${String(coordinator.coordinator_url || '')} · group: ${(coordinator.groups || []).join(', ') || 'none'}`
     : 'Start here: join an existing team or create a new one before connecting devices and people.';
+
   if (!configured) {
+    teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
     setupPanel.hidden = false;
     list.hidden = true;
     actions.hidden = true;
     if (joinRequests) joinRequests.hidden = true;
     if (discoveredPanel) discoveredPanel.hidden = true;
-    if (invitePanel) invitePanel.hidden = !adminSetupExpanded;
-    if (toggleAdmin) {
-      toggleAdmin.textContent = adminSetupExpanded
-        ? 'Hide team setup'
-        : 'Set up a new team instead\u2026';
-    }
     return;
   }
+
   setupPanel.hidden = true;
   list.hidden = false;
   actions.hidden = false;
-  if (joinRequests) joinRequests.hidden = false;
-  if (discoveredPanel) discoveredPanel.hidden = true;
+
+  const presenceStatus = String(coordinator.presence_status || '');
   const presenceLabel =
-    coordinator.presence_status === 'posted'
+    presenceStatus === 'posted'
       ? 'Connected'
-      : coordinator.presence_status === 'not_enrolled'
-        ? 'Not connected \u2014 import an invite or ask your admin to enroll this device'
+      : presenceStatus === 'not_enrolled'
+        ? 'Not connected — import an invite or ask your admin to enroll this device'
         : 'Connection error';
-  const statusRow = el('div', 'sync-team-summary');
-  const statusLine = el('div', 'sync-team-status-row');
-  const statusLabel = el('span', 'sync-team-status-label', 'Status');
-  const statusBadge = el(
-    'span',
-    `pill ${coordinator.presence_status === 'posted' ? 'pill-success' : coordinator.presence_status === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
-    presenceLabel,
-  );
   const metricParts = [
     `Connected devices: ${Number(syncView.summary?.connectedDeviceCount || 0)}`,
     `Seen on team: ${Number(syncView.summary?.seenOnTeamCount || 0)}`,
@@ -260,360 +312,252 @@ export function renderTeamSync() {
   if (Number(syncView.summary?.offlineTeamDeviceCount || 0) > 0) {
     metricParts.push(`Offline on team: ${Number(syncView.summary?.offlineTeamDeviceCount || 0)}`);
   }
-  statusLine.append(statusLabel, statusBadge);
-  statusRow.append(statusLine, el('div', 'sync-team-metrics', metricParts.join(' \u00b7 ')));
-  list.appendChild(statusRow);
+  const statusSummary: TeamSyncStatusSummary = {
+    badgeClassName: `pill ${presenceStatus === 'posted' ? 'pill-success' : presenceStatus === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
+    metricsText: metricParts.join(' · '),
+    presenceLabel,
+  };
 
   const localPeers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
   const attentionItems = Array.isArray(syncView.attentionItems) ? syncView.attentionItems : [];
-  if (attentionItems.length) {
-    const heading = el('div', 'sync-action-text');
-    heading.textContent = 'Needs attention';
-    actions.appendChild(heading);
-    attentionItems.slice(0, 4).forEach((item: any) => {
-      const row = el('div', 'sync-action');
-      const textWrap = el('div', 'sync-action-text');
-      textWrap.textContent = item.title;
-      textWrap.appendChild(el('span', 'sync-action-command', item.summary));
-      const actionButton = el('button', 'settings-button', item.actionLabel || 'Review') as HTMLButtonElement;
-      actionButton.addEventListener('click', async () => {
+  const discoveredDevices = Array.isArray(coordinator.discovered_devices)
+    ? coordinator.discovered_devices
+    : [];
+  const discoveredRows: TeamSyncDiscoveredRow[] = discoveredDevices.map((device) => {
+    const deviceId = String(device.device_id || '').trim();
+    const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
+    const fingerprint = String(device.fingerprint || '').trim();
+    const groupIds = Array.isArray(device.groups)
+      ? device.groups.map((value) => String(value || '').trim()).filter(Boolean)
+      : [];
+    const hasAmbiguousCoordinatorGroup = groupIds.length > 1;
+    const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || '') === deviceId);
+    const approvalSummary = deriveCoordinatorApprovalSummary({
+      device,
+      pairedLocally: Boolean(pairedPeer),
+    });
+    const pairedFingerprint = String(pairedPeer?.fingerprint || '').trim();
+    const hasConflict =
+      Boolean(pairedPeer) &&
+      Boolean(fingerprint) &&
+      Boolean(pairedFingerprint) &&
+      pairedFingerprint !== fingerprint;
+    const canAccept =
+      Boolean(deviceId) &&
+      Boolean(fingerprint) &&
+      !pairedPeer &&
+      !device.stale &&
+      !hasAmbiguousCoordinatorGroup;
+    const addresses = Array.isArray(device.addresses) ? device.addresses : [];
+    const addressLabel = addresses.length
+      ? addresses
+          .map((address) =>
+            isSyncRedactionEnabled() ? redactAddress(String(address || '')) : String(address || ''),
+          )
+          .filter(Boolean)
+          .join(' · ')
+      : 'No fresh addresses';
+    const noteParts = [deviceId, addressLabel];
+    let actionMessage: string | null = null;
+    let mode: TeamSyncDiscoveredRow['mode'] = canAccept ? 'accept' : 'none';
+    let pairedMessage: string | null = null;
+
+    if (hasConflict) {
+      noteParts.push('repair the local peer before accepting this discovered device');
+      mode = 'conflict';
+    } else if (hasAmbiguousCoordinatorGroup) {
+      noteParts.push('this device appears in multiple coordinator groups; review team setup before approving it here');
+      actionMessage =
+        'This device is visible through multiple coordinator groups. Fix that team setup first, then approve it here.';
+      mode = 'ambiguous';
+    } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
+      noteParts.push('scope review pending in People');
+      actionMessage = `Review this device's scope in People & devices next.`;
+      mode = 'scope-pending';
+    } else if (pairedPeer?.last_error) {
+      noteParts.push(`paired error: ${String(pairedPeer.last_error)}`);
+      mode = 'paired';
+    } else if (pairedPeer?.status?.peer_state) {
+      noteParts.push(`paired status: ${String(pairedPeer.status.peer_state)}`);
+      mode = 'paired';
+    } else if (!pairedPeer && device.stale) {
+      actionMessage = 'Wait for a fresh coordinator presence update.';
+      mode = 'stale';
+    } else if (pairedPeer) {
+      mode = 'paired';
+    }
+
+    if (approvalSummary.description) noteParts.push(approvalSummary.description);
+    if (mode === 'paired') {
+      pairedMessage =
+        approvalSummary.state === 'waiting-for-other-device'
+          ? approvalSummary.description || 'Waiting on the other device.'
+          : String(pairedPeer?.last_error || '').toLowerCase().includes('401') &&
+              String(pairedPeer?.last_error || '').toLowerCase().includes('unauthorized')
+            ? 'Waiting for the other device to trust this one before sync can work.'
+            : 'Manage this device in People & devices.';
+    }
+
+    return {
+      actionMessage,
+      actionLabel: approvalSummary.actionLabel || 'Review device',
+      approvalBadgeLabel: approvalSummary.badgeLabel,
+      availabilityLabel: device.stale ? 'Offline' : 'Available',
+      connectionLabel: hasConflict
+        ? SYNC_TERMINOLOGY.conflicts
+        : pairedPeer
+          ? SYNC_TERMINOLOGY.pairedLocally
+          : 'Not connected on this device',
+      deviceId,
+      displayName,
+      fingerprint,
+      mode,
+      note: noteParts.join(' · '),
+      pairedMessage,
+    };
+  });
+
+  const pending = Array.isArray(state.lastSyncJoinRequests) ? state.lastSyncJoinRequests : [];
+  const pendingJoinRequests: TeamSyncPendingJoinRequest[] = pending.map((request) => ({
+    displayName: String(request.display_name || request.device_id || 'Pending device'),
+    requestId: String(request.request_id || ''),
+  }));
+
+  if (discoveredPanel) discoveredPanel.hidden = discoveredRows.length === 0;
+  if (discoveredMeta) {
+    discoveredMeta.textContent = discoveredRows.length
+      ? 'These devices are visible through team discovery. Review them before connecting them on this machine.'
+      : '';
+  }
+  if (joinRequests) joinRequests.hidden = pendingJoinRequests.length === 0;
+
+  teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
+  const actionMount = document.createElement('div');
+  actionMount.id = TEAM_SYNC_ACTIONS_MOUNT_ID;
+  actions.appendChild(actionMount);
+
+  renderIntoSyncMount(
+    actionMount,
+    h(TeamSyncPanel, {
+      actionItems: attentionItems,
+      children: h(SyncInviteJoinPanels, {
+        invitePanel,
+        invitePanelOpen: teamInvitePanelOpen,
+        inviteRestoreParent,
+        joinPanel,
+        joinRestoreParent,
+        onToggleInvitePanel: () => {
+          if (!invitePanel) return;
+          setTeamInvitePanelOpen(!teamInvitePanelOpen);
+          renderTeamSync();
+        },
+        pairedPeerCount: Number(coordinator.paired_peer_count || 0),
+        presenceStatus,
+      }),
+      discoveredListMount: discoveredList,
+      discoveredRows,
+      joinRequestsMount: joinRequests,
+      listMount: list,
+      onApproveJoinRequest: async (request) => {
+        try {
+          await api.reviewJoinRequest(request.requestId, 'approve');
+          showGlobalNotice(`Approved ${request.displayName}. They can now sync with the team.`);
+          await _loadSyncData();
+        } catch (error) {
+          showGlobalNotice(friendlyError(error, 'Failed to approve join request.'), 'warning');
+          throw error;
+        }
+      },
+      onAttentionAction: async (item) => {
         if (item.kind === 'possible-duplicate-person') {
           await reviewDuplicatePeople(item);
           return;
         }
         focusAttentionTarget(item);
-      });
-      row.append(textWrap, actionButton);
-      actions.appendChild(row);
-    });
-  } else if (coordinator.presence_status === 'posted') {
-    const row = el('div', 'sync-action');
-    const textWrap = el('div', 'sync-action-text');
-    textWrap.textContent = 'No immediate issues';
-    textWrap.appendChild(
-      el('span', 'sync-action-command', 'Your devices and team records do not currently need review.'),
-    );
-    row.appendChild(textWrap);
-    actions.appendChild(row);
-  } else if (coordinator.presence_status === 'not_enrolled') {
-    const row = el('div', 'sync-action');
-    const textWrap = el('div', 'sync-action-text');
-    textWrap.textContent = 'This device still needs team enrollment';
-    textWrap.appendChild(
-      el('span', 'sync-action-command', 'Import an invite or ask your admin to enroll this device before expecting sync activity here.'),
-    );
-    row.appendChild(textWrap);
-    actions.appendChild(row);
-  }
-
-  const discoveredDevices = Array.isArray(coordinator.discovered_devices)
-    ? coordinator.discovered_devices
-    : [];
-  if (discoveredPanel && discoveredMeta && discoveredList && discoveredDevices.length) {
-    discoveredPanel.hidden = false;
-    discoveredMeta.textContent =
-      'These devices are visible through team discovery. Review them before connecting them on this machine.';
-    discoveredDevices.forEach((device) => {
-      const row = el('div', 'actor-row');
-      const details = el('div', 'actor-details');
-      const title = el('div', 'actor-title');
-      const rowActions = el('div', 'actor-actions');
-      const deviceId = String(device.device_id || '').trim();
-      if (deviceId) row.dataset.discoveredDeviceId = deviceId;
-      const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
-      const fingerprint = String(device.fingerprint || '').trim();
-      const groupIds = Array.isArray(device.groups)
-        ? device.groups.map((value) => String(value || '').trim()).filter(Boolean)
-        : [];
-      const hasAmbiguousCoordinatorGroup = groupIds.length > 1;
-      const pairedPeer = localPeers.find((peer) => String(peer?.peer_device_id || '') === deviceId);
-      const approvalSummary = deriveCoordinatorApprovalSummary({
-        device,
-        pairedLocally: Boolean(pairedPeer),
-      });
-      const pairedFingerprint = String(pairedPeer?.fingerprint || '').trim();
-      const hasConflict = Boolean(pairedPeer) && Boolean(fingerprint) && Boolean(pairedFingerprint) && pairedFingerprint !== fingerprint;
-      const canAccept =
-        Boolean(deviceId) &&
-        Boolean(fingerprint) &&
-        !pairedPeer &&
-        !device.stale &&
-        !hasAmbiguousCoordinatorGroup;
-      title.append(el('strong', null, displayName));
-      title.appendChild(
-        el(
-          'span',
-          `badge actor-badge${device.stale ? '' : ' local'}`,
-          device.stale ? 'Offline' : 'Available',
-        ),
-      );
-      title.appendChild(
-        el(
-          'span',
-          'badge actor-badge',
-          hasConflict ? SYNC_TERMINOLOGY.conflicts : pairedPeer ? SYNC_TERMINOLOGY.pairedLocally : 'Not connected on this device',
-        ),
-      );
-      if (approvalSummary.badgeLabel) {
-        title.appendChild(el('span', 'badge actor-badge', approvalSummary.badgeLabel));
-      }
-      const addresses = Array.isArray(device.addresses) ? device.addresses : [];
-      const addressLabel = addresses.length
-        ? addresses
-            .map((address) =>
-              isSyncRedactionEnabled() ? redactAddress(String(address || '')) : String(address || ''),
-            )
-            .filter(Boolean)
-            .join(' · ')
-        : 'No fresh addresses';
-      const noteParts = [deviceId, addressLabel];
-      if (hasConflict) {
-        noteParts.push('repair the local peer before accepting this discovered device');
-      } else if (hasAmbiguousCoordinatorGroup) {
-        noteParts.push('this device appears in multiple coordinator groups; review team setup before approving it here');
-      } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
-        noteParts.push('scope review pending in People');
-      } else if (pairedPeer?.last_error) {
-        noteParts.push(`paired error: ${String(pairedPeer.last_error)}`);
-      } else if (pairedPeer?.status?.peer_state) {
-        noteParts.push(`paired status: ${String(pairedPeer.status.peer_state)}`);
-      }
-      if (approvalSummary.description) noteParts.push(approvalSummary.description);
-      details.append(title, el('div', 'peer-meta', noteParts.join(' · ')));
-      if (canAccept) {
-        const acceptBtn = el(
-          'button',
-          'settings-button',
-          approvalSummary.actionLabel || 'Review device',
-        ) as HTMLButtonElement;
-        acceptBtn.addEventListener('click', async () => {
-          acceptBtn.disabled = true;
-          acceptBtn.textContent = 'Opening…';
-          try {
-            const result = await api.acceptDiscoveredPeer(deviceId, fingerprint);
-            requestPeerScopeReview(deviceId);
-            showGlobalNotice(
-              approvalSummary.state === 'needs-your-approval'
-                ? `Approved ${displayName} on this device. Two-way trust should be ready once both devices refresh.`
-                : `Step 1 complete on this device for ${displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
-            );
-            try {
-              await promptForDeviceName(
-                deviceId,
-                String(result?.name || displayName || '').trim() || displayName,
-              );
-            } catch (error) {
-              showGlobalNotice(
-                friendlyError(error, 'Device connected, but naming did not finish.'),
-                'warning',
-              );
-            }
-            try {
-              await _loadSyncData();
-            } catch (error) {
-              showGlobalNotice(
-                friendlyError(error, 'Device connected, but the screen did not refresh yet.'),
-                'warning',
-              );
-            }
-          } catch (error) {
-            showGlobalNotice(friendlyError(error, 'Failed to review this device.'), 'warning');
-            acceptBtn.textContent = 'Retry review';
-          } finally {
-            acceptBtn.disabled = false;
-            if (acceptBtn.textContent === 'Opening…') {
-              acceptBtn.textContent = approvalSummary.actionLabel || 'Review device';
-            }
-          }
-        });
-        rowActions.appendChild(acceptBtn);
-      } else if (!pairedPeer && device.stale) {
-        rowActions.appendChild(el('div', 'peer-meta', 'Wait for a fresh coordinator presence update.'));
-      } else if (!pairedPeer && hasAmbiguousCoordinatorGroup) {
-        rowActions.appendChild(
-          el('div', 'peer-meta', 'This device is visible through multiple coordinator groups. Fix that team setup first, then approve it here.'),
-        );
-      } else if (hasConflict) {
-        const inspectBtn = el('button', 'settings-button', 'Open device details') as HTMLButtonElement;
-        inspectBtn.addEventListener('click', () => {
-          const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
-          if (peerCard instanceof HTMLElement) {
-            peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
-            showGlobalNotice(`Opened the conflicting local device record for ${displayName}.`, 'warning');
-            return;
-          }
-          showGlobalNotice('The conflicting local device record is not visible yet. Scroll to People & devices and try again.', 'warning');
-        });
-        const removeConflictBtn = el('button', 'settings-button', 'Remove broken device record') as HTMLButtonElement;
-        removeConflictBtn.addEventListener('click', async () => {
-          if (!pairedPeer) return;
-          const confirmed = window.confirm(
-            `Remove the broken local device record for ${displayName}? You can review this device again after the screen refreshes.`,
-          );
-          if (!confirmed) return;
-          removeConflictBtn.disabled = true;
-          inspectBtn.disabled = true;
-            removeConflictBtn.textContent = 'Removing…';
-          try {
-            await api.deletePeer(deviceId);
-            showGlobalNotice(`Removed the broken local device record for ${displayName}. If it is still available, you can review it again from Needs attention.`);
-            await _loadSyncData();
-          } catch (error) {
-            showGlobalNotice(friendlyError(error, 'Failed to remove the broken local device record.'), 'warning');
-            removeConflictBtn.textContent = 'Retry remove';
-          } finally {
-            removeConflictBtn.disabled = false;
-            inspectBtn.disabled = false;
-            if (removeConflictBtn.textContent === 'Removing…') {
-              removeConflictBtn.textContent = 'Remove broken device record';
-            }
-          }
-        });
-        rowActions.append(inspectBtn, removeConflictBtn);
-      } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
-        rowActions.appendChild(el('div', 'peer-meta', 'Review this device\'s scope in People & devices next.'));
-      } else if (pairedPeer) {
-        rowActions.appendChild(
-          el(
-            'div',
-            'peer-meta',
-            approvalSummary.state === 'waiting-for-other-device'
-              ? approvalSummary.description || 'Waiting on the other device.'
-              : String(pairedPeer?.last_error || '').toLowerCase().includes('401') && String(pairedPeer?.last_error || '').toLowerCase().includes('unauthorized')
-                ? 'Waiting for the other device to trust this one before sync can work.'
-                : 'Manage this device in People & devices.',
-          ),
-        );
-      }
-      row.append(details, rowActions);
-      discoveredList.appendChild(row);
-    });
-  }
-
-  const inviteToggleRow = el('div', 'sync-action');
-  const inviteToggleText = el('div', 'sync-action-text');
-  inviteToggleText.textContent = 'Generate an invite to add another teammate to this team.';
-  const inviteToggleBtn = el(
-    'button',
-    'settings-button',
-    'Invite a teammate',
-  ) as HTMLButtonElement;
-  inviteToggleBtn.addEventListener('click', () => {
-    if (!invitePanel) return;
-    setTeamInvitePanelOpen(!teamInvitePanelOpen);
-    if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
-    invitePanel.hidden = !teamInvitePanelOpen;
-    inviteToggleBtn.textContent = teamInvitePanelOpen ? 'Hide invite form' : 'Invite a teammate';
-  });
-  inviteToggleRow.append(inviteToggleText, inviteToggleBtn);
-  actions.appendChild(inviteToggleRow);
-  if (invitePanel) {
-    if (teamInvitePanelOpen) {
-      if (invitePanel.parentElement !== actions) actions.appendChild(invitePanel);
-      invitePanel.hidden = false;
-      inviteToggleBtn.textContent = 'Hide invite form';
-    } else {
-      invitePanel.hidden = true;
-    }
-  }
-
-  if (coordinator.presence_status === 'not_enrolled') {
-    if (joinPanel) {
-      if (joinPanel.parentElement !== actions) actions.appendChild(joinPanel);
-      joinPanel.hidden = false;
-    }
-    const row = el('div', 'sync-action');
-    const textWrap = el('div', 'sync-action-text');
-    textWrap.textContent = 'This device is not connected to the team yet.';
-    textWrap.appendChild(
-      el(
-        'span',
-        'sync-action-command',
-        'Import a team invite or ask your admin to enroll this device',
-      ),
-    );
-    actions.appendChild(row);
-    row.appendChild(textWrap);
-  }
-  if (!Number(coordinator.paired_peer_count || 0) && coordinator.presence_status === 'posted') {
-    const row = el('div', 'sync-action');
-    const textWrap = el('div', 'sync-action-text');
-    textWrap.textContent = 'No devices are paired yet.';
-    textWrap.appendChild(
-      el('span', 'sync-action-command', 'codemem sync pair --payload-only'),
-    );
-    const btn = el('button', 'settings-button sync-action-copy', 'Copy') as HTMLButtonElement;
-    btn.addEventListener('click', () =>
-      copyToClipboard('codemem sync pair --payload-only', btn),
-    );
-    row.append(textWrap, btn);
-    actions.appendChild(row);
-  }
-
-  const pending = Array.isArray(state.lastSyncJoinRequests) ? state.lastSyncJoinRequests : [];
-  if (joinRequests && pending.length) {
-    const title = el(
-      'div',
-      'peer-meta',
-      `${pending.length} pending join request${pending.length === 1 ? '' : 's'}`,
-    );
-    joinRequests.appendChild(title);
-    pending.forEach((request) => {
-      const row = el('div', 'actor-row');
-      const details = el('div', 'actor-details');
-      const name = String(request.display_name || request.device_id || 'Pending device');
-      details.append(
-        el('div', 'actor-title', name),
-        el('div', 'peer-meta', `request: ${String(request.request_id || '')}`),
-      );
-      const rowActions = el('div', 'actor-actions');
-      const approveBtn = el('button', 'settings-button', 'Approve') as HTMLButtonElement;
-      const denyBtn = el('button', 'settings-button', 'Deny') as HTMLButtonElement;
-      approveBtn.addEventListener('click', async () => {
-        approveBtn.disabled = true;
-        denyBtn.disabled = true;
-        approveBtn.textContent = 'Approving\u2026';
-        try {
-          await api.reviewJoinRequest(String(request.request_id || ''), 'approve');
-          showGlobalNotice(`Approved ${name}. They can now sync with the team.`);
-          await _loadSyncData();
-        } catch (error) {
-          showGlobalNotice(friendlyError(error, 'Failed to approve join request.'), 'warning');
-          approveBtn.textContent = 'Retry';
-        } finally {
-          approveBtn.disabled = false;
-          denyBtn.disabled = false;
-        }
-      });
-      denyBtn.addEventListener('click', async () => {
+      },
+      onDenyJoinRequest: async (request) => {
         if (
           !window.confirm(
-            `Deny join request from ${name}? They will need a new invite to try again.`,
+            `Deny join request from ${request.displayName}? They will need a new invite to try again.`,
           )
-        )
+        ) {
           return;
-        approveBtn.disabled = true;
-        denyBtn.disabled = true;
-        denyBtn.textContent = 'Denying\u2026';
+        }
         try {
-          await api.reviewJoinRequest(String(request.request_id || ''), 'deny');
-          showGlobalNotice(`Denied join request from ${name}.`);
+          await api.reviewJoinRequest(request.requestId, 'deny');
+          showGlobalNotice(`Denied join request from ${request.displayName}.`);
           await _loadSyncData();
         } catch (error) {
           showGlobalNotice(friendlyError(error, 'Failed to deny join request.'), 'warning');
-          denyBtn.textContent = 'Retry deny';
-        } finally {
-          approveBtn.disabled = false;
-          denyBtn.disabled = false;
+          throw error;
         }
-      });
-      rowActions.append(approveBtn, denyBtn);
-      row.append(details, rowActions);
-      joinRequests.appendChild(row);
-    });
-  } else if (joinRequests) {
-    joinRequests.hidden = true;
-  }
+      },
+      onInspectConflict: (row) => {
+        const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(row.deviceId)}"]`);
+        if (peerCard instanceof HTMLElement) {
+          peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          showGlobalNotice(`Opened the conflicting local device record for ${row.displayName}.`, 'warning');
+          return;
+        }
+        showGlobalNotice(
+          'The conflicting local device record is not visible yet. Scroll to People & devices and try again.',
+          'warning',
+        );
+      },
+      onRemoveConflict: async (row) => {
+        const confirmed = window.confirm(
+          `Remove the broken local device record for ${row.displayName}? You can review this device again after the screen refreshes.`,
+        );
+        if (!confirmed) return;
+        try {
+          await api.deletePeer(row.deviceId);
+          showGlobalNotice(
+            `Removed the broken local device record for ${row.displayName}. If it is still available, you can review it again from Needs attention.`,
+          );
+          await _loadSyncData();
+        } catch (error) {
+          showGlobalNotice(friendlyError(error, 'Failed to remove the broken local device record.'), 'warning');
+          throw error;
+        }
+      },
+      onReviewDiscoveredDevice: async (row) => {
+        try {
+          const result = await api.acceptDiscoveredPeer(row.deviceId, row.fingerprint);
+          requestPeerScopeReview(row.deviceId);
+          showGlobalNotice(
+            row.approvalBadgeLabel === 'Needs your approval'
+              ? `Approved ${row.displayName} on this device. Two-way trust should be ready once both devices refresh.`
+              : `Step 1 complete on this device for ${row.displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
+          );
+          try {
+            await promptForDeviceName(
+              row.deviceId,
+              String(result?.name || row.displayName || '').trim() || row.displayName,
+            );
+          } catch (error) {
+            showGlobalNotice(
+              friendlyError(error, 'Device connected, but naming did not finish.'),
+              'warning',
+            );
+          }
+          try {
+            await _loadSyncData();
+          } catch (error) {
+            showGlobalNotice(
+              friendlyError(error, 'Device connected, but the screen did not refresh yet.'),
+              'warning',
+            );
+          }
+        } catch (error) {
+          showGlobalNotice(friendlyError(error, 'Failed to review this device.'), 'warning');
+          throw error;
+        }
+      },
+      pendingJoinRequests,
+      presenceStatus,
+      statusSummary,
+    }),
+  );
 }
 
 /* ── Event wiring ────────────────────────────────────────── */
@@ -622,14 +566,14 @@ export function initTeamSyncEvents(
   refreshCallback: () => void,
   loadSyncData: () => Promise<void>,
 ) {
+  renderAdminSetupDisclosure();
+  renderInvitePolicySelect();
+
   const syncNowButton = document.getElementById('syncNowButton') as HTMLButtonElement | null;
-  const syncToggleAdmin = document.getElementById('syncToggleAdmin') as HTMLButtonElement | null;
-  const syncInvitePanel = document.getElementById('syncInvitePanel');
   const syncCreateInviteButton = document.getElementById(
     'syncCreateInviteButton',
   ) as HTMLButtonElement | null;
   const syncInviteGroup = document.getElementById('syncInviteGroup') as HTMLInputElement | null;
-  const syncInvitePolicy = document.getElementById('syncInvitePolicy') as HTMLSelectElement | null;
   const syncInviteTtl = document.getElementById('syncInviteTtl') as HTMLInputElement | null;
   const syncInviteOutput = document.getElementById(
     'syncInviteOutput',
@@ -637,21 +581,10 @@ export function initTeamSyncEvents(
   const syncJoinButton = document.getElementById('syncJoinButton') as HTMLButtonElement | null;
   const syncJoinInvite = document.getElementById('syncJoinInvite') as HTMLTextAreaElement | null;
 
-  syncToggleAdmin?.addEventListener('click', () => {
-    if (!syncInvitePanel) return;
-    setAdminSetupExpanded(!adminSetupExpanded);
-    syncInvitePanel.hidden = !adminSetupExpanded;
-    syncToggleAdmin.setAttribute('aria-expanded', String(adminSetupExpanded));
-    syncToggleAdmin.textContent = adminSetupExpanded
-      ? 'Hide team setup'
-      : 'Set up a new team instead\u2026';
-  });
-
   syncCreateInviteButton?.addEventListener('click', async () => {
     if (
       !syncCreateInviteButton ||
       !syncInviteGroup ||
-      !syncInvitePolicy ||
       !syncInviteTtl ||
       !syncInviteOutput
     )
@@ -675,7 +608,7 @@ export function initTeamSyncEvents(
     try {
       const result = await api.createCoordinatorInvite({
         group_id: groupName,
-        policy: syncInvitePolicy.value as 'auto_admit' | 'approval_required',
+        policy: invitePolicyValue,
         ttl_hours: ttlValue || 24,
       });
       state.lastTeamInvite = result;
