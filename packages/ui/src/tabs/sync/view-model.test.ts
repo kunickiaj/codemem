@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  deriveCoordinatorApprovalSummary,
   deriveDuplicatePeople,
   derivePeerTrustSummary,
   derivePeerUiStatus,
@@ -99,6 +100,38 @@ describe('derivePeerTrustSummary', () => {
     expect(derivePeerTrustSummary({ status: { sync_status: 'ok', peer_state: 'online' } }).state).toBe(
       'mutual-trust',
     );
+  });
+});
+
+describe('deriveCoordinatorApprovalSummary', () => {
+  it('flags coordinator devices that need approval on this device', () => {
+    expect(
+      deriveCoordinatorApprovalSummary({
+        device: { device_id: 'peer-a', needs_local_approval: true },
+        pairedLocally: false,
+      }),
+    ).toEqual({
+      state: 'needs-your-approval',
+      badgeLabel: 'Needs your approval',
+      description:
+        'Another device already trusted this one. Approve it on this device to finish reciprocal onboarding.',
+      actionLabel: 'Approve on this device',
+    });
+  });
+
+  it('flags coordinator devices that are still waiting on the other device', () => {
+    expect(
+      deriveCoordinatorApprovalSummary({
+        device: { device_id: 'peer-a', waiting_for_peer_approval: true },
+        pairedLocally: true,
+      }),
+    ).toEqual({
+      state: 'waiting-for-other-device',
+      badgeLabel: 'Waiting on other device',
+      description:
+        'You already trusted this device here. The other device still needs to approve this one before sync can work both ways.',
+      actionLabel: null,
+    });
   });
 });
 
