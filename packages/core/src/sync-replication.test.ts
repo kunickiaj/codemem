@@ -1662,4 +1662,97 @@ describe("applyReplicationOps", () => {
 		const row = db.prepare("SELECT op_id FROM replication_ops WHERE op_id = ?").get("track-me");
 		expect(row).toBeDefined();
 	});
+
+	it("derives tags for inserted memories arriving with empty tags_text", () => {
+		const op = makeReplicationOp({
+			entity_id: "key:no-tags",
+			payload_json: toJson({
+				kind: "feature",
+				title: "Add authentication flow",
+				body_text: "Implements login and signup",
+				tags_text: "",
+				active: 1,
+				created_at: "2026-01-01T00:00:00Z",
+				updated_at: "2026-01-01T00:00:00Z",
+				concepts: ["authentication", "login"],
+				files_modified: ["src/auth/login.ts"],
+			}),
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+
+		const mem = db
+			.prepare("SELECT tags_text FROM memory_items WHERE import_key = ?")
+			.get("key:no-tags") as { tags_text: string };
+		expect(mem.tags_text).toBeTruthy();
+		expect(mem.tags_text).toContain("feature");
+		expect(mem.tags_text).toContain("authentication");
+	});
+
+	it("preserves incoming tags when source provides non-empty tags_text", () => {
+		const op = makeReplicationOp({
+			entity_id: "key:has-tags",
+			payload_json: toJson({
+				kind: "bugfix",
+				title: "Fix crash",
+				body_text: "Null check",
+				tags_text: "custom-tag-1 custom-tag-2",
+				active: 1,
+				created_at: "2026-01-01T00:00:00Z",
+				updated_at: "2026-01-01T00:00:00Z",
+			}),
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+
+		const mem = db
+			.prepare("SELECT tags_text FROM memory_items WHERE import_key = ?")
+			.get("key:has-tags") as { tags_text: string };
+		expect(mem.tags_text).toBe("custom-tag-1 custom-tag-2");
+	});
+
+	it("does not overwrite existing tags with empty incoming tags on update", () => {
+		// Insert initial memory with tags
+		const sessionId = insertTestSession(db);
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, tags_text, created_at, updated_at, import_key, rev, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Original",
+			"body",
+			"existing-tag",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"key:keep-tags",
+			1,
+			toJson({ clock_device_id: "dev-remote" }),
+		);
+
+		// Update with empty tags_text
+		const op = makeReplicationOp({
+			entity_id: "key:keep-tags",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Updated title",
+				body_text: "updated body",
+				tags_text: "",
+				updated_at: "2026-01-02T00:00:00Z",
+			}),
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+
+		const mem = db
+			.prepare("SELECT title, tags_text FROM memory_items WHERE import_key = ?")
+			.get("key:keep-tags") as { title: string; tags_text: string };
+		expect(mem.title).toBe("Updated title");
+		expect(mem.tags_text).toBe("existing-tag");
+	});
 });
