@@ -77,7 +77,6 @@ export function renderSyncPeers() {
   const syncPeers = document.getElementById('syncPeers');
   if (!syncPeers) return;
   hideSkeleton('syncPeersSkeleton');
-  syncPeers.textContent = '';
   const peers = state.lastSyncPeers;
   renderSyncPeersList(syncPeers, {
     peers: Array.isArray(peers) ? peers : [],
