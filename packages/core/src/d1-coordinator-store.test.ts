@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database as DatabaseType, Statement } from "better-sqlite3";
@@ -44,7 +44,7 @@ class SqliteD1Statement implements D1PreparedStatementLike {
 }
 
 class SqliteD1Database implements D1DatabaseLike {
-	constructor(private readonly db: DatabaseType) {}
+	constructor(protected readonly db: DatabaseType) {}
 
 	prepare(query: string): D1PreparedStatementLike {
 		return new SqliteD1Statement(this.db.prepare(query));
@@ -64,6 +64,68 @@ class SqliteD1Database implements D1DatabaseLike {
 	}
 }
 
+class RacingReciprocalApprovalStatement implements D1PreparedStatementLike {
+	private bound: unknown[] = [];
+	private injected = false;
+
+	constructor(
+		private readonly db: DatabaseType,
+		private readonly query: string,
+	) {}
+
+	bind(...values: unknown[]): D1PreparedStatementLike {
+		this.bound = values;
+		return this;
+	}
+
+	async first<T = unknown>(): Promise<T | null> {
+		return (this.db.prepare(this.query).get(...this.bound) as T | undefined) ?? null;
+	}
+
+	async run(): Promise<unknown> {
+		if (!this.injected) {
+			this.injected = true;
+			const [, groupId, requestingDeviceId, requestedDeviceId, low, high, createdAt] = this
+				.bound as [string, string, string, string, string, string, string];
+			this.db
+				.prepare(`INSERT INTO coordinator_reciprocal_approvals(
+					request_id,
+					group_id,
+					requesting_device_id,
+					requested_device_id,
+					pending_pair_low_device_id,
+					pending_pair_high_device_id,
+					status,
+					created_at,
+					resolved_at
+				) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`)
+				.run("race-existing", groupId, requestedDeviceId, requestingDeviceId, low, high, createdAt);
+		}
+		const result = this.db.prepare(this.query).run(...this.bound);
+		return { meta: { changes: result.changes } };
+	}
+
+	async all<T = unknown>(): Promise<{ results?: T[] }> {
+		return { results: this.db.prepare(this.query).all(...this.bound) as T[] };
+	}
+
+	async raw<T = unknown>(): Promise<T[]> {
+		return this.db
+			.prepare(this.query)
+			.raw(true)
+			.all(...this.bound) as T[];
+	}
+}
+
+class RacingSqliteD1Database extends SqliteD1Database {
+	override prepare(query: string): D1PreparedStatementLike {
+		if (query.includes("INSERT INTO coordinator_reciprocal_approvals(")) {
+			return new RacingReciprocalApprovalStatement(this.db, query);
+		}
+		return super.prepare(query);
+	}
+}
+
 describe("D1CoordinatorStore", () => {
 	let tmpDir: string;
 	let db: DatabaseType;
@@ -72,6 +134,21 @@ describe("D1CoordinatorStore", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "d1-coord-test-"));
 		db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
+		db.exec(`
+			DROP TABLE IF EXISTS coordinator_reciprocal_approvals;
+			DROP TABLE IF EXISTS coordinator_join_requests;
+			DROP TABLE IF EXISTS coordinator_invites;
+			DROP TABLE IF EXISTS request_nonces;
+			DROP TABLE IF EXISTS presence_records;
+			DROP TABLE IF EXISTS enrolled_devices;
+			DROP TABLE IF EXISTS groups;
+		`);
+		db.exec(
+			readFileSync(
+				join(import.meta.dirname, "../../cloudflare-coordinator-worker/schema.sql"),
+				"utf8",
+			),
+		);
 		store = new D1CoordinatorStore(new SqliteD1Database(db));
 	});
 
@@ -192,6 +269,25 @@ describe("D1CoordinatorStore", () => {
 		expect(
 			await store.listReciprocalApprovals({ groupId: "g1", deviceId: "d1", direction: "incoming" }),
 		).toEqual([]);
+	});
+
+	it("converges to completed when a reverse pending row appears during insert", async () => {
+		const racingStore = new D1CoordinatorStore(new RacingSqliteD1Database(db));
+		await racingStore.createGroup("g1");
+		const result = await racingStore.createReciprocalApproval({
+			groupId: "g1",
+			requestingDeviceId: "d1",
+			requestedDeviceId: "d2",
+		});
+		expect(result).toEqual(
+			expect.objectContaining({
+				request_id: "race-existing",
+				status: "completed",
+				requesting_device_id: "d2",
+				requested_device_id: "d1",
+			}),
+		);
+		await racingStore.close();
 	});
 
 	it("implements nonce replay protection, presence upsert, and peer listing", async () => {
