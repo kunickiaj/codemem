@@ -172,8 +172,8 @@ importers:
   packages/opencode-plugin:
     dependencies:
       '@opencode-ai/plugin':
-        specifier: 1.3.3
-        version: 1.3.3
+        specifier: 1.3.7
+        version: 1.3.7
 
   packages/ui:
     dependencies:
@@ -1264,11 +1264,19 @@ packages:
   '@napi-rs/wasm-runtime@1.1.1':
     resolution: {integrity: sha512-p64ah1M1ld8xjWv3qbvFwHiFVWrq1yFvV4f7w+mzaqiR4IlSgkqhcRdHwsGgomwzBH51sRY4NEowLxnaBjcW/A==}
 
-  '@opencode-ai/plugin@1.3.3':
-    resolution: {integrity: sha512-pxI4LanjnQb8sUd/zfQilzlGHyrdjmZuQ1XsUFbm+rij4yq0mUPtXcPGfuZJBEcGchKn57tA3/LB6RmipLQpXg==}
+  '@opencode-ai/plugin@1.3.7':
+    resolution: {integrity: sha512-pVBIcYtHiniQ93Gj/KRkhrIz1oIAwGRifb7+dfGWdHRy00gr9DyEHFYmgHcBYgfrBavZrWw2xmqEDJdjdBuC7g==}
+    peerDependencies:
+      '@opentui/core': '>=0.1.92'
+      '@opentui/solid': '>=0.1.92'
+    peerDependenciesMeta:
+      '@opentui/core':
+        optional: true
+      '@opentui/solid':
+        optional: true
 
-  '@opencode-ai/sdk@1.3.3':
-    resolution: {integrity: sha512-qg7DwEVUpZArsYajs0DcaHqmIYB3EfHCuuTdMJir7Yc976DUWDfLR/5y9h8fKb9HAMJXe4TZkAIEr0/3OmK67g==}
+  '@opencode-ai/sdk@1.3.7':
+    resolution: {integrity: sha512-ugkta0v0dMZchN15QGmqHb9zf35k+K1VM9wt3x4ZRJ6GxKAs0XlCmQPQJflgV9YSedNxjkgTud0GCCIWUSiUOg==}
 
   '@oxc-project/types@0.120.0':
     resolution: {integrity: sha512-k1YNu55DuvAip/MGE1FTsIuU3FUCn6v/ujG9V7Nq5Df/kX2CWb13hhwD0lmJGMGqE+bE1MXvv9SZVnMzEXlWcg==}
@@ -3930,12 +3938,12 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
-  '@opencode-ai/plugin@1.3.3':
+  '@opencode-ai/plugin@1.3.7':
     dependencies:
-      '@opencode-ai/sdk': 1.3.3
+      '@opencode-ai/sdk': 1.3.7
       zod: 4.1.8
 
-  '@opencode-ai/sdk@1.3.3': {}
+  '@opencode-ai/sdk@1.3.7': {}
 
   '@oxc-project/types@0.120.0': {}
 
