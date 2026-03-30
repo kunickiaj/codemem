@@ -8,6 +8,7 @@ import { deriveSyncViewModel } from './view-model';
 import { renderSyncStatus, renderSyncAttempts, renderPairing, initDiagnosticsEvents, setRenderSyncPeers } from './diagnostics';
 import { renderTeamSync, renderSyncSharingReview, initTeamSyncEvents, setLoadSyncData as setTeamSyncLoadData } from './team-sync';
 import { renderSyncActors, renderSyncPeers, renderLegacyDeviceClaims, initPeopleEvents, setLoadSyncData as setPeopleLoadData } from './people';
+import { ensureSyncRenderBoundary } from './components/render-root';
 import { hideSkeleton, readDuplicatePersonDecisions } from './helpers';
 
 /* ── Re-exports consumed by app.ts ───────────────────────── */
@@ -140,6 +141,7 @@ export async function loadPairingData() {
 /* ── Init ────────────────────────────────────────────────── */
 
 export function initSyncTab(refreshCallback: () => void) {
+  ensureSyncRenderBoundary();
   // Wire cross-module callbacks to avoid circular imports
   setTeamSyncLoadData(loadSyncData);
   setPeopleLoadData(loadSyncData);
