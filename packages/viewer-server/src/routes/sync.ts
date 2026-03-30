@@ -14,6 +14,7 @@ import {
 	coordinatorImportInviteAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorStatusSnapshot,
+	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
 	ensureDeviceIdentity,
 	extractReplicationOps,
@@ -322,6 +323,10 @@ function redactCoordinatorStatus(
 					last_seen_at: record.last_seen_at ?? null,
 					expires_at: record.expires_at ?? null,
 					stale: Boolean(record.stale),
+					needs_local_approval: Boolean(record.needs_local_approval),
+					waiting_for_peer_approval: Boolean(record.waiting_for_peer_approval),
+					incoming_reciprocal_request_id: record.incoming_reciprocal_request_id ?? null,
+					outgoing_reciprocal_request_id: record.outgoing_reciprocal_request_id ?? null,
 					fingerprint: null,
 					addresses: [],
 				};
@@ -372,39 +377,58 @@ async function acceptDiscoveredPeer(
 	const nextAddresses = Array.isArray(match.addresses)
 		? match.addresses.filter((value): value is string => typeof value === "string")
 		: [];
+	const groupIds = Array.isArray(match.groups)
+		? match.groups.map((value) => String(value ?? "").trim()).filter(Boolean)
+		: [];
+	if (groupIds.length !== 1) {
+		return {
+			ok: false,
+			status: 409,
+			error: "ambiguous_coordinator_group",
+			detail:
+				groupIds.length > 1
+					? "This device is visible through multiple coordinator groups. Review the team setup before approving it here."
+					: "This device is missing coordinator group context. Refresh sync status and try again.",
+		};
+	}
+	const groupId = groupIds[0] as string;
 	const d = drizzle(store.db, { schema });
-	const now = new Date().toISOString();
-	return store.db.transaction(() => {
-		const existing = d
-			.select({
-				peer_device_id: schema.syncPeers.peer_device_id,
-				pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
-				addresses_json: schema.syncPeers.addresses_json,
-			})
-			.from(schema.syncPeers)
-			.where(eq(schema.syncPeers.peer_device_id, input.peerDeviceId))
-			.get();
-		const existingFingerprint = String(existing?.pinned_fingerprint ?? "").trim();
-		if (existing && existingFingerprint && existingFingerprint !== nextFingerprint) {
-			return {
-				ok: false as const,
-				status: 409,
-				error: "peer_conflict",
-				detail:
-					"An existing peer with this device id is pinned to a different fingerprint. Remove or repair the old peer before accepting this discovered device.",
-			};
+	const existing = d
+		.select({
+			peer_device_id: schema.syncPeers.peer_device_id,
+			pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
+			addresses_json: schema.syncPeers.addresses_json,
+		})
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, input.peerDeviceId))
+		.get();
+	const existingFingerprint = String(existing?.pinned_fingerprint ?? "").trim();
+	if (existing && existingFingerprint && existingFingerprint !== nextFingerprint) {
+		return {
+			ok: false as const,
+			status: 409,
+			error: "peer_conflict",
+			detail:
+				"An existing peer with this device id is pinned to a different fingerprint. Remove or repair the old peer before accepting this discovered device.",
+		};
+	}
+	const existingAddresses = (() => {
+		try {
+			const raw = JSON.parse(String(existing?.addresses_json ?? "[]"));
+			return Array.isArray(raw)
+				? raw.filter((value): value is string => typeof value === "string")
+				: [];
+		} catch {
+			return [];
 		}
-		const existingAddresses = (() => {
-			try {
-				const raw = JSON.parse(String(existing?.addresses_json ?? "[]"));
-				return Array.isArray(raw)
-					? raw.filter((value): value is string => typeof value === "string")
-					: [];
-			} catch {
-				return [];
-			}
-		})();
-		const addressesJson = JSON.stringify(mergeAddresses(existingAddresses, nextAddresses));
+	})();
+	const addressesJson = JSON.stringify(mergeAddresses(existingAddresses, nextAddresses));
+	await createCoordinatorReciprocalApproval(store, config, {
+		groupId,
+		requestedDeviceId: input.peerDeviceId,
+	});
+	const now = new Date().toISOString();
+	const result = store.db.transaction(() => {
 		if (!existing) {
 			d.insert(schema.syncPeers)
 				.values({
@@ -441,6 +465,7 @@ async function acceptDiscoveredPeer(
 			name: nextName,
 		};
 	})();
+	return result;
 }
 
 function isSharedVisibility(payload: Record<string, unknown> | null): boolean {
