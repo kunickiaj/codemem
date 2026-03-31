@@ -104,7 +104,7 @@ function renderIntoFeedMount(mount: HTMLElement, content: ComponentChildren) {
 
 function feedScopeLabel(scope: string): string {
   if (scope === 'mine') return ' · my memories';
-  if (scope === 'theirs') return ' · other actors';
+  if (scope === 'theirs') return ' · other people';
   return '';
 }
 
@@ -852,7 +852,7 @@ function FeedTabView({ items, loadingText }: { items: any[]; loadingText?: strin
           options: [
             { value: 'all', label: 'All' },
             { value: 'mine', label: 'My memories' },
-            { value: 'theirs', label: 'Other actors' },
+            { value: 'theirs', label: 'Other people' },
           ],
         }),
         h(FeedToggle, {
