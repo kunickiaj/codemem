@@ -47,6 +47,23 @@ export function isLocalHost(host: string): boolean {
 	);
 }
 
+export function isLoopbackOnlyHost(host: string): boolean {
+	const normalized = host.trim().toLowerCase();
+	return (
+		normalized === "localhost" ||
+		/^127(?:\.\d{1,3}){0,3}$/.test(normalized) ||
+		normalized === "::1" ||
+		normalized === "0:0:0:0:0:0:0:1"
+	);
+}
+
+function warnIfViewerExposed(host: string, port: number): void {
+	if (isLoopbackOnlyHost(host)) return;
+	p.log.warn(
+		`Viewer bound to ${host}:${port}. codemem's viewer trust model assumes localhost-only access; do not expose it through a reverse proxy, tunnel, or public bind without adding your own auth layer.`,
+	);
+}
+
 export function isLikelyViewerCommand(command: string): boolean {
 	const lowered = command.toLowerCase();
 	if (!/\bserve\s+start\b/.test(lowered)) return false;
@@ -290,6 +307,7 @@ export function sqliteVecFailureDiagnostics(error: unknown, dbPath: string): str
 }
 
 async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
+	warnIfViewerExposed(invocation.host, invocation.port);
 	if (await isPortOpen(invocation.host, invocation.port)) {
 		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
 		return;
@@ -324,6 +342,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const { serve } = await import("@hono/node-server");
 
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
+	warnIfViewerExposed(invocation.host, invocation.port);
 	if (await isPortOpen(invocation.host, invocation.port)) {
 		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
 		process.exitCode = 1;

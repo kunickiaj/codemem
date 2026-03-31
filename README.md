@@ -151,6 +151,7 @@ Common overrides:
 
 The viewer includes a grouped Settings modal (`Connection`, `Processing`, `Device Sync`) with shell-agnostic labels and an advanced-controls toggle for technical fields.
 - Settings show effective values (configured or default) and only persist changed fields on save.
+- The viewer HTTP service is intended for localhost-only use. It does not currently provide a general-purpose auth/session layer for safe public exposure.
 
 Observer runtime/auth:
 

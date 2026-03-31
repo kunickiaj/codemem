@@ -5,6 +5,14 @@
 - `codemem serve --background` runs it in the background.
 - `codemem serve restart` restarts the background viewer.
 
+## Viewer trust model
+
+- The viewer and its JSON APIs are designed for **localhost-only** use.
+- codemem currently relies on loopback-origin checks and local-process assumptions, not a real login/session auth layer.
+- Binding the viewer to `0.0.0.0`, putting it behind a reverse proxy, or exposing it through a tunnel can make local APIs reachable in ways the current trust model was not built for.
+- Treat the viewer as a local tool. If you must expose it beyond loopback, add your own auth and network restrictions first.
+- This warning applies to the viewer HTTP service, not the separate sync/coordinator listeners documented elsewhere.
+
 ## Seeing UI changes
 - The viewer UI is built from `packages/ui/` and served by `packages/viewer-server/`.
 - Restart the viewer after updates: `codemem serve restart`.
@@ -145,6 +153,7 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - The Settings UI exposes coordinator URL, group, timeout, and presence TTL fields under the Sync tab.
 - The coordinator is self-hosted/operator-run and only helps peers discover fresh addresses; direct peer-to-peer sync remains the data path.
 - See [docs/coordinator-discovery.md](coordinator-discovery.md) for setup, config, and current limitations.
+- Do **not** expose the viewer itself just because the coordinator or sync protocol needs cross-network reachability; those are separate surfaces.
 
 ### Keychain (optional)
 
