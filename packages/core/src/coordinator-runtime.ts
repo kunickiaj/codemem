@@ -8,6 +8,7 @@ import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 
 type ConfigRecord = Record<string, unknown>;
+type PresenceStoreLike = Pick<MemoryStore, "db" | "dbPath">;
 
 function clean(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
@@ -79,7 +80,7 @@ interface PresenceSnapshot {
 
 const coordinatorPresenceCache = new Map<string, PresenceSnapshot>();
 
-function presenceCacheKey(store: MemoryStore, config: CoordinatorSyncConfig): string {
+function presenceCacheKey(store: PresenceStoreLike, config: CoordinatorSyncConfig): string {
 	const groups = [...config.syncCoordinatorGroups].sort().join(",");
 	return `${store.dbPath}|${config.syncCoordinatorUrl}|${groups}`;
 }
@@ -160,11 +161,12 @@ function advertisedSyncAddresses(config: CoordinatorSyncConfig): string[] {
 }
 
 export async function registerCoordinatorPresence(
-	store: MemoryStore,
+	store: PresenceStoreLike,
 	config: CoordinatorSyncConfig,
+	options?: { keysDir?: string },
 ): Promise<{ groups: string[]; responses: Record<string, unknown>[] } | null> {
 	if (!coordinatorEnabled(config)) return null;
-	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	const keysDir = options?.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir });
 	const publicKey = loadPublicKey(keysDir);
 	if (!publicKey) throw new Error("public key missing");
