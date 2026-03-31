@@ -74,6 +74,11 @@ That file points at the live Worker package source, not a separate example imple
 
 - `main = "../../packages/cloudflare-coordinator-worker/src/index.ts"`
 
+The current Worker path uses the Worker-native WebCrypto request verifier in
+`packages/cloudflare-coordinator-worker/src/request-verifier.ts`, but the checked-in Worker config still keeps
+`nodejs_compat` enabled for now because the shared coordinator code path still pulls in some transitive `node:*`
+dependencies during Worker startup.
+
 ## 3. Set the admin secret
 
 Admin operations use a separate secret header path. Set it before deploy:

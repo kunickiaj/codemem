@@ -3,7 +3,7 @@
 This is helper tooling around the Cloudflare Worker deployment path for the coordinator-backed discovery contract. For the
 canonical product docs, start with:
 
-- `docs/coordinator-cloudflare-deployment.md` for the Worker + D1 runbook
+- `docs/cloudflare-coordinator-deployment.md` for the Worker + D1 runbook
 - `docs/coordinator-deployment.md` for the canonical Linux/Node coordinator path
 
 If you want the current Cloudflare Workers + D1 deployment instructions, use
