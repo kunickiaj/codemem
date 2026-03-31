@@ -1,11 +1,19 @@
 # Cloudflare Worker reference coordinator
 
 This is a secondary reference deployment for the coordinator-backed discovery contract. The canonical deployment target
-is the built-in TypeScript coordinator (`codemem sync coordinator serve`). See `docs/coordinator-discovery.md` for the
-recommended deployment path.
+is still the built-in TypeScript coordinator (`codemem sync coordinator serve`). See `docs/coordinator-discovery.md`
+for the recommended deployment path.
 
-The product is now TS-first. This Worker example remains useful for experimenting with Workers + D1, but it is not the
-mainline coordinator runtime and should not be assumed to have feature parity with the built-in coordinator.
+The product is now TS-first. The live Worker implementation source lives in
+`packages/cloudflare-coordinator-worker/src/index.ts`. This example directory now exists to provide:
+
+- bootstrap helpers
+- smoke-check tooling
+- a local `wrangler.toml` wrapper for deploying the package worker source with D1 bindings
+- schema/bootstrap guidance for the experimental Worker path
+
+It remains useful for experimenting with Workers + D1, but it is not the mainline coordinator runtime and should not be
+assumed to have feature parity with the built-in coordinator.
 
 It is intentionally narrow:
 
@@ -17,9 +25,9 @@ It is not a relay, queue, or central memory store.
 
 ## Files
 
-- `src/index.mjs` - Worker implementation
-- `schema.sql` - D1 schema
-- `wrangler.toml.example` - example Wrangler config
+- `../../packages/cloudflare-coordinator-worker/src/index.ts` - Worker implementation source used by this example's Wrangler config
+- `../../packages/cloudflare-coordinator-worker/schema.sql` - D1 schema used by the package worker
+- `wrangler.toml.example` - example Wrangler config that points at the package worker source
 - `bootstrap.py` - guided bootstrap helper for local device enrollment
 - `smoke_check.py` - live smoke-check script for deployed endpoints
 
@@ -52,11 +60,20 @@ Then edit `examples/cloudflare-coordinator/wrangler.toml` and replace:
 
 with the actual D1 database ID from step 2.
 
+That `wrangler.toml` already points at the package worker source:
+
+- `../../packages/cloudflare-coordinator-worker/src/index.ts`
+
+So you are deploying the current TS Worker implementation, not a dead copy in this examples directory.
+
 ### 4. Apply the schema
 
 ```fish
-wrangler d1 execute codemem-coordinator --remote --file examples/cloudflare-coordinator/schema.sql
+wrangler d1 execute codemem-coordinator --remote --file packages/cloudflare-coordinator-worker/schema.sql
 ```
+
+Use the package worker schema here, not the older cut-down example schema. The package worker includes invite, join,
+and reciprocal-approval tables that the old example-only schema does not.
 
 ### 5. Deploy the Worker
 
