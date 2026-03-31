@@ -14,6 +14,10 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 | MCP server | Exposes memory tools (search, timeline, pack, remember, forget) to OpenCode | `packages/mcp-server/src/` |
 | CLI | Ties everything together: ingest, serve, search, export/import, sync | `packages/cli/src/` |
 
+The viewer trust model is intentionally local-first: it is designed for loopback access from the same machine, with
+cross-origin protections for browser callers and limited config-route guardrails, but not a full remote auth/session
+boundary.
+
 ## Data flow
 
 ```mermaid

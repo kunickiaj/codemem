@@ -4,6 +4,7 @@ import {
 	extractViewerPid,
 	isLikelyViewerCommand,
 	isLocalHost,
+	isLoopbackOnlyHost,
 	isSqliteVecLoadFailure,
 	pickViewerPidCandidate,
 	sqliteVecFailureDiagnostics,
@@ -176,6 +177,18 @@ describe("serve command option resolution", () => {
 		expect(isLocalHost("::1")).toBe(true);
 		expect(isLocalHost("0.0.0.0")).toBe(true);
 		expect(isLocalHost("example.com")).toBe(false);
+	});
+
+	it("distinguishes loopback-only viewer binds from network-exposed binds", () => {
+		expect(isLoopbackOnlyHost("127.0.0.1")).toBe(true);
+		expect(isLoopbackOnlyHost("127.0.0.2")).toBe(true);
+		expect(isLoopbackOnlyHost("127.1")).toBe(true);
+		expect(isLoopbackOnlyHost("localhost")).toBe(true);
+		expect(isLoopbackOnlyHost("::1")).toBe(true);
+		expect(isLoopbackOnlyHost("0:0:0:0:0:0:0:1")).toBe(true);
+		expect(isLoopbackOnlyHost("0.0.0.0")).toBe(false);
+		expect(isLoopbackOnlyHost("::")).toBe(false);
+		expect(isLoopbackOnlyHost("example.com")).toBe(false);
 	});
 
 	it("matches likely codemem viewer command lines", () => {
