@@ -49,18 +49,18 @@ export const state = {
   lastStatsPayload: null as any,
   lastUsagePayload: null as any,
   lastRawEventsPayload: null as any,
-  lastSyncStatus: null as any,
-  lastSyncActors: [] as any[],
-  lastSyncPeers: [] as any[],
-  pendingAcceptedSyncPeers: [] as any[],
+  lastSyncStatus: null as Record<string, unknown> | null,
+  lastSyncActors: [] as SyncActorSummary[],
+  lastSyncPeers: [] as SyncPeerSummary[],
+  pendingAcceptedSyncPeers: [] as SyncPeerSummary[],
   lastSyncSharingReview: [] as any[],
-  lastSyncCoordinator: null as any,
+  lastSyncCoordinator: null as SyncCoordinatorStatus | null,
   lastSyncJoinRequests: [] as any[],
   lastTeamInvite: null as any,
   lastTeamJoin: null as any,
-  lastSyncAttempts: [] as any[],
+  lastSyncAttempts: [] as SyncAttemptSummary[],
   lastSyncLegacyDevices: [] as any[],
-  lastSyncViewModel: null as any,
+  lastSyncViewModel: null as UiSyncViewModel | null,
   lastSyncDuplicatePersonDecisions: {} as Record<string, string>,
   pairingPayloadRaw: null as any,
   pairingCommandRaw: '',
@@ -159,3 +159,10 @@ export function initState() {
     state.syncPairingOpen = false;
   }
 }
+import type {
+  SyncActorSummary,
+  SyncAttemptSummary,
+  SyncCoordinatorStatus,
+  SyncPeerSummary,
+} from './api';
+import type { UiSyncViewModel } from '../tabs/sync/view-model';
