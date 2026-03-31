@@ -297,4 +297,31 @@ describe('deriveSyncViewModel', () => {
     expect(view.duplicatePeople).toEqual([]);
     expect(view.attentionItems).toEqual([]);
   });
+
+  it('does not count a stale coordinator record as offline when the paired peer is actively connected', () => {
+    const view = deriveSyncViewModel({
+      peers: [
+        {
+          peer_device_id: 'peer-1',
+          status: { peer_state: 'online', fresh: true, sync_status: 'ok' },
+        },
+      ],
+      coordinator: {
+        discovered_devices: [
+          {
+            device_id: 'peer-1',
+            display_name: 'Desk Mini',
+            stale: true,
+            fingerprint: 'fp-1',
+          },
+        ],
+      },
+    });
+
+    expect(view.summary).toEqual({
+      connectedDeviceCount: 1,
+      seenOnTeamCount: 1,
+      offlineTeamDeviceCount: 0,
+    });
+  });
 });
