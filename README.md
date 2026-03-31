@@ -19,13 +19,12 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 
 **Prerequisites:** Node.js 22+ and npm (or pnpm)
 
-1. Add the plugin to your OpenCode config (`~/.config/opencode/opencode.jsonc`):
+### OpenCode
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@codemem/opencode-plugin"]
-}
+1. Install the OpenCode plugin and MCP config:
+
+```text
+npx -y codemem setup --opencode-only
 ```
 
 2. Restart OpenCode.
@@ -34,7 +33,7 @@ The OpenCode plugin manages backend execution automatically — no separate glob
 
 3. Verify:
 
-```bash
+```text
 # Works on fresh installs (no global codemem needed)
 npx -y codemem stats
 npx -y codemem db raw-events-status
@@ -44,7 +43,7 @@ That's it. The plugin captures activity, builds memories, and injects context fr
 
 If you want `codemem` available directly on your `PATH` for manual commands, install the CLI globally:
 
-```bash
+```text
 npm install -g codemem
 ```
 
@@ -55,7 +54,13 @@ OpenCode plugin and CLI are now split intentionally:
 
 ### Claude Code (marketplace install)
 
-In [Claude Code](https://claude.ai/code), add the codemem marketplace source and install the plugin:
+1. Install codemem's Claude MCP config:
+
+```text
+npx -y codemem setup --claude-only
+```
+
+2. In [Claude Code](https://claude.ai/code), add the codemem marketplace source and install the plugin:
 
 ```text
 /plugin marketplace add kunickiaj/codemem
@@ -68,10 +73,7 @@ Claude hook ingestion is HTTP enqueue-first (`POST /api/claude-hooks`) and falls
 
 Claude hook events share the same raw-event queue pipeline used by OpenCode. `UserPromptSubmit` runs
 capture ingest in the background and injects memory context via Claude `additionalContext` using
-local CLI/store pack generation by default, with optional HTTP `/api/pack` fallback.
-
-The packaged Claude hook shell scripts are thin wrappers over TS CLI commands:
-`codemem claude-hook-ingest` and `codemem claude-hook-inject`.
+local pack generation by default, with optional HTTP `/api/pack` fallback.
 
 > Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
 
@@ -129,11 +131,11 @@ for manual prompt injection. `codemem memory compact` remains deferred.
 
 To give the LLM direct access to memory tools (search, timeline, pack, remember, forget):
 
-```bash
-codemem install-mcp
+```text
+codemem setup --opencode-only
 ```
 
-This updates your OpenCode config to register the MCP server. Restart OpenCode to activate.
+This updates your OpenCode config to install the plugin and register the MCP server. Restart OpenCode to activate.
 
 ## Configuration
 
@@ -150,7 +152,7 @@ Common overrides:
 The viewer includes a grouped Settings modal (`Connection`, `Processing`, `Device Sync`) with shell-agnostic labels and an advanced-controls toggle for technical fields.
 - Settings show effective values (configured or default) and only persist changed fields on save.
 
-Observer runtime/auth in `0.16`:
+Observer runtime/auth:
 
 - Runtime options: `api_http` and `claude_sidecar`.
 - `api_http` defaults to `gpt-5.1-codex-mini` (OpenAI path) unless you set `observer_model`.
@@ -170,15 +172,12 @@ Observer runtime/auth in `0.16`:
 
 Share project knowledge with teammates or back up memories across machines.
 
-```bash
+```text
 # Export current project
 codemem export-memories project.json
 
 # Import on another machine (idempotent, safe to re-run)
 codemem import-memories project.json --remap-project ~/workspace/myproject
-
-# Import from claude-mem
-codemem import-from-claude-mem ~/.claude-mem/claude-mem.db
 ```
 
 See `codemem export-memories --help` and `codemem import-memories --help` for full options.
@@ -187,7 +186,7 @@ See `codemem export-memories --help` and `codemem import-memories --help` for fu
 
 Replicate memories across devices without a central server.
 
-```bash
+```text
 codemem sync enable        # generate device keys
 codemem sync pair          # generate pairing payload
 codemem sync start         # start sync daemon
@@ -211,7 +210,7 @@ Embeddings are stored in sqlite-vec and written automatically when memories are 
 
 ### Local development
 
-```bash
+```text
 pnpm install
 pnpm build
 pnpm run codemem --help
@@ -219,7 +218,7 @@ pnpm run codemem --help
 
 ### Via npx (no install)
 
-```bash
+```text
 npx -y codemem stats
 ```
 

@@ -222,7 +222,7 @@ PL->>OC: append codemem context to system prompt
 
 The observer turns raw session transcripts into typed, structured memories. It's the quality gate — everything that ends up in the store passes through here.
 
-### Runtime and auth adapter (0.16)
+### Runtime and auth adapter
 
 - The observer still uses one pipeline (extract -> prompt -> parse -> persist); runtime/auth choices are adapter inputs, not a separate path.
 - Supported runtime values are `api_http` and `claude_sidecar`.
@@ -295,7 +295,10 @@ The OpenCode adapter streams each captured event to the viewer API (`captureEven
 
 When stream delivery is unavailable, the adapter can enqueue raw events through the CLI fallback path (`enqueue-raw-event`) so events still enter durable queue processing.
 
-Claude hook ingestion is enqueue-first (`POST /api/claude-hooks`) with CLI fallback and does not flush by default.
+Claude hook ingestion is enqueue-first (`POST /api/claude-hooks`) with CLI fallback. The route nudges the raw-event
+sweeper after enqueue, but actual auto-flush still depends on `CODEMEM_RAW_EVENTS_AUTO_FLUSH=1`; otherwise processing
+waits for the normal idle/sweeper path. `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` remains a separate opt-in for `Stop`
+events.
 
 ### OpenCode session finalization triggers
 - `session.idle` — finalizes current local buffer

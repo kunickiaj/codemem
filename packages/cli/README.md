@@ -21,6 +21,7 @@ npx -y codemem stats
 
 ```bash
 codemem --help
+codemem setup --opencode-only
 codemem stats
 codemem search "query"
 codemem serve start
