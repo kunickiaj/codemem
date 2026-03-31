@@ -19,7 +19,12 @@ from codemem.sync_identity import ensure_device_identity, fingerprint_public_key
 app = typer.Typer(add_completion=False, help="Bootstrap the Cloudflare coordinator example")
 console = Console()
 WRANGLER_TOML_TEMPLATE = Path(__file__).with_name("wrangler.toml.example")
-SCHEMA_SQL_PATH = Path(__file__).with_name("schema.sql")
+SCHEMA_SQL_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "packages"
+    / "cloudflare-coordinator-worker"
+    / "schema.sql"
+)
 DRY_RUN_DATABASE_ID = "00000000-0000-0000-0000-000000000000"
 
 

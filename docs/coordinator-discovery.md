@@ -165,9 +165,11 @@ introducing Cloudflare-specific runtime/storage constraints.
 
 ## Cloudflare Worker reference deployment
 
-A Cloudflare Worker reference implementation exists in `examples/cloudflare-coordinator/`. It was built as a separate
-Worker/D1 implementation of the coordinator contract and remains useful for experimentation, but it is not the
-canonical runtime for current product development.
+A Cloudflare Worker reference path exists for the coordinator contract. The current Worker implementation source lives in
+`packages/cloudflare-coordinator-worker/`, while `examples/cloudflare-coordinator/` provides the bootstrap/smoke-check
+helpers and a Wrangler wrapper config for that package worker.
+
+It remains useful for experimentation, but it is not the canonical runtime for current product development.
 
 The long-term Cloudflare direction should build from the TypeScript coordinator contract rather than from the old Python
 era deployment story. Today, the practical sequence is:
