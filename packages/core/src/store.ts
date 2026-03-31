@@ -1214,7 +1214,7 @@ export class MemoryStore {
 		startEventSeq: number,
 		endEventSeq: number,
 		extractorVersion: string,
-	): { batchId: number; status: string } {
+	): { batchId: number; status: string; attemptCount: number } {
 		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
 		const now = new Date().toISOString();
 
@@ -1245,7 +1245,7 @@ export class MemoryStore {
 					END`,
 				},
 			})
-			.returning({ id: t.id, status: t.status })
+			.returning({ id: t.id, status: t.status, attempt_count: t.attempt_count })
 			.get();
 
 		if (!row) throw new Error("Failed to create flush batch");
@@ -1259,7 +1259,11 @@ export class MemoryStore {
 					: rawStatus === "error"
 						? "failed"
 						: rawStatus;
-		return { batchId: Number(row.id), status: canonicalStatus };
+		return {
+			batchId: Number(row.id),
+			status: canonicalStatus,
+			attemptCount: Number(row.attempt_count ?? 0),
+		};
 	}
 
 	/**
@@ -1293,8 +1297,8 @@ export class MemoryStore {
 	 */
 	updateRawEventFlushBatchStatus(batchId: number, status: string): void {
 		const now = new Date().toISOString();
-		if (status === "failed") {
-			// Preserve existing error details when marking as failed
+		if (status === "failed" || status === "gave_up") {
+			// Preserve existing error details when marking as failed/gave_up
 			this.d
 				.update(schema.rawEventFlushBatches)
 				.set({ status, updated_at: now })
