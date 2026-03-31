@@ -14,6 +14,10 @@ export interface SyncRunResponse {
   items: SyncRunItem[];
 }
 
+export interface RuntimeInfo {
+  version: string;
+}
+
 function payloadError(payload: unknown): string | undefined {
   if (!payload || typeof payload !== 'object') return undefined;
   const maybeError = (payload as { error?: unknown }).error;
@@ -39,6 +43,10 @@ async function readJsonPayload<T = Record<string, unknown>>(
 
 export async function loadStats(): Promise<any> {
   return fetchJson('/api/stats');
+}
+
+export async function loadRuntimeInfo(): Promise<RuntimeInfo> {
+  return fetchJson('/api/runtime');
 }
 
 export async function loadUsage(project: string): Promise<any> {

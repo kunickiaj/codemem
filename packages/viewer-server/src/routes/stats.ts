@@ -4,7 +4,7 @@
  * Ports Python's viewer_routes/stats.py.
  */
 
-import type { MemoryStore } from "@codemem/core";
+import { type MemoryStore, VERSION } from "@codemem/core";
 import { Hono } from "hono";
 
 /**
@@ -28,6 +28,12 @@ export function statsRoutes(getStore: () => MemoryStore) {
 		return c.json({
 			...store.stats(),
 			viewer_pid: process.pid,
+		});
+	});
+
+	app.get("/api/runtime", (c) => {
+		return c.json({
+			version: VERSION,
 		});
 	});
 
