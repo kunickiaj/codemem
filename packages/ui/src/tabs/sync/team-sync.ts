@@ -314,6 +314,10 @@ export function renderTeamSync() {
   const discoveredDevices = Array.isArray(coordinator.discovered_devices)
     ? coordinator.discovered_devices
     : [];
+  const inviteCreationAvailable = Boolean(coordinator.admin_secret_configured);
+  const inviteCreationHint = inviteCreationAvailable
+    ? null
+    : 'Set CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET or sync_coordinator_admin_secret outside the viewer to create team invites from this device.';
   const discoveredRows: TeamSyncDiscoveredRow[] = discoveredDevices.map((device) => {
     const deviceId = String(device.device_id || '').trim();
     const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
@@ -435,6 +439,8 @@ export function renderTeamSync() {
         invitePanel,
         invitePanelOpen: teamInvitePanelOpen,
         inviteRestoreParent,
+        inviteCreationAvailable,
+        inviteCreationHint,
         joinPanel,
         joinRestoreParent,
         onToggleInvitePanel: () => {
@@ -571,6 +577,17 @@ export function renderTeamSync() {
       statusSummary,
     }),
   );
+
+  const syncCreateInviteButton = document.getElementById('syncCreateInviteButton') as HTMLButtonElement | null;
+  const syncInvitePrereqHint = document.getElementById('syncInvitePrereqHint');
+  if (syncCreateInviteButton) {
+    syncCreateInviteButton.disabled = !inviteCreationAvailable;
+    syncCreateInviteButton.title = inviteCreationAvailable ? '' : inviteCreationHint || '';
+  }
+  if (syncInvitePrereqHint) {
+    syncInvitePrereqHint.textContent = inviteCreationAvailable ? '' : inviteCreationHint || '';
+    syncInvitePrereqHint.hidden = inviteCreationAvailable;
+  }
 }
 
 /* ── Event wiring ────────────────────────────────────────── */

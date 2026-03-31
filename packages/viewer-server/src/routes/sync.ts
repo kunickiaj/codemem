@@ -1177,6 +1177,7 @@ export function syncRoutes(
 				await coordinatorStatusSnapshot(store, config),
 				showDiag,
 			);
+			coordinator.admin_secret_configured = Boolean(config.syncCoordinatorAdminSecret);
 			let joinRequests: Record<string, unknown>[] = [];
 			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {
 				try {

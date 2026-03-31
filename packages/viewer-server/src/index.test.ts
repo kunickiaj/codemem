@@ -1625,6 +1625,7 @@ describe("viewer-server", () => {
 				expect(body.project_filter).toEqual({ include: ["codemem"], exclude: ["junk"] });
 				expect(body.coordinator.enabled).toBe(true);
 				expect(body.coordinator.configured).toBe(true);
+				expect(body.coordinator.admin_secret_configured).toBe(true);
 				expect(body.coordinator.groups).toEqual(["team-a"]);
 				expect(body.join_requests).toHaveLength(1);
 				expect(body.join_requests[0].request_id).toBe("req-1");

@@ -88,6 +88,7 @@ function TeamSetupDisclosure({ open, onOpenChange }: TeamSetupDisclosureProps) {
         Create a team
       </h3>
       <div className="section-meta">Generate an invite to share with teammates.</div>
+      <div className="section-meta" id="syncInvitePrereqHint" hidden />
       <div className="actor-create-row">
         <label htmlFor="syncInviteGroup" className="sr-only">
           Team name

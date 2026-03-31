@@ -36,17 +36,26 @@ function InviteToggleRow({
   invitePanel,
   invitePanelOpen,
   inviteRestoreParent,
+  inviteCreationAvailable,
+  inviteCreationHint,
   onToggle,
 }: {
   invitePanel: HTMLElement | null;
   invitePanelOpen: boolean;
   inviteRestoreParent: HTMLElement | null;
+  inviteCreationAvailable: boolean;
+  inviteCreationHint: string | null;
   onToggle: () => void;
 }) {
   return (
     <>
       <div className="sync-action">
-        <div className="sync-action-text">Generate an invite to add another teammate to this team.</div>
+        <div className="sync-action-text">
+          {inviteCreationAvailable
+            ? 'Generate an invite to add another teammate to this team.'
+            : inviteCreationHint ||
+              'Invite creation is unavailable on this device until coordinator admin access is configured.'}
+        </div>
         <button type="button" className="settings-button" onClick={onToggle}>
           {invitePanelOpen ? 'Hide invite form' : 'Invite a teammate'}
         </button>
@@ -86,6 +95,8 @@ export type SyncInviteJoinPanelsProps = {
   invitePanel: HTMLElement | null;
   invitePanelOpen: boolean;
   inviteRestoreParent: HTMLElement | null;
+  inviteCreationAvailable: boolean;
+  inviteCreationHint: string | null;
   joinPanel: HTMLElement | null;
   joinRestoreParent: HTMLElement | null;
   onToggleInvitePanel: () => void;
@@ -97,6 +108,8 @@ export function SyncInviteJoinPanels({
   invitePanel,
   invitePanelOpen,
   inviteRestoreParent,
+  inviteCreationAvailable,
+  inviteCreationHint,
   joinPanel,
   joinRestoreParent,
   onToggleInvitePanel,
@@ -105,12 +118,14 @@ export function SyncInviteJoinPanels({
 }: SyncInviteJoinPanelsProps) {
   return (
     <>
-      <InviteToggleRow
-        invitePanel={invitePanel}
-        invitePanelOpen={invitePanelOpen}
-        inviteRestoreParent={inviteRestoreParent}
-        onToggle={onToggleInvitePanel}
-      />
+        <InviteToggleRow
+          invitePanel={invitePanel}
+          invitePanelOpen={invitePanelOpen}
+          inviteRestoreParent={inviteRestoreParent}
+          inviteCreationAvailable={inviteCreationAvailable}
+          inviteCreationHint={inviteCreationHint}
+          onToggle={onToggleInvitePanel}
+        />
 
       {presenceStatus === 'not_enrolled' ? (
         <>
