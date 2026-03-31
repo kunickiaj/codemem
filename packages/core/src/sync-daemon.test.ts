@@ -1,13 +1,25 @@
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	getSyncDaemonPhase,
+	refreshCoordinatorPresenceForDaemon,
+	runTickOnce,
 	setSyncDaemonError,
 	setSyncDaemonOk,
 	setSyncDaemonPhase,
 	syncDaemonTick,
 } from "./sync-daemon.js";
+
 import { initTestSchema } from "./test-utils.js";
+
+vi.mock("./coordinator-runtime.js", () => ({
+	coordinatorEnabled: vi.fn().mockReturnValue(false),
+	readCoordinatorSyncConfig: vi.fn().mockReturnValue({}),
+	registerCoordinatorPresence: vi.fn().mockResolvedValue(null),
+}));
 
 // Mock sync-pass to avoid needing real keys/network
 vi.mock("./sync-pass.js", () => ({
@@ -77,6 +89,79 @@ describe("syncDaemonTick", () => {
 		expect(results).toHaveLength(1);
 		expect(results[0].skipped).toBe(true);
 		expect(results[0].reason).toContain("backoff");
+	});
+});
+
+describe("refreshCoordinatorPresenceForDaemon", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	it("does nothing when coordinator sync is not configured", async () => {
+		const { coordinatorEnabled, registerCoordinatorPresence } = await import(
+			"./coordinator-runtime.js"
+		);
+		vi.mocked(coordinatorEnabled).mockReturnValue(false);
+
+		expect(await refreshCoordinatorPresenceForDaemon(db, ":memory:")).toBe(false);
+		expect(registerCoordinatorPresence).not.toHaveBeenCalled();
+	});
+
+	it("posts coordinator presence with the daemon db and keys context when enabled", async () => {
+		const { coordinatorEnabled, readCoordinatorSyncConfig, registerCoordinatorPresence } =
+			await import("./coordinator-runtime.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncCoordinatorUrl: "http://coord",
+			syncCoordinatorGroups: ["team"],
+		} as never);
+
+		expect(await refreshCoordinatorPresenceForDaemon(db, ":memory:", "/tmp/keys")).toBe(true);
+		expect(registerCoordinatorPresence).toHaveBeenCalledWith(
+			{ db, dbPath: ":memory:" },
+			expect.objectContaining({
+				syncCoordinatorUrl: "http://coord",
+				syncCoordinatorGroups: ["team"],
+			}),
+			{ keysDir: "/tmp/keys" },
+		);
+	});
+
+	it("keeps direct peer sync running when coordinator heartbeat fails", async () => {
+		const { coordinatorEnabled, readCoordinatorSyncConfig, registerCoordinatorPresence } =
+			await import("./coordinator-runtime.js");
+		const { syncPassPreflight } = await import("./sync-pass.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncCoordinatorUrl: "http://coord",
+			syncCoordinatorGroups: ["team"],
+		} as never);
+		vi.mocked(registerCoordinatorPresence).mockRejectedValue(new Error("coordinator timeout"));
+
+		const dbPath = join(tmpdir(), `codemem-sync-daemon-${Date.now()}.sqlite`);
+		const fileDb = new Database(dbPath);
+		try {
+			initTestSchema(fileDb);
+			fileDb
+				.prepare(
+					"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+				)
+				.run("peer-1", "fp1", new Date().toISOString());
+
+			await runTickOnce(dbPath);
+			expect(syncPassPreflight).toHaveBeenCalledTimes(1);
+		} finally {
+			fileDb.close();
+			rmSync(dbPath, { force: true });
+		}
 	});
 });
 
