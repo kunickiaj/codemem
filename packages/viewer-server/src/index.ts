@@ -15,6 +15,10 @@ import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@code
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { originGuard, preflightHandler } from "./middleware.js";
+import {
+	createInMemoryRequestRateLimiter,
+	type InMemoryRequestRateLimiter,
+} from "./request-rate-limit.js";
 import { configRoutes } from "./routes/config.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { observerStatusRoutes } from "./routes/observer-status.js";
@@ -49,6 +53,13 @@ export interface AppOptions {
 	storeFactory?: () => MemoryStore;
 	sweeper?: RawEventSweeper | null;
 	observer?: ObserverClient | null;
+	syncRequestRateLimit?: {
+		limiter?: InMemoryRequestRateLimiter;
+		readLimit?: number;
+		mutationLimit?: number;
+		unauthenticatedReadLimit?: number;
+		unauthenticatedMutationLimit?: number;
+	};
 	getSyncRuntimeStatus?: () => {
 		phase:
 			| "starting"
@@ -132,8 +143,29 @@ export function createApp(opts?: AppOptions) {
  */
 export function createSyncApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
+	const requestRateLimit = opts?.syncRequestRateLimit ?? {};
+	const rateLimiter = requestRateLimit.limiter ?? createInMemoryRequestRateLimiter();
+	const readLimit = Math.max(1, Math.trunc(requestRateLimit.readLimit ?? 120));
+	const mutationLimit = Math.max(1, Math.trunc(requestRateLimit.mutationLimit ?? 30));
 	const app = new Hono();
-	app.route("/", syncProtocolRoutes(storeFactory));
+	app.route(
+		"/",
+		syncProtocolRoutes(storeFactory, {
+			routeRateLimit: {
+				limiter: rateLimiter,
+				readLimit,
+				mutationLimit,
+				unauthenticatedReadLimit: Math.max(
+					1,
+					Math.trunc(requestRateLimit.unauthenticatedReadLimit ?? Math.min(20, readLimit)),
+				),
+				unauthenticatedMutationLimit: Math.max(
+					1,
+					Math.trunc(requestRateLimit.unauthenticatedMutationLimit ?? Math.min(10, mutationLimit)),
+				),
+			},
+		}),
+	);
 
 	// Catch-all — return generic 404 to avoid fingerprinting the server.
 	app.all("*", (c) => c.json({ error: "not found" }, 404));

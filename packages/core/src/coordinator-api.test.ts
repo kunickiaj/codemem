@@ -19,6 +19,7 @@ import {
 	type CoordinatorUpsertPresenceInput,
 	createCoordinatorApp,
 } from "./index.js";
+import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 function createMockStore(
 	overrides?: Partial<CoordinatorStoreInterface>,
@@ -128,6 +129,71 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(storeFactory).toHaveBeenCalledTimes(1);
 		expect(store.listEnrolledDevices).toHaveBeenCalledWith("g1", false);
 		expect(store.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("rate limits repeated coordinator reads before route handling continues", async () => {
+		const store = createMockStore({
+			listEnrolledDevices: vi.fn(async () => []),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+			requestRateLimit: {
+				limiter: createInMemoryRequestRateLimiter(),
+				readLimit: 1,
+			},
+		});
+
+		expect(
+			await app.request("/v1/admin/devices?group_id=g1", {
+				headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+			}),
+		).toHaveProperty("status", 200);
+
+		const limited = await app.request("/v1/admin/devices?group_id=g1", {
+			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+		});
+		expect(limited.status).toBe(429);
+		expect(limited.headers.get("retry-after")).toBeTruthy();
+		expect(await limited.json()).toEqual({
+			error: "rate_limited",
+			retry_after_s: expect.any(Number),
+		});
+	});
+
+	it("does not let invalid admin requests consume the authenticated admin bucket", async () => {
+		const store = createMockStore({
+			listEnrolledDevices: vi.fn(async () => []),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+			requestRateLimit: {
+				limiter: createInMemoryRequestRateLimiter(),
+				readLimit: 1,
+				unauthenticatedReadLimit: 1,
+			},
+		});
+
+		expect(
+			await app.request("/v1/admin/devices?group_id=g1", {
+				headers: { "X-Codemem-Coordinator-Admin": "wrong-secret" },
+			}),
+		).toHaveProperty("status", 401);
+
+		expect(
+			await app.request("/v1/admin/devices?group_id=g1", {
+				headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+			}),
+		).toHaveProperty("status", 200);
 	});
 
 	it("does not rely on process env when runtime admin secret is unset", async () => {
