@@ -3,10 +3,9 @@
 The built-in TypeScript coordinator is the canonical deployment target for team sync. This guide covers how to run it
 natively, in a container, and how to expose it to teammates outside your local network.
 
-The coordinator HTTP service is Hono-based, but the supported deployment path today is still the built-in
+The coordinator HTTP service is Hono-based, but the canonical deployment path today is still the built-in
 `codemem sync coordinator serve` runtime on Node/Linux with a local SQLite database. If your end goal is Cloudflare,
-the recommended sequence is to validate E2E flows here first, then adapt that proven coordinator surface to the target
-Cloudflare runtime.
+validate this Linux/Node flow first, then use the dedicated Worker runbook in `docs/coordinator-cloudflare-deployment.md`.
 
 If you want the fastest clean validation path, use `docs/coordinator-e2e-runbook.md` alongside this guide.
 

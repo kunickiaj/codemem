@@ -165,9 +165,9 @@ introducing Cloudflare-specific runtime/storage constraints.
 
 ## Cloudflare Worker reference deployment
 
-A Cloudflare Worker reference path exists for the coordinator contract. The current Worker implementation source lives in
-`packages/cloudflare-coordinator-worker/`, while `examples/cloudflare-coordinator/` provides the bootstrap/smoke-check
-helpers and a Wrangler wrapper config for that package worker.
+A Cloudflare Worker deployment path exists for the coordinator contract. The current Worker implementation source lives in
+`packages/cloudflare-coordinator-worker/`, while `examples/cloudflare-coordinator/` provides helper tooling around that
+package worker.
 
 It remains useful for experimentation, but it is not the canonical runtime for current product development.
 
@@ -177,9 +177,7 @@ era deployment story. Today, the practical sequence is:
 1. validate the built-in TS coordinator on Node/Linux with `codemem sync coordinator serve`
 2. adapt/package that validated coordinator surface for Cloudflare
 
-Use the Worker reference path only when you specifically want a serverless/edge experiment and are comfortable with
-feature lag — new coordinator capabilities may land in the built-in coordinator first and may not be ported to the
-reference Worker immediately.
+For the actual deployment steps, use `docs/coordinator-cloudflare-deployment.md`.
 
 ## Current limitations
 
