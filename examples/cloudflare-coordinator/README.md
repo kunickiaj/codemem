@@ -1,8 +1,10 @@
 # Cloudflare Worker reference coordinator
 
-This is a secondary reference deployment for the coordinator-backed discovery contract. The canonical deployment target
-is still the built-in TypeScript coordinator (`codemem sync coordinator serve`). See `docs/coordinator-discovery.md`
-for the recommended deployment path.
+This is helper tooling around the Cloudflare Worker deployment path for the coordinator-backed discovery contract. For the
+canonical product docs, start with:
+
+- `docs/coordinator-cloudflare-deployment.md` for the Worker + D1 runbook
+- `docs/coordinator-deployment.md` for the canonical Linux/Node coordinator path
 
 The product is now TS-first. The live Worker implementation source lives in
 `packages/cloudflare-coordinator-worker/src/index.ts`. This example directory now exists to provide:
