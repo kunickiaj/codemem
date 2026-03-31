@@ -6,6 +6,9 @@ canonical product docs, start with:
 - `docs/coordinator-cloudflare-deployment.md` for the Worker + D1 runbook
 - `docs/coordinator-deployment.md` for the canonical Linux/Node coordinator path
 
+If you want the current Cloudflare Workers + D1 deployment instructions, use
+`docs/cloudflare-coordinator-deployment.md`. This README is now intentionally focused on the example wrapper tooling.
+
 The product is now TS-first. The live Worker implementation source lives in
 `packages/cloudflare-coordinator-worker/src/index.ts`. This example directory now exists to provide:
 
@@ -34,6 +37,13 @@ It is not a relay, queue, or central memory store.
 - `smoke_check.py` - live smoke-check script for deployed endpoints
 
 ## First-time setup
+
+The short version:
+
+1. follow `docs/cloudflare-coordinator-deployment.md`
+2. use this directory only for the Wrangler wrapper config and helper scripts
+
+The remaining sections here are reference notes for those helper tools.
 
 ### 1. Install and authenticate Wrangler
 
