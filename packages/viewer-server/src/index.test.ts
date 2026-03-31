@@ -780,13 +780,74 @@ describe("viewer-server", () => {
 						"Content-Type": "application/json",
 						Origin: "http://localhost",
 					},
-					body: JSON.stringify({ config: { observer_headers: { Authorization: 123 } } }),
+					body: JSON.stringify({ config: { sync_enabled: "yes" } }),
 				});
 				expect(res.status).toBe(400);
 				const body = (await res.json()) as Record<string, unknown>;
-				expect(body.error).toBe("observer_headers must be object of string values");
+				expect(body.error).toBe("sync_enabled must be boolean");
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("rejects protected config mutations from the viewer API", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: { observer_auth_command: ["print-token"] } }),
+				});
+				expect(res.status).toBe(403);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe(
+					"observer_auth_command cannot be changed from the viewer API; edit the config file or environment instead",
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("ignores unchanged protected keys during full config saves", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const previous = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					observer_model: "old-model",
+					observer_auth_command: ["print-token"],
+					sync_coordinator_url: "https://coord.example.test",
+				}),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({
+						config: {
+							observer_model: "new-model",
+							observer_auth_command: "[redacted]",
+							sync_coordinator_url: "https://coord.example.test",
+						},
+					}),
+				});
+				expect(res.status).toBe(200);
+				const saved = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+				expect(saved.observer_model).toBe("new-model");
+				expect(saved.observer_auth_command).toEqual(["print-token"]);
+				expect(saved.sync_coordinator_url).toBe("https://coord.example.test");
+			} finally {
+				cleanup();
+				if (previous == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previous;
 			}
 		});
 

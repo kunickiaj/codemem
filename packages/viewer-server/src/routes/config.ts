@@ -23,9 +23,25 @@ import { Hono } from "hono";
 
 type ConfigData = Record<string, unknown>;
 
+const REDACTED_VALUE = "[redacted]";
+
 const RUNTIMES = new Set(["api_http", "claude_sidecar"]);
 const AUTH_SOURCES = new Set(["auto", "env", "file", "command", "none"]);
 const HOT_RELOAD_KEYS = new Set(["raw_events_sweeper_interval_s"]);
+const PROTECTED_WRITE_KEYS = new Set<string>([
+	"claude_command",
+	"observer_base_url",
+	"observer_auth_file",
+	"observer_auth_command",
+	"observer_headers",
+	"sync_coordinator_url",
+] as const);
+const SECRET_CONFIG_KEYS = new Set<string>([
+	"observer_auth_file",
+	"observer_auth_command",
+	"observer_headers",
+	"sync_coordinator_admin_secret",
+] as const);
 const ALLOWED_KEYS = [
 	"claude_command",
 	"observer_base_url",
@@ -121,6 +137,57 @@ function getEffectiveConfig(configData: ConfigData): ConfigData {
 		if (val != null && val !== "") effective[key] = val;
 	}
 	return effective;
+}
+
+function redactConfigValue(key: string, value: unknown): unknown {
+	if (value == null || !SECRET_CONFIG_KEYS.has(key)) return value;
+	if (Array.isArray(value)) return value.length > 0 ? REDACTED_VALUE : [];
+	if (typeof value === "object") {
+		return Object.keys(value as Record<string, unknown>).length > 0 ? REDACTED_VALUE : {};
+	}
+	if (typeof value === "string") return value.trim() ? REDACTED_VALUE : "";
+	return REDACTED_VALUE;
+}
+
+function sanitizeConfigForResponse(configData: ConfigData): ConfigData {
+	const sanitized: ConfigData = {};
+	for (const [key, value] of Object.entries(configData)) {
+		sanitized[key] = redactConfigValue(key, value);
+	}
+	return sanitized;
+}
+
+function configValuesEqual(left: unknown, right: unknown): boolean {
+	if (Object.is(left, right)) return true;
+	if (left == null || right == null) return left == null && right == null;
+	if (typeof left === "object" || typeof right === "object") {
+		return JSON.stringify(left) === JSON.stringify(right);
+	}
+	return false;
+}
+
+function partitionViewerUpdates(
+	updates: ConfigData,
+	beforeConfig: ConfigData,
+): { allowedUpdates: ConfigData; error: string | null } {
+	const allowedUpdates: ConfigData = {};
+	for (const [key, value] of Object.entries(updates)) {
+		if (!PROTECTED_WRITE_KEYS.has(key)) {
+			allowedUpdates[key] = value;
+			continue;
+		}
+		if (SECRET_CONFIG_KEYS.has(key) && value === REDACTED_VALUE) {
+			continue;
+		}
+		if (configValuesEqual(value, beforeConfig[key])) {
+			continue;
+		}
+		return {
+			allowedUpdates: {},
+			error: `${key} cannot be changed from the viewer API; edit the config file or environment instead`,
+		};
+	}
+	return { allowedUpdates, error: null };
 }
 
 function parsePositiveInt(value: unknown, allowZero = false): number | null {
@@ -264,12 +331,14 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 	app.get("/api/config", (c) => {
 		const configPath = getConfigPath();
 		const configData = readConfigFile(configPath);
+		const effective = getEffectiveConfig(configData);
 		return c.json({
 			path: configPath,
-			config: configData,
+			config: sanitizeConfigForResponse(configData),
 			defaults: DEFAULTS,
-			effective: getEffectiveConfig(configData),
+			effective: sanitizeConfigForResponse(effective),
 			env_overrides: getCodememEnvOverrides(),
+			protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 			providers: loadProviderOptions(),
 		});
 	});
@@ -302,14 +371,22 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 
 		const configPath = getCodememConfigPath();
 		const beforeConfig = readCodememConfigFile();
+		const { allowedUpdates, error: protectedKeyError } = partitionViewerUpdates(
+			updates,
+			beforeConfig,
+		);
+		if (protectedKeyError) {
+			return c.json({ error: protectedKeyError }, 403);
+		}
+
 		const beforeEffective = getEffectiveConfig(beforeConfig);
 		const nextConfig: ConfigData = { ...beforeConfig };
 		const providers = new Set(loadProviderOptions());
 
-		const touchedKeys = ALLOWED_KEYS.filter((key) => key in updates);
+		const touchedKeys = ALLOWED_KEYS.filter((key) => key in allowedUpdates);
 		for (const key of ALLOWED_KEYS) {
-			if (!(key in updates)) continue;
-			const error = validateAndApplyUpdate(nextConfig, key, updates[key], providers);
+			if (!(key in allowedUpdates)) continue;
+			const error = validateAndApplyUpdate(nextConfig, key, allowedUpdates[key], providers);
 			if (error) return c.json({ error }, 400);
 		}
 
@@ -339,8 +416,9 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 
 		return c.json({
 			path: savedPath,
-			config: nextConfig,
-			effective: afterEffective,
+			config: sanitizeConfigForResponse(nextConfig),
+			effective: sanitizeConfigForResponse(afterEffective),
+			protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 			effects: {
 				saved_keys: savedChangedKeys,
 				effective_keys: effectiveChangedKeys,
