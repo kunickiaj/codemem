@@ -18,6 +18,78 @@ export interface RuntimeInfo {
   version: string;
 }
 
+export interface SyncPeerStatus {
+  peer_state?: string;
+  sync_status?: string;
+  ping_status?: string;
+  fresh?: boolean;
+}
+
+export interface SyncPeerSummary {
+  peer_device_id?: string;
+  name?: string;
+  actor_id?: string | null;
+  claimed_local_actor?: boolean;
+  fingerprint?: string | null;
+  addresses?: string[];
+  last_error?: string | null;
+  has_error?: boolean;
+  status?: SyncPeerStatus;
+}
+
+export interface SyncActorSummary {
+  actor_id?: string;
+  display_name?: string;
+  is_local?: boolean;
+}
+
+export interface SyncActorListResponse {
+  items?: SyncActorSummary[];
+}
+
+export interface SyncCoordinatorDeviceSummary {
+  device_id?: string;
+  display_name?: string | null;
+  stale?: boolean;
+  fingerprint?: string | null;
+  groups?: string[];
+  addresses?: string[];
+  needs_local_approval?: boolean;
+  waiting_for_peer_approval?: boolean;
+}
+
+export interface SyncCoordinatorStatus {
+  enabled?: boolean;
+  configured?: boolean;
+  groups?: string[];
+  paired_peer_count?: number;
+  presence_status?: string;
+  admin_secret_configured?: boolean;
+  discovered_devices?: SyncCoordinatorDeviceSummary[];
+  [key: string]: unknown;
+}
+
+export interface SyncAttemptSummary {
+  peer_device_id?: string;
+  ok?: boolean;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+  ops_in?: number;
+  ops_out?: number;
+  status?: string;
+}
+
+export interface SyncStatusResponse {
+  status?: Record<string, unknown> | null;
+  peers?: SyncPeerSummary[];
+  coordinator?: SyncCoordinatorStatus | null;
+  join_requests?: Record<string, unknown>[];
+  sharing_review?: unknown[];
+  attempts?: SyncAttemptSummary[];
+  legacy_devices?: unknown[];
+}
+
 function payloadError(payload: unknown): string | undefined {
   if (!payload || typeof payload !== 'object') return undefined;
   const maybeError = (payload as { error?: unknown }).error;
@@ -142,7 +214,7 @@ export async function loadSyncStatus(
   includeDiagnostics: boolean,
   project = '',
   options?: { includeJoinRequests?: boolean },
-): Promise<any> {
+): Promise<SyncStatusResponse> {
   const params = new URLSearchParams();
   if (includeDiagnostics) params.set('includeDiagnostics', '1');
   if (project) params.set('project', project);
@@ -189,7 +261,7 @@ export async function reviewJoinRequest(requestId: string, action: 'approve' | '
   return data;
 }
 
-export async function loadSyncActors(): Promise<any> {
+export async function loadSyncActors(): Promise<SyncActorListResponse> {
   return fetchJson('/api/sync/actors');
 }
 
