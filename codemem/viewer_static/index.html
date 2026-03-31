@@ -346,6 +346,13 @@
         max-width: 300px;
       }
 
+      .runtime-label {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        opacity: 0.8;
+        white-space: nowrap;
+      }
+
       /* ── Tab bar ───────────────────────────────────────────── */
 
       .tab-bar {
@@ -1625,6 +1632,7 @@
           <span class="sr-only" id="refreshAnnouncer" aria-live="polite"></span>
         </div>
         <div class="header-right">
+          <span class="runtime-label" id="runtimeLabel" hidden></span>
           <span class="meta-line" id="metaLine"></span>
           <select class="project-filter" id="projectFilter" aria-label="Project filter">
             <option value="">All Projects</option>

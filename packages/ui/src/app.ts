@@ -7,6 +7,8 @@
 
 /* global marked, lucide */
 
+declare const __CODEMEM_GIT_COMMIT__: string;
+
 import { $, $select } from './lib/dom';
 import { getTheme, setTheme, initThemeSelect } from './lib/theme';
 import { state, initState, setActiveTab, type TabId } from './lib/state';
@@ -16,6 +18,24 @@ import { initFeedTab, loadFeedData, updateFeedView } from './tabs/feed';
 import { initHealthTab, loadHealthData, renderHealthOverview } from './tabs/health';
 import { initSyncTab, loadSyncData, loadPairingData, renderSyncStatus, renderSyncPeers, renderSyncAttempts, renderPairing } from './tabs/sync';
 import { initSettings, loadConfigData, isSettingsOpen } from './tabs/settings';
+
+function setRuntimeLabel(version: string, commit: string | null) {
+  const el = $('runtimeLabel');
+  if (!el) return;
+  const label = commit ? `v${version} (${commit})` : `v${version}`;
+  el.textContent = label;
+  el.title = commit ? `codemem ${version} (${commit})` : `codemem ${version}`;
+  el.hidden = false;
+}
+
+async function loadRuntimeLabel() {
+  try {
+    const runtime = await api.loadRuntimeInfo();
+    if (!runtime?.version) return;
+    const commit = __CODEMEM_GIT_COMMIT__ || null;
+    setRuntimeLabel(runtime.version, commit);
+  } catch {}
+}
 
 /* ── Refresh status ──────────────────────────────────────── */
 
@@ -199,6 +219,9 @@ initSettings(stopPolling, startPolling, () => refresh());
 
 // Projects
 loadProjects();
+
+// Version label
+loadRuntimeLabel();
 
 // Start
 refresh();

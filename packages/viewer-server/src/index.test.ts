@@ -16,6 +16,7 @@ import {
 	insertTestSession,
 	loadPublicKey,
 	MemoryStore,
+	VERSION,
 } from "@codemem/core";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
@@ -188,6 +189,21 @@ describe("viewer-server", () => {
 				expect(db).toHaveProperty("path");
 				expect(db).toHaveProperty("sessions");
 				expect(db).toHaveProperty("memory_items");
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("GET /api/runtime", () => {
+		it("returns viewer runtime version info", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/runtime");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.version).toBe(VERSION);
+				expect(body).not.toHaveProperty("commit");
 			} finally {
 				cleanup();
 			}
