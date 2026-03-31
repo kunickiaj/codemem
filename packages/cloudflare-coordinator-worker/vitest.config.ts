@@ -22,6 +22,7 @@ export default defineConfig(async () => {
 					configPath: path.resolve(import.meta.dirname, "wrangler.jsonc"),
 				},
 				miniflare: {
+					compatibilityFlags: ["nodejs_compat"],
 					bindings: {
 						CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
 						TEST_MIGRATIONS: migrations,

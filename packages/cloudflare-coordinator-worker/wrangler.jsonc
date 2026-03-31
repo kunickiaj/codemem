@@ -2,7 +2,6 @@
 	"name": "codemem-coordinator-worker",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-03-28",
-	"compatibility_flags": ["nodejs_compat"],
 	"d1_databases": [
 		{
 			"binding": "COORDINATOR_DB",
