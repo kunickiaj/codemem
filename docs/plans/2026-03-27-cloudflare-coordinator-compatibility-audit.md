@@ -11,19 +11,19 @@ Node/Linux assumptions that require an adaptation layer or separate implementati
 
 ## Short answer
 
-**Not directly.**
+**Not directly — but the project is no longer blocked on the original store/runtime split.**
 
-The current coordinator contract is a good fit for Cloudflare in principle, but the built-in runtime is still tightly
-bound to:
+The coordinator contract is a good fit for Cloudflare in principle, and the main architectural split is now materially in
+place:
 
-- Node process APIs
-- local SQLite via `better-sqlite3`
-- filesystem-backed configuration and key material
-- a long-running server model
+- shared Hono coordinator handlers
+- async coordinator store contract
+- BetterSQLite runtime/store adapter for Linux/Node
+- D1 runtime/store adapter for Workers
+- shared coordinator store conformance coverage across adapters
 
-That means the current built-in coordinator is still best treated as the canonical **Linux/Node runtime**, while
-Cloudflare remains an **adaptation target** built from the same HTTP contract rather than a drop-in deployment of the
-existing `codemem sync coordinator serve` implementation.
+That means Cloudflare is no longer just a hand-wavy future target. It is now a real adapter path. The remaining work is
+mostly about tightening the Worker runtime boundary, validating parity, and documenting the supported deployment model.
 
 ## What already ports cleanly
 
@@ -64,36 +64,22 @@ That means the remaining problems are runtime/storage adaptation problems, not p
 
 ## What does not port directly
 
-### 1. CoordinatorStore is Node + `better-sqlite3`
+### 1. The built-in serve path is still Node-server specific
 
-`packages/core/src/coordinator-store.ts` is the biggest direct blocker.
+`codemem sync coordinator serve` in `packages/cli/src/commands/sync.ts` still depends on the Node runtime and process
+model.
 
-It currently depends on:
-
-- `better-sqlite3`
-- `node:fs`
-- `node:os`
-- `node:path`
-- a file path (`DEFAULT_COORDINATOR_DB_PATH`)
-- WAL-mode local SQLite connection setup
-
-Cloudflare Workers do not run `better-sqlite3` and do not expose a local filesystem. So the existing store cannot be
-reused in Workers as-is.
-
-### 2. The built-in serve path is Node-server specific
-
-`codemem sync coordinator serve` in `packages/cli/src/commands/sync.ts` depends on the Node runtime and process model.
-
-Even though the coordinator handlers use Hono, the built-in deployment path is still:
+Even though the coordinator handlers now support multiple storage/runtime adapters, the built-in deployment path is
+still:
 
 - CLI entrypoint
 - Node server adapter
 - local DB path and local secret env
 - long-running process on a host machine
 
-That is a deployment model mismatch with Workers.
+That is still a deployment model mismatch with Workers.
 
-### 3. Coordinator runtime helpers still assume Node/device-local environment
+### 2. Client/runtime helpers still assume Node/device-local environment
 
 `packages/core/src/coordinator-runtime.ts` includes Node-specific assumptions such as:
 
@@ -102,10 +88,10 @@ That is a deployment model mismatch with Workers.
 - local device identity from SQLite + local key files
 - `Buffer`-based request-signing helpers
 
-Some of those are client/runtime concerns rather than server concerns, but they matter if the Cloudflare target is meant
-to reuse more of the built-in coordinator stack wholesale.
+Some of those are client/runtime concerns rather than server concerns, but they still matter if the Cloudflare target is
+meant to feel like a first-class deployment target instead of a one-off worker wrapper.
 
-### 4. General DB layer is still local-SQLite shaped
+### 3. General DB layer is still local-SQLite shaped outside the D1 coordinator path
 
 `packages/core/src/db.ts` and adjacent store code are built around:
 
@@ -114,7 +100,8 @@ to reuse more of the built-in coordinator stack wholesale.
 - `better-sqlite3`
 - process-local connection lifecycle
 
-That reinforces the same conclusion: the current core runtime was built for Node/Linux first.
+That reinforces the same conclusion: the broader core runtime was built for Node/Linux first, even though the narrower
+coordinator surface now has a real D1 path.
 
 ## What the existing Worker reference proves
 
@@ -136,19 +123,17 @@ So the Worker reference proves viability of the contract, not readiness of a dir
 
 ## Main compatibility blockers
 
-### Blocker A — storage abstraction
+### Blocker A — runtime/auth boundary tightening
 
-The built-in coordinator code mixes HTTP handling with a concrete local SQLite store.
+The original Worker path still leaked Node assumptions through shared auth code (`Buffer`, `process.env`, Node crypto).
+That boundary is now being tightened by the current D1/Cloudflare stack:
 
-To make the TS coordinator genuinely portable, the next real technical step is not “just deploy it to Workers.” It is:
+- runtime-specific request verification
+- WebCrypto verifier on the Worker path
+- BetterSQLite keeping the Node verifier
+- worker-safe request parsing / invite encoding helpers
 
-- separate the coordinator service logic from the local SQLite implementation
-- introduce a narrow store interface the coordinator app can depend on
-- provide:
-  - Node/Linux implementation backed by `CoordinatorStore`
-  - Worker/D1 implementation backed by D1 queries
-
-Without that split, Cloudflare remains a separate implementation path.
+This is the current real unlock for dropping broad `nodejs_compat` dependence.
 
 ### Blocker B — admin secret + runtime config shape
 
@@ -161,12 +146,16 @@ The current admin/device config assumptions are simple for Linux/Node, but Cloud
 
 These are solvable, but they need an explicit adapter plan.
 
-### Blocker C — no parity guarantee between built-in and Worker codepaths
+### Blocker C — parity and operational confidence
 
-Right now, features land in the built-in coordinator first and the Worker path can lag behind.
+Even with the shared contract and D1 adapter in place, Cloudflare remains riskier unless both paths are routinely held to
+the same behavior and operator expectations.
 
-That is acceptable for a reference implementation, but not for “Cloudflare deployment of the TS coordinator” as a first-
-class target.
+That means:
+
+- shared conformance coverage across store adapters
+- worker integration coverage for auth/presence/peer lookup flows
+- clear deployment docs for Linux-first validation vs Worker deployment
 
 ## Recommended deployment strategy
 
@@ -180,25 +169,25 @@ Continue treating:
 
 as the canonical runtime for product validation and E2E.
 
-This is already the documented path and should remain so until the storage/runtime split exists.
+This is already the documented path and should remain so until the Worker runtime path is fully validated and documented.
 
-### Stage 2 — formalize a coordinator store boundary
+### Stage 2 — finish the Worker runtime boundary cleanup
 
-Before trying to claim Cloudflare support for the TS coordinator, extract a service boundary like:
+Continue tightening the Worker-specific path so it no longer depends on Node-only auth/runtime assumptions.
 
-- coordinator app / handlers
-- coordinator store interface
-- Node store adapter
-- Worker/D1 store adapter
+- injected runtime config
+- Worker/WebCrypto request verification
+- worker-safe request encoding/parsing helpers
+- minimal compatibility flags in tests only
 
-This is the real unlock.
+This is the current unlock.
 
-### Stage 3 — adapt/package for Workers
+### Stage 3 — validate/package for Workers
 
-Once the store boundary exists:
+Once the runtime boundary is clean:
 
 - reuse the Hono contract
-- provide Worker bindings + D1-backed store
+- use the D1-backed store/runtime adapter
 - keep the same admin/device auth semantics
 - compare built-in and Worker behavior with shared tests where possible
 
@@ -209,31 +198,30 @@ Until then, the honest wording remains:
 - built-in TS coordinator on Linux/Node is canonical
 - Cloudflare Worker is a reference/experimental path
 
-## Recommended first implementation slice after this audit
+## Current implementation status
 
-If the goal is serious Cloudflare deployment of the TS coordinator, the next engineering slice should be:
+What is now materially in place:
 
-### `PR 470+1` — coordinator storage/runtime split design
+- async coordinator store contract
+- shared coordinator store conformance harness
+- D1 coordinator store/runtime adapter
+- worker entrypoint using the shared coordinator app
+- active runtime cleanup to remove broad `nodejs_compat` dependence
 
-Document or implement the smallest interface needed for:
+What still needs to be true before Cloudflare should be described as fully supported:
 
-- groups
-- enrolled devices
-- presence
-- invites
-- join requests
-- nonce replay records
-
-That gives the project one real coordinator implementation model with two storage/runtime adapters instead of two drifting
-codepaths.
+- runtime/auth cleanup merged and stable
+- docs updated to match the new adapter model
+- enough parity/integration confidence that Worker behavior won't drift silently
 
 ## Bottom line
 
-The current TS coordinator is **protocol-compatible** with Cloudflare but **runtime-incompatible** as a direct deployment.
+The current TS coordinator is **protocol-compatible** with Cloudflare and now has a real adapter path, but it is **not
+yet a drop-in replacement** for the canonical Linux/Node coordinator deployment.
 
 That means:
 
 - the existing Hono contract is a good foundation
-- the built-in Node/Linux coordinator remains the source of truth
-- Cloudflare support should be pursued via a store/runtime adapter split, not by pretending `codemem sync coordinator
-  serve` is already Worker-ready
+- the built-in Node/Linux coordinator remains the source-of-truth deployment path today
+- Cloudflare support should be pursued as a first-class adapter/runtime target with explicit parity coverage, not by
+  pretending `codemem sync coordinator serve` itself is already Worker-ready
