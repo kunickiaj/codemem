@@ -321,7 +321,7 @@ describe("opencode adapter event mapping", () => {
     );
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 
-    expect(packageJson.version).toBe("0.22.0-alpha.5");
-    expect(__testUtils.PINNED_BACKEND_VERSION).toBe("0.21.2");
+    expect(packageJson.version).toBe("0.22.0");
+    expect(__testUtils.PINNED_BACKEND_VERSION).toBe("0.22.0");
   });
 });
