@@ -4,7 +4,13 @@ Persistent memory plugin for [OpenCode](https://opencode.ai).
 
 ## Install
 
-Add the package name to your OpenCode config:
+Recommended:
+
+```text
+npx -y codemem setup --opencode-only
+```
+
+Manual config also works. Add the package name to your OpenCode config:
 
 ```json
 {

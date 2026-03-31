@@ -4,37 +4,38 @@ Thanks for helping improve codemem.
 
 ## Local setup
 
-```bash
-uv sync
-uv run codemem --help
+```text
+pnpm install
+pnpm run codemem --help
 ```
 
 ## Quality checks
 
 Run these before opening a PR:
 
-```bash
-uv run pytest
-uv run ruff check codemem tests
-uv run ruff format --check codemem tests
+```text
+pnpm run lint
+pnpm run typecheck
+pnpm run test
+pnpm build
 ```
 
 Targeted test examples:
 
-```bash
-uv run pytest tests/test_store.py
-uv run pytest tests/test_store.py::test_store_roundtrip
-uv run pytest -k "raw_event and sweeper"
+```text
+pnpm vitest run packages/cli/src/commands/serve.test.ts
+pnpm vitest run packages/viewer-server/src/index.test.ts
+pnpm vitest run packages/core/src/index.test.ts
 ```
 
 ## Viewer/plugin development
 
-- Viewer UI is embedded in `codemem/viewer.py`.
+- Viewer UI source is `packages/ui/` and is served by `packages/viewer-server/`.
 - OpenCode plugin source is `packages/opencode-plugin/.opencode/plugins/codemem.js`.
 - Restart the viewer after UI changes:
 
-```bash
-uv run codemem serve --restart
+```text
+pnpm run codemem serve restart
 ```
 
 ## Release workflow
@@ -43,23 +44,24 @@ Releases are tag-driven (`vX.Y.Z`) and run via `.github/workflows/release.yml`.
 
 Before tagging:
 
-1. Ensure CI is green on `main`
-2. Bump version fields:
-   - Run `uv run python scripts/release_version.py set X.Y.Z`
-3. Regenerate and commit artifacts:
-   - `uv sync` (commit `uv.lock`)
-   - `viewer_ui/`: `bun install` then `bun run build` (commit updated `codemem/viewer_static/app.js`)
-4. Tag and push:
+1. Create a release branch and PR. Do not push release changes directly to `main`.
+2. Bump the shared version fields listed in `docs/versioning.md`.
+3. Regenerate JS artifacts and lockfiles:
+   - `pnpm install`
+   - `pnpm build`
+4. Wait for CI to pass and merge the release PR.
+5. Switch to updated `main`, verify `HEAD` is the merged release commit, and confirm the worktree is clean.
+6. Tag from `main` and push the tag:
 
-```bash
+```text
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
 Verify release version alignment before tagging:
 
-```bash
-uv run python scripts/release_version.py check
+```text
+pnpm run release:preflight-tag
 ```
 
 ## Docs expectations

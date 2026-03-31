@@ -46,9 +46,8 @@ Ingest one Claude hook payload from stdin (this is what the installed hook scrip
 printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess-1","cwd":"/tmp/demo"}' | codemem claude-hook-ingest
 ```
 
-`inject-context-hook.sh` is also a thin wrapper and delegates prompt-time context output to:
-
-- `codemem claude-hook-inject`
+`inject-context-hook.sh` is also a thin wrapper and delegates prompt-time context output to
+codemem's local pack-generation path, with optional HTTP `/api/pack` fallback.
 
 By default, `SessionEnd` triggers a boundary flush after enqueue to preserve progress without waiting for sweeper timing. Set `CODEMEM_CLAUDE_HOOK_FLUSH=0` to force enqueue-only behavior, and set `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` to include `Stop` boundary flush.
 
@@ -64,7 +63,7 @@ The packaged template currently registers these hook events in `plugins/claude/h
 - sends the hook payload into capture ingest (`ingest-hook.sh`) in the background, and
 - returns `hookSpecificOutput.additionalContext` from local CLI/store pack generation for prompt-time memory injection.
 
-`claude-hook-inject` uses local pack generation first and falls back to `/api/pack` only when local pack generation fails and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled.
+Prompt-time Claude injection uses local pack generation first and falls back to `/api/pack` only when local generation fails and `CODEMEM_INJECT_HTTP_FALLBACK` is enabled.
 
 For Claude hooks, project resolution precedence is:
 
@@ -109,9 +108,9 @@ slash commands in the OpenCode chat input.
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
 `CODEMEM_OBSERVER_MODEL`. Custom providers are loaded from OpenCode config.
 
-### Observer auth modes (0.16)
+### Observer auth modes
 
-Observer execution in `0.16` supports both API and Claude runtime paths.
+Observer execution supports both API and Claude runtime paths.
 
 - Runtime values: `api_http`, `claude_sidecar`.
 - `claude_sidecar` runs observer calls via local Claude runtime auth (no `ANTHROPIC_API_KEY` required).
@@ -244,7 +243,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_CLAUDE_HOOK_HTTP_MAX_TIME_S` | Claude hook HTTP enqueue total timeout in seconds (default `2`). |
 | `CODEMEM_INJECT_HTTP_CONNECT_TIMEOUT_S` | `UserPromptSubmit` pack injection connect timeout in seconds (default `1`). |
 | `CODEMEM_INJECT_HTTP_MAX_TIME_S` | `UserPromptSubmit` pack injection total timeout in seconds (default `2`). |
-| `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for `claude-hook-inject` (default `1`). |
+| `CODEMEM_INJECT_HTTP_FALLBACK` | Set to `0` to disable HTTP `/api/pack` fallback for Claude prompt-time injection (default `1`). |
 | `CODEMEM_INJECT_MAX_CHARS` | Max chars returned as Claude `additionalContext` (default `16000`). |
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |

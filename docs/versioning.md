@@ -25,6 +25,17 @@ Version bumps are prepared on a release branch and touch these files:
 - `packages/core/src/index.ts` (`VERSION` export)
 - `packages/core/src/index.test.ts` (version assertion)
 - `packages/opencode-plugin/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
+- `.claude-plugin/marketplace.json` (marketplace metadata version)
+- `plugins/claude/.claude-plugin/plugin.json` (Claude plugin metadata version)
+
+Regenerate release artifacts before opening the release PR:
+
+- `pnpm install` (lockfile and generated artifacts when applicable)
+- `pnpm build` (viewer UI bundle/assets)
+
+Keep `.opencode/.npmrc` pinned to the public npm registry:
+
+- `registry=https://registry.npmjs.org/`
 
 ## Release tag preflight
 
@@ -38,6 +49,8 @@ This verifies release tagging safety in two contexts:
 
 - local preflight: target commit must match `origin/main` HEAD, and the working tree must be clean
 - CI tag workflow: tagged commit must be reachable from `origin/main` (avoids false failures if `main` advances after tag push)
+
+Tag only after the release PR has merged to `main` and you have verified that `HEAD` on `main` is the merged release commit. Do not tag the release branch tip directly.
 
 ## Compatibility check
 
