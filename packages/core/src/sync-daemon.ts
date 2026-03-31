@@ -260,10 +260,15 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
  *
  * Errors are caught and recorded in sync_daemon_state.
  */
-async function runTickOnce(dbPath: string, keysDir?: string): Promise<void> {
+export async function runTickOnce(dbPath: string, keysDir?: string): Promise<void> {
 	const db = connectDb(dbPath);
 	try {
-		await refreshCoordinatorPresenceForDaemon(db, dbPath, keysDir);
+		try {
+			await refreshCoordinatorPresenceForDaemon(db, dbPath, keysDir);
+		} catch {
+			// Coordinator discovery is a supplemental surface. Keep direct peer sync running
+			// even when heartbeat posting fails for this tick.
+		}
 		const results = await syncDaemonTick(db, keysDir);
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {

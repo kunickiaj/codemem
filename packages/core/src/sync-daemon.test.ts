@@ -1,13 +1,18 @@
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	getSyncDaemonPhase,
 	refreshCoordinatorPresenceForDaemon,
+	runTickOnce,
 	setSyncDaemonError,
 	setSyncDaemonOk,
 	setSyncDaemonPhase,
 	syncDaemonTick,
 } from "./sync-daemon.js";
+
 import { initTestSchema } from "./test-utils.js";
 
 vi.mock("./coordinator-runtime.js", () => ({
@@ -128,6 +133,35 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			}),
 			{ keysDir: "/tmp/keys" },
 		);
+	});
+
+	it("keeps direct peer sync running when coordinator heartbeat fails", async () => {
+		const { coordinatorEnabled, readCoordinatorSyncConfig, registerCoordinatorPresence } =
+			await import("./coordinator-runtime.js");
+		const { syncPassPreflight } = await import("./sync-pass.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncCoordinatorUrl: "http://coord",
+			syncCoordinatorGroups: ["team"],
+		} as never);
+		vi.mocked(registerCoordinatorPresence).mockRejectedValue(new Error("coordinator timeout"));
+
+		const dbPath = join(tmpdir(), `codemem-sync-daemon-${Date.now()}.sqlite`);
+		const fileDb = new Database(dbPath);
+		try {
+			initTestSchema(fileDb);
+			fileDb
+				.prepare(
+					"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+				)
+				.run("peer-1", "fp1", new Date().toISOString());
+
+			await runTickOnce(dbPath);
+			expect(syncPassPreflight).toHaveBeenCalledTimes(1);
+		} finally {
+			fileDb.close();
+			rmSync(dbPath, { force: true });
+		}
 	});
 });
 
