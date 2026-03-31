@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Database as DatabaseType, Statement } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import type { CoordinatorRequestVerifier } from "./coordinator-api.js";
 import { createD1CoordinatorApp } from "./d1-coordinator-runtime.js";
 import {
 	D1CoordinatorStore,
@@ -81,6 +82,8 @@ describe("createD1CoordinatorApp", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	const requestVerifier: CoordinatorRequestVerifier = async () => true;
+
 	it("serves coordinator admin data from the D1-backed adapter", async () => {
 		const store = new D1CoordinatorStore(d1db);
 		await store.createGroup("g1", "Team Alpha");
@@ -96,6 +99,7 @@ describe("createD1CoordinatorApp", () => {
 			db: d1db,
 			adminSecret: "test-secret",
 			now: () => "2026-03-28T00:00:00Z",
+			requestVerifier,
 		});
 
 		const res = await app.request("/v1/admin/devices?group_id=g1", {
@@ -123,6 +127,7 @@ describe("createD1CoordinatorApp", () => {
 			db: d1db,
 			adminSecret: null,
 			now: () => "2026-03-28T00:00:00Z",
+			requestVerifier,
 		});
 
 		const res = await app.request("/v1/admin/devices?group_id=g1", {

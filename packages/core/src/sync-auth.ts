@@ -17,6 +17,7 @@ import { lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
+import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 import { loadPrivateKey } from "./sync-identity.js";
 
 // ---------------------------------------------------------------------------
@@ -31,7 +32,6 @@ import { loadPrivateKey } from "./sync-identity.js";
  * be removed.  During migration, the verifier accepts both versions.
  */
 export const SIGNATURE_VERSION = "v2";
-export const DEFAULT_TIME_WINDOW_S = 300;
 
 // ---------------------------------------------------------------------------
 // Canonical request
