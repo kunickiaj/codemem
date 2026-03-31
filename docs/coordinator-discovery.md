@@ -169,6 +169,9 @@ A Cloudflare Worker deployment path exists for the coordinator contract. The cur
 `packages/cloudflare-coordinator-worker/`, while `examples/cloudflare-coordinator/` provides helper tooling around that
 package worker.
 
+If you are deploying on Cloudflare Workers + D1, use `docs/cloudflare-coordinator-deployment.md` as the canonical
+runbook.
+
 It remains useful for experimentation, but it is not the canonical runtime for current product development.
 
 The long-term Cloudflare direction should build from the TypeScript coordinator contract rather than from the old Python
@@ -177,7 +180,10 @@ era deployment story. Today, the practical sequence is:
 1. validate the built-in TS coordinator on Node/Linux with `codemem sync coordinator serve`
 2. adapt/package that validated coordinator surface for Cloudflare
 
-For the actual deployment steps, use `docs/coordinator-cloudflare-deployment.md`.
+Use the Worker reference path only when you specifically want a serverless/edge experiment and are comfortable with
+feature lag — new coordinator capabilities may land in the built-in coordinator first and may not be ported to the
+reference Worker immediately. When you do choose it, follow the dedicated Cloudflare runbook instead of relying on the
+older scattered example notes.
 
 ## Current limitations
 
