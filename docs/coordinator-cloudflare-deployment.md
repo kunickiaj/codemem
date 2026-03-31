@@ -63,10 +63,10 @@ Copy the returned `database_id`.
 Start from the package template:
 
 ```fish
-cp packages/cloudflare-coordinator-worker/wrangler.toml.example packages/cloudflare-coordinator-worker/wrangler.toml
+cp wrangler.toml.example wrangler.toml
 ```
 
-Then edit `packages/cloudflare-coordinator-worker/wrangler.toml` and replace:
+Then edit `wrangler.toml` and replace:
 
 - `REPLACE_WITH_D1_DATABASE_ID`
 
@@ -83,7 +83,7 @@ Keep that setting unless/until the runtime-boundary follow-up says otherwise.
 Use the package worker schema, not the older cut-down example schema:
 
 ```fish
-wrangler d1 execute codemem-coordinator --remote --file packages/cloudflare-coordinator-worker/schema.sql
+wrangler d1 execute codemem-coordinator --remote --file schema.sql
 ```
 
 That schema includes the invite, join-request, and reciprocal-approval tables required by the current Worker runtime.
@@ -299,7 +299,7 @@ security settings for the deployed Worker/custom domain.
 You likely applied the wrong schema. Re-apply:
 
 ```fish
-wrangler d1 execute codemem-coordinator --remote --file packages/cloudflare-coordinator-worker/schema.sql
+wrangler d1 execute codemem-coordinator --remote --file schema.sql
 ```
 
 ## Support posture
