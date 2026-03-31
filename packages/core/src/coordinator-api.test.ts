@@ -13,12 +13,12 @@ import {
 	type CoordinatorPeerRecord,
 	type CoordinatorPresenceRecord,
 	type CoordinatorReciprocalApproval,
+	type CoordinatorRequestVerifier,
 	type CoordinatorReviewJoinRequestInput,
 	type CoordinatorStoreInterface,
 	type CoordinatorUpsertPresenceInput,
 	createCoordinatorApp,
 } from "./index.js";
-import * as syncAuth from "./sync-auth.js";
 
 function createMockStore(
 	overrides?: Partial<CoordinatorStoreInterface>,
@@ -80,6 +80,8 @@ function createMockStore(
 	return { ...defaultStore, ...overrides };
 }
 
+const allowRequest: CoordinatorRequestVerifier = async () => true;
+
 describe("createCoordinatorApp dependency injection", () => {
 	it("uses injected admin secret and store factory for admin routes", async () => {
 		const store = createMockStore({
@@ -102,6 +104,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				adminSecret: () => "test-secret",
 				now: () => "2026-03-28T00:00:00Z",
 			},
+			requestVerifier: allowRequest,
 		});
 
 		const res = await app.request("/v1/admin/devices?group_id=g1", {
@@ -134,6 +137,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				adminSecret: () => null,
 				now: () => "2026-03-28T00:00:00Z",
 			},
+			requestVerifier: allowRequest,
 		});
 
 		const res = await app.request("/v1/admin/devices?group_id=g1", {
@@ -145,7 +149,6 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("lists reciprocal approvals for the authenticated device", async () => {
-		vi.spyOn(syncAuth, "verifySignature").mockReturnValue(true);
 		const store = createMockStore({
 			getEnrollment: vi.fn(async () => ({
 				group_id: "g1",
@@ -174,6 +177,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				adminSecret: () => "test-secret",
 				now: () => "2026-03-28T00:00:00Z",
 			},
+			requestVerifier: allowRequest,
 		});
 
 		const res = await app.request(
@@ -211,7 +215,6 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("creates a reciprocal approval for the authenticated device", async () => {
-		vi.spyOn(syncAuth, "verifySignature").mockReturnValue(true);
 		const store = createMockStore({
 			getEnrollment: vi.fn(async (groupId: string, deviceId: string) => {
 				if (groupId !== "g1") return null;
@@ -244,6 +247,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				adminSecret: () => "test-secret",
 				now: () => "2026-03-28T00:00:00Z",
 			},
+			requestVerifier: allowRequest,
 		});
 
 		const res = await app.request("/v1/reciprocal-approvals", {

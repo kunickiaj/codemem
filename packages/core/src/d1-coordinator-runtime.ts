@@ -1,10 +1,15 @@
-import { type CoordinatorRuntimeDeps, createCoordinatorApp } from "./coordinator-api.js";
+import {
+	type CoordinatorRequestVerifier,
+	type CoordinatorRuntimeDeps,
+	createCoordinatorApp,
+} from "./coordinator-api.js";
 import { D1CoordinatorStore, type D1DatabaseLike } from "./d1-coordinator-store.js";
 
 export interface CreateD1CoordinatorAppOptions {
 	db: D1DatabaseLike;
 	adminSecret?: string | null;
 	now?: () => string;
+	requestVerifier: CoordinatorRequestVerifier;
 }
 
 export function createD1CoordinatorApp(
@@ -17,5 +22,6 @@ export function createD1CoordinatorApp(
 	return createCoordinatorApp({
 		storeFactory: () => new D1CoordinatorStore(opts.db),
 		runtime,
+		requestVerifier: opts.requestVerifier,
 	});
 }

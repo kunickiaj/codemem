@@ -1,5 +1,6 @@
 import type { D1DatabaseLike } from "@codemem/core/internal/cloudflare-coordinator";
 import { createD1CoordinatorApp } from "@codemem/core/internal/cloudflare-coordinator";
+import { verifyCloudflareCoordinatorRequest } from "./request-verifier.js";
 
 export interface CloudflareCoordinatorEnv {
 	COORDINATOR_DB?: D1DatabaseLike;
@@ -32,6 +33,7 @@ export function createCloudflareCoordinatorWorker(
 					? opts.adminSecret(env)
 					: String(env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim() || null,
 				now: opts.now,
+				requestVerifier: verifyCloudflareCoordinatorRequest,
 			});
 			return app.fetch(request);
 		},

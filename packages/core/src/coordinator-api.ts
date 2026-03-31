@@ -10,7 +10,7 @@ import { Hono } from "hono";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
-import { DEFAULT_TIME_WINDOW_S, verifySignature } from "./sync-auth.js";
+import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -25,18 +25,29 @@ export interface CoordinatorRuntimeDeps {
 }
 
 export interface CreateCoordinatorAppOptions {
-	storeFactory?: () => CoordinatorStore;
-	runtime?: CoordinatorRuntimeDeps;
+	storeFactory: () => CoordinatorStore;
+	runtime: CoordinatorRuntimeDeps;
+	requestVerifier: CoordinatorRequestVerifier;
 }
+
+export interface CoordinatorVerifyRequestInput {
+	method: string;
+	pathWithQuery: string;
+	bodyBytes: Uint8Array;
+	timestamp: string;
+	nonce: string;
+	signature: string;
+	publicKey: string;
+	deviceId: string;
+}
+
+export type CoordinatorRequestVerifier = (
+	input: CoordinatorVerifyRequestInput,
+) => Promise<boolean> | boolean;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function defaultAdminSecret(): string | null {
-	const value = (process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim();
-	return value || null;
-}
 
 function authorizeAdmin(
 	headerValue: string | null | undefined,
@@ -78,11 +89,12 @@ interface AuthResult {
 async function authorizeRequest(
 	store: CoordinatorStore,
 	runtime: CoordinatorRuntimeDeps,
+	requestVerifier: CoordinatorRequestVerifier,
 	opts: {
 		method: string;
 		url: string;
 		groupId: string;
-		body: Buffer;
+		body: Uint8Array;
 		deviceId: string | null;
 		signature: string | null;
 		timestamp: string | null;
@@ -101,7 +113,7 @@ async function authorizeRequest(
 
 	let valid: boolean;
 	try {
-		valid = verifySignature({
+		valid = await requestVerifier({
 			method: opts.method,
 			pathWithQuery: pathWithQuery(opts.url),
 			bodyBytes: opts.body,
@@ -139,33 +151,43 @@ async function authorizeRequest(
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
-	const runtime: CoordinatorRuntimeDeps = opts?.runtime ?? {
-		adminSecret: defaultAdminSecret,
-		now: () => new Date().toISOString(),
-	};
-	if (!opts?.storeFactory) {
-		throw new Error("createCoordinatorApp requires a storeFactory.");
+	if (!opts?.storeFactory || !opts.runtime || !opts.requestVerifier) {
+		throw new Error("createCoordinatorApp requires storeFactory, runtime, and requestVerifier.");
 	}
+	const runtime = opts.runtime;
 	const createStore = opts.storeFactory;
+	const requestVerifier = opts.requestVerifier;
 	const app = new Hono();
+	const textDecoder = new TextDecoder();
+
+	async function readRequestBytes(c: Context): Promise<Uint8Array> {
+		return new Uint8Array(await c.req.arrayBuffer());
+	}
+
+	function parseJsonObject(raw: Uint8Array): Record<string, unknown> | null {
+		try {
+			const data: unknown = JSON.parse(textDecoder.decode(raw));
+			if (typeof data !== "object" || data === null || Array.isArray(data)) {
+				return null;
+			}
+			return data as Record<string, unknown>;
+		} catch {
+			return null;
+		}
+	}
 
 	// -----------------------------------------------------------------------
 	// POST /v1/presence — upsert device presence (authenticated)
 	// -----------------------------------------------------------------------
 
 	app.post("/v1/presence", async (c) => {
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) {
 			return c.json({ error: "body_too_large" }, 413);
 		}
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -176,7 +198,7 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const auth = await authorizeRequest(store, runtime, {
+			const auth = await authorizeRequest(store, runtime, requestVerifier, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
@@ -240,11 +262,11 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const auth = await authorizeRequest(store, runtime, {
+			const auth = await authorizeRequest(store, runtime, requestVerifier, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
-				body: Buffer.alloc(0),
+				body: new Uint8Array(0),
 				deviceId: c.req.header("X-Opencode-Device") ?? null,
 				signature: c.req.header("X-Opencode-Signature") ?? null,
 				timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
@@ -278,11 +300,11 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const auth = await authorizeRequest(store, runtime, {
+			const auth = await authorizeRequest(store, runtime, requestVerifier, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
-				body: Buffer.alloc(0),
+				body: new Uint8Array(0),
 				deviceId: c.req.header("X-Opencode-Device") ?? null,
 				signature: c.req.header("X-Opencode-Signature") ?? null,
 				timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
@@ -308,18 +330,13 @@ export function createCoordinatorApp(
 	// -----------------------------------------------------------------------
 
 	app.post("/v1/reciprocal-approvals", async (c) => {
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) {
 			return c.json({ error: "body_too_large" }, 413);
 		}
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -331,7 +348,7 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const auth = await authorizeRequest(store, runtime, {
+			const auth = await authorizeRequest(store, runtime, requestVerifier, {
 				method: c.req.method,
 				url: c.req.url,
 				groupId,
@@ -371,16 +388,11 @@ export function createCoordinatorApp(
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -435,16 +447,11 @@ export function createCoordinatorApp(
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -474,16 +481,11 @@ export function createCoordinatorApp(
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -509,16 +511,11 @@ export function createCoordinatorApp(
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -544,16 +541,11 @@ export function createCoordinatorApp(
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -655,16 +647,11 @@ export function createCoordinatorApp(
 	// -----------------------------------------------------------------------
 
 	app.post("/v1/join", async (c) => {
-		const raw = Buffer.from(await c.req.arrayBuffer());
+		const raw = await readRequestBytes(c);
 		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
 
-		let data: Record<string, unknown>;
-		try {
-			data = JSON.parse(raw.toString("utf-8"));
-			if (typeof data !== "object" || data === null || Array.isArray(data)) {
-				return c.json({ error: "invalid_json" }, 400);
-			}
-		} catch {
+		const data = parseJsonObject(raw);
+		if (!data) {
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
@@ -760,16 +747,21 @@ async function handleJoinRequestReview(
 	const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), deps.runtime);
 	if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
-	const raw = Buffer.from(await c.req.arrayBuffer());
+	const raw = new Uint8Array(await c.req.arrayBuffer());
 	if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
 
-	let data: Record<string, unknown>;
+	let data: Record<string, unknown> | null;
 	try {
-		data = JSON.parse(raw.toString("utf-8"));
-		if (typeof data !== "object" || data === null || Array.isArray(data)) {
-			return c.json({ error: "invalid_json" }, 400);
-		}
+		const textDecoder = new TextDecoder();
+		const parsed: unknown = JSON.parse(textDecoder.decode(raw));
+		data =
+			typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+				? (parsed as Record<string, unknown>)
+				: null;
 	} catch {
+		data = null;
+	}
+	if (!data) {
 		return c.json({ error: "invalid_json" }, 400);
 	}
 

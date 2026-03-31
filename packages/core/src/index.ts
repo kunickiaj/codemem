@@ -32,7 +32,12 @@ export {
 	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
 } from "./coordinator-actions.js";
-export type { CoordinatorRuntimeDeps, CreateCoordinatorAppOptions } from "./coordinator-api.js";
+export type {
+	CoordinatorRequestVerifier,
+	CoordinatorRuntimeDeps,
+	CoordinatorVerifyRequestInput,
+	CreateCoordinatorAppOptions,
+} from "./coordinator-api.js";
 export { createCoordinatorApp } from "./coordinator-api.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
@@ -253,12 +258,12 @@ export {
 	buildAuthHeaders,
 	buildCanonicalRequest,
 	cleanupNonces,
-	DEFAULT_TIME_WINDOW_S,
 	recordNonce,
 	SIGNATURE_VERSION,
 	signRequest,
 	verifySignature,
 } from "./sync-auth.js";
+export { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 export type { BootstrapOptions, BootstrapResult } from "./sync-bootstrap.js";
 export { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
 export type { SyncDaemonOptions, SyncDaemonPhase, SyncTickResult } from "./sync-daemon.js";

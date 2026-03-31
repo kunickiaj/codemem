@@ -15,20 +15,40 @@ export interface InvitePayload {
 	team_name: string | null;
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+	const binary = atob(base64);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index += 1) {
+		bytes[index] = binary.charCodeAt(index);
+	}
+	return bytes;
+}
+
+function toBase64Url(base64: string): string {
+	return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(value: string): string {
+	const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+	return padded + "=".repeat((4 - (padded.length % 4)) % 4);
+}
+
 /** Encode an invite payload as a compact base64url string (no padding). */
 export function encodeInvitePayload(payload: InvitePayload): string {
 	const json = JSON.stringify(payload);
 	const bytes = new TextEncoder().encode(json);
-	const base64 = Buffer.from(bytes).toString("base64url");
-	// base64url from Buffer already omits padding — strip defensively
-	return base64.replace(/=+$/, "");
+	return toBase64Url(bytesToBase64(bytes));
 }
 
 /** Decode a base64url invite payload string back to an InvitePayload. */
 export function decodeInvitePayload(value: string): InvitePayload {
-	// Re-add padding that was stripped
-	const padded = value + "=".repeat((4 - (value.length % 4)) % 4);
-	const json = Buffer.from(padded, "base64url").toString("utf-8");
+	const json = new TextDecoder().decode(base64ToBytes(fromBase64Url(value)));
 	const data: unknown = JSON.parse(json);
 	if (typeof data !== "object" || data === null) {
 		throw new Error("invalid invite payload");
