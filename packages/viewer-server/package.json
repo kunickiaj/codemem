@@ -23,7 +23,8 @@
 		"@codemem/core": "workspace:^",
 		"@hono/node-server": "^1.14.3",
 		"drizzle-orm": "^0.45.1",
-		"hono": "^4.7.10"
+		"hono": "^4.7.10",
+		"limiter": "^3.0.0"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",

@@ -93,6 +93,12 @@ function insertTestMemory(
 /** Create a test Hono app backed by a fresh in-memory DB. */
 function createTestApp(opts?: {
 	sweeper?: unknown;
+	syncRequestRateLimit?: {
+		readLimit?: number;
+		mutationLimit?: number;
+		unauthenticatedReadLimit?: number;
+		unauthenticatedMutationLimit?: number;
+	};
 	getSyncRuntimeStatus?: () => {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail?: string | null;
@@ -116,7 +122,10 @@ function createTestApp(opts?: {
 		getSyncRuntimeStatus: opts?.getSyncRuntimeStatus,
 	});
 
-	const syncApp = createSyncApp({ storeFactory });
+	const syncApp = createSyncApp({
+		storeFactory,
+		syncRequestRateLimit: opts?.syncRequestRateLimit,
+	});
 
 	return {
 		app,
@@ -1118,6 +1127,79 @@ describe("viewer-server", () => {
 				expect(body.error).toBe("unauthorized");
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("rate limits repeated sync listener requests", async () => {
+			const { syncApp, cleanup } = createTestApp({
+				syncRequestRateLimit: { unauthenticatedReadLimit: 1 },
+			});
+			try {
+				expect((await syncApp.request("/v1/status")).status).toBe(401);
+				const limited = await syncApp.request("/v1/status");
+				expect(limited.status).toBe(429);
+				expect(limited.headers.get("retry-after")).toBeTruthy();
+				expect(await limited.json()).toEqual({
+					error: "rate_limited",
+					retry_after_s: expect.any(Number),
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("does not let unauthorized sync requests consume a verified peer bucket", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp({
+				syncRequestRateLimit: { readLimit: 1, unauthenticatedReadLimit: 1 },
+			});
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			try {
+				expect((await syncApp.request("/v1/status")).status).toBe(401);
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					const peerPublicKey = loadPublicKey(peerKeysDir);
+					if (!peerPublicKey) throw new Error("peer public key missing");
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+
+					store.db
+						.prepare(
+							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+							 VALUES (?, ?, ?, ?)`,
+						)
+						.run(
+							peerDeviceId,
+							peerFingerprint.fingerprint,
+							peerPublicKey,
+							new Date().toISOString(),
+						);
+
+					const url = "http://localhost/v1/status";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+					});
+
+					expect((await syncApp.request(url, { headers })).status).toBe(200);
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
 			}
 		});
 

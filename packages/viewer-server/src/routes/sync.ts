@@ -33,8 +33,9 @@ import {
 } from "@codemem/core";
 import { count, desc, eq, max, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
+import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
 
 type StoreFactory = () => MemoryStore;
 type SyncRuntimeStatus = {
@@ -49,6 +50,16 @@ type SyncRuntimeStatus = {
 		| null;
 	detail?: string | null;
 };
+
+interface SyncProtocolRouteOptions {
+	routeRateLimit?: {
+		limiter: InMemoryRequestRateLimiter;
+		readLimit: number;
+		mutationLimit: number;
+		unauthenticatedReadLimit: number;
+		unauthenticatedMutationLimit: number;
+	};
+}
 
 const SYNC_STALE_AFTER_SECONDS = 10 * 60;
 const SYNC_PROTOCOL_VERSION = "2";
@@ -725,14 +736,38 @@ const PEERS_QUERY = `
  * network-accessible. All requests are auth-gated via signature
  * verification so unauthenticated callers are rejected.
  */
-export function syncProtocolRoutes(getStore: StoreFactory) {
+export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
 	const app = new Hono();
+	const routeRateLimit = opts.routeRateLimit ?? null;
+
+	function rateLimitedResponse(c: Context, key: string, authenticated: boolean) {
+		if (!routeRateLimit) return null;
+		const isRead = c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS";
+		const result = routeRateLimit.limiter.check(
+			`${c.req.method}:${authenticated ? "auth" : "anon"}:${key}`,
+			authenticated
+				? isRead
+					? routeRateLimit.readLimit
+					: routeRateLimit.mutationLimit
+				: isRead
+					? routeRateLimit.unauthenticatedReadLimit
+					: routeRateLimit.unauthenticatedMutationLimit,
+		);
+		if (result.allowed) return null;
+		c.header("Retry-After", String(result.retryAfterS));
+		return c.json({ error: "rate_limited", retry_after_s: result.retryAfterS }, 429);
+	}
 
 	// GET /v1/status (peer sync protocol)
 	app.get("/v1/status", (c) => {
 		const store = getStore();
 		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+		if (!auth.ok)
+			return (
+				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
+			);
+		const limited = rateLimitedResponse(c, auth.deviceId, true);
+		if (limited) return limited;
 
 		try {
 			let device = store.db
@@ -758,7 +793,12 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 	app.get("/v1/ops", (c) => {
 		const store = getStore();
 		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+		if (!auth.ok)
+			return (
+				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
+			);
+		const limited = rateLimitedResponse(c, auth.deviceId, true);
+		if (limited) return limited;
 		const peerDeviceId = auth.deviceId;
 
 		try {
@@ -817,7 +857,12 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 	app.get("/v1/snapshot", (c) => {
 		const store = getStore();
 		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+		if (!auth.ok)
+			return (
+				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
+			);
+		const limited = rateLimitedResponse(c, auth.deviceId, true);
+		if (limited) return limited;
 
 		try {
 			const rawGeneration = c.req.query("generation");
@@ -874,7 +919,12 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 		}
 
 		const auth = authorizeSyncRequest(store, c.req, raw);
-		if (!auth.ok) return c.json(unauthorizedPayload(auth.reason), 401);
+		if (!auth.ok)
+			return (
+				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
+			);
+		const limited = rateLimitedResponse(c, auth.deviceId, true);
+		if (limited) return limited;
 		const peerDeviceId = auth.deviceId;
 
 		let body: Record<string, unknown>;

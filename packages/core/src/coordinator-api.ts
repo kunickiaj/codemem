@@ -10,6 +10,10 @@ import { Hono } from "hono";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
+import {
+	createInMemoryRequestRateLimiter,
+	type InMemoryRequestRateLimiter,
+} from "./request-rate-limit.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -19,6 +23,16 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const ADMIN_HEADER = "X-Codemem-Coordinator-Admin";
+const DEFAULT_COORDINATOR_READ_LIMIT = 120;
+const DEFAULT_COORDINATOR_MUTATION_LIMIT = 30;
+
+export interface CoordinatorRequestRateLimitOptions {
+	limiter?: InMemoryRequestRateLimiter;
+	readLimit?: number;
+	mutationLimit?: number;
+	unauthenticatedReadLimit?: number;
+	unauthenticatedMutationLimit?: number;
+}
 
 export interface CoordinatorRuntimeDeps {
 	adminSecret(): string | null;
@@ -29,6 +43,7 @@ export interface CreateCoordinatorAppOptions {
 	storeFactory: () => CoordinatorStore;
 	runtime: CoordinatorRuntimeDeps;
 	requestVerifier: CoordinatorRequestVerifier;
+	requestRateLimit?: CoordinatorRequestRateLimitOptions;
 }
 
 export interface CoordinatorVerifyRequestInput {
@@ -158,8 +173,43 @@ export function createCoordinatorApp(
 	const runtime = opts.runtime;
 	const createStore = opts.storeFactory;
 	const requestVerifier = opts.requestVerifier;
+	const requestRateLimit = opts.requestRateLimit ?? {};
+	const rateLimiter = requestRateLimit.limiter ?? createInMemoryRequestRateLimiter();
+	const readLimit = Math.max(
+		1,
+		Math.trunc(requestRateLimit.readLimit ?? DEFAULT_COORDINATOR_READ_LIMIT),
+	);
+	const mutationLimit = Math.max(
+		1,
+		Math.trunc(requestRateLimit.mutationLimit ?? DEFAULT_COORDINATOR_MUTATION_LIMIT),
+	);
+	const unauthenticatedReadLimit = Math.max(
+		1,
+		Math.trunc(requestRateLimit.unauthenticatedReadLimit ?? Math.min(20, readLimit)),
+	);
+	const unauthenticatedMutationLimit = Math.max(
+		1,
+		Math.trunc(requestRateLimit.unauthenticatedMutationLimit ?? Math.min(10, mutationLimit)),
+	);
 	const app = new Hono();
 	const textDecoder = new TextDecoder();
+
+	function rateLimitedResponse(c: Context, key: string, authenticated: boolean) {
+		const isRead = c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS";
+		const result = rateLimiter.check(
+			`${c.req.method}:${authenticated ? "auth" : "anon"}:${key}`,
+			authenticated
+				? isRead
+					? readLimit
+					: mutationLimit
+				: isRead
+					? unauthenticatedReadLimit
+					: unauthenticatedMutationLimit,
+		);
+		if (result.allowed) return null;
+		c.header("Retry-After", String(result.retryAfterS));
+		return c.json({ error: "rate_limited", retry_after_s: result.retryAfterS }, 429);
+	}
 
 	async function readRequestBytes(c: Context): Promise<Uint8Array | null> {
 		const contentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
@@ -240,8 +290,10 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return c.json({ error: auth.error }, 401);
+				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
 			}
+			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
+			if (limited) return limited;
 
 			if (data.fingerprint && String(data.fingerprint) !== String(auth.enrollment.fingerprint)) {
 				return c.json({ error: "fingerprint_mismatch" }, 401);
@@ -304,8 +356,10 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return c.json({ error: auth.error }, 401);
+				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
 			}
+			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
+			if (limited) return limited;
 
 			const items = await store.listGroupPeers(groupId, String(auth.enrollment.device_id));
 			return c.json({ items });
@@ -342,8 +396,10 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return c.json({ error: auth.error }, 401);
+				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
 			}
+			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
+			if (limited) return limited;
 			const items = await store.listReciprocalApprovals({
 				groupId,
 				deviceId: String(auth.enrollment.device_id),
@@ -390,8 +446,10 @@ export function createCoordinatorApp(
 				nonce: c.req.header("X-Opencode-Nonce") ?? null,
 			});
 			if (!auth.ok || !auth.enrollment) {
-				return c.json({ error: auth.error }, 401);
+				return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: auth.error }, 401);
 			}
+			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
+			if (limited) return limited;
 			if (requestedDeviceId === String(auth.enrollment.device_id)) {
 				return c.json({ error: "requested_device_must_differ" }, 400);
 			}
@@ -417,7 +475,10 @@ export function createCoordinatorApp(
 	// POST /v1/admin/devices — enroll a device
 	app.post("/v1/admin/devices", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const raw = await readRequestBytes(c);
 		if (raw == null) return c.json({ error: "body_too_large" }, 413);
@@ -459,7 +520,10 @@ export function createCoordinatorApp(
 	// GET /v1/admin/devices — list enrolled devices
 	app.get("/v1/admin/devices", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const groupId = (c.req.query("group_id") ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id_required" }, 400);
@@ -479,7 +543,10 @@ export function createCoordinatorApp(
 	// POST /v1/admin/devices/rename
 	app.post("/v1/admin/devices/rename", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const raw = await readRequestBytes(c);
 		if (raw == null) return c.json({ error: "body_too_large" }, 413);
@@ -513,7 +580,10 @@ export function createCoordinatorApp(
 	// POST /v1/admin/devices/disable
 	app.post("/v1/admin/devices/disable", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const raw = await readRequestBytes(c);
 		if (raw == null) return c.json({ error: "body_too_large" }, 413);
@@ -543,7 +613,10 @@ export function createCoordinatorApp(
 	// POST /v1/admin/devices/remove
 	app.post("/v1/admin/devices/remove", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const raw = await readRequestBytes(c);
 		if (raw == null) return c.json({ error: "body_too_large" }, 413);
@@ -573,7 +646,10 @@ export function createCoordinatorApp(
 	// POST /v1/admin/invites — create an invite
 	app.post("/v1/admin/invites", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const raw = await readRequestBytes(c);
 		if (raw == null) return c.json({ error: "body_too_large" }, 413);
@@ -634,7 +710,10 @@ export function createCoordinatorApp(
 	// GET /v1/admin/invites — list invites
 	app.get("/v1/admin/invites", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const groupId = (c.req.query("group_id") ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id_required" }, 400);
@@ -652,18 +731,21 @@ export function createCoordinatorApp(
 
 	// POST /v1/admin/join-requests/approve
 	app.post("/v1/admin/join-requests/approve", async (c) => {
-		return handleJoinRequestReview(c, true, { createStore, runtime });
+		return handleJoinRequestReview(c, true, { createStore, runtime, rateLimitedResponse });
 	});
 
 	// POST /v1/admin/join-requests/deny
 	app.post("/v1/admin/join-requests/deny", async (c) => {
-		return handleJoinRequestReview(c, false, { createStore, runtime });
+		return handleJoinRequestReview(c, false, { createStore, runtime, rateLimitedResponse });
 	});
 
 	// GET /v1/admin/join-requests — list join requests
 	app.get("/v1/admin/join-requests", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
-		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
 
 		const groupId = (c.req.query("group_id") ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id_required" }, 400);
@@ -779,10 +861,19 @@ export function createCoordinatorApp(
 async function handleJoinRequestReview(
 	c: Context,
 	approved: boolean,
-	deps: { createStore: () => CoordinatorStore; runtime: CoordinatorRuntimeDeps },
+	deps: {
+		createStore: () => CoordinatorStore;
+		runtime: CoordinatorRuntimeDeps;
+		rateLimitedResponse: (c: Context, key: string, authenticated: boolean) => Response | null;
+	},
 ) {
 	const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), deps.runtime);
-	if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
+	if (!adminAuth.ok)
+		return (
+			deps.rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401)
+		);
+	const limited = deps.rateLimitedResponse(c, "admin", true);
+	if (limited) return limited;
 
 	const raw = await (async () => {
 		const contentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
