@@ -63,6 +63,34 @@ function intEnvOr(name: string, fallback: number): number {
 const MAX_SYNC_BODY_BYTES = intEnvOr("CODEMEM_SYNC_MAX_BODY_BYTES", 1_048_576);
 const MAX_SYNC_OPS = intEnvOr("CODEMEM_SYNC_MAX_OPS", 2000);
 
+async function readBoundedRequestBytes(request: Request, maxBytes: number): Promise<Buffer | null> {
+	const contentLength = Number.parseInt(request.headers.get("content-length") ?? "", 10);
+	if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+		return null;
+	}
+	const stream = request.body;
+	if (!stream) return Buffer.alloc(0);
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel();
+				return null;
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+}
+
 const PAIRING_FILTER_HINT =
 	"Run this on another device with codemem sync pair --accept '<payload>'. " +
 	"On the accepting device, --include/--exclude control both what it sends and what it accepts from that peer.";
@@ -840,8 +868,8 @@ export function syncProtocolRoutes(getStore: StoreFactory) {
 	// POST /v1/ops (peer sync protocol)
 	app.post("/v1/ops", async (c) => {
 		const store = getStore();
-		const raw = Buffer.from(await c.req.arrayBuffer());
-		if (raw.length > MAX_SYNC_BODY_BYTES) {
+		const raw = await readBoundedRequestBytes(c.req.raw, MAX_SYNC_BODY_BYTES);
+		if (raw == null) {
 			return c.json({ error: "payload_too_large" }, 413);
 		}
 
@@ -1100,7 +1128,7 @@ export function syncRoutes(
 				showDiag,
 			);
 			let joinRequests: Record<string, unknown>[] = [];
-			if (includeJoinRequests && config.syncCoordinatorAdminSecret) {
+			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {
 				try {
 					joinRequests = await listCoordinatorJoinRequests(config);
 				} catch {
@@ -1158,7 +1186,7 @@ export function syncRoutes(
 				sharing_review: sharingReview,
 				coordinator,
 			};
-			if (includeJoinRequests) {
+			if (includeJoinRequests && showDiag) {
 				responsePayload.join_requests = joinRequests;
 			}
 			return c.json(responsePayload);

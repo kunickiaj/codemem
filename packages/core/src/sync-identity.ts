@@ -6,13 +6,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import {
-	createHash,
-	createPrivateKey,
-	createPublicKey,
-	generateKeyPairSync,
-	randomUUID,
-} from "node:crypto";
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,6 +15,9 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
 import * as schema from "./schema.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
+
+export { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -34,11 +31,6 @@ const KEYCHAIN_SERVICE = "codemem-sync";
 // ---------------------------------------------------------------------------
 // Fingerprint
 // ---------------------------------------------------------------------------
-
-/** SHA-256 hex digest of a public key string. */
-export function fingerprintPublicKey(publicKey: string): string {
-	return createHash("sha256").update(publicKey, "utf-8").digest("hex");
-}
 
 // ---------------------------------------------------------------------------
 // Key store mode

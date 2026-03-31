@@ -155,6 +155,27 @@ describe("createCloudflareCoordinatorWorker", () => {
 		});
 	});
 
+	it("rejects oversized presence bodies before auth processing", async () => {
+		const worker = createCloudflareCoordinatorWorker({
+			now: () => "2026-03-28T00:00:00Z",
+		});
+		const hugeBody = JSON.stringify({
+			group_id: "g1",
+			addresses: ["http://127.0.0.1:7337"],
+			padding: "x".repeat(70_000),
+		});
+		const res = await worker.fetch(
+			new Request("https://coord.example.test/v1/presence", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: hugeBody,
+			}),
+			{ COORDINATOR_DB: d1db, CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret" },
+		);
+		expect(res.status).toBe(413);
+		expect(await res.json()).toEqual({ error: "body_too_large" });
+	});
+
 	it("supports invite, join approval, signed presence, and signed peer lookup through the worker entrypoint", async () => {
 		const worker = createCloudflareCoordinatorWorker({
 			now: () => "2026-03-28T00:00:00Z",

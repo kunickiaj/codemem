@@ -649,6 +649,50 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("redacts sensitive config values from config responses", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = "coord-secret";
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					observer_auth_file: "~/.codemem/token.txt",
+					observer_auth_command: ["print-token"],
+					observer_headers: { Authorization: "Bearer abc" },
+				}),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				const config = body.config as Record<string, unknown>;
+				const effective = body.effective as Record<string, unknown>;
+				expect(config.observer_auth_file).toBe("[redacted]");
+				expect(config.observer_auth_command).toBe("[redacted]");
+				expect(config.observer_headers).toBe("[redacted]");
+				expect(effective.sync_coordinator_admin_secret).toBe("[redacted]");
+				expect(body.protected_keys).toEqual(
+					expect.arrayContaining([
+						"claude_command",
+						"observer_auth_file",
+						"observer_auth_command",
+						"observer_headers",
+						"observer_base_url",
+						"sync_coordinator_url",
+					]),
+				);
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevSecret;
+			}
+		});
+
 		it("writes config and returns effects", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const notifyConfigChanged = vi.fn();
@@ -1088,6 +1132,22 @@ describe("viewer-server", () => {
 					body: JSON.stringify({ ops: [] }),
 				});
 				expect(postRes.status).toBe(401);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects oversized sync request bodies before auth processing", async () => {
+			const { syncApp, cleanup } = createTestApp();
+			try {
+				const hugeBody = JSON.stringify({ ops: [], padding: "x".repeat(1_048_600) });
+				const res = await syncApp.request("/v1/ops", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: hugeBody,
+				});
+				expect(res.status).toBe(413);
+				expect(await res.json()).toEqual({ error: "payload_too_large" });
 			} finally {
 				cleanup();
 			}
@@ -1547,6 +1607,68 @@ describe("viewer-server", () => {
 				ensureDeviceIdentity(store.db, { keysDir });
 
 				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).not.toHaveProperty("join_requests");
+
+				const calls = fetchMock.mock.calls.map(([input]) => String(input));
+				const joinRequestCalls = calls.filter((url) => url.includes("/v1/admin/join-requests"));
+				expect(joinRequestCalls).toHaveLength(0);
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+				delete process.env.CODEMEM_SYNC_ENABLED;
+			}
+		});
+
+		it("does not expose join requests without diagnostics", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/presence")) {
+					return new Response(JSON.stringify({ ok: true, addresses: ["http://1.2.3.4:7337"] }), {
+						status: 200,
+					});
+				}
+				if (url.includes("/v1/peers")) {
+					return new Response(JSON.stringify({ items: [] }), { status: 200 });
+				}
+				if (url.includes("/v1/admin/join-requests")) {
+					return new Response(
+						JSON.stringify({ items: [{ request_id: "req-1", token: "secret-token" }] }),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+
+				const res = await app.request("/api/sync/status?includeJoinRequests=1");
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).not.toHaveProperty("join_requests");
