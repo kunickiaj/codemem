@@ -11,6 +11,7 @@ import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -160,8 +161,38 @@ export function createCoordinatorApp(
 	const app = new Hono();
 	const textDecoder = new TextDecoder();
 
-	async function readRequestBytes(c: Context): Promise<Uint8Array> {
-		return new Uint8Array(await c.req.arrayBuffer());
+	async function readRequestBytes(c: Context): Promise<Uint8Array | null> {
+		const contentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
+		if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+			return null;
+		}
+		const stream = c.req.raw.body;
+		if (!stream) return new Uint8Array();
+		const reader = stream.getReader();
+		const chunks: Uint8Array[] = [];
+		let total = 0;
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				if (!value) continue;
+				total += value.byteLength;
+				if (total > MAX_BODY_BYTES) {
+					await reader.cancel();
+					return null;
+				}
+				chunks.push(value);
+			}
+		} finally {
+			reader.releaseLock();
+		}
+		const combined = new Uint8Array(total);
+		let offset = 0;
+		for (const chunk of chunks) {
+			combined.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		return combined;
 	}
 
 	function parseJsonObject(raw: Uint8Array): Record<string, unknown> | null {
@@ -182,7 +213,7 @@ export function createCoordinatorApp(
 
 	app.post("/v1/presence", async (c) => {
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) {
+		if (raw == null) {
 			return c.json({ error: "body_too_large" }, 413);
 		}
 
@@ -331,7 +362,7 @@ export function createCoordinatorApp(
 
 	app.post("/v1/reciprocal-approvals", async (c) => {
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) {
+		if (raw == null) {
 			return c.json({ error: "body_too_large" }, 413);
 		}
 
@@ -389,7 +420,7 @@ export function createCoordinatorApp(
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
 
 		const data = parseJsonObject(raw);
 		if (!data) {
@@ -404,6 +435,9 @@ export function createCoordinatorApp(
 
 		if (!groupId || !deviceId || !fingerprint || !publicKey) {
 			return c.json({ error: "group_id_device_id_fingerprint_public_key_required" }, 400);
+		}
+		if (fingerprintPublicKey(publicKey) !== fingerprint) {
+			return c.json({ error: "fingerprint_mismatch" }, 400);
 		}
 
 		const store = createStore();
@@ -448,7 +482,7 @@ export function createCoordinatorApp(
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
 
 		const data = parseJsonObject(raw);
 		if (!data) {
@@ -482,7 +516,7 @@ export function createCoordinatorApp(
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
 
 		const data = parseJsonObject(raw);
 		if (!data) {
@@ -512,7 +546,7 @@ export function createCoordinatorApp(
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
 
 		const data = parseJsonObject(raw);
 		if (!data) {
@@ -542,7 +576,7 @@ export function createCoordinatorApp(
 		if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
 
 		const data = parseJsonObject(raw);
 		if (!data) {
@@ -648,7 +682,7 @@ export function createCoordinatorApp(
 
 	app.post("/v1/join", async (c) => {
 		const raw = await readRequestBytes(c);
-		if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
 
 		const data = parseJsonObject(raw);
 		if (!data) {
@@ -663,6 +697,9 @@ export function createCoordinatorApp(
 
 		if (!token || !deviceId || !fingerprint || !publicKey) {
 			return c.json({ error: "token_device_id_fingerprint_public_key_required" }, 400);
+		}
+		if (fingerprintPublicKey(publicKey) !== fingerprint) {
+			return c.json({ error: "fingerprint_mismatch" }, 400);
 		}
 
 		const store = createStore();
@@ -747,8 +784,40 @@ async function handleJoinRequestReview(
 	const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), deps.runtime);
 	if (!adminAuth.ok) return c.json({ error: adminAuth.error }, 401);
 
-	const raw = new Uint8Array(await c.req.arrayBuffer());
-	if (raw.length > MAX_BODY_BYTES) return c.json({ error: "body_too_large" }, 413);
+	const raw = await (async () => {
+		const contentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
+		if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+			return null;
+		}
+		const stream = c.req.raw.body;
+		if (!stream) return new Uint8Array();
+		const reader = stream.getReader();
+		const chunks: Uint8Array[] = [];
+		let total = 0;
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				if (!value) continue;
+				total += value.byteLength;
+				if (total > MAX_BODY_BYTES) {
+					await reader.cancel();
+					return null;
+				}
+				chunks.push(value);
+			}
+		} finally {
+			reader.releaseLock();
+		}
+		const combined = new Uint8Array(total);
+		let offset = 0;
+		for (const chunk of chunks) {
+			combined.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		return combined;
+	})();
+	if (raw == null) return c.json({ error: "body_too_large" }, 413);
 
 	let data: Record<string, unknown> | null;
 	try {

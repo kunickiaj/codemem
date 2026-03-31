@@ -11,6 +11,9 @@ import {
 	type D1DatabaseLike,
 	type D1PreparedStatementLike,
 } from "./d1-coordinator-store.js";
+import { connect } from "./db.js";
+import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
+import { initTestSchema } from "./test-utils.js";
 
 class SqliteD1Statement implements D1PreparedStatementLike {
 	private bound: unknown[] = [];
@@ -136,5 +139,50 @@ describe("createD1CoordinatorApp", () => {
 
 		expect(res.status).toBe(401);
 		expect(await res.json()).toEqual({ error: "admin_not_configured" });
+	});
+
+	it("rejects join requests with mismatched fingerprint and public key", async () => {
+		const store = new D1CoordinatorStore(d1db);
+		await store.createGroup("g1", "Team Alpha");
+		const invite = await store.createInvite({
+			groupId: "g1",
+			policy: "approval_required",
+			expiresAt: "2099-01-01T00:00:00Z",
+			createdBy: null,
+		});
+		await store.close();
+
+		const joinerDb = connect(join(tmpDir, "joiner.sqlite"));
+		try {
+			initTestSchema(joinerDb);
+			const keysDir = join(tmpDir, "joiner-keys");
+			const [deviceId] = ensureDeviceIdentity(joinerDb, { keysDir });
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("public key missing");
+
+			const app = createD1CoordinatorApp({
+				db: d1db,
+				adminSecret: "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+				requestVerifier,
+			});
+
+			const res = await app.request("/v1/join", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					token: invite.token,
+					device_id: deviceId,
+					public_key: publicKey,
+					fingerprint: "wrong-fingerprint",
+					display_name: "Joiner Device",
+				}),
+			});
+
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({ error: "fingerprint_mismatch" });
+		} finally {
+			joinerDb.close();
+		}
 	});
 });
