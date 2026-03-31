@@ -5,7 +5,7 @@ natively, in a container, and how to expose it to teammates outside your local n
 
 The coordinator HTTP service is Hono-based, but the canonical deployment path today is still the built-in
 `codemem sync coordinator serve` runtime on Node/Linux with a local SQLite database. If your end goal is Cloudflare,
-validate this Linux/Node flow first, then use the dedicated Worker runbook in `docs/coordinator-cloudflare-deployment.md`.
+validate this Linux/Node flow first, then use the dedicated Worker runbook in `docs/cloudflare-coordinator-deployment.md`.
 
 If you want the fastest clean validation path, use `docs/coordinator-e2e-runbook.md` alongside this guide.
 
