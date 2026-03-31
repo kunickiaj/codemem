@@ -16,6 +16,7 @@ let settingsBaseline: Record<string, unknown> = {};
 let settingsEnvOverrides: Record<string, unknown> = {};
 let settingsTouchedKeys = new Set<string>();
 let settingsShellMounted = false;
+let settingsProtectedKeys = new Set<string>();
 let settingsStartPolling: (() => void) | null = null;
 let settingsRefresh: (() => void) | null = null;
 const SETTINGS_ADVANCED_KEY = 'codemem-settings-advanced';
@@ -105,6 +106,15 @@ const INPUT_TO_CONFIG_KEY: Record<keyof SettingsFormState, string> = {
   syncCoordinatorTimeout: 'sync_coordinator_timeout_s',
   syncCoordinatorPresenceTtl: 'sync_coordinator_presence_ttl_s',
 };
+
+const PROTECTED_VIEWER_CONFIG_KEYS = new Set([
+  'claude_command',
+  'observer_base_url',
+  'observer_auth_file',
+  'observer_auth_command',
+  'observer_headers',
+  'sync_coordinator_url',
+]);
 
 const EMPTY_FORM_STATE: SettingsFormState = {
   claudeCommand: '',
@@ -674,6 +684,14 @@ function buildSettingsNotice(payload: any): { message: string; type: 'success' |
   return { message: lines.join(' '), type: hasWarning ? 'warning' : 'success' };
 }
 
+function isProtectedConfigKey(key: string): boolean {
+  return settingsProtectedKeys.has(key) || PROTECTED_VIEWER_CONFIG_KEYS.has(key);
+}
+
+function protectedConfigHelp(key: string): string {
+  return `${key} is read-only in the viewer for security. Edit the config file or environment instead.`;
+}
+
 function formStateFromPayload(payload: any): SettingsFormState {
   const config = payload.config || {};
   const effective = payload.effective || {};
@@ -743,9 +761,15 @@ export function renderConfigModal(payload: any) {
   const config = payload.config || {};
   const envOverrides =
     payload.env_overrides && typeof payload.env_overrides === 'object' ? payload.env_overrides : {};
+  const protectedKeys = Array.isArray(payload.protected_keys)
+    ? payload.protected_keys.filter(
+        (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0,
+      )
+    : [];
   const values = formStateFromPayload(payload);
 
   settingsEnvOverrides = envOverrides;
+  settingsProtectedKeys = new Set(protectedKeys);
   state.configDefaults = defaults;
   state.configPath = payload.path || '';
 
@@ -947,6 +971,9 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
     const current = collectSettingsPayload({ allowUntouchedParseErrors: true });
     const changed: Record<string, unknown> = {};
     Object.entries(current).forEach(([key, value]) => {
+      if (isProtectedConfigKey(key)) {
+        return;
+      }
       if (hasOwn(settingsEnvOverrides, key) && !settingsTouchedKeys.has(key)) {
         return;
       }
@@ -1295,8 +1322,8 @@ function SettingsDialogContent() {
             </Field>
             <Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
               <label htmlFor="claudeCommand">Claude command (JSON argv)</label>
-              <textarea id="claudeCommand" onInput={onTextInput('claudeCommand')} placeholder='["claude"]' rows={2} value={values.claudeCommand} />
-              <div className="small">Used by `claude_sidecar` runtime. Example wrapper: `["wrapper", "claude", "--"]`.</div>
+              <textarea disabled id="claudeCommand" placeholder='["claude"]' rows={2} value={values.claudeCommand} />
+              <div className="small">{protectedConfigHelp('claude_command')}</div>
             </Field>
             <Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
               <label htmlFor="observerMaxChars">Request size limit (chars)</label>
@@ -1323,16 +1350,16 @@ function SettingsDialogContent() {
             </Field>
             <Field hidden={!showAuthFile} id="observerAuthFileField">
               <label htmlFor="observerAuthFile">Token file path</label>
-              <input id="observerAuthFile" onInput={onTextInput('observerAuthFile')} placeholder="~/.codemem/work-token.txt" value={values.observerAuthFile} />
-              <div className="small">Reads token text from this file when method is `file`.</div>
+              <input disabled id="observerAuthFile" placeholder="~/.codemem/work-token.txt" value={values.observerAuthFile} />
+              <div className="small">{protectedConfigHelp('observer_auth_file')}</div>
             </Field>
             <Field hidden={!showAuthCommand} id="observerAuthCommandField">
               <div className="field-label">
                 <label htmlFor="observerAuthCommand">Token command</label>
                 <button aria-label="About token command" className="help-icon" data-tooltip="Runs this command and uses stdout as the token. JSON argv only, no shell parsing." type="button">?</button>
               </div>
-              <textarea id="observerAuthCommand" onInput={onTextInput('observerAuthCommand')} placeholder='["iap-auth", "--audience", "gateway"]' rows={3} value={values.observerAuthCommand} />
-              <div className="small">When method is `command`, command stdout is used as the token.</div>
+              <textarea disabled id="observerAuthCommand" placeholder='["iap-auth", "--audience", "gateway"]' rows={3} value={values.observerAuthCommand} />
+              <div className="small">{protectedConfigHelp('observer_auth_command')}</div>
             </Field>
             <div className="small" hidden={!showAuthCommand} id="observerAuthCommandNote">
               Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
@@ -1350,8 +1377,8 @@ function SettingsDialogContent() {
                 <label htmlFor="observerHeaders">Request headers (JSON)</label>
                 <button aria-label="About request headers" className="help-icon" data-tooltip={'Optional extra headers. Supports templates like ${auth.token}, ${auth.type}, ${auth.source}.'} type="button">?</button>
               </div>
-              <textarea id="observerHeaders" onInput={onTextInput('observerHeaders')} placeholder='{"Authorization":"Bearer ${auth.token}"}' rows={4} value={values.observerHeaders} />
-              <div className="small">Template variables: {'`${auth.token}`, `${auth.type}`, `${auth.source}`.'}</div>
+              <textarea disabled id="observerHeaders" placeholder='{"Authorization":"Bearer ${auth.token}"}' rows={4} value={values.observerHeaders} />
+              <div className="small">{protectedConfigHelp('observer_headers')}</div>
             </Field>
           </div>
         </div>
@@ -1393,8 +1420,8 @@ function SettingsDialogContent() {
             <div className="field field-checkbox settings-advanced" hidden={hiddenUnlessAdvanced()}><input checked={values.syncMdns} className="cm-checkbox" id="syncMdns" onChange={onCheckboxInput('syncMdns')} type="checkbox" /><label htmlFor="syncMdns">Enable mDNS discovery</label></div>
             <div className="field">
               <label htmlFor="syncCoordinatorUrl">Coordinator URL</label>
-              <input id="syncCoordinatorUrl" onInput={onTextInput('syncCoordinatorUrl')} placeholder="https://coord.example.com" value={values.syncCoordinatorUrl} />
-              <div className="small">Optional self-hosted/operator-run discovery service. Direct peer-to-peer sync remains the data path.</div>
+              <input disabled id="syncCoordinatorUrl" placeholder="https://coord.example.com" value={values.syncCoordinatorUrl} />
+              <div className="small">{protectedConfigHelp('sync_coordinator_url')}</div>
             </div>
             <div className="field">
               <label htmlFor="syncCoordinatorGroup">Coordinator group</label>
