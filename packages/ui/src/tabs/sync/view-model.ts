@@ -165,6 +165,11 @@ export function derivePeerUiStatus(peer: PeerLike): UiSyncStatus {
   return 'waiting';
 }
 
+function isOfflineTeamDevice(device: MergedDevice): boolean {
+  if (!device.discovered?.stale) return false;
+  return device.peer ? derivePeerUiStatus(device.peer) !== 'connected' : true;
+}
+
 function peerErrorText(peer: PeerLike): string {
   return cleanText(peer?.last_error).toLowerCase();
 }
@@ -508,7 +513,7 @@ export function deriveSyncViewModel(input: {
     summary: {
       connectedDeviceCount: peers.filter((peer) => derivePeerUiStatus(peer) === 'connected').length,
       seenOnTeamCount: discoveredDevices.length,
-      offlineTeamDeviceCount: discoveredDevices.filter((device) => Boolean(device?.stale)).length,
+      offlineTeamDeviceCount: mergedDevices.filter((device) => isOfflineTeamDevice(device)).length,
     },
     duplicatePeople,
     attentionItems: attentionItems.sort((a, b) => a.priority - b.priority || a.title.localeCompare(b.title)),
