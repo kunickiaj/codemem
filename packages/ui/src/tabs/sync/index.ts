@@ -22,6 +22,7 @@ export { renderSyncPeers } from './people';
 
 let lastSyncHash = '';
 let cachedSyncStatus: { key: string; expiresAtMs: number; payload: SyncStatusResponse } | null = null;
+let latestSyncLoadRequestId = 0;
 
 const HEALTH_SYNC_STATUS_CACHE_TTL_MS = 15_000;
 
@@ -54,6 +55,7 @@ function normalizeSyncStatusForCache(payload: SyncStatusResponse): SyncStatusRes
 }
 
 export async function loadSyncData() {
+  const requestId = ++latestSyncLoadRequestId;
   try {
     const project = state.currentProject || '';
     const includeJoinRequests = state.activeTab === 'sync';
@@ -64,11 +66,9 @@ export async function loadSyncData() {
       payload = readCachedSyncStatus(project);
       if (!payload) {
         payload = await api.loadSyncStatus(true, project, { includeJoinRequests: false });
-        writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
       }
     } else {
       payload = await api.loadSyncStatus(true, project, { includeJoinRequests });
-      writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
     }
 
     let actorsPayload: SyncActorListResponse | null = null;
@@ -79,6 +79,10 @@ export async function loadSyncData() {
     } catch {
       actorLoadError = true;
     }
+
+    if (requestId !== latestSyncLoadRequestId) return;
+
+    writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
 
     // Skip re-render if data hasn't changed since last poll
     const hash = JSON.stringify([payload, actorsPayload, duplicatePersonDecisions]);
@@ -133,6 +137,7 @@ export async function loadSyncData() {
           'People controls are temporarily unavailable. Device status and sync health still loaded.';
     }
   } catch {
+    if (requestId !== latestSyncLoadRequestId) return;
     // Clear all skeletons so the error state is visible, not masked by loading placeholders
     hideSkeleton('syncTeamSkeleton');
     hideSkeleton('syncActorsSkeleton');
@@ -141,6 +146,12 @@ export async function loadSyncData() {
     const syncMeta = document.getElementById('syncMeta');
     if (syncMeta) syncMeta.textContent = 'Sync unavailable';
   }
+}
+
+export function resetSyncLoadStateForTests() {
+  lastSyncHash = '';
+  cachedSyncStatus = null;
+  latestSyncLoadRequestId = 0;
 }
 
 export async function loadPairingData() {
