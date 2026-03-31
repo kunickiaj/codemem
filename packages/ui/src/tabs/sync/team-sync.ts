@@ -5,6 +5,7 @@ import { state, setFeedScopeFilter, isSyncRedactionEnabled } from '../../lib/sta
 import * as api from '../../lib/api';
 import { showGlobalNotice } from '../../lib/notice';
 import { markFieldError, clearFieldError, friendlyError } from '../../lib/form';
+import type { UiSyncViewModel } from './view-model';
 import {
   adminSetupExpanded,
   setAdminSetupExpanded,
@@ -180,7 +181,11 @@ export function renderTeamSync() {
   ensureJoinPanelInSetupSection();
 
   const coordinator = state.lastSyncCoordinator;
-  const syncView = state.lastSyncViewModel || { summary: {}, attentionItems: [] };
+  const syncView: UiSyncViewModel = state.lastSyncViewModel || {
+    summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
+    duplicatePeople: [],
+    attentionItems: [],
+  };
 
   const focusAttentionTarget = (item: { kind?: string; deviceId?: string }) => {
     if (item.kind === 'possible-duplicate-person') {

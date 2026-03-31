@@ -1,6 +1,7 @@
 /* Sync tab orchestrator — re-exports public API and coordinates sub-modules. */
 
 import * as api from '../../lib/api';
+import type { SyncActorListResponse, SyncPeerSummary, SyncStatusResponse } from '../../lib/api';
 import { state } from '../../lib/state';
 import { renderHealthOverview } from '../health';
 import { deriveSyncViewModel } from './view-model';
@@ -20,7 +21,7 @@ export { renderSyncPeers } from './people';
 /* ── Data loading ────────────────────────────────────────── */
 
 let lastSyncHash = '';
-let cachedSyncStatus: { key: string; expiresAtMs: number; payload: any } | null = null;
+let cachedSyncStatus: { key: string; expiresAtMs: number; payload: SyncStatusResponse } | null = null;
 
 const HEALTH_SYNC_STATUS_CACHE_TTL_MS = 15_000;
 
@@ -28,7 +29,7 @@ function syncStatusCacheKey(project: string): string {
   return `project:${project || ''}|includeJoinRequests:false`;
 }
 
-function readCachedSyncStatus(project: string): any | null {
+function readCachedSyncStatus(project: string): SyncStatusResponse | null {
   const key = syncStatusCacheKey(project);
   if (!cachedSyncStatus) return null;
   if (cachedSyncStatus.key !== key) return null;
@@ -36,7 +37,7 @@ function readCachedSyncStatus(project: string): any | null {
   return cachedSyncStatus.payload;
 }
 
-function writeCachedSyncStatus(project: string, payload: any): void {
+function writeCachedSyncStatus(project: string, payload: SyncStatusResponse): void {
   cachedSyncStatus = {
     key: syncStatusCacheKey(project),
     expiresAtMs: Date.now() + HEALTH_SYNC_STATUS_CACHE_TTL_MS,
@@ -44,7 +45,7 @@ function writeCachedSyncStatus(project: string, payload: any): void {
   };
 }
 
-function normalizeSyncStatusForCache(payload: any): any {
+function normalizeSyncStatusForCache(payload: SyncStatusResponse): SyncStatusResponse {
   if (!payload || typeof payload !== 'object') return payload;
   return {
     ...payload,
@@ -58,7 +59,7 @@ export async function loadSyncData() {
     const includeJoinRequests = state.activeTab === 'sync';
     const useCache = state.activeTab === 'health';
 
-    let payload: any;
+    let payload: SyncStatusResponse;
     if (useCache) {
       payload = readCachedSyncStatus(project);
       if (!payload) {
@@ -70,7 +71,7 @@ export async function loadSyncData() {
       writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
     }
 
-    let actorsPayload: any = null;
+    let actorsPayload: SyncActorListResponse | null = null;
     let actorLoadError = false;
     const duplicatePersonDecisions = readDuplicatePersonDecisions();
     try {
@@ -93,9 +94,9 @@ export async function loadSyncData() {
       state.lastSyncActors = [];
     }
     const payloadPeers = Array.isArray(payload.peers) ? payload.peers : [];
-    const realPeerIds = new Set(payloadPeers.map((peer: any) => String(peer?.peer_device_id || '').trim()).filter(Boolean));
+    const realPeerIds = new Set(payloadPeers.map((peer: SyncPeerSummary) => String(peer?.peer_device_id || '').trim()).filter(Boolean));
     const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
-      ? state.pendingAcceptedSyncPeers.filter((peer: any) => {
+      ? state.pendingAcceptedSyncPeers.filter((peer: SyncPeerSummary) => {
           const peerId = String(peer?.peer_device_id || '').trim();
           return peerId && !realPeerIds.has(peerId);
         })
