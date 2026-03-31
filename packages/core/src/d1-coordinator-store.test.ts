@@ -2,8 +2,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database as DatabaseType, Statement } from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { runCoordinatorStoreContract } from "./coordinator-store-test-harness.js";
 import {
 	D1CoordinatorStore,
 	type D1DatabaseLike,
@@ -127,13 +128,9 @@ class RacingSqliteD1Database extends SqliteD1Database {
 }
 
 describe("D1CoordinatorStore", () => {
-	let tmpDir: string;
-	let db: DatabaseType;
-	let store: D1CoordinatorStore;
-
-	beforeEach(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), "d1-coord-test-"));
-		db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
+	function setupStore() {
+		const tmpDir = mkdtempSync(join(tmpdir(), "d1-coord-test-"));
+		const db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
 			DROP TABLE IF EXISTS coordinator_reciprocal_approvals;
 			DROP TABLE IF EXISTS coordinator_join_requests;
@@ -149,273 +146,114 @@ describe("D1CoordinatorStore", () => {
 				"utf8",
 			),
 		);
-		store = new D1CoordinatorStore(new SqliteD1Database(db));
-	});
+		const store = new D1CoordinatorStore(new SqliteD1Database(db));
+		return {
+			store,
+			db,
+			cleanup: async () => {
+				await store.close();
+				db.close();
+				rmSync(tmpDir, { recursive: true, force: true });
+			},
+		};
+	}
 
-	afterEach(async () => {
-		await store.close();
-		db.close();
-		rmSync(tmpDir, { recursive: true, force: true });
-	});
-
-	it("creates and lists groups", async () => {
-		await store.createGroup("g1", "Team Alpha");
-		await store.createGroup("g2", null);
-		expect(await store.getGroup("g1")).toEqual(
-			expect.objectContaining({ group_id: "g1", display_name: "Team Alpha" }),
-		);
-		expect(await store.listGroups()).toHaveLength(2);
-	});
-
-	it("enrolls, renames, disables, and removes devices", async () => {
-		await store.createGroup("g1");
-		await store.enrollDevice("g1", {
-			deviceId: "d1",
-			fingerprint: "fp1",
-			publicKey: "pk1",
-			displayName: "Laptop",
-		});
-		expect(await store.getEnrollment("g1", "d1")).toEqual(
-			expect.objectContaining({ device_id: "d1", display_name: "Laptop", fingerprint: "fp1" }),
-		);
-		expect(await store.renameDevice("g1", "d1", "Desktop")).toBe(true);
-		expect(await store.getEnrollment("g1", "d1")).toEqual(
-			expect.objectContaining({ display_name: "Desktop" }),
-		);
-		await store.setDeviceEnabled("g1", "d1", false);
-		expect(await store.listEnrolledDevices("g1")).toEqual([]);
-		expect(await store.listEnrolledDevices("g1", true)).toEqual([
-			expect.objectContaining({ device_id: "d1", enabled: 0 }),
-		]);
-		expect(await store.removeDevice("g1", "d1")).toBe(true);
-		expect(await store.listEnrolledDevices("g1", true)).toEqual([]);
-	});
-
-	it("creates and lists invites", async () => {
-		await store.createGroup("g1", "Team Alpha");
-		const invite = await store.createInvite({
-			groupId: "g1",
-			policy: "auto_admit",
-			expiresAt: "2099-01-01T00:00:00Z",
-			createdBy: "admin",
-		});
-		expect(invite.team_name_snapshot).toBe("Team Alpha");
-		expect(await store.getInviteByToken(invite.token)).toEqual(
-			expect.objectContaining({ invite_id: invite.invite_id, group_id: "g1" }),
-		);
-		expect(await store.listInvites("g1")).toHaveLength(1);
-	});
-
-	it("creates, lists, and reviews join requests", async () => {
-		await store.createGroup("g1");
-		const request = await store.createJoinRequest({
-			groupId: "g1",
-			deviceId: "d1",
-			publicKey: "pk1",
-			fingerprint: "fp1",
-			displayName: "Laptop",
-			token: "token-1",
-		});
-		expect(request.status).toBe("pending");
-		expect(await store.listJoinRequests("g1")).toHaveLength(1);
-		const approved = await store.reviewJoinRequest({
-			requestId: request.request_id,
-			approved: true,
-			reviewedBy: "admin",
-		});
-		expect(approved).toEqual(expect.objectContaining({ status: "approved", reviewed_by: "admin" }));
-		expect(await store.getEnrollment("g1", "d1")).toEqual(
-			expect.objectContaining({ device_id: "d1", fingerprint: "fp1" }),
-		);
-		const again = await store.reviewJoinRequest({ requestId: request.request_id, approved: false });
-		expect(again?._no_transition).toBe(true);
-		expect(again?.status).toBe("approved");
-	});
-
-	it("denies a join request without enrolling the device", async () => {
-		await store.createGroup("g1");
-		const request = await store.createJoinRequest({
-			groupId: "g1",
-			deviceId: "d2",
-			publicKey: "pk2",
-			fingerprint: "fp2",
-			token: "token-2",
-		});
-		const denied = await store.reviewJoinRequest({
-			requestId: request.request_id,
-			approved: false,
-		});
-		expect(denied).toEqual(expect.objectContaining({ status: "denied" }));
-		expect(await store.getEnrollment("g1", "d2")).toBeNull();
-	});
-
-	it("completes reverse reciprocal approvals when both devices approve each other", async () => {
-		await store.createGroup("g1");
-		const first = await store.createReciprocalApproval({
-			groupId: "g1",
-			requestingDeviceId: "d1",
-			requestedDeviceId: "d2",
-		});
-		expect(first.status).toBe("pending");
-		expect(
-			await store.listReciprocalApprovals({ groupId: "g1", deviceId: "d2", direction: "incoming" }),
-		).toEqual([expect.objectContaining({ request_id: first.request_id, status: "pending" })]);
-		const second = await store.createReciprocalApproval({
-			groupId: "g1",
-			requestingDeviceId: "d2",
-			requestedDeviceId: "d1",
-		});
-		expect(second.status).toBe("completed");
-		expect(
-			await store.listReciprocalApprovals({ groupId: "g1", deviceId: "d1", direction: "incoming" }),
-		).toEqual([]);
+	runCoordinatorStoreContract("contract", () => {
+		const { store, cleanup } = setupStore();
+		return { store, cleanup };
 	});
 
 	it("converges to completed when a reverse pending row appears during insert", async () => {
+		const { db, cleanup } = setupStore();
 		const racingStore = new D1CoordinatorStore(new RacingSqliteD1Database(db));
-		await racingStore.createGroup("g1");
-		const result = await racingStore.createReciprocalApproval({
-			groupId: "g1",
-			requestingDeviceId: "d1",
-			requestedDeviceId: "d2",
-		});
-		expect(result).toEqual(
-			expect.objectContaining({
-				request_id: "race-existing",
-				status: "completed",
-				requesting_device_id: "d2",
-				requested_device_id: "d1",
-			}),
-		);
-		await racingStore.close();
+		try {
+			await racingStore.createGroup("g1");
+			const result = await racingStore.createReciprocalApproval({
+				groupId: "g1",
+				requestingDeviceId: "d1",
+				requestedDeviceId: "d2",
+			});
+			expect(result).toEqual(
+				expect.objectContaining({
+					request_id: "race-existing",
+					status: "completed",
+					requesting_device_id: "d2",
+					requested_device_id: "d1",
+				}),
+			);
+			await racingStore.close();
+		} finally {
+			await cleanup();
+		}
 	});
 
 	it("dedupes mirrored pending rows before creating the pending-pair unique index", async () => {
+		const { db, cleanup } = setupStore();
 		const migrationPath = join(
 			import.meta.dirname,
 			"../../cloudflare-coordinator-worker/migrations/0003_harden_reciprocal_approval_pending_pairs.sql",
 		);
-		if (!existsSync(migrationPath)) {
-			throw new Error(`missing migration fixture: ${migrationPath}`);
+		try {
+			if (!existsSync(migrationPath)) {
+				throw new Error(`missing migration fixture: ${migrationPath}`);
+			}
+			db.exec("DROP TABLE IF EXISTS coordinator_reciprocal_approvals");
+			db.exec(`
+				CREATE TABLE coordinator_reciprocal_approvals (
+					request_id TEXT PRIMARY KEY,
+					group_id TEXT NOT NULL,
+					requesting_device_id TEXT NOT NULL,
+					requested_device_id TEXT NOT NULL,
+					status TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					resolved_at TEXT
+				)
+			`);
+			db.prepare(
+				`INSERT INTO coordinator_reciprocal_approvals(
+					request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			).run("req-a", "g1", "d1", "d2", "pending", "2026-03-29T00:00:00Z", null);
+			db.prepare(
+				`INSERT INTO coordinator_reciprocal_approvals(
+					request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			).run("req-b", "g1", "d2", "d1", "pending", "2026-03-29T00:00:01Z", null);
+
+			db.exec(readFileSync(migrationPath, "utf8"));
+
+			const migratedRows = db
+				.prepare(
+					`SELECT request_id, status, pending_pair_low_device_id, pending_pair_high_device_id, resolved_at
+					 FROM coordinator_reciprocal_approvals ORDER BY request_id ASC`,
+				)
+				.all() as Array<Record<string, unknown>>;
+			expect(migratedRows).toEqual([
+				expect.objectContaining({
+					request_id: "req-a",
+					status: "completed",
+					pending_pair_low_device_id: "d1",
+					pending_pair_high_device_id: "d2",
+					resolved_at: "2026-03-29T00:00:00Z",
+				}),
+				expect.objectContaining({
+					request_id: "req-b",
+					status: "completed",
+					pending_pair_low_device_id: "d1",
+					pending_pair_high_device_id: "d2",
+					resolved_at: "2026-03-29T00:00:01Z",
+				}),
+			]);
+			const indexInfo = db
+				.prepare(`PRAGMA index_list('coordinator_reciprocal_approvals')`)
+				.all() as Array<Record<string, unknown>>;
+			expect(indexInfo).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "idx_coordinator_reciprocal_pending_pair", unique: 1 }),
+				]),
+			);
+		} finally {
+			await cleanup();
 		}
-		db.exec("DROP TABLE IF EXISTS coordinator_reciprocal_approvals");
-		db.exec(`
-			CREATE TABLE coordinator_reciprocal_approvals (
-				request_id TEXT PRIMARY KEY,
-				group_id TEXT NOT NULL,
-				requesting_device_id TEXT NOT NULL,
-				requested_device_id TEXT NOT NULL,
-				status TEXT NOT NULL,
-				created_at TEXT NOT NULL,
-				resolved_at TEXT
-			)
-		`);
-		db.prepare(
-			`INSERT INTO coordinator_reciprocal_approvals(
-				request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		).run("req-a", "g1", "d1", "d2", "pending", "2026-03-29T00:00:00Z", null);
-		db.prepare(
-			`INSERT INTO coordinator_reciprocal_approvals(
-				request_id, group_id, requesting_device_id, requested_device_id, status, created_at, resolved_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		).run("req-b", "g1", "d2", "d1", "pending", "2026-03-29T00:00:01Z", null);
-
-		db.exec(readFileSync(migrationPath, "utf8"));
-
-		const migratedRows = db
-			.prepare(
-				`SELECT request_id, status, pending_pair_low_device_id, pending_pair_high_device_id, resolved_at
-				 FROM coordinator_reciprocal_approvals ORDER BY request_id ASC`,
-			)
-			.all() as Array<Record<string, unknown>>;
-		expect(migratedRows).toEqual([
-			expect.objectContaining({
-				request_id: "req-a",
-				status: "completed",
-				pending_pair_low_device_id: "d1",
-				pending_pair_high_device_id: "d2",
-				resolved_at: "2026-03-29T00:00:00Z",
-			}),
-			expect.objectContaining({
-				request_id: "req-b",
-				status: "completed",
-				pending_pair_low_device_id: "d1",
-				pending_pair_high_device_id: "d2",
-				resolved_at: "2026-03-29T00:00:01Z",
-			}),
-		]);
-		const indexInfo = db
-			.prepare(`PRAGMA index_list('coordinator_reciprocal_approvals')`)
-			.all() as Array<Record<string, unknown>>;
-		expect(indexInfo).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ name: "idx_coordinator_reciprocal_pending_pair", unique: 1 }),
-			]),
-		);
-	});
-
-	it("implements nonce replay protection, presence upsert, and peer listing", async () => {
-		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:00Z")).resolves.toBe(true);
-		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:01Z")).resolves.toBe(false);
-		await store.cleanupNonces("2026-03-28T00:00:01Z");
-		await expect(store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:02Z")).resolves.toBe(true);
-		await store.createGroup("g1");
-		await store.enrollDevice("g1", {
-			deviceId: "d1",
-			fingerprint: "fp1",
-			publicKey: "pk1",
-		});
-		await store.enrollDevice("g1", {
-			deviceId: "d2",
-			fingerprint: "fp2",
-			publicKey: "pk2",
-		});
-		const presence = await store.upsertPresence({
-			groupId: "g1",
-			deviceId: "d2",
-			addresses: ["http://localhost:9001", "localhost:9001/"],
-			ttlS: 60,
-			capabilities: { role: "peer" },
-		});
-		expect(presence).toEqual(
-			expect.objectContaining({
-				group_id: "g1",
-				device_id: "d2",
-				addresses: ["http://localhost:9001"],
-			}),
-		);
-		await expect(store.listGroupPeers("g1", "d1")).resolves.toEqual([
-			expect.objectContaining({
-				device_id: "d2",
-				fingerprint: "fp2",
-				stale: false,
-				addresses: ["http://localhost:9001"],
-				capabilities: { role: "peer" },
-			}),
-		]);
-	});
-
-	it("marks stale peers with empty addresses", async () => {
-		await store.createGroup("g1");
-		await store.enrollDevice("g1", {
-			deviceId: "d1",
-			fingerprint: "fp1",
-			publicKey: "pk1",
-		});
-		await store.enrollDevice("g1", {
-			deviceId: "d2",
-			fingerprint: "fp2",
-			publicKey: "pk2",
-		});
-		await store.upsertPresence({
-			groupId: "g1",
-			deviceId: "d2",
-			addresses: ["http://localhost:9001"],
-			ttlS: 0,
-		});
-		await expect(store.listGroupPeers("g1", "d1")).resolves.toEqual([
-			expect.objectContaining({ device_id: "d2", stale: true, addresses: [] }),
-		]);
 	});
 });
