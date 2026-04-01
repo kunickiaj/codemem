@@ -31,7 +31,7 @@ import {
 	schema,
 	verifySignature,
 } from "@codemem/core";
-import { count, desc, eq, max, ne } from "drizzle-orm";
+import { and, count, desc, eq, max, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
@@ -1157,11 +1157,22 @@ export function syncRoutes(
 				.orderBy(desc(schema.syncAttempts.finished_at))
 				.limit(25)
 				.all();
-			const attemptsItems = attemptRows.map((row) => ({
-				...row,
-				status: attemptStatus(row),
-				address: null,
-			}));
+			const peerAddressMap = new Map<string, string[]>();
+			store.db
+				.prepare("SELECT peer_device_id, addresses_json FROM sync_peers")
+				.all()
+				.forEach((peerRow: any) => {
+					const addrs = safeJsonList(peerRow.addresses_json as string | null);
+					if (addrs.length) peerAddressMap.set(String(peerRow.peer_device_id ?? ""), addrs);
+				});
+			const attemptsItems = attemptRows.map((row) => {
+				const addrs = showDiag ? peerAddressMap.get(String(row.peer_device_id ?? "")) : undefined;
+				return {
+					...row,
+					status: attemptStatus(row),
+					address: addrs?.length ? addrs[0] : null,
+				};
+			});
 			const latestAttemptError = String(attemptsItems[0]?.error || "").trim();
 
 			const statusBlock: Record<string, unknown> = {
@@ -1265,7 +1276,10 @@ export function syncRoutes(
 			const query = d.select().from(schema.actors);
 			const rows = includeMerged
 				? query.orderBy(schema.actors.display_name).all()
-				: query.where(ne(schema.actors.status, "merged")).orderBy(schema.actors.display_name).all();
+				: query
+						.where(and(ne(schema.actors.status, "merged"), ne(schema.actors.status, "deactivated")))
+						.orderBy(schema.actors.display_name)
+						.all();
 			return c.json({ items: rows });
 		}
 	});
@@ -1625,7 +1639,9 @@ export function syncRoutes(
 		if (!primary || !secondary) return c.json({ error: "actor not found" }, 404);
 		if (primary.status !== "active") return c.json({ error: "primary actor not active" }, 409);
 		if (secondary.status !== "active") return c.json({ error: "secondary actor not active" }, 409);
-		if (secondary.is_local) return c.json({ error: "cannot merge local actor" }, 409);
+		if (secondary.is_local && secondary.actor_id === store.actorId) {
+			return c.json({ error: "cannot merge this device's own local actor" }, 409);
+		}
 		const now = new Date().toISOString();
 		const mergedCount = store.db.transaction(() => {
 			const peerUpdate = d
@@ -1646,6 +1662,35 @@ export function syncRoutes(
 			return Number(peerUpdate.changes ?? 0);
 		})();
 		return c.json({ merged_count: mergedCount });
+	});
+
+	app.post("/api/sync/actors/deactivate", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const actorId = String(body.actor_id ?? "").trim();
+		if (!actorId) return c.json({ error: "actor_id required" }, 400);
+		if (actorId === store.actorId) {
+			return c.json({ error: "cannot deactivate this device's own local actor" }, 409);
+		}
+		const d = drizzle(store.db, { schema });
+		const actor = d.select().from(schema.actors).where(eq(schema.actors.actor_id, actorId)).get();
+		if (!actor) return c.json({ error: "actor not found" }, 404);
+		if (actor.status !== "active") return c.json({ error: "actor not active" }, 409);
+		const now = new Date().toISOString();
+		d.update(schema.actors)
+			.set({ status: "deactivated", updated_at: now })
+			.where(eq(schema.actors.actor_id, actorId))
+			.run();
+		d.update(schema.syncPeers)
+			.set({ actor_id: null })
+			.where(eq(schema.syncPeers.actor_id, actorId))
+			.run();
+		return c.json({ ok: true });
 	});
 
 	app.post("/api/sync/legacy-devices/claim", async (c) => {

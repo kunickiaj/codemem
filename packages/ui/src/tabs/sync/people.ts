@@ -78,6 +78,16 @@ export function renderSyncActors() {
         throw error;
       }
     },
+    onDeactivate: async (actorId) => {
+      try {
+        await api.deactivateActor(actorId);
+        showGlobalNotice('Person removed. Assigned devices have been unassigned.');
+        await _loadSyncData();
+      } catch (error) {
+        showGlobalNotice(friendlyError(error, 'Failed to remove person.'), 'warning');
+        throw error;
+      }
+    },
   });
 }
 

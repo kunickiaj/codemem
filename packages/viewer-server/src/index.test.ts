@@ -162,9 +162,10 @@ describe("viewer-server", () => {
 	});
 
 	it("sync UI api routes all exist in the viewer sync router", () => {
-		const apiSource = readFileSync(join(process.cwd(), "packages/ui/src/lib/api.ts"), "utf8");
+		const root = join(import.meta.dirname, "../../..");
+		const apiSource = readFileSync(join(root, "packages/ui/src/lib/api.ts"), "utf8");
 		const routeSource = readFileSync(
-			join(process.cwd(), "packages/viewer-server/src/routes/sync.ts"),
+			join(root, "packages/viewer-server/src/routes/sync.ts"),
 			"utf8",
 		);
 		const uiRoutes = [
@@ -2849,7 +2850,7 @@ describe("viewer-server", () => {
 					}),
 				});
 				expect(res.status).toBe(409);
-				expect(await res.json()).toEqual({ error: "cannot merge local actor" });
+				expect(await res.json()).toEqual({ error: "cannot merge this device's own local actor" });
 			} finally {
 				cleanup();
 			}

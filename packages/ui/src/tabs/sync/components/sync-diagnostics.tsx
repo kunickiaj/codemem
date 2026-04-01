@@ -8,7 +8,8 @@ export type SyncStatItem = {
 
 export type SyncAttemptItem = {
   status: string;
-  address: string;
+  peerLabel: string;
+  detail: string;
   startedAt: string;
 };
 
@@ -41,10 +42,10 @@ function AttemptsList({ attempts }: { attempts: SyncAttemptItem[] }) {
   return (
     <Fragment>
       {attempts.map((attempt, index) => (
-        <div class="diag-line" key={`${attempt.startedAt}-${attempt.address}-${index}`}>
+        <div class="diag-line" key={`${attempt.startedAt}-${attempt.peerLabel}-${index}`}>
           <div class="left">
-            <div>{attempt.status}</div>
-            <div class="small">{attempt.address}</div>
+            <div>{attempt.peerLabel} — {attempt.status}</div>
+            {attempt.detail ? <div class="small">{attempt.detail}</div> : null}
           </div>
           <div class="right">{attempt.startedAt}</div>
         </div>

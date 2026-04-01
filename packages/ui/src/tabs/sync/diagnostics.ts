@@ -51,6 +51,11 @@ type SyncStatusState = {
 
 type SyncAttemptState = {
   address?: string;
+  error?: string;
+  finished_at?: string;
+  ops_in?: number;
+  ops_out?: number;
+  peer_device_id?: string;
   started_at?: string;
   started_at_utc?: string;
   status?: string;
@@ -345,9 +350,30 @@ export function renderSyncAttempts() {
 
   const items: SyncAttemptItem[] = attempts.slice(0, 5).map((attempt) => {
     const time = attempt.started_at || attempt.started_at_utc || '';
+    const peerId = String(attempt.peer_device_id || '').trim();
+    const matchedPeer = Array.isArray(state.lastSyncPeers)
+      ? state.lastSyncPeers.find((p: any) => String(p?.peer_device_id || '') === peerId)
+      : null;
+    const peerName = String(matchedPeer?.name || '').trim();
+    const peerLabel = peerName || (peerId ? peerId.slice(0, 8) : 'unknown');
+
+    // Progressive disclosure: show what's relevant for this attempt's outcome
+    const isError = attempt.status === 'error';
+    const detailParts: string[] = [];
+    if (isError && attempt.error) {
+      detailParts.push(String(attempt.error));
+    }
+    if (!isError && (attempt.ops_in || attempt.ops_out)) {
+      detailParts.push(`${attempt.ops_in ?? 0} in · ${attempt.ops_out ?? 0} out`);
+    }
+    if (!isSyncRedactionEnabled() && attempt.address) {
+      detailParts.push(attempt.address);
+    }
+
     return {
       status: attempt.status || 'unknown',
-      address: isSyncRedactionEnabled() ? redactAddress(attempt.address) : attempt.address || 'n/a',
+      peerLabel,
+      detail: detailParts.join(' · '),
       startedAt: time ? formatTimestamp(time) : '',
     };
   });
