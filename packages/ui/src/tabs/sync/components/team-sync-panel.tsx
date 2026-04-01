@@ -5,6 +5,7 @@ import type { UiSyncAttentionItem } from '../view-model';
 
 export interface TeamSyncStatusSummary {
   badgeClassName: string;
+  headline: string | null;
   presenceLabel: string;
   metricsText: string;
 }
@@ -252,21 +253,14 @@ function ActionContent(props: TeamSyncPanelProps) {
         : null}
       {!hasAttentionItems && props.presenceStatus === 'posted' ? (
         <div className="sync-action">
-          <div className="sync-action-text">
-            No immediate issues
-            <span className="sync-action-command">
-              Your devices and team records do not currently need review.
-            </span>
-          </div>
+          <div className="sync-action-text">No immediate issues</div>
         </div>
       ) : null}
       {!hasAttentionItems && props.presenceStatus === 'not_enrolled' ? (
         <div className="sync-action">
           <div className="sync-action-text">
             This device still needs team enrollment
-            <span className="sync-action-command">
-              Import an invite or ask your admin to enroll this device before expecting sync activity here.
-            </span>
+            <span className="sync-action-command">Import an invite or ask an admin to enroll it.</span>
           </div>
         </div>
       ) : null}
@@ -288,6 +282,7 @@ function TeamStatusPortal({
         <span className="sync-team-status-label">Status</span>
         <span className={statusSummary.badgeClassName}>{statusSummary.presenceLabel}</span>
       </div>
+      {statusSummary.headline ? <div className="sync-team-metrics">{statusSummary.headline}</div> : null}
       <div className="sync-team-metrics">{statusSummary.metricsText}</div>
     </div>,
     mount,
