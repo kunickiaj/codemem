@@ -685,14 +685,23 @@ export function initTeamSyncEvents(
       syncInviteOutput.hidden = false;
       syncInviteOutput.focus();
       syncInviteOutput.select();
-      showGlobalNotice('Invite created. Copy the text above and share it with your teammate.');
       const warnings = Array.isArray(result.warnings) ? result.warnings : [];
-      warnings.forEach((warning) => showGlobalNotice(String(warning), 'warning'));
+      showGlobalNotice(
+        warnings.length
+          ? `Invite created. Copy it above and review ${warnings.length === 1 ? '1 warning' : `${warnings.length} warnings`}.`
+          : 'Invite created. Copy the text above and share it with your teammate.',
+        warnings.length ? 'warning' : 'success',
+      );
     } catch (error) {
       showGlobalNotice(friendlyError(error, 'Failed to create invite.'), 'warning');
-    } finally {
+      syncCreateInviteButton.textContent = 'Retry';
       syncCreateInviteButton.disabled = false;
-      syncCreateInviteButton.textContent = 'Create invite';
+      return;
+    } finally {
+      if (syncCreateInviteButton.disabled) {
+        syncCreateInviteButton.disabled = false;
+        syncCreateInviteButton.textContent = 'Create invite';
+      }
     }
   });
 
@@ -732,9 +741,14 @@ export function initTeamSyncEvents(
         tone: 'warning',
       };
       setJoinFeedbackVisibility();
-    } finally {
+      syncJoinButton.textContent = 'Retry';
       syncJoinButton.disabled = false;
-      syncJoinButton.textContent = 'Join team';
+      return;
+    } finally {
+      if (syncJoinButton.disabled) {
+        syncJoinButton.disabled = false;
+        syncJoinButton.textContent = 'Join team';
+      }
     }
   });
 
@@ -748,6 +762,9 @@ export function initTeamSyncEvents(
       showGlobalNotice(summary.message, summary.warning ? 'warning' : undefined);
     } catch (error) {
       showGlobalNotice(friendlyError(error, 'Failed to start sync.'), 'warning');
+      syncNowButton.textContent = 'Retry';
+      syncNowButton.disabled = false;
+      return;
     }
     syncNowButton.disabled = false;
     syncNowButton.textContent = 'Sync now';
