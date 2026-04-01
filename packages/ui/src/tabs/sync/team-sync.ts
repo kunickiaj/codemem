@@ -378,8 +378,7 @@ export function renderTeamSync() {
     if (hasConflict) {
       mode = 'conflict';
     } else if (hasAmbiguousCoordinatorGroup) {
-      actionMessage =
-        'This device is visible through multiple coordinator groups. Fix that team setup first, then approve it here.';
+      actionMessage = 'This device appears in multiple coordinator groups. Review the team setup before approving it here.';
       mode = 'ambiguous';
     } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
       actionMessage = `Review this device's scope in People & devices next.`;
@@ -403,7 +402,7 @@ export function renderTeamSync() {
           : String(pairedPeer?.last_error || '').toLowerCase().includes('401') &&
               String(pairedPeer?.last_error || '').toLowerCase().includes('unauthorized')
             ? 'Waiting for the other device to trust this one before sync can work.'
-            : 'Manage this device in People & devices.';
+            : null;
     }
 
     return {
