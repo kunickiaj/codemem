@@ -24,9 +24,15 @@ Version bumps are prepared on a release branch and touch these files:
 - `packages/viewer-server/package.json` (`version`)
 - `packages/core/src/index.ts` (`VERSION` export)
 - `packages/core/src/index.test.ts` (version assertion)
+- `packages/cli/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
 - `packages/opencode-plugin/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
-- `.claude-plugin/marketplace.json` (marketplace metadata version)
+- `.claude-plugin/marketplace.json` (marketplace metadata version and codemem plugin entry version)
 - `plugins/claude/.claude-plugin/plugin.json` (Claude plugin metadata version)
+
+Use the release version helper to verify or apply the bump:
+
+- `pnpm run release:version -- check`
+- `pnpm run release:version -- set X.Y.Z`
 
 Regenerate release artifacts before opening the release PR:
 

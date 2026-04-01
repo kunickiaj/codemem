@@ -7,11 +7,13 @@
     "build": "pnpm -r run build && pnpm exec tsc --build",
     "test": "pnpm exec vitest run",
     "test:watch": "pnpm exec vitest",
+    "test:release-version": "node --test scripts/release-version.test.mjs",
     "lint": "pnpm exec biome check packages/",
     "format": "pnpm exec biome check --write packages/",
     "typecheck": "pnpm exec tsc --build",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
     "codemem": "tsx --conditions source packages/cli/src/index.ts",
+    "release:version": "node scripts/release-version.mjs",
     "release:preflight-tag": "bash scripts/release-tag-preflight.sh"
   },
   "devDependencies": {
