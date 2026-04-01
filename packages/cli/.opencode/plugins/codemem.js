@@ -16,6 +16,10 @@ import {
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
 const PINNED_BACKEND_VERSION = "0.22.1";
+const COMPAT_CHECK_DELAY_MS = 1500;
+const COMPAT_CHECK_CACHE_TTL_MS = 5 * 60 * 1000;
+
+let compatCheckCache = null;
 
 const normalizeEnvValue = (value) => (value || "").toLowerCase();
 const envHasValue = (value, truthyValues) =>
@@ -39,6 +43,35 @@ const resolveLogPath = (logPathEnvRaw, cwd, homeDir) => {
 
 /** Path for error/warning logging — always available regardless of debug flag. */
 const resolveErrorLogPath = (cwd, homeDir) => DEFAULT_LOG_PATH(homeDir, cwd);
+
+const resolveCompatCheckCacheKey = ({ backendUpdatePolicy, minVersion, runner, runnerFrom }) =>
+  [backendUpdatePolicy, minVersion, runner, runnerFrom || ""].join("|");
+
+const readCompatCheckCache = (cacheKey) => {
+  if (!compatCheckCache) {
+    return null;
+  }
+  if (compatCheckCache.cacheKey !== cacheKey) {
+    return null;
+  }
+  if (Date.now() >= compatCheckCache.expiresAtMs) {
+    compatCheckCache = null;
+    return null;
+  }
+  return compatCheckCache.value;
+};
+
+const writeCompatCheckCache = (cacheKey, value) => {
+  compatCheckCache = {
+    cacheKey,
+    expiresAtMs: Date.now() + COMPAT_CHECK_CACHE_TTL_MS,
+    value,
+  };
+};
+
+const clearCompatCheckCache = () => {
+  compatCheckCache = null;
+};
 
 const createLogLine = (logPath) => async (line) => {
   if (!logPath) {
@@ -1180,6 +1213,18 @@ export const OpencodeMemPlugin = async ({
 
   const verifyCliCompatibility = async () => {
     const minVersion = process.env.CODEMEM_MIN_VERSION || "0.9.20";
+    const cacheKey = resolveCompatCheckCacheKey({
+      backendUpdatePolicy,
+      minVersion,
+      runner,
+      runnerFrom,
+    });
+    const cachedVersion = readCompatCheckCache(cacheKey);
+    if (cachedVersion && isVersionAtLeast(cachedVersion, minVersion)) {
+      await logLine(`compat.version_check_cached current=${cachedVersion} required=${minVersion}`);
+      return;
+    }
+
     const versionResult = await runCli(["version"]);
     if (!versionResult || versionResult.exitCode !== 0) {
       await logLine(
@@ -1213,8 +1258,11 @@ export const OpencodeMemPlugin = async ({
     }
 
     if (isVersionAtLeast(currentVersion, minVersion)) {
+      writeCompatCheckCache(cacheKey, currentVersion);
       return;
     }
+
+    clearCompatCheckCache();
 
     const guidance = resolveUpgradeGuidance({ runner, runnerFrom });
     const message = `codemem CLI ${currentVersion || "unknown"} is older than required ${minVersion}`;
@@ -1249,6 +1297,7 @@ export const OpencodeMemPlugin = async ({
           && refreshedResult?.exitCode === 0
           && isVersionAtLeast(refreshedVersion, minVersion)
         ) {
+          writeCompatCheckCache(cacheKey, refreshedVersion);
           const viewerRestart = await restartViewerAfterAutoUpdate();
           await logLine(
             `compat.auto_update_success before=${currentVersion} after=${refreshedVersion}`
@@ -1485,11 +1534,14 @@ export const OpencodeMemPlugin = async ({
   await log("info", "codemem plugin initialized", { cwd, version });
   await logLine(`plugin initialized cwd=${cwd} version=${version}`);
   startViewer();
-  void verifyCliCompatibility().catch(async (err) => {
-    await logLine(
-      `compat.version_check_error message=${String(err?.message || err || "unknown")}`
-    );
-  });
+  const compatCheckTimer = setTimeout(() => {
+    void verifyCliCompatibility().catch(async (err) => {
+      await logLine(
+        `compat.version_check_error message=${String(err?.message || err || "unknown")}`
+      );
+    });
+  }, COMPAT_CHECK_DELAY_MS);
+  if (compatCheckTimer.unref) compatCheckTimer.unref();
 
   const truncate = (value) => {
     if (value === undefined || value === null) {
