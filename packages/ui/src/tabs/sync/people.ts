@@ -46,7 +46,7 @@ export function renderSyncActors() {
   if (actorMeta) {
     actorMeta.textContent = actors.length
       ? 'Manage people here, then assign devices below.'
-      : 'No named people yet. Create one here, then assign devices below.';
+      : 'No named people yet. Create a person here when you want to organize devices by owner.';
     if (actorVisibility.hiddenLocalDuplicateCount > 0) {
       actorMeta.textContent += ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden here until reviewed in Needs attention.`;
     }

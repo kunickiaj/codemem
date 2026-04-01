@@ -67,7 +67,7 @@ function PairingCopyRow() {
     <div className="sync-action">
       <div className="sync-action-text">
         No devices are paired yet.
-        <span className="sync-action-command">codemem sync pair --payload-only</span>
+        <span className="sync-action-command">Use the pairing command in Advanced diagnostics when you are ready to connect another device.</span>
       </div>
       <button
         type="button"
