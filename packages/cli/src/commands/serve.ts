@@ -347,13 +347,13 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const { serve } = await import("@hono/node-server");
 
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
-	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 	warnIfViewerExposed(invocation.host, invocation.port);
 	if (await isPortOpen(invocation.host, invocation.port)) {
 		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
 		process.exitCode = 1;
 		return;
 	}
+	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 
 	const observer = new ObserverClient();
 	let store: MemoryStore;
