@@ -264,9 +264,18 @@ function ActionContent(props: TeamSyncPanelProps) {
           </div>
         </div>
       ) : null}
-      {props.children}
     </>
   );
+}
+
+function TeamActionsContent({ children }: { children?: ComponentChildren }) {
+	if (!children) return null;
+	return (
+		<>
+			<div className="sync-action-text">Team actions</div>
+			{children}
+		</>
+	);
 }
 
 function TeamStatusPortal({
@@ -353,6 +362,7 @@ export function TeamSyncPanel(props: TeamSyncPanelProps) {
   return (
     <>
       <ActionContent {...props} />
+      <TeamActionsContent>{props.children}</TeamActionsContent>
       <TeamStatusPortal mount={props.listMount} statusSummary={props.statusSummary} />
       <PendingRequestsPortal
         mount={props.joinRequestsMount}
