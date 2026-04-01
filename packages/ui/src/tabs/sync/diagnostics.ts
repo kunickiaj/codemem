@@ -5,12 +5,13 @@ import { RadixSwitch } from '../../components/primitives/radix-switch';
 import { copyToClipboard } from '../../lib/dom';
 import { formatAgeShort, formatTimestamp, secondsSince, titleCase } from '../../lib/format';
 import { state, setSyncPairingOpen, isSyncRedactionEnabled, setSyncRedactionEnabled } from '../../lib/state';
-import { clearSyncMount, renderIntoSyncMount } from './components/render-root';
+import { renderIntoSyncMount } from './components/render-root';
 import { renderPairingDisclosure } from './components/sync-disclosure';
 import {
   renderAttemptsList,
   renderDiagnosticsGrid,
   renderPairingView,
+  renderSyncEmptyState,
   type PairingView,
   type SyncAttemptItem,
   type SyncStatItem,
@@ -120,6 +121,38 @@ function pairingView(payload: unknown): PairingView {
   };
 }
 
+function diagnosticsLoadingState() {
+  return {
+    title: 'Diagnostics still loading.',
+    detail: 'Wait a moment for local sync status. If it stays blank, refresh the page or check whether sync is enabled on this device.',
+  };
+}
+
+function diagnosticsUnavailableState() {
+  return {
+    title: 'Diagnostics unavailable right now.',
+    detail: 'The viewer could not load sync status. Refresh this page, or check that the local codemem sync service is reachable before retrying.',
+  };
+}
+
+function noAttemptsState() {
+  const syncStatus = state.lastSyncStatus as { daemon_state?: string; enabled?: boolean } | null;
+  const syncDisabled = syncStatus?.daemon_state === 'disabled' || syncStatus?.enabled === false;
+  return {
+    title: 'No recent sync attempts yet.',
+    detail: syncDisabled
+      ? 'Turn on sync in Settings → Device Sync first. Recent attempts will appear here after this device can actually run sync work.'
+      : 'Trigger a sync pass or pair another device to generate activity here when you need low-level troubleshooting.',
+  };
+}
+
+function unavailableAttemptsState() {
+  return {
+    title: 'Recent attempts unavailable right now.',
+    detail: 'Attempt history could not be loaded because sync diagnostics failed. Refresh the page after local sync status is reachable again.',
+  };
+}
+
 /* ── Sync status renderer ────────────────────────────────── */
 
 export function renderSyncStatus() {
@@ -132,9 +165,9 @@ export function renderSyncStatus() {
 
   const status = state.lastSyncStatus as SyncStatusState | null;
   if (!status) {
-    clearSyncMount(syncStatusGrid);
+    renderSyncEmptyState(syncStatusGrid, diagnosticsLoadingState());
     renderActionList(syncActions, []);
-    if (syncMeta) syncMeta.textContent = 'Loading sync status…';
+    if (syncMeta) syncMeta.textContent = 'Loading advanced sync diagnostics…';
     return;
   }
 
@@ -167,9 +200,15 @@ export function renderSyncStatus() {
 
   if (syncMeta) {
     const parts = syncDisabled
-      ? ['Advanced sync state', 'Sync is optional and currently off']
+      ? [
+          'Advanced sync is off on this device',
+          'Turn on sync in Settings → Device Sync when you want pairing payloads, peer status, and recent attempt details here',
+        ]
       : syncNoPeers
-        ? ['Advanced sync state', 'Add peers to enable replication']
+        ? [
+            'Advanced sync is ready but idle',
+            'Use Show pairing to connect another device, then this panel will start showing live peer status and recent attempts',
+          ]
         : [
             `Advanced state: ${daemonStateLabel}`,
             `Peers: ${peerCount}`,
@@ -199,14 +238,14 @@ export function renderSyncStatus() {
         { label: 'State', value: 'Disabled' },
         { label: 'Mode', value: 'Optional' },
         { label: 'Pending events', value: pending },
-        { label: 'Last sync', value: 'n/a' },
+        { label: 'Last sync', value: 'Not running' },
       ]
     : syncNoPeers
       ? [
           { label: 'State', value: 'No peers' },
-          { label: 'Mode', value: 'Idle' },
+          { label: 'Mode', value: 'Ready to pair' },
           { label: 'Pending events', value: pending },
-          { label: 'Last sync', value: 'n/a' },
+          { label: 'Last sync', value: 'Waiting for first peer' },
         ]
       : [
           { label: 'State', value: daemonStateLabel },
@@ -300,7 +339,7 @@ export function renderSyncAttempts() {
 
   const attempts = state.lastSyncAttempts as SyncAttemptState[];
   if (!Array.isArray(attempts) || !attempts.length) {
-    clearSyncMount(syncAttempts);
+    renderSyncEmptyState(syncAttempts, noAttemptsState());
     return;
   }
 
@@ -314,6 +353,20 @@ export function renderSyncAttempts() {
   });
 
   renderAttemptsList(syncAttempts, items);
+}
+
+export function renderSyncDiagnosticsUnavailable() {
+  const syncStatusGrid = document.getElementById('syncStatusGrid');
+  const syncAttempts = document.getElementById('syncAttempts');
+  const syncMeta = document.getElementById('syncMeta');
+  const syncActions = document.getElementById('syncActions');
+  if (syncStatusGrid) renderSyncEmptyState(syncStatusGrid, diagnosticsUnavailableState());
+  if (syncAttempts) renderSyncEmptyState(syncAttempts, unavailableAttemptsState());
+  if (syncMeta) {
+    syncMeta.textContent =
+      'Advanced diagnostics are unavailable right now. Refresh the page, or verify the local sync service before retrying.';
+  }
+  renderActionList(syncActions, []);
 }
 
 /* ── Pairing renderer ────────────────────────────────────── */

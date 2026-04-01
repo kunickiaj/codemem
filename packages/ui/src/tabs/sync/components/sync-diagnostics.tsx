@@ -17,6 +17,11 @@ export type PairingView = {
   hintText: string;
 };
 
+export type SyncEmptyStateView = {
+  title: string;
+  detail: string;
+};
+
 function DiagnosticsGrid({ items }: { items: SyncStatItem[] }) {
   return (
     <Fragment>
@@ -52,6 +57,15 @@ function PairingText({ text }: { text: string }) {
   return <Fragment>{text}</Fragment>;
 }
 
+function SyncEmptyState({ title, detail }: SyncEmptyStateView) {
+  return (
+    <div class="sync-empty-state">
+      <strong>{title}</strong>
+      <span>{detail}</span>
+    </div>
+  );
+}
+
 export function renderDiagnosticsGrid(mount: HTMLElement, items: SyncStatItem[]) {
   if (!items.length) {
     clearSyncMount(mount);
@@ -68,6 +82,10 @@ export function renderAttemptsList(mount: HTMLElement, attempts: SyncAttemptItem
   }
 
   renderIntoSyncMount(mount, <AttemptsList attempts={attempts} />);
+}
+
+export function renderSyncEmptyState(mount: HTMLElement, view: SyncEmptyStateView) {
+  renderIntoSyncMount(mount, <SyncEmptyState {...view} />);
 }
 
 export function renderPairingView(

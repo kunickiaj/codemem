@@ -17,6 +17,7 @@ import {
 import { openSyncConfirmDialog } from './sync-dialogs';
 import { renderSyncActorsList } from './components/sync-actors';
 import { renderSyncPeersList } from './components/sync-peers';
+import { renderSyncEmptyState } from './components/sync-diagnostics';
 import { renderLegacyClaimsSlice } from './components/sync-legacy-claims';
 import type { SyncActionFeedback } from './components/sync-inline-feedback';
 
@@ -24,6 +25,13 @@ import type { SyncActionFeedback } from './components/sync-inline-feedback';
 
 let _loadSyncData: () => Promise<void> = async () => {};
 let legacyDeviceValue = '';
+
+function setPeopleCreateControlsDisabled(disabled: boolean) {
+  const createButton = document.getElementById('syncActorCreateButton') as HTMLButtonElement | null;
+  const createInput = document.getElementById('syncActorCreateInput') as HTMLInputElement | null;
+  if (createButton) createButton.disabled = disabled;
+  if (createInput) createInput.disabled = disabled;
+}
 
 export function setLoadSyncData(fn: () => Promise<void>) {
   _loadSyncData = fn;
@@ -36,6 +44,7 @@ export function renderSyncActors() {
   const actorMeta = document.getElementById('syncActorsMeta');
   if (!actorList) return;
   hideSkeleton('syncActorsSkeleton');
+  setPeopleCreateControlsDisabled(false);
 
   const actorVisibility: VisiblePeopleResult = deriveVisiblePeopleActors({
     actors: state.lastSyncActors,
@@ -46,7 +55,7 @@ export function renderSyncActors() {
   if (actorMeta) {
     actorMeta.textContent = actors.length
       ? 'Manage people here, then assign devices below.'
-      : 'No named people yet. Create a person here when you want to organize devices by owner.';
+      : 'No named people yet. Create a person here, then assign devices below so sync ownership is easier to review.';
     if (actorVisibility.hiddenLocalDuplicateCount > 0) {
       actorMeta.textContent += ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden here until reviewed in Needs attention.`;
     }
@@ -70,6 +79,22 @@ export function renderSyncActors() {
       }
     },
   });
+}
+
+export function renderSyncActorsUnavailable() {
+  const actorList = document.getElementById('syncActorsList');
+  const actorMeta = document.getElementById('syncActorsMeta');
+  setPeopleCreateControlsDisabled(true);
+  if (actorMeta) {
+    actorMeta.textContent =
+      'People controls are temporarily unavailable. Refresh this page to retry, but device status and sync health are still available below.';
+  }
+  if (actorList) {
+    renderSyncEmptyState(actorList, {
+      title: 'People unavailable right now.',
+      detail: 'Refresh this page to reload named people once the people endpoint is responding again.',
+    });
+  }
 }
 
 /* ── Devices renderer ────────────────────────────────────── */
@@ -159,6 +184,29 @@ export function renderSyncPeers() {
       }
     },
   });
+}
+
+export function renderSyncPeopleUnavailable() {
+  const actorList = document.getElementById('syncActorsList');
+  const actorMeta = document.getElementById('syncActorsMeta');
+  const syncPeers = document.getElementById('syncPeers');
+  setPeopleCreateControlsDisabled(true);
+  if (actorMeta) {
+    actorMeta.textContent =
+      'People and device details are unavailable right now. Refresh this page to retry once local sync status is reachable again.';
+  }
+  if (actorList) {
+    renderSyncEmptyState(actorList, {
+      title: 'People unavailable right now.',
+      detail: 'Refresh this page to reload named people once the local sync status endpoint is responding again.',
+    });
+  }
+  if (syncPeers) {
+    renderSyncEmptyState(syncPeers, {
+      title: 'Devices unavailable right now.',
+      detail: 'Refresh this page to reload paired devices. When sync is reachable again, you can rename, assign, or pair devices here.',
+    });
+  }
 }
 
 /* ── Legacy device claims renderer ───────────────────────── */
