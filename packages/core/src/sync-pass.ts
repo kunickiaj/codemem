@@ -428,10 +428,30 @@ export async function syncOnce(
 							pageSize: BOOTSTRAP_PAGE_SIZE,
 						});
 
-						// No TOCTOU dirty-state re-check here: the localSharedCount === 0
-						// guard above ensures there are no shared memories to lose. Unlike
-						// the re-bootstrap path (which runs on nodes that already have shared
-						// data), this path only fires on truly empty nodes.
+						// Re-check after network fetch: another process (plugin, CLI, another
+						// sync pass) could have created shared memories while we were fetching
+						// pages.  Same TOCTOU guard as the re-bootstrap path.
+						const postFetchSharedCount = Number(
+							(
+								db
+									.prepare("SELECT count(*) as n FROM memory_items WHERE import_key IS NOT NULL")
+									.get() as { n: number }
+							)?.n ?? 0,
+						);
+						if (postFetchSharedCount > 0) {
+							recordSyncAttempt(db, peerDeviceId, {
+								ok: false,
+								error: "needs_attention:shared_memories_appeared_during_bootstrap",
+							});
+							return {
+								ok: false,
+								address: baseUrl,
+								error: `needs attention: ${postFetchSharedCount} shared memory change(s) appeared during initial bootstrap fetch`,
+								opsIn: 0,
+								opsOut: 0,
+								addressErrors: [],
+							};
+						}
 						const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo);
 						if (!bootstrapResult.ok) {
 							throw new Error("initial bootstrap apply failed");

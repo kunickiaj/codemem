@@ -850,31 +850,33 @@ export function loadMemorySnapshotPageForPeer(
 }
 
 export function hasUnsyncedSharedMemoryChanges(db: Database, limit = 25): SyncDirtyLocalState {
-	const d = drizzle(db, { schema });
-	const rows = d.select().from(schema.memoryItems).orderBy(schema.memoryItems.updated_at).all();
-	let count = 0;
-	for (const row of rows) {
-		if (!row.import_key) continue;
-		const payload = buildPayloadFromMemoryRow(row);
-		if (!syncVisibilityAllowed(payload as unknown as Record<string, unknown>)) continue;
-		const opType: "upsert" | "delete" = row.deleted_at || row.active === 0 ? "delete" : "upsert";
-		const exists = d
-			.select({ one: sql<number>`1` })
-			.from(schema.replicationOps)
-			.where(
-				and(
-					eq(schema.replicationOps.entity_type, "memory_item"),
-					eq(schema.replicationOps.entity_id, row.import_key),
-					eq(schema.replicationOps.op_type, opType),
-					eq(schema.replicationOps.clock_rev, Number(row.rev ?? 0)),
-				),
-			)
-			.limit(1)
-			.get();
-		if (exists) continue;
-		count += 1;
-		if (count >= limit) break;
-	}
+	// Single SQL query replacing the old O(N×M) JS loop that loaded every
+	// memory item then queried replication_ops per-row.  This uses NOT EXISTS
+	// to find shared memories whose current rev lacks a matching replication op,
+	// which is exactly the "dirty" condition the old loop was checking.
+	//
+	// Visibility matching follows syncVisibilityAllowed semantics:
+	//  - explicit 'shared', 'shared:default', 'shared:legacy' → sync-eligible
+	//  - NULL/empty visibility with non-private content → sync-eligible (legacy default)
+	//  - explicit 'private' or 'personal:*' → not sync-eligible
+	const stmt = db.prepare(`
+		SELECT count(*) as n FROM (
+			SELECT 1 FROM memory_items m
+			WHERE m.import_key IS NOT NULL
+			  AND COALESCE(m.visibility, '') NOT LIKE 'private%'
+			  AND COALESCE(m.visibility, '') NOT LIKE 'personal%'
+			  AND NOT EXISTS (
+				SELECT 1 FROM replication_ops r
+				WHERE r.entity_type = 'memory_item'
+				  AND r.entity_id = m.import_key
+				  AND r.op_type = CASE WHEN m.deleted_at IS NOT NULL OR m.active = 0 THEN 'delete' ELSE 'upsert' END
+				  AND r.clock_rev = COALESCE(m.rev, 0)
+			  )
+			LIMIT ?
+		)
+	`);
+	const row = stmt.get(limit) as { n: number } | undefined;
+	const count = Number(row?.n ?? 0);
 	return { dirty: count > 0, count };
 }
 
