@@ -41,6 +41,67 @@ async function loadRuntimeLabel() {
 
 type RefreshState = 'idle' | 'refreshing' | 'paused' | 'error';
 let lastAnnouncedRefreshState: RefreshState | null = null;
+const RECONNECT_POLL_MS = 1500;
+
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnecting = false;
+
+function setReconnectOverlay(open: boolean, detail?: string) {
+  const overlay = $('viewerReconnectOverlay');
+  const detailEl = $('viewerReconnectDetail');
+  if (!overlay || !detailEl) return;
+  overlay.hidden = !open;
+  detailEl.textContent = detail || 'Trying again automatically while the viewer comes back.';
+}
+
+async function isViewerReady() {
+  try {
+    await api.pingViewerReady();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopReconnectLoop() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  reconnecting = false;
+  setReconnectOverlay(false);
+}
+
+function canResumeRefresh() {
+  return document.visibilityState !== 'hidden' && !isSettingsOpen();
+}
+
+function scheduleReconnectLoop() {
+  if (reconnecting) return;
+  reconnecting = true;
+  stopPolling();
+  setRefreshStatus('error', '(reconnecting)');
+  setReconnectOverlay(true, 'The viewer server is restarting or temporarily unavailable. Trying again automatically…');
+
+  const tick = async () => {
+    const ready = await isViewerReady();
+    if (ready) {
+      stopReconnectLoop();
+      if (canResumeRefresh()) {
+        setRefreshStatus('refreshing');
+        startPolling();
+        void doRefresh();
+      } else {
+        setRefreshStatus('paused', document.visibilityState === 'hidden' ? '(tab hidden)' : '(settings open)');
+      }
+      return;
+    }
+    setReconnectOverlay(true, 'Still reconnecting… the viewer will recover automatically as soon as the server responds.');
+    reconnectTimer = setTimeout(tick, RECONNECT_POLL_MS);
+  };
+
+  reconnectTimer = setTimeout(tick, RECONNECT_POLL_MS);
+}
 
 function setRefreshStatus(rs: RefreshState, detail?: string) {
   state.refreshState = rs;
@@ -56,6 +117,11 @@ function setRefreshStatus(rs: RefreshState, detail?: string) {
 
   if (rs === 'refreshing') { el.textContent = "refreshing…"; return; }
   if (rs === 'paused') { el.textContent = "paused"; announce('Auto refresh paused.'); return; }
+  if (rs === 'error' && detail === '(reconnecting)') {
+    el.textContent = 'reconnecting…';
+    announce('Viewer reconnecting.');
+    return;
+  }
   if (rs === 'error') { el.textContent = "refresh failed"; announce('Refresh failed.'); return; }
   const suffix = detail ? ` ${detail}` : '';
   el.textContent = "updated " + new Date().toLocaleTimeString() + suffix;
@@ -77,7 +143,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     stopPolling();
     setRefreshStatus('paused', '(tab hidden)');
-  } else if (!isSettingsOpen()) {
+  } else if (!isSettingsOpen() && !reconnecting) {
     startPolling();
     refresh();
   }
@@ -155,12 +221,14 @@ $select('projectFilter')?.addEventListener('change', () => {
 let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function refresh() {
+  if (reconnecting) return;
   // Debounce rapid calls (tab switch + hash change + visibility)
   if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
   refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
 }
 
 async function doRefresh() {
+  if (reconnecting) return;
   if (state.refreshInFlight) { state.refreshQueued = true; return; }
   state.refreshInFlight = true;
 
@@ -190,10 +258,15 @@ async function doRefresh() {
     await Promise.all(promises);
     setRefreshStatus('idle');
   } catch {
-    setRefreshStatus('error');
+    const ready = await isViewerReady();
+    if (!ready) {
+      scheduleReconnectLoop();
+    } else {
+      setRefreshStatus('error');
+    }
   } finally {
     state.refreshInFlight = false;
-    if (state.refreshQueued) {
+    if (state.refreshQueued && !reconnecting) {
       state.refreshQueued = false;
       doRefresh();
     }
@@ -219,6 +292,18 @@ initSettings(stopPolling, startPolling, () => refresh());
 
 // Projects
 loadProjects();
+
+$('viewerReconnectRetry')?.addEventListener('click', async () => {
+  setReconnectOverlay(true, 'Checking whether the viewer server is back…');
+  const ready = await isViewerReady();
+  if (!ready) {
+    scheduleReconnectLoop();
+    return;
+  }
+  stopReconnectLoop();
+  startPolling();
+  void doRefresh();
+});
 
 // Version label
 loadRuntimeLabel();

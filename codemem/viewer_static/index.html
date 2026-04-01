@@ -1395,6 +1395,64 @@
         background: rgba(212, 100, 46, 0.1);
         color: var(--accent-warm);
       }
+      .viewer-reconnect-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: var(--sp-6);
+        background: color-mix(in srgb, var(--surface-0) 82%, transparent);
+        backdrop-filter: blur(10px);
+      }
+      .viewer-reconnect-card {
+        width: min(460px, 100%);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+        padding: var(--sp-5);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        background: var(--surface-1);
+        box-shadow: var(--shadow-md);
+      }
+      .viewer-reconnect-eyebrow {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
+      .viewer-reconnect-title {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+      .viewer-reconnect-detail {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text-secondary);
+      }
+      .viewer-reconnect-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+      .viewer-reconnect-spinner {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+        border-top-color: var(--accent);
+        animation: reconnectSpin 0.9s linear infinite;
+      }
+      @keyframes reconnectSpin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
 
       .settings-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
       .settings-tab {
@@ -1725,6 +1783,22 @@
       <button class="tab-btn" id="tabBtn-sync">Sync</button>
     </nav>
     <div class="app-notice" id="globalNotice" hidden aria-live="polite"></div>
+    <div class="viewer-reconnect-overlay" id="viewerReconnectOverlay" hidden>
+      <div class="viewer-reconnect-card" role="status" aria-live="assertive">
+        <div class="viewer-reconnect-eyebrow">Viewer connection</div>
+        <div class="viewer-reconnect-title">Reconnecting to codemem…</div>
+        <div class="viewer-reconnect-detail" id="viewerReconnectDetail">
+          The viewer server is restarting or temporarily unavailable. Trying again automatically…
+        </div>
+        <div class="viewer-reconnect-status">
+          <span class="viewer-reconnect-spinner" aria-hidden="true"></span>
+          <span>The page will recover automatically when the server responds.</span>
+        </div>
+        <div>
+          <button class="settings-button" id="viewerReconnectRetry">Retry now</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ── Settings modal ──────────────────────────────────── -->
     <div id="settingsDialogMount"></div>

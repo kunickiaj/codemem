@@ -30,6 +30,20 @@ async function fetchJson<T = Record<string, unknown>>(url: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+export async function pingViewerReady(timeoutMs = 1200): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch('/api/stats', {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!resp.ok) throw new Error(`/api/stats: ${resp.status} ${resp.statusText}`);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function readJsonPayload<T = Record<string, unknown>>(
   resp: Response,
 ): Promise<{ text: string; payload: T }> {
