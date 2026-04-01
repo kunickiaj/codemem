@@ -278,7 +278,7 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	if (!children) return null;
 	return (
 		<>
-			<div className="sync-action-text">Team setup and invites</div>
+			<div className="sync-action-text">Team setup</div>
 			{children}
 		</>
 	);

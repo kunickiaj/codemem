@@ -164,6 +164,7 @@ export function renderTeamSync() {
   const meta = document.getElementById('syncTeamMeta');
   const setupPanel = document.getElementById('syncSetupPanel');
   const list = document.getElementById('syncTeamStatus');
+  const listHeading = list?.previousElementSibling as HTMLElement | null;
   const actions = document.getElementById('syncTeamActions');
   if (!meta || !setupPanel || !list || !actions) return;
 
@@ -289,6 +290,7 @@ export function renderTeamSync() {
     teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
     setupPanel.hidden = false;
     list.hidden = true;
+    if (listHeading) listHeading.hidden = true;
     actions.hidden = true;
     if (joinRequests) joinRequests.hidden = true;
     if (discoveredPanel) discoveredPanel.hidden = true;
@@ -297,6 +299,7 @@ export function renderTeamSync() {
 
   setupPanel.hidden = true;
   list.hidden = false;
+  if (listHeading) listHeading.hidden = false;
   actions.hidden = false;
 
   const presenceStatus = String(coordinator.presence_status || '');
