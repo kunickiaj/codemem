@@ -261,7 +261,7 @@ function ActionContent(props: TeamSyncPanelProps) {
         : null}
       {!hasAttentionItems && !hasOtherActionableWork && props.presenceStatus === 'posted' ? (
         <div className="sync-action">
-          <div className="sync-action-text">Everything important looks healthy.</div>
+          <div className="sync-action-text">Everything is healthy.</div>
         </div>
       ) : null}
       {!hasAttentionItems && hasOtherActionableWork && props.presenceStatus === 'posted' ? (
@@ -285,7 +285,7 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	if (!children) return null;
 	return (
 		<>
-			<div className="sync-action-text">Team setup</div>
+			<div className="sync-action-text sync-section-label">Team setup</div>
 			{children}
 		</>
 	);

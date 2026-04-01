@@ -450,7 +450,7 @@ export function renderTeamSync() {
       presenceStatus === 'posted'
         ? actionableCount > 0
           ? `${actionableCount} item${actionableCount === 1 ? '' : 's'} need attention`
-          : 'Everything important looks healthy'
+          : 'Everything is healthy'
         : presenceStatus === 'not_enrolled'
           ? 'This device is not enrolled in the team yet'
           : 'Sync needs attention',
