@@ -63,6 +63,17 @@ type PairingPayloadState = Record<string, unknown> & {
 const SYNC_REDACT_MOUNT_ID = 'syncRedactMount';
 const SYNC_REDACT_LABEL_ID = 'syncRedactLabel';
 
+function newestPeerPing(peers: Record<string, unknown> | null | undefined): string | null {
+  const timestamps = Object.values(peers || {})
+    .map((peer) => {
+      if (!peer || typeof peer !== 'object') return '';
+      return String((peer as { last_ping_at?: string | null }).last_ping_at || '').trim();
+    })
+    .filter(Boolean)
+    .sort();
+  return timestamps.length ? timestamps[timestamps.length - 1]! : null;
+}
+
 /* ── Import render functions needed for redact toggle ────── */
 // These are set by the index module to avoid circular imports.
 let _renderSyncPeers: () => void = () => {};
@@ -131,7 +142,7 @@ export function renderSyncStatus() {
   const pingPayload = status.ping || {};
   const syncPayload = status.sync || {};
   const lastSync = status.last_sync_at || status.last_sync_at_utc || null;
-  const lastPing = pingPayload.last_ping_at || status.last_ping_at || null;
+  const lastPing = pingPayload.last_ping_at || status.last_ping_at || newestPeerPing(peers) || null;
   const syncError = status.last_sync_error || '';
   const pingError = status.last_ping_error || '';
   const pending = Number(status.pending || 0);
@@ -205,7 +216,7 @@ export function renderSyncStatus() {
             value: lastSync ? `${formatAgeShort(secondsSince(lastSync))} ago` : 'never',
           },
           {
-            label: 'Last ping',
+            label: 'Last peer ping',
             value: lastPing ? `${formatAgeShort(secondsSince(lastPing))} ago` : 'never',
           },
           {
@@ -234,7 +245,7 @@ export function renderSyncStatus() {
 
   if (!syncDisabled && !syncNoPeers && pingPayload.seconds_since_last) {
     items.push({
-      label: 'Since last ping',
+      label: 'Since last peer ping',
       value: `${pingPayload.seconds_since_last}s`,
     });
   }
