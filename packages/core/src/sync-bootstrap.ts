@@ -158,27 +158,43 @@ function parseSnapshotPayload(item: SyncMemorySnapshotItem): Record<string, unkn
 	}
 }
 
-function ensureSessionForBootstrap(d: ReturnType<typeof drizzle>, updatedAt: string): number {
+const bootstrapSessionCache = new Map<string, number>();
+
+function ensureSessionForBootstrap(
+	d: ReturnType<typeof drizzle>,
+	updatedAt: string,
+	project?: string | null,
+): number {
+	const projectKey = project ?? "__none__";
+	const cached = bootstrapSessionCache.get(projectKey);
+	if (cached != null) return cached;
+
+	const cwd = project ? `__sync_bootstrap__:${project}` : "__sync_bootstrap__";
 	const existing = d
 		.select({ id: schema.sessions.id })
 		.from(schema.sessions)
-		.where(eq(schema.sessions.cwd, "__sync_bootstrap__"))
+		.where(eq(schema.sessions.cwd, cwd))
 		.limit(1)
 		.get();
-	if (existing) return existing.id;
+	if (existing) {
+		bootstrapSessionCache.set(projectKey, existing.id);
+		return existing.id;
+	}
 
 	const rows = d
 		.insert(schema.sessions)
 		.values({
 			started_at: updatedAt,
-			cwd: "__sync_bootstrap__",
-			project: null,
+			cwd,
+			project: project ?? null,
 			user: "sync",
 			tool_version: "bootstrap",
 		})
 		.returning({ id: schema.sessions.id })
 		.all();
-	return rows[0]?.id ?? 0;
+	const id = rows[0]?.id ?? 0;
+	bootstrapSessionCache.set(projectKey, id);
+	return id;
 }
 
 /**
@@ -220,12 +236,17 @@ export function applyBootstrapSnapshot(
 			.run();
 		result.deleted = deleteResult.changes;
 
-		// 2. Insert snapshot items.
-		const sessionId = ensureSessionForBootstrap(d, new Date().toISOString());
+		// 2. Insert snapshot items, grouping by project.
+		bootstrapSessionCache.clear();
 
 		for (const item of items) {
 			const payload = parseSnapshotPayload(item);
 			if (!payload) continue;
+			const project =
+				typeof payload.project === "string" && payload.project.trim()
+					? payload.project.trim()
+					: null;
+			const sessionId = ensureSessionForBootstrap(d, new Date().toISOString(), project);
 
 			const metaRaw = payload.metadata_json;
 			const meta =
@@ -274,6 +295,9 @@ export function applyBootstrapSnapshot(
 					files_modified: Array.isArray(payload.files_modified)
 						? JSON.stringify(payload.files_modified)
 						: null,
+					user_prompt_id:
+						typeof payload.user_prompt_id === "number" ? payload.user_prompt_id : null,
+					prompt_number: typeof payload.prompt_number === "number" ? payload.prompt_number : null,
 				})
 				.run();
 			result.applied++;
