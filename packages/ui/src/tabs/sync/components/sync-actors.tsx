@@ -16,6 +16,7 @@ type SyncActorRowProps = {
   hiddenLocalDuplicateCount: number;
   onRename: (actorId: string, displayName: string) => Promise<void>;
   onMerge: (primaryActorId: string, secondaryActorId: string) => Promise<void>;
+  onDeactivate: (actorId: string) => Promise<void>;
 };
 
 type SyncActorsListProps = {
@@ -23,6 +24,7 @@ type SyncActorsListProps = {
   hiddenLocalDuplicateCount: number;
   onRename: (actorId: string, displayName: string) => Promise<void>;
   onMerge: (primaryActorId: string, secondaryActorId: string) => Promise<void>;
+  onDeactivate: (actorId: string) => Promise<void>;
 };
 
 function localActorNote(hiddenLocalDuplicateCount: number): string {
@@ -32,7 +34,7 @@ function localActorNote(hiddenLocalDuplicateCount: number): string {
   return `Represents you across your devices. ${hiddenLocalDuplicateCount} unresolved duplicate ${hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden until reviewed in Needs attention.`;
 }
 
-function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: SyncActorRowProps) {
+function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge, onDeactivate }: SyncActorRowProps) {
   const actorId = String(actor.actor_id || '');
   const label = actorLabel(actor);
   const count = assignedActorCount(actorId);
@@ -162,6 +164,22 @@ function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: S
               </button>
             </div>
             <div className="peer-meta actor-merge-note">{mergeNote}</div>
+            <button
+              className="settings-button"
+              disabled={renameBusy || mergeBusy}
+              onClick={async () => {
+                const confirmed = await openSyncConfirmDialog({
+                  title: `Remove ${label}?`,
+                  description: 'This deactivates the person and unassigns their devices. Existing memories keep their current attribution.',
+                  confirmLabel: 'Remove person',
+                  cancelLabel: 'Keep',
+                  tone: 'danger',
+                });
+                if (confirmed) await onDeactivate(actorId);
+              }}
+            >
+              Remove person
+            </button>
           </>
         )}
       </div>
@@ -169,7 +187,7 @@ function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: S
   );
 }
 
-function SyncActorsList({ actors, hiddenLocalDuplicateCount, onRename, onMerge }: SyncActorsListProps) {
+function SyncActorsList({ actors, hiddenLocalDuplicateCount, onRename, onMerge, onDeactivate }: SyncActorsListProps) {
   if (!actors.length) {
     return (
       <div className="sync-empty-state">
@@ -190,6 +208,7 @@ function SyncActorsList({ actors, hiddenLocalDuplicateCount, onRename, onMerge }
             hiddenLocalDuplicateCount={hiddenLocalDuplicateCount}
             onRename={onRename}
             onMerge={onMerge}
+            onDeactivate={onDeactivate}
           />
         );
       })}

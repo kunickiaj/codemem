@@ -342,6 +342,17 @@ export async function mergeActor(primaryActorId: string, secondaryActorId: strin
   return payload;
 }
 
+export async function deactivateActor(actorId: string): Promise<any> {
+  const resp = await fetch('/api/sync/actors/deactivate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actor_id: actorId }),
+  });
+  const { text, payload } = await readJsonPayload(resp);
+  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
+  return payload;
+}
+
 export async function claimLegacyDeviceIdentity(originDeviceId: string): Promise<any> {
   const resp = await fetch('/api/sync/legacy-devices/claim', {
     method: 'POST',
