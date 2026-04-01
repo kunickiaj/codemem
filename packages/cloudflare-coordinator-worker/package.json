@@ -5,8 +5,8 @@
 	"type": "module",
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm --filter @codemem/core build && pnpm exec vite build && pnpm exec tsc --noEmit",
-		"typecheck": "pnpm --filter @codemem/core build && pnpm exec tsc --noEmit",
+		"build": "pnpm exec vite build && pnpm exec tsc --build",
+		"typecheck": "pnpm exec tsc --build",
 		"test:worker": "pnpm --filter @codemem/core build && pnpm exec vitest run --config vitest.config.ts test/worker.integration.test.ts"
 	},
 	"dependencies": {

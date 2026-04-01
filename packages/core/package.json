@@ -20,7 +20,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
+		"build": "pnpm exec vite build && pnpm exec tsc --build",
 		"typecheck": "pnpm exec tsc --noEmit",
 		"generate:test-schema": "pnpm exec tsx scripts/generate-test-schema.ts"
 	},
