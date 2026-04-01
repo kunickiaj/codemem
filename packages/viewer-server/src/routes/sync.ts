@@ -874,7 +874,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const baselineCursor = c.req.query("baseline_cursor") ?? null;
 			const pageToken = c.req.query("page_token") ?? null;
 			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
-			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 1000)) : 200;
+			// Cap raised to 5000 to support elevated bootstrap page sizes (default 2000).
+			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 200;
 
 			if (generation == null || !Number.isFinite(generation)) {
 				return c.json({ error: "missing_generation" }, 400);

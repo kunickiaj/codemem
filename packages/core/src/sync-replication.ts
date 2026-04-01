@@ -756,10 +756,13 @@ export function loadMemorySnapshotPageForPeer(
 		throw new Error("boundary_mismatch");
 	}
 
-	const limit = Math.max(1, Math.min(options.limit ?? 200, 1000));
+	// Cap raised to 5000 to support elevated bootstrap page sizes (default 2000).
+	const limit = Math.max(1, Math.min(options.limit ?? 200, 5000));
 	const pageToken = parseSnapshotPageToken(options.pageToken);
 	const d = drizzle(db, { schema });
-	const scanBatchSize = Math.min(Math.max(limit * 3, limit), 1000);
+	// Scan batch must be >= limit so high page sizes don't degrade into
+	// multiple keyset-pagination round-trips per page.
+	const scanBatchSize = Math.max(limit, Math.min(limit * 3, 10000));
 	const rowsAfterToken = (token: { importKey: string; id: number } | null, batchLimit: number) =>
 		d
 			.select({

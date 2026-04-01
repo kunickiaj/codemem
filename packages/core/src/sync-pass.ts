@@ -38,6 +38,9 @@ const MAX_SYNC_BODY_BYTES = 1_048_576;
 /** Default op fetch/push limit per round. */
 const DEFAULT_LIMIT = 200;
 
+/** Elevated page size for initial bootstrap of never-synced peers. */
+const BOOTSTRAP_PAGE_SIZE = 2000;
+
 /** Current sync protocol version expected from peers. */
 const EXPECTED_SYNC_PROTOCOL_VERSION = "2";
 
@@ -395,6 +398,65 @@ export async function syncOnce(
 			const peerResetBoundary = parsePeerResetBoundary(statusPayload);
 			if (!peerResetBoundary) {
 				throw new Error("peer status missing sync_reset boundary");
+			}
+
+			// -- 1b. Auto-bootstrap if local node is empty and has never synced --
+			// Only triggers when: (a) no cursor for this peer, AND (b) no shared
+			// memories exist locally.  If the node already has shared data from
+			// another peer, fall through to normal incremental sync so the server
+			// can decide whether a reset is needed without clobbering local state.
+			if (lastApplied === null && lastAcked === null) {
+				const localSharedCount = Number(
+					(
+						db
+							.prepare("SELECT count(*) as n FROM memory_items WHERE import_key IS NOT NULL")
+							.get() as { n: number }
+					)?.n ?? 0,
+				);
+				if (localSharedCount === 0) {
+					try {
+						const resetInfo = {
+							generation: peerResetBoundary.generation,
+							snapshot_id: peerResetBoundary.snapshot_id,
+							baseline_cursor: peerResetBoundary.baseline_cursor ?? null,
+							retained_floor_cursor: peerResetBoundary.retained_floor_cursor ?? null,
+							reset_required: true as const,
+							reason: "initial_bootstrap" as const,
+						};
+						const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
+							keysDir,
+							pageSize: BOOTSTRAP_PAGE_SIZE,
+						});
+
+						// No TOCTOU dirty-state re-check here: the localSharedCount === 0
+						// guard above ensures there are no shared memories to lose. Unlike
+						// the re-bootstrap path (which runs on nodes that already have shared
+						// data), this path only fires on truly empty nodes.
+						const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo);
+						if (!bootstrapResult.ok) {
+							throw new Error("initial bootstrap apply failed");
+						}
+						recordPeerSuccess(db, peerDeviceId);
+						recordSyncAttempt(db, peerDeviceId, {
+							ok: true,
+							opsIn: bootstrapResult.applied,
+							opsOut: 0,
+						});
+						return {
+							ok: true,
+							address: baseUrl,
+							opsIn: bootstrapResult.applied,
+							opsOut: 0,
+							addressErrors: [],
+						};
+					} catch (bootstrapErr) {
+						const msg = bootstrapErr instanceof Error ? bootstrapErr.message : String(bootstrapErr);
+						// Don't record attempt here — let address fallback loop handle it
+						// to avoid inflating consecutive failure counts.
+						throw new Error(`initial bootstrap failed: ${msg}`);
+					}
+				}
+				// else: local node has shared data — fall through to incremental sync
 			}
 
 			// -- 2. Pull ops from peer --
