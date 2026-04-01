@@ -135,7 +135,11 @@ export function renderSyncPeers() {
         try {
           await _loadSyncData();
         } catch {
-          feedback = { message: 'Sync started, but this view has not refreshed yet.', tone: 'warning' };
+          feedback = {
+            message:
+              'Sync started, but this view has not refreshed yet. Refresh the page or use Sync now again before retrying.',
+            tone: 'warning',
+          };
         }
         return feedback;
       } catch (error) {
@@ -151,7 +155,10 @@ export function renderSyncPeers() {
         await _loadSyncData();
         return feedback;
       } catch (error) {
-        return { message: friendlyError(error, 'Failed to remove peer.'), tone: 'warning' } satisfies SyncActionFeedback;
+        return {
+          message: friendlyError(error, 'Failed to remove peer. The local peer entry is still here.'),
+          tone: 'warning',
+        } satisfies SyncActionFeedback;
       }
     },
     onAssignActor: async (peerId, actorId) => {
@@ -160,7 +167,10 @@ export function renderSyncPeers() {
         await _loadSyncData();
         return { message: actorId ? 'Device person updated.' : 'Device person cleared.', tone: 'success' } satisfies SyncActionFeedback;
       } catch (error) {
-        return { message: friendlyError(error, 'Failed to update device person.'), tone: 'warning' } satisfies SyncActionFeedback;
+        return {
+          message: friendlyError(error, 'Failed to update device person. The current assignment is unchanged.'),
+          tone: 'warning',
+        } satisfies SyncActionFeedback;
       }
     },
     onSaveScope: async (peerId, include, exclude) => {
@@ -170,7 +180,10 @@ export function renderSyncPeers() {
         await _loadSyncData();
         return { message: 'Device sync scope saved.', tone: 'success' } satisfies SyncActionFeedback;
       } catch (error) {
-        return { message: friendlyError(error, 'Failed to save device scope.'), tone: 'warning' } satisfies SyncActionFeedback;
+        return {
+          message: friendlyError(error, 'Failed to save device scope. The current sharing rules are still active.'),
+          tone: 'warning',
+        } satisfies SyncActionFeedback;
       }
     },
     onResetScope: async (peerId) => {
@@ -180,7 +193,10 @@ export function renderSyncPeers() {
         await _loadSyncData();
         return { message: 'Device sync scope reset to global defaults.', tone: 'success' } satisfies SyncActionFeedback;
       } catch (error) {
-        return { message: friendlyError(error, 'Failed to reset device scope.'), tone: 'warning' } satisfies SyncActionFeedback;
+        return {
+          message: friendlyError(error, 'Failed to reset device scope. The current sharing rules are still active.'),
+          tone: 'warning',
+        } satisfies SyncActionFeedback;
       }
     },
   });
