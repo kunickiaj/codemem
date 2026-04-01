@@ -255,7 +255,7 @@ export function renderSyncStatus() {
     /* informational */
   } else if (daemonState === 'stopped') {
     actions.push({ label: 'Sync daemon is stopped. Start it.', command: 'codemem sync start' });
-    actions.push({ label: 'Then run one immediate sync pass.', command: 'codemem sync once' });
+    actions.push({ label: 'Run one sync pass now.', command: 'codemem sync once' });
   } else if (daemonState === 'needs_attention') {
     actions.push({
       label: 'Sync needs manual attention before reset can continue.',
@@ -269,7 +269,7 @@ export function renderSyncStatus() {
       command: 'codemem sync restart && codemem sync once',
     });
     actions.push({
-      label: 'Then run doctor for root cause.',
+      label: 'Run doctor for the root cause.',
       command: 'codemem sync doctor',
     });
   } else if (!syncDisabled && !syncNoPeers && pending > 0) {

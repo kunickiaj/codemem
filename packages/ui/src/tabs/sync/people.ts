@@ -44,7 +44,7 @@ export function renderSyncActors() {
   const actors = actorVisibility.visibleActors;
   if (actorMeta) {
     actorMeta.textContent = actors.length
-      ? 'Create, rename, and combine people here. Assign each device below. Non-local people receive memories from allowed projects unless you mark them Only me.'
+      ? 'Manage people here, then assign devices below.'
       : 'No named people yet. Create one here, then assign devices below.';
     if (actorVisibility.hiddenLocalDuplicateCount > 0) {
       actorMeta.textContent += ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? 'entry is' : 'entries are'} hidden here until reviewed in Needs attention.`;
@@ -100,7 +100,7 @@ export function renderSyncPeers() {
         } else if (peerId && isPeerScopeReviewPending(peerId)) {
           const displayName = peer?.name || (peerId ? peerId.slice(0, 8) : 'unknown');
           showGlobalNotice(
-            `Triggered sync for ${displayName} before scope review was finished. Review scope in this card if you want tighter sharing rules.`,
+            `Triggered sync for ${displayName}. Review scope in this card if you want tighter sharing rules.`,
             'warning',
           );
         } else {
@@ -113,7 +113,7 @@ export function renderSyncPeers() {
       try {
         await _loadSyncData();
       } catch {
-        showGlobalNotice('Sync started, but the local status view did not refresh yet.', 'warning');
+        showGlobalNotice('Sync started, but this view has not refreshed yet.', 'warning');
       }
       return null;
     },

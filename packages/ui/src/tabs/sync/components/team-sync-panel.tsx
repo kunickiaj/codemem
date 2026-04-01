@@ -265,7 +265,7 @@ function ActionContent(props: TeamSyncPanelProps) {
       {!hasAttentionItems && props.presenceStatus === 'not_enrolled' ? (
         <div className="sync-action">
           <div className="sync-action-text">
-            This device still needs team enrollment
+            This device needs team enrollment
             <span className="sync-action-command">Import an invite or ask an admin to enroll it.</span>
           </div>
         </div>
