@@ -16,6 +16,7 @@ export interface TeamSyncDiscoveredRow {
   availabilityLabel: string;
   deviceId: string;
   displayName: string;
+  displayTitle: string | null;
   fingerprint: string;
   mode: 'accept' | 'ambiguous' | 'conflict' | 'none' | 'paired' | 'scope-pending' | 'stale';
   note: string;
@@ -163,7 +164,7 @@ function DiscoveredDeviceRow({
     <div className="actor-row" data-discovered-device-id={row.deviceId}>
       <div className="actor-details">
         <div className="actor-title">
-          <strong>{row.displayName}</strong>
+          <strong title={row.displayTitle || undefined}>{row.displayName}</strong>
           <span className={`badge actor-badge${row.availabilityLabel === 'Offline' ? '' : ' local'}`}>
             {row.availabilityLabel}
           </span>

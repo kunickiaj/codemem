@@ -8,7 +8,6 @@ import { openSyncConfirmDialog } from '../sync-dialogs';
 import { PeerScopeCollapsible } from '../peer-scope-collapsible';
 import {
   actorDisplayLabel,
-  assignmentNote,
   buildActorSelectOptions,
   consumePeerScopeReviewRequest,
   createChipEditor,
@@ -396,15 +395,6 @@ function SyncPeerCard({
           <button className="settings-button" disabled={applyActorBusy} onClick={() => void savePerson()}>
             {applyActorLabel}
           </button>
-        </div>
-        <div className="peer-scope-effective">{assignmentNote(selectedActorId)}</div>
-        <div className="peer-scope-summary">
-          {inheritsGlobal
-            ? 'Using global sync scope'
-            : `Device override · include: ${includeList.join(', ') || 'all'} · exclude: ${excludeList.join(', ') || 'none'}`}
-        </div>
-        <div className="peer-scope-effective">
-          {`Effective scope · ${summaryText('include', effectiveInclude, 'all')} · ${summaryText('exclude', effectiveExclude, 'none')}`}
         </div>
         <div ref={setScopeHost} />
       </div>
