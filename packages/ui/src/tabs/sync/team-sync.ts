@@ -261,7 +261,7 @@ export function renderTeamSync() {
       actorIds.includes(String(actor?.actor_id || '').trim()),
     );
     if (actors.length < 2) {
-      showGlobalNotice('This possible duplicate no longer has enough people to review.', 'warning');
+      showGlobalNotice('This duplicate review is outdated. Refresh the card and review the remaining people entries.', 'warning');
       return;
     }
     const result = await openDuplicatePersonDialog({
@@ -283,7 +283,7 @@ export function renderTeamSync() {
     const primary = actors.find((actor) => String(actor?.actor_id || '') === result.primaryActorId);
     const secondary = actors.find((actor) => String(actor?.actor_id || '') === result.secondaryActorId);
     if (!primary?.actor_id || !secondary?.actor_id) {
-      showGlobalNotice('Could not determine which people to combine.', 'warning');
+      showGlobalNotice('Could not determine which people to combine. Refresh People & devices and try the review again.', 'warning');
       return;
     }
     try {
@@ -400,10 +400,10 @@ export function renderTeamSync() {
     if (hasConflict) {
       mode = 'conflict';
     } else if (hasAmbiguousCoordinatorGroup) {
-      actionMessage = 'This device appears in multiple coordinator groups. Review the team setup before approving it here.';
+      actionMessage = 'This device appears in multiple coordinator groups. Review team setup first or ask an admin to clean up the duplicate enrollment before approving it here.';
       mode = 'ambiguous';
     } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
-      actionMessage = `Review this device's scope in People & devices next.`;
+      actionMessage = `Finish this device's scope review in People & devices before you sync it.`;
       mode = 'scope-pending';
     } else if (pairedPeer?.last_error) {
       noteParts.push(`error: ${String(pairedPeer.last_error)}`);
@@ -412,7 +412,7 @@ export function renderTeamSync() {
       noteParts.push(`status: ${String(pairedPeer.status.peer_state)}`);
       mode = 'paired';
     } else if (!pairedPeer && device.stale) {
-      actionMessage = 'Wait for a fresh coordinator presence update.';
+      actionMessage = 'Wait for a fresh coordinator presence update, then review this device again here.';
       mode = 'stale';
     } else if (pairedPeer) {
       mode = 'paired';
@@ -527,7 +527,10 @@ export function renderTeamSync() {
           await _loadSyncData();
           return feedback;
         } catch (error) {
-          return { message: friendlyError(error, 'Failed to approve join request.'), tone: 'warning' } satisfies SyncActionFeedback;
+          return {
+            message: friendlyError(error, 'Failed to approve join request. Keep it pending and try again after the coordinator refreshes.'),
+            tone: 'warning',
+          } satisfies SyncActionFeedback;
         }
       },
       onAttentionAction: async (item) => {
@@ -553,7 +556,10 @@ export function renderTeamSync() {
           await _loadSyncData();
           return feedback;
         } catch (error) {
-          return { message: friendlyError(error, 'Failed to deny join request.'), tone: 'warning' } satisfies SyncActionFeedback;
+          return {
+            message: friendlyError(error, 'Failed to deny join request. Leave it pending for now, then retry after the coordinator refreshes.'),
+            tone: 'warning',
+          } satisfies SyncActionFeedback;
         }
       },
       onInspectConflict: (row) => {
@@ -580,14 +586,17 @@ export function renderTeamSync() {
         try {
           await api.deletePeer(row.deviceId);
           const feedback = {
-            message: `Removed the broken local device record for ${row.displayName}. If it is still available, you can review it again from Needs attention.`,
+            message: `Removed the broken local device record for ${row.displayName}. If it is still available, review it again from Next steps or Devices seen on team.`,
             tone: 'success',
           } satisfies SyncActionFeedback;
           state.syncDiscoveredFeedback = feedback;
           await _loadSyncData();
           return feedback;
         } catch (error) {
-          return { message: friendlyError(error, 'Failed to remove the broken local device record.'), tone: 'warning' } satisfies SyncActionFeedback;
+          return {
+            message: friendlyError(error, 'Failed to remove the broken local device record. The old local record is still present in People & devices.'),
+            tone: 'warning',
+          } satisfies SyncActionFeedback;
         }
       },
       onReviewDiscoveredDevice: async (row) => {
@@ -638,12 +647,18 @@ export function renderTeamSync() {
           try {
             await _loadSyncData();
           } catch (error) {
-            feedback = { message: friendlyError(error, 'Device connected, but the screen did not refresh yet.'), tone: 'warning' };
+            feedback = {
+              message: friendlyError(error, 'Device connected, but the screen did not refresh yet. Refresh this page before trying the next step.'),
+              tone: 'warning',
+            };
             state.syncDiscoveredFeedback = feedback;
           }
           return feedback;
         } catch (error) {
-          return { message: friendlyError(error, 'Failed to review this device.'), tone: 'warning' } satisfies SyncActionFeedback;
+          return {
+            message: friendlyError(error, 'Failed to review this device. Wait for a fresh presence update and try again.'),
+            tone: 'warning',
+          } satisfies SyncActionFeedback;
         }
       },
       pendingJoinRequests,
@@ -718,7 +733,10 @@ export function initTeamSyncEvents(
         warnings.length ? 'warning' : 'success',
       );
     } catch (error) {
-      showGlobalNotice(friendlyError(error, 'Failed to create invite.'), 'warning');
+      showGlobalNotice(
+        friendlyError(error, 'Failed to create invite. Check the team name, invite lifetime, and coordinator reachability, then try again.'),
+        'warning',
+      );
       syncCreateInviteButton.textContent = 'Retry';
       syncCreateInviteButton.disabled = false;
       return;
@@ -762,7 +780,7 @@ export function initTeamSyncEvents(
       }
     } catch (error) {
       state.syncJoinFlowFeedback = {
-        message: friendlyError(error, 'Failed to import invite.'),
+        message: friendlyError(error, 'Failed to import invite. Check that the invite is complete, current, and meant for this team, then try again.'),
         tone: 'warning',
       };
       setJoinFeedbackVisibility();
@@ -786,7 +804,10 @@ export function initTeamSyncEvents(
       const summary = summarizeSyncRunResult(result);
       showGlobalNotice(summary.message, summary.warning ? 'warning' : undefined);
     } catch (error) {
-      showGlobalNotice(friendlyError(error, 'Failed to start sync.'), 'warning');
+      showGlobalNotice(
+        friendlyError(error, 'Failed to start sync. Retry once, then run codemem sync doctor if the problem keeps coming back.'),
+        'warning',
+      );
       syncNowButton.textContent = 'Retry';
       syncNowButton.disabled = false;
       return;

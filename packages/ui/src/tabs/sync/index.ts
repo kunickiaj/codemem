@@ -129,7 +129,7 @@ export async function loadSyncData() {
     if (statusPayload) state.lastSyncStatus = statusPayload;
     if (Array.isArray(actorsPayload?.items)) {
       state.lastSyncActors = actorsPayload.items;
-    } else if (!actorLoadError) {
+    } else {
       state.lastSyncActors = [];
     }
     const payloadPeers = Array.isArray(payload.peers) ? payload.peers : [];
