@@ -81,28 +81,29 @@ async function buildCanonicalRequest(
 }
 
 export const verifyCloudflareCoordinatorRequest: CoordinatorRequestVerifier = async (input) => {
-	if (!/^\d+$/.test(input.timestamp)) return false;
-	const timestamp = Number.parseInt(input.timestamp, 10);
+	const request = input;
+	if (!/^\d+$/.test(request.timestamp)) return false;
+	const timestamp = Number.parseInt(request.timestamp, 10);
 	if (Number.isNaN(timestamp)) return false;
 	const now = Math.floor(Date.now() / 1000);
 	if (Math.abs(now - timestamp) > DEFAULT_TIME_WINDOW_S) return false;
 
-	const colonIndex = input.signature.indexOf(":");
+	const colonIndex = request.signature.indexOf(":");
 	if (colonIndex < 1) return false;
-	const version = input.signature.slice(0, colonIndex);
+	const version = request.signature.slice(0, colonIndex);
 	if (!version || !["v1", "v2"].includes(version)) return false;
-	const encodedSignature = input.signature.slice(colonIndex + 1);
+	const encodedSignature = request.signature.slice(colonIndex + 1);
 	if (!encodedSignature) return false;
 
 	try {
 		const [key, canonical, signatureBytes] = await Promise.all([
-			importSshEd25519PublicKey(input.publicKey),
+			importSshEd25519PublicKey(request.publicKey),
 			buildCanonicalRequest(
-				input.method,
-				input.pathWithQuery,
-				input.timestamp,
-				input.nonce,
-				input.bodyBytes,
+				request.method,
+				request.pathWithQuery,
+				request.timestamp,
+				request.nonce,
+				request.bodyBytes,
 			),
 			Promise.resolve(base64ToBytes(encodedSignature)),
 		]);
