@@ -5,9 +5,9 @@ import { state } from '../../lib/state';
 import { renderHealthOverview } from '../health';
 import { deriveSyncViewModel } from './view-model';
 
-import { renderSyncStatus, renderSyncAttempts, renderPairing, initDiagnosticsEvents, setRenderSyncPeers } from './diagnostics';
+import { renderSyncStatus, renderSyncAttempts, renderPairing, renderSyncDiagnosticsUnavailable, initDiagnosticsEvents, setRenderSyncPeers } from './diagnostics';
 import { renderTeamSync, renderSyncSharingReview, initTeamSyncEvents, setLoadSyncData as setTeamSyncLoadData } from './team-sync';
-import { renderSyncActors, renderSyncPeers, renderLegacyDeviceClaims, initPeopleEvents, setLoadSyncData as setPeopleLoadData } from './people';
+import { renderSyncActors, renderSyncPeers, renderLegacyDeviceClaims, renderSyncActorsUnavailable, renderSyncPeopleUnavailable, initPeopleEvents, setLoadSyncData as setPeopleLoadData } from './people';
 import { ensureSyncRenderBoundary } from './components/render-root';
 import { ensureSyncDialogHost } from './sync-dialogs';
 import { hideSkeleton, readDuplicatePersonDecisions } from './helpers';
@@ -69,6 +69,19 @@ function normalizeSyncStatusForCache(payload: SyncStatusResponseLike): SyncStatu
     ...payload,
     join_requests: [],
   };
+}
+
+function hideStaleSyncSecondarySections() {
+  const sharingReview = document.getElementById('syncSharingReview');
+  const sharingReviewList = document.getElementById('syncSharingReviewList');
+  const sharingReviewMeta = document.getElementById('syncSharingReviewMeta');
+  const legacyClaims = document.getElementById('syncLegacyClaims');
+  const legacyClaimsMeta = document.getElementById('syncLegacyClaimsMeta');
+  if (sharingReview) sharingReview.hidden = true;
+  if (sharingReviewList) sharingReviewList.textContent = '';
+  if (sharingReviewMeta) sharingReviewMeta.textContent = '';
+  if (legacyClaims) legacyClaims.hidden = true;
+  if (legacyClaimsMeta) legacyClaimsMeta.textContent = '';
 }
 
 export async function loadSyncData() {
@@ -153,20 +166,19 @@ export async function loadSyncData() {
     // Re-render health indicators since they consume sync state (health dot, etc.)
     renderHealthOverview();
     if (actorLoadError) {
-      const actorMeta = document.getElementById('syncActorsMeta');
-      if (actorMeta)
-        actorMeta.textContent =
-          'People controls are temporarily unavailable. Device status and sync health still loaded.';
+      renderSyncActorsUnavailable();
     }
   } catch {
     if (requestId !== latestSyncLoadRequestId) return;
+    lastSyncHash = '';
     // Clear all skeletons so the error state is visible, not masked by loading placeholders
     hideSkeleton('syncTeamSkeleton');
     hideSkeleton('syncActorsSkeleton');
     hideSkeleton('syncPeersSkeleton');
     hideSkeleton('syncDiagSkeleton');
-    const syncMeta = document.getElementById('syncMeta');
-    if (syncMeta) syncMeta.textContent = 'Sync unavailable';
+    hideStaleSyncSecondarySections();
+    renderSyncPeopleUnavailable();
+    renderSyncDiagnosticsUnavailable();
   }
 }
 
@@ -182,6 +194,7 @@ export async function loadPairingData() {
     state.pairingPayloadRaw = payload || null;
     renderPairing();
   } catch {
+    state.pairingPayloadRaw = null;
     renderPairing();
   }
 }

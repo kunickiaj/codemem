@@ -171,7 +171,12 @@ function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: S
 
 function SyncActorsList({ actors, hiddenLocalDuplicateCount, onRename, onMerge }: SyncActorsListProps) {
   if (!actors.length) {
-    return <div className="sync-empty-state">No people yet. Create one to represent yourself or a teammate.</div>;
+    return (
+      <div className="sync-empty-state">
+        <strong>No people yet.</strong>
+        <span>Create a named person here, then assign each device below to keep sync ownership readable.</span>
+      </div>
+    );
   }
 
   return (

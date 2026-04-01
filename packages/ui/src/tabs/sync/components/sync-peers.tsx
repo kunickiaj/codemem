@@ -409,12 +409,19 @@ function SyncPeerCard({
 
 function SyncPeersList(props: SyncPeersListProps) {
   const sectionFeedback = state.syncPeersSectionFeedback;
+  const syncStatus = state.lastSyncStatus as { daemon_state?: string; enabled?: boolean } | null;
+  const syncDisabled = syncStatus?.daemon_state === 'disabled' || syncStatus?.enabled === false;
   if (!props.peers.length) {
     return (
       <>
         <SyncInlineFeedback feedback={sectionFeedback} />
         <div className="sync-empty-state">
-          No devices connected on this machine yet. Pair another device from Advanced diagnostics when you are ready.
+          <strong>No paired devices yet.</strong>
+          <span>
+            {syncDisabled
+              ? 'Turn on sync in Settings → Device Sync first, then use Show pairing in Advanced diagnostics to connect another device.'
+              : 'Use the Show pairing control in Advanced diagnostics, run the command on the other device, then come back here to name and assign it.'}
+          </span>
         </div>
       </>
     );
