@@ -278,7 +278,7 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	if (!children) return null;
 	return (
 		<>
-			<div className="sync-action-text">Team actions</div>
+			<div className="sync-action-text">Team setup and invites</div>
 			{children}
 		</>
 	);
@@ -320,6 +320,7 @@ function DiscoveredPortal({
   if (!mount) return null;
   return createPortal(
     <>
+      <div className="sync-action-text">Devices seen on team</div>
       {rows.map((row) => (
         <DiscoveredDeviceRow
           key={row.deviceId}
@@ -348,6 +349,7 @@ function PendingRequestsPortal({
   if (!mount || !requests.length) return null;
   return createPortal(
     <>
+      <div className="sync-action-text">Pending join requests</div>
       <div className="peer-meta">
         {requests.length} pending join request{requests.length === 1 ? '' : 's'}
       </div>
