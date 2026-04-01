@@ -945,7 +945,25 @@
       .sync-action + .sync-action { margin-top: var(--sp-2); }
 
       .health-action-text, .sync-action-text { font-size: 13px; color: var(--text-primary); flex: 1; min-width: 0; }
-      .sync-section-label { margin-top: 10px; }
+      .sync-section-heading {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        margin-top: var(--sp-2);
+        flex-wrap: wrap;
+      }
+      .sync-section-label {
+        margin-top: 0;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
+      .sync-section-count {
+        font-size: 11px;
+        padding: 2px 8px;
+      }
       .health-action-command, .sync-action-command { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); }
       .health-action-buttons { display: flex; gap: 6px; flex-shrink: 0; }
 
@@ -1060,6 +1078,23 @@
         40%, 80% { transform: translateX(4px); }
       }
       .sync-shake { animation: sync-shake 0.3s ease-in-out; }
+      @keyframes sync-attention-target {
+        0% {
+          transform: translateY(0);
+          box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+        }
+        35% {
+          transform: translateY(-1px);
+          box-shadow: 0 0 0 3px var(--focus-ring);
+        }
+        100% {
+          transform: translateY(0);
+          box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+        }
+      }
+      .sync-attention-target {
+        animation: sync-attention-target 900ms ease-out;
+      }
       .settings-button:disabled {
         opacity: 0.55;
         cursor: not-allowed;
@@ -1114,10 +1149,18 @@
         text-transform: uppercase;
         color: var(--text-tertiary);
       }
+      .sync-team-headline {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
       .sync-team-metrics {
         font-size: 13px;
         color: var(--text-secondary);
         font-feature-settings: 'tnum' 1;
+      }
+      .sync-team-metrics-secondary {
+        color: var(--text-tertiary);
       }
       .sync-radix-select-host {
         min-width: 0;
@@ -1894,17 +1937,18 @@
       <!-- 1. Needs attention + team setup/status -->
       <div class="card" id="syncTeamCard">
         <div class="section-header">
-          <h2>Needs attention</h2>
+          <h2>Team sync</h2>
           <div class="section-actions">
             <button class="settings-button" id="syncNowButton">Sync now</button>
           </div>
         </div>
-        <div class="section-meta" id="syncTeamMeta">See what needs action first, then review the current team status below.</div>
+        <div class="section-meta" id="syncTeamMeta">Start with the next step below, then review team status and device details.</div>
         <div class="sync-skeleton" id="syncTeamSkeleton" role="status" aria-label="Loading team sync">
           <div class="sync-skeleton-line medium"></div>
           <div class="sync-skeleton-block"></div>
           <div class="sync-skeleton-line short"></div>
         </div>
+        <div class="sync-actions" id="syncTeamActions" hidden></div>
         <div id="syncSetupPanel">
           <div id="syncJoinSection">
             <h3 class="settings-group-title">Join a team</h3>
@@ -1927,7 +1971,6 @@
           <div class="section-meta" id="syncCoordinatorDiscoveredMeta"></div>
           <div class="actor-list" id="syncCoordinatorDiscoveredList"></div>
         </div>
-        <div class="sync-actions" id="syncTeamActions" hidden></div>
       </div>
 
       <!-- 2. People & devices -->
