@@ -18,6 +18,7 @@ import { openSyncConfirmDialog } from './sync-dialogs';
 import { renderSyncActorsList } from './components/sync-actors';
 import { renderSyncPeersList } from './components/sync-peers';
 import { renderLegacyClaimsSlice } from './components/sync-legacy-claims';
+import type { SyncActionFeedback } from './components/sync-inline-feedback';
 
 /* ── loadSyncData callback (set by index module) ─────────── */
 
@@ -83,11 +84,10 @@ export function renderSyncPeers() {
     onRename: async (peerId, nextName) => {
       try {
         await api.renamePeer(peerId, nextName);
-        showGlobalNotice('Device name saved.');
         await _loadSyncData();
+        return { message: 'Device name saved.', tone: 'success' } satisfies SyncActionFeedback;
       } catch (error) {
-        showGlobalNotice(friendlyError(error, 'Failed to save device name.'), 'warning');
-        throw error;
+        return { message: friendlyError(error, 'Failed to save device name.'), tone: 'warning' } satisfies SyncActionFeedback;
       }
     },
     onSync: async (peer, address) => {
@@ -95,68 +95,67 @@ export function renderSyncPeers() {
         const result = await api.triggerSync(address);
         const summary = summarizeSyncRunResult(result);
         const peerId = String(peer?.peer_device_id || '');
+        let feedback: SyncActionFeedback | null;
         if (!summary.ok) {
-          showGlobalNotice(summary.message, 'warning');
+          feedback = { message: summary.message, tone: 'warning' };
         } else if (peerId && isPeerScopeReviewPending(peerId)) {
           const displayName = peer?.name || (peerId ? peerId.slice(0, 8) : 'unknown');
-          showGlobalNotice(
-            `Triggered sync for ${displayName}. Review scope in this card if you want tighter sharing rules.`,
-            'warning',
-          );
+          feedback = {
+            message: `Triggered sync for ${displayName}. Review scope in this card if you want tighter sharing rules.`,
+            tone: 'warning',
+          };
         } else {
-          showGlobalNotice(summary.message);
+          feedback = { message: summary.message, tone: 'success' };
         }
+        try {
+          await _loadSyncData();
+        } catch {
+          feedback = { message: 'Sync started, but this view has not refreshed yet.', tone: 'warning' };
+        }
+        return feedback;
       } catch (error) {
-        showGlobalNotice(friendlyError(error, 'Failed to trigger sync.'), 'warning');
-        throw error;
+        return { message: friendlyError(error, 'Failed to trigger sync.'), tone: 'warning' } satisfies SyncActionFeedback;
       }
-      try {
-        await _loadSyncData();
-      } catch {
-        showGlobalNotice('Sync started, but this view has not refreshed yet.', 'warning');
-      }
-      return null;
     },
     onRemove: async (peerId, label) => {
       try {
         await api.deletePeer(peerId);
-        showGlobalNotice(`Removed peer ${label}.`);
+        const feedback = { message: `Removed peer ${label}.`, tone: 'success' } satisfies SyncActionFeedback;
+        state.syncPeerFeedbackById.delete(peerId);
+        state.syncPeersSectionFeedback = feedback;
         await _loadSyncData();
+        return feedback;
       } catch (error) {
-        showGlobalNotice(friendlyError(error, 'Failed to remove peer.'), 'warning');
-        throw error;
+        return { message: friendlyError(error, 'Failed to remove peer.'), tone: 'warning' } satisfies SyncActionFeedback;
       }
     },
     onAssignActor: async (peerId, actorId) => {
       try {
         await api.assignPeerActor(peerId, actorId);
-        showGlobalNotice(actorId ? 'Device person updated.' : 'Device person cleared.');
         await _loadSyncData();
+        return { message: actorId ? 'Device person updated.' : 'Device person cleared.', tone: 'success' } satisfies SyncActionFeedback;
       } catch (error) {
-        showGlobalNotice(friendlyError(error, 'Failed to update device person.'), 'warning');
-        throw error;
+        return { message: friendlyError(error, 'Failed to update device person.'), tone: 'warning' } satisfies SyncActionFeedback;
       }
     },
     onSaveScope: async (peerId, include, exclude) => {
       try {
         await api.updatePeerScope(peerId, include, exclude);
         clearPeerScopeReview(peerId);
-        showGlobalNotice('Device sync scope saved.');
         await _loadSyncData();
+        return { message: 'Device sync scope saved.', tone: 'success' } satisfies SyncActionFeedback;
       } catch (error) {
-        showGlobalNotice(friendlyError(error, 'Failed to save device scope.'), 'warning');
-        throw error;
+        return { message: friendlyError(error, 'Failed to save device scope.'), tone: 'warning' } satisfies SyncActionFeedback;
       }
     },
     onResetScope: async (peerId) => {
       try {
         await api.updatePeerScope(peerId, null, null, true);
         clearPeerScopeReview(peerId);
-        showGlobalNotice('Device sync scope reset to global defaults.');
         await _loadSyncData();
+        return { message: 'Device sync scope reset to global defaults.', tone: 'success' } satisfies SyncActionFeedback;
       } catch (error) {
-        showGlobalNotice(friendlyError(error, 'Failed to reset device scope.'), 'warning');
-        throw error;
+        return { message: friendlyError(error, 'Failed to reset device scope.'), tone: 'warning' } satisfies SyncActionFeedback;
       }
     },
   });

@@ -20,6 +20,7 @@ import {
 import { clearSyncMount, renderIntoSyncMount } from './components/render-root';
 import { renderTeamSetupDisclosure } from './components/sync-disclosure';
 import { SyncInviteJoinPanels } from './components/sync-invite-join-panels';
+import type { SyncActionFeedback } from './components/sync-inline-feedback';
 import { SyncSharingReview, type SyncSharingReviewItem } from './components/sync-sharing-review';
 import {
   TeamSyncPanel,
@@ -73,10 +74,27 @@ function ensureJoinPanelInSetupSection() {
 
 function setInviteOutputVisibility() {
   const syncInviteOutput = document.getElementById('syncInviteOutput') as HTMLTextAreaElement | null;
+  const syncInviteWarnings = document.getElementById('syncInviteWarnings') as HTMLDivElement | null;
   if (!syncInviteOutput) return;
   const encoded = String(state.lastTeamInvite?.encoded || '').trim();
   syncInviteOutput.value = encoded;
   syncInviteOutput.hidden = !encoded;
+  if (syncInviteWarnings) {
+    const warnings = Array.isArray(state.lastTeamInvite?.warnings) ? state.lastTeamInvite.warnings : [];
+    syncInviteWarnings.textContent = warnings.join(' · ');
+    syncInviteWarnings.hidden = warnings.length === 0;
+  }
+}
+
+function setJoinFeedbackVisibility() {
+  const syncJoinFeedback = document.getElementById('syncJoinFeedback') as HTMLDivElement | null;
+  if (!syncJoinFeedback) return;
+  const feedback = state.syncJoinFlowFeedback;
+  syncJoinFeedback.textContent = feedback?.message || '';
+  syncJoinFeedback.hidden = !feedback?.message;
+  syncJoinFeedback.setAttribute('role', feedback?.tone === 'warning' ? 'alert' : 'status');
+  syncJoinFeedback.setAttribute('aria-live', feedback?.tone === 'warning' ? 'assertive' : 'polite');
+  syncJoinFeedback.className = `peer-meta${feedback ? ` ${feedback.tone === 'warning' ? 'sync-inline-feedback warning' : 'sync-inline-feedback success'}` : ''}`;
 }
 
 function clearContent(node: HTMLElement | null) {
@@ -171,6 +189,7 @@ export function renderTeamSync() {
   renderAdminSetupDisclosure();
   renderInvitePolicySelect();
   setInviteOutputVisibility();
+  setJoinFeedbackVisibility();
 
   const invitePanel = document.getElementById('syncInvitePanel');
   const inviteRestoreParent = document.getElementById('syncAdminSection');
@@ -478,11 +497,12 @@ export function renderTeamSync() {
       onApproveJoinRequest: async (request) => {
         try {
           await api.reviewJoinRequest(request.requestId, 'approve');
-          showGlobalNotice(`Approved ${request.displayName}. They can now sync with the team.`);
+          const feedback = { message: `Approved ${request.displayName}. They can now sync with the team.`, tone: 'success' } satisfies SyncActionFeedback;
+          state.syncJoinRequestsFeedback = feedback;
           await _loadSyncData();
+          return feedback;
         } catch (error) {
-          showGlobalNotice(friendlyError(error, 'Failed to approve join request.'), 'warning');
-          throw error;
+          return { message: friendlyError(error, 'Failed to approve join request.'), tone: 'warning' } satisfies SyncActionFeedback;
         }
       },
       onAttentionAction: async (item) => {
@@ -500,14 +520,15 @@ export function renderTeamSync() {
           cancelLabel: 'Keep request pending',
           tone: 'danger',
         });
-        if (!confirmed) return;
+        if (!confirmed) return null;
         try {
           await api.reviewJoinRequest(request.requestId, 'deny');
-          showGlobalNotice(`Denied join request from ${request.displayName}.`);
+          const feedback = { message: `Denied join request from ${request.displayName}.`, tone: 'success' } satisfies SyncActionFeedback;
+          state.syncJoinRequestsFeedback = feedback;
           await _loadSyncData();
+          return feedback;
         } catch (error) {
-          showGlobalNotice(friendlyError(error, 'Failed to deny join request.'), 'warning');
-          throw error;
+          return { message: friendlyError(error, 'Failed to deny join request.'), tone: 'warning' } satisfies SyncActionFeedback;
         }
       },
       onInspectConflict: (row) => {
@@ -530,22 +551,24 @@ export function renderTeamSync() {
           cancelLabel: 'Keep device record',
           tone: 'danger',
         });
-        if (!confirmed) return;
+        if (!confirmed) return null;
         try {
           await api.deletePeer(row.deviceId);
-          showGlobalNotice(
-            `Removed the broken local device record for ${row.displayName}. If it is still available, you can review it again from Needs attention.`,
-          );
+          const feedback = {
+            message: `Removed the broken local device record for ${row.displayName}. If it is still available, you can review it again from Needs attention.`,
+            tone: 'success',
+          } satisfies SyncActionFeedback;
+          state.syncDiscoveredFeedback = feedback;
           await _loadSyncData();
+          return feedback;
         } catch (error) {
-          showGlobalNotice(friendlyError(error, 'Failed to remove the broken local device record.'), 'warning');
-          throw error;
+          return { message: friendlyError(error, 'Failed to remove the broken local device record.'), tone: 'warning' } satisfies SyncActionFeedback;
         }
       },
       onReviewDiscoveredDevice: async (row) => {
         try {
           const reviewedName = await reviewDiscoveredDeviceName(row.displayName);
-          if (!reviewedName) return;
+          if (!reviewedName) return null;
           const result = await api.acceptDiscoveredPeer(row.deviceId, row.fingerprint);
           const optimisticName = String(result?.name || row.displayName || '').trim() || row.displayName;
           const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
@@ -566,30 +589,36 @@ export function renderTeamSync() {
             },
           ];
           requestPeerScopeReview(row.deviceId);
-          showGlobalNotice(
-            row.approvalBadgeLabel === 'Needs your approval'
-              ? `Approved ${row.displayName} on this device. Two-way trust should be ready once both devices refresh.`
-              : `Step 1 complete on this device for ${row.displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
-          );
+          let feedback: SyncActionFeedback = {
+            message:
+              row.approvalBadgeLabel === 'Needs your approval'
+                ? `Approved ${row.displayName} on this device. Two-way trust should be ready once both devices refresh.`
+                : `Step 1 complete on this device for ${row.displayName}. Finish onboarding on the other device so both sides trust each other for sync.`,
+            tone: 'success',
+          };
           try {
             if (reviewedName.trim() !== optimisticName.trim()) {
               await api.renamePeer(row.deviceId, reviewedName.trim());
-              showGlobalNotice(`Saved device name: ${reviewedName.trim()}.`);
+              state.pendingAcceptedSyncPeers = state.pendingAcceptedSyncPeers.map((peer) =>
+                String(peer?.peer_device_id || '').trim() === row.deviceId
+                  ? { ...peer, name: reviewedName.trim() }
+                  : peer,
+              );
+              feedback = { message: `Connected ${reviewedName.trim()} and saved its name.`, tone: 'success' };
             }
           } catch (error) {
-            showGlobalNotice(friendlyError(error, 'Device connected, but naming did not finish.'), 'warning');
+            feedback = { message: friendlyError(error, 'Device connected, but naming did not finish.'), tone: 'warning' };
           }
+          state.syncDiscoveredFeedback = feedback;
           try {
             await _loadSyncData();
           } catch (error) {
-            showGlobalNotice(
-              friendlyError(error, 'Device connected, but the screen did not refresh yet.'),
-              'warning',
-            );
+            feedback = { message: friendlyError(error, 'Device connected, but the screen did not refresh yet.'), tone: 'warning' };
+            state.syncDiscoveredFeedback = feedback;
           }
+          return feedback;
         } catch (error) {
-          showGlobalNotice(friendlyError(error, 'Failed to review this device.'), 'warning');
-          throw error;
+          return { message: friendlyError(error, 'Failed to review this device.'), tone: 'warning' } satisfies SyncActionFeedback;
         }
       },
       pendingJoinRequests,
@@ -651,6 +680,7 @@ export function initTeamSyncEvents(
         ttl_hours: ttlValue || 24,
       });
       state.lastTeamInvite = result;
+      setInviteOutputVisibility();
       syncInviteOutput.value = String(result.encoded || '');
       syncInviteOutput.hidden = false;
       syncInviteOutput.focus();
@@ -679,15 +709,29 @@ export function initTeamSyncEvents(
     try {
       const result = await api.importCoordinatorInvite(inviteValue);
       state.lastTeamJoin = result;
-      showGlobalNotice(
-        result.status === 'pending'
-          ? 'Join request submitted \u2014 waiting for admin approval.'
-          : 'Joined team successfully.',
-      );
+      let feedback: SyncActionFeedback = {
+        message: result.status === 'pending' ? 'Join request sent. Waiting for admin approval.' : 'Joined the team.',
+        tone: 'success',
+      };
+      state.syncJoinFlowFeedback = feedback;
+      setJoinFeedbackVisibility();
       syncJoinInvite.value = '';
-      await loadSyncData();
+      try {
+        await loadSyncData();
+      } catch (error) {
+        feedback = {
+          message: friendlyError(error, 'Joined the team, but this view has not refreshed yet.'),
+          tone: 'warning',
+        };
+        state.syncJoinFlowFeedback = feedback;
+        setJoinFeedbackVisibility();
+      }
     } catch (error) {
-      showGlobalNotice(friendlyError(error, 'Failed to import invite.'), 'warning');
+      state.syncJoinFlowFeedback = {
+        message: friendlyError(error, 'Failed to import invite.'),
+        tone: 'warning',
+      };
+      setJoinFeedbackVisibility();
     } finally {
       syncJoinButton.disabled = false;
       syncJoinButton.textContent = 'Join team';
