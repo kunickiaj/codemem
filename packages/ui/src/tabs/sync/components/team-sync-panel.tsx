@@ -1,7 +1,10 @@
 import { createPortal } from 'preact/compat';
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
+import { state } from '../../../lib/state';
 import type { UiSyncAttentionItem } from '../view-model';
+import type { SyncActionFeedback } from './sync-inline-feedback';
+import { SyncInlineFeedback } from './sync-inline-feedback';
 
 export interface TeamSyncStatusSummary {
   badgeClassName: string;
@@ -38,12 +41,12 @@ type TeamSyncPanelProps = {
   discoveredRows: TeamSyncDiscoveredRow[];
   joinRequestsMount: HTMLElement | null;
   listMount: HTMLElement;
-  onApproveJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<void>;
+  onApproveJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
   onAttentionAction: (item: UiSyncAttentionItem) => Promise<void>;
-  onDenyJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<void>;
+  onDenyJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
   onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
-  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<void>;
-  onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<void>;
+  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+  onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
   pendingJoinRequests: TeamSyncPendingJoinRequest[];
   presenceStatus: string;
   statusSummary: TeamSyncStatusSummary;
@@ -90,10 +93,11 @@ function PendingJoinRequestRow({
   onDeny,
 }: {
   request: TeamSyncPendingJoinRequest;
-  onApprove: (request: TeamSyncPendingJoinRequest) => Promise<void>;
-  onDeny: (request: TeamSyncPendingJoinRequest) => Promise<void>;
+  onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+  onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
 }) {
   const [busyAction, setBusyAction] = useState<'approve' | 'deny' | null>(null);
+  const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
   const [approveLabel, setApproveLabel] = useState('Approve');
   const [denyLabel, setDenyLabel] = useState('Deny');
 
@@ -111,7 +115,7 @@ function PendingJoinRequestRow({
             setBusyAction('approve');
             setApproveLabel('Approving…');
             try {
-              await onApprove(request);
+              setFeedback((await onApprove(request)) || null);
               setApproveLabel('Approve');
             } catch {
               setApproveLabel('Retry');
@@ -130,10 +134,10 @@ function PendingJoinRequestRow({
             setBusyAction('deny');
             setDenyLabel('Denying…');
             try {
-              await onDeny(request);
+              setFeedback((await onDeny(request)) || null);
               setDenyLabel('Deny');
             } catch {
-              setDenyLabel('Retry deny');
+              setDenyLabel('Retry');
             } finally {
               setBusyAction(null);
             }
@@ -142,6 +146,7 @@ function PendingJoinRequestRow({
           {denyLabel}
         </button>
       </div>
+      <SyncInlineFeedback feedback={feedback} />
     </div>
   );
 }
@@ -154,10 +159,11 @@ function DiscoveredDeviceRow({
 }: {
   row: TeamSyncDiscoveredRow;
   onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
-  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<void>;
-  onReview: (row: TeamSyncDiscoveredRow) => Promise<void>;
+  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+  onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 }) {
   const [busy, setBusy] = useState<'remove' | 'review' | null>(null);
+  const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
   const [reviewLabel, setReviewLabel] = useState(row.actionLabel || 'Review device');
   const [removeLabel, setRemoveLabel] = useState('Remove broken device record');
 
@@ -182,17 +188,17 @@ function DiscoveredDeviceRow({
             type="button"
             className="settings-button"
             disabled={busy !== null}
-            onClick={async () => {
-              setBusy('review');
-              setReviewLabel('Opening…');
-              try {
-                await onReview(row);
-                setReviewLabel(row.actionLabel || 'Review device');
-              } catch {
-                setReviewLabel('Retry review');
-              } finally {
-                setBusy(null);
-              }
+              onClick={async () => {
+                setBusy('review');
+                setReviewLabel('Reviewing…');
+                try {
+                  setFeedback((await onReview(row)) || null);
+                  setReviewLabel(row.actionLabel || 'Review device');
+                } catch {
+                  setReviewLabel('Retry');
+                } finally {
+                  setBusy(null);
+                }
             }}
           >
             {reviewLabel}
@@ -222,10 +228,10 @@ function DiscoveredDeviceRow({
                 setBusy('remove');
                 setRemoveLabel('Removing…');
                 try {
-                  await onRemoveConflict(row);
+                  setFeedback((await onRemoveConflict(row)) || null);
                   setRemoveLabel('Remove broken device record');
                 } catch {
-                  setRemoveLabel('Retry remove');
+                  setRemoveLabel('Retry');
                 } finally {
                   setBusy(null);
                 }
@@ -236,6 +242,7 @@ function DiscoveredDeviceRow({
           </>
         ) : null}
       </div>
+      <SyncInlineFeedback feedback={feedback} />
     </div>
   );
 }
@@ -314,13 +321,14 @@ function DiscoveredPortal({
   mount: HTMLElement | null;
   rows: TeamSyncDiscoveredRow[];
   onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
-  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<void>;
-  onReview: (row: TeamSyncDiscoveredRow) => Promise<void>;
+  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+  onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 }) {
-  if (!mount) return null;
+  if (!mount || (!rows.length && !state.syncDiscoveredFeedback)) return null;
   return createPortal(
     <>
       <div className="sync-action-text">Devices seen on team</div>
+      <SyncInlineFeedback feedback={state.syncDiscoveredFeedback} />
       {rows.map((row) => (
         <DiscoveredDeviceRow
           key={row.deviceId}
@@ -343,13 +351,14 @@ function PendingRequestsPortal({
 }: {
   mount: HTMLElement | null;
   requests: TeamSyncPendingJoinRequest[];
-  onApprove: (request: TeamSyncPendingJoinRequest) => Promise<void>;
-  onDeny: (request: TeamSyncPendingJoinRequest) => Promise<void>;
+  onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+  onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
 }) {
-  if (!mount || !requests.length) return null;
+  if (!mount || (!requests.length && !state.syncJoinRequestsFeedback)) return null;
   return createPortal(
     <>
       <div className="sync-action-text">Pending join requests</div>
+      <SyncInlineFeedback feedback={state.syncJoinRequestsFeedback} />
       <div className="peer-meta">
         {requests.length} pending join request{requests.length === 1 ? '' : 's'}
       </div>

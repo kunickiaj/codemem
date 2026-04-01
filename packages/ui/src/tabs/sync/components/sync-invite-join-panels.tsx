@@ -112,6 +112,7 @@ export function SyncInviteJoinPanels({
           {joinPanel ? (
             <ExistingElementSlot element={joinPanel} hidden={false} restoreParent={joinRestoreParent} />
           ) : null}
+          <div className="peer-meta" id="syncJoinFeedback" hidden />
           <div className="sync-action">
             <div className="sync-action-text">
               This device is not connected to the team yet.

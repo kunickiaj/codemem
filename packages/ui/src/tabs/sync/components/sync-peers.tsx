@@ -18,6 +18,7 @@ import {
 } from '../helpers';
 import { derivePeerTrustSummary, summarizeSyncRunResult, type PeerLike } from '../view-model';
 import { renderIntoSyncMount } from './render-root';
+import { SyncInlineFeedback, type SyncActionFeedback } from './sync-inline-feedback';
 
 type PeerScopeLike = {
   include?: string[];
@@ -43,12 +44,12 @@ type SyncPeerStatus = NonNullable<SyncPeer['status']> & {
 
 type SyncPeerCardProps = {
   peer: SyncPeer;
-  onAssignActor: (peerId: string, actorId: string | null) => Promise<void>;
-  onRemove: (peerId: string, label: string) => Promise<void>;
-  onRename: (peerId: string, name: string) => Promise<void>;
-  onResetScope: (peerId: string) => Promise<void>;
-  onSaveScope: (peerId: string, include: string[], exclude: string[]) => Promise<void>;
-  onSync: (peer: SyncPeer, address: string | undefined) => Promise<ReturnType<typeof summarizeSyncRunResult> | null>;
+  onAssignActor: (peerId: string, actorId: string | null) => Promise<SyncActionFeedback>;
+  onRemove: (peerId: string, label: string) => Promise<SyncActionFeedback>;
+  onRename: (peerId: string, name: string) => Promise<SyncActionFeedback>;
+  onResetScope: (peerId: string) => Promise<SyncActionFeedback>;
+  onSaveScope: (peerId: string, include: string[], exclude: string[]) => Promise<SyncActionFeedback>;
+  onSync: (peer: SyncPeer, address: string | undefined) => Promise<SyncActionFeedback | null>;
 };
 
 type SyncPeersListProps = Omit<SyncPeerCardProps, 'peer'> & {
@@ -116,6 +117,7 @@ function SyncPeerCard({
   const [scopeHost, setScopeHost] = useState<HTMLDivElement | null>(null);
 
   const [renameValue, setRenameValue] = useState(displayName);
+  const [feedback, setFeedback] = useState<SyncActionFeedback | null>(() => state.syncPeerFeedbackById.get(peerId) ?? null);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameLabel, setRenameLabel] = useState('Save name');
   const [syncBusy, setSyncBusy] = useState(false);
@@ -151,6 +153,7 @@ function SyncPeerCard({
 
   useEffect(() => {
     setRenameValue(displayName);
+    setFeedback(state.syncPeerFeedbackById.get(peerId) ?? null);
     setRenameBusy(false);
     setRenameLabel('Save name');
     setSyncBusy(false);
@@ -174,7 +177,9 @@ function SyncPeerCard({
     if (!peerId) return;
     const nextName = renameValue.trim();
     if (!nextName) {
-      showGlobalNotice('Enter a friendly name for this device.', 'warning');
+      const warning = { message: 'Enter a friendly name for this device.', tone: 'warning' } satisfies SyncActionFeedback;
+      setFeedback(warning);
+      state.syncPeerFeedbackById.set(peerId, warning);
       const input = document.querySelector(`[data-device-name-input="${CSS.escape(peerId)}"]`) as
         | HTMLInputElement
         | null;
@@ -183,15 +188,15 @@ function SyncPeerCard({
     }
     setRenameBusy(true);
     setRenameLabel('Saving…');
-    let ok = false;
     try {
-      await onRename(peerId, nextName);
-      ok = true;
+      const nextFeedback = await onRename(peerId, nextName);
+      setFeedback(nextFeedback);
+      state.syncPeerFeedbackById.set(peerId, nextFeedback);
+      setRenameLabel('Save name');
     } catch {
-      setRenameLabel('Retry save');
+      setRenameLabel('Retry');
     } finally {
       setRenameBusy(false);
-      if (ok) setRenameLabel('Save name');
     }
   }
 
@@ -208,7 +213,9 @@ function SyncPeerCard({
     }
     setSyncBusy(true);
     try {
-      await onSync(peer, primaryAddress);
+      const nextFeedback = await onSync(peer, primaryAddress);
+      setFeedback(nextFeedback);
+      if (nextFeedback) state.syncPeerFeedbackById.set(peerId, nextFeedback);
     } finally {
       setSyncBusy(false);
     }
@@ -241,16 +248,16 @@ function SyncPeerCard({
   async function savePerson() {
     if (!peerId) return;
     setApplyActorBusy(true);
-    setApplyActorLabel('Applying…');
-    let ok = false;
+    setApplyActorLabel('Saving…');
     try {
-      await onAssignActor(peerId, selectedActorId || null);
-      ok = true;
+      const nextFeedback = await onAssignActor(peerId, selectedActorId || null);
+      setFeedback(nextFeedback);
+      state.syncPeerFeedbackById.set(peerId, nextFeedback);
+      setApplyActorLabel('Save person');
     } catch {
       setApplyActorLabel('Retry');
     } finally {
       setApplyActorBusy(false);
-      if (ok) setApplyActorLabel('Save person');
     }
   }
 
@@ -258,15 +265,15 @@ function SyncPeerCard({
     if (!peerId) return;
     setSaveScopeBusy(true);
     setSaveScopeLabel('Saving…');
-    let ok = false;
     try {
-      await onSaveScope(peerId, includeEditor.values(), excludeEditor.values());
-      ok = true;
+      const nextFeedback = await onSaveScope(peerId, includeEditor.values(), excludeEditor.values());
+      setFeedback(nextFeedback);
+      state.syncPeerFeedbackById.set(peerId, nextFeedback);
+      setSaveScopeLabel('Save scope');
     } catch {
-      setSaveScopeLabel('Retry save');
+      setSaveScopeLabel('Retry');
     } finally {
       setSaveScopeBusy(false);
-      if (ok) setSaveScopeLabel('Save scope');
     }
   }
 
@@ -274,15 +281,15 @@ function SyncPeerCard({
     if (!peerId) return;
     setResetScopeBusy(true);
     setResetScopeLabel('Resetting…');
-    let ok = false;
     try {
-      await onResetScope(peerId);
-      ok = true;
+      const nextFeedback = await onResetScope(peerId);
+      setFeedback(nextFeedback);
+      state.syncPeerFeedbackById.set(peerId, nextFeedback);
+      setResetScopeLabel('Reset to global scope');
     } catch {
-      setResetScopeLabel('Retry reset');
+      setResetScopeLabel('Retry');
     } finally {
       setResetScopeBusy(false);
-      if (ok) setResetScopeLabel('Reset to global scope');
     }
   }
 
@@ -393,6 +400,7 @@ function SyncPeerCard({
             {applyActorLabel}
           </button>
         </div>
+        <SyncInlineFeedback feedback={feedback} />
         <div ref={setScopeHost} />
       </div>
     </div>
@@ -400,16 +408,21 @@ function SyncPeerCard({
 }
 
 function SyncPeersList(props: SyncPeersListProps) {
+  const sectionFeedback = state.syncPeersSectionFeedback;
   if (!props.peers.length) {
     return (
-      <div className="sync-empty-state">
-        No devices connected on this machine yet. Use the pairing command in Diagnostics to connect another device.
-      </div>
+      <>
+        <SyncInlineFeedback feedback={sectionFeedback} />
+        <div className="sync-empty-state">
+          No devices connected on this machine yet. Use the pairing command in Diagnostics to connect another device.
+        </div>
+      </>
     );
   }
 
   return (
     <>
+      <SyncInlineFeedback feedback={sectionFeedback} />
       {props.peers.map((peer) => {
         const peerId = String(peer.peer_device_id || peer.name || 'unknown-peer');
         return <SyncPeerCard key={peerId} peer={peer} {...props} />;
