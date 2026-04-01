@@ -414,7 +414,7 @@ function SyncPeersList(props: SyncPeersListProps) {
       <>
         <SyncInlineFeedback feedback={sectionFeedback} />
         <div className="sync-empty-state">
-          No devices connected on this machine yet. Use the pairing command in Diagnostics to connect another device.
+          No devices connected on this machine yet. Pair another device from Advanced diagnostics when you are ready.
         </div>
       </>
     );
