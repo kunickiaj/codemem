@@ -358,7 +358,7 @@ export function renderTeamSync() {
           .join(' · ')
       : 'No fresh addresses';
     const noteParts = [addressLabel];
-    if (displayTitle && !addresses.length) noteParts.push(`device id: ${deviceId}`);
+    if (!addresses.length && displayTitle) noteParts.push(`device id: ${deviceId}`);
     let actionMessage: string | null = null;
     let mode: TeamSyncDiscoveredRow['mode'] = canAccept ? 'accept' : 'none';
     let pairedMessage: string | null = null;
