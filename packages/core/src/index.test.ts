@@ -3,6 +3,6 @@ import { VERSION } from "./index.js";
 
 describe("core", () => {
 	it("exports a version string", () => {
-		expect(VERSION).toBe("0.22.2");
+		expect(VERSION).toBe("0.22.3");
 	});
 });
