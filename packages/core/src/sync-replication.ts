@@ -105,6 +105,7 @@ interface MemoryPayload {
 	deleted_at: string | null;
 	rev: number;
 	import_key: string | null;
+	project?: string | null;
 }
 
 function asNumberOrNull(value: unknown): number | null {
@@ -168,6 +169,7 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 		deleted_at: asStringOrNull(raw.deleted_at),
 		rev: asNumberOrNull(raw.rev) ?? 0,
 		import_key: asStringOrNull(raw.import_key),
+		project: asStringOrNull(raw.project),
 	};
 }
 
@@ -546,6 +548,15 @@ export function recordReplicationOp(
 			? metadata.clock_device_id
 			: opts.deviceId;
 
+	// Resolve session project so peers can reconstruct the project association.
+	const sessionProject = row?.session_id
+		? (d
+				.select({ project: schema.sessions.project })
+				.from(schema.sessions)
+				.where(eq(schema.sessions.id, row.session_id))
+				.get()?.project ?? null)
+		: null;
+
 	// Build payload from the memory row so peers can reconstruct the full item.
 	// Explicit payload override takes precedence (used by tests).
 	let payloadJson: string | null;
@@ -563,6 +574,7 @@ export function recordReplicationOp(
 		};
 
 		payloadJson = toJson({
+			project: sessionProject,
 			session_id: row.session_id,
 			kind: row.kind,
 			title: row.title,
@@ -822,10 +834,13 @@ export function loadMemorySnapshotPageForPeer(
 				typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim()
 					? metadata.clock_device_id.trim()
 					: String(row.memory.origin_device_id ?? "local");
+			// Include session project in the payload so targets can associate
+			// replicated memories with the correct project.
+			const payloadWithProject = { ...payload, project: row.sessionProject ?? null };
 			items.push({
 				entity_id: importKey,
 				op_type: row.memory.deleted_at || row.memory.active === 0 ? "delete" : "upsert",
-				payload_json: toJson(payload),
+				payload_json: toJson(payloadWithProject),
 				clock_rev: Number(row.memory.rev ?? 0),
 				clock_updated_at: String(
 					row.memory.updated_at ?? row.memory.created_at ?? new Date().toISOString(),
@@ -1792,6 +1807,8 @@ export function applyReplicationOps(
 								concepts: toJsonNullable(payload.concepts),
 								files_read: toJsonNullable(payload.files_read),
 								files_modified: toJsonNullable(payload.files_modified),
+								user_prompt_id: payload.user_prompt_id,
+								prompt_number: payload.prompt_number,
 							})
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
@@ -1799,7 +1816,16 @@ export function applyReplicationOps(
 						// Insert new memory item — skip if malformed
 						const payload = parseMemoryPayload(op, result.errors);
 						if (!payload) continue;
-						const sessionId = ensureSessionForReplication(d, null, op.clock_updated_at);
+						const replicatedProject =
+							typeof payload.project === "string" && payload.project.trim()
+								? payload.project.trim()
+								: null;
+						const sessionId = ensureSessionForReplication(
+							d,
+							null,
+							op.clock_updated_at,
+							replicatedProject,
+						);
 						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
 
 						d.insert(schema.memoryItems)
@@ -1831,6 +1857,8 @@ export function applyReplicationOps(
 								concepts: toJsonNullable(payload.concepts),
 								files_read: toJsonNullable(payload.files_read),
 								files_modified: toJsonNullable(payload.files_modified),
+								user_prompt_id: payload.user_prompt_id,
+								prompt_number: payload.prompt_number,
 							})
 							.run();
 					}
@@ -1919,6 +1947,7 @@ function ensureSessionForReplication(
 	d: ReturnType<typeof drizzle>,
 	sessionId: number | null,
 	createdAt: string,
+	project?: string | null,
 ): number {
 	if (sessionId != null) {
 		const row = d
@@ -1928,12 +1957,13 @@ function ensureSessionForReplication(
 			.get();
 		if (row) return sessionId;
 	}
-	// Create a new session for replicated data
+	// Create a new session for replicated data, preserving the source project.
 	const now = createdAt || new Date().toISOString();
 	const rows = d
 		.insert(schema.sessions)
 		.values({
 			started_at: now,
+			project: project ?? null,
 			user: "sync",
 			tool_version: "sync_replication",
 			metadata_json: toJson({ source: "sync" }),

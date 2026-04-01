@@ -1756,3 +1756,237 @@ describe("applyReplicationOps", () => {
 		expect(mem.tags_text).toBe("existing-tag");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Payload round-trip parity — ensures recordReplicationOp, parseMemoryPayload,
+// and applyReplicationOps all agree on which fields are carried through the
+// replication pipeline.  If you add a field to one and not the others, this
+// test will catch the drift.
+// ---------------------------------------------------------------------------
+
+describe("replication payload round-trip parity", () => {
+	let db: InstanceType<typeof Database>;
+	let sessionId: number;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		sessionId = insertTestSession(db);
+		setSyncResetState(db, { generation: 1, snapshot_id: "snap-rt", baseline_cursor: null });
+	});
+
+	afterEach(() => db.close());
+
+	it("round-trips all payload fields through record → parse → apply", () => {
+		const now = new Date().toISOString();
+
+		// Insert a memory with every field populated
+		db.prepare(`
+			INSERT INTO memory_items (
+				session_id, kind, title, subtitle, body_text, confidence,
+				tags_text, active, created_at, updated_at, metadata_json,
+				actor_id, actor_display_name, visibility, workspace_id,
+				workspace_kind, origin_device_id, origin_source, trust_state,
+				narrative, facts, concepts, files_read, files_modified,
+				user_prompt_id, prompt_number, import_key, rev
+			) VALUES (
+				?, 'decision', 'Round Trip Title', 'Sub', 'Body text here', 0.85,
+				'tag-a tag-b', 1, ?, ?, '{"custom_key":"custom_val"}',
+				'actor-rt', 'Actor Name', 'shared', 'ws-1',
+				'shared', 'device-origin', 'test', 'trusted',
+				'A narrative', '["fact-1"]', '["concept-1"]', '["file-a"]', '["file-b"]',
+				42, 7, 'roundtrip-key-1', 1
+			)
+		`).run(sessionId, now, now);
+
+		// Also set the session project so it flows through
+		db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("test-project", sessionId);
+
+		const memoryId = (
+			db.prepare("SELECT id FROM memory_items WHERE import_key = 'roundtrip-key-1'").get() as {
+				id: number;
+			}
+		).id;
+
+		// Record a replication op (source side)
+		const opId = recordReplicationOp(db, {
+			memoryId,
+			opType: "upsert",
+			deviceId: "source-device",
+		});
+
+		// Read the op back
+		const op = db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as any;
+		const payload = JSON.parse(op.payload_json);
+
+		// Verify the payload includes all the fields we care about
+		expect(payload.project).toBe("test-project");
+		expect(payload.kind).toBe("decision");
+		expect(payload.title).toBe("Round Trip Title");
+		expect(payload.subtitle).toBe("Sub");
+		expect(payload.body_text).toBe("Body text here");
+		expect(payload.confidence).toBe(0.85);
+		expect(payload.actor_id).toBe("actor-rt");
+		expect(payload.actor_display_name).toBe("Actor Name");
+		expect(payload.visibility).toBe("shared");
+		expect(payload.workspace_id).toBe("ws-1");
+		expect(payload.workspace_kind).toBe("shared");
+		expect(payload.origin_device_id).toBe("device-origin");
+		expect(payload.origin_source).toBe("test");
+		expect(payload.trust_state).toBe("trusted");
+		expect(payload.narrative).toBe("A narrative");
+		expect(payload.user_prompt_id).toBe(42);
+		expect(payload.prompt_number).toBe(7);
+
+		// Now apply this op on a "target" DB (same DB, different import key scenario)
+		// Delete the original memory AND the recorded op so the apply treats this as new
+		db.prepare("DELETE FROM memory_items WHERE id = ?").run(memoryId);
+		db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(opId);
+
+		const replicationOp: ReplicationOp = {
+			op_id: "roundtrip-apply-op",
+			entity_type: "memory_item",
+			entity_id: "roundtrip-key-1",
+			op_type: "upsert",
+			payload_json: op.payload_json,
+			clock_rev: op.clock_rev,
+			clock_updated_at: op.clock_updated_at,
+			clock_device_id: "remote-device",
+			device_id: "remote-device",
+			created_at: op.created_at,
+		};
+
+		const result = applyReplicationOps(db, [replicationOp], "target-device");
+		expect(result.applied).toBe(1);
+
+		// Verify the round-tripped memory has the right fields
+		const applied = db
+			.prepare(
+				"SELECT m.*, s.project as session_project FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.import_key = 'roundtrip-key-1'",
+			)
+			.get() as any;
+
+		expect(applied).toBeTruthy();
+		expect(applied.session_project).toBe("test-project");
+		expect(applied.kind).toBe("decision");
+		expect(applied.title).toBe("Round Trip Title");
+		expect(applied.subtitle).toBe("Sub");
+		expect(applied.body_text).toBe("Body text here");
+		expect(applied.confidence).toBe(0.85);
+		expect(applied.actor_id).toBe("actor-rt");
+		expect(applied.actor_display_name).toBe("Actor Name");
+		expect(applied.visibility).toBe("shared");
+		expect(applied.workspace_id).toBe("ws-1");
+		expect(applied.workspace_kind).toBe("shared");
+		expect(applied.origin_device_id).toBe("device-origin");
+		expect(applied.origin_source).toBe("test");
+		expect(applied.trust_state).toBe("trusted");
+		expect(applied.narrative).toBe("A narrative");
+		expect(applied.user_prompt_id).toBe(42);
+		expect(applied.prompt_number).toBe(7);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Bootstrap snapshot round-trip parity — ensures the snapshot page builder
+// (loadMemorySnapshotPageForPeer) and applyBootstrapSnapshot agree on which
+// fields survive a full snapshot transfer.  If you add a field to one side
+// and not the other, this test will catch the drift.
+// ---------------------------------------------------------------------------
+
+describe("bootstrap snapshot round-trip parity", () => {
+	let db: InstanceType<typeof Database>;
+	let sessionId: number;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		sessionId = insertTestSession(db);
+		setSyncResetState(db, { generation: 1, snapshot_id: "snap-bs", baseline_cursor: null });
+	});
+
+	afterEach(() => db.close());
+
+	it("round-trips all fields through snapshot page → applyBootstrapSnapshot", async () => {
+		const now = new Date().toISOString();
+
+		// Set the session project
+		db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("bootstrap-project", sessionId);
+
+		// Insert a fully-populated shared memory
+		db.prepare(`
+			INSERT INTO memory_items (
+				session_id, kind, title, subtitle, body_text, confidence,
+				tags_text, active, created_at, updated_at, metadata_json,
+				actor_id, actor_display_name, visibility, workspace_id,
+				workspace_kind, origin_device_id, origin_source, trust_state,
+				narrative, facts, concepts, files_read, files_modified,
+				user_prompt_id, prompt_number, import_key, rev
+			) VALUES (
+				?, 'feature', 'Bootstrap Title', 'BSub', 'Bootstrap body', 0.9,
+				'btag-a btag-b', 1, ?, ?, '{"bs_key":"bs_val"}',
+				'actor-bs', 'Bootstrap Actor', 'shared', 'ws-bs',
+				'shared', 'device-bs-origin', 'bootstrap-test', 'trusted',
+				'Bootstrap narrative', '["bs-fact"]', '["bs-concept"]', '["bs-file-r"]', '["bs-file-w"]',
+				99, 3, 'bootstrap-roundtrip-key', 2
+			)
+		`).run(sessionId, now, now);
+
+		// Build a snapshot page from the source DB (simulates the serving side)
+		const { applyBootstrapSnapshot } = await import("./sync-bootstrap.js");
+
+		const page = loadMemorySnapshotPageForPeer(db, {
+			generation: 1,
+			snapshotId: "snap-bs",
+			baselineCursor: null,
+			limit: 100,
+		});
+
+		expect(page.items.length).toBeGreaterThanOrEqual(1);
+		const snapshotItem = page.items.find((i) => i.entity_id === "bootstrap-roundtrip-key");
+		expect(snapshotItem).toBeTruthy();
+
+		// Now apply the snapshot on a "target" DB (same DB after wiping source data)
+		db.prepare("DELETE FROM memory_items").run();
+		db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+
+		const resetInfo = {
+			generation: 1,
+			snapshot_id: "snap-bs",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+			reset_required: true as const,
+			reason: "initial_bootstrap" as const,
+		};
+
+		const result = applyBootstrapSnapshot(db, "target-peer", page.items, resetInfo);
+		expect(result.ok).toBe(true);
+		expect(result.applied).toBeGreaterThanOrEqual(1);
+
+		// Verify every field round-tripped through the bootstrap pipeline
+		const applied = db
+			.prepare(
+				"SELECT m.*, s.project as session_project FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.import_key = 'bootstrap-roundtrip-key'",
+			)
+			.get() as any;
+
+		expect(applied).toBeTruthy();
+		expect(applied.session_project).toBe("bootstrap-project");
+		expect(applied.kind).toBe("feature");
+		expect(applied.title).toBe("Bootstrap Title");
+		expect(applied.subtitle).toBe("BSub");
+		expect(applied.body_text).toBe("Bootstrap body");
+		expect(applied.confidence).toBe(0.9);
+		expect(applied.actor_id).toBe("actor-bs");
+		expect(applied.actor_display_name).toBe("Bootstrap Actor");
+		expect(applied.visibility).toBe("shared");
+		expect(applied.workspace_id).toBe("ws-bs");
+		expect(applied.workspace_kind).toBe("shared");
+		expect(applied.origin_device_id).toBe("device-bs-origin");
+		expect(applied.origin_source).toBe("bootstrap-test");
+		expect(applied.trust_state).toBe("trusted");
+		expect(applied.narrative).toBe("Bootstrap narrative");
+		expect(applied.user_prompt_id).toBe(99);
+		expect(applied.prompt_number).toBe(3);
+	});
+});
