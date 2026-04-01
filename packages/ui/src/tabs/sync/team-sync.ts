@@ -28,7 +28,12 @@ import {
   type TeamSyncStatusSummary,
 } from './components/team-sync-panel';
 import { openDuplicatePersonDialog, openSyncConfirmDialog, openSyncInputDialog } from './sync-dialogs';
-import { deriveCoordinatorApprovalSummary, SYNC_TERMINOLOGY, summarizeSyncRunResult } from './view-model';
+import {
+  deriveCoordinatorApprovalSummary,
+  resolveFriendlyDeviceName,
+  SYNC_TERMINOLOGY,
+  summarizeSyncRunResult,
+} from './view-model';
 import { RadixSelect, type RadixSelectOption } from '../../components/primitives/radix-select';
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = 'syncTeamActionsMount';
@@ -180,7 +185,11 @@ export function renderTeamSync() {
   ensureJoinPanelInSetupSection();
 
   const coordinator = state.lastSyncCoordinator;
-  const syncView = state.lastSyncViewModel || { summary: {}, attentionItems: [] };
+  const syncView = state.lastSyncViewModel || {
+    summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
+    duplicatePeople: [],
+    attentionItems: [],
+  };
 
   const focusAttentionTarget = (item: { kind?: string; deviceId?: string }) => {
     if (item.kind === 'possible-duplicate-person') {
@@ -316,7 +325,11 @@ export function renderTeamSync() {
     : [];
   const discoveredRows: TeamSyncDiscoveredRow[] = discoveredDevices.map((device) => {
     const deviceId = String(device.device_id || '').trim();
-    const displayName = String(device.display_name || '').trim() || deviceId || 'Discovered device';
+    const rawCoordinatorName = String(device.display_name || '').trim();
+    const displayName =
+      resolveFriendlyDeviceName({ coordinatorName: rawCoordinatorName, deviceId }) ||
+      'Discovered device';
+    const displayTitle = deviceId && displayName !== deviceId ? deviceId : null;
     const fingerprint = String(device.fingerprint || '').trim();
     const groupIds = Array.isArray(device.groups)
       ? device.groups.map((value) => String(value || '').trim()).filter(Boolean)
@@ -348,7 +361,8 @@ export function renderTeamSync() {
           .filter(Boolean)
           .join(' · ')
       : 'No fresh addresses';
-    const noteParts = [deviceId, addressLabel];
+    const noteParts = [addressLabel];
+    if (displayTitle) noteParts.push(`device id: ${deviceId}`);
     let actionMessage: string | null = null;
     let mode: TeamSyncDiscoveredRow['mode'] = canAccept ? 'accept' : 'none';
     let pairedMessage: string | null = null;
@@ -401,6 +415,7 @@ export function renderTeamSync() {
           : 'Not connected on this device',
       deviceId,
       displayName,
+      displayTitle,
       fingerprint,
       mode,
       note: noteParts.join(' · '),
