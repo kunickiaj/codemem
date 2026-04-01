@@ -156,11 +156,11 @@ export function renderSyncStatus() {
 
   if (syncMeta) {
     const parts = syncDisabled
-      ? ['State: Disabled', 'Sync is optional and currently off']
+      ? ['Advanced sync state', 'Sync is optional and currently off']
       : syncNoPeers
-        ? ['State: No peers', 'Add peers to enable replication']
+        ? ['Advanced sync state', 'Add peers to enable replication']
         : [
-            `State: ${daemonStateLabel}`,
+            `Advanced state: ${daemonStateLabel}`,
             `Peers: ${peerCount}`,
             lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : 'Last sync: never',
           ];

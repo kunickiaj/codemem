@@ -103,6 +103,8 @@ export function SyncInviteJoinPanels({
   pairedPeerCount,
   presenceStatus,
 }: SyncInviteJoinPanelsProps) {
+  const showInviteActions = presenceStatus !== 'not_enrolled';
+
   return (
     <>
       {presenceStatus === 'not_enrolled' ? (
@@ -121,12 +123,14 @@ export function SyncInviteJoinPanels({
         </>
       ) : null}
 
-      <InviteToggleRow
-        invitePanel={invitePanel}
-        invitePanelOpen={invitePanelOpen}
-        inviteRestoreParent={inviteRestoreParent}
-        onToggle={onToggleInvitePanel}
-      />
+      {showInviteActions ? (
+        <InviteToggleRow
+          invitePanel={invitePanel}
+          invitePanelOpen={invitePanelOpen}
+          inviteRestoreParent={inviteRestoreParent}
+          onToggle={onToggleInvitePanel}
+        />
+      ) : null}
 
       {!pairedPeerCount && presenceStatus === 'posted' ? <PairingCopyRow /> : null}
     </>
