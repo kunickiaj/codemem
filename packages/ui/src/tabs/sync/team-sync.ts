@@ -370,28 +370,25 @@ export function renderTeamSync() {
           .join(' · ')
       : 'No fresh addresses';
     const noteParts = [addressLabel];
-    if (displayTitle) noteParts.push(`device id: ${deviceId}`);
+    if (displayTitle && !addresses.length) noteParts.push(`device id: ${deviceId}`);
     let actionMessage: string | null = null;
     let mode: TeamSyncDiscoveredRow['mode'] = canAccept ? 'accept' : 'none';
     let pairedMessage: string | null = null;
 
     if (hasConflict) {
-      noteParts.push('repair the local peer before accepting this discovered device');
       mode = 'conflict';
     } else if (hasAmbiguousCoordinatorGroup) {
-      noteParts.push('this device appears in multiple coordinator groups; review team setup before approving it here');
       actionMessage =
         'This device is visible through multiple coordinator groups. Fix that team setup first, then approve it here.';
       mode = 'ambiguous';
     } else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
-      noteParts.push('scope review pending in People');
       actionMessage = `Review this device's scope in People & devices next.`;
       mode = 'scope-pending';
     } else if (pairedPeer?.last_error) {
-      noteParts.push(`paired error: ${String(pairedPeer.last_error)}`);
+      noteParts.push(`error: ${String(pairedPeer.last_error)}`);
       mode = 'paired';
     } else if (pairedPeer?.status?.peer_state) {
-      noteParts.push(`paired status: ${String(pairedPeer.status.peer_state)}`);
+      noteParts.push(`status: ${String(pairedPeer.status.peer_state)}`);
       mode = 'paired';
     } else if (!pairedPeer && device.stale) {
       actionMessage = 'Wait for a fresh coordinator presence update.';
@@ -399,7 +396,6 @@ export function renderTeamSync() {
     } else if (pairedPeer) {
       mode = 'paired';
     }
-    if (approvalSummary.description) noteParts.push(approvalSummary.description);
     if (mode === 'paired') {
       pairedMessage =
         approvalSummary.state === 'waiting-for-other-device'
