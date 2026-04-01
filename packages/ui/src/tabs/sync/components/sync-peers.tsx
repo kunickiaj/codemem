@@ -362,12 +362,10 @@ function SyncPeerCard({
       <div className="peer-scope">
         {scopeReviewRequested ? (
           <div className="peer-meta">
-            Review this device&apos;s sync scope now. Global defaults apply until you save an override here.
+            Review this device&apos;s sharing scope now.
           </div>
         ) : pendingScopeReview ? (
-          <div className="peer-meta">
-            Scope review still pending. Save an override here or reset to global scope when you are done reviewing. Manual syncs can proceed, but they will use the current effective scope until you change it.
-          </div>
+          <div className="peer-meta">Scope review still pending.</div>
         ) : null}
 
         <div className="peer-scope-summary">Assigned person</div>
@@ -376,7 +374,6 @@ function SyncPeerCard({
             ? `Assigned to ${peer.claimed_local_actor ? 'You' : String(peer.actor_display_name)}`
             : 'Unassigned person'}
         </div>
-        <div className="peer-meta">{trustSummary.description}</div>
         <div className="peer-actor-row">
           <div className="sync-radix-select-host sync-actor-select-host">
             <RadixSelect
