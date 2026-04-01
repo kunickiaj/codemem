@@ -460,17 +460,30 @@ export function renderTeamSync() {
     displayName: String(request.display_name || request.device_id || 'Pending device'),
     requestId: String(request.request_id || ''),
   }));
-  const discoveredActionableCount = discoveredRows.filter(
+  const visibleDiscoveredRows = discoveredRows.filter(
+    (row) => row.mode !== 'paired' && row.mode !== 'none',
+  );
+  const discoveredActionableCount = visibleDiscoveredRows.filter(
     (row) => row.mode === 'accept' || row.mode === 'scope-pending',
   ).length;
   const actionableCount = attentionItems.length + pendingJoinRequests.length + discoveredActionableCount;
+  const attentionParts: string[] = [];
+  if (attentionItems.length > 0) {
+    const deviceItems = attentionItems.filter((item) => item.kind !== 'possible-duplicate-person');
+    const duplicateItems = attentionItems.filter((item) => item.kind === 'possible-duplicate-person');
+    if (deviceItems.length > 0) attentionParts.push(`${deviceItems.length} device${deviceItems.length === 1 ? '' : 's'}`);
+    if (duplicateItems.length > 0) attentionParts.push(`${duplicateItems.length} duplicate${duplicateItems.length === 1 ? '' : 's'}`);
+  }
+  if (pendingJoinRequests.length > 0) attentionParts.push(`${pendingJoinRequests.length} join request${pendingJoinRequests.length === 1 ? '' : 's'}`);
+  if (discoveredActionableCount > 0) attentionParts.push(`${discoveredActionableCount} discovered`);
+  const attentionDetail = attentionParts.join(', ');
   const teamLabel = (coordinator.groups || []).join(', ') || 'none';
   const statusSummary: TeamSyncStatusSummary = {
     badgeClassName: `pill ${presenceStatus === 'posted' ? 'pill-success' : presenceStatus === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
     headline:
       presenceStatus === 'posted'
         ? actionableCount > 0
-          ? `${actionableCount} item${actionableCount === 1 ? '' : 's'} need attention`
+          ? `${attentionDetail} need${actionableCount === 1 ? 's' : ''} attention`
           : 'Everything is healthy'
         : presenceStatus === 'not_enrolled'
           ? 'This device is not enrolled in the team yet'
@@ -488,10 +501,10 @@ export function renderTeamSync() {
         : `Team: ${teamLabel}. Fix the current sync issue first, then use the rest of this card to verify the team state.`;
 
   if (discoveredPanel) {
-    discoveredPanel.hidden = discoveredRows.length === 0 && !state.syncDiscoveredFeedback;
+    discoveredPanel.hidden = visibleDiscoveredRows.length === 0 && !state.syncDiscoveredFeedback;
   }
   if (discoveredMeta) {
-    discoveredMeta.textContent = discoveredRows.length
+    discoveredMeta.textContent = visibleDiscoveredRows.length
       ? 'Review anything here that still needs trust, repair, or approval.'
       : '';
   }
@@ -524,7 +537,7 @@ export function renderTeamSync() {
         presenceStatus,
       }),
       discoveredListMount: discoveredList,
-      discoveredRows,
+      discoveredRows: visibleDiscoveredRows,
       joinRequestsMount: joinRequests,
       listMount: list,
       onApproveJoinRequest: async (request) => {
