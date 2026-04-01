@@ -522,10 +522,15 @@
         background: var(--control-bg);
         color: var(--control-text);
         padding: 5px 12px;
+        min-width: 28px;
+        min-height: 28px;
         border-radius: var(--radius-pill);
         font-size: 12px;
         font-family: var(--font-sans);
         cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         transition: background 0.15s ease, border-color 0.15s ease;
         white-space: nowrap;
       }
@@ -1008,8 +1013,14 @@
       .peer-scope-input { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); padding: 8px 10px; font: inherit; }
       .peer-scope-actions { display: flex; gap: var(--sp-2); }
       .peer-actions { display: flex; gap: 6px; }
-      .peer-actions button { border: 1px solid var(--border); background: transparent; border-radius: var(--radius-pill); padding: 5px 10px; font-family: var(--font-sans); font-size: 12px; cursor: pointer; color: var(--text-secondary); }
+      .peer-actions button { border: 1px solid var(--border); background: transparent; border-radius: var(--radius-pill); padding: 5px 10px; min-width: 28px; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-sans); font-size: 12px; cursor: pointer; color: var(--text-secondary); }
       .peer-actions button:hover { border-color: var(--border-hover); background: var(--surface-2); }
+      .peer-card,
+      .actor-row,
+      .peer-scope-input,
+      .actor-list {
+        scroll-margin-top: 110px;
+      }
       .peer-scope-editor-wrap {
         display: grid;
         gap: var(--sp-2);

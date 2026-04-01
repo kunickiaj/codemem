@@ -170,7 +170,12 @@ function SyncPeerCard({
 
   useEffect(() => {
     if (!scopeReviewRequested || !cardRef.current) return;
-    queueMicrotask(() => cardRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+    queueMicrotask(() =>
+      cardRef.current?.scrollIntoView({
+        block: 'center',
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      }),
+    );
   }, [scopeReviewRequested]);
 
   async function rename() {

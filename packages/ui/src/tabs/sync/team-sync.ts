@@ -109,6 +109,14 @@ function pulseAttentionTarget(target: HTMLElement | null) {
   window.setTimeout(() => target.classList.remove('sync-attention-target'), 900);
 }
 
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function syncScrollBehavior(): ScrollBehavior {
+  return prefersReducedMotion() ? 'auto' : 'smooth';
+}
+
 function renderInvitePolicySelect() {
   const mount = document.getElementById('syncInvitePolicyMount') as HTMLElement | null;
   if (!mount) return;
@@ -223,7 +231,7 @@ export function renderTeamSync() {
     if (item.kind === 'possible-duplicate-person') {
       const actorList = document.getElementById('syncActorsList');
       if (actorList instanceof HTMLElement) {
-        actorList.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        actorList.scrollIntoView({ block: 'center', behavior: syncScrollBehavior() });
         pulseAttentionTarget(actorList);
       }
       return;
@@ -233,7 +241,7 @@ export function renderTeamSync() {
     if (item.kind === 'name-device') {
       const renameInput = document.querySelector(`[data-device-name-input="${CSS.escape(deviceId)}"]`);
       if (renameInput instanceof HTMLInputElement) {
-        renameInput.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        renameInput.scrollIntoView({ block: 'center', behavior: syncScrollBehavior() });
         renameInput.focus();
         renameInput.select();
         pulseAttentionTarget(renameInput);
@@ -242,13 +250,13 @@ export function renderTeamSync() {
     }
     const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
     if (peerCard instanceof HTMLElement) {
-      peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      peerCard.scrollIntoView({ block: 'center', behavior: syncScrollBehavior() });
       pulseAttentionTarget(peerCard);
       return;
     }
     const discoveredRow = document.querySelector(`[data-discovered-device-id="${CSS.escape(deviceId)}"]`);
     if (discoveredRow instanceof HTMLElement) {
-      discoveredRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      discoveredRow.scrollIntoView({ block: 'center', behavior: syncScrollBehavior() });
       pulseAttentionTarget(discoveredRow);
     }
   };
@@ -565,7 +573,7 @@ export function renderTeamSync() {
       onInspectConflict: (row) => {
         const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(row.deviceId)}"]`);
         if (peerCard instanceof HTMLElement) {
-          peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          peerCard.scrollIntoView({ block: 'center', behavior: syncScrollBehavior() });
           showGlobalNotice(`Opened the conflicting local device record for ${row.displayName}.`, 'warning');
           return;
         }
