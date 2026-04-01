@@ -101,6 +101,14 @@ function clearContent(node: HTMLElement | null) {
   if (node) node.textContent = '';
 }
 
+function pulseAttentionTarget(target: HTMLElement | null) {
+  if (!(target instanceof HTMLElement)) return;
+  target.classList.remove('sync-attention-target');
+  void target.offsetWidth;
+  target.classList.add('sync-attention-target');
+  window.setTimeout(() => target.classList.remove('sync-attention-target'), 900);
+}
+
 function renderInvitePolicySelect() {
   const mount = document.getElementById('syncInvitePolicyMount') as HTMLElement | null;
   if (!mount) return;
@@ -216,6 +224,7 @@ export function renderTeamSync() {
       const actorList = document.getElementById('syncActorsList');
       if (actorList instanceof HTMLElement) {
         actorList.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        pulseAttentionTarget(actorList);
       }
       return;
     }
@@ -227,17 +236,20 @@ export function renderTeamSync() {
         renameInput.scrollIntoView({ block: 'center', behavior: 'smooth' });
         renameInput.focus();
         renameInput.select();
+        pulseAttentionTarget(renameInput);
         return;
       }
     }
     const peerCard = document.querySelector(`[data-peer-device-id="${CSS.escape(deviceId)}"]`);
     if (peerCard instanceof HTMLElement) {
       peerCard.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      pulseAttentionTarget(peerCard);
       return;
     }
     const discoveredRow = document.querySelector(`[data-discovered-device-id="${CSS.escape(deviceId)}"]`);
     if (discoveredRow instanceof HTMLElement) {
       discoveredRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      pulseAttentionTarget(discoveredRow);
     }
   };
 
@@ -302,7 +314,7 @@ export function renderTeamSync() {
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
     ? `Team: ${(coordinator.groups || []).join(', ') || 'none'}`
-    : 'Join an existing team or create one before connecting devices and people.';
+    : 'Start by joining an existing team or creating one, then connect people and devices.';
   meta.title = configured ? String(coordinator.coordinator_url || '').trim() : '';
 
   if (!configured) {
@@ -444,6 +456,7 @@ export function renderTeamSync() {
     (row) => row.mode === 'accept' || row.mode === 'scope-pending',
   ).length;
   const actionableCount = attentionItems.length + pendingJoinRequests.length + discoveredActionableCount;
+  const teamLabel = (coordinator.groups || []).join(', ') || 'none';
   const statusSummary: TeamSyncStatusSummary = {
     badgeClassName: `pill ${presenceStatus === 'posted' ? 'pill-success' : presenceStatus === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
     headline:
@@ -457,14 +470,26 @@ export function renderTeamSync() {
     metricsText: metricParts.join(' · '),
     presenceLabel,
   };
+  meta.textContent =
+    presenceStatus === 'posted'
+      ? actionableCount > 0
+        ? `Team: ${teamLabel}. Start with the next step below, then scan the current team status.`
+        : `Team: ${teamLabel}. Team status and device details are below.`
+      : presenceStatus === 'not_enrolled'
+        ? `Team: ${teamLabel}. Enroll this device first, then return here to review the rest of the team.`
+        : `Team: ${teamLabel}. Fix the current sync issue first, then use the rest of this card to verify the team state.`;
 
-  if (discoveredPanel) discoveredPanel.hidden = discoveredRows.length === 0;
+  if (discoveredPanel) {
+    discoveredPanel.hidden = discoveredRows.length === 0 && !state.syncDiscoveredFeedback;
+  }
   if (discoveredMeta) {
     discoveredMeta.textContent = discoveredRows.length
-      ? 'Team devices and discovery results. Review anything that still needs trust, repair, or approval.'
+      ? 'Review anything here that still needs trust, repair, or approval.'
       : '';
   }
-  if (joinRequests) joinRequests.hidden = pendingJoinRequests.length === 0;
+  if (joinRequests) {
+    joinRequests.hidden = pendingJoinRequests.length === 0 && !state.syncJoinRequestsFeedback;
+  }
 
   teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
   const actionMount = document.createElement('div');

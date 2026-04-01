@@ -52,6 +52,21 @@ type TeamSyncPanelProps = {
   statusSummary: TeamSyncStatusSummary;
 };
 
+function SectionHeading({
+  count,
+  label,
+}: {
+  count?: number;
+  label: string;
+}) {
+  return (
+    <div className="sync-section-heading">
+      <div className="sync-action-text sync-section-label">{label}</div>
+      {count ? <span className="badge actor-badge sync-section-count">{count}</span> : null}
+    </div>
+  );
+}
+
 function AttentionRow({
   item,
   onAction,
@@ -250,10 +265,11 @@ function DiscoveredDeviceRow({
 function ActionContent(props: TeamSyncPanelProps) {
   const hasAttentionItems = props.actionItems.length > 0;
   const hasOtherActionableWork = props.actionableCount > props.actionItems.length;
+  const showNextStepsLabel = hasAttentionItems || hasOtherActionableWork || props.presenceStatus !== 'posted';
 
   return (
     <>
-      {hasAttentionItems ? <div className="sync-action-text">Needs attention</div> : null}
+      {showNextStepsLabel ? <SectionHeading label="Next steps" /> : null}
       {hasAttentionItems
         ? props.actionItems.map((item) => (
             <AttentionRow key={item.id} item={item} onAction={props.onAttentionAction} />
@@ -285,7 +301,7 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	if (!children) return null;
 	return (
 		<>
-			<div className="sync-action-text sync-section-label">Team setup</div>
+			<SectionHeading label="Keep the team moving" />
 			{children}
 		</>
 	);
@@ -301,11 +317,11 @@ function TeamStatusPortal({
   return createPortal(
     <div className="sync-team-summary">
       <div className="sync-team-status-row">
-        <span className="sync-team-status-label">Status</span>
+        <span className="sync-team-status-label">Team status</span>
         <span className={statusSummary.badgeClassName}>{statusSummary.presenceLabel}</span>
       </div>
-      {statusSummary.headline ? <div className="sync-team-metrics">{statusSummary.headline}</div> : null}
-      <div className="sync-team-metrics">{statusSummary.metricsText}</div>
+      {statusSummary.headline ? <div className="sync-team-headline">{statusSummary.headline}</div> : null}
+      <div className="sync-team-metrics sync-team-metrics-secondary">{statusSummary.metricsText}</div>
     </div>,
     mount,
   );
@@ -327,7 +343,7 @@ function DiscoveredPortal({
   if (!mount || (!rows.length && !state.syncDiscoveredFeedback)) return null;
   return createPortal(
     <>
-      <div className="sync-action-text">Devices seen on team</div>
+      <SectionHeading count={rows.length || undefined} label="Devices seen on team" />
       <SyncInlineFeedback feedback={state.syncDiscoveredFeedback} />
       {rows.map((row) => (
         <DiscoveredDeviceRow
@@ -357,11 +373,8 @@ function PendingRequestsPortal({
   if (!mount || (!requests.length && !state.syncJoinRequestsFeedback)) return null;
   return createPortal(
     <>
-      <div className="sync-action-text">Pending join requests</div>
+      <SectionHeading count={requests.length || undefined} label="Pending join requests" />
       <SyncInlineFeedback feedback={state.syncJoinRequestsFeedback} />
-      <div className="peer-meta">
-        {requests.length} pending join request{requests.length === 1 ? '' : 's'}
-      </div>
       {requests.map((request) => (
         <PendingJoinRequestRow
           key={request.requestId}

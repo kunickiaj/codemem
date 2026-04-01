@@ -46,7 +46,10 @@ function InviteToggleRow({
   return (
     <>
       <div className="sync-action">
-        <div className="sync-action-text">Generate an invite to add another teammate to this team.</div>
+        <div className="sync-action-text">
+          Add another teammate.
+          <span className="sync-action-command">Generate an invite when you are ready to bring another device into this team.</span>
+        </div>
         <button type="button" className="settings-button" onClick={onToggle}>
           {invitePanelOpen ? 'Hide invite form' : 'Invite a teammate'}
         </button>
@@ -66,8 +69,8 @@ function PairingCopyRow() {
   return (
     <div className="sync-action">
       <div className="sync-action-text">
-        No devices are paired yet.
-        <span className="sync-action-command">Use the pairing command in Advanced diagnostics when you are ready to connect another device.</span>
+        Pair another device.
+        <span className="sync-action-command">Use the pairing command in Advanced diagnostics when you are ready to connect one.</span>
       </div>
       <button
         type="button"
@@ -115,9 +118,9 @@ export function SyncInviteJoinPanels({
           <div className="peer-meta" id="syncJoinFeedback" hidden />
           <div className="sync-action">
             <div className="sync-action-text">
-              This device is not connected to the team yet.
+              This device is not on the team yet.
               <span className="sync-action-command">
-                Import a team invite or ask your admin to enroll this device
+                Import an invite or ask an admin to enroll it first.
               </span>
             </div>
           </div>

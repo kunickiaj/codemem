@@ -349,7 +349,7 @@ function createRepairItem(device: { id: string; name: string; summary: string })
     priority: 10,
     title: `${device.name} needs repair`,
     summary: device.summary,
-    actionLabel: 'Review device',
+    actionLabel: 'Open device',
     deviceId: device.id,
   };
 }
@@ -361,7 +361,7 @@ function createReviewItem(device: { id: string; name: string; summary: string; k
     priority: 20,
     title: `${device.name} is available to review`,
     summary: device.summary,
-    actionLabel: 'Review device',
+    actionLabel: 'Open device',
     deviceId: device.id,
   };
 }
@@ -373,7 +373,7 @@ function createNamingItem(device: { id: string; name: string; summary: string })
     priority: 30,
     title: `Name ${device.name}`,
     summary: device.summary,
-    actionLabel: 'Name device',
+    actionLabel: 'Go to name field',
     deviceId: device.id,
   };
 }
@@ -438,7 +438,7 @@ export function deriveSyncViewModel(input: {
       summary: candidate.includesLocal
         ? 'At least one entry is marked as you. Confirm whether these records represent the same person.'
         : 'Multiple people share this name. Confirm whether they should stay separate or be combined.',
-      actionLabel: 'Review people',
+      actionLabel: 'Go to people',
       actorIds: candidate.actorIds,
     });
   });
