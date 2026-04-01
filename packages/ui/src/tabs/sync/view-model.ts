@@ -97,6 +97,7 @@ export interface DiscoveredDeviceLike {
   display_name?: string;
   stale?: boolean;
   fingerprint?: string;
+  groups?: string[];
   needs_local_approval?: boolean;
   waiting_for_peer_approval?: boolean;
 }
@@ -353,9 +354,9 @@ function createRepairItem(device: { id: string; name: string; summary: string })
   };
 }
 
-function createReviewItem(device: { id: string; name: string; summary: string }): UiSyncAttentionItem {
+function createReviewItem(device: { id: string; name: string; summary: string; key?: string }): UiSyncAttentionItem {
   return {
-    id: `review:${device.id}`,
+    id: `review:${device.id}:${device.key || 'default'}`,
     kind: 'review-team-device',
     priority: 20,
     title: `${device.name} is available to review`,
@@ -484,9 +485,32 @@ export function deriveSyncViewModel(input: {
       attentionItems.push(
         createReviewItem({
           id: device.deviceId,
+          key: 'other-device-trust',
           name,
           summary:
             'You accepted this device. Finish onboarding on the other device so it trusts this one too.',
+        }),
+      );
+    }
+
+    if (!device.peer && device.discovered?.stale) {
+      attentionItems.push(
+        createReviewItem({
+          id: device.deviceId,
+          key: 'stale-discovery',
+          name,
+          summary: 'This device is no longer advertising fresh coordinator presence. Wait for it to check in again before connecting it here.',
+        }),
+      );
+    }
+
+    if (!device.peer && Array.isArray(device.discovered?.groups) && device.discovered.groups.length > 1) {
+      attentionItems.push(
+        createReviewItem({
+          id: device.deviceId,
+          key: 'ambiguous-groups',
+          name,
+          summary: 'This device appears in multiple coordinator groups. Review the team setup before approving it here.',
         }),
       );
     }
