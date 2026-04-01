@@ -281,8 +281,9 @@ export function renderTeamSync() {
 
   const configured = Boolean(coordinator && coordinator.configured);
   meta.textContent = configured
-    ? `Coordinator: ${String(coordinator.coordinator_url || '')} · group: ${(coordinator.groups || []).join(', ') || 'none'}`
+    ? `Team: ${(coordinator.groups || []).join(', ') || 'none'}`
     : 'Join an existing team or create one before connecting devices and people.';
+  meta.title = configured ? String(coordinator.coordinator_url || '').trim() : '';
 
   if (!configured) {
     teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
@@ -314,19 +315,6 @@ export function renderTeamSync() {
   if (offlineTeamDeviceCount > 0) {
     metricParts.push(`Offline ${offlineTeamDeviceCount}`);
   }
-  const statusSummary: TeamSyncStatusSummary = {
-    badgeClassName: `pill ${presenceStatus === 'posted' ? 'pill-success' : presenceStatus === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
-    headline:
-      presenceStatus === 'posted'
-        ? attentionItems.length > 0
-          ? `${attentionItems.length} item${attentionItems.length === 1 ? '' : 's'} need review`
-          : 'Everything important looks healthy'
-        : presenceStatus === 'not_enrolled'
-          ? 'This device is not enrolled in the team yet'
-          : 'Sync needs attention',
-    metricsText: metricParts.join(' · '),
-    presenceLabel,
-  };
 
   const discoveredDevices = Array.isArray(coordinator.discovered_devices)
     ? coordinator.discovered_devices
@@ -430,11 +418,28 @@ export function renderTeamSync() {
     displayName: String(request.display_name || request.device_id || 'Pending device'),
     requestId: String(request.request_id || ''),
   }));
+  const discoveredActionableCount = discoveredRows.filter(
+    (row) => row.mode === 'accept' || row.mode === 'scope-pending',
+  ).length;
+  const actionableCount = attentionItems.length + pendingJoinRequests.length + discoveredActionableCount;
+  const statusSummary: TeamSyncStatusSummary = {
+    badgeClassName: `pill ${presenceStatus === 'posted' ? 'pill-success' : presenceStatus === 'not_enrolled' ? 'pill-warning' : 'pill-error'}`,
+    headline:
+      presenceStatus === 'posted'
+        ? actionableCount > 0
+          ? `${actionableCount} item${actionableCount === 1 ? '' : 's'} need attention`
+          : 'Everything important looks healthy'
+        : presenceStatus === 'not_enrolled'
+          ? 'This device is not enrolled in the team yet'
+          : 'Sync needs attention',
+    metricsText: metricParts.join(' · '),
+    presenceLabel,
+  };
 
   if (discoveredPanel) discoveredPanel.hidden = discoveredRows.length === 0;
   if (discoveredMeta) {
     discoveredMeta.textContent = discoveredRows.length
-      ? 'Visible through team discovery. Review before connecting them on this machine.'
+      ? 'Team devices and discovery results. Review anything that still needs trust, repair, or approval.'
       : '';
   }
   if (joinRequests) joinRequests.hidden = pendingJoinRequests.length === 0;
@@ -448,6 +453,7 @@ export function renderTeamSync() {
     actionMount,
     h(TeamSyncPanel, {
       actionItems: attentionItems,
+      actionableCount,
       children: h(SyncInviteJoinPanels, {
         invitePanel,
         invitePanelOpen: teamInvitePanelOpen,

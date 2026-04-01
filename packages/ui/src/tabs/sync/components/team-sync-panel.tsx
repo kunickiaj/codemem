@@ -32,6 +32,7 @@ export interface TeamSyncPendingJoinRequest {
 
 type TeamSyncPanelProps = {
   actionItems: UiSyncAttentionItem[];
+  actionableCount: number;
   children?: ComponentChildren;
   discoveredListMount: HTMLElement | null;
   discoveredRows: TeamSyncDiscoveredRow[];
@@ -99,8 +100,7 @@ function PendingJoinRequestRow({
   return (
     <div className="actor-row">
       <div className="actor-details">
-        <div className="actor-title">{request.displayName}</div>
-        <div className="peer-meta">request: {request.requestId}</div>
+        <div className="actor-title" title={request.requestId || undefined}>{request.displayName}</div>
       </div>
       <div className="actor-actions">
         <button
@@ -198,7 +198,7 @@ function DiscoveredDeviceRow({
             {reviewLabel}
           </button>
         ) : null}
-        {row.mode === 'stale' || row.mode === 'ambiguous' || row.mode === 'scope-pending' ? (
+        {(row.mode === 'stale' || row.mode === 'ambiguous' || row.mode === 'scope-pending') && row.actionMessage ? (
           <div className="peer-meta">{row.actionMessage}</div>
         ) : null}
         {row.mode === 'paired' && row.pairedMessage ? (
@@ -242,18 +242,24 @@ function DiscoveredDeviceRow({
 
 function ActionContent(props: TeamSyncPanelProps) {
   const hasAttentionItems = props.actionItems.length > 0;
+  const hasOtherActionableWork = props.actionableCount > props.actionItems.length;
 
   return (
     <>
       {hasAttentionItems ? <div className="sync-action-text">Needs attention</div> : null}
       {hasAttentionItems
-        ? props.actionItems.slice(0, 4).map((item) => (
+        ? props.actionItems.map((item) => (
             <AttentionRow key={item.id} item={item} onAction={props.onAttentionAction} />
           ))
         : null}
-      {!hasAttentionItems && props.presenceStatus === 'posted' ? (
+      {!hasAttentionItems && !hasOtherActionableWork && props.presenceStatus === 'posted' ? (
         <div className="sync-action">
           <div className="sync-action-text">No immediate issues</div>
+        </div>
+      ) : null}
+      {!hasAttentionItems && hasOtherActionableWork && props.presenceStatus === 'posted' ? (
+        <div className="sync-action">
+          <div className="sync-action-text">Review the team items below</div>
         </div>
       ) : null}
       {!hasAttentionItems && props.presenceStatus === 'not_enrolled' ? (
