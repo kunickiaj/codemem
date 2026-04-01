@@ -1,5 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as syncBootstrap from "./sync-bootstrap.js";
+import * as syncHttpClient from "./sync-http-client.js";
 import {
 	consecutiveConnectivityFailures,
 	cursorAdvances,
@@ -321,5 +323,211 @@ describe("shouldSkipOfflinePeer", () => {
 			).run("peer-1", ts, "Connection refused");
 		}
 		expect(shouldSkipOfflinePeer(db, "peer-1")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// syncOnce — auto-bootstrap path
+// ---------------------------------------------------------------------------
+
+describe("syncOnce auto-bootstrap", () => {
+	let db: InstanceType<typeof Database>;
+	const peerDeviceId = "peer-bootstrap-1";
+	const address = "http://127.0.0.1:9999";
+	const fingerprint = "test-fingerprint-abc";
+
+	function seedPeer(opts?: { withCursor?: boolean; withSharedMemory?: boolean }) {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, name, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?, ?)",
+		).run(
+			peerDeviceId,
+			"test-peer",
+			fingerprint,
+			JSON.stringify([address]),
+			new Date().toISOString(),
+		);
+
+		// Seed device identity
+		db.prepare(
+			"INSERT OR REPLACE INTO device_state (key, value) VALUES ('device_id', 'local-device-id')",
+		).run();
+
+		if (opts?.withCursor) {
+			db.prepare(
+				"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+			).run(
+				peerDeviceId,
+				"2026-01-01T00:00:00Z|op-1",
+				"2026-01-01T00:00:00Z|op-1",
+				new Date().toISOString(),
+			);
+		}
+
+		if (opts?.withSharedMemory) {
+			const sessionId = db
+				.prepare("INSERT INTO sessions (started_at, user, tool_version) VALUES (?, ?, ?)")
+				.run(new Date().toISOString(), "test", "test").lastInsertRowid;
+			db.prepare(
+				"INSERT INTO memory_items (session_id, kind, title, body_text, import_key, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			).run(
+				Number(sessionId),
+				"discovery",
+				"existing",
+				"existing shared memory",
+				"existing-key-1",
+				"shared",
+				new Date().toISOString(),
+				new Date().toISOString(),
+			);
+		}
+	}
+
+	// Mock the status endpoint and bootstrap functions
+	const statusPayload = {
+		fingerprint,
+		protocol_version: "2",
+		sync_reset: {
+			generation: 1,
+			snapshot_id: "snap-1",
+			baseline_cursor: "2026-01-01T00:00:00Z|base",
+			retained_floor_cursor: null,
+		},
+	};
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		addSyncTables(db);
+		// Add replication_cursors table used by getReplicationCursor
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS replication_cursors (
+				peer_device_id TEXT PRIMARY KEY,
+				last_applied_cursor TEXT,
+				last_acked_cursor TEXT
+			);
+			CREATE TABLE IF NOT EXISTS device_state (
+				key TEXT PRIMARY KEY,
+				value TEXT
+			);
+		`);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		db.close();
+	});
+
+	it("triggers bootstrap for empty local state with no cursor", async () => {
+		seedPeer();
+
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([200, statusPayload]);
+		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockResolvedValue({
+			items: [],
+			generation: 1,
+			snapshot_id: "snap-1",
+			baseline_cursor: "2026-01-01T00:00:00Z|base",
+		});
+		vi.spyOn(syncBootstrap, "applyBootstrapSnapshot").mockReturnValue({
+			ok: true,
+			applied: 42,
+			deleted: 0,
+		});
+
+		const result = await syncOnce(db, peerDeviceId, [address]);
+
+		expect(result.ok).toBe(true);
+		expect(result.opsIn).toBe(42);
+		expect(syncBootstrap.fetchAllSnapshotPages).toHaveBeenCalledOnce();
+		expect(syncBootstrap.applyBootstrapSnapshot).toHaveBeenCalledOnce();
+
+		// Verify the elevated page size was used
+		const fetchCall = vi.mocked(syncBootstrap.fetchAllSnapshotPages).mock.calls[0];
+		expect(fetchCall?.[3]?.pageSize).toBe(2000);
+	});
+
+	it("falls through to incremental when local shared data exists", async () => {
+		seedPeer({ withSharedMemory: true });
+
+		// Mock the status + incremental ops path
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
+			200,
+			{
+				...statusPayload,
+				reset_required: false,
+				generation: 1,
+				snapshot_id: "snap-1",
+				baseline_cursor: "2026-01-01T00:00:00Z|base",
+				retained_floor_cursor: null,
+				ops: [],
+				next_cursor: null,
+			},
+		]);
+		const fetchSpy = vi.spyOn(syncBootstrap, "fetchAllSnapshotPages");
+
+		const result = await syncOnce(db, peerDeviceId, [address]);
+
+		// Should NOT have called bootstrap
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("falls through to incremental when cursor already exists", async () => {
+		seedPeer({ withCursor: true });
+
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
+			200,
+			{
+				...statusPayload,
+				reset_required: false,
+				generation: 1,
+				snapshot_id: "snap-1",
+				baseline_cursor: "2026-01-01T00:00:00Z|base",
+				retained_floor_cursor: null,
+				ops: [],
+				next_cursor: null,
+			},
+		]);
+		const fetchSpy = vi.spyOn(syncBootstrap, "fetchAllSnapshotPages");
+
+		const result = await syncOnce(db, peerDeviceId, [address]);
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("bails when shared memories appear during bootstrap fetch", async () => {
+		seedPeer();
+
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([200, statusPayload]);
+		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockImplementation(async () => {
+			// Simulate another process inserting shared memory during the fetch
+			const sessionId = db
+				.prepare("INSERT INTO sessions (started_at, user, tool_version) VALUES (?, ?, ?)")
+				.run(new Date().toISOString(), "other", "other").lastInsertRowid;
+			db.prepare(
+				"INSERT INTO memory_items (session_id, kind, title, body_text, import_key, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			).run(
+				Number(sessionId),
+				"discovery",
+				"sneaky",
+				"appeared during fetch",
+				"sneaky-key",
+				"shared",
+				new Date().toISOString(),
+				new Date().toISOString(),
+			);
+
+			return {
+				items: [],
+				generation: 1,
+				snapshot_id: "snap-1",
+				baseline_cursor: "2026-01-01T00:00:00Z|base",
+			};
+		});
+		const applySpy = vi.spyOn(syncBootstrap, "applyBootstrapSnapshot");
+
+		const result = await syncOnce(db, peerDeviceId, [address]);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("shared memory change(s) appeared during initial bootstrap");
+		expect(applySpy).not.toHaveBeenCalled();
 	});
 });
