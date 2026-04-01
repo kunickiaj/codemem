@@ -287,7 +287,7 @@ export interface SyncResetBoundary {
 
 export interface SyncResetRequired extends SyncResetBoundary {
 	reset_required: true;
-	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
+	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch" | "initial_bootstrap";
 }
 
 export interface SyncDirtyLocalState {
