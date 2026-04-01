@@ -971,7 +971,7 @@ syncCommand.addCommand(
 						baseline_cursor: string | null;
 					} | null = null;
 					let baseUrl = "";
-					let lastAddressError = "";
+					const addressResults: Array<{ address: string; result: string }> = [];
 
 					for (const address of addresses) {
 						const candidate = buildBaseUrl(address);
@@ -987,11 +987,11 @@ syncCommand.addCommand(
 						try {
 							const [code, payload] = await requestJson("GET", statusUrl, { headers });
 							if (code !== 200 || !payload) {
-								lastAddressError = `${candidate}: status ${code}`;
+								addressResults.push({ address: candidate, result: `status ${code}` });
 								continue;
 							}
 							if (payload.fingerprint !== peer.pinned_fingerprint) {
-								lastAddressError = `${candidate}: fingerprint mismatch`;
+								addressResults.push({ address: candidate, result: "fingerprint mismatch" });
 								continue;
 							}
 							const reset = payload.sync_reset as Record<string, unknown> | undefined;
@@ -1007,20 +1007,25 @@ syncCommand.addCommand(
 										typeof reset.baseline_cursor === "string" ? reset.baseline_cursor : null,
 								};
 								baseUrl = candidate;
+								addressResults.push({ address: candidate, result: "ok" });
 								break;
 							}
-							lastAddressError = `${candidate}: missing sync_reset boundary`;
+							addressResults.push({ address: candidate, result: "missing sync_reset boundary" });
 						} catch (err) {
-							lastAddressError = `${candidate}: ${err instanceof Error ? err.message : String(err)}`;
+							addressResults.push({
+								address: candidate,
+								result: err instanceof Error ? err.message : String(err),
+							});
 						}
 					}
 
 					if (!boundary || !baseUrl) {
-						const detail = lastAddressError
-							? `peer unreachable or missing reset boundary (${lastAddressError})`
+						const summary = addressResults.map((r) => `${r.address}: ${r.result}`).join("; ");
+						const detail = summary
+							? `no reachable peer with valid reset boundary. Tried: ${summary}`
 							: "peer unreachable or missing reset boundary";
 						if (opts.json) {
-							console.log(JSON.stringify({ ok: false, error: detail }));
+							console.log(JSON.stringify({ ok: false, error: detail, addresses: addressResults }));
 						} else {
 							p.log.error(detail);
 						}
