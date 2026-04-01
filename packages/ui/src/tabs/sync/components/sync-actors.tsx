@@ -108,13 +108,14 @@ function SyncActorRow({ actor, hiddenLocalDuplicateCount, onRename, onMerge }: S
       <div className="actor-details">
         <div className="actor-title">
           <strong>{actorDisplayLabel(actor)}</strong>
-          <span className={`badge actor-badge${actor.is_local ? ' local' : ''}`}>
+          <span
+            className={`badge actor-badge${actor.is_local ? ' local' : ''}`}
+            title={actor.is_local ? localActorNote(hiddenLocalDuplicateCount) : undefined}
+          >
             {actor.is_local ? 'You' : `${count} device${count === 1 ? '' : 's'}`}
           </span>
         </div>
-        <div className="peer-meta">
-          {actor.is_local ? localActorNote(hiddenLocalDuplicateCount) : `${count} assigned device${count === 1 ? '' : 's'}`}
-        </div>
+        {!actor.is_local ? <div className="peer-meta">{count} assigned device{count === 1 ? '' : 's'}</div> : null}
       </div>
 
       <div className="actor-actions">
