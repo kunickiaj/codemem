@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MemoryStore } from "@codemem/core";
 import { describe, expect, it } from "vitest";
 import {
 	buildForegroundRunnerArgs,
@@ -7,6 +11,7 @@ import {
 	isLoopbackOnlyHost,
 	isSqliteVecLoadFailure,
 	pickViewerPidCandidate,
+	prepareViewerDatabase,
 	sqliteVecFailureDiagnostics,
 } from "./serve.js";
 import {
@@ -177,6 +182,26 @@ describe("serve command option resolution", () => {
 		expect(isLocalHost("::1")).toBe(true);
 		expect(isLocalHost("0.0.0.0")).toBe(true);
 		expect(isLocalHost("example.com")).toBe(false);
+	});
+
+	it("prepares a fresh viewer database before startup", () => {
+		const dir = mkdtempSync(join(tmpdir(), "codemem-serve-"));
+		const dbPath = join(dir, "viewer.sqlite");
+		try {
+			const prepared = prepareViewerDatabase(dbPath);
+			expect(prepared).toBe(dbPath);
+
+			process.env.CODEMEM_EMBEDDING_DISABLED = "1";
+			const db = new MemoryStore(dbPath);
+			try {
+				expect(db.dbPath).toBe(dbPath);
+			} finally {
+				db.close();
+				delete process.env.CODEMEM_EMBEDDING_DISABLED;
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("distinguishes loopback-only viewer binds from network-exposed binds", () => {
