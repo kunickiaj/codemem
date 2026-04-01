@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/mcp",
-	"version": "0.22.2",
+	"version": "0.22.3",
 	"type": "module",
 	"types": "./dist/index.d.ts",
 	"exports": {

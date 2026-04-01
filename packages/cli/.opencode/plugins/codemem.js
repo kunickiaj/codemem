@@ -15,7 +15,7 @@ import {
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
-const PINNED_BACKEND_VERSION = "0.22.2";
+const PINNED_BACKEND_VERSION = "0.22.3";
 const COMPAT_CHECK_DELAY_MS = 1500;
 const COMPAT_CHECK_CACHE_TTL_MS = 5 * 60 * 1000;
 
