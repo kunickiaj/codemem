@@ -4,6 +4,7 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
+	initDatabase,
 	isEmbeddingDisabled,
 	type MemoryStore,
 	ObserverClient,
@@ -72,6 +73,10 @@ export function isLikelyViewerCommand(command: string): boolean {
 		lowered.includes("packages/cli/dist/index.js") ||
 		lowered.includes("/cli/dist/index.js")
 	);
+}
+
+export function prepareViewerDatabase(dbPath?: string | null): string {
+	return initDatabase(dbPath ?? undefined).path;
 }
 
 export function pickViewerPidCandidate(
@@ -348,6 +353,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		process.exitCode = 1;
 		return;
 	}
+	const preparedDb = prepareViewerDatabase(invocation.dbPath);
 
 	const observer = new ObserverClient();
 	let store: MemoryStore;
@@ -436,7 +442,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			);
 			p.intro("codemem viewer");
 			p.log.success(`Listening on http://${info.address}:${info.port}`);
-			p.log.info(`Database: ${dbPath}`);
+			p.log.info(`Database: ${preparedDb}`);
 			p.log.step("Raw event sweeper started");
 			if (syncConfig.syncRetentionEnabled) {
 				retentionRunner.start();

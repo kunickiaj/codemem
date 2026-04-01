@@ -99,6 +99,23 @@ describe("maintenance", () => {
 		expect(vacuum.sizeBytes).toBeGreaterThan(0);
 	});
 
+	it("initializes a fresh database schema", () => {
+		const dbPath = createDbPath("fresh-init");
+
+		const init = initDatabase(dbPath);
+		expect(init.path).toBe(dbPath);
+		expect(init.sizeBytes).toBeGreaterThan(0);
+
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			expect(() => db.prepare("SELECT 1 FROM memory_items LIMIT 1").get()).not.toThrow();
+			expect(() => db.prepare("SELECT 1 FROM sessions LIMIT 1").get()).not.toThrow();
+			expect(db.pragma("user_version", { simple: true })).toBeGreaterThan(0);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("reports max retry depth from raw_event_flush_batches.attempt_count", () => {
 		const dbPath = createDbPath("retry-depth");
 		seedMaintenanceDb(dbPath);

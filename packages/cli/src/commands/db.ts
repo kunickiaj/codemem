@@ -68,7 +68,7 @@ dbCommand
 	.addCommand(
 		new Command("init")
 			.configureHelp(helpStyle)
-			.description("Verify the SQLite database is present and schema-ready")
+			.description("Create or verify the SQLite database and schema")
 			.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 			.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 			.action((opts: { db?: string; dbPath?: string }) => {

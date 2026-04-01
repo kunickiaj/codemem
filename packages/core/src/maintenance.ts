@@ -1,10 +1,17 @@
 import { statSync } from "node:fs";
 import { and, eq, gt, gte, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { assertSchemaReady, connect, type Database, resolveDbPath } from "./db.js";
+import {
+	assertSchemaReady,
+	connect,
+	type Database,
+	getSchemaVersion,
+	resolveDbPath,
+} from "./db.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
 import { projectClause } from "./project.js";
 import * as schema from "./schema.js";
+import { bootstrapSchema } from "./schema-bootstrap.js";
 
 export interface RawEventStatusItem {
 	source: string;
@@ -39,10 +46,18 @@ function withDb<T>(dbPath: string | undefined, fn: (db: Database, resolvedPath: 
 }
 
 export function initDatabase(dbPath?: string): { path: string; sizeBytes: number } {
-	return withDb(dbPath, (_db, resolvedPath) => {
+	const resolvedPath = resolveDbPath(dbPath);
+	const db = connect(resolvedPath);
+	try {
+		if (getSchemaVersion(db) === 0) {
+			bootstrapSchema(db);
+		}
+		assertSchemaReady(db);
 		const stats = statSync(resolvedPath);
 		return { path: resolvedPath, sizeBytes: stats.size };
-	});
+	} finally {
+		db.close();
+	}
 }
 
 export function vacuumDatabase(dbPath?: string): { path: string; sizeBytes: number } {
