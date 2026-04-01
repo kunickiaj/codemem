@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Official CodeMem plugins for Claude Code",
-    "version": "0.22.0"
+    "version": "0.22.1"
   },
   "plugins": [
     {
       "name": "codemem",
       "source": "./plugins/claude",
       "description": "Persistent memory for Claude Code. Capture work across sessions and recall relevant context.",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "author": {
         "name": "Adam Kunicki"
       },
