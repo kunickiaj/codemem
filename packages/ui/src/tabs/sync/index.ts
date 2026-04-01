@@ -20,7 +20,26 @@ export { renderSyncPeers } from './people';
 /* ── Data loading ────────────────────────────────────────── */
 
 let lastSyncHash = '';
-let cachedSyncStatus: { key: string; expiresAtMs: number; payload: any } | null = null;
+type SyncStatusResponseLike = {
+  status?: Record<string, unknown> | null;
+  peers?: Array<{ peer_device_id?: string }>;
+  coordinator?: Record<string, unknown> | null;
+  join_requests?: unknown[];
+  sharing_review?: unknown[];
+  attempts?: unknown[];
+  legacy_devices?: unknown[];
+};
+
+type SyncActorListResponseLike = {
+  items?: unknown[];
+};
+
+type SyncPeerSummaryLike = {
+  peer_device_id?: string;
+};
+
+let cachedSyncStatus: { key: string; expiresAtMs: number; payload: SyncStatusResponseLike } | null = null;
+let latestSyncLoadRequestId = 0;
 
 const HEALTH_SYNC_STATUS_CACHE_TTL_MS = 15_000;
 
@@ -28,7 +47,7 @@ function syncStatusCacheKey(project: string): string {
   return `project:${project || ''}|includeJoinRequests:false`;
 }
 
-function readCachedSyncStatus(project: string): any | null {
+function readCachedSyncStatus(project: string): SyncStatusResponseLike | null {
   const key = syncStatusCacheKey(project);
   if (!cachedSyncStatus) return null;
   if (cachedSyncStatus.key !== key) return null;
@@ -36,7 +55,7 @@ function readCachedSyncStatus(project: string): any | null {
   return cachedSyncStatus.payload;
 }
 
-function writeCachedSyncStatus(project: string, payload: any): void {
+function writeCachedSyncStatus(project: string, payload: SyncStatusResponseLike): void {
   cachedSyncStatus = {
     key: syncStatusCacheKey(project),
     expiresAtMs: Date.now() + HEALTH_SYNC_STATUS_CACHE_TTL_MS,
@@ -44,7 +63,7 @@ function writeCachedSyncStatus(project: string, payload: any): void {
   };
 }
 
-function normalizeSyncStatusForCache(payload: any): any {
+function normalizeSyncStatusForCache(payload: SyncStatusResponseLike): SyncStatusResponseLike {
   if (!payload || typeof payload !== 'object') return payload;
   return {
     ...payload,
@@ -53,30 +72,38 @@ function normalizeSyncStatusForCache(payload: any): any {
 }
 
 export async function loadSyncData() {
+  const requestId = ++latestSyncLoadRequestId;
   try {
     const project = state.currentProject || '';
     const includeJoinRequests = state.activeTab === 'sync';
     const useCache = state.activeTab === 'health';
+    let fetchedFreshSyncStatus = false;
 
-    let payload: any;
+    let payload: SyncStatusResponseLike;
     if (useCache) {
       payload = readCachedSyncStatus(project);
       if (!payload) {
         payload = await api.loadSyncStatus(true, project, { includeJoinRequests: false });
-        writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
+        fetchedFreshSyncStatus = true;
       }
     } else {
       payload = await api.loadSyncStatus(true, project, { includeJoinRequests });
-      writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
+      fetchedFreshSyncStatus = true;
     }
 
-    let actorsPayload: any = null;
+    let actorsPayload: SyncActorListResponseLike | null = null;
     let actorLoadError = false;
     const duplicatePersonDecisions = readDuplicatePersonDecisions();
     try {
       actorsPayload = await api.loadSyncActors();
     } catch {
       actorLoadError = true;
+    }
+
+    if (requestId !== latestSyncLoadRequestId) return;
+
+    if (fetchedFreshSyncStatus) {
+      writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
     }
 
     // Skip re-render if data hasn't changed since last poll
@@ -93,9 +120,9 @@ export async function loadSyncData() {
       state.lastSyncActors = [];
     }
     const payloadPeers = Array.isArray(payload.peers) ? payload.peers : [];
-    const realPeerIds = new Set(payloadPeers.map((peer: any) => String(peer?.peer_device_id || '').trim()).filter(Boolean));
+    const realPeerIds = new Set(payloadPeers.map((peer: SyncPeerSummaryLike) => String(peer?.peer_device_id || '').trim()).filter(Boolean));
     const pendingPeers = Array.isArray(state.pendingAcceptedSyncPeers)
-      ? state.pendingAcceptedSyncPeers.filter((peer: any) => {
+      ? state.pendingAcceptedSyncPeers.filter((peer: SyncPeerSummaryLike) => {
           const peerId = String(peer?.peer_device_id || '').trim();
           return peerId && !realPeerIds.has(peerId);
         })
@@ -132,6 +159,7 @@ export async function loadSyncData() {
           'People controls are temporarily unavailable. Device status and sync health still loaded.';
     }
   } catch {
+    if (requestId !== latestSyncLoadRequestId) return;
     // Clear all skeletons so the error state is visible, not masked by loading placeholders
     hideSkeleton('syncTeamSkeleton');
     hideSkeleton('syncActorsSkeleton');
@@ -140,6 +168,12 @@ export async function loadSyncData() {
     const syncMeta = document.getElementById('syncMeta');
     if (syncMeta) syncMeta.textContent = 'Sync unavailable';
   }
+}
+
+export function resetSyncLoadStateForTests() {
+  lastSyncHash = '';
+  cachedSyncStatus = null;
+  latestSyncLoadRequestId = 0;
 }
 
 export async function loadPairingData() {
