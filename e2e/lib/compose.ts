@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { writeCommandArtifact, type CommandRecord } from "./artifacts.js";
 
+const DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
 export interface RunCommandOptions {
 	artifactsDir: string;
 	artifactName: string;
@@ -23,6 +25,7 @@ export function runCommand(command: string, args: string[], options: RunCommandO
 		env: options.env ?? process.env,
 		encoding: "utf8",
 		timeout: options.timeoutMs ?? 120_000,
+		maxBuffer: DEFAULT_MAX_BUFFER_BYTES,
 	});
 	const record: RunCommandResult = {
 		command: stringifyCommand(command, args),

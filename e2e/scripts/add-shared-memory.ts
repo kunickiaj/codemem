@@ -1,4 +1,6 @@
-import { initDatabase, MemoryStore, resolveDbPath } from "../../packages/core/src/index.ts";
+import { randomUUID } from "node:crypto";
+import { initDatabase, resolveDbPath } from "../../packages/core/src/index.ts";
+import { connect } from "../../packages/core/src/db.ts";
 
 function parseArgs(argv: string[]): { dbPath: string; title: string; body: string } {
 	let dbPath = "/data/mem.sqlite";
@@ -25,24 +27,49 @@ async function main(): Promise<void> {
 	const { dbPath, title, body } = parseArgs(process.argv);
 	const resolvedDbPath = resolveDbPath(dbPath);
 	initDatabase(resolvedDbPath);
-	const store = new MemoryStore(resolvedDbPath);
+	const db = connect(resolvedDbPath);
 	try {
-		const sessionId = store.startSession({
-			cwd: "/workspace/e2e-local-dirty",
-			project: "e2e-bootstrap-refusal",
-			user: "e2e",
-			toolVersion: "e2e-local-dirty",
-		});
-		store.remember(sessionId, "exploration", title, body, 0.5, ["e2e", "bootstrap"], {
-			visibility: "shared",
-			workspace_kind: "shared",
-			workspace_id: "shared:bootstrap-refusal",
-		});
-		store.endSession(sessionId, { local_dirty_marker: true });
-		await store.flushPendingVectorWrites();
-		console.log(JSON.stringify({ ok: true, title }, null, 2));
+		const now = new Date().toISOString();
+		const sessionInsert = db
+			.prepare(
+				"INSERT INTO sessions (started_at, cwd, project, user, tool_version, metadata_json) VALUES (?, ?, ?, ?, ?, ?)",
+			)
+			.run(
+				now,
+				"/workspace/e2e-local-dirty",
+				"e2e-bootstrap-refusal",
+				"e2e",
+				"e2e-local-dirty",
+				JSON.stringify({ local_dirty_marker: true }),
+			);
+		const sessionId = Number(sessionInsert.lastInsertRowid);
+		const importKey = `e2e-local-dirty-${randomUUID()}`;
+		db.prepare(
+			`INSERT INTO memory_items (
+				session_id, kind, title, body_text, confidence, tags_text,
+				active, created_at, updated_at, metadata_json,
+				visibility, workspace_id, workspace_kind, import_key, rev
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"exploration",
+			title,
+			body,
+			0.5,
+			"e2e,bootstrap",
+			1,
+			now,
+			now,
+			JSON.stringify({ local_dirty_marker: true }),
+			"shared",
+			"shared:bootstrap-refusal",
+			"shared",
+			importKey,
+			0,
+		);
+		console.log(JSON.stringify({ ok: true, title, import_key: importKey }, null, 2));
 	} finally {
-		store.close();
+		db.close();
 	}
 }
 
