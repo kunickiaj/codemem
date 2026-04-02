@@ -61,3 +61,7 @@ pnpm run e2e:smoke
 Set `CODEMEM_E2E_BUILD=1` when you want to force an image rebuild for a run.
 
 Artifacts are written to `.tmp/e2e-artifacts/`, which is intentionally ignored by git.
+
+Set `CODEMEM_E2E_ARTIFACTS_DIR` to override the artifact root for CI or scripted runs.
+
+For machine-readable runner status, pass `--json` or set `CODEMEM_E2E_JSON=1`.

@@ -15,7 +15,10 @@ function slugify(value: string): string {
 
 export function createArtifactDir(scenario: string): string {
 	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-	const dir = resolve(".tmp", "e2e-artifacts", `${timestamp}-${slugify(scenario)}`);
+	const root = process.env.CODEMEM_E2E_ARTIFACTS_DIR?.trim()
+		? resolve(process.env.CODEMEM_E2E_ARTIFACTS_DIR)
+		: resolve(".tmp", "e2e-artifacts");
+	const dir = join(root, `${timestamp}-${slugify(scenario)}`);
 	mkdirSync(dir, { recursive: true });
 	return dir;
 }

@@ -142,3 +142,37 @@ jobs:
 
       - name: Run packed artifact smoke test
         run: pnpm --filter @codemem/opencode-plugin test:packed-artifact
+
+  e2e-smoke:
+    name: E2E Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run E2E smoke scenario
+        env:
+          CODEMEM_E2E_BUILD: "1"
+          CODEMEM_E2E_ARTIFACTS_DIR: .tmp/e2e-artifacts
+          CODEMEM_E2E_JSON: "1"
+        run: pnpm run e2e:smoke -- --json
+
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-artifacts
+          path: .tmp/e2e-artifacts
+          if-no-files-found: ignore
