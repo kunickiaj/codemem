@@ -66,6 +66,10 @@ const SYNC_PROTOCOL_VERSION = "2";
 const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
 const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
 
+function syncKeysDir(): string | undefined {
+	return process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+}
+
 function intEnvOr(name: string, fallback: number): number {
 	const value = Number.parseInt(process.env[name] ?? "", 10);
 	return Number.isFinite(value) ? value : fallback;
@@ -770,18 +774,14 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		if (limited) return limited;
 
 		try {
-			let device = store.db
-				.prepare("SELECT device_id, fingerprint FROM sync_device LIMIT 1")
-				.get() as { device_id: string; fingerprint: string } | undefined;
-			if (!device) {
-				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db);
-				device = { device_id: deviceId, fingerprint };
-			}
+			const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, {
+				keysDir: syncKeysDir(),
+			});
 			const syncReset = getSyncResetState(store.db);
 			return c.json({
-				device_id: device.device_id,
+				device_id: deviceId,
 				protocol_version: SYNC_PROTOCOL_VERSION,
-				fingerprint: device.fingerprint,
+				fingerprint,
 				sync_reset: syncReset,
 			});
 		} catch {
@@ -812,17 +812,11 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const snapshotId = c.req.query("snapshot_id") ?? null;
 			const baselineCursor = c.req.query("baseline_cursor") ?? null;
 			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 1000)) : 200;
-			let localDeviceId = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
-				| { device_id: string }
-				| undefined;
-			if (!localDeviceId) {
-				const [deviceId] = ensureDeviceIdentity(store.db);
-				localDeviceId = { device_id: deviceId };
-			}
+			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const result = loadReplicationOpsForPeer(store.db, {
 				since,
 				limit,
-				deviceId: localDeviceId.device_id,
+				deviceId: localDeviceId,
 				generation: Number.isFinite(generation) ? generation : null,
 				snapshotId,
 				baselineCursor,
@@ -959,16 +953,10 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				);
 			}
 		}
-		let localDeviceId = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
-			| { device_id: string }
-			| undefined;
-		if (!localDeviceId) {
-			const [deviceId] = ensureDeviceIdentity(store.db);
-			localDeviceId = { device_id: deviceId };
-		}
+		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 
 		const filteredInbound = filterOpsForPeer(store, peerDeviceId, normalizedOps);
-		const result = applyReplicationOps(store.db, filteredInbound.allowed, localDeviceId.device_id);
+		const result = applyReplicationOps(store.db, filteredInbound.allowed, localDeviceId);
 		return c.json({
 			...result,
 			skipped: result.skipped + filteredInbound.skipped,
@@ -1344,7 +1332,7 @@ export function syncRoutes(
 			} else {
 				// Fall back to ensureDeviceIdentity if no row exists
 				try {
-					const [id, fp] = ensureDeviceIdentity(store.db);
+					const [id, fp] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 					deviceId = id;
 					fingerprint = fp;
 					const newRow = d
