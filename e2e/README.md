@@ -9,6 +9,7 @@ This directory holds the first local Docker/Compose-based E2E harness for sync s
 - smoke scenario for stack bring-up and coordinator reachability
 - coordinator invite/join/approval/discovery scenario
 - direct peer sync scenario with data-plane assertions
+- bootstrap scenario plus dirty-local refusal validation
 - seed modes: `empty`, `fixture-small`, `fixture-large`, `local-import`
 - automatic artifact capture under `.tmp/e2e-artifacts/`
 
@@ -34,6 +35,12 @@ pnpm run e2e:coordinator
 
 ```fish
 pnpm run e2e:direct-sync
+```
+
+## Run the bootstrap scenario
+
+```fish
+pnpm run e2e:bootstrap
 ```
 
 ## Local import seed mode
