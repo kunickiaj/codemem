@@ -298,6 +298,7 @@ syncCommand.addCommand(
 		.action(async (opts: SyncOnceOptions) => {
 			const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 			try {
+				const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 				syncPassPreflight(store.db);
 				const d = drizzle(store.db, { schema });
 				const rows = opts.peer
@@ -333,7 +334,7 @@ syncCommand.addCommand(
 
 				let hadFailure = false;
 				for (const row of rows) {
-					const result = await runSyncPass(store.db, row.peer_device_id);
+					const result = await runSyncPass(store.db, row.peer_device_id, { keysDir });
 					if (!result.ok) hadFailure = true;
 					console.log(formatSyncOnceResult(row.peer_device_id, result));
 				}

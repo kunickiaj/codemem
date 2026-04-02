@@ -1,9 +1,11 @@
 import { runCoordinatorScenario } from "../scenarios/coordinator.js";
+import { runDirectSyncScenario } from "../scenarios/direct-sync.js";
 import { runSmokeScenario } from "../scenarios/smoke.js";
 import { createScenarioContext } from "../lib/scenario-context.js";
 
 const scenarios = {
 	coordinator: runCoordinatorScenario,
+	directSync: runDirectSyncScenario,
 	smoke: runSmokeScenario,
 } as const;
 

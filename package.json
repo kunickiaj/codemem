@@ -7,6 +7,7 @@
     "build": "pnpm -r run build && pnpm exec tsc --build",
     "e2e": "pnpm exec tsx e2e/bin/run-local.ts",
     "e2e:coordinator": "pnpm exec tsx e2e/bin/run-local.ts coordinator",
+    "e2e:direct-sync": "pnpm exec tsx e2e/bin/run-local.ts directSync",
     "e2e:smoke": "pnpm exec tsx e2e/bin/run-local.ts smoke",
     "test": "pnpm exec vitest run",
     "test:watch": "pnpm exec vitest",
