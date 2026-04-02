@@ -1,0 +1,70 @@
+{
+  "fleet": {
+    "name": "compose-shared-seed-pilot",
+    "mode": "seed-peer-swarms"
+  },
+  "seed_peer": {
+    "id": "seed-main",
+    "runtime": {
+      "type": "compose",
+      "service": "peer-a",
+      "config_path": "/config/codemem.json",
+      "db_path": "/data/mem.sqlite",
+      "keys_path": "/keys"
+    },
+    "identity": "stable",
+    "storage": {
+      "kind": "sqlite",
+      "persistence": "durable"
+    }
+  },
+  "coordinator": {
+    "mode": "shared",
+    "runtime": {
+      "type": "compose",
+      "service": "coordinator"
+    },
+    "cleanup": {
+      "stale_after_minutes": 30,
+      "expire_after_minutes": 120
+    }
+  },
+  "swarms": [
+    {
+      "id": "swarm-a",
+      "coordinator_group": "swarm-a",
+      "seed_peer": "seed-main",
+      "workers": [
+        {
+          "id": "swarm-a-worker-1",
+          "runtime": {
+            "type": "compose",
+            "service": "peer-b",
+            "config_path": "/config/codemem.json",
+            "db_path": "/data/mem.sqlite",
+            "keys_path": "/keys"
+          },
+          "identity": "ephemeral"
+        }
+      ]
+    },
+    {
+      "id": "swarm-b",
+      "coordinator_group": "swarm-b",
+      "seed_peer": "seed-main",
+      "workers": [
+        {
+          "id": "swarm-b-worker-1",
+          "runtime": {
+            "type": "compose",
+            "service": "peer-c",
+            "config_path": "/config/codemem.json",
+            "db_path": "/data/mem.sqlite",
+            "keys_path": "/keys"
+          },
+          "identity": "ephemeral"
+        }
+      ]
+    }
+  ]
+}

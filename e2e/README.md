@@ -7,6 +7,7 @@ This directory holds the first local Docker/Compose-based E2E harness for sync s
 - Docker Compose topology for `coordinator`, `peer-a`, and `peer-b`
 - host-run TypeScript runner
 - smoke scenario for stack bring-up and coordinator reachability
+- fleet spec and Compose fleet-smoke proving scenario
 - coordinator invite/join/approval/discovery scenario
 - direct peer sync scenario with data-plane assertions
 - bootstrap scenario plus dirty-local refusal validation
@@ -36,6 +37,14 @@ pnpm run e2e:coordinator
 ```fish
 pnpm run e2e:direct-sync
 ```
+
+## Run the fleet smoke scenario
+
+```fish
+pnpm run e2e:fleet-smoke
+```
+
+Set `CODEMEM_E2E_FLEET_SPEC` to point at a different fleet spec file.
 
 ## Run the bootstrap scenario
 
