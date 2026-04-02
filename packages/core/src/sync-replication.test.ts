@@ -1539,6 +1539,33 @@ describe("applyReplicationOps", () => {
 		expect(result.applied).toBe(0);
 	});
 
+	it("preserves project on newly replicated memories", () => {
+		const op = makeReplicationOp({
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Remote memory",
+				body_text: "Remote body",
+				visibility: "shared",
+				project: "proj-replicated",
+			}),
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+
+		const row = db
+			.prepare(
+				`SELECT s.project
+				   FROM memory_items m
+				   JOIN sessions s ON s.id = m.session_id
+				  WHERE m.import_key = ?
+				  LIMIT 1`,
+			)
+			.get(op.entity_id) as { project: string | null } | undefined;
+
+		expect(row?.project).toBe("proj-replicated");
+	});
+
 	it("skips duplicate op_ids (idempotent)", () => {
 		const op = makeReplicationOp({ op_id: "fixed-op-id" });
 		const r1 = applyReplicationOps(db, [op], "dev-local");
