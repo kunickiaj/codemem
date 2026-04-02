@@ -9,6 +9,7 @@
     "e2e:bootstrap": "pnpm exec tsx e2e/bin/run-local.ts bootstrap",
     "e2e:coordinator": "pnpm exec tsx e2e/bin/run-local.ts coordinator",
     "e2e:direct-sync": "pnpm exec tsx e2e/bin/run-local.ts directSync",
+    "e2e:fleet-cleanup": "pnpm exec tsx e2e/bin/run-local.ts fleetCleanup",
     "e2e:fleet-ready": "pnpm exec tsx e2e/bin/run-local.ts fleetReady",
     "e2e:fleet-smoke": "pnpm exec tsx e2e/bin/run-local.ts fleetSmoke",
     "e2e:smoke": "pnpm exec tsx e2e/bin/run-local.ts smoke",
