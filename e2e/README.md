@@ -54,6 +54,14 @@ pnpm run e2e:fleet-ready
 
 This scenario materializes swarm groups from the fleet spec, joins workers, bootstraps them from the shared seed peer, and records a readiness snapshot.
 
+## Run the fleet cleanup scenario
+
+```fish
+pnpm run e2e:fleet-cleanup
+```
+
+This scenario proves ephemeral worker peers can be removed from coordinator and local peer state while protecting the shared seed peer.
+
 ## Run the bootstrap scenario
 
 ```fish

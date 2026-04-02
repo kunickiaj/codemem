@@ -1,4 +1,5 @@
 import { runFleetReadyScenario } from "../scenarios/fleet-ready.js";
+import { runFleetCleanupScenario } from "../scenarios/fleet-cleanup.js";
 import { runFleetSmokeScenario } from "../scenarios/fleet-smoke.js";
 import { runBootstrapScenario } from "../scenarios/bootstrap.js";
 import { runCoordinatorScenario } from "../scenarios/coordinator.js";
@@ -10,6 +11,7 @@ const scenarios = {
 	bootstrap: runBootstrapScenario,
 	coordinator: runCoordinatorScenario,
 	directSync: runDirectSyncScenario,
+	fleetCleanup: runFleetCleanupScenario,
 	fleetReady: runFleetReadyScenario,
 	fleetSmoke: runFleetSmokeScenario,
 	smoke: runSmokeScenario,
