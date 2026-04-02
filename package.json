@@ -5,6 +5,8 @@
   "scripts": {
     "clean": "pnpm -r run clean && pnpm exec tsc --build --clean",
     "build": "pnpm -r run build && pnpm exec tsc --build",
+    "e2e": "pnpm exec tsx e2e/bin/run-local.ts",
+    "e2e:smoke": "pnpm exec tsx e2e/bin/run-local.ts smoke",
     "test": "pnpm exec vitest run",
     "test:watch": "pnpm exec vitest",
     "test:release-version": "node --test scripts/release-version.test.mjs",
