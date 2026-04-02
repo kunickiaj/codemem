@@ -1,3 +1,4 @@
+import { runFleetSmokeScenario } from "../scenarios/fleet-smoke.js";
 import { runBootstrapScenario } from "../scenarios/bootstrap.js";
 import { runCoordinatorScenario } from "../scenarios/coordinator.js";
 import { runDirectSyncScenario } from "../scenarios/direct-sync.js";
@@ -8,8 +9,13 @@ const scenarios = {
 	bootstrap: runBootstrapScenario,
 	coordinator: runCoordinatorScenario,
 	directSync: runDirectSyncScenario,
+	fleetSmoke: runFleetSmokeScenario,
 	smoke: runSmokeScenario,
 } as const;
+
+const processRef = globalThis as typeof globalThis & {
+	process: { env: Record<string, string | undefined>; argv: string[]; exitCode?: number };
+};
 
 type ScenarioName = keyof typeof scenarios;
 
@@ -20,7 +26,7 @@ interface CliOptions {
 
 function parseCliArgs(argv: string[]): CliOptions {
 	let scenarioName: CliOptions["scenarioName"] = "smoke";
-	let json = process.env.CODEMEM_E2E_JSON === "1";
+	let json = processRef.process.env.CODEMEM_E2E_JSON === "1";
 	for (const arg of argv) {
 		if (arg === "--help" || arg === "-h" || arg === "list") {
 			scenarioName = arg as CliOptions["scenarioName"];
@@ -46,7 +52,7 @@ function printUsage(): void {
 }
 
 async function main(): Promise<void> {
-	const { scenarioName, json } = parseCliArgs(process.argv.slice(2));
+	const { scenarioName, json } = parseCliArgs(processRef.process.argv.slice(2));
 	if (scenarioName === "list") {
 		printUsage();
 		return;
@@ -99,5 +105,5 @@ async function main(): Promise<void> {
 
 void main().catch((error) => {
 	console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-	process.exitCode = 1;
+	processRef.process.exitCode = 1;
 });
