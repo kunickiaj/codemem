@@ -1,7 +1,9 @@
+import { runCoordinatorScenario } from "../scenarios/coordinator.js";
 import { runSmokeScenario } from "../scenarios/smoke.js";
 import { createScenarioContext } from "../lib/scenario-context.js";
 
 const scenarios = {
+	coordinator: runCoordinatorScenario,
 	smoke: runSmokeScenario,
 } as const;
 
