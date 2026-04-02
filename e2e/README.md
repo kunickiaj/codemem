@@ -46,6 +46,14 @@ pnpm run e2e:fleet-smoke
 
 Set `CODEMEM_E2E_FLEET_SPEC` to point at a different fleet spec file.
 
+## Run the fleet ready scenario
+
+```fish
+pnpm run e2e:fleet-ready
+```
+
+This scenario materializes swarm groups from the fleet spec, joins workers, bootstraps them from the shared seed peer, and records a readiness snapshot.
+
 ## Run the bootstrap scenario
 
 ```fish
