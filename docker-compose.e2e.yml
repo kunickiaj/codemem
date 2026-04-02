@@ -1,0 +1,122 @@
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: e2e/images/peer.Dockerfile
+    image: codemem-e2e-peer:local
+    working_dir: /workspace
+    command:
+      [
+        "pnpm",
+        "exec",
+        "tsx",
+        "--conditions",
+        "source",
+        "packages/cli/src/index.ts",
+        "sync",
+        "coordinator",
+        "serve",
+        "--db-path",
+        "/data/coordinator.sqlite",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "7347"
+      ]
+    environment:
+      CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: e2e-admin-secret
+      CODEMEM_EMBEDDING_DISABLED: "1"
+    ports:
+      - "17347:7347"
+    volumes:
+      - coordinator-data:/data
+      - coordinator-config:/config
+      - coordinator-keys:/keys
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "--input-type=module",
+          "-e",
+          "const res = await fetch('http://127.0.0.1:7347/v1/admin/devices?group_id=healthcheck', { headers: { 'X-Codemem-Coordinator-Admin': 'e2e-admin-secret' } }); process.exit(res.status === 200 || res.status === 400 ? 0 : 1);"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  peer-a:
+    image: codemem-e2e-peer:local
+    build:
+      context: .
+      dockerfile: e2e/images/peer.Dockerfile
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    environment:
+      CODEMEM_DB: /data/mem.sqlite
+      CODEMEM_CONFIG: /config/codemem.json
+      CODEMEM_KEYS_DIR: /keys
+      CODEMEM_EMBEDDING_DISABLED: "1"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    volumes:
+      - peer-a-data:/data
+      - peer-a-config:/config
+      - peer-a-keys:/keys
+
+  peer-b:
+    image: codemem-e2e-peer:local
+    build:
+      context: .
+      dockerfile: e2e/images/peer.Dockerfile
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    environment:
+      CODEMEM_DB: /data/mem.sqlite
+      CODEMEM_CONFIG: /config/codemem.json
+      CODEMEM_KEYS_DIR: /keys
+      CODEMEM_EMBEDDING_DISABLED: "1"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    volumes:
+      - peer-b-data:/data
+      - peer-b-config:/config
+      - peer-b-keys:/keys
+
+  peer-c:
+    image: codemem-e2e-peer:local
+    build:
+      context: .
+      dockerfile: e2e/images/peer.Dockerfile
+    profiles: ["bootstrap"]
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    environment:
+      CODEMEM_DB: /data/mem.sqlite
+      CODEMEM_CONFIG: /config/codemem.json
+      CODEMEM_KEYS_DIR: /keys
+      CODEMEM_EMBEDDING_DISABLED: "1"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    volumes:
+      - peer-c-data:/data
+      - peer-c-config:/config
+      - peer-c-keys:/keys
+
+volumes:
+  coordinator-data:
+  coordinator-config:
+  coordinator-keys:
+  peer-a-data:
+  peer-a-config:
+  peer-a-keys:
+  peer-b-data:
+  peer-b-config:
+  peer-b-keys:
+  peer-c-data:
+  peer-c-config:
+  peer-c-keys:
