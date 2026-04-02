@@ -76,7 +76,13 @@ export class ComposeManager {
 		});
 	}
 
-	exec(service: string, commandArgs: string[], artifactName: string, timeoutMs = 120_000): RunCommandResult {
+	exec(
+		service: string,
+		commandArgs: string[],
+		artifactName: string,
+		timeoutMs = 120_000,
+		allowFailure = false,
+	): RunCommandResult {
 		return runCommand(
 			"docker",
 			this.composeArgs(["exec", "-T", service, ...commandArgs]),
@@ -84,6 +90,7 @@ export class ComposeManager {
 				artifactsDir: this.options.artifactsDir,
 				artifactName,
 				timeoutMs,
+				allowFailure,
 			},
 		);
 	}
