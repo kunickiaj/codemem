@@ -139,7 +139,13 @@ This updates your OpenCode config to install the plugin and register the MCP ser
 
 ## Configuration
 
-Config file: `~/.config/codemem/config.json` (override with `CODEMEM_CONFIG`). Environment variables take precedence over file settings.
+Config resolution precedence for runtime commands is:
+
+1. explicit `CODEMEM_CONFIG`
+2. workspace-scoped config derived from `CODEMEM_RUNTIME_ROOT` or `CODEMEM_WORKSPACE_ID`
+3. legacy global config at `~/.config/codemem/config.json{c}`
+
+Environment variables still override file values once a config file has been selected.
 
 Common overrides:
 
@@ -190,7 +196,7 @@ Replicate memories across devices without a central server.
 ```text
 codemem sync enable        # generate device keys
 codemem sync pair          # generate pairing payload
-codemem sync start         # start sync daemon
+codemem sync start         # start the viewer-backed sync runtime
 codemem sync once          # run one immediate sync pass
 ```
 

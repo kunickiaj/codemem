@@ -38,7 +38,7 @@ Each workspace attachment operation must receive the following inputs.
 ### Runtime target information
 
 - `workspace_selector` or equivalent target identifier
-- `config_path`
+- `config_path` (for the current codemem CLI/runtime this should be translated to `CODEMEM_CONFIG` or `--config`)
 - `db_path`
 - `keys_path`
 - `bootstrap_hook` or startup script entrypoint
@@ -91,6 +91,12 @@ Expected outcome:
 ### 2. Configure
 
 The runtime adapter writes or updates codemem configuration for the node.
+
+Recommended config resolution precedence for workspace automation:
+
+1. explicit `config_path` translated to the runtime's actual config selector (`CODEMEM_CONFIG` or `--config`)
+2. workspace-scoped config derived from runtime root / workspace identifier
+3. legacy global config fallback
 
 Expected configuration includes:
 - database path

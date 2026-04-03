@@ -33,6 +33,8 @@ import {
 	loadPublicKey,
 	MemoryStore,
 	readCodememConfigFile,
+	readCodememConfigFileAtPath,
+	readCoordinatorSyncConfig,
 	requestJson,
 	resolveDbPath,
 	runSyncPass,
@@ -56,11 +58,31 @@ import {
 	type SyncLifecycleOptions,
 } from "./sync-helpers.js";
 
+function readCliConfig(configPath?: string): Record<string, unknown> {
+	return configPath ? readCodememConfigFileAtPath(configPath) : readCodememConfigFile();
+}
+
+function writeCliConfig(config: Record<string, unknown>, configPath?: string): string {
+	return writeCodememConfigFile(config, configPath || undefined);
+}
+
 function parseAttemptsLimit(value: string): number {
 	if (!/^\d+$/.test(value.trim())) {
 		throw new Error(`Invalid --limit: ${value}`);
 	}
 	return Number.parseInt(value, 10);
+}
+
+function parsePositiveIntegerOption(
+	value: string | undefined,
+	flagName: string,
+): number | undefined {
+	if (value == null) return undefined;
+	const trimmed = value.trim();
+	if (!/^\d+$/.test(trimmed)) {
+		throw new Error(`Invalid ${flagName}: ${value}`);
+	}
+	return Number.parseInt(trimmed, 10);
 }
 
 interface SyncOnceOptions {
@@ -79,6 +101,7 @@ interface SyncPairOptions {
 	exclude?: string;
 	all?: boolean;
 	default?: boolean;
+	config?: string;
 	dbPath?: string;
 }
 
@@ -166,8 +189,8 @@ async function runServeLifecycle(
 		);
 	}
 	if (action === "start") {
-		const config = readCodememConfigFile();
-		if (config.sync_enabled !== true) {
+		const config = readCoordinatorSyncConfig(readCliConfig(opts.config));
+		if (config.syncEnabled !== true) {
 			p.log.error("Sync is disabled. Run `codemem sync enable` first.");
 			process.exitCode = 1;
 			return;
@@ -185,6 +208,7 @@ async function runServeLifecycle(
 			env: {
 				...process.env,
 				...((opts.db ?? opts.dbPath) ? { CODEMEM_DB: opts.db ?? opts.dbPath } : {}),
+				...(opts.config ? { CODEMEM_CONFIG: opts.config } : {}),
 			},
 		});
 		child.once("error", reject);
@@ -249,6 +273,7 @@ syncCommand.addCommand(
 		.description("Start sync daemon")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
+		.option("--config <path>", "config path")
 		.option("--host <host>", "viewer host")
 		.option("--port <port>", "viewer port")
 		.option("--user", "accepted for compatibility", true)
@@ -264,6 +289,7 @@ syncCommand.addCommand(
 		.description("Stop sync daemon")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
+		.option("--config <path>", "config path")
 		.option("--host <host>", "viewer host")
 		.option("--port <port>", "viewer port")
 		.option("--user", "accepted for compatibility", true)
@@ -279,6 +305,7 @@ syncCommand.addCommand(
 		.description("Restart sync daemon")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
+		.option("--config <path>", "config path")
 		.option("--host <host>", "viewer host")
 		.option("--port <port>", "viewer port")
 		.option("--user", "accepted for compatibility", true)
@@ -360,6 +387,7 @@ syncCommand.addCommand(
 		.option("--exclude <projects>", "outbound-only blocklist for accepted peer")
 		.option("--all", "with --accept, push all projects to that peer")
 		.option("--default", "with --accept, use default/global push filters")
+		.option("--config <path>", "config path")
 		.option("--db-path <path>", "database path")
 		.action(async (opts: SyncPairOptions) => {
 			const store = new MemoryStore(resolveDbPath(opts.dbPath));
@@ -492,7 +520,7 @@ syncCommand.addCommand(
 					return;
 				}
 
-				const config = readCodememConfigFile();
+				const config = readCliConfig(opts.config);
 				const explicitAddress = opts.address?.trim();
 				const configuredHost = typeof config.sync_host === "string" ? config.sync_host : null;
 				const configuredPort = typeof config.sync_port === "number" ? config.sync_port : 7337;
@@ -540,8 +568,9 @@ syncCommand.addCommand(
 		.description("Diagnose common sync setup and connectivity issues")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
-		.action(async (opts: { db?: string; dbPath?: string }) => {
-			const config = readCodememConfigFile();
+		.option("--config <path>", "config path")
+		.action(async (opts: { db?: string; dbPath?: string; config?: string }) => {
+			const config = readCliConfig(opts.config);
 			const dbPath = resolveDbPath(opts.db ?? opts.dbPath);
 			const store = new MemoryStore(dbPath);
 			try {
@@ -644,9 +673,10 @@ syncCommand.addCommand(
 		.description("Show sync configuration and peer summary")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
+		.option("--config <path>", "config path")
 		.option("--json", "output as JSON")
-		.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
-			const config = readCodememConfigFile();
+		.action((opts: { db?: string; dbPath?: string; config?: string; json?: boolean }) => {
+			const config = readCliConfig(opts.config);
 			const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 			try {
 				const d = drizzle(store.db, { schema });
@@ -732,20 +762,30 @@ syncCommand.addCommand(
 		.description("Enable sync and initialize device identity")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
+		.option("--config <path>", "config path")
 		.option("--host <host>", "sync listen host")
 		.option("--port <port>", "sync listen port")
 		.option("--interval <seconds>", "sync interval in seconds")
 		.action(
-			(opts: { db?: string; dbPath?: string; host?: string; port?: string; interval?: string }) => {
+			(opts: {
+				db?: string;
+				dbPath?: string;
+				config?: string;
+				host?: string;
+				port?: string;
+				interval?: string;
+			}) => {
 				const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
 				try {
 					const [deviceId, fingerprint] = ensureDeviceIdentity(store.db);
-					const config = readCodememConfigFile();
+					const config = readCliConfig(opts.config);
 					config.sync_enabled = true;
 					if (opts.host) config.sync_host = opts.host;
-					if (opts.port) config.sync_port = Number.parseInt(opts.port, 10);
-					if (opts.interval) config.sync_interval_s = Number.parseInt(opts.interval, 10);
-					writeCodememConfigFile(config);
+					const syncPort = parsePositiveIntegerOption(opts.port, "--port");
+					const syncInterval = parsePositiveIntegerOption(opts.interval, "--interval");
+					if (syncPort != null) config.sync_port = syncPort;
+					if (syncInterval != null) config.sync_interval_s = syncInterval;
+					writeCliConfig(config, opts.config);
 
 					p.intro("codemem sync enable");
 					p.log.success(
@@ -770,10 +810,11 @@ syncCommand.addCommand(
 	new Command("disable")
 		.configureHelp(helpStyle)
 		.description("Disable sync without deleting keys or peers")
-		.action(() => {
-			const config = readCodememConfigFile();
+		.option("--config <path>", "config path")
+		.action((opts: { config?: string }) => {
+			const config = readCliConfig(opts.config);
 			config.sync_enabled = false;
-			writeCodememConfigFile(config);
+			writeCliConfig(config, opts.config);
 			p.intro("codemem sync disable");
 			p.outro("Sync disabled — restart `codemem serve` to take effect");
 		}),
@@ -1089,11 +1130,12 @@ syncCommand.addCommand(
 		.description("Configure coordinator URL for cloud sync")
 		.argument("<url>", "coordinator URL (e.g. https://coordinator.example.com)")
 		.option("--group <group>", "sync group ID")
-		.action((url: string, opts: { group?: string }) => {
-			const config = readCodememConfigFile();
+		.option("--config <path>", "config path")
+		.action((url: string, opts: { group?: string; config?: string }) => {
+			const config = readCliConfig(opts.config);
 			config.sync_coordinator_url = url.trim();
 			if (opts.group) config.sync_coordinator_group = opts.group.trim();
-			writeCodememConfigFile(config);
+			writeCliConfig(config, opts.config);
 			p.intro("codemem sync connect");
 			p.log.success(`Coordinator: ${url.trim()}`);
 			if (opts.group) p.log.info(`Group: ${opts.group.trim()}`);

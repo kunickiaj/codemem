@@ -138,6 +138,52 @@ export function expandUserPath(value: string): string {
 	return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
 }
 
+function isSafeWorkspaceId(value: string): boolean {
+	return /^[A-Za-z0-9._:-]+$/.test(value) && !/^\.+$/.test(value);
+}
+
+export function getWorkspaceCodememConfigPath(workspaceId: string): string {
+	const trimmed = workspaceId.trim();
+	if (!trimmed || !isSafeWorkspaceId(trimmed)) {
+		throw new Error(`Invalid workspace id for config path: ${workspaceId}`);
+	}
+	return join(homedir(), ".codemem", "workspaces", trimmed, "config", "codemem.json");
+}
+
+export function getWorkspaceScopedCodememConfigPath(): string | null {
+	const runtimeRoot = process.env.CODEMEM_RUNTIME_ROOT?.trim();
+	if (runtimeRoot) {
+		const expandedRoot = expandUserPath(runtimeRoot);
+		if (expandedRoot.startsWith("/")) {
+			return join(expandedRoot, "config", "codemem.json");
+		}
+		// Invalid/relative runtime root — fall through to workspace-id lookup
+	}
+
+	const workspaceId = process.env.CODEMEM_WORKSPACE_ID?.trim();
+	if (!workspaceId) return null;
+	if (!isSafeWorkspaceId(workspaceId)) return null;
+	return getWorkspaceCodememConfigPath(workspaceId);
+}
+
+function getLegacyCodememConfigPath(): string {
+	const configDir = join(homedir(), ".config", "codemem");
+	const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
+	return candidates.find((p) => existsSync(p)) ?? join(configDir, "config.json");
+}
+
+function getCodememConfigWritePath(): string {
+	const envPath = process.env.CODEMEM_CONFIG?.trim();
+	if (envPath) return expandUserPath(envPath);
+	const workspaceConfigPath = getWorkspaceScopedCodememConfigPath();
+	if (workspaceConfigPath) return workspaceConfigPath;
+	return getLegacyCodememConfigPath();
+}
+
+export function readWorkspaceCodememConfigFile(workspaceId: string): Record<string, unknown> {
+	return readCodememConfigFileAtPath(getWorkspaceCodememConfigPath(workspaceId));
+}
+
 /** Env var overrides matching Python's CONFIG_ENV_OVERRIDES. */
 export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	actor_id: "CODEMEM_ACTOR_ID",
@@ -179,23 +225,35 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	raw_events_sweeper_interval_s: "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
 };
 
-/** Resolve codemem config path with CODEMEM_CONFIG override. */
+/**
+ * Resolve codemem config path with precedence:
+ * 1. explicit CODEMEM_CONFIG override
+ * 2. workspace-scoped config via CODEMEM_RUNTIME_ROOT or CODEMEM_WORKSPACE_ID
+ * 3. legacy global config under ~/.config/codemem/
+ */
 export function getCodememConfigPath(): string {
 	const envPath = process.env.CODEMEM_CONFIG?.trim();
 	if (envPath) return expandUserPath(envPath);
-	const configDir = join(homedir(), ".config", "codemem");
-	const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
-	return candidates.find((p) => existsSync(p)) ?? join(configDir, "config.json");
+	const workspaceConfigPath = getWorkspaceScopedCodememConfigPath();
+	if (workspaceConfigPath && existsSync(workspaceConfigPath)) return workspaceConfigPath;
+	const legacyConfigPath = getLegacyCodememConfigPath();
+	if (existsSync(legacyConfigPath)) return legacyConfigPath;
+	return workspaceConfigPath ?? legacyConfigPath;
 }
 
 /** Read codemem config file with the same JSON/JSONC behavior as Python. */
 export function readCodememConfigFile(): Record<string, unknown> {
 	const configPath = getCodememConfigPath();
-	if (!existsSync(configPath)) return {};
+	return readCodememConfigFileAtPath(configPath);
+}
+
+export function readCodememConfigFileAtPath(configPath: string): Record<string, unknown> {
+	const resolvedPath = expandUserPath(configPath);
+	if (!existsSync(resolvedPath)) return {};
 
 	let text: string;
 	try {
-		text = readFileSync(configPath, "utf-8");
+		text = readFileSync(resolvedPath, "utf-8");
 	} catch {
 		return {};
 	}
@@ -224,10 +282,17 @@ export function readCodememConfigFile(): Record<string, unknown> {
 
 /** Persist the codemem config file as normalized JSON. */
 export function writeCodememConfigFile(data: Record<string, unknown>, configPath?: string): string {
-	const targetPath = configPath ? expandUserPath(configPath) : getCodememConfigPath();
+	const targetPath = configPath ? expandUserPath(configPath) : getCodememConfigWritePath();
 	mkdirSync(dirname(targetPath), { recursive: true });
 	writeFileSync(targetPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 	return targetPath;
+}
+
+export function writeWorkspaceCodememConfigFile(
+	workspaceId: string,
+	data: Record<string, unknown>,
+): string {
+	return writeCodememConfigFile(data, getWorkspaceCodememConfigPath(workspaceId));
 }
 
 /** Return active env overrides for codemem config keys. */

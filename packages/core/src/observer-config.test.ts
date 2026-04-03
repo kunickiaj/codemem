@@ -1,13 +1,145 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	getCodememConfigPath,
 	getCodememEnvOverrides,
 	getProviderApiKey,
+	getWorkspaceCodememConfigPath,
+	getWorkspaceScopedCodememConfigPath,
 	loadOpenCodeConfig,
+	readCodememConfigFileAtPath,
+	readWorkspaceCodememConfigFile,
 	resolveCustomProviderFromModel,
 	resolvePlaceholder,
 	stripJsonComments,
 	stripTrailingCommas,
+	writeCodememConfigFile,
+	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
+
+describe("codemem config path resolution", () => {
+	let tmpHome: string;
+	let prevHome: string | undefined;
+	let prevCodememConfig: string | undefined;
+	let prevRuntimeRoot: string | undefined;
+	let prevWorkspaceId: string | undefined;
+
+	beforeEach(() => {
+		tmpHome = mkdtempSync(join(tmpdir(), "codemem-config-home-"));
+		prevHome = process.env.HOME;
+		prevCodememConfig = process.env.CODEMEM_CONFIG;
+		prevRuntimeRoot = process.env.CODEMEM_RUNTIME_ROOT;
+		prevWorkspaceId = process.env.CODEMEM_WORKSPACE_ID;
+		process.env.HOME = tmpHome;
+		delete process.env.CODEMEM_CONFIG;
+		delete process.env.CODEMEM_RUNTIME_ROOT;
+		delete process.env.CODEMEM_WORKSPACE_ID;
+	});
+
+	afterEach(() => {
+		if (prevHome == null) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		if (prevCodememConfig == null) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = prevCodememConfig;
+		if (prevRuntimeRoot == null) delete process.env.CODEMEM_RUNTIME_ROOT;
+		else process.env.CODEMEM_RUNTIME_ROOT = prevRuntimeRoot;
+		if (prevWorkspaceId == null) delete process.env.CODEMEM_WORKSPACE_ID;
+		else process.env.CODEMEM_WORKSPACE_ID = prevWorkspaceId;
+	});
+
+	it("resolves workspace config path from workspace id", () => {
+		expect(getWorkspaceCodememConfigPath("pilot-1")).toBe(
+			join(tmpHome, ".codemem", "workspaces", "pilot-1", "config", "codemem.json"),
+		);
+	});
+
+	it("rejects unsafe workspace ids for config path", () => {
+		expect(() => getWorkspaceCodememConfigPath("../pilot-1")).toThrow(
+			"Invalid workspace id for config path",
+		);
+		expect(() => getWorkspaceCodememConfigPath(".")).toThrow(
+			"Invalid workspace id for config path",
+		);
+		expect(() => getWorkspaceCodememConfigPath("..")).toThrow(
+			"Invalid workspace id for config path",
+		);
+	});
+
+	it("prefers CODEMEM_CONFIG over workspace-scoped config", () => {
+		process.env.CODEMEM_CONFIG = "~/explicit/config.json";
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+		expect(getCodememConfigPath()).toBe(join(tmpHome, "explicit", "config.json"));
+	});
+
+	it("uses CODEMEM_RUNTIME_ROOT when present", () => {
+		process.env.CODEMEM_RUNTIME_ROOT = join(tmpHome, "runtime-root");
+		expect(getWorkspaceScopedCodememConfigPath()).toBe(
+			join(tmpHome, "runtime-root", "config", "codemem.json"),
+		);
+	});
+
+	it("ignores relative CODEMEM_RUNTIME_ROOT values", () => {
+		process.env.CODEMEM_RUNTIME_ROOT = "../runtime-root";
+		expect(getWorkspaceScopedCodememConfigPath()).toBeNull();
+		expect(getCodememConfigPath()).toBe(join(tmpHome, ".config", "codemem", "config.json"));
+	});
+
+	it("uses workspace-scoped config path when workspace id is known", () => {
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+		expect(getCodememConfigPath()).toBe(
+			join(tmpHome, ".codemem", "workspaces", "pilot-1", "config", "codemem.json"),
+		);
+	});
+
+	it("falls back to legacy config for reads until workspace config exists", () => {
+		const legacyPath = join(tmpHome, ".config", "codemem", "config.jsonc");
+		mkdirSync(join(tmpHome, ".config", "codemem"), { recursive: true });
+		writeFileSync(legacyPath, '{"sync_enabled": true}\n', "utf8");
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+		expect(getCodememConfigPath()).toBe(legacyPath);
+	});
+
+	it("falls back to legacy global config when workspace id is absent", () => {
+		const legacyPath = join(tmpHome, ".config", "codemem", "config.jsonc");
+		mkdirSync(join(tmpHome, ".config", "codemem"), { recursive: true });
+		writeFileSync(legacyPath, "{}\n", "utf8");
+		expect(getCodememConfigPath()).toBe(legacyPath);
+	});
+
+	it("returns default legacy global config path when no config exists", () => {
+		expect(getCodememConfigPath()).toBe(join(tmpHome, ".config", "codemem", "config.json"));
+	});
+
+	it("writes and reads workspace-scoped config files", () => {
+		const targetPath = writeWorkspaceCodememConfigFile("pilot-1", {
+			sync_enabled: true,
+			sync_port: 47337,
+		});
+		expect(targetPath).toBe(
+			join(tmpHome, ".codemem", "workspaces", "pilot-1", "config", "codemem.json"),
+		);
+		expect(readWorkspaceCodememConfigFile("pilot-1")).toEqual({
+			sync_enabled: true,
+			sync_port: 47337,
+		});
+	});
+
+	it("writes to the workspace path when workspace mode is active", () => {
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+		const targetPath = writeCodememConfigFile({ sync_enabled: true });
+		expect(targetPath).toBe(
+			join(tmpHome, ".codemem", "workspaces", "pilot-1", "config", "codemem.json"),
+		);
+	});
+
+	it("reads JSONC config from an explicit path", () => {
+		const configPath = join(tmpHome, "workspace-config.jsonc");
+		writeFileSync(configPath, '{\n  // comment\n  "sync_enabled": true,\n}\n', "utf8");
+		expect(readCodememConfigFileAtPath(configPath)).toEqual({ sync_enabled: true });
+	});
+});
 
 describe("stripJsonComments", () => {
 	it("removes line comments", () => {

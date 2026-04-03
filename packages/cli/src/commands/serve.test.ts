@@ -27,6 +27,7 @@ describe("serve command option resolution", () => {
 		expect(resolved).toEqual({
 			mode: "start",
 			dbPath: null,
+			configPath: null,
 			host: "127.0.0.1",
 			port: 38888,
 			background: false,
@@ -113,9 +114,11 @@ describe("serve command option resolution", () => {
 			host: "127.0.0.1",
 			port: "38888",
 			foreground: true,
+			config: "/tmp/workspace-config.json",
 		});
 		expect(resolved.mode).toBe("start");
 		expect(resolved.background).toBe(false);
+		expect(resolved.configPath).toBe("/tmp/workspace-config.json");
 	});
 
 	it("builds background child args from the current runner", () => {
@@ -124,6 +127,7 @@ describe("serve command option resolution", () => {
 			{
 				mode: "start",
 				dbPath: "/tmp/test.sqlite",
+				configPath: null,
 				host: "127.0.0.1",
 				port: 38991,
 				background: true,
