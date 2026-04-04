@@ -156,6 +156,8 @@ describe("formatSyncAttempt", () => {
 			"disable-device",
 			"remove-device",
 			"serve",
+			"list-bootstrap-grants",
+			"revoke-bootstrap-grant",
 			"create-invite",
 			"import-invite",
 			"list-join-requests",

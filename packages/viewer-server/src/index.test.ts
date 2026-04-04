@@ -1131,6 +1131,94 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("allows /v1/status with a valid bootstrap grant", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			let peerDeviceIdValue = "";
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/bootstrap-grants/grant-1")) {
+					return new Response(
+						JSON.stringify({
+							grant: {
+								grant_id: "grant-1",
+								group_id: "g1",
+								seed_device_id: "test-device-001",
+								worker_device_id: peerDeviceIdValue,
+								scope: "bootstrap",
+								expires_at: "2099-01-01T00:00:00Z",
+								created_at: "2026-01-01T00:00:00Z",
+								created_by: "admin",
+								revoked_at: null,
+							},
+							worker_enrollment: {
+								group_id: "g1",
+								device_id: peerDeviceIdValue,
+								public_key: peerPublicKeyValue,
+								fingerprint: peerFingerprintValue,
+								display_name: "Peer Bootstrap",
+								enabled: 1,
+								created_at: "2026-01-01T00:00:00Z",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			let peerPublicKeyValue = "";
+			let peerFingerprintValue = "";
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					peerDeviceIdValue = peerDeviceId;
+					peerPublicKeyValue = loadPublicKey(peerKeysDir) ?? "";
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					peerFingerprintValue = peerFingerprint?.fingerprint ?? "";
+					const url = "http://localhost/v1/status";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+						bootstrapGrantId: "grant-1",
+					});
+					const res = await syncApp.request(url, { headers });
+					expect(res.status).toBe(200);
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
 		it("rate limits repeated sync listener requests", async () => {
 			const { syncApp, cleanup } = createTestApp({
 				syncRequestRateLimit: { unauthenticatedReadLimit: 1 },
@@ -1217,6 +1305,189 @@ describe("viewer-server", () => {
 				expect(postRes.status).toBe(401);
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("does not allow a bootstrap grant to access /v1/ops", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			let peerDeviceIdValue = "";
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/bootstrap-grants/grant-1")) {
+					return new Response(
+						JSON.stringify({
+							grant: {
+								grant_id: "grant-1",
+								group_id: "g1",
+								seed_device_id: "test-device-001",
+								worker_device_id: peerDeviceIdValue,
+								scope: "bootstrap",
+								expires_at: "2099-01-01T00:00:00Z",
+								created_at: "2026-01-01T00:00:00Z",
+								created_by: "admin",
+								revoked_at: null,
+							},
+							worker_enrollment: {
+								group_id: "g1",
+								device_id: peerDeviceIdValue,
+								public_key: peerPublicKeyValue,
+								fingerprint: peerFingerprintValue,
+								display_name: "Peer Bootstrap",
+								enabled: 1,
+								created_at: "2026-01-01T00:00:00Z",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			let peerPublicKeyValue = "";
+			let peerFingerprintValue = "";
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					peerDeviceIdValue = peerDeviceId;
+					peerPublicKeyValue = loadPublicKey(peerKeysDir) ?? "";
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					peerFingerprintValue = peerFingerprint?.fingerprint ?? "";
+					const url = "http://localhost/v1/ops";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "POST",
+						url,
+						bodyBytes: Buffer.from(JSON.stringify({ ops: [] })),
+						keysDir: peerKeysDir,
+						bootstrapGrantId: "grant-1",
+					});
+					const res = await syncApp.request(url, {
+						method: "POST",
+						headers: {
+							...headers,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ ops: [] }),
+					});
+					expect(res.status).toBe(401);
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
+		it("rejects bootstrap grants whose worker enrollment does not match the granted worker", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			let peerDeviceIdValue = "";
+			let peerPublicKeyValue = "";
+			let peerFingerprintValue = "";
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/bootstrap-grants/grant-1")) {
+					return new Response(
+						JSON.stringify({
+							grant: {
+								grant_id: "grant-1",
+								group_id: "g1",
+								seed_device_id: "test-device-001",
+								worker_device_id: peerDeviceIdValue,
+								scope: "bootstrap",
+								expires_at: "2099-01-01T00:00:00Z",
+								created_at: "2026-01-01T00:00:00Z",
+								created_by: "admin",
+								revoked_at: null,
+							},
+							worker_enrollment: {
+								group_id: "g1",
+								device_id: "different-worker-id",
+								public_key: peerPublicKeyValue,
+								fingerprint: peerFingerprintValue,
+								display_name: "Peer Bootstrap",
+								enabled: 1,
+								created_at: "2026-01-01T00:00:00Z",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					peerDeviceIdValue = peerDeviceId;
+					peerPublicKeyValue = loadPublicKey(peerKeysDir) ?? "";
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					peerFingerprintValue = peerFingerprint?.fingerprint ?? "";
+					const url = "http://localhost/v1/status";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+						bootstrapGrantId: "grant-1",
+					});
+					const res = await syncApp.request(url, { headers });
+					expect(res.status).toBe(401);
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
 			}
 		});
 
@@ -1544,6 +1815,101 @@ describe("viewer-server", () => {
 				expect(body.error).toBe("unauthorized");
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("lists bootstrap grants through viewer sync routes", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/bootstrap-grants?group_id=g1")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{
+									grant_id: "grant-1",
+									group_id: "g1",
+									seed_device_id: "seed-1",
+									worker_device_id: "worker-1",
+									scope: "bootstrap",
+									expires_at: "2099-01-01T00:00:00Z",
+									created_at: "2026-01-01T00:00:00Z",
+									created_by: "admin",
+									revoked_at: null,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const res = await app.request("/api/sync/bootstrap-grants?group_id=g1");
+					expect(res.status).toBe(200);
+					expect(await res.json()).toEqual({
+						items: [expect.objectContaining({ grant_id: "grant-1", group_id: "g1" })],
+					});
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
+		it("revokes bootstrap grants through viewer sync routes", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/bootstrap-grants/revoke")) {
+					return new Response(JSON.stringify({ ok: true, grant_id: "grant-1" }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const res = await app.request("/api/sync/bootstrap-grants/revoke", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ grant_id: "grant-1" }),
+					});
+					expect(res.status).toBe(200);
+					expect(await res.json()).toEqual({ ok: true, grant_id: "grant-1" });
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
 			}
 		});
 

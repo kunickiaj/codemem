@@ -70,6 +70,18 @@ CREATE TABLE IF NOT EXISTS coordinator_reciprocal_approvals (
   resolved_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS coordinator_bootstrap_grants (
+  grant_id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  seed_device_id TEXT NOT NULL,
+  worker_device_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by TEXT,
+  revoked_at TEXT
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coordinator_reciprocal_pending_pair
 ON coordinator_reciprocal_approvals(group_id, pending_pair_low_device_id, pending_pair_high_device_id)
 WHERE status = 'pending';

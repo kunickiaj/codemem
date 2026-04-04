@@ -1,7 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
-import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
+import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
+import { ensureDeviceIdentity } from "./sync-identity.js";
 import { getSyncResetState, setSyncResetState } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
@@ -166,5 +170,47 @@ describe("applyBootstrapSnapshot", () => {
 		expect(result.ok).toBe(true);
 		expect(result.deleted).toBe(1);
 		expect(result.applied).toBe(0);
+	});
+});
+
+describe("fetchAllSnapshotPages", () => {
+	it("forwards bootstrap grant id as an auth header", async () => {
+		const db = new Database(":memory:");
+		initTestSchema(db);
+		const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
+		const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+		const prevFetch = globalThis.fetch;
+		try {
+			globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+				expect(init?.headers).toMatchObject({
+					"X-Codemem-Bootstrap-Grant": "grant-1",
+					"X-Opencode-Device": deviceId,
+				});
+				return new Response(
+					JSON.stringify({
+						generation: 2,
+						snapshot_id: "snap-2",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+						items: [],
+						next_page_token: null,
+						has_more: false,
+					}),
+					{ status: 200 },
+				);
+			}) as typeof fetch;
+
+			const result = await fetchAllSnapshotPages(
+				"http://peer.example.test:47337",
+				makeResetInfo(),
+				deviceId,
+				{ keysDir, bootstrapGrantId: "grant-1" },
+			);
+			expect(result.snapshot_id).toBe("snap-2");
+		} finally {
+			globalThis.fetch = prevFetch;
+			db.close();
+			rmSync(keysDir, { recursive: true, force: true });
+		}
 	});
 });

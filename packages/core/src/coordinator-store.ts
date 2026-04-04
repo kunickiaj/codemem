@@ -4,6 +4,7 @@ export {
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./better-sqlite-coordinator-store.js";
 export type {
+	CoordinatorBootstrapGrantVerification,
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
 	CoordinatorCreateReciprocalApprovalInput,

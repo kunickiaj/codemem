@@ -219,6 +219,7 @@ export interface BuildAuthHeadersOptions {
 	method: string;
 	url: string;
 	bodyBytes: Buffer;
+	bootstrapGrantId?: string;
 	keysDir?: string;
 	timestamp?: string;
 	nonce?: string;
@@ -230,6 +231,7 @@ export interface BuildAuthHeadersOptions {
 export function buildAuthHeaders(options: BuildAuthHeadersOptions): Record<string, string> {
 	return {
 		"X-Opencode-Device": options.deviceId,
+		...(options.bootstrapGrantId ? { "X-Codemem-Bootstrap-Grant": options.bootstrapGrantId } : {}),
 		...signRequest({
 			method: options.method,
 			url: options.url,

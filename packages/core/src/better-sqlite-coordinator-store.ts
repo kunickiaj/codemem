@@ -17,6 +17,8 @@ import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import type {
+	CoordinatorBootstrapGrant,
+	CoordinatorCreateBootstrapGrantInput,
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
 	CoordinatorCreateReciprocalApprovalInput,
@@ -30,6 +32,7 @@ import type {
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
 	CoordinatorReciprocalApproval,
+	CoordinatorReviewJoinRequestBootstrapGrantInput,
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorStore,
 	CoordinatorUpsertPresenceInput,
@@ -92,6 +95,68 @@ function tokenUrlSafe(bytes: number): string {
 function rowToRecord<T>(row: unknown): T {
 	if (row == null) throw new Error("expected row");
 	return row as T;
+}
+
+function normalizeBootstrapGrantRequest(
+	input: CoordinatorReviewJoinRequestBootstrapGrantInput | null | undefined,
+): CoordinatorCreateBootstrapGrantInput | null {
+	if (!input) return null;
+	const seedDeviceId = String(input.seedDeviceId ?? "").trim();
+	const scope = String(input.scope ?? "").trim();
+	const expiresAt = String(input.expiresAt ?? "").trim();
+	const createdBy = String(input.createdBy ?? "").trim() || null;
+	if (!seedDeviceId || !scope || !expiresAt) {
+		throw new Error("bootstrapGrant.seedDeviceId, scope, and expiresAt are required.");
+	}
+	return {
+		groupId: "",
+		seedDeviceId,
+		workerDeviceId: "",
+		scope,
+		expiresAt,
+		createdBy,
+	};
+}
+
+function normalizeBootstrapGrantInput(
+	opts: CoordinatorCreateBootstrapGrantInput,
+): CoordinatorCreateBootstrapGrantInput {
+	const groupId = String(opts.groupId ?? "").trim();
+	const seedDeviceId = String(opts.seedDeviceId ?? "").trim();
+	const workerDeviceId = String(opts.workerDeviceId ?? "").trim();
+	const scope = String(opts.scope ?? "").trim();
+	const expiresAt = String(opts.expiresAt ?? "").trim();
+	const createdBy = String(opts.createdBy ?? "").trim() || null;
+	if (!groupId || !seedDeviceId || !workerDeviceId || !scope || !expiresAt) {
+		throw new Error("groupId, seedDeviceId, workerDeviceId, scope, and expiresAt are required.");
+	}
+	return { groupId, seedDeviceId, workerDeviceId, scope, expiresAt, createdBy };
+}
+
+function insertBootstrapGrantSync(
+	db: DatabaseType,
+	opts: CoordinatorCreateBootstrapGrantInput,
+): CoordinatorBootstrapGrant {
+	const normalized = normalizeBootstrapGrantInput(opts);
+	const grantId = tokenUrlSafe(12);
+	const createdAt = nowISO();
+	db.prepare(`INSERT INTO coordinator_bootstrap_grants(
+			grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(
+		grantId,
+		normalized.groupId,
+		normalized.seedDeviceId,
+		normalized.workerDeviceId,
+		normalized.scope,
+		normalized.expiresAt,
+		createdAt,
+		normalized.createdBy,
+	);
+	const row = db
+		.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+			 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
+		.get(grantId);
+	return rowToRecord<CoordinatorBootstrapGrant>(row);
 }
 
 function initializeSchema(db: DatabaseType): void {
@@ -164,6 +229,18 @@ function initializeSchema(db: DatabaseType): void {
 			status TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			resolved_at TEXT
+		);
+
+		CREATE TABLE IF NOT EXISTS coordinator_bootstrap_grants (
+			grant_id TEXT PRIMARY KEY,
+			group_id TEXT NOT NULL,
+			seed_device_id TEXT NOT NULL,
+			worker_device_id TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			created_by TEXT,
+			revoked_at TEXT
 		);
 	`);
 }
@@ -399,9 +476,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		if (!row) return null;
 		if (row.status !== "pending")
 			return { ...rowToRecord<CoordinatorJoinRequest>(row), _no_transition: true };
-		return this.db.transaction(() => {
+		const bootstrapGrantRequest = normalizeBootstrapGrantRequest(opts.bootstrapGrant);
+		const result = this.db.transaction(() => {
 			const reviewedAt = nowISO();
 			const nextStatus = opts.approved ? "approved" : "denied";
+			let bootstrapGrant: CoordinatorBootstrapGrant | null = null;
 			if (opts.approved) {
 				this.enrollDeviceSync(row.group_id, {
 					deviceId: row.device_id,
@@ -409,6 +488,25 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					publicKey: row.public_key,
 					displayName: (row.display_name ?? "").trim() || null,
 				});
+				if (bootstrapGrantRequest) {
+					const seedEnrollment = this.db
+						.prepare(
+							`SELECT device_id FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`,
+						)
+						.get(row.group_id, bootstrapGrantRequest.seedDeviceId);
+					if (!seedEnrollment) {
+						throw new Error("bootstrap grant seed device is not enrolled in the group.");
+					}
+					if (bootstrapGrantRequest.seedDeviceId === row.device_id) {
+						throw new Error("bootstrap grant seed and worker device ids must differ.");
+					}
+					const bootstrapGrantInput = {
+						...bootstrapGrantRequest,
+						groupId: row.group_id,
+						workerDeviceId: row.device_id,
+					};
+					bootstrapGrant = insertBootstrapGrantSync(this.db, bootstrapGrantInput);
+				}
 			}
 			this.db
 				.prepare(`UPDATE coordinator_join_requests
@@ -419,8 +517,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 					 FROM coordinator_join_requests WHERE request_id = ?`)
 				.get(opts.requestId);
-			return updated ? rowToRecord<CoordinatorJoinRequestReviewResult>(updated) : null;
+			return {
+				updated: updated ? rowToRecord<CoordinatorJoinRequestReviewResult>(updated) : null,
+				bootstrapGrant,
+			};
 		})();
+		if (!result.updated) return null;
+		return {
+			...result.updated,
+			bootstrap_grant: result.bootstrapGrant,
+		};
 	}
 
 	async createReciprocalApproval(
@@ -484,6 +590,38 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				.get(requestId);
 			return rowToRecord<CoordinatorReciprocalApproval>(created);
 		})();
+	}
+
+	async createBootstrapGrant(
+		opts: CoordinatorCreateBootstrapGrantInput,
+	): Promise<CoordinatorBootstrapGrant> {
+		return insertBootstrapGrantSync(this.db, opts);
+	}
+
+	async getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null> {
+		const row = this.db
+			.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+				 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
+			.get(grantId);
+		return row ? rowToRecord<CoordinatorBootstrapGrant>(row) : null;
+	}
+
+	async listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]> {
+		return this.db
+			.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+				 FROM coordinator_bootstrap_grants WHERE group_id = ?
+				 ORDER BY created_at DESC, grant_id DESC`)
+			.all(groupId)
+			.map((row) => rowToRecord<CoordinatorBootstrapGrant>(row));
+	}
+
+	async revokeBootstrapGrant(grantId: string, revokedAt = nowISO()): Promise<boolean> {
+		const result = this.db
+			.prepare(`UPDATE coordinator_bootstrap_grants
+				 SET revoked_at = COALESCE(revoked_at, ?)
+				 WHERE grant_id = ?`)
+			.run(revokedAt, grantId);
+		return result.changes > 0;
 	}
 
 	async listReciprocalApprovals(

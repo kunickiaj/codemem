@@ -256,4 +256,42 @@ describe("D1CoordinatorStore", () => {
 			await cleanup();
 		}
 	});
+
+	it("normalizes and validates bootstrap grant input consistently", async () => {
+		const { store, cleanup } = setupStore();
+		try {
+			const grant = await store.createBootstrapGrant({
+				groupId: " g1 ",
+				seedDeviceId: " seed-1 ",
+				workerDeviceId: " worker-1 ",
+				scope: " bootstrap ",
+				expiresAt: " 2099-01-01T00:00:00Z ",
+				createdBy: " admin ",
+			});
+			expect(grant).toEqual(
+				expect.objectContaining({
+					group_id: "g1",
+					seed_device_id: "seed-1",
+					worker_device_id: "worker-1",
+					scope: "bootstrap",
+					expires_at: "2099-01-01T00:00:00Z",
+					created_by: "admin",
+				}),
+			);
+
+			await expect(
+				store.createBootstrapGrant({
+					groupId: "   ",
+					seedDeviceId: "seed-1",
+					workerDeviceId: "worker-1",
+					scope: "bootstrap",
+					expiresAt: "2099-01-01T00:00:00Z",
+				}),
+			).rejects.toThrow(
+				"groupId, seedDeviceId, workerDeviceId, scope, and expiresAt are required.",
+			);
+		} finally {
+			await cleanup();
+		}
+	});
 });

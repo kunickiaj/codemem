@@ -9,7 +9,11 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
-import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
+import type {
+	CoordinatorBootstrapGrantVerification,
+	CoordinatorEnrollment,
+	CoordinatorStore,
+} from "./coordinator-store-contract.js";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
@@ -729,6 +733,75 @@ export function createCoordinatorApp(
 		}
 	});
 
+	app.get("/v1/admin/bootstrap-grants/:grantId", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const grantId = String(c.req.param("grantId") ?? "").trim();
+		if (!grantId) return c.json({ error: "grant_id_required" }, 400);
+
+		const store = createStore();
+		try {
+			const grant = await store.getBootstrapGrant(grantId);
+			if (!grant) return c.json({ error: "grant_not_found" }, 404);
+			const workerEnrollment = await store.getEnrollment(grant.group_id, grant.worker_device_id);
+			if (!workerEnrollment) return c.json({ error: "worker_enrollment_not_found" }, 404);
+			const payload: CoordinatorBootstrapGrantVerification = {
+				grant,
+				worker_enrollment: workerEnrollment,
+			};
+			return c.json(payload);
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.get("/v1/admin/bootstrap-grants", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const groupId = (c.req.query("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+
+		const store = createStore();
+		try {
+			return c.json({ items: await store.listBootstrapGrants(groupId) });
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.post("/v1/admin/bootstrap-grants/revoke", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const grantId = String(data.grant_id ?? "").trim();
+		if (!grantId) return c.json({ error: "grant_id_required" }, 400);
+
+		const store = createStore();
+		try {
+			const ok = await store.revokeBootstrapGrant(grantId, runtime.now());
+			if (!ok) return c.json({ error: "grant_not_found" }, 404);
+			return c.json({ ok: true, grant_id: grantId });
+		} finally {
+			await store.close();
+		}
+	});
+
 	// POST /v1/admin/join-requests/approve
 	app.post("/v1/admin/join-requests/approve", async (c) => {
 		return handleJoinRequestReview(c, true, { createStore, runtime, rateLimitedResponse });
@@ -927,8 +1000,22 @@ async function handleJoinRequestReview(
 
 	const requestId = String(data.request_id ?? "").trim();
 	const reviewedBy = String(data.reviewed_by ?? "").trim() || null;
+	const bootstrapGrantSeedDeviceId = String(data.bootstrap_grant_seed_device_id ?? "").trim();
+	const bootstrapGrantScope = String(data.bootstrap_grant_scope ?? "").trim();
+	const bootstrapGrantExpiresAt = String(data.bootstrap_grant_expires_at ?? "").trim();
 
 	if (!requestId) return c.json({ error: "request_id_required" }, 400);
+	const bootstrapGrantFields = [
+		bootstrapGrantSeedDeviceId,
+		bootstrapGrantScope,
+		bootstrapGrantExpiresAt,
+	].filter(Boolean).length;
+	if (bootstrapGrantFields > 0 && bootstrapGrantFields < 3) {
+		return c.json(
+			{ error: "bootstrap_grant_seed_device_id_scope_and_expires_at_required_together" },
+			400,
+		);
+	}
 
 	const store = deps.createStore();
 	try {
@@ -936,6 +1023,15 @@ async function handleJoinRequestReview(
 			requestId,
 			approved,
 			reviewedBy,
+			bootstrapGrant:
+				approved && bootstrapGrantSeedDeviceId && bootstrapGrantScope && bootstrapGrantExpiresAt
+					? {
+							seedDeviceId: bootstrapGrantSeedDeviceId,
+							scope: bootstrapGrantScope,
+							expiresAt: bootstrapGrantExpiresAt,
+							createdBy: reviewedBy,
+						}
+					: null,
 		});
 
 		if (!request) return c.json({ error: "request_not_found" }, 404);
