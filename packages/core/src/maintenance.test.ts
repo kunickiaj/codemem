@@ -438,6 +438,8 @@ describe("maintenance", () => {
 		expect(report.totals.groups_with_multiple_sessions).toBe(1);
 		expect(report.totals.groups_with_mapped_session).toBe(1);
 		expect(report.totals.groups_without_mapped_session).toBe(1);
+		expect(report.totals.eligible_groups).toBe(2);
+		expect(report.totals.ineligible_groups).toBe(0);
 		expect(report.totals.active_memories).toBe(3);
 		expect(report.totals.repointable_active_memories).toBe(1);
 		expect(report.groups[0]).toEqual(
@@ -446,6 +448,8 @@ describe("maintenance", () => {
 				local_sessions: 2,
 				mapped_sessions: 1,
 				unmapped_sessions: 1,
+				eligible: true,
+				blockers: [],
 				canonical_session_id: 1,
 				canonical_reason: "existing_mapped_session",
 				would_create_bridge: false,
@@ -478,9 +482,13 @@ describe("maintenance", () => {
 		const plan = getRawEventRelinkPlan(dbPath, { limit: 10 });
 
 		expect(plan.totals.groups).toBe(1);
+		expect(plan.totals.eligible_groups).toBe(1);
+		expect(plan.totals.skipped_groups).toBe(0);
 		expect(plan.totals.bridge_creations).toBe(1);
 		expect(plan.totals.memory_repoints).toBe(1);
 		expect(plan.totals.session_compactions).toBe(1);
+		expect(plan.actions[1]?.session_ids).toEqual([2]);
+		expect(plan.skipped_groups).toEqual([]);
 		expect(plan.actions).toEqual([
 			expect.objectContaining({
 				action: "create_bridge",

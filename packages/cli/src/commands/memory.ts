@@ -441,6 +441,8 @@ function createMemoryRelinkPlanCommand(): Command {
 			p.log.info(
 				[
 					`Groups: ${result.totals.groups}`,
+					`Eligible groups: ${result.totals.eligible_groups}`,
+					`Skipped groups: ${result.totals.skipped_groups}`,
 					`Actions: ${result.totals.actions}`,
 					`Bridge creations: ${result.totals.bridge_creations}`,
 					`Memory repoints: ${result.totals.memory_repoints}`,
@@ -452,6 +454,12 @@ function createMemoryRelinkPlanCommand(): Command {
 				p.log.message(
 					`  ${action.action} ${action.stable_id} -> canonical ${action.canonical_session_id} | sessions=${action.session_ids.join(",") || "-"} memories=${action.memory_count} reason=${action.reason}`,
 				);
+			}
+			if (result.skipped_groups.length > 0) {
+				p.log.info("Skipped groups:");
+				for (const group of result.skipped_groups.slice(0, 10)) {
+					p.log.message(`  ${group.stable_id} | blockers=${group.blockers.join(",")}`);
+				}
 			}
 			p.outro("done");
 		},
