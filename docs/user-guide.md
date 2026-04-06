@@ -26,7 +26,10 @@
 - Connection/auth settings map to `claude_command`, `observer_runtime`, `observer_provider`, `observer_model`, `observer_base_url`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
-- Config file supports JSON and JSONC (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`).
+- Config resolution supports JSON and JSONC with this precedence:
+  1. explicit `CODEMEM_CONFIG`
+  2. workspace-scoped config derived from `CODEMEM_RUNTIME_ROOT` or `CODEMEM_WORKSPACE_ID`
+  3. legacy global config (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`)
 
 ## Observer auth configuration
 
@@ -100,7 +103,7 @@ Command/file token caching notes:
 ### Enable + run
 
 - `codemem sync enable` generates keys and writes config.
-- `codemem sync start` starts sync daemon processing.
+- `codemem sync start` starts the viewer-backed sync runtime.
 - `codemem sync status` shows device info and peer health.
 
 ### Pair devices
@@ -144,7 +147,8 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 
 ### Service helpers
 
-- `codemem sync status` and `codemem sync start|stop|restart` for daemon control.
+- `codemem sync status` shows sync config and peer health.
+- `codemem sync start|stop|restart` currently manage the viewer-backed sync runtime rather than a separate sync-only daemon.
 
 ### Coordinator-backed discovery
 

@@ -17,6 +17,7 @@ export function formatSyncAttempt(row: SyncAttemptRow): string {
 export interface SyncLifecycleOptions {
 	db?: string;
 	dbPath?: string;
+	config?: string;
 	host?: string;
 	port?: string;
 	user?: boolean;
@@ -39,6 +40,7 @@ export function buildServeLifecycleArgs(
 		args.push("--restart");
 	}
 	if (opts.db ?? opts.dbPath) args.push("--db-path", opts.db ?? opts.dbPath ?? "");
+	if (opts.config) args.push("--config", opts.config);
 	if (opts.host) args.push("--host", opts.host);
 	if (opts.port) args.push("--port", opts.port);
 	return args;

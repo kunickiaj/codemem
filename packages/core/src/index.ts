@@ -209,11 +209,15 @@ export {
 	getProviderBaseUrl,
 	getProviderHeaders,
 	getProviderOptions,
+	getWorkspaceCodememConfigPath,
+	getWorkspaceScopedCodememConfigPath,
 	listConfiguredOpenCodeProviders,
 	listCustomProviders,
 	listObserverProviderOptions,
 	loadOpenCodeConfig,
 	readCodememConfigFile,
+	readCodememConfigFileAtPath,
+	readWorkspaceCodememConfigFile,
 	resolveBuiltInProviderDefaultModel,
 	resolveBuiltInProviderFromModel,
 	resolveBuiltInProviderModel,
@@ -224,6 +228,7 @@ export {
 	stripJsonComments,
 	stripTrailingCommas,
 	writeCodememConfigFile,
+	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
 export { buildMemoryPack, buildMemoryPackAsync, estimateTokens } from "./pack.js";
 export {

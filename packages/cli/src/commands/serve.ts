@@ -10,6 +10,7 @@ import {
 	ObserverClient,
 	RawEventSweeper,
 	readCodememConfigFile,
+	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	resolveDbPath,
 	runSyncDaemon,
@@ -326,6 +327,7 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 		env: {
 			...process.env,
 			...(invocation.dbPath ? { CODEMEM_DB: invocation.dbPath } : {}),
+			...(invocation.configPath ? { CODEMEM_CONFIG: invocation.configPath } : {}),
 		},
 	});
 	child.unref();
@@ -347,6 +349,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const { serve } = await import("@hono/node-server");
 
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
+	if (invocation.configPath) process.env.CODEMEM_CONFIG = invocation.configPath;
 	warnIfViewerExposed(invocation.host, invocation.port);
 	if (await isPortOpen(invocation.host, invocation.port)) {
 		p.log.warn(`Viewer already running at http://${invocation.host}:${invocation.port}`);
@@ -382,7 +385,9 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 
 	const syncAbort = new AbortController();
 	const retentionAbort = new AbortController();
-	const config = readCodememConfigFile();
+	const config = invocation.configPath
+		? readCodememConfigFileAtPath(invocation.configPath)
+		: readCodememConfigFile();
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
 	const retentionRunner = new SyncRetentionRunner({
@@ -607,6 +612,7 @@ function addSharedServeOptions(command: Command): Command {
 	return command
 		.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 		.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
+		.option("--config <path>", "config path (default: CODEMEM_CONFIG or resolved config)")
 		.option("--host <host>", "bind host", "127.0.0.1")
 		.option("--port <port>", "bind port", "38888");
 }

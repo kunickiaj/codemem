@@ -5,6 +5,7 @@ export type ServeAction = ServeMode | undefined;
 export interface LegacyServeOptions {
 	db?: string;
 	dbPath?: string;
+	config?: string;
 	host: string;
 	port: string;
 	background?: boolean;
@@ -16,6 +17,7 @@ export interface LegacyServeOptions {
 export interface StartServeOptions {
 	db?: string;
 	dbPath?: string;
+	config?: string;
 	host: string;
 	port: string;
 	foreground?: boolean;
@@ -24,6 +26,7 @@ export interface StartServeOptions {
 export interface StopRestartServeOptions {
 	db?: string;
 	dbPath?: string;
+	config?: string;
 	host: string;
 	port: string;
 }
@@ -31,6 +34,7 @@ export interface StopRestartServeOptions {
 export interface ResolvedServeInvocation {
 	mode: ServeMode;
 	dbPath: string | null;
+	configPath: string | null;
 	host: string;
 	port: number;
 	background: boolean;
@@ -55,6 +59,7 @@ export function resolveLegacyServeInvocation(opts: LegacyServeOptions): Resolved
 	return {
 		mode: opts.stop ? "stop" : opts.restart ? "restart" : "start",
 		dbPath,
+		configPath: opts.config ?? null,
 		host: opts.host,
 		port: parsePort(opts.port),
 		background: opts.restart ? true : opts.background ? true : false,
@@ -82,6 +87,7 @@ export function resolveStartServeInvocation(opts: StartServeOptions): ResolvedSe
 	return {
 		mode: "start",
 		dbPath,
+		configPath: opts.config ?? null,
 		host: opts.host,
 		port: parsePort(opts.port),
 		background: !opts.foreground,
@@ -96,6 +102,7 @@ export function resolveStopRestartInvocation(
 	return {
 		mode,
 		dbPath,
+		configPath: opts.config ?? null,
 		host: opts.host,
 		port: parsePort(opts.port),
 		background: mode === "restart",

@@ -15,6 +15,7 @@ import { VERSION } from "@codemem/core";
 import { Command } from "commander";
 import omelette from "omelette";
 import { claudeHookIngestCommand } from "./commands/claude-hook-ingest.js";
+import { configCommand } from "./commands/config.js";
 import { dbCommand } from "./commands/db.js";
 import { embedCommand } from "./commands/embed.js";
 import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
@@ -47,6 +48,7 @@ const completion = omelette("codemem <command>") as CompletionWithScriptGenerato
 completion.on("command", ({ reply }) => {
 	reply([
 		"claude-hook-ingest",
+		"config",
 		"db",
 		"embed",
 		"export-memories",
@@ -115,6 +117,7 @@ if (hasRootFlag("--cleanup-completion")) {
 }
 
 program.addCommand(serveCommand);
+program.addCommand(configCommand);
 program.addCommand(mcpCommand);
 program.addCommand(claudeHookIngestCommand);
 program.addCommand(dbCommand);

@@ -81,6 +81,25 @@ describe("formatSyncAttempt", () => {
 		]);
 	});
 
+	it("passes config path through sync lifecycle args", () => {
+		expect(
+			buildServeLifecycleArgs(
+				"start",
+				{ dbPath: "/tmp/test.sqlite", config: "/tmp/workspace-config.json" },
+				"/repo/packages/cli/src/index.ts",
+				[],
+			),
+		).toEqual([
+			"/repo/packages/cli/src/index.ts",
+			"serve",
+			"--restart",
+			"--db-path",
+			"/tmp/test.sqlite",
+			"--config",
+			"/tmp/workspace-config.json",
+		]);
+	});
+
 	it("builds sync restart as a serve restart invocation", () => {
 		expect(
 			buildServeLifecycleArgs(
