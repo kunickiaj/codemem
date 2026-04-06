@@ -52,6 +52,7 @@ export interface MemoryRoleProbeItem {
 	role: MemoryRole;
 	role_reason: string;
 	mapping: "mapped" | "unmapped";
+	relinkable: boolean;
 }
 
 export interface MemoryRoleProbeResult {
@@ -79,6 +80,15 @@ export interface MemoryRoleProbeResult {
 	simulated_demoted_unmapped_recap_and_ephemeral?: {
 		item_ids: number[];
 		top_role_counts: Record<MemoryRole, number>;
+		top_mapping_counts: Record<"mapped" | "unmapped", number>;
+		top_burden: {
+			recap_share: number;
+			unmapped_share: number;
+			recap_unmapped_share: number;
+		};
+	};
+	simulated_relinked_mapping?: {
+		item_ids: number[];
 		top_mapping_counts: Record<"mapped" | "unmapped", number>;
 		top_burden: {
 			recap_share: number;
@@ -115,6 +125,42 @@ export interface MemoryRoleReport {
 		Record<MemoryRole, Array<{ id: number; kind: string; title: string; role_reason: string }>>
 	>;
 	probe_results: MemoryRoleProbeResult[];
+}
+
+export interface RawEventRelinkGroup {
+	stable_id: string;
+	local_sessions: number;
+	mapped_sessions: number;
+	unmapped_sessions: number;
+	canonical_session_id: number;
+	canonical_reason: string;
+	would_create_bridge: boolean;
+	sessions_to_compact: number;
+	sample_session_ids: number[];
+	active_memories: number;
+	repointable_active_memories: number;
+	oldest_started_at: string | null;
+	latest_started_at: string | null;
+	project: string | null;
+}
+
+export interface RawEventRelinkReportOptions {
+	project?: string | null;
+	allProjects?: boolean;
+	limit?: number;
+}
+
+export interface RawEventRelinkReport {
+	totals: {
+		recoverable_sessions: number;
+		distinct_stable_ids: number;
+		groups_with_multiple_sessions: number;
+		groups_with_mapped_session: number;
+		groups_without_mapped_session: number;
+		active_memories: number;
+		repointable_active_memories: number;
+	};
+	groups: RawEventRelinkGroup[];
 }
 
 interface InferredMemoryRole {
@@ -269,6 +315,15 @@ export function getMemoryRoleReport(
 						ELSE NULL
 					END AS session_minutes,
 					CASE WHEN os.session_id IS NULL THEN 0 ELSE 1 END AS has_opencode_mapping
+					,
+					CASE
+						WHEN json_extract(s.metadata_json, '$.session_context.flusher') = 'raw_events'
+						THEN COALESCE(
+							json_extract(s.metadata_json, '$.session_context.opencodeSessionId'),
+							json_extract(s.metadata_json, '$.session_context.streamId')
+						)
+						ELSE NULL
+					END AS stable_id
 				FROM memory_items m
 				JOIN sessions s ON s.id = m.session_id
 				LEFT JOIN (
@@ -289,6 +344,7 @@ export function getMemoryRoleReport(
 			project: string | null;
 			session_minutes: number | null;
 			has_opencode_mapping: number;
+			stable_id: string | null;
 		}>;
 
 		const roleCounts: Record<MemoryRole, number> = {
@@ -403,6 +459,7 @@ export function getMemoryRoleReport(
 						const mapping: "mapped" | "unmapped" = source?.has_opencode_mapping
 							? "mapped"
 							: "unmapped";
+						const relinkable = Boolean(source?.stable_id);
 						return {
 							id: item.id,
 							kind: item.kind,
@@ -410,6 +467,7 @@ export function getMemoryRoleReport(
 							role: inferred.role,
 							role_reason: inferred.reason,
 							mapping,
+							relinkable,
 						};
 					});
 					const topRoleCounts: Record<MemoryRole, number> = {
@@ -475,6 +533,19 @@ export function getMemoryRoleReport(
 							simulated2RecapUnmappedCount += 1;
 						}
 					}
+					const simulatedRelinkedItems = probeItems.map((item) =>
+						item.mapping === "unmapped" && item.relinkable
+							? { ...item, mapping: "mapped" as const }
+							: item,
+					);
+					const simulatedRelinkedTopMappingCounts = { mapped: 0, unmapped: 0 };
+					let simulatedRelinkedRecapUnmappedCount = 0;
+					for (const item of simulatedRelinkedItems.slice(0, 5)) {
+						simulatedRelinkedTopMappingCounts[item.mapping] += 1;
+						if (item.role === "recap" && item.mapping === "unmapped") {
+							simulatedRelinkedRecapUnmappedCount += 1;
+						}
+					}
 					probeResults.push({
 						query,
 						mode: String(pack.metrics.mode ?? "default"),
@@ -507,6 +578,15 @@ export function getMemoryRoleReport(
 								recap_unmapped_share: simulated2RecapUnmappedCount / topCount,
 							},
 						},
+						simulated_relinked_mapping: {
+							item_ids: simulatedRelinkedItems.map((item) => item.id),
+							top_mapping_counts: simulatedRelinkedTopMappingCounts,
+							top_burden: {
+								recap_share: topRoleCounts.recap / topCount,
+								unmapped_share: simulatedRelinkedTopMappingCounts.unmapped / topCount,
+								recap_unmapped_share: simulatedRelinkedRecapUnmappedCount / topCount,
+							},
+						},
 					});
 				}
 			} finally {
@@ -535,6 +615,148 @@ export function getMemoryRoleReport(
 			session_duration_buckets: sessionDurationBuckets,
 			role_examples: roleExamples,
 			probe_results: probeResults,
+		};
+	});
+}
+
+export function getRawEventRelinkReport(
+	dbPath?: string,
+	opts: RawEventRelinkReportOptions = {},
+): RawEventRelinkReport {
+	return withDb(dbPath, (db) => {
+		const projectFilter = opts.allProjects ? null : opts.project?.trim() || null;
+		const projectClause = projectFilter ? "AND s.project = ?" : "";
+		const params = projectFilter ? [projectFilter] : [];
+		const limit = Math.max(1, opts.limit ?? 25);
+
+		const rows = db
+			.prepare(
+				`SELECT
+					s.id,
+					s.project,
+					s.started_at,
+					s.ended_at,
+					COALESCE(
+						json_extract(s.metadata_json, '$.session_context.opencodeSessionId'),
+						json_extract(s.metadata_json, '$.session_context.streamId')
+					) AS stable_id,
+					CASE WHEN os.session_id IS NULL THEN 0 ELSE 1 END AS has_mapping,
+					(
+						SELECT COUNT(*)
+						FROM memory_items m
+						WHERE m.session_id = s.id AND m.active = 1
+					) AS active_memories
+				FROM sessions s
+				LEFT JOIN (
+					SELECT DISTINCT session_id
+					FROM opencode_sessions
+					WHERE session_id IS NOT NULL
+				) os ON os.session_id = s.id
+				WHERE json_extract(s.metadata_json, '$.session_context.flusher') = 'raw_events'
+				  AND COALESCE(
+						json_extract(s.metadata_json, '$.session_context.opencodeSessionId'),
+						json_extract(s.metadata_json, '$.session_context.streamId')
+					  ) IS NOT NULL
+				  ${projectClause}
+				ORDER BY s.started_at DESC, s.id DESC`,
+			)
+			.all(...params) as Array<{
+			id: number;
+			project: string | null;
+			started_at: string | null;
+			ended_at: string | null;
+			stable_id: string;
+			has_mapping: number;
+			active_memories: number;
+		}>;
+
+		const groups = new Map<string, typeof rows>();
+		for (const row of rows) {
+			const key = String(row.stable_id || "").trim();
+			if (!key) continue;
+			const list = groups.get(key) ?? [];
+			list.push(row);
+			groups.set(key, list);
+		}
+
+		const reportGroups: RawEventRelinkGroup[] = [];
+		let activeMemories = 0;
+		let repointableActiveMemories = 0;
+		let groupsWithMappedSession = 0;
+		let groupsWithoutMappedSession = 0;
+
+		for (const [stableId, groupRows] of groups.entries()) {
+			const sorted = [...groupRows].sort((a, b) => {
+				if (b.has_mapping !== a.has_mapping) return b.has_mapping - a.has_mapping;
+				const aStarted = a.started_at ?? "";
+				const bStarted = b.started_at ?? "";
+				if (aStarted !== bStarted) return aStarted.localeCompare(bStarted);
+				return a.id - b.id;
+			});
+			const canonical = sorted[0];
+			if (!canonical) continue;
+			const mappedSessions = groupRows.filter((row) => row.has_mapping === 1).length;
+			const unmappedSessions = groupRows.length - mappedSessions;
+			const totalActiveMemories = groupRows.reduce(
+				(sum, row) => sum + Number(row.active_memories ?? 0),
+				0,
+			);
+			const canonicalActiveMemories = Number(canonical.active_memories ?? 0);
+			const repointable = Math.max(0, totalActiveMemories - canonicalActiveMemories);
+			const canonicalReason =
+				canonical.has_mapping === 1 ? "existing_mapped_session" : "oldest_unmapped_session";
+			activeMemories += totalActiveMemories;
+			repointableActiveMemories += repointable;
+			if (mappedSessions > 0) groupsWithMappedSession += 1;
+			else groupsWithoutMappedSession += 1;
+
+			reportGroups.push({
+				stable_id: stableId,
+				local_sessions: groupRows.length,
+				mapped_sessions: mappedSessions,
+				unmapped_sessions: unmappedSessions,
+				canonical_session_id: canonical.id,
+				canonical_reason: canonicalReason,
+				would_create_bridge: canonical.has_mapping === 0,
+				sessions_to_compact: Math.max(0, groupRows.length - 1),
+				sample_session_ids: groupRows.slice(0, 5).map((row) => row.id),
+				active_memories: totalActiveMemories,
+				repointable_active_memories: repointable,
+				oldest_started_at:
+					[...groupRows]
+						.map((row) => row.started_at)
+						.filter(Boolean)
+						.sort()[0] ?? null,
+				latest_started_at:
+					[...groupRows]
+						.map((row) => row.started_at)
+						.filter(Boolean)
+						.sort()
+						.at(-1) ?? null,
+				project: canonical.project,
+			});
+		}
+
+		reportGroups.sort((a, b) => {
+			if (b.repointable_active_memories !== a.repointable_active_memories) {
+				return b.repointable_active_memories - a.repointable_active_memories;
+			}
+			if (b.local_sessions !== a.local_sessions) return b.local_sessions - a.local_sessions;
+			return a.stable_id.localeCompare(b.stable_id);
+		});
+
+		return {
+			totals: {
+				recoverable_sessions: rows.length,
+				distinct_stable_ids: groups.size,
+				groups_with_multiple_sessions: reportGroups.filter((group) => group.local_sessions > 1)
+					.length,
+				groups_with_mapped_session: groupsWithMappedSession,
+				groups_without_mapped_session: groupsWithoutMappedSession,
+				active_memories: activeMemories,
+				repointable_active_memories: repointableActiveMemories,
+			},
+			groups: reportGroups.slice(0, limit),
 		};
 	});
 }

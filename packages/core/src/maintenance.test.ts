@@ -8,6 +8,7 @@ import {
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
 	getMemoryRoleReport,
+	getRawEventRelinkReport,
 	getRawEventStatus,
 	getReliabilityMetrics,
 	initDatabase,
@@ -389,14 +390,68 @@ describe("maintenance", () => {
 			unmapped_share: 0,
 			recap_unmapped_share: 0,
 		});
+		expect(report.probe_results[0]?.simulated_relinked_mapping?.top_burden).toEqual({
+			recap_share: 0.5,
+			unmapped_share: 0,
+			recap_unmapped_share: 0,
+		});
 		expect(report.probe_results[0]?.items[0]).toEqual(
 			expect.objectContaining({
 				kind: "decision",
 				mapping: "mapped",
+				relinkable: false,
 				role: "durable",
 				role_reason: "durable_kind",
 				title: "OAuth callback fix",
 			}),
 		);
+	});
+
+	it("reports relinkable raw-event session groups", () => {
+		const dbPath = createDbPath("raw-event-relink-report");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1"}}'),
+				  (3, '2026-03-01T10:20:00Z', '2026-03-01T10:21:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-2"}}');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'session_summary', 'Summary 1', 'body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+				  (2, 2, 'decision', 'Decision 2', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k2'),
+				  (3, 3, 'change', 'Change 3', 'body', 1, '2026-03-01T10:21:00Z', '2026-03-01T10:21:00Z', '{}', 'k3');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getRawEventRelinkReport(dbPath, { limit: 10 });
+
+		expect(report.totals.recoverable_sessions).toBe(3);
+		expect(report.totals.distinct_stable_ids).toBe(2);
+		expect(report.totals.groups_with_multiple_sessions).toBe(1);
+		expect(report.totals.groups_with_mapped_session).toBe(1);
+		expect(report.totals.groups_without_mapped_session).toBe(1);
+		expect(report.totals.active_memories).toBe(3);
+		expect(report.totals.repointable_active_memories).toBe(1);
+		expect(report.groups[0]).toEqual(
+			expect.objectContaining({
+				stable_id: "ses-1",
+				local_sessions: 2,
+				mapped_sessions: 1,
+				unmapped_sessions: 1,
+				canonical_session_id: 1,
+				canonical_reason: "existing_mapped_session",
+				would_create_bridge: false,
+				sessions_to_compact: 1,
+				repointable_active_memories: 1,
+			}),
+		);
+		expect(report.groups[0]?.sample_session_ids.sort((a, b) => a - b)).toEqual([1, 2]);
 	});
 });
