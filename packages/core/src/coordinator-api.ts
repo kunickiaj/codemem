@@ -1001,18 +1001,15 @@ async function handleJoinRequestReview(
 	const requestId = String(data.request_id ?? "").trim();
 	const reviewedBy = String(data.reviewed_by ?? "").trim() || null;
 	const bootstrapGrantSeedDeviceId = String(data.bootstrap_grant_seed_device_id ?? "").trim();
-	const bootstrapGrantScope = String(data.bootstrap_grant_scope ?? "").trim();
 	const bootstrapGrantExpiresAt = String(data.bootstrap_grant_expires_at ?? "").trim();
 
 	if (!requestId) return c.json({ error: "request_id_required" }, 400);
-	const bootstrapGrantFields = [
-		bootstrapGrantSeedDeviceId,
-		bootstrapGrantScope,
-		bootstrapGrantExpiresAt,
-	].filter(Boolean).length;
-	if (bootstrapGrantFields > 0 && bootstrapGrantFields < 3) {
+	const bootstrapGrantFields = [bootstrapGrantSeedDeviceId, bootstrapGrantExpiresAt].filter(
+		Boolean,
+	).length;
+	if (bootstrapGrantFields > 0 && bootstrapGrantFields < 2) {
 		return c.json(
-			{ error: "bootstrap_grant_seed_device_id_scope_and_expires_at_required_together" },
+			{ error: "bootstrap_grant_seed_device_id_and_expires_at_required_together" },
 			400,
 		);
 	}
@@ -1024,10 +1021,9 @@ async function handleJoinRequestReview(
 			approved,
 			reviewedBy,
 			bootstrapGrant:
-				approved && bootstrapGrantSeedDeviceId && bootstrapGrantScope && bootstrapGrantExpiresAt
+				approved && bootstrapGrantSeedDeviceId && bootstrapGrantExpiresAt
 					? {
 							seedDeviceId: bootstrapGrantSeedDeviceId,
-							scope: bootstrapGrantScope,
 							expiresAt: bootstrapGrantExpiresAt,
 							createdBy: reviewedBy,
 						}

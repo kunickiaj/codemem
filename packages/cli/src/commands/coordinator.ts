@@ -504,7 +504,7 @@ export function buildCoordinatorCommand(): Command {
 				}
 				for (const row of rows) {
 					p.log.message(
-						`- ${row.grant_id} seed=${row.seed_device_id} worker=${row.worker_device_id} scope=${row.scope} expires=${row.expires_at} revoked=${row.revoked_at ?? "no"}`,
+						`- ${row.grant_id} seed=${row.seed_device_id} worker=${row.worker_device_id} expires=${row.expires_at} revoked=${row.revoked_at ?? "no"}`,
 					);
 				}
 				p.outro(`${rows.length} bootstrap grant(s)`);

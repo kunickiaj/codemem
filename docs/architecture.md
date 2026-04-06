@@ -323,6 +323,18 @@ events.
 - `CODEMEM_CLAUDE_HOOK_FLUSH=1` enables immediate `SessionEnd` boundary flush attempts
 - `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` extends immediate flush to `Stop` when boundary flush is enabled
 
+## Bootstrap grant verification flow
+
+During fleet bootstrap, a worker device presents a `X-Codemem-Bootstrap-Grant` header to the seed peer's `/v1/status` and `/v1/snapshot` endpoints. These are the only sync protocol endpoints that accept bootstrap grant authentication; `/v1/ops` requires full peer-to-peer signature auth.
+
+The seed's viewer-server calls the coordinator's admin API (`GET /v1/admin/bootstrap-grants/:grantId`) to verify the grant. This creates a **runtime dependency: seed → coordinator** during active bootstrap load. The seed must be able to reach the coordinator to verify any bootstrap grant.
+
+**Failure mode:** if the coordinator is unreachable during verification, bootstrap fails with a generic `bootstrap_grant_invalid` error on the wire. The specific failure reason (`bootstrap_grant_lookup_failed`, `bootstrap_grant_expired`, `bootstrap_grant_revoked`, etc.) is logged server-side only — wire responses use a generic reason to prevent information disclosure to unauthenticated callers.
+
+The system **fails closed**: unverifiable grants are rejected. A grant that cannot be looked up, has expired, has been revoked, or whose worker/seed device IDs do not match is always denied.
+
+Rate limiting is applied at the unauthenticated bucket level **before** grant verification. This prevents unauthenticated callers from using grant verification as an oracle or amplification vector against the coordinator.
+
 ## Design tradeoffs
 
 codemem is built for **episodic memory** — remembering what happened across coding sessions: what was tried, changed, decided, and learned. It's good at:

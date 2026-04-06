@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "clean": "pnpm -r run clean && pnpm exec tsc --build --clean",
-    "build": "pnpm -r run build && pnpm exec tsc --build",
+    "build": "pnpm -r run build",
     "e2e": "pnpm exec tsx e2e/bin/run-local.ts",
     "e2e:bootstrap": "pnpm exec tsx e2e/bin/run-local.ts bootstrap",
     "e2e:coordinator": "pnpm exec tsx e2e/bin/run-local.ts coordinator",

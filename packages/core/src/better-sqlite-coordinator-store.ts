@@ -102,17 +102,15 @@ function normalizeBootstrapGrantRequest(
 ): CoordinatorCreateBootstrapGrantInput | null {
 	if (!input) return null;
 	const seedDeviceId = String(input.seedDeviceId ?? "").trim();
-	const scope = String(input.scope ?? "").trim();
 	const expiresAt = String(input.expiresAt ?? "").trim();
 	const createdBy = String(input.createdBy ?? "").trim() || null;
-	if (!seedDeviceId || !scope || !expiresAt) {
-		throw new Error("bootstrapGrant.seedDeviceId, scope, and expiresAt are required.");
+	if (!seedDeviceId || !expiresAt) {
+		throw new Error("bootstrapGrant.seedDeviceId and expiresAt are required.");
 	}
 	return {
 		groupId: "",
 		seedDeviceId,
 		workerDeviceId: "",
-		scope,
 		expiresAt,
 		createdBy,
 	};
@@ -124,13 +122,12 @@ function normalizeBootstrapGrantInput(
 	const groupId = String(opts.groupId ?? "").trim();
 	const seedDeviceId = String(opts.seedDeviceId ?? "").trim();
 	const workerDeviceId = String(opts.workerDeviceId ?? "").trim();
-	const scope = String(opts.scope ?? "").trim();
 	const expiresAt = String(opts.expiresAt ?? "").trim();
 	const createdBy = String(opts.createdBy ?? "").trim() || null;
-	if (!groupId || !seedDeviceId || !workerDeviceId || !scope || !expiresAt) {
-		throw new Error("groupId, seedDeviceId, workerDeviceId, scope, and expiresAt are required.");
+	if (!groupId || !seedDeviceId || !workerDeviceId || !expiresAt) {
+		throw new Error("groupId, seedDeviceId, workerDeviceId, and expiresAt are required.");
 	}
-	return { groupId, seedDeviceId, workerDeviceId, scope, expiresAt, createdBy };
+	return { groupId, seedDeviceId, workerDeviceId, expiresAt, createdBy };
 }
 
 function insertBootstrapGrantSync(
@@ -141,19 +138,18 @@ function insertBootstrapGrantSync(
 	const grantId = tokenUrlSafe(12);
 	const createdAt = nowISO();
 	db.prepare(`INSERT INTO coordinator_bootstrap_grants(
-			grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(
+			grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`).run(
 		grantId,
 		normalized.groupId,
 		normalized.seedDeviceId,
 		normalized.workerDeviceId,
-		normalized.scope,
 		normalized.expiresAt,
 		createdAt,
 		normalized.createdBy,
 	);
 	const row = db
-		.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+		.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
 			 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
 		.get(grantId);
 	return rowToRecord<CoordinatorBootstrapGrant>(row);
@@ -236,7 +232,6 @@ function initializeSchema(db: DatabaseType): void {
 			group_id TEXT NOT NULL,
 			seed_device_id TEXT NOT NULL,
 			worker_device_id TEXT NOT NULL,
-			scope TEXT NOT NULL,
 			expires_at TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			created_by TEXT,
@@ -600,7 +595,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null> {
 		const row = this.db
-			.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+			.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
 				 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
 			.get(grantId);
 		return row ? rowToRecord<CoordinatorBootstrapGrant>(row) : null;
@@ -608,7 +603,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]> {
 		return this.db
-			.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+			.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
 				 FROM coordinator_bootstrap_grants WHERE group_id = ?
 				 ORDER BY created_at DESC, grant_id DESC`)
 			.all(groupId)

@@ -47,7 +47,6 @@ export interface CoordinatorJoinRequestReviewResult extends CoordinatorJoinReque
 
 export interface CoordinatorReviewJoinRequestBootstrapGrantInput {
 	seedDeviceId: string;
-	scope: string;
 	expiresAt: string;
 	createdBy?: string | null;
 }
@@ -86,7 +85,6 @@ export interface CoordinatorBootstrapGrant {
 	group_id: string;
 	seed_device_id: string;
 	worker_device_id: string;
-	scope: string;
 	expires_at: string;
 	created_at: string;
 	created_by: string | null;
@@ -141,7 +139,6 @@ export interface CoordinatorCreateBootstrapGrantInput {
 	groupId: string;
 	seedDeviceId: string;
 	workerDeviceId: string;
-	scope: string;
 	expiresAt: string;
 	createdBy?: string | null;
 }

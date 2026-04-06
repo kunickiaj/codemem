@@ -176,6 +176,16 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
 
+### Bootstrap grant failures
+
+**Symptom:** worker bootstrap fails with HTTP 401 / `bootstrap_grant_invalid`.
+
+The wire error is intentionally generic. Check the seed peer's server logs for the specific reason, then work through these:
+
+1. **Is the coordinator reachable from the seed peer?** The seed must call the coordinator's admin API to verify the grant. If the coordinator is down or unreachable, the grant cannot be verified and bootstrap will fail. Check network connectivity and `sync_coordinator_url` config on the seed.
+2. **Is the grant expired or revoked?** List active grants with `codemem coordinator list-bootstrap-grants <group>` and confirm the grant is still valid.
+3. **Does the grant's worker device match the bootstrapping device?** The `worker_device_id` on the grant must match the device ID of the worker attempting bootstrap. A mismatch (e.g., using a grant issued for a different worker) will be rejected.
+
 ## Retrieval scope
 - New memories default to the shared path for projects allowed by sync filters.
 - Owned feed items expose a visibility control so you can explicitly switch a memory between `Only me` and `Share with peers`.
