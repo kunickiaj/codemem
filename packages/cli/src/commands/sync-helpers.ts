@@ -1,3 +1,5 @@
+import { resolveDbOpt } from "../shared-options.js";
+
 export interface SyncAttemptRow {
 	peer_device_id: string;
 	ok: number;
@@ -39,7 +41,8 @@ export function buildServeLifecycleArgs(
 	} else {
 		args.push("--restart");
 	}
-	if (opts.db ?? opts.dbPath) args.push("--db-path", opts.db ?? opts.dbPath ?? "");
+	const dbResolved = resolveDbOpt(opts);
+	if (dbResolved) args.push("--db-path", dbResolved);
 	if (opts.config) args.push("--config", opts.config);
 	if (opts.host) args.push("--host", opts.host);
 	if (opts.port) args.push("--port", opts.port);

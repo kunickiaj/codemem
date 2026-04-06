@@ -5,18 +5,18 @@ import {
 	readCodememConfigFileAtPath,
 	writeCodememConfigFile,
 } from "@codemem/core";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
+import { addJsonOption, type JsonOpts } from "../shared-options.js";
 
-type WorkspaceConfigOptions = {
-	workspaceId: string;
+type WorkspaceConfigOptions = JsonOpts & {
+	workspaceId?: string;
 	syncEnabled?: boolean;
 	syncHost?: string;
 	syncPort?: string;
 	syncIntervalS?: string;
 	coordinatorUrl?: string;
 	coordinatorGroup?: string;
-	json?: boolean;
 };
 
 type WorkspaceConfigResult = {
@@ -62,12 +62,16 @@ function runWorkspaceConfigCommand(
 	if (opts.enableSync && opts.disableSync) {
 		throw new Error("Use only one of --enable-sync or --disable-sync");
 	}
-	const configPath = getWorkspaceCodememConfigPath(opts.workspaceId);
+	const workspaceId = opts.workspaceId;
+	if (!workspaceId) {
+		throw new Error("workspace-id is required");
+	}
+	const configPath = getWorkspaceCodememConfigPath(workspaceId);
 	const existingConfig = existsSync(configPath)
 		? readCodememConfigFileAtPath(configPath)
 		: readCodememConfigFile();
 	const patch = buildWorkspaceConfigPatch({
-		workspaceId: opts.workspaceId,
+		workspaceId,
 		syncEnabled: opts.enableSync ? true : opts.disableSync ? false : undefined,
 		syncHost: opts.syncHost,
 		syncPort: opts.syncPort,
@@ -82,7 +86,7 @@ function runWorkspaceConfigCommand(
 	const nextConfig = mergeWorkspaceConfig(existingConfig, patch);
 	const savedPath = writeCodememConfigFile(nextConfig, configPath);
 	return {
-		workspace_id: opts.workspaceId,
+		workspace_id: workspaceId,
 		config_path: savedPath,
 		updated_keys: Object.keys(patch).sort(),
 		config: nextConfig,
@@ -93,21 +97,40 @@ export const configCommand = new Command("config")
 	.configureHelp(helpStyle)
 	.description("Manage codemem configuration");
 
-configCommand.addCommand(
-	new Command("workspace")
-		.configureHelp(helpStyle)
-		.description("Create or update workspace-scoped codemem config")
-		.requiredOption("--workspace-id <id>", "workspace identifier")
-		.option("--enable-sync", "set sync_enabled=true")
-		.option("--disable-sync", "set sync_enabled=false")
-		.option("--sync-host <host>", "set sync_host")
-		.option("--sync-port <port>", "set sync_port")
-		.option("--sync-interval-s <seconds>", "set sync_interval_s")
-		.option("--coordinator-url <url>", "set sync_coordinator_url")
-		.option("--coordinator-group <group>", "set sync_coordinator_group")
-		.option("--json", "output as JSON")
-		.action((opts: WorkspaceConfigOptions & { enableSync?: boolean; disableSync?: boolean }) => {
-			const result = runWorkspaceConfigCommand(opts);
+const workspaceCmd = new Command("workspace")
+	.configureHelp(helpStyle)
+	.description("Create or update workspace-scoped codemem config")
+	.argument("[workspace-id]", "workspace identifier")
+	.option("--enable-sync", "set sync_enabled=true")
+	.option("--disable-sync", "set sync_enabled=false")
+	.option("--sync-host <host>", "set sync_host")
+	.option("--sync-port <port>", "set sync_port")
+	.option("--sync-interval-s <seconds>", "set sync_interval_s")
+	.option("--coordinator-url <url>", "set sync_coordinator_url")
+	.option("--coordinator-group <group>", "set sync_coordinator_group");
+
+// Hidden backwards-compat alias for --workspace-id <id>
+workspaceCmd.addOption(
+	new Option("--workspace-id <id>", "workspace identifier (use positional instead)").hideHelp(),
+);
+
+addJsonOption(workspaceCmd);
+
+workspaceCmd.action(
+	(
+		workspaceIdArg: string | undefined,
+		opts: WorkspaceConfigOptions & { enableSync?: boolean; disableSync?: boolean },
+	) => {
+		try {
+			// Positional takes precedence over hidden flag alias
+			const workspaceId = workspaceIdArg || opts.workspaceId;
+			if (!workspaceId) {
+				console.error("Error: missing required argument 'workspace-id'");
+				process.exitCode = 2;
+				return;
+			}
+
+			const result = runWorkspaceConfigCommand({ ...opts, workspaceId });
 
 			if (opts.json) {
 				console.log(JSON.stringify(result, null, 2));
@@ -116,7 +139,22 @@ configCommand.addCommand(
 
 			console.log(`Updated workspace config: ${result.config_path}`);
 			console.log(`Updated keys: ${result.updated_keys.join(", ")}`);
-		}),
+		} catch (err) {
+			if (opts.json) {
+				console.log(
+					JSON.stringify({
+						error: "config_error",
+						message: err instanceof Error ? err.message : String(err),
+					}),
+				);
+			} else {
+				console.error(err instanceof Error ? err.message : String(err));
+			}
+			process.exitCode = 1;
+		}
+	},
 );
+
+configCommand.addCommand(workspaceCmd);
 
 export { buildWorkspaceConfigPatch, mergeWorkspaceConfig, runWorkspaceConfigCommand };

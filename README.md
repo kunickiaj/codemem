@@ -108,24 +108,37 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 
 ## CLI
 
-| Command | Description |
-|---------|-------------|
-| `codemem stats` | Database statistics |
-| `codemem recent` | Recent memories |
-| `codemem search <query>` | Search memories |
-| `codemem embed` | Backfill semantic embeddings |
-| `codemem serve` | Launch the web viewer |
-| `codemem db backfill-tags` | Populate missing `tags_text` values |
-| `codemem db prune-observations` | Deactivate low-signal observations |
-| `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
-| `codemem export-memories` | Export memories by project |
-| `codemem import-memories` | Import memories (idempotent) |
-| `codemem sync` | Peer-to-peer sync commands |
+| Group | Command | Description |
+|-------|---------|-------------|
+| **Core** | `codemem stats` | Database statistics |
+| | `codemem recent` | Recent memories |
+| | `codemem search <query>` | Search memories |
+| | `codemem pack <context>` | Build a context-aware memory pack |
+| | `codemem embed` | Backfill semantic embeddings |
+| **Memory** | `codemem memory show <id>` | Print a memory item as JSON |
+| | `codemem memory forget <id>` | Deactivate a memory item |
+| | `codemem memory remember` | Manually add a memory |
+| | `codemem memory inject <context>` | Raw pack text for prompt injection |
+| | `codemem memory export <output>` | Export memories by project |
+| | `codemem memory import <file>` | Import memories (idempotent) |
+| **Viewer** | `codemem serve [start\|stop\|restart]` | Launch / manage the web viewer |
+| **Sync** | `codemem sync enable\|disable` | Enable or disable peer-to-peer sync |
+| | `codemem sync status` | Device info and peer health |
+| | `codemem sync pair` | Generate or accept a pairing payload |
+| | `codemem sync once` | Run one immediate sync pass |
+| | `codemem sync doctor` | Diagnose sync configuration issues |
+| | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
+| **Coordinator** | `codemem coordinator` | Self-hosted coordinator admin (groups, devices, invites) |
+| **Database** | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
+| | `codemem db prune-observations` | Deactivate low-signal observations |
+| | `codemem db backfill-tags` | Populate missing `tags_text` values |
+| | `codemem db raw-events-status` | Show raw-event queue status |
+| **Config** | `codemem config` | View or update configuration |
+| | `codemem setup` | Interactive first-run setup |
+| **Plumbing** | `codemem mcp` | MCP stdio server |
+| | `codemem claude-hook-ingest` | Claude hook event ingestion (stdin) |
 
-Run `codemem --help` for the full list.
-
-Note: in the TypeScript CLI, `codemem memory inject <context>` prints raw `pack_text`
-for manual prompt injection. `codemem memory compact` remains deferred.
+Run `codemem --help` for the full list. Legacy top-level aliases (`export-memories`, `import-memories`, `show`, `forget`, `remember`) still work but are hidden from help.
 
 ## MCP tools
 
@@ -204,7 +217,7 @@ The viewer now includes actor management for mapping multiple peers to one logic
 
 Project filters, peer-to-actor assignment, visibility controls, and config keys are documented in [docs/user-guide.md](docs/user-guide.md).
 
-For cross-network setups where peer addresses change frequently or mDNS does not cross VPN/network boundaries, codemem also supports optional coordinator-backed discovery with a self-hosted coordinator. The preferred deployment path is the built-in `codemem sync coordinator` service; see [docs/coordinator-discovery.md](docs/coordinator-discovery.md).
+For cross-network setups where peer addresses change frequently or mDNS does not cross VPN/network boundaries, codemem also supports optional coordinator-backed discovery with a self-hosted coordinator. The preferred deployment path is the built-in `codemem coordinator` service; see [docs/coordinator-discovery.md](docs/coordinator-discovery.md).
 
 ## Semantic recall
 

@@ -1,6 +1,7 @@
 import { MemoryStore, resolveDbPath, stripPrivateObj } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
+import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
 
 const SESSION_ID_KEYS = [
 	"session_stream_id",
@@ -19,7 +20,7 @@ function resolveSessionStreamId(payload: Record<string, unknown>): string | null
 	}
 	if (values.size === 0) return null;
 	const unique = new Set(values.values());
-	if (unique.size > 1) throw new Error("conflicting session id fields");
+	if (unique.size > 1) return null;
 	for (const key of SESSION_ID_KEYS) {
 		const value = values.get(key);
 		if (value) return value;
@@ -41,19 +42,35 @@ async function readStdinJson(): Promise<Record<string, unknown>> {
 	return parsed as Record<string, unknown>;
 }
 
-export const enqueueRawEventCommand = new Command("enqueue-raw-event")
+function emitStructuredError(errorCode: string, message: string): void {
+	console.log(JSON.stringify({ error: errorCode, message }));
+	process.exitCode = 1;
+}
+
+const enqueueCmd = new Command("enqueue-raw-event")
 	.configureHelp(helpStyle)
-	.description("Enqueue one raw event from stdin into the durable queue")
-	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.action(async (opts: { db?: string; dbPath?: string }) => {
+	.description("Enqueue one raw event from stdin into the durable queue");
+
+addDbOption(enqueueCmd);
+
+export const enqueueRawEventCommand = enqueueCmd.action(async (opts: DbOpts) => {
+	try {
 		const payload = await readStdinJson();
 		const sessionId = resolveSessionStreamId(payload);
-		if (!sessionId) throw new Error("session id required");
-		if (sessionId.startsWith("msg_")) throw new Error("invalid session id");
+		if (!sessionId) {
+			emitStructuredError("validation_error", "session id required");
+			return;
+		}
+		if (sessionId.startsWith("msg_")) {
+			emitStructuredError("validation_error", "invalid session id");
+			return;
+		}
 
 		const eventType = typeof payload.event_type === "string" ? payload.event_type.trim() : "";
-		if (!eventType) throw new Error("event_type required");
+		if (!eventType) {
+			emitStructuredError("validation_error", "event_type required");
+			return;
+		}
 
 		const cwd = typeof payload.cwd === "string" ? payload.cwd : null;
 		const project = typeof payload.project === "string" ? payload.project : null;
@@ -70,7 +87,7 @@ export const enqueueRawEventCommand = new Command("enqueue-raw-event")
 				? (stripPrivateObj(payload.payload) as Record<string, unknown>)
 				: {};
 
-		const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 		try {
 			store.updateRawEventSessionMeta({
 				opencodeSessionId: sessionId,
@@ -92,4 +109,7 @@ export const enqueueRawEventCommand = new Command("enqueue-raw-event")
 		} finally {
 			store.close();
 		}
-	});
+	} catch (err) {
+		emitStructuredError("enqueue_error", err instanceof Error ? err.message : String(err));
+	}
+});

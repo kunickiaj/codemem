@@ -188,11 +188,14 @@ describe("formatSyncAttempt", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		const serve = coordinator?.commands.find((command) => command.name() === "serve");
 		expect(serve?.options.find((opt) => opt.long === "--db")?.defaultValue).toBeUndefined();
-		expect(serve?.options.find((opt) => opt.long === "--port")?.defaultValue).toBe("7347");
-		// runtime default is enforced in action code, not commander metadata
+		// Defaults live in the action handler, not on the Option definitions,
+		// so that hidden --host/--port aliases can fall through correctly.
+		expect(
+			serve?.options.find((opt) => opt.long === "--coordinator-port")?.defaultValue,
+		).toBeUndefined();
 		const help = serve?.helpInformation() ?? "";
 		expect(help).toContain("coordinator database path");
-		expect(help).toContain("7347");
+		expect(help).toContain("bind port");
 	});
 
 	it("allows positional group ids for create-invite and list-join-requests", () => {

@@ -16,6 +16,7 @@ import { Command } from "commander";
 import omelette from "omelette";
 import { claudeHookIngestCommand } from "./commands/claude-hook-ingest.js";
 import { configCommand } from "./commands/config.js";
+import { coordinatorCommand } from "./commands/coordinator.js";
 import { dbCommand } from "./commands/db.js";
 import { embedCommand } from "./commands/embed.js";
 import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
@@ -49,23 +50,21 @@ completion.on("command", ({ reply }) => {
 	reply([
 		"claude-hook-ingest",
 		"config",
+		"coordinator",
 		"db",
 		"embed",
-		"export-memories",
-		"forget",
-		"memory",
-		"import-memories",
-		"setup",
-		"show",
-		"sync",
-		"stats",
-		"recent",
-		"remember",
-		"search",
-		"pack",
-		"serve",
-		"mcp",
 		"enqueue-raw-event",
+		"export-memories",
+		"import-memories",
+		"mcp",
+		"memory",
+		"pack",
+		"recent",
+		"search",
+		"serve",
+		"setup",
+		"stats",
+		"sync",
 		"version",
 		"help",
 		"--help",
@@ -116,8 +115,58 @@ if (hasRootFlag("--cleanup-completion")) {
 	process.exit(0);
 }
 
+// --- Memory subcommands: export/import registered under `memory` group ---
+// Per cli-design-conventions.md, export/import belong under their noun group.
+// The top-level export-memories/import-memories remain as compatibility aliases.
+//
+// We create thin wrapper commands that replicate the same argument/option shape
+// and delegate to the original command's parseAsync with synthetic argv.
+// This avoids accessing Commander internals while keeping a single source of
+// truth for the action logic in the original command modules.
+{
+	const memExport = new Command("export")
+		.description("Export memories to a JSON file for sharing or backup")
+		.argument("<output>", "output file path (use '-' for stdout)")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--project <project>", "filter by project")
+		.option("--all-projects", "export all projects")
+		.option("--include-inactive", "include deactivated memories")
+		.option("--since <iso>", "only export memories created after this ISO timestamp")
+		.configureHelp(helpStyle)
+		.allowUnknownOption(true)
+		.allowExcessArguments(true)
+		.action(async () => {
+			// Forward to the original command by re-parsing the raw argv tail.
+			// `memory export <args>` → `export-memories <args>`
+			const idx = process.argv.indexOf("export");
+			const tail = idx >= 0 ? process.argv.slice(idx + 1) : [];
+			await exportMemoriesCommand.parseAsync(["node", "export-memories", ...tail]);
+		});
+
+	const memImport = new Command("import")
+		.description("Import memories from an exported JSON file")
+		.argument("<inputFile>", "input JSON file (use '-' for stdin)")
+		.option("--db <path>", "database path")
+		.option("--db-path <path>", "database path")
+		.option("--remap-project <path>", "remap all projects to this path on import")
+		.option("--dry-run", "preview import without writing")
+		.configureHelp(helpStyle)
+		.allowUnknownOption(true)
+		.allowExcessArguments(true)
+		.action(async () => {
+			const idx = process.argv.indexOf("import");
+			const tail = idx >= 0 ? process.argv.slice(idx + 1) : [];
+			await importMemoriesCommand.parseAsync(["node", "import-memories", ...tail]);
+		});
+
+	memoryCommand.addCommand(memExport);
+	memoryCommand.addCommand(memImport);
+}
+
 program.addCommand(serveCommand);
 program.addCommand(configCommand);
+program.addCommand(coordinatorCommand);
 program.addCommand(mcpCommand);
 program.addCommand(claudeHookIngestCommand);
 program.addCommand(dbCommand);
@@ -128,9 +177,11 @@ program.addCommand(embedCommand);
 program.addCommand(recentCommand);
 program.addCommand(searchCommand);
 program.addCommand(packCommand);
-program.addCommand(showMemoryCommand);
-program.addCommand(forgetMemoryCommand);
-program.addCommand(rememberMemoryCommand);
+// Deprecated top-level aliases — use `memory show`, `memory forget`, `memory remember` instead.
+// These are hidden from --help and shell completion but still functional for backwards compat.
+program.addCommand(showMemoryCommand, { hidden: true });
+program.addCommand(forgetMemoryCommand, { hidden: true });
+program.addCommand(rememberMemoryCommand, { hidden: true });
 program.addCommand(memoryCommand);
 program.addCommand(syncCommand);
 program.addCommand(setupCommand);

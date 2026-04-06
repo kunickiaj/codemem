@@ -3,29 +3,49 @@ import type { ExportPayload } from "@codemem/core";
 import { importMemories, readImportPayload, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
+import {
+	addDbOption,
+	addJsonOption,
+	type DbOpts,
+	emitJsonError,
+	type JsonOpts,
+	resolveDbOpt,
+} from "../shared-options.js";
 
-export const importMemoriesCommand = new Command("import-memories")
+const cmd = new Command("import-memories")
 	.configureHelp(helpStyle)
 	.description("Import memories from an exported JSON file")
 	.argument("<inputFile>", "input JSON file (use '-' for stdin)")
-	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
 	.option("--remap-project <path>", "remap all projects to this path on import")
-	.option("--dry-run", "preview import without writing")
-	.action(
-		(
-			inputFile: string,
-			opts: { db?: string; dbPath?: string; remapProject?: string; dryRun?: boolean },
-		) => {
-			let payload: ExportPayload;
-			try {
-				payload = readImportPayload(inputFile);
-			} catch (error) {
-				p.log.error(error instanceof Error ? error.message : "Invalid import file");
-				process.exitCode = 1;
-				return;
-			}
+	.option("--dry-run", "preview import without writing");
 
+addDbOption(cmd);
+addJsonOption(cmd);
+
+cmd.action(
+	(
+		inputFile: string,
+		opts: DbOpts &
+			JsonOpts & {
+				remapProject?: string;
+				dryRun?: boolean;
+			},
+	) => {
+		let payload: ExportPayload;
+		try {
+			payload = readImportPayload(inputFile);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Invalid import file";
+			if (opts.json) {
+				emitJsonError("invalid_input", message);
+			} else {
+				p.log.error(message);
+				process.exitCode = 1;
+			}
+			return;
+		}
+
+		if (!opts.json) {
 			p.intro("codemem import-memories");
 			p.log.info(
 				[
@@ -37,25 +57,39 @@ export const importMemoriesCommand = new Command("import-memories")
 					`Prompts:        ${payload.user_prompts.length.toLocaleString()}`,
 				].join("\n"),
 			);
+		}
 
-			const result = importMemories(payload, {
-				dbPath: resolveDbPath(opts.db ?? opts.dbPath),
-				remapProject: opts.remapProject,
-				dryRun: opts.dryRun,
-			});
+		const result = importMemories(payload, {
+			dbPath: resolveDbPath(resolveDbOpt(opts)),
+			remapProject: opts.remapProject,
+			dryRun: opts.dryRun,
+		});
 
-			if (result.dryRun) {
-				p.outro("dry run complete");
-				return;
-			}
-			p.log.success(
-				[
-					`Imported sessions:  ${result.sessions.toLocaleString()}`,
-					`Imported prompts:   ${result.user_prompts.toLocaleString()}`,
-					`Imported memories:  ${result.memory_items.toLocaleString()}`,
-					`Imported summaries: ${result.session_summaries.toLocaleString()}`,
-				].join("\n"),
+		if (opts.json) {
+			console.log(
+				JSON.stringify({
+					sessions: result.sessions,
+					memory_items: result.memory_items,
+					skipped: result.dryRun,
+				}),
 			);
-			p.outro("done");
-		},
-	);
+			return;
+		}
+
+		if (result.dryRun) {
+			p.outro("dry run complete");
+			return;
+		}
+		p.log.success(
+			[
+				`Imported sessions:  ${result.sessions.toLocaleString()}`,
+				`Imported prompts:   ${result.user_prompts.toLocaleString()}`,
+				`Imported memories:  ${result.memory_items.toLocaleString()}`,
+				`Imported summaries: ${result.session_summaries.toLocaleString()}`,
+			].join("\n"),
+		);
+		p.outro("done");
+	},
+);
+
+export const importMemoriesCommand = cmd;
