@@ -35,7 +35,7 @@
 		"@types/omelette": "^0.4.5",
 		"tsx": "^4.21.0",
 		"typescript": "catalog:",
-		"vite": "8.0.1",
+		"vite": "8.0.5",
 		"vitest": "4.0.17"
 	},
 	"engines": {
