@@ -225,25 +225,40 @@ export async function ingest(
 	const now = new Date().toISOString();
 	const project = normalizeProjectLabel(payload.project) ?? resolveProject(cwd) ?? null;
 
-	const rows = d
-		.insert(schema.sessions)
-		.values({
-			started_at: now,
-			cwd,
-			project,
-			user: process.env.USER ?? "unknown",
-			tool_version: "plugin-ts",
-			metadata_json: toJson({
-				source: "plugin",
-				event_count: events.length,
-				started_at: payload.startedAt,
-				session_context: sessionContext,
-			}),
-		})
-		.returning({ id: schema.sessions.id })
-		.all();
-	const sessionId = rows[0]?.id;
-	if (sessionId == null) throw new Error("session insert returned no id");
+	const sessionMetadata = {
+		source: "plugin",
+		event_count: events.length,
+		started_at: payload.startedAt,
+		session_context: sessionContext,
+	};
+	const sessionId =
+		sessionContext.flusher === "raw_events" && sessionContext.opencodeSessionId
+			? store.getOrCreateSessionForOpencodeSession({
+					opencodeSessionId: sessionContext.opencodeSessionId,
+					source: sessionContext.source,
+					cwd,
+					project,
+					metadata: sessionMetadata,
+					startedAt: payload.startedAt ?? now,
+					toolVersion: "raw_events",
+				})
+			: (() => {
+					const rows = d
+						.insert(schema.sessions)
+						.values({
+							started_at: now,
+							cwd,
+							project,
+							user: process.env.USER ?? "unknown",
+							tool_version: "plugin-ts",
+							metadata_json: toJson(sessionMetadata),
+						})
+						.returning({ id: schema.sessions.id })
+						.all();
+					const id = rows[0]?.id;
+					if (id == null) throw new Error("session insert returned no id");
+					return id;
+				})();
 
 	try {
 		// ------------------------------------------------------------------
