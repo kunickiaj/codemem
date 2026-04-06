@@ -30,7 +30,7 @@ import {
 	extractToolEvents,
 	projectAdapterToolEvent,
 } from "./ingest-events.js";
-import { isLowSignalObservation } from "./ingest-filters.js";
+import { isLowSignalObservation, isLowSignalSummary } from "./ingest-filters.js";
 import { buildObserverPrompt } from "./ingest-prompts.js";
 import {
 	buildTranscript,
@@ -107,6 +107,39 @@ function summaryBody(summary: ParsedSummary): string {
 		.filter(([, value]) => value)
 		.map(([label, value]) => `## ${label}\n${value}`)
 		.join("\n\n");
+}
+
+function summaryHasMeaningfulSignal(args: {
+	summary: ParsedSummary;
+	body: string;
+	observationsCount: number;
+	sessionContext: SessionContext | null;
+}): boolean {
+	const { summary, body, observationsCount, sessionContext } = args;
+	if (!body || isLowSignalSummary(firstSentence(body))) {
+		return false;
+	}
+	if (observationsCount > 0) return true;
+	if ((summary.filesModified?.length ?? 0) > 0) return true;
+	if ((summary.filesRead?.length ?? 0) > 0) return true;
+
+	const substantiveSections = [
+		summary.completed,
+		summary.learned,
+		summary.investigated,
+		summary.nextSteps,
+		summary.notes,
+	].filter((value) => value && value.trim().length >= 40);
+	if (substantiveSections.length >= 2) return true;
+
+	const promptCount = sessionContext?.promptCount ?? 0;
+	const toolCount = sessionContext?.toolCount ?? 0;
+	const durationMs = sessionContext?.durationMs ?? 0;
+	if (promptCount <= 1 && toolCount <= 1 && durationMs < 2 * 60_000) {
+		return false;
+	}
+
+	return substantiveSections.length >= 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +454,14 @@ export async function ingest(
 				}
 
 				const body = summaryBody(summary);
-				if (body && !isLowSignalObservation(firstSentence(body))) {
+				if (
+					summaryHasMeaningfulSignal({
+						summary,
+						body,
+						observationsCount: observationsToStore.length,
+						sessionContext,
+					})
+				) {
 					summaryToStore = { summary, request, body };
 				}
 			}

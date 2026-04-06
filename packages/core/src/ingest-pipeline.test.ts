@@ -707,6 +707,84 @@ describe("ingest() integration", () => {
 		expect(store.recent(10)).toHaveLength(0);
 	});
 
+	it("suppresses low-signal summary-only output for tiny sessions", async () => {
+		const weakSummaryObserver = {
+			observe: async () => ({
+				raw: `<summary><request>Check logs</request><completed>Checked logs</completed></summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-summary-weak",
+				promptCount: 1,
+				toolCount: 1,
+				durationMs: 1000,
+				flusher: "raw_events",
+			},
+		});
+
+		await expect(
+			ingest(payload, store, { observer: weakSummaryObserver } as unknown as IngestOptions),
+		).rejects.toThrow("observer produced no storable output for raw-event flush");
+
+		expect(store.recent(10)).toHaveLength(0);
+	});
+
+	it("keeps substantive summary output when it carries clear signal", async () => {
+		const strongSummaryObserver = {
+			observe: async () => ({
+				raw: `<summary>
+				<request>Investigate auth timeout</request>
+				<investigated>Reviewed the callback validation path and request timing to isolate where duplicate retries were introduced.</investigated>
+				<learned>Discovered the retry loop was triggered by a state mismatch after callback validation completed, which explains the intermittent timeout symptoms.</learned>
+				<completed>Documented the auth timeout root cause and outlined the regression coverage needed before changing retry handling.</completed>
+			</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-summary-strong",
+				promptCount: 2,
+				toolCount: 3,
+				durationMs: 4 * 60_000,
+				flusher: "raw_events",
+			},
+		});
+
+		await ingest(payload, store, { observer: strongSummaryObserver } as unknown as IngestOptions);
+
+		const summary = store.db
+			.prepare(
+				"SELECT kind, title, body_text FROM memory_items WHERE kind = 'session_summary' ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { kind: string; title: string; body_text: string };
+		expect(summary.kind).toBe("session_summary");
+		expect(summary.title).toBe("Investigate auth timeout");
+		expect(summary.body_text).toContain("retry loop");
+	});
+
 	it("retries once when observer returns plain text instead of XML during raw-event flush", async () => {
 		let calls = 0;
 		const retryingObserver = {
@@ -721,7 +799,12 @@ describe("ingest() integration", () => {
 					};
 				}
 				return {
-					raw: `<summary><request>Check restart state</request><completed>Confirmed the observer needed an XML retry.</completed></summary>`,
+					raw: `<summary>
+						<request>Check restart state</request>
+						<investigated>Reviewed the restart flow and observer response handling to confirm why the first pass produced plain text instead of XML.</investigated>
+						<completed>Confirmed the observer needed an XML retry and documented the restart-state path that should be preserved in future retries.</completed>
+						<learned>The retry path must preserve the original restart context or the summary becomes too generic to store safely.</learned>
+					</summary>`,
 					parsed: null,
 					provider: "test",
 					model: "test-model",
