@@ -38,7 +38,6 @@ import {
 	extractAssistantMessages,
 	extractAssistantUsage,
 	extractPrompts,
-	firstSentence,
 	isTrivialRequest,
 	normalizeAdapterEvents,
 } from "./ingest-transcript.js";
@@ -116,7 +115,7 @@ function summaryHasMeaningfulSignal(args: {
 	sessionContext: SessionContext | null;
 }): boolean {
 	const { summary, body, observationsCount, sessionContext } = args;
-	if (!body || isLowSignalSummary(firstSentence(body))) {
+	if (!body) {
 		return false;
 	}
 	if (observationsCount > 0) return true;
@@ -136,10 +135,10 @@ function summaryHasMeaningfulSignal(args: {
 	const toolCount = sessionContext?.toolCount ?? 0;
 	const durationMs = sessionContext?.durationMs ?? 0;
 	if (promptCount <= 1 && toolCount <= 1 && durationMs < 2 * 60_000) {
-		return false;
+		return !isLowSignalSummary(body) && substantiveSections.length >= 1;
 	}
 
-	return substantiveSections.length >= 1;
+	return !isLowSignalSummary(body) && substantiveSections.length >= 1;
 }
 
 // ---------------------------------------------------------------------------
