@@ -192,6 +192,11 @@ Viewer UI is in `packages/ui` and served by `packages/viewer-server`.
 - `CODEMEM_DB`: sqlite path (example: `~/.codemem/mem.sqlite`)
 - `CODEMEM_PLUGIN_LOG`: set to `1` to enable plugin logging
 
+## CLI Design
+- Follow `docs/cli-design-conventions.md` for all CLI command additions and modifications
+- Key rules: max 2 nesting levels, positional args for primary nouns, flags for config/modifiers, `--json` on all data-returning commands, structured error output, no uncaught throws from action handlers
+- Shared flags (`--db-path`, `--config`, `--json`) should use option-builder helpers, not copy-paste
+
 ## Code Style
 
 ### Python
