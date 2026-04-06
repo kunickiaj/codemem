@@ -255,7 +255,7 @@ Observations use a fixed set of kinds defined in `packages/core/src/store.ts`:
 | `exploration` | Something was tried but not shipped (preserves "why not") | "Tried Redis for session store, reverted due to complexity" |
 | `note` | Small useful facts worth remembering | "The staging DB password rotates weekly" |
 | `observation` | General observations from session activity | "Test suite takes 4 minutes on this repo" |
-| `session_summary` | Auto-generated session summary | (produced by the observer, not typically created manually) |
+| `session_summary` | Auto-generated session summary and session handoff context | (produced by the observer, not typically created manually) |
 | `entities` | Notable services, components, or domains mentioned | (auto-extracted) |
 
 ### Low-signal filtering

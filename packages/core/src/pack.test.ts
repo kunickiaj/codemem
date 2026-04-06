@@ -360,7 +360,7 @@ describe("buildMemoryPack", () => {
 		};
 
 		const olderSession = insertTestSession(store.db);
-		store.remember(
+		const decisionId = store.remember(
 			olderSession,
 			"decision",
 			"OAuth callback fix",
@@ -374,6 +374,129 @@ describe("buildMemoryPack", () => {
 
 		const pack = buildMemoryPack(store, "what did we do last time about oauth", 10);
 
+		expect(pack.item_ids[0]).toBe(decisionId);
 		expect(pack.pack_text).toContain("OAuth callback fix");
+	});
+
+	it("keeps broad recap queries summary-first in recall mode", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+			)
+			.run(sessionId, "Recent summary", "Catch-up recap for current work", now, now);
+		const decisionId = store.remember(
+			sessionId,
+			"decision",
+			"OAuth callback fix",
+			"Patched callback verification",
+			0.8,
+		);
+
+		const pack = buildMemoryPack(store, "catch me up", 10);
+
+		expect(pack.metrics.mode).toBe("recall");
+		expect(pack.pack_text).toContain("Recent summary");
+		expect(pack.item_ids[0]).not.toBe(decisionId);
+	});
+
+	it("treats legacy change memories with is_summary metadata as summaries", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1)`,
+			)
+			.run(
+				sessionId,
+				"Legacy summary",
+				"## Request\nFix auth timeout\n\n## Completed\nAdded callback validation",
+				now,
+				now,
+				JSON.stringify({ is_summary: true }),
+			);
+		store.remember(
+			sessionId,
+			"decision",
+			"OAuth callback fix",
+			"Patched callback verification",
+			0.8,
+		);
+
+		const pack = buildMemoryPack(store, "what did we do last time about oauth", 10);
+
+		expect(pack.pack_text).toContain("## Summary");
+		expect(pack.pack_text).toContain("Legacy summary");
+		expect(pack.pack_text).toContain("## Timeline\n[2] (decision) OAuth callback fix");
+	});
+
+	it("uses legacy summary-like rows in recall fallback when no session_summary exists", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1)`,
+			)
+			.run(
+				sessionId,
+				"Fallback summary",
+				"## Request\nInvestigate auth failure\n\n## Learned\nOAuth callback state was missing",
+				now,
+				now,
+				JSON.stringify({ is_summary: true }),
+			);
+
+		const pack = buildMemoryPack(store, "catch me up", 10);
+
+		expect(pack.metrics.mode).toBe("recall");
+		expect(pack.pack_text).toContain("Fallback summary");
+	});
+
+	it("finds the latest summary-like fallback even with many newer non-summary memories", () => {
+		const older = new Date(Date.now() - 86_400_000).toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+			)
+			.run(sessionId, "Older summary", "Still the latest available summary", older, older);
+
+		for (let i = 0; i < 50; i += 1) {
+			store.remember(sessionId, "feature", `Recent feature ${i}`, "Newer non-summary memory", 0.5);
+		}
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10);
+
+		expect(pack.pack_text).toContain("## Summary");
+		expect(pack.pack_text).toContain("Older summary");
+	});
+
+	it("keeps item_ids in relevance order even when summary is only display fallback", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+			)
+			.run(sessionId, "Recent summary", "Generic recap text", now, now);
+
+		const decisionId = store.remember(
+			sessionId,
+			"decision",
+			"OAuth callback fix",
+			"Patched callback verification for auth flow",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(store, "oauth callback", 10);
+
+		expect(pack.pack_text).toContain("## Summary\n[1] (session_summary) Recent summary");
+		expect(pack.item_ids[0]).toBe(decisionId);
 	});
 });

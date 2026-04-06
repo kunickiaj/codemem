@@ -471,24 +471,32 @@ export async function ingest(
 				const { summary, request, body } = summaryToStore;
 				const summaryTitle = request || "Session summary";
 				const summaryTags = deriveTags({
-					kind: "change",
+					kind: "session_summary",
 					title: summaryTitle,
 					filesRead: summary.filesRead,
 					filesModified: summary.filesModified,
 				});
-				const memoryId = store.remember(sessionId, "change", summaryTitle, body, 0.3, summaryTags, {
-					is_summary: true,
-					request,
-					investigated: summary.investigated,
-					learned: summary.learned,
-					completed: summary.completed,
-					next_steps: summary.nextSteps,
-					notes: summary.notes,
-					prompt_number: promptNumber,
-					files_read: summary.filesRead,
-					files_modified: summary.filesModified,
-					source: "observer_summary",
-				});
+				const memoryId = store.remember(
+					sessionId,
+					"session_summary",
+					summaryTitle,
+					body,
+					0.3,
+					summaryTags,
+					{
+						is_summary: true,
+						request,
+						investigated: summary.investigated,
+						learned: summary.learned,
+						completed: summary.completed,
+						next_steps: summary.nextSteps,
+						notes: summary.notes,
+						prompt_number: promptNumber,
+						files_read: summary.filesRead,
+						files_modified: summary.filesModified,
+						source: "observer_summary",
+					},
+				);
 				vectorWriteInputs.push({ memoryId, title: summaryTitle, bodyText: body });
 			}
 
