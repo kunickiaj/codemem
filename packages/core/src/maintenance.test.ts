@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
+	applyRawEventRelinkPlan,
 	backfillTagsText,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
@@ -508,5 +509,55 @@ describe("maintenance", () => {
 				canonical_session_id: 1,
 			}),
 		]);
+	});
+
+	it("applies relink plan by creating bridge, repointing memories, and marking compacted sessions", () => {
+		const dbPath = createDbPath("raw-event-relink-apply");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1","source":"opencode"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1","source":"opencode"}}');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'session_summary', 'Summary 1', 'body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+				  (2, 2, 'decision', 'Decision 2', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k2');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const result = applyRawEventRelinkPlan(dbPath, { limit: 10, dryRun: false });
+		expect(result.dry_run).toBe(false);
+		expect(result.bridge_creations).toBe(1);
+		expect(result.memory_repoints).toBe(1);
+		expect(result.session_compactions).toBe(1);
+
+		const verify = new Database(dbPath);
+		try {
+			const bridge = verify
+				.prepare(
+					"SELECT source, stream_id, session_id FROM opencode_sessions WHERE source = 'opencode' AND stream_id = 'ses-1'",
+				)
+				.get() as { source: string; stream_id: string; session_id: number };
+			expect(bridge.session_id).toBe(1);
+
+			const movedMemory = verify
+				.prepare("SELECT session_id FROM memory_items WHERE id = 2")
+				.get() as { session_id: number };
+			expect(movedMemory.session_id).toBe(1);
+
+			const compacted = verify.prepare("SELECT metadata_json FROM sessions WHERE id = 2").get() as {
+				metadata_json: string;
+			};
+			const metadata = JSON.parse(compacted.metadata_json) as Record<string, unknown>;
+			expect(metadata.merged_into_session_id).toBe(1);
+			expect(metadata.relinked_from_raw_events).toBe(true);
+		} finally {
+			verify.close();
+		}
 	});
 });

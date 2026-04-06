@@ -128,6 +128,7 @@ export interface MemoryRoleReport {
 }
 
 export interface RawEventRelinkGroup {
+	source: string;
 	stable_id: string;
 	local_sessions: number;
 	mapped_sessions: number;
@@ -170,6 +171,7 @@ export interface RawEventRelinkReport {
 
 export interface RawEventRelinkAction {
 	action: "create_bridge" | "repoint_memories" | "compact_sessions";
+	source: string;
 	stable_id: string;
 	canonical_session_id: number;
 	session_ids: number[];
@@ -191,6 +193,19 @@ export interface RawEventRelinkPlan {
 	};
 	actions: RawEventRelinkAction[];
 	skipped_groups: Array<{ stable_id: string; blockers: string[] }>;
+}
+
+export interface RawEventRelinkApplyOptions extends RawEventRelinkPlanOptions {
+	dryRun?: boolean;
+}
+
+export interface RawEventRelinkApplyResult {
+	dry_run: boolean;
+	eligible_groups: number;
+	skipped_groups: Array<{ stable_id: string; blockers: string[] }>;
+	bridge_creations: number;
+	memory_repoints: number;
+	session_compactions: number;
 }
 
 interface InferredMemoryRole {
@@ -228,6 +243,10 @@ function safeParseMetadata(raw: string | null): Record<string, unknown> {
 	} catch {
 		return {};
 	}
+}
+
+function toJsonString(value: unknown): string {
+	return JSON.stringify(value ?? {});
 }
 
 function hasAnyMarker(text: string, markers: string[]): boolean {
@@ -663,6 +682,7 @@ export function getRawEventRelinkReport(
 			.prepare(
 				`SELECT
 					s.id,
+					COALESCE(json_extract(s.metadata_json, '$.session_context.source'), 'opencode') AS source,
 					s.project,
 					s.started_at,
 					s.ended_at,
@@ -692,6 +712,7 @@ export function getRawEventRelinkReport(
 			)
 			.all(...params) as Array<{
 			id: number;
+			source: string;
 			project: string | null;
 			started_at: string | null;
 			ended_at: string | null;
@@ -738,9 +759,11 @@ export function getRawEventRelinkReport(
 			const canonicalReason =
 				canonical.has_mapping === 1 ? "existing_mapped_session" : "oldest_unmapped_session";
 			const projectValues = new Set(groupRows.map((row) => row.project ?? null));
+			const sourceValues = new Set(groupRows.map((row) => row.source || "opencode"));
 			const blockers: string[] = [];
 			if (mappedSessions > 1) blockers.push("multiple_mapped_sessions");
 			if (projectValues.size > 1) blockers.push("mixed_projects");
+			if (sourceValues.size > 1) blockers.push("mixed_sources");
 			const eligible = blockers.length === 0;
 			activeMemories += totalActiveMemories;
 			repointableActiveMemories += repointable;
@@ -750,6 +773,7 @@ export function getRawEventRelinkReport(
 			else ineligibleGroups += 1;
 
 			reportGroups.push({
+				source: canonical.source || "opencode",
 				stable_id: stableId,
 				local_sessions: groupRows.length,
 				mapped_sessions: mappedSessions,
@@ -827,6 +851,7 @@ export function getRawEventRelinkPlan(
 			bridgeCreations += 1;
 			actions.push({
 				action: "create_bridge",
+				source: group.source,
 				stable_id: group.stable_id,
 				canonical_session_id: group.canonical_session_id,
 				session_ids: [group.canonical_session_id],
@@ -839,6 +864,7 @@ export function getRawEventRelinkPlan(
 			memoryRepoints += group.repointable_active_memories;
 			actions.push({
 				action: "repoint_memories",
+				source: group.source,
 				stable_id: group.stable_id,
 				canonical_session_id: group.canonical_session_id,
 				session_ids: group.all_session_ids.filter((id) => id !== group.canonical_session_id),
@@ -851,6 +877,7 @@ export function getRawEventRelinkPlan(
 			sessionCompactions += group.sessions_to_compact;
 			actions.push({
 				action: "compact_sessions",
+				source: group.source,
 				stable_id: group.stable_id,
 				canonical_session_id: group.canonical_session_id,
 				session_ids: group.all_session_ids.filter((id) => id !== group.canonical_session_id),
@@ -873,6 +900,103 @@ export function getRawEventRelinkPlan(
 		actions,
 		skipped_groups: skippedGroups,
 	};
+}
+
+export function applyRawEventRelinkPlan(
+	dbPath?: string,
+	opts: RawEventRelinkApplyOptions = {},
+): RawEventRelinkApplyResult {
+	const plan = getRawEventRelinkPlan(dbPath, opts);
+	const dryRun = opts.dryRun !== false;
+	if (dryRun) {
+		return {
+			dry_run: true,
+			eligible_groups: plan.totals.eligible_groups,
+			skipped_groups: plan.skipped_groups,
+			bridge_creations: plan.totals.bridge_creations,
+			memory_repoints: plan.totals.memory_repoints,
+			session_compactions: plan.totals.session_compactions,
+		};
+	}
+
+	return withDb(dbPath, (db) => {
+		const d = drizzle(db, { schema });
+		const applyOne = db.transaction((actions: RawEventRelinkAction[]) => {
+			let bridgeCreations = 0;
+			let memoryRepoints = 0;
+			let sessionCompactions = 0;
+
+			for (const action of actions) {
+				if (action.action === "create_bridge") {
+					d.insert(schema.opencodeSessions)
+						.values({
+							source: action.source,
+							stream_id: action.stable_id,
+							opencode_session_id: action.stable_id,
+							session_id: action.canonical_session_id,
+							created_at: new Date().toISOString(),
+						})
+						.onConflictDoUpdate({
+							target: [schema.opencodeSessions.source, schema.opencodeSessions.stream_id],
+							set: {
+								opencode_session_id: sql`excluded.opencode_session_id`,
+								session_id: sql`excluded.session_id`,
+							},
+						})
+						.run();
+					bridgeCreations += 1;
+					continue;
+				}
+
+				if (action.action === "repoint_memories") {
+					if (action.session_ids.length > 0) {
+						d.update(schema.memoryItems)
+							.set({ session_id: action.canonical_session_id })
+							.where(
+								and(
+									inArray(schema.memoryItems.session_id, action.session_ids),
+									eq(schema.memoryItems.active, 1),
+								),
+							)
+							.run();
+					}
+					memoryRepoints += action.memory_count;
+					continue;
+				}
+
+				if (action.action === "compact_sessions") {
+					for (const sessionId of action.session_ids) {
+						const row = d
+							.select({ metadata_json: schema.sessions.metadata_json })
+							.from(schema.sessions)
+							.where(eq(schema.sessions.id, sessionId))
+							.get();
+						const metadata = safeParseMetadata(row?.metadata_json ?? null);
+						metadata.merged_into_session_id = action.canonical_session_id;
+						metadata.merged_at = new Date().toISOString();
+						metadata.relinked_from_raw_events = true;
+						d.update(schema.sessions)
+							.set({ metadata_json: toJsonString(metadata) })
+							.where(eq(schema.sessions.id, sessionId))
+							.run();
+					}
+					sessionCompactions += action.session_ids.length;
+				}
+			}
+
+			return { bridgeCreations, memoryRepoints, sessionCompactions };
+		});
+
+		const applied = applyOne(plan.actions);
+		return {
+			dry_run: false,
+			eligible_groups: plan.totals.eligible_groups,
+			skipped_groups: plan.skipped_groups,
+			bridge_creations: applied.bridgeCreations,
+			memory_repoints: applied.memoryRepoints,
+			session_compactions: applied.sessionCompactions,
+		};
+	});
 }
 
 export function initDatabase(dbPath?: string): { path: string; sizeBytes: number } {

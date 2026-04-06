@@ -174,6 +174,8 @@ export type {
 	MemoryRoleReport,
 	MemoryRoleReportOptions,
 	RawEventRelinkAction,
+	RawEventRelinkApplyOptions,
+	RawEventRelinkApplyResult,
 	RawEventRelinkGroup,
 	RawEventRelinkPlan,
 	RawEventRelinkPlanOptions,
@@ -184,6 +186,7 @@ export type {
 	ReliabilityMetrics,
 } from "./maintenance.js";
 export {
+	applyRawEventRelinkPlan,
 	backfillTagsText,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
