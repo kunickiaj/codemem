@@ -74,24 +74,29 @@ Backward compatibility:
 ## Built-in coordinator service
 
 The preferred self-hosted deployment path is the first-party TypeScript coordinator service shipped in the main
-`codemem` CLI. Its HTTP surface is implemented with Hono and exposed through `codemem sync coordinator serve`.
+`codemem` CLI. Its HTTP surface is implemented with Hono and exposed through `codemem coordinator serve`.
+
+`coordinator` is now a **top-level command** (`codemem coordinator ...`). The legacy path `codemem sync coordinator ...`
+still works as a compatibility alias but is hidden from help and shell completion.
 
 Current shipped local coordinator CLI surface:
 
 ```fish
-codemem sync coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator list-groups --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
-codemem sync coordinator create-invite team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator import-invite <invite>
-codemem sync coordinator list-join-requests team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator approve-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
-codemem sync coordinator deny-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator list-groups --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator list-bootstrap-grants team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator revoke-bootstrap-grant <grant-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator serve --db-path ~/.codemem/coordinator.sqlite --host 0.0.0.0 --port 7347
+codemem coordinator create-invite team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator import-invite <invite>
+codemem coordinator list-join-requests team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator approve-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator deny-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
 ```
 
 This keeps the primary deployment path inside the main `codemem` artifact and reuses the current TypeScript sync
@@ -150,12 +155,12 @@ is only for remote mutation/listing endpoints.
 
 ## Canonical deployment target
 
-The built-in coordinator (`codemem sync coordinator serve`) is the canonical deployment target for ongoing product
+The built-in coordinator (`codemem coordinator serve`) is the canonical deployment target for ongoing product
 development, E2E validation, and dogfooding.
 
 Recommended deployment patterns:
 
-- **Native**: run `codemem sync coordinator serve` on a reachable machine (VPS, homelab, always-on workstation)
+- **Native**: run `codemem coordinator serve` on a reachable machine (VPS, homelab, always-on workstation)
 - **Container**: run via Docker/Podman with the coordinator SQLite volume mounted
 - **Exposure**: use Tailscale Funnel or Cloudflare Tunnel to make the coordinator reachable from outside a local network
 
@@ -177,7 +182,7 @@ It remains useful for experimentation, but it is not the canonical runtime for c
 The long-term Cloudflare direction should build from the TypeScript coordinator contract rather than from the old Python
 era deployment story. Today, the practical sequence is:
 
-1. validate the built-in TS coordinator on Node/Linux with `codemem sync coordinator serve`
+1. validate the built-in TS coordinator on Node/Linux with `codemem coordinator serve`
 2. adapt/package that validated coordinator surface for Cloudflare
 
 Use the Worker reference path only when you specifically want a serverless/edge experiment and are comfortable with

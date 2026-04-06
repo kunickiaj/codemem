@@ -145,10 +145,16 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - Use an OS service manager to run `codemem serve start --foreground` at login/boot.
 - Example service templates live in `docs/autostart/launchd/` and `docs/autostart/systemd/`.
 
+### Diagnostics
+
+- `codemem sync doctor` diagnoses sync configuration issues (keys, config, peer reachability).
+- `codemem sync bootstrap <peer-device-id>` bootstraps sync state from a peer's snapshot.
+- `codemem sync attempts` shows recent sync attempt history per peer.
+
 ### Service helpers
 
 - `codemem sync status` shows sync config and peer health.
-- `codemem sync start|stop|restart` currently manage the viewer-backed sync runtime rather than a separate sync-only daemon.
+- `codemem sync start|stop|restart` are deprecated — use `codemem serve start|stop|restart` instead. The viewer process manages the sync runtime; there is no separate sync-only daemon.
 
 ### Coordinator-backed discovery
 
