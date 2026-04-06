@@ -441,6 +441,8 @@ describe("maintenance", () => {
 				mapped_sessions: 1,
 				unmapped_sessions: 1,
 				source: "opencode",
+				eligible: true,
+				blockers: [],
 				canonical_session_id: 1,
 				repointable_active_memories: 1,
 			}),
@@ -495,6 +497,7 @@ describe("maintenance", () => {
 		expect(plan.totals.bridge_creations).toBe(1);
 		expect(plan.totals.memory_repoints).toBe(1);
 		expect(plan.totals.session_compactions).toBe(1);
+		expect(plan.actions[1]?.session_ids).toEqual([2]);
 		expect(plan.actions).toEqual([
 			expect.objectContaining({
 				action: "create_bridge",
