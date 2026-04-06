@@ -228,7 +228,6 @@ describe("createCoordinatorApp dependency injection", () => {
 					group_id: "g1",
 					seed_device_id: "seed-1",
 					worker_device_id: "worker-1",
-					scope: "bootstrap",
 					expires_at: "2099-01-01T00:00:00Z",
 					created_at: "2026-01-01T00:00:00Z",
 					created_by: "admin",

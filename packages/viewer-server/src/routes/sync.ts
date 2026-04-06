@@ -195,7 +195,6 @@ async function authorizeBootstrapGrantRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; header(name: string): string | undefined },
 	body: Buffer,
-	allowedScopes: string[],
 ): Promise<{ ok: boolean; reason: string; deviceId: string }> {
 	const grantId = (request.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
@@ -253,13 +252,6 @@ async function authorizeBootstrapGrantRequest(
 	}
 	if (new Date(grant.expires_at) <= new Date()) {
 		return { ok: false, reason: "bootstrap_grant_expired", deviceId };
-	}
-	const scopes = String(grant.scope ?? "")
-		.split(",")
-		.map((item) => item.trim())
-		.filter(Boolean);
-	if (!allowedScopes.some((scope) => scopes.includes(scope))) {
-		return { ok: false, reason: "bootstrap_grant_scope_denied", deviceId };
 	}
 
 	let valid = false;
@@ -874,8 +866,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const store = getStore();
 		return (async () => {
 			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-			let exposeBootstrapReason = false;
 			let preauthChecked = false;
+			let bootstrapAttempted = false;
 			if (!auth.ok) {
 				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 				if (bootstrapGrantId) {
@@ -889,14 +881,23 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
 					if (unauthLimited) return unauthLimited;
 				}
-				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), ["bootstrap"]);
-				exposeBootstrapReason = auth.reason.startsWith("bootstrap_grant_");
+				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
+				bootstrapAttempted = true;
 			}
-			if (!auth.ok)
+			if (!auth.ok) {
+				// Specific reasons are logged server-side; wire responses use a generic
+				// reason to prevent info-disclosure.
+				if (bootstrapAttempted) {
+					console.warn(
+						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant=${(c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim()} path=${c.req.path}`,
+					);
+				}
+				const wireReason = bootstrapAttempted ? "bootstrap_grant_invalid" : auth.reason;
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(auth.reason, exposeBootstrapReason), 401)
+					c.json(unauthorizedPayload(wireReason), 401)
 				);
+			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
 			if (limited) return limited;
 
@@ -980,8 +981,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const store = getStore();
 		return (async () => {
 			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-			let exposeBootstrapReason = false;
 			let preauthChecked = false;
+			let bootstrapAttempted = false;
 			if (!auth.ok) {
 				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
 				if (bootstrapGrantId) {
@@ -995,14 +996,23 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
 					if (unauthLimited) return unauthLimited;
 				}
-				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), ["bootstrap"]);
-				exposeBootstrapReason = auth.reason.startsWith("bootstrap_grant_");
+				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0));
+				bootstrapAttempted = true;
 			}
-			if (!auth.ok)
+			if (!auth.ok) {
+				// Specific reasons are logged server-side; wire responses use a generic
+				// reason to prevent info-disclosure.
+				if (bootstrapAttempted) {
+					console.warn(
+						`[sync] bootstrap grant auth failed: reason=${auth.reason} grant=${(c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim()} path=${c.req.path}`,
+					);
+				}
+				const wireReason = bootstrapAttempted ? "bootstrap_grant_invalid" : auth.reason;
 				return (
 					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
-					c.json(unauthorizedPayload(auth.reason, exposeBootstrapReason), 401)
+					c.json(unauthorizedPayload(wireReason), 401)
 				);
+			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
 			if (limited) return limited;
 

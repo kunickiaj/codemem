@@ -386,7 +386,6 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						approved: true,
 						bootstrapGrant: {
 							seedDeviceId: "seed-1",
-							scope: "bootstrap",
 							expiresAt: "2099-02-01T00:00:00Z",
 						},
 					});
@@ -396,7 +395,6 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							group_id: "g1",
 							seed_device_id: "seed-1",
 							worker_device_id: "worker-1",
-							scope: "bootstrap",
 						}),
 					);
 				});
@@ -538,7 +536,6 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						groupId: "g1",
 						seedDeviceId: "seed-1",
 						workerDeviceId: "worker-1",
-						scope: "bootstrap",
 						expiresAt: "2099-01-01T00:00:00Z",
 						createdBy: "admin",
 					});
@@ -546,7 +543,6 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(fetched).not.toBeNull();
 					expect(fetched?.seed_device_id).toBe("seed-1");
 					expect(fetched?.worker_device_id).toBe("worker-1");
-					expect(fetched?.scope).toBe("bootstrap");
 				});
 			});
 
@@ -556,14 +552,12 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						groupId: "g1",
 						seedDeviceId: "seed-1",
 						workerDeviceId: "worker-1",
-						scope: "bootstrap",
 						expiresAt: "2099-01-01T00:00:00Z",
 					});
 					await store.createBootstrapGrant({
 						groupId: "g1",
 						seedDeviceId: "seed-1",
 						workerDeviceId: "worker-2",
-						scope: "bootstrap,initial_sync",
 						expiresAt: "2099-02-01T00:00:00Z",
 					});
 					expect(await store.listBootstrapGrants("g1")).toHaveLength(2);
@@ -576,7 +570,6 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						groupId: "g1",
 						seedDeviceId: "seed-1",
 						workerDeviceId: "worker-1",
-						scope: "bootstrap",
 						expiresAt: "2099-01-01T00:00:00Z",
 					});
 					expect(await store.revokeBootstrapGrant(grant.grant_id, "2099-01-02T00:00:00Z")).toBe(

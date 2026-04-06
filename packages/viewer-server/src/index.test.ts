@@ -1149,7 +1149,6 @@ describe("viewer-server", () => {
 								group_id: "g1",
 								seed_device_id: "test-device-001",
 								worker_device_id: peerDeviceIdValue,
-								scope: "bootstrap",
 								expires_at: "2099-01-01T00:00:00Z",
 								created_at: "2026-01-01T00:00:00Z",
 								created_by: "admin",
@@ -1326,7 +1325,6 @@ describe("viewer-server", () => {
 								group_id: "g1",
 								seed_device_id: "test-device-001",
 								worker_device_id: peerDeviceIdValue,
-								scope: "bootstrap",
 								expires_at: "2099-01-01T00:00:00Z",
 								created_at: "2026-01-01T00:00:00Z",
 								created_by: "admin",
@@ -1423,7 +1421,6 @@ describe("viewer-server", () => {
 								group_id: "g1",
 								seed_device_id: "test-device-001",
 								worker_device_id: peerDeviceIdValue,
-								scope: "bootstrap",
 								expires_at: "2099-01-01T00:00:00Z",
 								created_at: "2026-01-01T00:00:00Z",
 								created_by: "admin",
@@ -1479,6 +1476,11 @@ describe("viewer-server", () => {
 					});
 					const res = await syncApp.request(url, { headers });
 					expect(res.status).toBe(401);
+					// Wire response must use generic reason, not the specific
+					// bootstrap_grant_worker_enrollment_mismatch — prevents info-disclosure.
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.error).toBe("unauthorized");
+					expect(body).not.toHaveProperty("reason");
 				} finally {
 					peerDb.close();
 				}
@@ -1832,7 +1834,6 @@ describe("viewer-server", () => {
 									group_id: "g1",
 									seed_device_id: "seed-1",
 									worker_device_id: "worker-1",
-									scope: "bootstrap",
 									expires_at: "2099-01-01T00:00:00Z",
 									created_at: "2026-01-01T00:00:00Z",
 									created_by: "admin",

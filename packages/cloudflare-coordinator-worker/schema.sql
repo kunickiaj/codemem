@@ -75,7 +75,6 @@ CREATE TABLE IF NOT EXISTS coordinator_bootstrap_grants (
   group_id TEXT NOT NULL,
   seed_device_id TEXT NOT NULL,
   worker_device_id TEXT NOT NULL,
-  scope TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   created_by TEXT,
