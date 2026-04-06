@@ -29,7 +29,7 @@
 	"devDependencies": {
 		"@types/node": "^25.5.0",
 		"typescript": "catalog:",
-		"vite": "8.0.1",
+		"vite": "8.0.5",
 		"vitest": "4.0.17"
 	},
 	"repository": {
