@@ -707,6 +707,7 @@ export function getRawEventRelinkReport(
 						json_extract(s.metadata_json, '$.session_context.opencodeSessionId'),
 						json_extract(s.metadata_json, '$.session_context.streamId')
 					  ) IS NOT NULL
+				  AND json_extract(s.metadata_json, '$.merged_into_session_id') IS NULL
 				  ${projectClause}
 				ORDER BY s.started_at DESC, s.id DESC`,
 			)

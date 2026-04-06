@@ -536,6 +536,12 @@ describe("maintenance", () => {
 		expect(result.memory_repoints).toBe(1);
 		expect(result.session_compactions).toBe(1);
 
+		const secondRun = applyRawEventRelinkPlan(dbPath, { limit: 10, dryRun: false });
+		expect(secondRun.dry_run).toBe(false);
+		expect(secondRun.bridge_creations).toBe(0);
+		expect(secondRun.memory_repoints).toBe(0);
+		expect(secondRun.session_compactions).toBe(0);
+
 		const verify = new Database(dbPath);
 		try {
 			const bridge = verify
