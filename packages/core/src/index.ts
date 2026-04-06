@@ -203,6 +203,11 @@ export {
 } from "./observer-auth.js";
 export type { ObserverConfig, ObserverResponse, ObserverStatus } from "./observer-client.js";
 export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
+export type {
+	ConfigPathResolution,
+	ConfigPathSource,
+	ConfigResolutionResult,
+} from "./observer-config.js";
 export {
 	CODEMEM_CONFIG_ENV_OVERRIDES,
 	getCodememConfigPath,
@@ -224,6 +229,7 @@ export {
 	resolveBuiltInProviderDefaultModel,
 	resolveBuiltInProviderFromModel,
 	resolveBuiltInProviderModel,
+	resolveCodememConfigPath,
 	resolveCustomProviderDefaultModel,
 	resolveCustomProviderFromModel,
 	resolveCustomProviderModel,

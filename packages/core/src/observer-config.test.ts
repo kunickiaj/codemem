@@ -11,6 +11,7 @@ import {
 	loadOpenCodeConfig,
 	readCodememConfigFileAtPath,
 	readWorkspaceCodememConfigFile,
+	resolveCodememConfigPath,
 	resolveCustomProviderFromModel,
 	resolvePlaceholder,
 	stripJsonComments,
@@ -278,5 +279,157 @@ describe("getCodememEnvOverrides", () => {
 			delete process.env.CODEMEM_SYNC_RETENTION_MAX_AGE_DAYS;
 			delete process.env.CODEMEM_SYNC_RETENTION_MAX_SIZE_MB;
 		}
+	});
+});
+
+describe("resolveCodememConfigPath", () => {
+	let tmpHome: string;
+	let prevHome: string | undefined;
+	let prevCodememConfig: string | undefined;
+	let prevRuntimeRoot: string | undefined;
+	let prevWorkspaceId: string | undefined;
+
+	beforeEach(() => {
+		tmpHome = mkdtempSync(join(tmpdir(), "codemem-resolve-"));
+		prevHome = process.env.HOME;
+		prevCodememConfig = process.env.CODEMEM_CONFIG;
+		prevRuntimeRoot = process.env.CODEMEM_RUNTIME_ROOT;
+		prevWorkspaceId = process.env.CODEMEM_WORKSPACE_ID;
+		process.env.HOME = tmpHome;
+		delete process.env.CODEMEM_CONFIG;
+		delete process.env.CODEMEM_RUNTIME_ROOT;
+		delete process.env.CODEMEM_WORKSPACE_ID;
+	});
+
+	afterEach(() => {
+		if (prevHome == null) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		if (prevCodememConfig == null) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = prevCodememConfig;
+		if (prevRuntimeRoot == null) delete process.env.CODEMEM_RUNTIME_ROOT;
+		else process.env.CODEMEM_RUNTIME_ROOT = prevRuntimeRoot;
+		if (prevWorkspaceId == null) delete process.env.CODEMEM_WORKSPACE_ID;
+		else process.env.CODEMEM_WORKSPACE_ID = prevWorkspaceId;
+	});
+
+	it("CLI flag takes precedence over everything", () => {
+		process.env.CODEMEM_CONFIG = join(tmpHome, "env-config.json");
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+		const cliPath = join(tmpHome, "cli-config.json");
+
+		const result = resolveCodememConfigPath(cliPath, "read");
+		expect(result.resolved.source).toBe("cli-flag");
+		expect(result.resolved.path).toBe(cliPath);
+	});
+
+	it("CODEMEM_CONFIG env takes precedence over workspace/legacy", () => {
+		const envPath = join(tmpHome, "env-config.json");
+		writeFileSync(envPath, "{}\n", "utf8");
+		process.env.CODEMEM_CONFIG = envPath;
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+
+		const result = resolveCodememConfigPath(undefined, "read");
+		expect(result.resolved.source).toBe("env-codemem-config");
+		expect(result.resolved.path).toBe(envPath);
+	});
+
+	it("relative CODEMEM_RUNTIME_ROOT is recorded in fallbackChain with reason", () => {
+		process.env.CODEMEM_RUNTIME_ROOT = "../relative-root";
+
+		const result = resolveCodememConfigPath(undefined, "read");
+		expect(result.resolved.source).toBe("legacy-global");
+		const runtimeEntry = result.fallbackChain.find((c) => c.source === "env-runtime-root");
+		expect(runtimeEntry).toBeDefined();
+		expect(runtimeEntry!.reason).toContain("is relative, not absolute");
+	});
+
+	it("mode 'write' returns first candidate even if it doesn't exist", () => {
+		const envPath = join(tmpHome, "nonexistent", "config.json");
+		process.env.CODEMEM_CONFIG = envPath;
+
+		const result = resolveCodememConfigPath(undefined, "write");
+		expect(result.resolved.source).toBe("env-codemem-config");
+		expect(result.resolved.path).toBe(envPath);
+		expect(result.resolved.exists).toBe(false);
+	});
+
+	it("mode 'read' skips non-existent non-authoritative candidates", () => {
+		// CODEMEM_CONFIG and cli-flag are authoritative (always win in read mode).
+		// Non-authoritative sources (runtime root, workspace id) are skipped when missing.
+		process.env.CODEMEM_RUNTIME_ROOT = join(tmpHome, "nonexistent-runtime");
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+		const legacyDir = join(tmpHome, ".config", "codemem");
+		mkdirSync(legacyDir, { recursive: true });
+		const legacyPath = join(legacyDir, "config.json");
+		writeFileSync(legacyPath, "{}\n", "utf8");
+
+		const result = resolveCodememConfigPath(undefined, "read");
+		expect(result.resolved.source).toBe("legacy-global");
+		expect(result.resolved.path).toBe(legacyPath);
+		expect(result.resolved.exists).toBe(true);
+	});
+
+	it("CODEMEM_CONFIG is authoritative in read mode even when file is missing", () => {
+		process.env.CODEMEM_CONFIG = join(tmpHome, "nonexistent.json");
+
+		const result = resolveCodememConfigPath(undefined, "read");
+		expect(result.resolved.source).toBe("env-codemem-config");
+		expect(result.resolved.exists).toBe(false);
+	});
+
+	it("full fallback chain is populated with all evaluated candidates", () => {
+		process.env.CODEMEM_CONFIG = join(tmpHome, "env.json");
+		process.env.CODEMEM_RUNTIME_ROOT = join(tmpHome, "runtime");
+		process.env.CODEMEM_WORKSPACE_ID = "pilot-1";
+
+		const result = resolveCodememConfigPath(join(tmpHome, "cli.json"), "read");
+		// All 5 sources should be present (1 resolved + 4 in fallbackChain)
+		const allSources = [
+			result.resolved.source,
+			...result.fallbackChain.map((c) => c.source),
+		].sort();
+		expect(allSources).toEqual([
+			"cli-flag",
+			"env-codemem-config",
+			"env-runtime-root",
+			"env-workspace-id",
+			"legacy-global",
+		]);
+	});
+
+	it("unsafe CODEMEM_WORKSPACE_ID is recorded with safety-check reason", () => {
+		process.env.CODEMEM_WORKSPACE_ID = "../evil";
+
+		const result = resolveCodememConfigPath(undefined, "read");
+		const wsEntry = result.fallbackChain.find((c) => c.source === "env-workspace-id");
+		expect(wsEntry).toBeDefined();
+		expect(wsEntry!.reason).toContain("failed safety check");
+	});
+
+	it("write mode skips relative runtime root", () => {
+		process.env.CODEMEM_RUNTIME_ROOT = "../relative";
+
+		const result = resolveCodememConfigPath(undefined, "write");
+		// Should resolve to legacy, not the relative runtime root
+		expect(result.resolved.source).toBe("legacy-global");
+	});
+
+	it("delegates correctly from getCodememConfigPath", () => {
+		// Verify the refactored getCodememConfigPath still works
+		const legacyDir = join(tmpHome, ".config", "codemem");
+		mkdirSync(legacyDir, { recursive: true });
+		const legacyPath = join(legacyDir, "config.jsonc");
+		writeFileSync(legacyPath, "{}\n", "utf8");
+
+		expect(getCodememConfigPath()).toBe(legacyPath);
+	});
+
+	it("resolved entry has exists=true when file is present", () => {
+		const envPath = join(tmpHome, "existing-config.json");
+		writeFileSync(envPath, "{}\n", "utf8");
+		process.env.CODEMEM_CONFIG = envPath;
+
+		const result = resolveCodememConfigPath(undefined, "read");
+		expect(result.resolved.exists).toBe(true);
 	});
 });
