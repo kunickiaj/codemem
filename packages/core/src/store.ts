@@ -312,6 +312,73 @@ export class MemoryStore {
 		return id;
 	}
 
+	getOrCreateSessionForOpencodeSession(opts: {
+		opencodeSessionId: string;
+		source?: string;
+		cwd?: string;
+		project?: string | null;
+		metadata?: Record<string, unknown>;
+		startedAt?: string | null;
+		toolVersion?: string;
+		user?: string;
+	}): number {
+		const [source, streamId] = this.normalizeStreamIdentity(
+			opts.source ?? "opencode",
+			opts.opencodeSessionId,
+		);
+		const existing = this.d
+			.select({ session_id: schema.opencodeSessions.session_id })
+			.from(schema.opencodeSessions)
+			.where(
+				and(
+					eq(schema.opencodeSessions.source, source),
+					eq(schema.opencodeSessions.stream_id, streamId),
+				),
+			)
+			.get();
+		if (existing?.session_id != null) {
+			return Number(existing.session_id);
+		}
+
+		const startedAt = opts.startedAt ?? nowIso();
+		const sessionRows = this.d
+			.insert(schema.sessions)
+			.values({
+				started_at: startedAt,
+				cwd: opts.cwd ?? process.cwd(),
+				project: opts.project ?? null,
+				git_remote: null,
+				git_branch: null,
+				user: opts.user ?? process.env.USER ?? "unknown",
+				tool_version: opts.toolVersion ?? "raw_events",
+				metadata_json: toJson(opts.metadata ?? {}),
+			})
+			.returning({ id: schema.sessions.id })
+			.all();
+		const sessionId = sessionRows[0]?.id;
+		if (sessionId == null) throw new Error("session insert returned no id");
+
+		this.d
+			.insert(schema.opencodeSessions)
+			.values({
+				opencode_session_id: streamId,
+				source,
+				stream_id: streamId,
+				session_id: sessionId,
+				created_at: nowIso(),
+			})
+			.onConflictDoUpdate({
+				target: [schema.opencodeSessions.source, schema.opencodeSessions.stream_id],
+				set: {
+					opencode_session_id: sql`excluded.opencode_session_id`,
+					session_id: sql`excluded.session_id`,
+				},
+			})
+			.run();
+
+		return Number(sessionId);
+	}
+
 	/**
 	 * End a session by recording ended_at.
 	 * FIX: merges incoming metadata with existing instead of replacing.

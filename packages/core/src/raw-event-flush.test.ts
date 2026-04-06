@@ -62,6 +62,28 @@ describe("flushRawEvents max retry", () => {
 		}),
 	};
 
+	const summaryObserver = {
+		observe: async () => ({
+			raw: `<summary>
+				<request>Investigate auth timeout</request>
+				<investigated>Session handling code</investigated>
+				<learned>Race condition in handler</learned>
+				<completed>Added callback validation</completed>
+				<next_steps>Add regression test</next_steps>
+				<notes></notes>
+			</summary>`,
+			parsed: null,
+			provider: "test",
+			model: "test-model",
+		}),
+		getStatus: () => ({
+			provider: "test",
+			model: "test-model",
+			runtime: "test",
+			auth: { source: "none", type: "none", hasToken: false },
+		}),
+	};
+
 	it("gives up after max attempts and advances flush cursor", async () => {
 		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "3";
 		const sessionId = "ses_max_retry_test";
@@ -203,5 +225,64 @@ describe("flushRawEvents max retry", () => {
 			.prepare("SELECT status FROM raw_event_flush_batches WHERE opencode_session_id = ?")
 			.get(sessionId) as { status: string };
 		expect(after.status).toBe("gave_up");
+	});
+
+	it("reuses one local session per stable raw-event session id", async () => {
+		const sessionId = "ses_bridge_reuse";
+		seedEvents(sessionId);
+
+		const ingestOpts = { observer: summaryObserver } as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: "2026-03-01T10:00:00Z",
+			maxEvents: null,
+		};
+
+		const first = await flushRawEvents(store, ingestOpts, flushOpts);
+		expect(first.updatedState).toBe(1);
+
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-3",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "Added validation." },
+			tsWallMs: 300,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			eventId: "evt-4",
+			eventType: "tool.execute.after",
+			payload: {
+				type: "tool.execute.after",
+				tool: "edit",
+				args: { filePath: "/tmp/y.ts" },
+			},
+			tsWallMs: 400,
+		});
+
+		const second = await flushRawEvents(store, ingestOpts, flushOpts);
+		expect(second.updatedState).toBe(1);
+
+		const opencodeBridge = store.db
+			.prepare(
+				"SELECT session_id FROM opencode_sessions WHERE source = 'opencode' AND stream_id = ?",
+			)
+			.get(sessionId) as { session_id: number } | undefined;
+		expect(opencodeBridge?.session_id).toBeDefined();
+
+		const localSessionCount = store.db.prepare("SELECT COUNT(*) AS count FROM sessions").get() as {
+			count: number;
+		};
+		expect(localSessionCount.count).toBe(1);
+
+		const memorySessionCounts = store.db
+			.prepare(
+				"SELECT COUNT(DISTINCT session_id) AS count FROM memory_items WHERE active = 1 AND json_extract(metadata_json, '$.source') = 'observer_summary'",
+			)
+			.get() as { count: number };
+		expect(memorySessionCounts.count).toBe(1);
 	});
 });
