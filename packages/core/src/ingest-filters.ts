@@ -30,6 +30,14 @@ const LOW_SIGNAL_OBSERVATION_PATTERNS: RegExp[] = [
 	/\bprimary\s+user\s+request\s+details\s+were\s+absent\b/i,
 ];
 
+const LOW_SIGNAL_SUMMARY_PATTERNS: RegExp[] = [
+	/\bcheck\s+logs?\b/i,
+	/\binspect(?:ed|ion)?\s+(?:the\s+)?current\s+state\b/i,
+	/\breview(?:ed|ing)?\s+(?:the\s+)?current\s+state\b/i,
+	/\bverify\s+the\s+current\s+state\b/i,
+	/\bno\s+(?:meaningful|substantive)\s+(?:changes|updates|deliverables?)\b/i,
+];
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -51,4 +59,11 @@ export function isLowSignalObservation(text: string): boolean {
 	const normalized = normalizeObservation(text);
 	if (!normalized) return true;
 	return LOW_SIGNAL_OBSERVATION_PATTERNS.some((p) => p.test(normalized));
+}
+
+export function isLowSignalSummary(text: string): boolean {
+	const normalized = normalizeObservation(text);
+	if (!normalized) return true;
+	if (normalized.length < 40) return true;
+	return LOW_SIGNAL_SUMMARY_PATTERNS.some((p) => p.test(normalized));
 }
