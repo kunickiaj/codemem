@@ -37,6 +37,9 @@
 		"url": "git+https://github.com/kunickiaj/codemem.git",
 		"directory": "packages/mcp-server"
 	},
+	"engines": {
+		"node": ">=24"
+	},
 	"license": "MIT",
 	"publishConfig": {
 		"access": "public"

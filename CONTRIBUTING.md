@@ -15,7 +15,7 @@ Run these before opening a PR:
 
 ```text
 pnpm run lint
-pnpm run typecheck
+pnpm run tsc
 pnpm run test
 pnpm build
 ```
