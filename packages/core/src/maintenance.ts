@@ -123,7 +123,14 @@ export interface RawEventRelinkGroup {
 	local_sessions: number;
 	mapped_sessions: number;
 	unmapped_sessions: number;
+	eligible: boolean;
+	blockers: string[];
 	canonical_session_id: number;
+	canonical_reason: string;
+	would_create_bridge: boolean;
+	sessions_to_compact: number;
+	all_session_ids: number[];
+	sample_session_ids: number[];
 	active_memories: number;
 	repointable_active_memories: number;
 	oldest_started_at: string | null;
@@ -144,10 +151,37 @@ export interface RawEventRelinkReport {
 		groups_with_multiple_sessions: number;
 		groups_with_mapped_session: number;
 		groups_without_mapped_session: number;
+		eligible_groups: number;
+		ineligible_groups: number;
 		active_memories: number;
 		repointable_active_memories: number;
 	};
 	groups: RawEventRelinkGroup[];
+}
+
+export interface RawEventRelinkAction {
+	action: "create_bridge" | "repoint_memories" | "compact_sessions";
+	stable_id: string;
+	canonical_session_id: number;
+	session_ids: number[];
+	memory_count: number;
+	reason: string;
+}
+
+export interface RawEventRelinkPlanOptions extends RawEventRelinkReportOptions {}
+
+export interface RawEventRelinkPlan {
+	totals: {
+		groups: number;
+		eligible_groups: number;
+		skipped_groups: number;
+		actions: number;
+		bridge_creations: number;
+		memory_repoints: number;
+		session_compactions: number;
+	};
+	actions: RawEventRelinkAction[];
+	skipped_groups: Array<{ stable_id: string; blockers: string[] }>;
 }
 
 interface InferredMemoryRole {
@@ -645,6 +679,8 @@ export function getRawEventRelinkReport(
 		let repointableActiveMemories = 0;
 		let groupsWithMappedSession = 0;
 		let groupsWithoutMappedSession = 0;
+		let eligibleGroups = 0;
+		let ineligibleGroups = 0;
 
 		for (const [groupKey, groupRows] of groups.entries()) {
 			const stableId = groupRows[0]?.stable_id ?? groupKey;
@@ -666,10 +702,19 @@ export function getRawEventRelinkReport(
 			);
 			const canonicalActiveMemories = Number(canonical.active_memories ?? 0);
 			const repointable = Math.max(0, totalActiveMemories - canonicalActiveMemories);
+			const canonicalReason =
+				canonical.has_mapping === 1 ? "existing_mapped_session" : "oldest_unmapped_session";
+			const projectValues = new Set(groupRows.map((row) => row.project ?? null));
+			const blockers: string[] = [];
+			if (mappedSessions > 1) blockers.push("multiple_mapped_sessions");
+			if (projectValues.size > 1) blockers.push("mixed_projects");
+			const eligible = blockers.length === 0;
 			activeMemories += totalActiveMemories;
 			repointableActiveMemories += repointable;
 			if (mappedSessions > 0) groupsWithMappedSession += 1;
 			else groupsWithoutMappedSession += 1;
+			if (eligible) eligibleGroups += 1;
+			else ineligibleGroups += 1;
 
 			reportGroups.push({
 				source: groupSource,
@@ -677,7 +722,14 @@ export function getRawEventRelinkReport(
 				local_sessions: groupRows.length,
 				mapped_sessions: mappedSessions,
 				unmapped_sessions: unmappedSessions,
+				eligible,
+				blockers,
 				canonical_session_id: canonical.id,
+				canonical_reason: canonicalReason,
+				would_create_bridge: canonical.has_mapping === 0,
+				sessions_to_compact: Math.max(0, groupRows.length - 1),
+				all_session_ids: groupRows.map((row) => row.id),
+				sample_session_ids: groupRows.slice(0, 5).map((row) => row.id),
 				active_memories: totalActiveMemories,
 				repointable_active_memories: repointable,
 				oldest_started_at:
@@ -711,12 +763,84 @@ export function getRawEventRelinkReport(
 					.length,
 				groups_with_mapped_session: groupsWithMappedSession,
 				groups_without_mapped_session: groupsWithoutMappedSession,
+				eligible_groups: eligibleGroups,
+				ineligible_groups: ineligibleGroups,
 				active_memories: activeMemories,
 				repointable_active_memories: repointableActiveMemories,
 			},
 			groups: reportGroups.slice(0, limit),
 		};
 	});
+}
+
+export function getRawEventRelinkPlan(
+	dbPath?: string,
+	opts: RawEventRelinkPlanOptions = {},
+): RawEventRelinkPlan {
+	const report = getRawEventRelinkReport(dbPath, opts);
+	const actions: RawEventRelinkAction[] = [];
+	let bridgeCreations = 0;
+	let memoryRepoints = 0;
+	let sessionCompactions = 0;
+	const skippedGroups: Array<{ stable_id: string; blockers: string[] }> = [];
+	let eligibleGroups = 0;
+
+	for (const group of report.groups) {
+		if (!group.eligible) {
+			skippedGroups.push({ stable_id: group.stable_id, blockers: group.blockers });
+			continue;
+		}
+		eligibleGroups += 1;
+		if (group.would_create_bridge) {
+			bridgeCreations += 1;
+			actions.push({
+				action: "create_bridge",
+				stable_id: group.stable_id,
+				canonical_session_id: group.canonical_session_id,
+				session_ids: [group.canonical_session_id],
+				memory_count: 0,
+				reason: group.canonical_reason,
+			});
+		}
+
+		if (group.repointable_active_memories > 0) {
+			memoryRepoints += group.repointable_active_memories;
+			actions.push({
+				action: "repoint_memories",
+				stable_id: group.stable_id,
+				canonical_session_id: group.canonical_session_id,
+				session_ids: group.all_session_ids.filter((id) => id !== group.canonical_session_id),
+				memory_count: group.repointable_active_memories,
+				reason: group.canonical_reason,
+			});
+		}
+
+		if (group.sessions_to_compact > 0) {
+			sessionCompactions += group.sessions_to_compact;
+			actions.push({
+				action: "compact_sessions",
+				stable_id: group.stable_id,
+				canonical_session_id: group.canonical_session_id,
+				session_ids: group.all_session_ids.filter((id) => id !== group.canonical_session_id),
+				memory_count: group.repointable_active_memories,
+				reason: group.canonical_reason,
+			});
+		}
+	}
+
+	return {
+		totals: {
+			groups: report.groups.length,
+			eligible_groups: eligibleGroups,
+			skipped_groups: skippedGroups.length,
+			actions: actions.length,
+			bridge_creations: bridgeCreations,
+			memory_repoints: memoryRepoints,
+			session_compactions: sessionCompactions,
+		},
+		actions,
+		skipped_groups: skippedGroups,
+	};
 }
 
 export function initDatabase(dbPath?: string): { path: string; sizeBytes: number } {

@@ -15,6 +15,7 @@ describe("memory command aliases", () => {
 			"inject",
 			"role-report",
 			"relink-report",
+			"relink-plan",
 		]);
 	});
 
@@ -51,6 +52,18 @@ describe("memory command aliases", () => {
 		);
 		expect(relinkReport).toBeDefined();
 		const longs = relinkReport?.options.map((option) => option.long) ?? [];
+		expect(longs).toContain("--db");
+		expect(longs).toContain("--db-path");
+		expect(longs).toContain("--project");
+		expect(longs).toContain("--all-projects");
+		expect(longs).toContain("--limit");
+		expect(longs).toContain("--json");
+	});
+
+	it("registers relink-plan under memory with dry-run planning options", () => {
+		const relinkPlan = memoryCommand.commands.find((command) => command.name() === "relink-plan");
+		expect(relinkPlan).toBeDefined();
+		const longs = relinkPlan?.options.map((option) => option.long) ?? [];
 		expect(longs).toContain("--db");
 		expect(longs).toContain("--db-path");
 		expect(longs).toContain("--project");

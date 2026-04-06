@@ -8,6 +8,7 @@
 import * as p from "@clack/prompts";
 import {
 	getMemoryRoleReport,
+	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
 	MemoryStore,
 	resolveDbPath,
@@ -395,6 +396,72 @@ function createMemoryRelinkReportCommand(): Command {
 	return cmd;
 }
 
+function createMemoryRelinkPlanCommand(): Command {
+	const cmd = new Command("relink-plan")
+		.configureHelp(helpStyle)
+		.description("Emit dry-run raw-event relink remediation actions")
+		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--all-projects", "analyze across all projects")
+		.option("--limit <n>", "max groups to include", "25");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(
+		(
+			opts: DbOpts &
+				JsonOpts & {
+					project?: string;
+					allProjects?: boolean;
+					limit?: string;
+				},
+		) => {
+			const project =
+				opts.allProjects === true
+					? null
+					: opts.project?.trim() ||
+						process.env.CODEMEM_PROJECT?.trim() ||
+						resolveProject(process.cwd(), null);
+			const limit = Number.parseInt(opts.limit ?? "25", 10) || 25;
+			const result = getRawEventRelinkPlan(resolveDbOpt(opts), {
+				project,
+				allProjects: opts.allProjects === true,
+				limit,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			p.intro("codemem memory relink-plan");
+			p.log.info(
+				[
+					`Groups: ${result.totals.groups}`,
+					`Eligible groups: ${result.totals.eligible_groups}`,
+					`Skipped groups: ${result.totals.skipped_groups}`,
+					`Actions: ${result.totals.actions}`,
+					`Bridge creations: ${result.totals.bridge_creations}`,
+					`Memory repoints: ${result.totals.memory_repoints}`,
+					`Session compactions: ${result.totals.session_compactions}`,
+				].join("\n"),
+			);
+			p.log.info("Planned actions:");
+			for (const action of result.actions.slice(0, 15)) {
+				p.log.message(
+					`  ${action.action} ${action.stable_id} -> canonical ${action.canonical_session_id} | sessions=${action.session_ids.join(",") || "-"} memories=${action.memory_count} reason=${action.reason}`,
+				);
+			}
+			if (result.skipped_groups.length > 0) {
+				p.log.info("Skipped groups:");
+				for (const group of result.skipped_groups.slice(0, 10)) {
+					p.log.message(`  ${group.stable_id} | blockers=${group.blockers.join(",")}`);
+				}
+			}
+			p.outro("done");
+		},
+	);
+	return cmd;
+}
+
 export const showMemoryCommand = createShowMemoryCommand();
 export const forgetMemoryCommand = createForgetMemoryCommand();
 export const rememberMemoryCommand = createRememberMemoryCommand();
@@ -409,3 +476,4 @@ memoryCommand.addCommand(createRememberMemoryCommand());
 memoryCommand.addCommand(createInjectMemoryCommand());
 memoryCommand.addCommand(createMemoryRoleReportCommand());
 memoryCommand.addCommand(createMemoryRelinkReportCommand());
+memoryCommand.addCommand(createMemoryRelinkPlanCommand());
