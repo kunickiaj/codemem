@@ -64,6 +64,7 @@ const ALLOWED_MEMORY_KINDS = new Set([
 	"refactor",
 	"decision",
 	"exploration",
+	"session_summary",
 ]);
 
 /** Normalize and validate a memory kind. Throws on invalid kinds. */

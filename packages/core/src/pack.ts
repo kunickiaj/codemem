@@ -15,6 +15,7 @@
  */
 
 import type { Database } from "./db.js";
+import { buildFilterClausesWithContext } from "./filters.js";
 import { projectBasename } from "./project.js";
 import type { StoreHandle } from "./search.js";
 import { rerankResults, search, timeline } from "./search.js";
@@ -113,7 +114,7 @@ function normalizeDedupe(text: string): string {
  * cause collisions between distinct (kind, title, body) tuples.
  */
 function exactDedupeKey(item: MemoryResult): string | null {
-	if (item.kind === "session_summary") return null;
+	if (isSummaryLike(item)) return null;
 	const title = normalizeDedupe(item.title);
 	const body = normalizeDedupe(item.body_text);
 	if (!title && !body) return null;
@@ -182,6 +183,68 @@ function countOverlap(tags: string, tokens: Set<string>): number {
 	return count;
 }
 
+function queryContentTokens(query: string): Set<string> {
+	const stopWords = new Set([
+		"a",
+		"about",
+		"an",
+		"and",
+		"catch",
+		"continue",
+		"did",
+		"do",
+		"for",
+		"happened",
+		"how",
+		"i",
+		"last",
+		"me",
+		"next",
+		"on",
+		"previous",
+		"recall",
+		"recap",
+		"remember",
+		"remind",
+		"session",
+		"summarize",
+		"summary",
+		"the",
+		"time",
+		"up",
+		"we",
+		"what",
+		"where",
+		"work",
+		"worked",
+		"working",
+	]);
+	return new Set(
+		(query.toLowerCase().match(/[a-z0-9_]+/g) ?? []).filter(
+			(token) => token.length > 2 && !stopWords.has(token),
+		),
+	);
+}
+
+function textOverlapScore(item: MemoryResult, query: string): number {
+	const tokens = queryContentTokens(query);
+	if (tokens.size === 0) return 0;
+	const haystack = `${item.title} ${item.body_text} ${item.tags_text}`.toLowerCase();
+	let count = 0;
+	for (const token of tokens) {
+		if (haystack.includes(token)) count += 1;
+	}
+	return count;
+}
+
+function itemLooksTaskLike(item: MemoryResult): boolean {
+	const text = `${item.title} ${item.body_text}`.toLowerCase();
+	for (const marker of ["task:", "todo", "pending", "next step", "continue", "resume", "need to"]) {
+		if (text.includes(marker)) return true;
+	}
+	return false;
+}
+
 function queryLooksLikeTasks(query: string): boolean {
 	const lowered = query.toLowerCase();
 	for (const token of [
@@ -236,6 +299,17 @@ function queryLooksLikeRecall(query: string): boolean {
 	return false;
 }
 
+function recallQueryPrefersSummary(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const token of ["summary", "summarize", "recap"]) {
+		if (lowered.includes(token)) return true;
+	}
+	for (const phrase of ["catch me up", "catch up", "what happened", "where were we"]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	return false;
+}
+
 function toMemoryResult(row: MemoryItemResponse | TimelineItemResponse): MemoryResult {
 	return {
 		id: row.id,
@@ -263,11 +337,13 @@ function filterRecentResults(results: MemoryResult[], days: number): MemoryResul
 	return results.filter((item) => parseCreatedAt(item.created_at) >= cutoff);
 }
 
-function prioritizeTaskResults(results: MemoryResult[], limit: number): MemoryResult[] {
+function prioritizeTaskResults(results: MemoryResult[], limit: number, query = ""): MemoryResult[] {
 	const ordered = [...results].sort((a, b) =>
 		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
 	);
 	ordered.sort((a, b) => {
+		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
+		if (overlapDelta !== 0) return overlapDelta;
 		const rank = (kind: string): number => {
 			if (kind === "note") return 0;
 			if (kind === "decision") return 1;
@@ -279,20 +355,39 @@ function prioritizeTaskResults(results: MemoryResult[], limit: number): MemoryRe
 	return ordered.slice(0, limit);
 }
 
-function prioritizeRecallResults(results: MemoryResult[], limit: number): MemoryResult[] {
+function prioritizeRecallResults(
+	results: MemoryResult[],
+	limit: number,
+	preferSummary: boolean,
+	query: string,
+): MemoryResult[] {
 	const ordered = [...results].sort((a, b) =>
 		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
 	);
 	ordered.sort((a, b) => {
-		const rank = (kind: string): number => {
-			if (kind === "session_summary") return 0;
-			if (kind === "decision") return 1;
-			if (kind === "note") return 2;
-			if (kind === "observation") return 3;
-			if (kind === "entities") return 4;
+		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
+		if (overlapDelta !== 0) return overlapDelta;
+		const rank = (item: MemoryResult): number => {
+			if (preferSummary) {
+				if (isSummaryLike(item)) return 0;
+				if (item.kind === "decision") return 1;
+				if (item.kind === "note") return 2;
+				if (item.kind === "observation") return 3;
+				if (item.kind === "entities") return 4;
+				return 5;
+			}
+			if (itemLooksTaskLike(item)) return 8;
+			if (item.kind === "decision") return 0;
+			if (item.kind === "bugfix") return 1;
+			if (item.kind === "discovery") return 2;
+			if (item.kind === "exploration") return 3;
+			if (isSummaryLike(item)) return 4;
+			if (item.kind === "note") return 5;
+			if (item.kind === "observation") return 6;
+			if (item.kind === "entities") return 7;
 			return 5;
 		};
-		return rank(a.kind) - rank(b.kind);
+		return rank(a) - rank(b);
 	});
 	return ordered.slice(0, limit);
 }
@@ -312,12 +407,11 @@ function recallFallbackRecent(
 	limit: number,
 	filters?: MemoryFilters,
 ): MemoryResult[] {
-	const summaryFilters = { ...(filters ?? {}), kind: "session_summary" };
-	const summaries = store.recent(limit, summaryFilters).map(toMemoryResult);
+	const expandedLimit = Math.max(limit * 4, limit);
+	const recentAll = store.recent(expandedLimit, filters ?? null).map(toMemoryResult);
+	const summaries = recentAll.filter(isSummaryLike).slice(0, limit);
 	if (summaries.length >= limit) return summaries.slice(0, limit);
 
-	const expandedLimit = Math.max(limit * 3, limit);
-	const recentAll = store.recent(expandedLimit, filters ?? null).map(toMemoryResult);
 	const summaryIds = new Set(summaries.map((item) => item.id));
 	const remainder = recentAll.filter((item) => !summaryIds.has(item.id));
 	const prioritized = prioritizeTaskResults(remainder, limit - summaries.length);
@@ -369,6 +463,38 @@ function parseMetadataObject(value: unknown): Record<string, unknown> {
 		return value as Record<string, unknown>;
 	}
 	return {};
+}
+
+function isSummaryLike(item: Pick<MemoryResult, "kind" | "metadata">): boolean {
+	if (item.kind === "session_summary") return true;
+	const metadata = parseMetadataObject(item.metadata);
+	return metadata.is_summary === true;
+}
+
+function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): MemoryResult | null {
+	const filterResult = buildFilterClausesWithContext(filters ?? null, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+	});
+	const whereParts = [
+		"memory_items.active = 1",
+		"(memory_items.kind = 'session_summary' OR json_extract(memory_items.metadata_json, '$.is_summary') = 1)",
+		...filterResult.clauses,
+	];
+	const joinClause = filterResult.joinSessions
+		? "JOIN sessions ON sessions.id = memory_items.session_id"
+		: "";
+	const row = store.db
+		.prepare(
+			`SELECT memory_items.*
+			 FROM memory_items
+			 ${joinClause}
+			 WHERE ${whereParts.join(" AND ")}
+			 ORDER BY memory_items.created_at DESC, memory_items.id DESC
+			 LIMIT 1`,
+		)
+		.get(...filterResult.params) as MemoryItemResponse | null;
+	return row ? toMemoryResult(row) : null;
 }
 
 function getPackDeltaBaseline(
@@ -557,19 +683,45 @@ export function buildMemoryPack(
 			fallbackUsed = true;
 			results = taskFallbackRecent(store, effectiveLimit, filters);
 		} else {
-			const recentTaskResults = filterRecentResults(taskResults, TASK_RECENCY_DAYS);
+			const actionableTaskResults = taskResults.filter((item) => !isSummaryLike(item));
+			const recentTaskResults = filterRecentResults(
+				actionableTaskResults.length > 0 ? actionableTaskResults : taskResults,
+				TASK_RECENCY_DAYS,
+			);
 			results = prioritizeTaskResults(
-				recentTaskResults.length > 0 ? recentTaskResults : taskResults,
+				recentTaskResults.length > 0
+					? recentTaskResults
+					: actionableTaskResults.length > 0
+						? actionableTaskResults
+						: taskResults,
 				effectiveLimit,
+				context,
 			);
 		}
 	} else if (recallMode) {
 		const recallQuery = context.trim().length > 0 ? context : RECALL_HINT_QUERY;
+		const preferSummary = recallQueryPrefersSummary(recallQuery);
+		const topicalRecallQuery = [...queryContentTokens(recallQuery)].join(" ");
 		let recallResults = search(store, recallQuery, effectiveLimit, filters);
 		ftsCount = recallResults.length;
+		if (!preferSummary && topicalRecallQuery) {
+			const needsTopicalRetry =
+				recallResults.length === 0 ||
+				recallResults.every(
+					(item) => isSummaryLike(item) || textOverlapScore(item, topicalRecallQuery) === 0,
+				);
+			if (needsTopicalRetry) {
+				const topicalResults = search(store, topicalRecallQuery, effectiveLimit, filters);
+				if (topicalResults.length > 0) {
+					recallResults = topicalResults;
+					ftsCount = topicalResults.length;
+				}
+			}
+		}
 		if (recallResults.length === 0) {
-			const recallFilters = { ...(filters ?? {}), kind: "session_summary" };
-			recallResults = search(store, RECALL_HINT_QUERY, effectiveLimit, recallFilters);
+			recallResults = search(store, RECALL_HINT_QUERY, effectiveLimit, filters).filter(
+				isSummaryLike,
+			);
 			ftsCount = recallResults.length;
 		}
 		if (semanticResults && semanticResults.length > 0) {
@@ -577,12 +729,15 @@ export function buildMemoryPack(
 			recallResults = merge.merged;
 			semanticCount = merge.semanticCount;
 		}
-		results = prioritizeRecallResults(recallResults, effectiveLimit);
+		results = prioritizeRecallResults(recallResults, effectiveLimit, preferSummary, context);
 		if (results.length === 0) {
 			fallbackUsed = true;
 			results = recallFallbackRecent(store, effectiveLimit, filters);
 		}
-		const anchorId = results[0]?.id;
+		const anchor = preferSummary
+			? results[0]
+			: (results.find((item) => !isSummaryLike(item)) ?? results[0]);
+		const anchorId = anchor?.id;
 		if (anchorId != null) {
 			const depthBefore = Math.max(0, Math.floor(effectiveLimit / 2));
 			const depthAfter = Math.max(0, effectiveLimit - depthBefore - 1);
@@ -618,11 +773,10 @@ export function buildMemoryPack(
 	// Step 2: categorize results
 
 	// Summary: prefer search match, fall back to most recent session_summary
-	let summaryItems = results.filter((r) => r.kind === "session_summary").slice(0, 1);
+	let summaryItems = results.filter(isSummaryLike).slice(0, 1);
 	if (summaryItems.length === 0) {
-		const recentSummary = store.recent(1, { ...(filters ?? {}), kind: "session_summary" });
-		if (recentSummary.length > 0) {
-			const s = recentSummary[0]!;
+		const s = findLatestSummaryLike(store, filters);
+		if (s) {
 			summaryItems = [
 				{
 					id: s.id,
@@ -635,19 +789,19 @@ export function buildMemoryPack(
 					tags_text: s.tags_text ?? "",
 					score: 0,
 					session_id: s.session_id,
-					metadata: s.metadata_json,
+					metadata: s.metadata,
 				},
 			];
 		}
 	}
 
-	let timelineItems = results.filter((r) => r.kind !== "session_summary").slice(0, 3);
+	let timelineItems = results.filter((r) => !isSummaryLike(r)).slice(0, 3);
 	const timelineIds = new Set(timelineItems.map((r) => r.id));
 
 	// Observations: from search results, then fall back to recent by observation kinds
 	const OBSERVATION_KINDS = Object.keys(OBSERVATION_KIND_PRIORITY);
 	let observationItems = [...results]
-		.filter((r) => r.kind !== "session_summary" && !timelineIds.has(r.id))
+		.filter((r) => !isSummaryLike(r) && !timelineIds.has(r.id))
 		.sort((a, b) => {
 			const pa = OBSERVATION_KIND_PRIORITY[a.kind] ?? 99;
 			const pb = OBSERVATION_KIND_PRIORITY[b.kind] ?? 99;
@@ -655,7 +809,7 @@ export function buildMemoryPack(
 		});
 
 	if (recallMode && observationItems.length === 0) {
-		observationItems = results.filter((r) => r.kind !== "session_summary");
+		observationItems = results.filter((r) => !isSummaryLike(r));
 	}
 
 	if (observationItems.length === 0) {
@@ -738,18 +892,31 @@ export function buildMemoryPack(
 	const packText = sections.join("\n\n");
 	const packTokens = estimateTokens(packText);
 
-	// Collect all unique items across sections
+	// Collect all unique items across sections, but preserve relevance order from
+	// the ranked results when reporting item_ids/items.
 	const seenIds = new Set<number>();
-	const allItems: PackItem[] = [];
-	const selectedItems: MemoryResult[] = [];
-	const allItemIds: number[] = [];
+	const selectedById = new Map<number, MemoryResult>();
 	for (const item of [...budgetedSummary, ...budgetedTimeline, ...budgetedObservations]) {
 		if (seenIds.has(item.id)) continue;
 		seenIds.add(item.id);
-		selectedItems.push(item);
-		allItems.push(toPackItem(item, dedupeState));
-		allItemIds.push(item.id);
+		selectedById.set(item.id, item);
 	}
+
+	const selectedItems: MemoryResult[] = [];
+	const selectedIds = new Set(selectedById.keys());
+	for (const item of results) {
+		if (!selectedIds.has(item.id)) continue;
+		selectedItems.push(selectedById.get(item.id)!);
+		selectedIds.delete(item.id);
+	}
+	for (const item of [...budgetedSummary, ...budgetedTimeline, ...budgetedObservations]) {
+		if (!selectedIds.has(item.id)) continue;
+		selectedItems.push(item);
+		selectedIds.delete(item.id);
+	}
+
+	const allItems = selectedItems.map((item) => toPackItem(item, dedupeState));
+	const allItemIds = selectedItems.map((item) => item.id);
 
 	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(
 		store,

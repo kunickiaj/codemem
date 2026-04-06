@@ -539,9 +539,10 @@ describe("ingest() integration", () => {
 
 		const summaryMemory = store.db
 			.prepare(
-				"SELECT metadata_json FROM memory_items WHERE json_extract(metadata_json, '$.is_summary') = 1 ORDER BY id DESC LIMIT 1",
+				"SELECT kind, metadata_json FROM memory_items WHERE json_extract(metadata_json, '$.is_summary') = 1 ORDER BY id DESC LIMIT 1",
 			)
-			.get() as { metadata_json: string };
+			.get() as { kind: string; metadata_json: string };
+		expect(summaryMemory.kind).toBe("session_summary");
 		const summaryMetadata = JSON.parse(summaryMemory.metadata_json) as Record<string, unknown>;
 		expect(summaryMetadata.request).toBe("Fix auth timeout");
 		expect(summaryMetadata.completed).toBe("Fixed the timeout");
