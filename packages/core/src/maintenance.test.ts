@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
+	applyRawEventRelinkPlan,
 	backfillTagsText,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
@@ -449,6 +450,37 @@ describe("maintenance", () => {
 		);
 	});
 
+	it("ignores unrelated bridge rows when selecting mapped canonical sessions", () => {
+		const dbPath = createDbPath("raw-event-relink-report-unrelated-bridge");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-1"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-1"}}'),
+				  (3, '2026-03-01T10:14:00Z', '2026-03-01T10:15:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-other"}}');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-other', 'ses-other', 2, '2026-03-01T10:14:00Z');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getRawEventRelinkReport(dbPath, { limit: 10 });
+		const ses1Group = report.groups.find((group) => group.stable_id === "ses-1");
+
+		expect(ses1Group).toEqual(
+			expect.objectContaining({
+				mapped_sessions: 0,
+				unmapped_sessions: 2,
+				canonical_session_id: 1,
+				canonical_reason: "oldest_unmapped_session",
+				would_create_bridge: true,
+			}),
+		);
+	});
+
 	it("separates relink groups by source even when stable ids match", () => {
 		const dbPath = createDbPath("raw-event-relink-report-source-scope");
 		const db = new Database(dbPath);
@@ -517,5 +549,210 @@ describe("maintenance", () => {
 				canonical_session_id: 1,
 			}),
 		]);
+	});
+
+	it("applies raw-event relink remediation and compacts duplicate sessions", () => {
+		const dbPath = createDbPath("raw-event-relink-apply");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"source":"plugin","session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-1"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"source":"plugin","session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-1"}}');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'session_summary', 'Summary 1', 'body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+				  (2, 2, 'decision', 'Decision 2', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k2');
+				INSERT INTO session_summaries(
+					id, session_id, project, request, created_at, created_at_epoch, metadata_json, import_key
+				) VALUES
+				  (1, 2, 'codemem', 'repair me', '2026-03-01T10:13:00Z', 1740823980, '{}', 'summary-1');
+				INSERT INTO user_prompts(
+					id, session_id, project, prompt_text, created_at, created_at_epoch, metadata_json, import_key
+				) VALUES
+				  (1, 2, 'codemem', 'repair me', '2026-03-01T10:12:30Z', 1740823950, '{}', 'prompt-1');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const result = applyRawEventRelinkPlan(dbPath, { limit: 10 });
+
+		expect(result.totals).toEqual({
+			groups: 1,
+			eligible_groups: 1,
+			skipped_groups: 0,
+			bridge_creations: 1,
+			memory_repoints: 1,
+			session_compactions: 1,
+		});
+
+		const verify = new Database(dbPath, { readonly: true });
+		try {
+			const sessions = verify.prepare("SELECT id FROM sessions ORDER BY id").all() as Array<{
+				id: number;
+			}>;
+			expect(sessions).toEqual([{ id: 1 }]);
+
+			const bridge = verify
+				.prepare(
+					"SELECT source, stream_id, session_id FROM opencode_sessions WHERE stream_id = 'ses-1'",
+				)
+				.get() as { source: string; stream_id: string; session_id: number };
+			expect(bridge).toEqual({ source: "opencode", stream_id: "ses-1", session_id: 1 });
+
+			const memorySessionIds = verify
+				.prepare("SELECT id, session_id FROM memory_items ORDER BY id")
+				.all() as Array<{ id: number; session_id: number }>;
+			expect(memorySessionIds).toEqual([
+				{ id: 1, session_id: 1 },
+				{ id: 2, session_id: 1 },
+			]);
+
+			const sessionSummary = verify
+				.prepare("SELECT session_id FROM session_summaries WHERE id = 1")
+				.get() as { session_id: number };
+			expect(sessionSummary.session_id).toBe(1);
+
+			const userPrompt = verify
+				.prepare("SELECT session_id FROM user_prompts WHERE id = 1")
+				.get() as { session_id: number };
+			expect(userPrompt.session_id).toBe(1);
+		} finally {
+			verify.close();
+		}
+	});
+
+	it("runs raw-event relink remediation during initDatabase", () => {
+		const dbPath = createDbPath("init-relink-apply");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-2"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-2"}}');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 2, 'decision', 'Decision 2', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k2');
+			`);
+		} finally {
+			db.close();
+		}
+
+		initDatabase(dbPath);
+
+		const verify = new Database(dbPath, { readonly: true });
+		try {
+			const sessions = verify.prepare("SELECT id FROM sessions ORDER BY id").all() as Array<{
+				id: number;
+			}>;
+			expect(sessions).toEqual([{ id: 1 }]);
+
+			const bridge = verify
+				.prepare(
+					"SELECT source, stream_id, session_id FROM opencode_sessions WHERE stream_id = 'ses-2'",
+				)
+				.get() as { source: string; stream_id: string; session_id: number };
+			expect(bridge).toEqual({ source: "opencode", stream_id: "ses-2", session_id: 1 });
+
+			const memory = verify.prepare("SELECT session_id FROM memory_items WHERE id = 1").get() as {
+				session_id: number;
+			};
+			expect(memory.session_id).toBe(1);
+		} finally {
+			verify.close();
+		}
+	});
+
+	it("is idempotent when raw-event relink remediation is applied twice", () => {
+		const dbPath = createDbPath("raw-event-relink-apply-idempotent");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-3"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-3"}}');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 2, 'decision', 'Decision 3', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k3');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const first = applyRawEventRelinkPlan(dbPath, { limit: 10 });
+		const second = applyRawEventRelinkPlan(dbPath, { limit: 10 });
+
+		expect(first.totals.bridge_creations).toBe(1);
+		expect(first.totals.memory_repoints).toBe(1);
+		expect(first.totals.session_compactions).toBe(1);
+		expect(second.totals.bridge_creations).toBe(0);
+		expect(second.totals.memory_repoints).toBe(0);
+		expect(second.totals.session_compactions).toBe(0);
+	});
+
+	it("blocks compaction when redundant sessions still carry other bridge rows", () => {
+		const dbPath = createDbPath("raw-event-relink-foreign-bridge-blocker");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-4"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"source":"opencode","flusher":"raw_events","streamId":"ses-4"}}');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'other-stream', 'other-stream', 2, '2026-03-01T10:12:00Z');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 2, 'decision', 'Decision 4', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k4');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getRawEventRelinkReport(dbPath, { limit: 10 });
+		expect(report.groups[0]).toEqual(
+			expect.objectContaining({
+				stable_id: "ses-4",
+				eligible: false,
+				blockers: expect.arrayContaining(["out_of_group_bridge_rows"]),
+			}),
+		);
+
+		const result = applyRawEventRelinkPlan(dbPath, { limit: 10 });
+		expect(result.totals).toEqual({
+			groups: 1,
+			eligible_groups: 0,
+			skipped_groups: 1,
+			bridge_creations: 0,
+			memory_repoints: 0,
+			session_compactions: 0,
+		});
+		expect(result.skipped_groups).toEqual([
+			{ stable_id: "ses-4", blockers: ["out_of_group_bridge_rows"] },
+		]);
+
+		const verify = new Database(dbPath, { readonly: true });
+		try {
+			const sessions = verify.prepare("SELECT id FROM sessions ORDER BY id").all() as Array<{
+				id: number;
+			}>;
+			expect(sessions).toEqual([{ id: 1 }, { id: 2 }]);
+			const bridgeRows = verify
+				.prepare("SELECT source, stream_id, session_id FROM opencode_sessions ORDER BY stream_id")
+				.all() as Array<{ source: string; stream_id: string; session_id: number }>;
+			expect(bridgeRows).toEqual([
+				{ source: "opencode", stream_id: "other-stream", session_id: 2 },
+			]);
+		} finally {
+			verify.close();
+		}
 	});
 });
