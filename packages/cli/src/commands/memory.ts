@@ -1,15 +1,23 @@
 /**
- * Memory management CLI commands — show, forget, remember.
+ * Memory management CLI commands — show, forget, remember, inject.
  *
  * Ports codemem/commands/memory_cmds.py (show_cmd, forget_cmd, remember_cmd).
- * Compact and inject are deferred — compact requires the summarizer pipeline,
- * and inject is just pack_text output which the existing pack command covers.
+ * Inject is deprecated in favor of `codemem pack`.
  */
 
 import * as p from "@clack/prompts";
 import { MemoryStore, resolveDbPath, resolveProject } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
+import {
+	addDbOption,
+	addJsonOption,
+	type DbOpts,
+	emitDeprecationWarning,
+	emitJsonError,
+	type JsonOpts,
+	resolveDbOpt,
+} from "../shared-options.js";
 
 function collectWorkingSetFile(value: string, previous: string[]): string[] {
 	return [...previous, value];
@@ -22,55 +30,82 @@ function parseStrictPositiveId(value: string): number | null {
 	return Number.isFinite(n) && n >= 1 && Number.isInteger(n) ? n : null;
 }
 
-function showMemoryAction(idStr: string, opts: { db?: string; dbPath?: string }): void {
+function showMemoryAction(idStr: string, opts: DbOpts & JsonOpts): void {
 	const memoryId = parseStrictPositiveId(idStr);
 	if (memoryId === null) {
-		p.log.error(`Invalid memory ID: ${idStr}`);
-		process.exitCode = 1;
+		if (opts.json) {
+			emitJsonError("invalid_id", `Invalid memory ID: ${idStr}`);
+		} else {
+			p.log.error(`Invalid memory ID: ${idStr}`);
+			process.exitCode = 1;
+		}
 		return;
 	}
-	const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
 		const item = store.get(memoryId);
 		if (!item) {
-			p.log.error(`Memory ${memoryId} not found`);
-			process.exitCode = 1;
+			if (opts.json) {
+				emitJsonError("not_found", `Memory ${memoryId} not found`);
+			} else {
+				p.log.error(`Memory ${memoryId} not found`);
+				process.exitCode = 1;
+			}
 			return;
 		}
-		console.log(JSON.stringify(item, null, 2));
+		if (opts.json) {
+			console.log(JSON.stringify(item, null, 2));
+		} else {
+			// Human-readable format
+			console.log(`#${item.id} [${item.kind}] ${item.title}`);
+			if (item.subtitle) console.log(`  ${item.subtitle}`);
+			console.log(`  created: ${item.created_at}  confidence: ${item.confidence}`);
+			if (item.tags_text) console.log(`  tags: ${item.tags_text}`);
+			if (item.body_text) {
+				const preview =
+					item.body_text.length > 300 ? `${item.body_text.slice(0, 300)}…` : item.body_text;
+				console.log(`\n${preview}`);
+			}
+		}
 	} finally {
 		store.close();
 	}
 }
 
-function forgetMemoryAction(idStr: string, opts: { db?: string; dbPath?: string }): void {
+function forgetMemoryAction(idStr: string, opts: DbOpts & JsonOpts): void {
 	const memoryId = parseStrictPositiveId(idStr);
 	if (memoryId === null) {
-		p.log.error(`Invalid memory ID: ${idStr}`);
-		process.exitCode = 1;
+		if (opts.json) {
+			emitJsonError("invalid_id", `Invalid memory ID: ${idStr}`);
+		} else {
+			p.log.error(`Invalid memory ID: ${idStr}`);
+			process.exitCode = 1;
+		}
 		return;
 	}
-	const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
 		store.forget(memoryId);
-		p.log.success(`Memory ${memoryId} marked inactive`);
+		if (opts.json) {
+			console.log(JSON.stringify({ id: memoryId, status: "forgotten" }));
+		} else {
+			p.log.success(`Memory ${memoryId} marked inactive`);
+		}
 	} finally {
 		store.close();
 	}
 }
 
-interface RememberMemoryOptions {
+interface RememberMemoryOptions extends DbOpts, JsonOpts {
 	kind: string;
 	title: string;
 	body: string;
 	tags?: string[];
 	project?: string;
-	db?: string;
-	dbPath?: string;
 }
 
 async function rememberMemoryAction(opts: RememberMemoryOptions): Promise<void> {
-	const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
+	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	let sessionId: number | null = null;
 	try {
 		const project = resolveProject(process.cwd(), opts.project ?? null);
@@ -84,7 +119,11 @@ async function rememberMemoryAction(opts: RememberMemoryOptions): Promise<void> 
 		const memId = store.remember(sessionId, opts.kind, opts.title, opts.body, 0.5, opts.tags);
 		await store.flushPendingVectorWrites();
 		store.endSession(sessionId, { manual: true });
-		p.log.success(`Stored memory ${memId}`);
+		if (opts.json) {
+			console.log(JSON.stringify({ id: memId }));
+		} else {
+			p.log.success(`Stored memory ${memId}`);
+		}
 	} catch (err) {
 		if (sessionId !== null) {
 			try {
@@ -93,53 +132,60 @@ async function rememberMemoryAction(opts: RememberMemoryOptions): Promise<void> 
 				// ignore — already in error path
 			}
 		}
-		throw err;
+		const message = err instanceof Error ? err.message : String(err);
+		if (opts.json) {
+			emitJsonError("remember_failed", message);
+		} else {
+			p.log.error(`Failed to store memory: ${message}`);
+			process.exitCode = 1;
+		}
 	} finally {
 		store.close();
 	}
 }
 
 function createShowMemoryCommand(): Command {
-	return new Command("show")
+	const cmd = new Command("show")
 		.configureHelp(helpStyle)
-		.description("Print a memory item as JSON")
-		.argument("<id>", "memory ID")
-		.option("--db <path>", "database path")
-		.option("--db-path <path>", "database path")
-		.action(showMemoryAction);
+		.description("Show a memory item")
+		.argument("<id>", "memory ID");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(showMemoryAction);
+	return cmd;
 }
 
 function createForgetMemoryCommand(): Command {
-	return new Command("forget")
+	const cmd = new Command("forget")
 		.configureHelp(helpStyle)
 		.description("Deactivate a memory item")
-		.argument("<id>", "memory ID")
-		.option("--db <path>", "database path")
-		.option("--db-path <path>", "database path")
-		.action(forgetMemoryAction);
+		.argument("<id>", "memory ID");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(forgetMemoryAction);
+	return cmd;
 }
 
 function createRememberMemoryCommand(): Command {
-	return new Command("remember")
+	const cmd = new Command("remember")
 		.configureHelp(helpStyle)
 		.description("Manually add a memory item")
 		.requiredOption("-k, --kind <kind>", "memory kind (discovery, decision, feature, bugfix, etc.)")
 		.requiredOption("-t, --title <title>", "memory title")
 		.requiredOption("-b, --body <body>", "memory body text")
 		.option("--tags <tags...>", "tags (space-separated)")
-		.option("--project <project>", "project name (defaults to git repo root)")
-		.option("--db <path>", "database path")
-		.option("--db-path <path>", "database path")
-		.action(rememberMemoryAction);
+		.option("--project <project>", "project name (defaults to git repo root)");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(rememberMemoryAction);
+	return cmd;
 }
 
 function createInjectMemoryCommand(): Command {
-	return new Command("inject")
+	const cmd = new Command("inject")
 		.configureHelp(helpStyle)
 		.description("Build raw memory context text for manual prompt injection")
 		.argument("<context>", "context string to search for")
-		.option("--db <path>", "database path")
-		.option("--db-path <path>", "database path")
 		.option("-n, --limit <n>", "max items", "10")
 		.option("--budget <tokens>", "token budget")
 		.option("--token-budget <tokens>", "token budget")
@@ -152,61 +198,43 @@ function createInjectMemoryCommand(): Command {
 		.option("--project <project>", "project identifier (defaults to git repo root)")
 		.option("--all-projects", "search across all projects")
 		.allowUnknownOption(true)
-		.allowExcessArguments(true)
-		.action(
-			async (
-				context: string,
-				opts: {
-					db?: string;
-					dbPath?: string;
-					limit?: string;
-					budget?: string;
-					tokenBudget?: string;
-					workingSetFile?: string[];
-					project?: string;
-					allProjects?: boolean;
-				},
-			) => {
-				const store = new MemoryStore(resolveDbPath(opts.db ?? opts.dbPath));
-				try {
-					const limit = Number.parseInt(opts.limit ?? "10", 10) || 10;
-					const budgetRaw = opts.tokenBudget ?? opts.budget;
-					const budget = budgetRaw ? Number.parseInt(budgetRaw, 10) : undefined;
-					const filters: { project?: string; working_set_paths?: string[] } = {};
-					if (!opts.allProjects) {
-						const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
-						const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
-						if (project) filters.project = project;
-					}
-					if ((opts.workingSetFile?.length ?? 0) > 0) {
-						filters.working_set_paths = opts.workingSetFile;
-					}
-					const pack = await store.buildMemoryPackAsync(context, limit, budget, filters);
-					console.log(pack.pack_text ?? "");
-				} finally {
-					store.close();
-				}
+		.allowExcessArguments(true);
+	addDbOption(cmd);
+	cmd.action(
+		async (
+			context: string,
+			opts: DbOpts & {
+				limit?: string;
+				budget?: string;
+				tokenBudget?: string;
+				workingSetFile?: string[];
+				project?: string;
+				allProjects?: boolean;
 			},
-		);
-}
-
-function createCompactMemoryCommand(): Command {
-	return new Command("compact")
-		.configureHelp(helpStyle)
-		.description("Deferred command guidance for memory compaction")
-		.option("--db <path>", "database path")
-		.option("--db-path <path>", "database path")
-		.option("--session-id <id>", "session ID")
-		.option("--limit <n>", "max sessions to compact", "10")
-		.allowUnknownOption(true)
-		.allowExcessArguments(true)
-		.action(() => {
-			p.log.warn("`codemem memory compact` is not implemented in the TypeScript CLI yet.");
-			p.log.info(
-				"Current workaround: rely on automatic ingestion; for manual context use `codemem memory inject <context>`.",
-			);
-			process.exitCode = 2;
-		});
+		) => {
+			emitDeprecationWarning("codemem memory inject", "codemem pack");
+			const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+			try {
+				const limit = Number.parseInt(opts.limit ?? "10", 10) || 10;
+				const budgetRaw = opts.tokenBudget ?? opts.budget;
+				const budget = budgetRaw ? Number.parseInt(budgetRaw, 10) : undefined;
+				const filters: { project?: string; working_set_paths?: string[] } = {};
+				if (!opts.allProjects) {
+					const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
+					const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
+					if (project) filters.project = project;
+				}
+				if ((opts.workingSetFile?.length ?? 0) > 0) {
+					filters.working_set_paths = opts.workingSetFile;
+				}
+				const pack = await store.buildMemoryPackAsync(context, limit, budget, filters);
+				console.log(pack.pack_text ?? "");
+			} finally {
+				store.close();
+			}
+		},
+	);
+	return cmd;
 }
 
 export const showMemoryCommand = createShowMemoryCommand();
@@ -221,4 +249,3 @@ memoryCommand.addCommand(createShowMemoryCommand());
 memoryCommand.addCommand(createForgetMemoryCommand());
 memoryCommand.addCommand(createRememberMemoryCommand());
 memoryCommand.addCommand(createInjectMemoryCommand());
-memoryCommand.addCommand(createCompactMemoryCommand());

@@ -16,8 +16,14 @@ import {
 	runSyncDaemon,
 	SyncRetentionRunner,
 } from "@codemem/core";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
+import {
+	addConfigOption,
+	addDbOption,
+	addViewerHostOptions,
+	emitDeprecationWarning,
+} from "../shared-options.js";
 import {
 	type LegacyServeOptions,
 	type ResolvedServeInvocation,
@@ -319,7 +325,11 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 		return;
 	}
 	const scriptPath = process.argv[1];
-	if (!scriptPath) throw new Error("Unable to resolve CLI entrypoint for background launch");
+	if (!scriptPath) {
+		p.log.error("Unable to resolve CLI entrypoint for background launch");
+		process.exitCode = 1;
+		return;
+	}
 	const child = spawn(process.execPath, buildForegroundRunnerArgs(scriptPath, invocation), {
 		cwd: process.cwd(),
 		detached: true,
@@ -608,36 +618,46 @@ async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<
 	}
 }
 
-function addSharedServeOptions(command: Command): Command {
-	return command
-		.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-		.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-		.option("--config <path>", "config path (default: CODEMEM_CONFIG or resolved config)")
-		.option("--host <host>", "bind host", "127.0.0.1")
-		.option("--port <port>", "bind port", "38888");
-}
+const serveCmd = new Command("serve")
+	.configureHelp(helpStyle)
+	.description("Run or manage the viewer")
+	.argument("[action]", "lifecycle action (start|stop|restart)");
 
-export const serveCommand = addSharedServeOptions(
-	new Command("serve")
-		.configureHelp(helpStyle)
-		.description("Run or manage the viewer")
-		.argument("[action]", "lifecycle action (start|stop|restart)"),
-)
-	.option("--background", "run viewer in background")
-	.option("--foreground", "run viewer in foreground")
-	.option("--stop", "stop background viewer")
-	.option("--restart", "restart background viewer")
-	.action(async (action: string | undefined, opts: LegacyServeOptions) => {
-		const normalizedAction =
-			action === undefined
-				? undefined
-				: action === "start" || action === "stop" || action === "restart"
-					? (action as ServeAction)
-					: null;
-		if (normalizedAction === null) {
-			p.log.error(`Unknown serve action: ${action}`);
+addDbOption(serveCmd);
+addConfigOption(serveCmd);
+addViewerHostOptions(serveCmd);
+
+// Legacy lifecycle flags — hidden from --help, emit deprecation warnings when used.
+serveCmd.addOption(new Option("--background", "run viewer in background").hideHelp());
+serveCmd.addOption(new Option("--foreground", "run viewer in foreground").hideHelp());
+serveCmd.addOption(new Option("--stop", "stop background viewer").hideHelp());
+serveCmd.addOption(new Option("--restart", "restart background viewer").hideHelp());
+
+export const serveCommand = serveCmd.action(
+	async (action: string | undefined, opts: LegacyServeOptions) => {
+		try {
+			// Emit deprecation warnings for legacy flags
+			if (opts.stop) emitDeprecationWarning("--stop", "codemem serve stop");
+			if (opts.restart) emitDeprecationWarning("--restart", "codemem serve restart");
+			if (opts.background) emitDeprecationWarning("--background", "codemem serve start");
+			if (opts.foreground)
+				emitDeprecationWarning("--foreground", "codemem serve start --foreground");
+
+			const normalizedAction =
+				action === undefined
+					? undefined
+					: action === "start" || action === "stop" || action === "restart"
+						? (action as ServeAction)
+						: null;
+			if (normalizedAction === null) {
+				p.log.error(`Unknown serve action: ${action}`);
+				process.exitCode = 1;
+				return;
+			}
+			await runServeInvocation(resolveServeInvocation(normalizedAction, opts));
+		} catch (err) {
+			p.log.error(err instanceof Error ? err.message : String(err));
 			process.exitCode = 1;
-			return;
 		}
-		await runServeInvocation(resolveServeInvocation(normalizedAction, opts));
-	});
+	},
+);

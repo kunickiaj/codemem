@@ -13,7 +13,6 @@ describe("memory command aliases", () => {
 			"forget",
 			"remember",
 			"inject",
-			"compact",
 		]);
 	});
 
