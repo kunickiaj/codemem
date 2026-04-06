@@ -280,9 +280,14 @@ function createMemoryRoleReportCommand(): Command {
 			for (const [role, count] of Object.entries(result.counts_by_role)) {
 				p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
 			}
+			p.log.info("Counts by mapping:");
+			p.log.message(`  mapped      ${result.counts_by_mapping.mapped}`);
+			p.log.message(`  unmapped    ${result.counts_by_mapping.unmapped}`);
 			p.log.info("Summary lineages:");
 			p.log.message(`  session_summary         ${result.summary_lineages.session_summary}`);
 			p.log.message(`  legacy_metadata_summary ${result.summary_lineages.legacy_metadata_summary}`);
+			p.log.message(`  summary_mapped          ${result.summary_mapping.mapped}`);
+			p.log.message(`  summary_unmapped        ${result.summary_mapping.unmapped}`);
 			p.log.info("Project quality:");
 			for (const [bucket, count] of Object.entries(result.project_quality)) {
 				p.log.message(`  ${bucket.padEnd(12)} ${String(count)}`);
@@ -292,8 +297,29 @@ function createMemoryRoleReportCommand(): Command {
 				for (const probe of result.probe_results) {
 					p.log.message(`  query: ${probe.query}`);
 					p.log.message(`    mode: ${probe.mode}`);
+					p.log.message(
+						`    top roles: durable=${probe.top_role_counts.durable} recap=${probe.top_role_counts.recap} ephemeral=${probe.top_role_counts.ephemeral} general=${probe.top_role_counts.general}`,
+					);
+					p.log.message(
+						`    top mapping: mapped=${probe.top_mapping_counts.mapped} unmapped=${probe.top_mapping_counts.unmapped}`,
+					);
+					p.log.message(
+						`    burden: recap_share=${probe.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.top_burden.recap_unmapped_share.toFixed(2)}`,
+					);
+					if (probe.simulated_demoted_unmapped_recap) {
+						p.log.message(
+							`    simulated demote-unmapped-recap burden: recap_share=${probe.simulated_demoted_unmapped_recap.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.simulated_demoted_unmapped_recap.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.simulated_demoted_unmapped_recap.top_burden.recap_unmapped_share.toFixed(2)}`,
+						);
+					}
+					if (probe.simulated_demoted_unmapped_recap_and_ephemeral) {
+						p.log.message(
+							`    simulated demote-unmapped-recap+ephemeral burden: recap_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_unmapped_share.toFixed(2)}`,
+						);
+					}
 					for (const item of probe.items.slice(0, 5)) {
-						p.log.message(`    [${item.id}] (${item.kind}/${item.role}) ${item.title}`);
+						p.log.message(
+							`    [${item.id}] (${item.kind}/${item.role}/${item.mapping}) ${item.title} — ${item.role_reason}`,
+						);
 					}
 				}
 			}

@@ -288,6 +288,8 @@ describe("maintenance", () => {
 				  (2, 1, 'decision', 'OAuth callback fix', 'Durable auth decision', 1, '2026-03-01T10:10:01Z', '2026-03-01T10:10:01Z', '{}', 'k2'),
 				  (3, 2, 'change', 'Legacy recap', '## Request\nfoo\n\n## Completed\nbar', 1, '2026-03-01T10:20:20Z', '2026-03-01T10:20:20Z', '{"is_summary":true}', 'k3'),
 				  (4, 2, 'change', 'Micro change', 'small procedural update', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k4');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
 			`);
 		} finally {
 			db.close();
@@ -302,11 +304,14 @@ describe("maintenance", () => {
 			session_summary: 1,
 			legacy_metadata_summary: 1,
 		});
+		expect(report.counts_by_mapping).toEqual({ mapped: 2, unmapped: 2 });
+		expect(report.summary_mapping).toEqual({ mapped: 1, unmapped: 1 });
 		expect(report.counts_by_role.recap).toBe(2);
 		expect(report.counts_by_role.durable).toBe(1);
 		expect(report.counts_by_role.ephemeral).toBe(1);
 		expect(report.project_quality.empty).toBe(2);
 		expect(report.role_examples.recap?.map((item) => item.id)).toEqual([1, 3]);
+		expect(report.role_examples.recap?.[0]?.role_reason).toBe("session_summary_kind");
 		expect(report.session_duration_buckets["5-30m"]).toBe(1);
 		expect(report.session_duration_buckets["<1m"]).toBe(1);
 	});
@@ -319,6 +324,8 @@ describe("maintenance", () => {
 			db.exec(`
 				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
 				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
 				INSERT INTO memory_items(
 					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
 				) VALUES
@@ -342,6 +349,8 @@ describe("maintenance", () => {
 			db.exec(`
 				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
 				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
 				INSERT INTO memory_items(
 					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
 				) VALUES
@@ -356,8 +365,38 @@ describe("maintenance", () => {
 
 		expect(report.probe_results).toHaveLength(1);
 		expect(report.probe_results[0]?.query).toBe("oauth callback");
+		expect(report.probe_results[0]?.top_role_counts).toEqual({
+			recap: 1,
+			durable: 1,
+			ephemeral: 0,
+			general: 0,
+		});
+		expect(report.probe_results[0]?.top_mapping_counts).toEqual({ mapped: 2, unmapped: 0 });
+		expect(report.probe_results[0]?.top_burden).toEqual({
+			recap_share: 0.5,
+			unmapped_share: 0,
+			recap_unmapped_share: 0,
+		});
+		expect(report.probe_results[0]?.simulated_demoted_unmapped_recap?.top_burden).toEqual({
+			recap_share: 0.5,
+			unmapped_share: 0,
+			recap_unmapped_share: 0,
+		});
+		expect(
+			report.probe_results[0]?.simulated_demoted_unmapped_recap_and_ephemeral?.top_burden,
+		).toEqual({
+			recap_share: 0.5,
+			unmapped_share: 0,
+			recap_unmapped_share: 0,
+		});
 		expect(report.probe_results[0]?.items[0]).toEqual(
-			expect.objectContaining({ kind: "decision", role: "durable", title: "OAuth callback fix" }),
+			expect.objectContaining({
+				kind: "decision",
+				mapping: "mapped",
+				role: "durable",
+				role_reason: "durable_kind",
+				title: "OAuth callback fix",
+			}),
 		);
 	});
 });
