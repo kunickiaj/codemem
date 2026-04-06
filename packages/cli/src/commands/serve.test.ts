@@ -208,6 +208,50 @@ describe("serve command option resolution", () => {
 		}
 	});
 
+	it("repairs relinkable raw-event session fragments during viewer DB preparation", () => {
+		const dir = mkdtempSync(join(tmpdir(), "codemem-serve-relink-"));
+		const dbPath = join(dir, "viewer.sqlite");
+		try {
+			prepareViewerDatabase(dbPath);
+			const db = new MemoryStore(dbPath);
+			try {
+				db.db.exec(`
+					INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+					  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1","source":"opencode"}}'),
+					  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1","source":"opencode"}}');
+					INSERT INTO memory_items(
+						id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+					) VALUES
+					  (1, 1, 'session_summary', 'Summary 1', 'body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+					  (2, 2, 'decision', 'Decision 2', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k2');
+				`);
+			} finally {
+				db.close();
+			}
+
+			prepareViewerDatabase(dbPath);
+
+			const verify = new MemoryStore(dbPath);
+			try {
+				const bridge = verify.db
+					.prepare(
+						"SELECT session_id FROM opencode_sessions WHERE source = 'opencode' AND stream_id = 'ses-1'",
+					)
+					.get() as { session_id: number };
+				expect(bridge.session_id).toBe(1);
+
+				const movedMemory = verify.db
+					.prepare("SELECT session_id FROM memory_items WHERE id = 2")
+					.get() as { session_id: number };
+				expect(movedMemory.session_id).toBe(1);
+			} finally {
+				verify.close();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("distinguishes loopback-only viewer binds from network-exposed binds", () => {
 		expect(isLoopbackOnlyHost("127.0.0.1")).toBe(true);
 		expect(isLoopbackOnlyHost("127.0.0.2")).toBe(true);

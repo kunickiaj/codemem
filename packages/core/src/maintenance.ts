@@ -676,7 +676,7 @@ export function getRawEventRelinkReport(
 		const projectFilter = opts.allProjects ? null : opts.project?.trim() || null;
 		const projectClause = projectFilter ? "AND s.project = ?" : "";
 		const params = projectFilter ? [projectFilter] : [];
-		const limit = Math.max(1, opts.limit ?? 25);
+		const limit = opts.limit == null ? Number.MAX_SAFE_INTEGER : Math.max(1, opts.limit);
 
 		const rows = db
 			.prepare(

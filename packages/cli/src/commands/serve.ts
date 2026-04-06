@@ -4,6 +4,7 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
+	applyRawEventRelinkPlan,
 	initDatabase,
 	isEmbeddingDisabled,
 	type MemoryStore,
@@ -83,7 +84,9 @@ export function isLikelyViewerCommand(command: string): boolean {
 }
 
 export function prepareViewerDatabase(dbPath?: string | null): string {
-	return initDatabase(dbPath ?? undefined).path;
+	const path = initDatabase(dbPath ?? undefined).path;
+	applyRawEventRelinkPlan(path, { dryRun: false });
+	return path;
 }
 
 export function pickViewerPidCandidate(
