@@ -21,21 +21,25 @@ import {
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
+import { addDbOption, addViewerHostOptions, type DbOpts, resolveDbOpt } from "../shared-options.js";
 
 type IngestResult = { inserted: number; skipped: number; via: "http" | "direct" };
 
 type IngestOpts = {
 	host: string;
-	port: number;
-	db?: string;
-	dbPath?: string;
-};
+	port: string | number;
+} & DbOpts;
 
 type IngestDeps = {
 	httpIngest?: typeof tryHttpIngest;
 	directIngest?: typeof directEnqueue;
 	resolveDb?: typeof resolveDbPath;
 };
+
+function emitStructuredError(errorCode: string, message: string): void {
+	console.log(JSON.stringify({ error: errorCode, message }));
+	process.exitCode = 1;
+}
 
 /** Try to POST the hook payload to the running viewer server. */
 async function tryHttpIngest(
@@ -163,34 +167,36 @@ export async function ingestClaudeHookPayload(
 	const directIngest = deps.directIngest ?? directEnqueue;
 	const resolveDb = deps.resolveDb ?? resolveDbPath;
 
-	const httpResult = await httpIngest(payload, opts.host, opts.port);
+	const port = typeof opts.port === "number" ? opts.port : Number.parseInt(opts.port, 10);
+	const httpResult = await httpIngest(payload, opts.host, port);
 	if (httpResult.ok) {
 		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
 	}
 
-	const dbPath = resolveDb(opts.db ?? opts.dbPath);
+	const dbPath = resolveDb(resolveDbOpt(opts));
 	const directResult = directIngest(payload, dbPath);
 	return { ...directResult, via: "direct" };
 }
 
-export const claudeHookIngestCommand = new Command("claude-hook-ingest")
+const claudeHookCmd = new Command("claude-hook-ingest")
 	.configureHelp(helpStyle)
-	.description("Ingest Claude hook payload: HTTP first, direct DB fallback")
-	.option("--db <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.option("--db-path <path>", "database path (default: $CODEMEM_DB or ~/.codemem/mem.sqlite)")
-	.option("--host <host>", "viewer server host", "127.0.0.1")
-	.option("--port <port>", "viewer server port", "38888")
-	.action(async (opts: { db?: string; dbPath?: string; host: string; port: string }) => {
+	.description("Ingest Claude hook payload: HTTP first, direct DB fallback");
+
+addDbOption(claudeHookCmd);
+addViewerHostOptions(claudeHookCmd);
+
+export const claudeHookIngestCommand = claudeHookCmd.action(
+	async (opts: DbOpts & { host: string; port: string }) => {
 		// Read payload from stdin
 		let raw: string;
 		try {
 			raw = readFileSync(0, "utf8").trim();
 		} catch {
-			process.exitCode = 1;
+			emitStructuredError("read_error", "failed to read stdin");
 			return;
 		}
 		if (!raw) {
-			process.exitCode = 1;
+			emitStructuredError("read_error", "empty stdin");
 			return;
 		}
 
@@ -198,27 +204,20 @@ export const claudeHookIngestCommand = new Command("claude-hook-ingest")
 		try {
 			const parsed = JSON.parse(raw) as unknown;
 			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				process.exitCode = 1;
+				emitStructuredError("parse_error", "payload must be a JSON object");
 				return;
 			}
 			payload = parsed as Record<string, unknown>;
 		} catch {
-			process.exitCode = 1;
+			emitStructuredError("parse_error", "invalid JSON");
 			return;
 		}
 
-		const port = Number.parseInt(opts.port, 10);
-		const host = opts.host;
-
 		try {
-			const result = await ingestClaudeHookPayload(payload, {
-				host,
-				port,
-				db: opts.db,
-				dbPath: opts.dbPath,
-			});
+			const result = await ingestClaudeHookPayload(payload, opts);
 			console.log(JSON.stringify(result));
-		} catch {
-			process.exitCode = 1;
+		} catch (err) {
+			emitStructuredError("ingest_error", err instanceof Error ? err.message : String(err));
 		}
-	});
+	},
+);

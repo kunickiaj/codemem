@@ -1,10 +1,10 @@
+import { type DbOpts, resolveDbOpt } from "../shared-options.js";
+
 export type ServeMode = "start" | "stop" | "restart";
 
 export type ServeAction = ServeMode | undefined;
 
-export interface LegacyServeOptions {
-	db?: string;
-	dbPath?: string;
+export interface LegacyServeOptions extends DbOpts {
 	config?: string;
 	host: string;
 	port: string;
@@ -14,18 +14,14 @@ export interface LegacyServeOptions {
 	restart?: boolean;
 }
 
-export interface StartServeOptions {
-	db?: string;
-	dbPath?: string;
+export interface StartServeOptions extends DbOpts {
 	config?: string;
 	host: string;
 	port: string;
 	foreground?: boolean;
 }
 
-export interface StopRestartServeOptions {
-	db?: string;
-	dbPath?: string;
+export interface StopRestartServeOptions extends DbOpts {
 	config?: string;
 	host: string;
 	port: string;
@@ -40,7 +36,11 @@ export interface ResolvedServeInvocation {
 	background: boolean;
 }
 
-function parsePort(rawPort: string): number {
+/**
+ * Parse and validate a port string. Throws a user-friendly message (no stack trace)
+ * that callers in serve.ts catch at the action boundary.
+ */
+export function parsePort(rawPort: string): number {
 	const port = Number.parseInt(rawPort, 10);
 	if (!Number.isFinite(port) || port < 1 || port > 65535) {
 		throw new Error(`Invalid port: ${rawPort}`);
@@ -55,7 +55,7 @@ export function resolveLegacyServeInvocation(opts: LegacyServeOptions): Resolved
 	if (opts.foreground && opts.background) {
 		throw new Error("Use only one of --background or --foreground");
 	}
-	const dbPath = opts.db ?? opts.dbPath ?? null;
+	const dbPath = resolveDbOpt(opts) ?? null;
 	return {
 		mode: opts.stop ? "stop" : opts.restart ? "restart" : "start",
 		dbPath,
@@ -83,7 +83,7 @@ export function resolveServeInvocation(
 }
 
 export function resolveStartServeInvocation(opts: StartServeOptions): ResolvedServeInvocation {
-	const dbPath = opts.db ?? opts.dbPath ?? null;
+	const dbPath = resolveDbOpt(opts) ?? null;
 	return {
 		mode: "start",
 		dbPath,
@@ -98,7 +98,7 @@ export function resolveStopRestartInvocation(
 	mode: "stop" | "restart",
 	opts: StopRestartServeOptions,
 ): ResolvedServeInvocation {
-	const dbPath = opts.db ?? opts.dbPath ?? null;
+	const dbPath = resolveDbOpt(opts) ?? null;
 	return {
 		mode,
 		dbPath,
