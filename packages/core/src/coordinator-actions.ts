@@ -12,6 +12,7 @@ import {
 	inviteLink,
 } from "./coordinator-invites.js";
 import type {
+	CoordinatorBootstrapGrant,
 	CoordinatorEnrollment,
 	CoordinatorGroup,
 	CoordinatorJoinRequest,
@@ -489,6 +490,72 @@ export async function coordinatorReviewJoinRequestAction(opts: {
 			approved: opts.approve,
 			reviewedBy: opts.reviewedBy ?? null,
 		});
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorListBootstrapGrantsAction(opts: {
+	groupId: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorBootstrapGrant[]> {
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : coordinatorRemoteTarget().remoteUrl);
+	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"GET",
+			`${remote.replace(/\/+$/, "")}/v1/admin/bootstrap-grants?group_id=${encodeURIComponent(opts.groupId)}`,
+			adminSecret,
+		);
+		return Array.isArray(payload?.items)
+			? payload.items.filter(
+					(row): row is CoordinatorBootstrapGrant => Boolean(row) && typeof row === "object",
+				)
+			: [];
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return await store.listBootstrapGrants(opts.groupId);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorRevokeBootstrapGrantAction(opts: {
+	grantId: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<boolean> {
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : coordinatorRemoteTarget().remoteUrl);
+	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		try {
+			await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/bootstrap-grants/revoke`,
+				adminSecret,
+				{ grant_id: opts.grantId },
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message.includes("(404)") &&
+				error.message.includes("grant_not_found")
+			) {
+				return false;
+			}
+			throw error;
+		}
+		return true;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return await store.revokeBootstrapGrant(opts.grantId);
 	} finally {
 		await store.close();
 	}

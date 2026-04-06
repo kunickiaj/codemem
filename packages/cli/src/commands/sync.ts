@@ -18,12 +18,14 @@ import {
 	coordinatorDisableDeviceAction,
 	coordinatorEnrollDeviceAction,
 	coordinatorImportInviteAction,
+	coordinatorListBootstrapGrantsAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
+	coordinatorRevokeBootstrapGrantAction,
 	createBetterSqliteCoordinatorApp,
 	DEFAULT_COORDINATOR_DB_PATH,
 	ensureDeviceIdentity,
@@ -921,6 +923,7 @@ syncCommand.addCommand(
 		.configureHelp(helpStyle)
 		.description("Fast-bootstrap memories from a peer (full snapshot transfer)")
 		.requiredOption("--peer <device-id>", "peer device ID to bootstrap from")
+		.option("--bootstrap-grant <grant-id>", "bootstrap grant id for seed-authorized bootstrap")
 		.option("--page-size <n>", "items per snapshot page (default: 2000)", "2000")
 		.option("--db <path>", "database path")
 		.option("--db-path <path>", "database path")
@@ -930,6 +933,7 @@ syncCommand.addCommand(
 		.action(
 			async (opts: {
 				peer: string;
+				bootstrapGrant?: string;
 				pageSize: string;
 				db?: string;
 				dbPath?: string;
@@ -1024,6 +1028,7 @@ syncCommand.addCommand(
 							method: "GET",
 							url: statusUrl,
 							bodyBytes: Buffer.alloc(0),
+							bootstrapGrantId: opts.bootstrapGrant,
 							keysDir,
 						});
 						try {
@@ -1091,6 +1096,7 @@ syncCommand.addCommand(
 
 					const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
 						keysDir,
+						bootstrapGrantId: opts.bootstrapGrant,
 						pageSize,
 					});
 
@@ -1442,6 +1448,95 @@ coordinatorCommand.addCommand(
 			p.log.info(`DB: ${dbPath}`);
 			honoServe({ fetch: app.fetch, hostname: host, port });
 		}),
+);
+
+coordinatorCommand.addCommand(
+	new Command("list-bootstrap-grants")
+		.configureHelp(helpStyle)
+		.description("List bootstrap grants for a coordinator group")
+		.argument("<group>", "group id")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override")
+		.option("--json", "output as JSON")
+		.action(
+			async (
+				groupId: string,
+				opts: {
+					db?: string;
+					dbPath?: string;
+					remoteUrl?: string;
+					adminSecret?: string;
+					json?: boolean;
+				},
+			) => {
+				const rows = await coordinatorListBootstrapGrantsAction({
+					groupId,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(rows, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator list-bootstrap-grants");
+				if (rows.length === 0) {
+					p.outro(`No bootstrap grants for ${groupId.trim()}`);
+					return;
+				}
+				for (const row of rows) {
+					p.log.message(
+						`- ${row.grant_id} seed=${row.seed_device_id} worker=${row.worker_device_id} scope=${row.scope} expires=${row.expires_at} revoked=${row.revoked_at ?? "no"}`,
+					);
+				}
+				p.outro(`${rows.length} bootstrap grant(s)`);
+			},
+		),
+);
+
+coordinatorCommand.addCommand(
+	new Command("revoke-bootstrap-grant")
+		.configureHelp(helpStyle)
+		.description("Revoke a bootstrap grant")
+		.argument("<grant-id>", "bootstrap grant id")
+		.option("--db <path>", "coordinator database path")
+		.option("--db-path <path>", "coordinator database path")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override")
+		.option("--json", "output as JSON")
+		.action(
+			async (
+				grantId: string,
+				opts: {
+					db?: string;
+					dbPath?: string;
+					remoteUrl?: string;
+					adminSecret?: string;
+					json?: boolean;
+				},
+			) => {
+				const ok = await coordinatorRevokeBootstrapGrantAction({
+					grantId,
+					dbPath: opts.db ?? opts.dbPath ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (!ok) {
+					p.log.error(`Bootstrap grant not found: ${grantId.trim()}`);
+					process.exitCode = 1;
+					return;
+				}
+				if (opts.json) {
+					console.log(JSON.stringify({ ok: true, grant_id: grantId.trim() }, null, 2));
+					return;
+				}
+				p.intro("codemem sync coordinator revoke-bootstrap-grant");
+				p.log.success(`Revoked ${grantId.trim()}`);
+				p.outro("revoked");
+			},
+		),
 );
 
 coordinatorCommand.addCommand(

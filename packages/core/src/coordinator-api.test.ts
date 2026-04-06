@@ -77,6 +77,12 @@ function createMockStore(
 			},
 		),
 		listGroupPeers: vi.fn(async (_: string, __: string): Promise<CoordinatorPeerRecord[]> => []),
+		createBootstrapGrant: vi.fn(async () => {
+			throw new Error("not implemented");
+		}),
+		getBootstrapGrant: vi.fn(async () => null),
+		listBootstrapGrants: vi.fn(async () => []),
+		revokeBootstrapGrant: vi.fn(async () => false),
 	};
 	return { ...defaultStore, ...overrides };
 }
@@ -212,6 +218,69 @@ describe("createCoordinatorApp dependency injection", () => {
 
 		expect(res.status).toBe(401);
 		expect(await res.json()).toEqual({ error: "admin_not_configured" });
+	});
+
+	it("lists bootstrap grants for admins", async () => {
+		const store = createMockStore({
+			listBootstrapGrants: vi.fn(async () => [
+				{
+					grant_id: "grant-1",
+					group_id: "g1",
+					seed_device_id: "seed-1",
+					worker_device_id: "worker-1",
+					scope: "bootstrap",
+					expires_at: "2099-01-01T00:00:00Z",
+					created_at: "2026-01-01T00:00:00Z",
+					created_by: "admin",
+					revoked_at: null,
+				},
+			]),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+		const res = await app.request("/v1/admin/bootstrap-grants?group_id=g1", {
+			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			items: [
+				expect.objectContaining({
+					grant_id: "grant-1",
+					group_id: "g1",
+					seed_device_id: "seed-1",
+				}),
+			],
+		});
+	});
+
+	it("revokes bootstrap grants for admins", async () => {
+		const store = createMockStore({
+			revokeBootstrapGrant: vi.fn(async () => true),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+		const res = await app.request("/v1/admin/bootstrap-grants/revoke", {
+			method: "POST",
+			headers: {
+				"X-Codemem-Coordinator-Admin": "test-secret",
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ grant_id: "grant-1" }),
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ ok: true, grant_id: "grant-1" });
 	});
 
 	it("lists reciprocal approvals for the authenticated device", async () => {

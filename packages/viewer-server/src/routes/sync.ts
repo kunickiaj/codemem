@@ -6,13 +6,20 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, join } from "node:path";
-import type { MemoryStore, ReplicationOp } from "@codemem/core";
+import type {
+	CoordinatorBootstrapGrantVerification,
+	MemoryStore,
+	ReplicationOp,
+} from "@codemem/core";
 import {
 	applyReplicationOps,
+	buildBaseUrl,
 	cleanupNonces,
 	coordinatorCreateInviteAction,
 	coordinatorImportInviteAction,
+	coordinatorListBootstrapGrantsAction,
 	coordinatorReviewJoinRequestAction,
+	coordinatorRevokeBootstrapGrantAction,
 	coordinatorStatusSnapshot,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
@@ -27,6 +34,7 @@ import {
 	mergeAddresses,
 	readCoordinatorSyncConfig,
 	recordNonce,
+	requestJson,
 	runSyncPass,
 	schema,
 	verifySignature,
@@ -115,8 +123,8 @@ function pathWithQuery(url: string): string {
 	return parsed.search ? `${parsed.pathname}${parsed.search}` : parsed.pathname;
 }
 
-function unauthorizedPayload(reason: string): Record<string, string> {
-	if (process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS === "1") {
+function unauthorizedPayload(reason: string, exposeReason = false): Record<string, string> {
+	if (exposeReason && process.env.CODEMEM_SYNC_AUTH_DIAGNOSTICS === "1") {
 		return { error: "unauthorized", reason };
 	}
 	return { error: "unauthorized" };
@@ -178,6 +186,105 @@ function authorizeSyncRequest(
 		return { ok: false, reason: "nonce_replay", deviceId };
 	}
 
+	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
+	cleanupNonces(store.db, cutoff);
+	return { ok: true, reason: "ok", deviceId };
+}
+
+async function authorizeBootstrapGrantRequest(
+	store: MemoryStore,
+	request: { method: string; url: string; header(name: string): string | undefined },
+	body: Buffer,
+	allowedScopes: string[],
+): Promise<{ ok: boolean; reason: string; deviceId: string }> {
+	const grantId = (request.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
+	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
+	const signature = request.header("X-Opencode-Signature") ?? "";
+	const timestamp = request.header("X-Opencode-Timestamp") ?? "";
+	const nonce = request.header("X-Opencode-Nonce") ?? "";
+	if (!grantId || !deviceId || !signature || !timestamp || !nonce) {
+		return { ok: false, reason: "missing_bootstrap_grant_headers", deviceId };
+	}
+
+	const config = readCoordinatorSyncConfig();
+	if (!config.syncCoordinatorUrl || !config.syncCoordinatorAdminSecret) {
+		return { ok: false, reason: "bootstrap_grant_coordinator_not_configured", deviceId };
+	}
+
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	let verification: CoordinatorBootstrapGrantVerification;
+	try {
+		const [status, payload] = await requestJson(
+			"GET",
+			`${buildBaseUrl(config.syncCoordinatorUrl)}/v1/admin/bootstrap-grants/${encodeURIComponent(grantId)}`,
+			{
+				headers: { "X-Codemem-Coordinator-Admin": config.syncCoordinatorAdminSecret },
+				timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
+			},
+		);
+		if (status !== 200 || !payload) {
+			return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
+		}
+		verification = payload as unknown as CoordinatorBootstrapGrantVerification;
+	} catch {
+		return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
+	}
+
+	const grant = verification.grant;
+	const workerEnrollment = verification.worker_enrollment;
+	if (!grant || !workerEnrollment) {
+		return { ok: false, reason: "bootstrap_grant_invalid_payload", deviceId };
+	}
+	if (grant.revoked_at) return { ok: false, reason: "bootstrap_grant_revoked", deviceId };
+	if (String(workerEnrollment.device_id) !== String(grant.worker_device_id)) {
+		return { ok: false, reason: "bootstrap_grant_worker_enrollment_mismatch", deviceId };
+	}
+	if (String(workerEnrollment.group_id) !== String(grant.group_id)) {
+		return { ok: false, reason: "bootstrap_grant_group_mismatch", deviceId };
+	}
+	if (Number(workerEnrollment.enabled) !== 1) {
+		return { ok: false, reason: "bootstrap_grant_worker_disabled", deviceId };
+	}
+	if (grant.worker_device_id !== deviceId) {
+		return { ok: false, reason: "bootstrap_grant_worker_mismatch", deviceId };
+	}
+	if (grant.seed_device_id !== localDeviceId) {
+		return { ok: false, reason: "bootstrap_grant_seed_mismatch", deviceId };
+	}
+	if (new Date(grant.expires_at) <= new Date()) {
+		return { ok: false, reason: "bootstrap_grant_expired", deviceId };
+	}
+	const scopes = String(grant.scope ?? "")
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+	if (!allowedScopes.some((scope) => scopes.includes(scope))) {
+		return { ok: false, reason: "bootstrap_grant_scope_denied", deviceId };
+	}
+
+	let valid = false;
+	try {
+		valid = verifySignature({
+			method: request.method,
+			pathWithQuery: pathWithQuery(request.url),
+			bodyBytes: body,
+			timestamp,
+			nonce,
+			signature,
+			publicKey: String(workerEnrollment.public_key),
+			deviceId,
+		});
+	} catch {
+		return { ok: false, reason: "bootstrap_grant_signature_verification_error", deviceId };
+	}
+	if (!valid) {
+		return { ok: false, reason: "bootstrap_grant_invalid_signature", deviceId };
+	}
+
+	const createdAt = new Date().toISOString();
+	if (!recordNonce(store.db, deviceId, nonce, createdAt)) {
+		return { ok: false, reason: "nonce_replay", deviceId };
+	}
 	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
 	cleanupNonces(store.db, cutoff);
 	return { ok: true, reason: "ok", deviceId };
@@ -765,28 +872,49 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	// GET /v1/status (peer sync protocol)
 	app.get("/v1/status", (c) => {
 		const store = getStore();
-		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-		if (!auth.ok)
-			return (
-				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
-			);
-		const limited = rateLimitedResponse(c, auth.deviceId, true);
-		if (limited) return limited;
+		return (async () => {
+			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+			let exposeBootstrapReason = false;
+			let preauthChecked = false;
+			if (!auth.ok) {
+				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
+				if (bootstrapGrantId) {
+					preauthChecked = true;
+					// Use unauthenticated bucket with stable key — grant is not yet verified,
+					// so caller-controlled headers must not influence rate-limit identity.
+					const bootstrapLimited = rateLimitedResponse(c, c.req.path, false);
+					if (bootstrapLimited) return bootstrapLimited;
+				} else {
+					preauthChecked = true;
+					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
+					if (unauthLimited) return unauthLimited;
+				}
+				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), ["bootstrap"]);
+				exposeBootstrapReason = auth.reason.startsWith("bootstrap_grant_");
+			}
+			if (!auth.ok)
+				return (
+					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
+					c.json(unauthorizedPayload(auth.reason, exposeBootstrapReason), 401)
+				);
+			const limited = rateLimitedResponse(c, auth.deviceId, true);
+			if (limited) return limited;
 
-		try {
-			const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, {
-				keysDir: syncKeysDir(),
-			});
-			const syncReset = getSyncResetState(store.db);
-			return c.json({
-				device_id: deviceId,
-				protocol_version: SYNC_PROTOCOL_VERSION,
-				fingerprint,
-				sync_reset: syncReset,
-			});
-		} catch {
-			return c.json({ error: "internal_error" }, 500);
-		}
+			try {
+				const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, {
+					keysDir: syncKeysDir(),
+				});
+				const syncReset = getSyncResetState(store.db);
+				return c.json({
+					device_id: deviceId,
+					protocol_version: SYNC_PROTOCOL_VERSION,
+					fingerprint,
+					sync_reset: syncReset,
+				});
+			} catch {
+				return c.json({ error: "internal_error" }, 500);
+			}
+		})();
 	});
 
 	// GET /v1/ops (peer sync protocol)
@@ -850,59 +978,80 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	// GET /v1/snapshot (peer sync protocol — bootstrap snapshot pages)
 	app.get("/v1/snapshot", (c) => {
 		const store = getStore();
-		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
-		if (!auth.ok)
-			return (
-				rateLimitedResponse(c, c.req.path, false) ?? c.json(unauthorizedPayload(auth.reason), 401)
-			);
-		const limited = rateLimitedResponse(c, auth.deviceId, true);
-		if (limited) return limited;
-
-		try {
-			const rawGeneration = c.req.query("generation");
-			const generation =
-				rawGeneration != null && rawGeneration.trim().length > 0
-					? Number.parseInt(rawGeneration, 10)
-					: null;
-			const snapshotId = c.req.query("snapshot_id") ?? null;
-			const baselineCursor = c.req.query("baseline_cursor") ?? null;
-			const pageToken = c.req.query("page_token") ?? null;
-			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
-			// Cap raised to 5000 to support elevated bootstrap page sizes (default 2000).
-			const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 200;
-
-			if (generation == null || !Number.isFinite(generation)) {
-				return c.json({ error: "missing_generation" }, 400);
+		return (async () => {
+			let auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+			let exposeBootstrapReason = false;
+			let preauthChecked = false;
+			if (!auth.ok) {
+				const bootstrapGrantId = (c.req.header("X-Codemem-Bootstrap-Grant") ?? "").trim();
+				if (bootstrapGrantId) {
+					preauthChecked = true;
+					// Use unauthenticated bucket with stable key — grant is not yet verified,
+					// so caller-controlled headers must not influence rate-limit identity.
+					const bootstrapLimited = rateLimitedResponse(c, c.req.path, false);
+					if (bootstrapLimited) return bootstrapLimited;
+				} else {
+					preauthChecked = true;
+					const unauthLimited = rateLimitedResponse(c, c.req.path, false);
+					if (unauthLimited) return unauthLimited;
+				}
+				auth = await authorizeBootstrapGrantRequest(store, c.req, Buffer.alloc(0), ["bootstrap"]);
+				exposeBootstrapReason = auth.reason.startsWith("bootstrap_grant_");
 			}
-			if (!snapshotId) {
-				return c.json({ error: "missing_snapshot_id" }, 400);
-			}
+			if (!auth.ok)
+				return (
+					(preauthChecked ? null : rateLimitedResponse(c, c.req.path, false)) ??
+					c.json(unauthorizedPayload(auth.reason, exposeBootstrapReason), 401)
+				);
+			const limited = rateLimitedResponse(c, auth.deviceId, true);
+			if (limited) return limited;
 
-			const result = loadMemorySnapshotPageForPeer(store.db, {
-				generation,
-				snapshotId,
-				baselineCursor,
-				pageToken,
-				limit,
-				peerDeviceId: auth.deviceId,
-			});
+			try {
+				const rawGeneration = c.req.query("generation");
+				const generation =
+					rawGeneration != null && rawGeneration.trim().length > 0
+						? Number.parseInt(rawGeneration, 10)
+						: null;
+				const snapshotId = c.req.query("snapshot_id") ?? null;
+				const baselineCursor = c.req.query("baseline_cursor") ?? null;
+				const pageToken = c.req.query("page_token") ?? null;
+				const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
+				// Cap raised to 5000 to support elevated bootstrap page sizes (default 2000).
+				const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 200;
 
-			return c.json({
-				generation: result.boundary.generation,
-				snapshot_id: result.boundary.snapshot_id,
-				baseline_cursor: result.boundary.baseline_cursor,
-				retained_floor_cursor: result.boundary.retained_floor_cursor,
-				items: result.items,
-				next_page_token: result.nextPageToken,
-				has_more: result.hasMore,
-			});
-		} catch (err) {
-			const message = err instanceof Error ? err.message : "";
-			if (message === "generation_mismatch" || message === "boundary_mismatch") {
-				return c.json({ error: message }, 409);
+				if (generation == null || !Number.isFinite(generation)) {
+					return c.json({ error: "missing_generation" }, 400);
+				}
+				if (!snapshotId) {
+					return c.json({ error: "missing_snapshot_id" }, 400);
+				}
+
+				const result = loadMemorySnapshotPageForPeer(store.db, {
+					generation,
+					snapshotId,
+					baselineCursor,
+					pageToken,
+					limit,
+					peerDeviceId: auth.deviceId,
+				});
+
+				return c.json({
+					generation: result.boundary.generation,
+					snapshot_id: result.boundary.snapshot_id,
+					baseline_cursor: result.boundary.baseline_cursor,
+					retained_floor_cursor: result.boundary.retained_floor_cursor,
+					items: result.items,
+					next_page_token: result.nextPageToken,
+					has_more: result.hasMore,
+				});
+			} catch (err) {
+				const message = err instanceof Error ? err.message : "";
+				if (message === "generation_mismatch" || message === "boundary_mismatch") {
+					return c.json({ error: message }, 409);
+				}
+				return c.json({ error: "internal_error" }, 500);
 			}
-			return c.json({ error: "internal_error" }, 500);
-		}
+		})();
 	});
 
 	// POST /v1/ops (peer sync protocol)
@@ -1820,6 +1969,47 @@ export function syncRoutes(
 				{ error: message },
 				message.includes("request_not_found") || message.includes("not found") ? 404 : 400,
 			);
+		}
+	});
+
+	app.get("/api/sync/bootstrap-grants", async (c) => {
+		const groupId = String(c.req.query("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+		const config = readCoordinatorSyncConfig();
+		try {
+			const items = await coordinatorListBootstrapGrantsAction({
+				groupId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ items });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown";
+			return c.json({ error: message }, 500);
+		}
+	});
+
+	app.post("/api/sync/bootstrap-grants/revoke", async (c) => {
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const grantId = String(body.grant_id ?? "").trim();
+		if (!grantId) return c.json({ error: "grant_id_required" }, 400);
+		const config = readCoordinatorSyncConfig();
+		try {
+			const ok = await coordinatorRevokeBootstrapGrantAction({
+				grantId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!ok) return c.json({ error: "grant_not_found" }, 404);
+			return c.json({ ok: true, grant_id: grantId });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown";
+			return c.json({ error: message }, 500);
 		}
 	});
 

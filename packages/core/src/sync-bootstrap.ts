@@ -33,6 +33,7 @@ export interface BootstrapResult {
 
 export interface BootstrapOptions {
 	keysDir?: string;
+	bootstrapGrantId?: string;
 	/** Max items per page request. Defaults to 200. */
 	pageSize?: number;
 	/** Timeout per HTTP request in seconds. Defaults to 10. */
@@ -73,6 +74,7 @@ export async function fetchAllSnapshotPages(
 	const pageSize = options?.pageSize ?? 200;
 	const timeoutS = options?.timeoutS ?? 10;
 	const keysDir = options?.keysDir;
+	const bootstrapGrantId = options?.bootstrapGrantId?.trim() || undefined;
 	const maxItems = options?.maxItems ?? 100_000;
 
 	const allItems: SyncMemorySnapshotItem[] = [];
@@ -99,6 +101,7 @@ export async function fetchAllSnapshotPages(
 			method: "GET",
 			url,
 			bodyBytes: Buffer.alloc(0),
+			bootstrapGrantId,
 			keysDir,
 		});
 

@@ -25,12 +25,14 @@ export {
 	coordinatorDisableDeviceAction,
 	coordinatorEnrollDeviceAction,
 	coordinatorImportInviteAction,
+	coordinatorListBootstrapGrantsAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
+	coordinatorRevokeBootstrapGrantAction,
 } from "./coordinator-actions.js";
 export type {
 	CoordinatorRequestVerifier,
@@ -57,6 +59,7 @@ export {
 	registerCoordinatorPresence,
 } from "./coordinator-runtime.js";
 export type {
+	CoordinatorBootstrapGrantVerification,
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
 	CoordinatorCreateReciprocalApprovalInput,

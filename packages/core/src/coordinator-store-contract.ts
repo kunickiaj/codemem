@@ -42,6 +42,14 @@ export interface CoordinatorJoinRequest {
 
 export interface CoordinatorJoinRequestReviewResult extends CoordinatorJoinRequest {
 	_no_transition?: boolean;
+	bootstrap_grant?: CoordinatorBootstrapGrant | null;
+}
+
+export interface CoordinatorReviewJoinRequestBootstrapGrantInput {
+	seedDeviceId: string;
+	scope: string;
+	expiresAt: string;
+	createdBy?: string | null;
 }
 
 export interface CoordinatorPresenceRecord {
@@ -73,6 +81,18 @@ export interface CoordinatorReciprocalApproval {
 	resolved_at: string | null;
 }
 
+export interface CoordinatorBootstrapGrant {
+	grant_id: string;
+	group_id: string;
+	seed_device_id: string;
+	worker_device_id: string;
+	scope: string;
+	expires_at: string;
+	created_at: string;
+	created_by: string | null;
+	revoked_at: string | null;
+}
+
 export interface CoordinatorEnrollDeviceInput {
 	deviceId: string;
 	fingerprint: string;
@@ -100,6 +120,7 @@ export interface CoordinatorReviewJoinRequestInput {
 	requestId: string;
 	approved: boolean;
 	reviewedBy?: string | null;
+	bootstrapGrant?: CoordinatorReviewJoinRequestBootstrapGrantInput | null;
 }
 
 export interface CoordinatorUpsertPresenceInput {
@@ -114,6 +135,15 @@ export interface CoordinatorCreateReciprocalApprovalInput {
 	groupId: string;
 	requestingDeviceId: string;
 	requestedDeviceId: string;
+}
+
+export interface CoordinatorCreateBootstrapGrantInput {
+	groupId: string;
+	seedDeviceId: string;
+	workerDeviceId: string;
+	scope: string;
+	expiresAt: string;
+	createdBy?: string | null;
 }
 
 export interface CoordinatorListReciprocalApprovalsInput {
@@ -147,9 +177,20 @@ export interface CoordinatorStore {
 	createReciprocalApproval(
 		opts: CoordinatorCreateReciprocalApprovalInput,
 	): Promise<CoordinatorReciprocalApproval>;
+	createBootstrapGrant(
+		opts: CoordinatorCreateBootstrapGrantInput,
+	): Promise<CoordinatorBootstrapGrant>;
+	getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null>;
+	listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]>;
+	revokeBootstrapGrant(grantId: string, revokedAt?: string): Promise<boolean>;
 	listReciprocalApprovals(
 		opts: CoordinatorListReciprocalApprovalsInput,
 	): Promise<CoordinatorReciprocalApproval[]>;
 	upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord>;
 	listGroupPeers(groupId: string, requestingDeviceId: string): Promise<CoordinatorPeerRecord[]>;
+}
+
+export interface CoordinatorBootstrapGrantVerification {
+	grant: CoordinatorBootstrapGrant;
+	worker_enrollment: CoordinatorEnrollment;
 }

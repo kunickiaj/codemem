@@ -1,4 +1,6 @@
 import type {
+	CoordinatorBootstrapGrant,
+	CoordinatorCreateBootstrapGrantInput,
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
 	CoordinatorCreateReciprocalApprovalInput,
@@ -12,6 +14,7 @@ import type {
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
 	CoordinatorReciprocalApproval,
+	CoordinatorReviewJoinRequestBootstrapGrantInput,
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorStore,
 	CoordinatorUpsertPresenceInput,
@@ -126,6 +129,47 @@ function tokenUrlSafe(bytes: number): string {
 		output.push(alphabet[byte % alphabet.length] ?? "A");
 	}
 	return output.join("");
+}
+
+function requireTrimmedBootstrapGrantInput(opts: CoordinatorCreateBootstrapGrantInput): {
+	groupId: string;
+	seedDeviceId: string;
+	workerDeviceId: string;
+	scope: string;
+	expiresAt: string;
+	createdBy: string | null;
+} {
+	const groupId = String(opts.groupId ?? "").trim();
+	const seedDeviceId = String(opts.seedDeviceId ?? "").trim();
+	const workerDeviceId = String(opts.workerDeviceId ?? "").trim();
+	const scope = String(opts.scope ?? "").trim();
+	const expiresAt = String(opts.expiresAt ?? "").trim();
+	const createdBy = String(opts.createdBy ?? "").trim() || null;
+	if (!groupId || !seedDeviceId || !workerDeviceId || !scope || !expiresAt) {
+		throw new Error("groupId, seedDeviceId, workerDeviceId, scope, and expiresAt are required.");
+	}
+	return { groupId, seedDeviceId, workerDeviceId, scope, expiresAt, createdBy };
+}
+
+function normalizeBootstrapGrantRequest(
+	input: CoordinatorReviewJoinRequestBootstrapGrantInput | null | undefined,
+): CoordinatorCreateBootstrapGrantInput | null {
+	if (!input) return null;
+	const seedDeviceId = String(input.seedDeviceId ?? "").trim();
+	const scope = String(input.scope ?? "").trim();
+	const expiresAt = String(input.expiresAt ?? "").trim();
+	const createdBy = String(input.createdBy ?? "").trim() || null;
+	if (!seedDeviceId || !scope || !expiresAt) {
+		throw new Error("bootstrapGrant.seedDeviceId, scope, and expiresAt are required.");
+	}
+	return {
+		groupId: "",
+		seedDeviceId,
+		workerDeviceId: "",
+		scope,
+		expiresAt,
+		createdBy,
+	};
 }
 
 async function allRows<T>(statement: D1PreparedStatementLike): Promise<T[]> {
@@ -397,8 +441,31 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (row.status !== "pending") {
 			return { ...rowToRecord<CoordinatorJoinRequest>(row), _no_transition: true };
 		}
+		const bootstrapGrantRequest = normalizeBootstrapGrantRequest(_opts.bootstrapGrant);
 		const reviewedAt = nowISO();
 		const nextStatus = _opts.approved ? "approved" : "denied";
+		let bootstrapGrantInput: CoordinatorCreateBootstrapGrantInput | null = null;
+		let bootstrapGrantId: string | null = null;
+		if (_opts.approved && bootstrapGrantRequest) {
+			const seedEnrollment = await firstRow<{ device_id: string }>(
+				this.db
+					.prepare(
+						`SELECT device_id FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`,
+					)
+					.bind(row.group_id, bootstrapGrantRequest.seedDeviceId),
+			);
+			if (!seedEnrollment) {
+				throw new Error("bootstrap grant seed device is not enrolled in the group.");
+			}
+			if (bootstrapGrantRequest.seedDeviceId === row.device_id) {
+				throw new Error("bootstrap grant seed and worker device ids must differ.");
+			}
+			bootstrapGrantInput = {
+				...bootstrapGrantRequest,
+				groupId: row.group_id,
+				workerDeviceId: row.device_id,
+			};
+		}
 		if (this.db.batch) {
 			const statements: D1PreparedStatementLike[] = [];
 			statements.push(
@@ -426,9 +493,52 @@ export class D1CoordinatorStore implements CoordinatorStore {
 							enabled = 1`)
 						.bind(nowISO(), _opts.requestId, reviewedAt),
 				);
+				if (bootstrapGrantInput) {
+					bootstrapGrantId = tokenUrlSafe(12);
+					const createdAt = nowISO();
+					// Conditional INSERT: only mint a grant if the join request was
+					// actually transitioned to 'approved' by the UPDATE in this batch.
+					// This prevents issuing extra grants under concurrent review races.
+					statements.push(
+						this.db
+							.prepare(`INSERT INTO coordinator_bootstrap_grants(
+							grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+						) SELECT ?, ?, ?, ?, ?, ?, ?, ?, NULL
+						WHERE EXISTS (
+							SELECT 1 FROM coordinator_join_requests
+							WHERE request_id = ? AND status = 'approved' AND reviewed_at = ?
+						)`)
+							.bind(
+								bootstrapGrantId,
+								bootstrapGrantInput.groupId,
+								bootstrapGrantInput.seedDeviceId,
+								bootstrapGrantInput.workerDeviceId,
+								bootstrapGrantInput.scope,
+								bootstrapGrantInput.expiresAt,
+								createdAt,
+								bootstrapGrantInput.createdBy ?? null,
+								_opts.requestId,
+								reviewedAt,
+							),
+					);
+				}
 			}
 			await this.db.batch(statements);
 		} else {
+			let createdGrantId: string | null = null;
+			if (_opts.approved) {
+				await this.enrollDevice(row.group_id, {
+					deviceId: row.device_id,
+					fingerprint: row.fingerprint,
+					publicKey: row.public_key,
+					displayName: (row.display_name ?? "").trim() || null,
+				});
+				if (bootstrapGrantInput) {
+					const grant = await this.createBootstrapGrant(bootstrapGrantInput);
+					createdGrantId = grant.grant_id;
+					bootstrapGrantId = grant.grant_id;
+				}
+			}
 			const changes = await runChanges(
 				this.db
 					.prepare(`UPDATE coordinator_join_requests
@@ -437,6 +547,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					.bind(nextStatus, reviewedAt, _opts.reviewedBy ?? null, _opts.requestId),
 			);
 			if (changes === 0) {
+				if (createdGrantId) {
+					await this.revokeBootstrapGrant(createdGrantId);
+				}
 				const latest = await firstRow<CoordinatorJoinRequestReviewResult>(
 					this.db
 						.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
@@ -447,14 +560,6 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					? { ...rowToRecord<CoordinatorJoinRequestReviewResult>(latest), _no_transition: true }
 					: null;
 			}
-			if (_opts.approved) {
-				await this.enrollDevice(row.group_id, {
-					deviceId: row.device_id,
-					fingerprint: row.fingerprint,
-					publicKey: row.public_key,
-					displayName: (row.display_name ?? "").trim() || null,
-				});
-			}
 		}
 		const updated = await firstRow<CoordinatorJoinRequestReviewResult>(
 			this.db
@@ -462,7 +567,16 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					 FROM coordinator_join_requests WHERE request_id = ?`)
 				.bind(_opts.requestId),
 		);
-		return updated ? rowToRecord<CoordinatorJoinRequestReviewResult>(updated) : null;
+		if (!updated) return null;
+		const bootstrapGrant = bootstrapGrantInput
+			? bootstrapGrantId
+				? await this.getBootstrapGrant(bootstrapGrantId)
+				: await this.createBootstrapGrant(bootstrapGrantInput)
+			: null;
+		return {
+			...rowToRecord<CoordinatorJoinRequestReviewResult>(updated),
+			bootstrap_grant: bootstrapGrant,
+		};
 	}
 
 	async createReciprocalApproval(
@@ -580,6 +694,70 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.bind(requestId),
 		);
 		return rowToRecord<CoordinatorReciprocalApproval>(created);
+	}
+
+	async createBootstrapGrant(
+		opts: CoordinatorCreateBootstrapGrantInput,
+	): Promise<CoordinatorBootstrapGrant> {
+		const normalized = requireTrimmedBootstrapGrantInput(opts);
+		const grantId = tokenUrlSafe(12);
+		const createdAt = nowISO();
+		await this.db
+			.prepare(`INSERT INTO coordinator_bootstrap_grants(
+				grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
+			.bind(
+				grantId,
+				normalized.groupId,
+				normalized.seedDeviceId,
+				normalized.workerDeviceId,
+				normalized.scope,
+				normalized.expiresAt,
+				createdAt,
+				normalized.createdBy,
+			)
+			.run();
+		const row = await firstRow<CoordinatorBootstrapGrant>(
+			this.db
+				.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+					 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
+				.bind(grantId),
+		);
+		return rowToRecord<CoordinatorBootstrapGrant>(row);
+	}
+
+	async getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null> {
+		const row = await firstRow<CoordinatorBootstrapGrant>(
+			this.db
+				.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+					 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
+				.bind(grantId),
+		);
+		return row ? rowToRecord<CoordinatorBootstrapGrant>(row) : null;
+	}
+
+	async listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]> {
+		return (
+			await allRows<CoordinatorBootstrapGrant>(
+				this.db
+					.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, scope, expires_at, created_at, created_by, revoked_at
+						 FROM coordinator_bootstrap_grants WHERE group_id = ?
+						 ORDER BY created_at DESC, grant_id DESC`)
+					.bind(groupId),
+			)
+		).map((row) => rowToRecord<CoordinatorBootstrapGrant>(row));
+	}
+
+	async revokeBootstrapGrant(grantId: string, revokedAt = nowISO()): Promise<boolean> {
+		return (
+			(await runChanges(
+				this.db
+					.prepare(`UPDATE coordinator_bootstrap_grants
+						 SET revoked_at = COALESCE(revoked_at, ?)
+						 WHERE grant_id = ?`)
+					.bind(revokedAt, grantId),
+			)) > 0
+		);
 	}
 
 	async listReciprocalApprovals(

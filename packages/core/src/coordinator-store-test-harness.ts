@@ -361,6 +361,47 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 				});
 			});
 
+			it("can mint a bootstrap grant when approving a join request", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1");
+					await store.enrollDevice("g1", {
+						deviceId: "seed-1",
+						fingerprint: "seed-fp",
+						publicKey: "seed-pk",
+					});
+					const invite = await store.createInvite({
+						groupId: "g1",
+						policy: "approval_required",
+						expiresAt: "2099-01-01T00:00:00Z",
+					});
+					const req = await store.createJoinRequest({
+						groupId: "g1",
+						deviceId: "worker-1",
+						publicKey: "worker-pk",
+						fingerprint: "worker-fp",
+						token: invite.token,
+					});
+					const reviewed = await store.reviewJoinRequest({
+						requestId: req.request_id as string,
+						approved: true,
+						bootstrapGrant: {
+							seedDeviceId: "seed-1",
+							scope: "bootstrap",
+							expiresAt: "2099-02-01T00:00:00Z",
+						},
+					});
+					expect(reviewed?.status).toBe("approved");
+					expect(reviewed?.bootstrap_grant).toEqual(
+						expect.objectContaining({
+							group_id: "g1",
+							seed_device_id: "seed-1",
+							worker_device_id: "worker-1",
+							scope: "bootstrap",
+						}),
+					);
+				});
+			});
+
 			it("denies a join request without enrolling", async () => {
 				await withContext(async ({ store }) => {
 					await store.createGroup("g1");
@@ -486,6 +527,63 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							direction: "incoming",
 						}),
 					).toEqual([]);
+				});
+			});
+		});
+
+		describe("bootstrap grants", () => {
+			it("creates and retrieves a bootstrap grant", async () => {
+				await withContext(async ({ store }) => {
+					const grant = await store.createBootstrapGrant({
+						groupId: "g1",
+						seedDeviceId: "seed-1",
+						workerDeviceId: "worker-1",
+						scope: "bootstrap",
+						expiresAt: "2099-01-01T00:00:00Z",
+						createdBy: "admin",
+					});
+					const fetched = await store.getBootstrapGrant(grant.grant_id);
+					expect(fetched).not.toBeNull();
+					expect(fetched?.seed_device_id).toBe("seed-1");
+					expect(fetched?.worker_device_id).toBe("worker-1");
+					expect(fetched?.scope).toBe("bootstrap");
+				});
+			});
+
+			it("lists bootstrap grants for a group", async () => {
+				await withContext(async ({ store }) => {
+					await store.createBootstrapGrant({
+						groupId: "g1",
+						seedDeviceId: "seed-1",
+						workerDeviceId: "worker-1",
+						scope: "bootstrap",
+						expiresAt: "2099-01-01T00:00:00Z",
+					});
+					await store.createBootstrapGrant({
+						groupId: "g1",
+						seedDeviceId: "seed-1",
+						workerDeviceId: "worker-2",
+						scope: "bootstrap,initial_sync",
+						expiresAt: "2099-02-01T00:00:00Z",
+					});
+					expect(await store.listBootstrapGrants("g1")).toHaveLength(2);
+				});
+			});
+
+			it("revokes a bootstrap grant", async () => {
+				await withContext(async ({ store }) => {
+					const grant = await store.createBootstrapGrant({
+						groupId: "g1",
+						seedDeviceId: "seed-1",
+						workerDeviceId: "worker-1",
+						scope: "bootstrap",
+						expiresAt: "2099-01-01T00:00:00Z",
+					});
+					expect(await store.revokeBootstrapGrant(grant.grant_id, "2099-01-02T00:00:00Z")).toBe(
+						true,
+					);
+					const fetched = await store.getBootstrapGrant(grant.grant_id);
+					expect(fetched?.revoked_at).toBe("2099-01-02T00:00:00Z");
 				});
 			});
 		});

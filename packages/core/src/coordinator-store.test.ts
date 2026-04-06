@@ -29,6 +29,7 @@ describe("CoordinatorStore", () => {
 					.all() as { name: string }[];
 				const names = tables.map((t) => t.name).sort();
 				expect(names).toEqual([
+					"coordinator_bootstrap_grants",
 					"coordinator_invites",
 					"coordinator_join_requests",
 					"coordinator_reciprocal_approvals",
