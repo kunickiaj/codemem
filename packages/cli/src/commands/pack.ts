@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import { MemoryStore, resolveDbPath, resolveProject } from "@codemem/core";
+import { MemoryStore, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
@@ -9,10 +9,7 @@ import {
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
-
-function collectWorkingSetFile(value: string, previous: string[]): string[] {
-	return [...previous, value];
-}
+import { buildPackRequestOptions, collectWorkingSetFile } from "./pack-shared.js";
 
 const packCmd = new Command("pack")
 	.configureHelp(helpStyle)
@@ -48,18 +45,9 @@ export const packCommand = packCmd.action(
 	) => {
 		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 		try {
-			const limit = Number.parseInt(opts.limit, 10) || 10;
-			const budgetRaw = opts.tokenBudget ?? opts.budget;
-			const budget = budgetRaw ? Number.parseInt(budgetRaw, 10) : undefined;
-			const filters: { project?: string; working_set_paths?: string[] } = {};
-			if (!opts.allProjects) {
-				const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
-				const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
-				if (project) filters.project = project;
-			}
-			if ((opts.workingSetFile?.length ?? 0) > 0) {
-				filters.working_set_paths = opts.workingSetFile;
-			}
+			const { limit, budget, filters } = buildPackRequestOptions(opts, {
+				envProject: process.env.CODEMEM_PROJECT,
+			});
 			const result = await store.buildMemoryPackAsync(context, limit, budget, filters);
 
 			if (opts.json) {
