@@ -66,10 +66,10 @@ describe("flushRawEvents max retry", () => {
 		observe: async () => ({
 			raw: `<summary>
 				<request>Investigate auth timeout</request>
-				<investigated>Session handling code</investigated>
-				<learned>Race condition in handler</learned>
-				<completed>Added callback validation</completed>
-				<next_steps>Add regression test</next_steps>
+				<investigated>Reviewed the session handling code to trace why callback retries were creating duplicate raw-event flushes for the same stable session stream.</investigated>
+				<learned>Discovered the retry path could race with callback validation and create fragmented local sessions unless the stable stream mapping was reused consistently.</learned>
+				<completed>Added callback validation and confirmed the raw-event ingest path reused the stable session mapping instead of minting another detached local session.</completed>
+				<next_steps>Add regression coverage for repeated raw-event flushes on one stable session id.</next_steps>
 				<notes></notes>
 			</summary>`,
 			parsed: null,

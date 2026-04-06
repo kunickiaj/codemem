@@ -151,8 +151,10 @@ describe("RawEventSweeper auto flush", () => {
 		observer: {
 			observe: async () => ({
 				raw: `<summary>
-  <request>Auto flush request</request>
-  <completed>Flushed debounced raw events</completed>
+	<request>Auto flush request</request>
+	<investigated>Reviewed the debounced raw-event flush path to confirm the sweeper still preserves enough context for a durable summary after automatic flushing.</investigated>
+	<completed>Flushed debounced raw events and verified the resulting session summary captured the key outcome instead of collapsing into low-signal recap text.</completed>
+	<learned>Automatic raw-event flushes need richer summary content than a tiny completed note or the ingest gate will correctly discard them.</learned>
 </summary>`,
 				parsed: null,
 				provider: "test",
@@ -207,7 +209,12 @@ describe("RawEventSweeper auto flush", () => {
 					await sleep(80);
 					resolved = true;
 					return {
-						raw: `<summary><request>stop</request><completed>done</completed></summary>`,
+						raw: `<summary>
+							<request>stop</request>
+							<investigated>Reviewed the stop path to ensure the active raw-event flush can finish cleanly before shutdown returns control to the caller.</investigated>
+							<completed>Confirmed the in-flight flush completed and persisted the stop-state handoff without dropping the current batch.</completed>
+							<learned>Shutdown correctness depends on preserving enough context for the flush summary to remain storable after the observer finishes.</learned>
+						</summary>`,
 						parsed: null,
 						provider: "test",
 						model: "test",
@@ -261,7 +268,12 @@ describe("RawEventSweeper auto flush", () => {
 						await sleep(60);
 					}
 					return {
-						raw: `<summary><request>rerun</request><completed>done</completed></summary>`,
+						raw: `<summary>
+							<request>rerun</request>
+							<investigated>Observed the rerun path while new activity arrived mid-flush so the sweeper could prove it schedules a second pass instead of discarding the extra event.</investigated>
+							<completed>Confirmed the second pass preserved the late-arriving tool event and advanced the flush state after the queued rerun finished.</completed>
+							<learned>Mid-flush arrivals need enough retained context to produce a real summary on the rerun rather than collapsing into low-signal recap sludge.</learned>
+						</summary>`,
 						parsed: null,
 						provider: "test",
 						model: "test",
@@ -422,7 +434,12 @@ describe("RawEventSweeper auto flush", () => {
 				observe: async () => {
 					observerCalls += 1;
 					return {
-						raw: `<summary><request>Investigate a real issue</request><completed>Captured adapter wrapped session.</completed></summary>`,
+						raw: `<summary>
+							<request>Investigate a real issue</request>
+							<investigated>Reviewed the adapter-wrapped prompt path to confirm the sweeper still forwards a meaningful observer transcript for wrapped user prompts.</investigated>
+							<completed>Captured the adapter wrapped session and verified it produced a durable summary rather than being misclassified as low-signal lifecycle noise.</completed>
+							<learned>Adapter-wrapped prompts must keep enough semantic context for summary storage or the raw-event path regresses into repeated unstorable flushes.</learned>
+						</summary>`,
 						parsed: null,
 						provider: "test",
 						model: "test",
