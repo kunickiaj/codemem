@@ -25,16 +25,16 @@
 		"generate:test-schema": "pnpm exec tsx scripts/generate-test-schema.ts"
 	},
 	"devDependencies": {
-		"@types/better-sqlite3": "^7.6.13",
+		"@types/better-sqlite3": "catalog:",
 		"typescript": "catalog:",
-		"vite": "8.0.1",
-		"vitest": "4.0.17"
+		"vite": "catalog:",
+		"vitest": "catalog:"
 	},
 	"dependencies": {
 		"better-sqlite3": "^12.8.0",
-		"drizzle-orm": "^0.45.1",
-		"hono": "^4.7.10",
-		"limiter": "^3.0.0",
+		"drizzle-orm": "catalog:",
+		"hono": "catalog:",
+		"limiter": "catalog:",
 		"sqlite-vec": "0.1.7-alpha.2"
 	},
 	"repository": {

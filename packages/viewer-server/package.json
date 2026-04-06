@@ -21,19 +21,19 @@
 	},
 	"dependencies": {
 		"@codemem/core": "workspace:^",
-		"@hono/node-server": "^1.14.3",
-		"drizzle-orm": "^0.45.1",
-		"hono": "^4.7.10",
-		"limiter": "^3.0.0"
+		"@hono/node-server": "catalog:",
+		"drizzle-orm": "catalog:",
+		"hono": "catalog:",
+		"limiter": "catalog:"
 	},
 	"devDependencies": {
-		"@types/better-sqlite3": "^7.6.13",
+		"@types/better-sqlite3": "catalog:",
 		"@types/node": "^22.15.21",
 		"better-sqlite3": "^12.8.0",
 		"sqlite-vec": "0.1.7-alpha.2",
 		"typescript": "catalog:",
-		"vite": "8.0.1",
-		"vitest": "4.0.17"
+		"vite": "catalog:",
+		"vitest": "catalog:"
 	},
 	"repository": {
 		"type": "git",

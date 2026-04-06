@@ -24,14 +24,14 @@
     "release:version": "node scripts/release-version.mjs",
     "release:preflight-tag": "bash scripts/release-tag-preflight.sh"
   },
-  "devDependencies": {
-    "@biomejs/biome": "^2.0.6",
-    "drizzle-kit": "^0.31.10",
-    "tsx": "^4.21.0",
-    "typescript": "^5.8.2",
-    "vite": "catalog:",
-    "vitest": "catalog:"
-  },
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"drizzle-kit": "^0.31.10",
+		"tsx": "catalog:",
+		"typescript": "catalog:",
+		"vite": "catalog:",
+		"vitest": "catalog:"
+	},
   "engines": {
     "node": ">=22"
   },
