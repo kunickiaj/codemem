@@ -14,6 +14,7 @@ describe("memory command aliases", () => {
 			"remember",
 			"inject",
 			"role-report",
+			"relink-report",
 		]);
 	});
 
@@ -41,6 +42,20 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--all-projects");
 		expect(longs).toContain("--probe");
 		expect(longs).toContain("--inactive");
+		expect(longs).toContain("--json");
+	});
+
+	it("registers relink-report under memory with dry-run analysis options", () => {
+		const relinkReport = memoryCommand.commands.find(
+			(command) => command.name() === "relink-report",
+		);
+		expect(relinkReport).toBeDefined();
+		const longs = relinkReport?.options.map((option) => option.long) ?? [];
+		expect(longs).toContain("--db");
+		expect(longs).toContain("--db-path");
+		expect(longs).toContain("--project");
+		expect(longs).toContain("--all-projects");
+		expect(longs).toContain("--limit");
 		expect(longs).toContain("--json");
 	});
 });
