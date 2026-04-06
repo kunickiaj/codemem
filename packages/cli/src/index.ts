@@ -15,6 +15,7 @@ import { VERSION } from "@codemem/core";
 import { Command } from "commander";
 import omelette from "omelette";
 import { claudeHookIngestCommand } from "./commands/claude-hook-ingest.js";
+import { claudeHookInjectCommand } from "./commands/claude-hook-inject.js";
 import { configCommand } from "./commands/config.js";
 import { coordinatorCommand } from "./commands/coordinator.js";
 import { dbCommand } from "./commands/db.js";
@@ -48,6 +49,7 @@ type CompletionWithScriptGenerators = ReturnType<typeof omelette> & {
 const completion = omelette("codemem <command>") as CompletionWithScriptGenerators;
 completion.on("command", ({ reply }) => {
 	reply([
+		"claude-hook-inject",
 		"claude-hook-ingest",
 		"config",
 		"coordinator",
@@ -168,6 +170,7 @@ program.addCommand(serveCommand);
 program.addCommand(configCommand);
 program.addCommand(coordinatorCommand);
 program.addCommand(mcpCommand);
+program.addCommand(claudeHookInjectCommand);
 program.addCommand(claudeHookIngestCommand);
 program.addCommand(dbCommand);
 program.addCommand(exportMemoriesCommand);

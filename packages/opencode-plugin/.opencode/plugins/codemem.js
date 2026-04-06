@@ -161,6 +161,111 @@ const appendWorkingSetFileArgs = (args, workingSetFiles) => {
   return args;
 };
 
+const buildInjectQuery = ({ firstPrompt, lastPromptText, projectName, filesModified }) => {
+  const parts = [];
+
+  if (firstPrompt && String(firstPrompt).trim()) {
+    parts.push(String(firstPrompt).trim());
+  }
+
+  if (
+    lastPromptText
+    && String(lastPromptText).trim()
+    && String(lastPromptText).trim() !== String(firstPrompt || "").trim()
+    && String(lastPromptText).trim().length > 5
+  ) {
+    parts.push(String(lastPromptText).trim());
+  }
+
+  if (projectName) {
+    parts.push(String(projectName));
+  }
+
+  const recentFiles = Array.from(filesModified || [])
+    .slice(-5)
+    .map((filePath) => String(filePath || "").split("/").pop())
+    .filter(Boolean)
+    .join(" ");
+  if (recentFiles) {
+    parts.push(recentFiles);
+  }
+
+  if (parts.length === 0) {
+    return "recent work";
+  }
+
+  const query = parts.join(" ");
+  return query.length > 500 ? query.slice(0, 500) : query;
+};
+
+const buildPackArgs = ({ query, filesModified, injectLimit, injectTokenBudget }) => {
+  const workingSetFiles = Array.from(filesModified || [])
+    .slice(-8)
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const args = ["pack", query];
+  if (injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0) {
+    args.push("--limit", String(injectLimit));
+  }
+  if (
+    injectTokenBudget !== null
+    && Number.isFinite(injectTokenBudget)
+    && injectTokenBudget > 0
+  ) {
+    args.push("--token-budget", String(injectTokenBudget));
+  }
+  return appendWorkingSetFileArgs(args, workingSetFiles);
+};
+
+const applyInjectedContextToOutput = async ({
+  injectEnabled,
+  input,
+  output,
+  injectedSessions,
+  injectionToastShown,
+  showToast,
+  resolveInjectQuery,
+  buildInjectedContext,
+}) => {
+  if (!injectEnabled) {
+    return false;
+  }
+
+  const query = resolveInjectQuery();
+  const cached = injectedSessions.get(input.sessionID);
+  let contextText = cached?.text || "";
+
+  if (!contextText || cached?.query !== query) {
+    const injected = await buildInjectedContext(query);
+    if (injected?.text) {
+      injectedSessions.set(input.sessionID, {
+        query,
+        text: injected.text,
+        metrics: injected.metrics || null,
+      });
+      contextText = injected.text;
+
+      if (!injectionToastShown.has(input.sessionID) && showToast) {
+        injectionToastShown.add(input.sessionID);
+        try {
+          await showToast(buildInjectionToastMessage(injected.metrics));
+        } catch {
+          // best-effort only
+        }
+      }
+    }
+  }
+
+  if (!contextText) {
+    return false;
+  }
+  if (!Array.isArray(output.system)) {
+    output.system = [];
+  }
+  output.system.push(contextText);
+  return true;
+};
+
 const mapOpencodeEventTypeToAdapterType = (eventType) => {
   if (eventType === "user_prompt") {
     return "prompt";
@@ -1335,63 +1440,13 @@ export const OpencodeMemPlugin = async ({
     await showToast(`${message}. Suggested action: ${guidance.action}`, "warning");
   };
 
-  const resolveInjectQuery = () => {
-    const parts = [];
-
-    // First prompt captures session intent (most stable signal)
-    if (sessionContext.firstPrompt && sessionContext.firstPrompt.trim()) {
-      parts.push(sessionContext.firstPrompt.trim());
-    }
-
-    // Latest prompt adds current focus (skip if same as first, or trivial)
-    if (
-      lastPromptText &&
-      lastPromptText.trim() &&
-      lastPromptText.trim() !== (sessionContext.firstPrompt || "").trim() &&
-      lastPromptText.trim().length > 5
-    ) {
-      parts.push(lastPromptText.trim());
-    }
-
-    // Project name for scoping
-    const projectName = resolveProjectName(project, cwd);
-    if (projectName) {
-      parts.push(projectName);
-    }
-
-    // Recently modified files signal what area of the codebase we're in
-    if (sessionContext.filesModified.size > 0) {
-      const recentFiles = Array.from(sessionContext.filesModified)
-        .slice(-5)
-        .map((f) => f.split("/").pop())
-        .join(" ");
-      parts.push(recentFiles);
-    }
-
-    if (parts.length === 0) {
-      return "recent work";
-    }
-
-    // Cap total length to avoid overly long CLI args
-    const query = parts.join(" ");
-    return query.length > 500 ? query.slice(0, 500) : query;
-  };
-
-  const buildPackArgs = (query) => {
-    const workingSetFiles = Array.from(sessionContext.filesModified)
-      .slice(-8)
-      .map((value) => String(value || "").trim())
-      .filter(Boolean);
-    const args = ["pack", query];
-    if (injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0) {
-      args.push("--limit", String(injectLimit));
-    }
-    if (injectTokenBudget !== null && Number.isFinite(injectTokenBudget) && injectTokenBudget > 0) {
-      args.push("--token-budget", String(injectTokenBudget));
-    }
-    appendWorkingSetFileArgs(args, workingSetFiles);
-    return args;
-  };
+  const resolveInjectQuery = () =>
+    buildInjectQuery({
+      firstPrompt: sessionContext.firstPrompt,
+      lastPromptText,
+      projectName: resolveProjectName(project, cwd),
+      filesModified: sessionContext.filesModified,
+    });
 
   const parsePackText = (stdout) => {
     if (!stdout || !stdout.trim()) {
@@ -1424,7 +1479,12 @@ export const OpencodeMemPlugin = async ({
   };
 
   const buildInjectedContext = async (query) => {
-    const packArgs = buildPackArgs(query);
+    const packArgs = buildPackArgs({
+      query,
+      filesModified: sessionContext.filesModified,
+      injectLimit,
+      injectTokenBudget,
+    });
     const result = await runCli(packArgs);
     if (!result || result.exitCode !== 0) {
       const exitCode = result?.exitCode ?? "unknown";
@@ -1681,9 +1741,6 @@ export const OpencodeMemPlugin = async ({
 
   return {
     "experimental.chat.system.transform": async (input, output) => {
-      if (!injectEnabled) {
-        return;
-      }
       const query = resolveInjectQuery();
       if (debug) {
         await logLine(
@@ -1692,40 +1749,25 @@ export const OpencodeMemPlugin = async ({
           } tui_toast=${Boolean(client.tui?.showToast)}`
         );
       }
-      const cached = injectedSessions.get(input.sessionID);
-      let contextText = cached?.text || "";
-      if (!contextText || cached?.query !== query) {
-        const injected = await buildInjectedContext(query);
-        if (injected?.text) {
-          injectedSessions.set(input.sessionID, {
-            query,
-            text: injected.text,
-            metrics: injected.metrics || null,
-          });
-          contextText = injected.text;
-
-            if (!injectionToastShown.has(input.sessionID) && client.tui?.showToast) {
-              injectionToastShown.add(input.sessionID);
-              try {
-                await client.tui.showToast({
-                  body: {
-                    message: buildInjectionToastMessage(injected.metrics),
-                    variant: "info",
-                  },
-                });
-            } catch (toastErr) {
-              // best-effort only
-            }
+      await applyInjectedContextToOutput({
+        injectEnabled,
+        input,
+        output,
+        injectedSessions,
+        injectionToastShown,
+        showToast: client.tui?.showToast
+          ? async (message) => {
+            await client.tui.showToast({
+              body: {
+                message,
+                variant: "info",
+              },
+            });
           }
-        }
-      }
-      if (!contextText) {
-        return;
-      }
-      if (!Array.isArray(output.system)) {
-        output.system = [];
-      }
-      output.system.push(contextText);
+          : null,
+        resolveInjectQuery,
+        buildInjectedContext,
+      });
     },
     event: async ({ event }) => {
       const eventType = event?.type || "unknown";
@@ -2009,6 +2051,9 @@ export const __testUtils = {
   inferProjectFromCwd,
   normalizeProjectLabel,
   resolveProjectName,
+  buildInjectQuery,
+  buildPackArgs,
+  applyInjectedContextToOutput,
   buildRunnerArgs,
   appendWorkingSetFileArgs,
   extractApplyPatchPaths,
