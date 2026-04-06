@@ -32,6 +32,9 @@
 	"bugs": {
 		"url": "https://github.com/kunickiaj/codemem/issues"
 	},
+	"engines": {
+		"node": ">=24"
+	},
 	"license": "MIT",
 	"publishConfig": {
 		"access": "public"

@@ -67,7 +67,7 @@ Release checklist:
 
 ## Stack
 
-- Node: >=22
+- Node: >=24
 - Package manager: pnpm (workspace at root)
 - Build: Vite 8 (library mode, Rolldown-powered)
 - Tests: vitest
@@ -92,7 +92,7 @@ The published OpenCode plugin package is `@codemem/opencode-plugin` from `packag
 - Build all TS packages: `pnpm build`
 - Run tests: `pnpm run test`
 - Lint: `pnpm run lint`
-- Typecheck: `pnpm run typecheck`
+- Typecheck: `pnpm run tsc`
 - Run TS CLI from source: `pnpm run codemem --help`
 
 ### Legacy Python setup (only when required)

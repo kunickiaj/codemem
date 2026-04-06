@@ -8,6 +8,28 @@ on:
   workflow_call:
 
 jobs:
+  tsc:
+    name: TypeScript Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript project reference check
+        run: pnpm run tsc
+
   ts-test:
     name: TypeScript Test
     runs-on: ubuntu-latest
@@ -112,10 +134,6 @@ jobs:
   packaged-plugin-smoke:
     name: Packaged Plugin Smoke Test
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [22, 24]
 
     steps:
       - uses: actions/checkout@v4
@@ -126,7 +144,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 24
           cache: pnpm
 
       - name: Install workspace dependencies

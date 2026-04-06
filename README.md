@@ -17,7 +17,7 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 
 ## Quick start
 
-**Prerequisites:** Node.js 22+ and npm (or pnpm)
+**Prerequisites:** Node.js 24+ and npm (or pnpm)
 
 ### OpenCode
 

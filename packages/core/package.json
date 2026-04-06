@@ -42,6 +42,9 @@
 		"url": "git+https://github.com/kunickiaj/codemem.git",
 		"directory": "packages/core"
 	},
+	"engines": {
+		"node": ">=24"
+	},
 	"license": "MIT",
 	"publishConfig": {
 		"access": "public"
