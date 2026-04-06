@@ -2,6 +2,13 @@ packages:
   - packages/*
 
 catalog:
-  typescript: ^5.8.2
-  vite: ^8.0.1
-  vitest: ^4.1.0
+  '@biomejs/biome': ^2.4.10
+  '@hono/node-server': ^1.19.12
+  '@types/better-sqlite3': ^7.6.13
+  drizzle-orm: ^0.45.2
+  hono: ^4.12.11
+  limiter: ^3.0.0
+  tsx: ^4.21.0
+  typescript: ^5.9.3
+  vite: ^8.0.5
+  vitest: ^4.1.2

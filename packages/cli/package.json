@@ -25,18 +25,18 @@
 		"@codemem/core": "workspace:^",
 		"@codemem/mcp": "workspace:^",
 		"@codemem/server": "workspace:^",
-		"@hono/node-server": "^1.14.3",
+		"@hono/node-server": "catalog:",
 		"commander": "^14.0.3",
-		"drizzle-orm": "^0.45.1",
+		"drizzle-orm": "catalog:",
 		"omelette": "^0.4.17"
 	},
 	"devDependencies": {
 		"@types/node": "^25.5.0",
 		"@types/omelette": "^0.4.5",
-		"tsx": "^4.21.0",
+		"tsx": "catalog:",
 		"typescript": "catalog:",
-		"vite": "8.0.1",
-		"vitest": "4.0.17"
+		"vite": "catalog:",
+		"vitest": "catalog:"
 	},
 	"engines": {
 		"node": ">=22"
