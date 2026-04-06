@@ -163,6 +163,28 @@ export interface RawEventRelinkReport {
 	groups: RawEventRelinkGroup[];
 }
 
+export interface RawEventRelinkAction {
+	action: "create_bridge" | "repoint_memories" | "compact_sessions";
+	stable_id: string;
+	canonical_session_id: number;
+	session_ids: number[];
+	memory_count: number;
+	reason: string;
+}
+
+export interface RawEventRelinkPlanOptions extends RawEventRelinkReportOptions {}
+
+export interface RawEventRelinkPlan {
+	totals: {
+		groups: number;
+		actions: number;
+		bridge_creations: number;
+		memory_repoints: number;
+		session_compactions: number;
+	};
+	actions: RawEventRelinkAction[];
+}
+
 interface InferredMemoryRole {
 	role: MemoryRole;
 	reason: string;
@@ -759,6 +781,66 @@ export function getRawEventRelinkReport(
 			groups: reportGroups.slice(0, limit),
 		};
 	});
+}
+
+export function getRawEventRelinkPlan(
+	dbPath?: string,
+	opts: RawEventRelinkPlanOptions = {},
+): RawEventRelinkPlan {
+	const report = getRawEventRelinkReport(dbPath, opts);
+	const actions: RawEventRelinkAction[] = [];
+	let bridgeCreations = 0;
+	let memoryRepoints = 0;
+	let sessionCompactions = 0;
+
+	for (const group of report.groups) {
+		if (group.would_create_bridge) {
+			bridgeCreations += 1;
+			actions.push({
+				action: "create_bridge",
+				stable_id: group.stable_id,
+				canonical_session_id: group.canonical_session_id,
+				session_ids: [group.canonical_session_id],
+				memory_count: 0,
+				reason: group.canonical_reason,
+			});
+		}
+
+		if (group.repointable_active_memories > 0) {
+			memoryRepoints += group.repointable_active_memories;
+			actions.push({
+				action: "repoint_memories",
+				stable_id: group.stable_id,
+				canonical_session_id: group.canonical_session_id,
+				session_ids: group.sample_session_ids.filter((id) => id !== group.canonical_session_id),
+				memory_count: group.repointable_active_memories,
+				reason: group.canonical_reason,
+			});
+		}
+
+		if (group.sessions_to_compact > 0) {
+			sessionCompactions += group.sessions_to_compact;
+			actions.push({
+				action: "compact_sessions",
+				stable_id: group.stable_id,
+				canonical_session_id: group.canonical_session_id,
+				session_ids: group.sample_session_ids.filter((id) => id !== group.canonical_session_id),
+				memory_count: group.repointable_active_memories,
+				reason: group.canonical_reason,
+			});
+		}
+	}
+
+	return {
+		totals: {
+			groups: report.groups.length,
+			actions: actions.length,
+			bridge_creations: bridgeCreations,
+			memory_repoints: memoryRepoints,
+			session_compactions: sessionCompactions,
+		},
+		actions,
+	};
 }
 
 export function initDatabase(dbPath?: string): { path: string; sizeBytes: number } {

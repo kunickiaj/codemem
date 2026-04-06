@@ -8,6 +8,7 @@ import {
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
 	getMemoryRoleReport,
+	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
 	getRawEventStatus,
 	getReliabilityMetrics,
@@ -453,5 +454,51 @@ describe("maintenance", () => {
 			}),
 		);
 		expect(report.groups[0]?.sample_session_ids.sort((a, b) => a - b)).toEqual([1, 2]);
+	});
+
+	it("emits dry-run relink actions from relinkable groups", () => {
+		const dbPath = createDbPath("raw-event-relink-plan");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1"}}'),
+				  (2, '2026-03-01T10:12:00Z', '2026-03-01T10:13:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"session_context":{"flusher":"raw_events","streamId":"ses-1"}}');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'session_summary', 'Summary 1', 'body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+				  (2, 2, 'decision', 'Decision 2', 'body', 1, '2026-03-01T10:13:00Z', '2026-03-01T10:13:00Z', '{}', 'k2');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const plan = getRawEventRelinkPlan(dbPath, { limit: 10 });
+
+		expect(plan.totals.groups).toBe(1);
+		expect(plan.totals.bridge_creations).toBe(1);
+		expect(plan.totals.memory_repoints).toBe(1);
+		expect(plan.totals.session_compactions).toBe(1);
+		expect(plan.actions).toEqual([
+			expect.objectContaining({
+				action: "create_bridge",
+				stable_id: "ses-1",
+				canonical_session_id: 1,
+				reason: "oldest_unmapped_session",
+			}),
+			expect.objectContaining({
+				action: "repoint_memories",
+				stable_id: "ses-1",
+				canonical_session_id: 1,
+				memory_count: 1,
+			}),
+			expect.objectContaining({
+				action: "compact_sessions",
+				stable_id: "ses-1",
+				canonical_session_id: 1,
+			}),
+		]);
 	});
 });
