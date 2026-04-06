@@ -172,6 +172,8 @@ export type {
 	GateResult,
 	MemoryRole,
 	MemoryRoleReport,
+	MemoryRoleReportComparison,
+	MemoryRoleReportComparisonOptions,
 	MemoryRoleReportOptions,
 	RawEventRelinkAction,
 	RawEventRelinkGroup,
@@ -185,6 +187,7 @@ export type {
 } from "./maintenance.js";
 export {
 	backfillTagsText,
+	compareMemoryRoleReports,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
 	getMemoryRoleReport,

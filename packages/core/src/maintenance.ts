@@ -47,6 +47,7 @@ export interface MemoryRoleReportOptions {
 
 export interface MemoryRoleProbeItem {
 	id: number;
+	stable_key: string;
 	kind: string;
 	title: string;
 	role: MemoryRole;
@@ -115,6 +116,36 @@ export interface MemoryRoleReport {
 		Record<MemoryRole, Array<{ id: number; kind: string; title: string; role_reason: string }>>
 	>;
 	probe_results: MemoryRoleProbeResult[];
+}
+
+export interface MemoryRoleReportComparisonOptions extends MemoryRoleReportOptions {}
+
+export interface MemoryRoleProbeComparison {
+	query: string;
+	baseline_mode: string | null;
+	candidate_mode: string | null;
+	baseline_item_ids: number[];
+	candidate_item_ids: number[];
+	shared_item_keys: string[];
+	baseline_top_burden: MemoryRoleProbeResult["top_burden"] | null;
+	candidate_top_burden: MemoryRoleProbeResult["top_burden"] | null;
+	delta_top_burden: MemoryRoleProbeResult["top_burden"] | null;
+	baseline_top_mapping_counts: Record<"mapped" | "unmapped", number> | null;
+	candidate_top_mapping_counts: Record<"mapped" | "unmapped", number> | null;
+	delta_top_mapping_counts: Record<"mapped" | "unmapped", number> | null;
+}
+
+export interface MemoryRoleReportComparison {
+	baseline: MemoryRoleReport;
+	candidate: MemoryRoleReport;
+	delta: {
+		totals: MemoryRoleReport["totals"];
+		counts_by_role: Record<MemoryRole, number>;
+		counts_by_mapping: Record<"mapped" | "unmapped", number>;
+		summary_mapping: Record<"mapped" | "unmapped", number>;
+		session_duration_buckets: Record<string, number>;
+	};
+	probe_comparisons: MemoryRoleProbeComparison[];
 }
 
 export interface RawEventRelinkGroup {
@@ -257,6 +288,91 @@ function hasOutOfGroupBridgeRows(
 		)
 		.get(...sessionIds, source, stableId);
 	return row != null;
+}
+
+function subtractKeyedCounts<T extends string>(
+	baseline: Partial<Record<T, number>>,
+	candidate: Partial<Record<T, number>>,
+): Record<T, number> {
+	const keys = new Set<T>([...(Object.keys(baseline) as T[]), ...(Object.keys(candidate) as T[])]);
+	const result = {} as Record<T, number>;
+	for (const key of keys) {
+		result[key] = Number(candidate[key] ?? 0) - Number(baseline[key] ?? 0);
+	}
+	return result;
+}
+
+function subtractBurden(
+	baseline: MemoryRoleProbeResult["top_burden"] | null,
+	candidate: MemoryRoleProbeResult["top_burden"] | null,
+): MemoryRoleProbeResult["top_burden"] | null {
+	if (!baseline || !candidate) return null;
+	return {
+		recap_share: candidate.recap_share - baseline.recap_share,
+		unmapped_share: candidate.unmapped_share - baseline.unmapped_share,
+		recap_unmapped_share: candidate.recap_unmapped_share - baseline.recap_unmapped_share,
+	};
+}
+
+function compareProbeResults(
+	baseline: MemoryRoleProbeResult[],
+	candidate: MemoryRoleProbeResult[],
+): MemoryRoleProbeComparison[] {
+	const byQuery = new Map<
+		string,
+		{ baseline?: MemoryRoleProbeResult; candidate?: MemoryRoleProbeResult }
+	>();
+	for (const probe of baseline) {
+		byQuery.set(probe.query, { ...(byQuery.get(probe.query) ?? {}), baseline: probe });
+	}
+	for (const probe of candidate) {
+		byQuery.set(probe.query, { ...(byQuery.get(probe.query) ?? {}), candidate: probe });
+	}
+	return [...byQuery.entries()]
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([query, value]) => {
+			const baselineProbe = value.baseline;
+			const candidateProbe = value.candidate;
+			const baselineIds = baselineProbe?.item_ids ?? [];
+			const candidateIds = candidateProbe?.item_ids ?? [];
+			const baselineKeys = baselineProbe?.items.map((item) => item.stable_key) ?? [];
+			const candidateKeySet = new Set(candidateProbe?.items.map((item) => item.stable_key) ?? []);
+			const sharedItemKeys = baselineKeys.filter((key) => candidateKeySet.has(key));
+			return {
+				query,
+				baseline_mode: baselineProbe?.mode ?? null,
+				candidate_mode: candidateProbe?.mode ?? null,
+				baseline_item_ids: baselineIds,
+				candidate_item_ids: candidateIds,
+				shared_item_keys: sharedItemKeys,
+				baseline_top_burden: baselineProbe?.top_burden ?? null,
+				candidate_top_burden: candidateProbe?.top_burden ?? null,
+				delta_top_burden: subtractBurden(
+					baselineProbe?.top_burden ?? null,
+					candidateProbe?.top_burden ?? null,
+				),
+				baseline_top_mapping_counts: baselineProbe?.top_mapping_counts ?? null,
+				candidate_top_mapping_counts: candidateProbe?.top_mapping_counts ?? null,
+				delta_top_mapping_counts:
+					baselineProbe && candidateProbe
+						? subtractKeyedCounts(
+								baselineProbe.top_mapping_counts,
+								candidateProbe.top_mapping_counts,
+							)
+						: null,
+			};
+		});
+}
+
+function stableProbeItemKey(input: {
+	import_key?: string | null;
+	kind: string;
+	title: string;
+	body_text: string;
+}): string {
+	const importKey = input.import_key?.trim();
+	if (importKey) return `import:${importKey}`;
+	return `fallback:${input.kind}\u241f${input.title}\u241f${input.body_text}`;
 }
 
 function getRawEventRelinkReportFromDb(
@@ -632,6 +748,7 @@ export function getMemoryRoleReport(
 				`SELECT
 					m.id,
 					m.session_id,
+					m.import_key,
 					m.kind,
 					m.title,
 					m.body_text,
@@ -655,6 +772,7 @@ export function getMemoryRoleReport(
 			.all(...params) as Array<{
 			id: number;
 			session_id: number;
+			import_key: string | null;
 			kind: string;
 			title: string;
 			body_text: string;
@@ -779,6 +897,12 @@ export function getMemoryRoleReport(
 							: "unmapped";
 						return {
 							id: item.id,
+							stable_key: stableProbeItemKey({
+								import_key: source?.import_key ?? null,
+								kind: source?.kind ?? item.kind,
+								title: source?.title ?? item.title,
+								body_text: source?.body_text ?? "",
+							}),
 							kind: item.kind,
 							title: item.title,
 							role: inferred.role,
@@ -911,6 +1035,37 @@ export function getMemoryRoleReport(
 			probe_results: probeResults,
 		};
 	});
+}
+
+export function compareMemoryRoleReports(
+	baselineDbPath: string,
+	candidateDbPath: string,
+	opts: MemoryRoleReportComparisonOptions = {},
+): MemoryRoleReportComparison {
+	const baseline = getMemoryRoleReport(baselineDbPath, opts);
+	const candidate = getMemoryRoleReport(candidateDbPath, opts);
+	return {
+		baseline,
+		candidate,
+		delta: {
+			totals: {
+				memories: candidate.totals.memories - baseline.totals.memories,
+				active: candidate.totals.active - baseline.totals.active,
+				sessions: candidate.totals.sessions - baseline.totals.sessions,
+			},
+			counts_by_role: subtractKeyedCounts(baseline.counts_by_role, candidate.counts_by_role),
+			counts_by_mapping: subtractKeyedCounts(
+				baseline.counts_by_mapping,
+				candidate.counts_by_mapping,
+			),
+			summary_mapping: subtractKeyedCounts(baseline.summary_mapping, candidate.summary_mapping),
+			session_duration_buckets: subtractKeyedCounts(
+				baseline.session_duration_buckets,
+				candidate.session_duration_buckets,
+			),
+		},
+		probe_comparisons: compareProbeResults(baseline.probe_results, candidate.probe_results),
+	};
 }
 
 export function getRawEventRelinkReport(

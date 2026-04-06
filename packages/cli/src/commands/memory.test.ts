@@ -14,6 +14,7 @@ describe("memory command aliases", () => {
 			"remember",
 			"inject",
 			"role-report",
+			"role-compare",
 			"relink-report",
 			"relink-plan",
 		]);

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
 	applyRawEventRelinkPlan,
 	backfillTagsText,
+	compareMemoryRoleReports,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
 	getMemoryRoleReport,
@@ -399,6 +400,79 @@ describe("maintenance", () => {
 				role: "durable",
 				role_reason: "durable_kind",
 				title: "OAuth callback fix",
+			}),
+		);
+	});
+
+	it("compares memory role reports across two database snapshots", () => {
+		const baselinePath = createDbPath("memory-role-compare-baseline");
+		const candidatePath = createDbPath("memory-role-compare-candidate");
+		for (const dbPath of [baselinePath, candidatePath]) {
+			const db = new Database(dbPath);
+			try {
+				initTestSchema(db);
+			} finally {
+				db.close();
+			}
+		}
+
+		const baselineDb = new Database(baselinePath);
+		try {
+			baselineDb.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test'),
+				  (2, '2026-03-01T10:20:00Z', '2026-03-01T10:20:20Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+				  (2, 2, 'change', 'Legacy recap', '## Request\nfoo\n\n## Completed\nbar', 1, '2026-03-01T10:20:20Z', '2026-03-01T10:20:20Z', '{"is_summary":true}', 'k2'),
+				  (3, 2, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k3');
+			`);
+		} finally {
+			baselineDb.close();
+		}
+
+		const candidateDb = new Database(candidatePath);
+		try {
+			candidateDb.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (20, 1, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k3'),
+				  (21, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1');
+			`);
+		} finally {
+			candidateDb.close();
+		}
+
+		const comparison = compareMemoryRoleReports(baselinePath, candidatePath, {
+			project: "codemem",
+			probes: ["oauth callback"],
+		});
+
+		expect(comparison.delta.totals.sessions).toBe(-1);
+		expect(comparison.delta.counts_by_mapping).toEqual({ mapped: 1, unmapped: -2 });
+		expect(comparison.delta.summary_mapping).toEqual({ mapped: 0, unmapped: -1 });
+		expect(comparison.probe_comparisons).toHaveLength(1);
+		expect(comparison.probe_comparisons[0]).toEqual(
+			expect.objectContaining({
+				query: "oauth callback",
+				baseline_item_ids: [3, 2],
+				candidate_item_ids: [20, 21],
+				shared_item_keys: ["import:k3"],
+				delta_top_mapping_counts: { mapped: 2, unmapped: -2 },
+				delta_top_burden: {
+					recap_share: 0,
+					unmapped_share: -1,
+					recap_unmapped_share: -0.5,
+				},
 			}),
 		);
 	});
