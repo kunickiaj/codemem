@@ -6,7 +6,13 @@
  */
 
 import * as p from "@clack/prompts";
-import { getMemoryRoleReport, MemoryStore, resolveDbPath, resolveProject } from "@codemem/core";
+import {
+	getMemoryRoleReport,
+	getRawEventRelinkReport,
+	MemoryStore,
+	resolveDbPath,
+	resolveProject,
+} from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
@@ -329,6 +335,66 @@ function createMemoryRoleReportCommand(): Command {
 	return cmd;
 }
 
+function createMemoryRelinkReportCommand(): Command {
+	const cmd = new Command("relink-report")
+		.configureHelp(helpStyle)
+		.description("Analyze dry-run raw-event session relinking and compaction opportunities")
+		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--all-projects", "analyze across all projects")
+		.option("--limit <n>", "max groups to print", "25");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(
+		(
+			opts: DbOpts &
+				JsonOpts & {
+					project?: string;
+					allProjects?: boolean;
+					limit?: string;
+				},
+		) => {
+			const project =
+				opts.allProjects === true
+					? null
+					: opts.project?.trim() ||
+						process.env.CODEMEM_PROJECT?.trim() ||
+						resolveProject(process.cwd(), null);
+			const limit = Number.parseInt(opts.limit ?? "25", 10) || 25;
+			const result = getRawEventRelinkReport(resolveDbOpt(opts), {
+				project,
+				allProjects: opts.allProjects === true,
+				limit,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			p.intro("codemem memory relink-report");
+			p.log.info(
+				[
+					`Recoverable sessions: ${result.totals.recoverable_sessions}`,
+					`Distinct stable ids: ${result.totals.distinct_stable_ids}`,
+					`Groups with multiple sessions: ${result.totals.groups_with_multiple_sessions}`,
+					`Groups with mapped session: ${result.totals.groups_with_mapped_session}`,
+					`Groups without mapped session: ${result.totals.groups_without_mapped_session}`,
+					`Active memories in groups: ${result.totals.active_memories}`,
+					`Repointable active memories: ${result.totals.repointable_active_memories}`,
+				].join("\n"),
+			);
+			p.log.info("Top relink groups:");
+			for (const group of result.groups) {
+				p.log.message(
+					`  ${group.stable_id} -> canonical ${group.canonical_session_id} | local=${group.local_sessions} mapped=${group.mapped_sessions} unmapped=${group.unmapped_sessions} active=${group.active_memories} repointable=${group.repointable_active_memories}`,
+				);
+			}
+			p.outro("done");
+		},
+	);
+	return cmd;
+}
+
 export const showMemoryCommand = createShowMemoryCommand();
 export const forgetMemoryCommand = createForgetMemoryCommand();
 export const rememberMemoryCommand = createRememberMemoryCommand();
@@ -342,3 +408,4 @@ memoryCommand.addCommand(createForgetMemoryCommand());
 memoryCommand.addCommand(createRememberMemoryCommand());
 memoryCommand.addCommand(createInjectMemoryCommand());
 memoryCommand.addCommand(createMemoryRoleReportCommand());
+memoryCommand.addCommand(createMemoryRelinkReportCommand());
