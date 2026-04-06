@@ -27,7 +27,7 @@
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",
 		"typescript": "catalog:",
-		"vite": "8.0.1",
+		"vite": "8.0.5",
 		"vitest": "4.0.17"
 	},
 	"dependencies": {
