@@ -173,11 +173,7 @@ function getLegacyCodememConfigPath(): string {
 }
 
 function getCodememConfigWritePath(): string {
-	const envPath = process.env.CODEMEM_CONFIG?.trim();
-	if (envPath) return expandUserPath(envPath);
-	const workspaceConfigPath = getWorkspaceScopedCodememConfigPath();
-	if (workspaceConfigPath) return workspaceConfigPath;
-	return getLegacyCodememConfigPath();
+	return resolveCodememConfigPath(undefined, "write").resolved.path;
 }
 
 export function readWorkspaceCodememConfigFile(workspaceId: string): Record<string, unknown> {
@@ -225,6 +221,166 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	raw_events_sweeper_interval_s: "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
 };
 
+// ---------------------------------------------------------------------------
+// Unified config path resolver with full traceability
+// ---------------------------------------------------------------------------
+
+export type ConfigPathSource =
+	| "cli-flag"
+	| "env-codemem-config"
+	| "env-runtime-root"
+	| "env-workspace-id"
+	| "legacy-global";
+
+export interface ConfigPathResolution {
+	path: string;
+	source: ConfigPathSource;
+	reason: string;
+	exists: boolean;
+	/** Whether this candidate is structurally valid (absolute path, safe workspace id, etc.). */
+	valid: boolean;
+}
+
+export interface ConfigResolutionResult {
+	resolved: ConfigPathResolution;
+	fallbackChain: ConfigPathResolution[];
+}
+
+/**
+ * Resolve the codemem config path with full traceability.
+ *
+ * Every candidate in the precedence chain is evaluated and recorded.
+ * The `resolved` field is the winner; `fallbackChain` holds all rejected candidates
+ * with a reason string explaining why each was skipped.
+ *
+ * @param cliConfigPath - explicit --config flag value (highest precedence)
+ * @param mode - 'read' checks existence and falls back; 'write' takes first match
+ */
+export function resolveCodememConfigPath(
+	cliConfigPath?: string,
+	mode: "read" | "write" = "read",
+): ConfigResolutionResult {
+	const candidates: ConfigPathResolution[] = [];
+
+	// 1. CLI flag (highest precedence)
+	if (cliConfigPath?.trim()) {
+		const path = expandUserPath(cliConfigPath.trim());
+		candidates.push({
+			path,
+			source: "cli-flag",
+			reason: `--config ${cliConfigPath}`,
+			exists: existsSync(path),
+			valid: true,
+		});
+	}
+
+	// 2. CODEMEM_CONFIG env
+	const envConfig = process.env.CODEMEM_CONFIG?.trim();
+	if (envConfig) {
+		const path = expandUserPath(envConfig);
+		candidates.push({
+			path,
+			source: "env-codemem-config",
+			reason: `CODEMEM_CONFIG='${envConfig}'`,
+			exists: existsSync(path),
+			valid: true,
+		});
+	}
+
+	// 3. CODEMEM_RUNTIME_ROOT env (must be absolute after expandUser)
+	const runtimeRoot = process.env.CODEMEM_RUNTIME_ROOT?.trim();
+	if (runtimeRoot) {
+		const expandedRoot = expandUserPath(runtimeRoot);
+		const isAbsolute = expandedRoot.startsWith("/");
+		const path = join(expandedRoot, "config", "codemem.json");
+		candidates.push({
+			path,
+			source: "env-runtime-root",
+			reason: isAbsolute
+				? `CODEMEM_RUNTIME_ROOT='${runtimeRoot}'`
+				: `CODEMEM_RUNTIME_ROOT='${runtimeRoot}' is relative, not absolute`,
+			exists: isAbsolute ? existsSync(path) : false,
+			valid: isAbsolute,
+		});
+	}
+
+	// 4. CODEMEM_WORKSPACE_ID env (must pass isSafeWorkspaceId)
+	const workspaceId = process.env.CODEMEM_WORKSPACE_ID?.trim();
+	if (workspaceId) {
+		const safe = isSafeWorkspaceId(workspaceId);
+		const path = safe
+			? getWorkspaceCodememConfigPath(workspaceId)
+			: join(homedir(), ".codemem", "workspaces", workspaceId, "config", "codemem.json");
+		candidates.push({
+			path,
+			source: "env-workspace-id",
+			reason: safe
+				? `CODEMEM_WORKSPACE_ID='${workspaceId}'`
+				: `CODEMEM_WORKSPACE_ID='${workspaceId}' failed safety check`,
+			exists: safe ? existsSync(path) : false,
+			valid: safe,
+		});
+	}
+
+	// 5. Legacy global config (~/.config/codemem/config.json{c})
+	const legacyPath = getLegacyCodememConfigPath();
+	candidates.push({
+		path: legacyPath,
+		source: "legacy-global",
+		reason: "legacy global config",
+		exists: existsSync(legacyPath),
+		valid: true,
+	});
+
+	// Explicit overrides (cli-flag, env-codemem-config) are authoritative:
+	// they win in both read and write mode regardless of file existence.
+	// This matches the original getCodememConfigPath behavior where
+	// CODEMEM_CONFIG is returned immediately without an existence check.
+	const isAuthoritative = (c: ConfigPathResolution): boolean =>
+		c.source === "cli-flag" || c.source === "env-codemem-config";
+
+	// Select the winner based on mode.
+	// Validity is determined structurally via the `valid` flag on each candidate,
+	// not by inspecting the `reason` string.
+	let resolvedIndex: number;
+	if (mode === "write") {
+		// Write mode: first valid candidate regardless of existence
+		resolvedIndex = candidates.findIndex((c) => c.valid);
+	} else {
+		// Read mode: authoritative sources win immediately; otherwise first existing candidate
+		const authoritativeIndex = candidates.findIndex((c) => isAuthoritative(c) && c.valid);
+		if (authoritativeIndex >= 0) {
+			resolvedIndex = authoritativeIndex;
+		} else {
+			const existingIndex = candidates.findIndex((c) => c.valid && c.exists);
+			// If none exist, fall back to first valid candidate (matches getCodememConfigPath behavior)
+			resolvedIndex = existingIndex >= 0 ? existingIndex : candidates.findIndex((c) => c.valid);
+		}
+	}
+
+	// Should always find at least the legacy candidate, but guard anyway
+	if (resolvedIndex < 0) resolvedIndex = candidates.length - 1;
+
+	const resolved = candidates[resolvedIndex]!;
+	const fallbackChain = candidates.filter((_, i) => i !== resolvedIndex);
+
+	// Annotate skipped candidates with why they were not selected
+	for (const entry of fallbackChain) {
+		if (entry.source === "env-runtime-root" && entry.reason.includes("is relative")) {
+			// Already has a descriptive reason
+		} else if (
+			entry.source === "env-workspace-id" &&
+			entry.reason.includes("failed safety check")
+		) {
+			// Already has a descriptive reason
+		} else if (mode === "read" && !entry.exists) {
+			entry.reason += " (does not exist)";
+		}
+	}
+
+	return { resolved, fallbackChain };
+}
+
 /**
  * Resolve codemem config path with precedence:
  * 1. explicit CODEMEM_CONFIG override
@@ -232,13 +388,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
  * 3. legacy global config under ~/.config/codemem/
  */
 export function getCodememConfigPath(): string {
-	const envPath = process.env.CODEMEM_CONFIG?.trim();
-	if (envPath) return expandUserPath(envPath);
-	const workspaceConfigPath = getWorkspaceScopedCodememConfigPath();
-	if (workspaceConfigPath && existsSync(workspaceConfigPath)) return workspaceConfigPath;
-	const legacyConfigPath = getLegacyCodememConfigPath();
-	if (existsSync(legacyConfigPath)) return legacyConfigPath;
-	return workspaceConfigPath ?? legacyConfigPath;
+	return resolveCodememConfigPath(undefined, "read").resolved.path;
 }
 
 /** Read codemem config file with the same JSON/JSONC behavior as Python. */
