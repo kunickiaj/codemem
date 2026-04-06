@@ -20,6 +20,9 @@ viewer_ui/node_modules/
 viewer_ui/.vite/
 codemem/viewer_static/app.js.map
 
+# OpenCode runtime artifacts
+.opencode/package-lock.json
+
 # Agent skills (project-local installs, regenerate with: npx skills add)
 # Ignores canonical .agents/skills/, per-agent symlink dirs, and lockfile
 .agents/skills/
