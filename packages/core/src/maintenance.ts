@@ -50,6 +50,8 @@ export interface MemoryRoleProbeItem {
 	kind: string;
 	title: string;
 	role: MemoryRole;
+	role_reason: string;
+	mapping: "mapped" | "unmapped";
 }
 
 export interface MemoryRoleProbeResult {
@@ -57,6 +59,33 @@ export interface MemoryRoleProbeResult {
 	mode: string;
 	item_ids: number[];
 	items: MemoryRoleProbeItem[];
+	top_role_counts: Record<MemoryRole, number>;
+	top_mapping_counts: Record<"mapped" | "unmapped", number>;
+	top_burden: {
+		recap_share: number;
+		unmapped_share: number;
+		recap_unmapped_share: number;
+	};
+	simulated_demoted_unmapped_recap?: {
+		item_ids: number[];
+		top_role_counts: Record<MemoryRole, number>;
+		top_mapping_counts: Record<"mapped" | "unmapped", number>;
+		top_burden: {
+			recap_share: number;
+			unmapped_share: number;
+			recap_unmapped_share: number;
+		};
+	};
+	simulated_demoted_unmapped_recap_and_ephemeral?: {
+		item_ids: number[];
+		top_role_counts: Record<MemoryRole, number>;
+		top_mapping_counts: Record<"mapped" | "unmapped", number>;
+		top_burden: {
+			recap_share: number;
+			unmapped_share: number;
+			recap_unmapped_share: number;
+		};
+	};
 }
 
 export interface MemoryRoleReport {
@@ -67,9 +96,14 @@ export interface MemoryRoleReport {
 	};
 	counts_by_kind: Record<string, number>;
 	counts_by_role: Record<MemoryRole, number>;
+	counts_by_mapping: Record<"mapped" | "unmapped", number>;
 	summary_lineages: {
 		session_summary: number;
 		legacy_metadata_summary: number;
+	};
+	summary_mapping: {
+		mapped: number;
+		unmapped: number;
 	};
 	project_quality: {
 		normal: number;
@@ -77,8 +111,15 @@ export interface MemoryRoleReport {
 		garbage_like: number;
 	};
 	session_duration_buckets: Record<string, number>;
-	role_examples: Partial<Record<MemoryRole, Array<{ id: number; kind: string; title: string }>>>;
+	role_examples: Partial<
+		Record<MemoryRole, Array<{ id: number; kind: string; title: string; role_reason: string }>>
+	>;
 	probe_results: MemoryRoleProbeResult[];
+}
+
+interface InferredMemoryRole {
+	role: MemoryRole;
+	reason: string;
 }
 
 function withDb<T>(dbPath: string | undefined, fn: (db: Database, resolvedPath: string) => T): T {
@@ -113,6 +154,10 @@ function safeParseMetadata(raw: string | null): Record<string, unknown> {
 	}
 }
 
+function hasAnyMarker(text: string, markers: string[]): boolean {
+	return markers.some((marker) => text.includes(marker));
+}
+
 function inferMemoryRole(row: {
 	kind: string;
 	title: string;
@@ -120,40 +165,82 @@ function inferMemoryRole(row: {
 	project: string | null;
 	metadata_json: string | null;
 	session_minutes: number | null;
-}): MemoryRole {
+	has_opencode_mapping: number;
+}): InferredMemoryRole {
 	const metadata = safeParseMetadata(row.metadata_json);
 	const isSummary = row.kind === "session_summary" || metadata?.is_summary === true;
-	if (isSummary) return "recap";
+	if (isSummary) {
+		return {
+			role: "recap",
+			reason: row.kind === "session_summary" ? "session_summary_kind" : "legacy_summary_metadata",
+		};
+	}
 
 	const text = `${row.title} ${row.body_text}`.toLowerCase();
 	const projectQuality = classifyProjectQuality(row.project);
+	const microSession = (row.session_minutes ?? 0) < 1;
+	const hasTaskMarkers = hasAnyMarker(text, [
+		"task:",
+		"todo",
+		"need to",
+		"next step",
+		"follow up",
+		"continue ",
+	]);
+	const hasRecapMarkers = hasAnyMarker(text, [
+		"## request",
+		"## completed",
+		"## learned",
+		"user asked",
+		"the session",
+		"the goal was",
+	]);
+	const hasInvestigativeMarkers = hasAnyMarker(text, [
+		"identified",
+		"discovered",
+		"confirm",
+		"confirmed",
+		"verified",
+		"investigate",
+		"investigated",
+		"determine whether",
+		"clarified",
+		"resolved",
+	]);
 
 	if (["decision", "bugfix", "discovery", "exploration"].includes(row.kind)) {
-		if (projectQuality !== "normal") return "general";
-		if (text.includes("task:") || text.includes("todo") || text.includes("need to")) {
-			return "ephemeral";
+		if (projectQuality !== "normal")
+			return { role: "general", reason: "durable_kind_with_non_normal_project" };
+		if (hasTaskMarkers && !hasInvestigativeMarkers) {
+			return { role: "ephemeral", reason: "durable_kind_task_markers_without_resolution" };
 		}
-		return "durable";
+		return { role: "durable", reason: "durable_kind" };
 	}
 
 	if (["feature", "refactor"].includes(row.kind)) {
-		if ((row.session_minutes ?? 0) < 1) return "ephemeral";
-		return "durable";
+		if (hasRecapMarkers) return { role: "recap", reason: "implementation_kind_with_recap_markers" };
+		if (microSession && hasTaskMarkers) {
+			return { role: "ephemeral", reason: "micro_session_implementation_task" };
+		}
+		return { role: "durable", reason: "implementation_kind" };
 	}
 
 	if (row.kind === "change") {
-		if ((row.session_minutes ?? 0) < 1) return "ephemeral";
-		if (
-			text.includes("## request") ||
-			text.includes("## completed") ||
-			text.includes("## learned")
-		) {
-			return "ephemeral";
+		if (hasRecapMarkers) {
+			return { role: "recap", reason: "change_with_recap_markers" };
 		}
-		return projectQuality !== "normal" ? "general" : "ephemeral";
+		if (microSession) return { role: "ephemeral", reason: "micro_session_change" };
+		if (projectQuality !== "normal")
+			return { role: "general", reason: "change_with_non_normal_project" };
+		if (hasInvestigativeMarkers && !hasTaskMarkers) {
+			return { role: "durable", reason: "change_with_investigative_markers" };
+		}
+		return { role: "ephemeral", reason: "default_change_ephemeral" };
 	}
 
-	return projectQuality !== "normal" ? "general" : "ephemeral";
+	return projectQuality !== "normal"
+		? { role: "general", reason: "fallback_non_normal_project" }
+		: { role: "ephemeral", reason: "fallback_ephemeral" };
 }
 
 export function getMemoryRoleReport(
@@ -180,9 +267,15 @@ export function getMemoryRoleReport(
 					CASE
 						WHEN s.ended_at IS NOT NULL THEN (julianday(s.ended_at) - julianday(s.started_at)) * 24 * 60
 						ELSE NULL
-					END AS session_minutes
+					END AS session_minutes,
+					CASE WHEN os.session_id IS NULL THEN 0 ELSE 1 END AS has_opencode_mapping
 				FROM memory_items m
 				JOIN sessions s ON s.id = m.session_id
+				LEFT JOIN (
+					SELECT DISTINCT session_id
+					FROM opencode_sessions
+					WHERE session_id IS NOT NULL
+				) os ON os.session_id = m.session_id
 				WHERE 1 = 1 ${activeClause} ${projectClause}`,
 			)
 			.all(...params) as Array<{
@@ -195,6 +288,7 @@ export function getMemoryRoleReport(
 			metadata_json: string | null;
 			project: string | null;
 			session_minutes: number | null;
+			has_opencode_mapping: number;
 		}>;
 
 		const roleCounts: Record<MemoryRole, number> = {
@@ -203,6 +297,7 @@ export function getMemoryRoleReport(
 			ephemeral: 0,
 			general: 0,
 		};
+		const mappingCounts = { mapped: 0, unmapped: 0 };
 		const kindCounts: Record<string, number> = {};
 		const projectQuality = { normal: 0, empty: 0, garbage_like: 0 };
 		const sessionDurationBuckets: Record<string, number> = {
@@ -216,25 +311,43 @@ export function getMemoryRoleReport(
 		const roleExamples: MemoryRoleReport["role_examples"] = {};
 		let sessionSummaryCount = 0;
 		let legacySummaryCount = 0;
+		let mappedSummaryCount = 0;
+		let unmappedSummaryCount = 0;
 		const seenSessionBuckets = new Set<number>();
 
 		for (const row of rows) {
 			kindCounts[row.kind] = (kindCounts[row.kind] ?? 0) + 1;
+			const mapping: "mapped" | "unmapped" = row.has_opencode_mapping ? "mapped" : "unmapped";
+			mappingCounts[mapping] += 1;
 			const quality = classifyProjectQuality(row.project);
 			projectQuality[quality] += 1;
 
 			const metadata = safeParseMetadata(row.metadata_json);
 			if (row.kind === "session_summary") sessionSummaryCount += 1;
 			if (row.kind === "change" && metadata?.is_summary === true) legacySummaryCount += 1;
-
-			const role = inferMemoryRole(row);
-			roleCounts[role] += 1;
-			if (!roleExamples[role]) {
-				roleExamples[role] = [];
+			if (row.kind === "session_summary" || metadata?.is_summary === true) {
+				if (mapping === "mapped") mappedSummaryCount += 1;
+				else unmappedSummaryCount += 1;
 			}
-			const examples = roleExamples[role] as Array<{ id: number; kind: string; title: string }>;
+
+			const inferred = inferMemoryRole(row);
+			roleCounts[inferred.role] += 1;
+			if (!roleExamples[inferred.role]) {
+				roleExamples[inferred.role] = [];
+			}
+			const examples = roleExamples[inferred.role] as Array<{
+				id: number;
+				kind: string;
+				title: string;
+				role_reason: string;
+			}>;
 			if (examples.length < 3) {
-				examples.push({ id: row.id, kind: row.kind, title: row.title });
+				examples.push({
+					id: row.id,
+					kind: row.kind,
+					title: row.title,
+					role_reason: inferred.reason,
+				});
 			}
 
 			if (!seenSessionBuckets.has(row.session_id)) {
@@ -282,23 +395,118 @@ export function getMemoryRoleReport(
 					);
 					const probeItems = pack.items.map((item) => {
 						const source = rows.find((row) => row.id === item.id);
-						const role = source
+						const inferred = source
 							? inferMemoryRole(source)
 							: item.kind === "session_summary"
-								? "recap"
-								: "ephemeral";
+								? { role: "recap" as const, reason: "session_summary_kind" }
+								: { role: "ephemeral" as const, reason: "missing_source_row" };
+						const mapping: "mapped" | "unmapped" = source?.has_opencode_mapping
+							? "mapped"
+							: "unmapped";
 						return {
 							id: item.id,
 							kind: item.kind,
 							title: item.title,
-							role,
+							role: inferred.role,
+							role_reason: inferred.reason,
+							mapping,
 						};
 					});
+					const topRoleCounts: Record<MemoryRole, number> = {
+						recap: 0,
+						durable: 0,
+						ephemeral: 0,
+						general: 0,
+					};
+					const topMappingCounts = { mapped: 0, unmapped: 0 };
+					let recapUnmappedCount = 0;
+					for (const item of probeItems.slice(0, 5)) {
+						topRoleCounts[item.role] += 1;
+						topMappingCounts[item.mapping] += 1;
+						if (item.role === "recap" && item.mapping === "unmapped") {
+							recapUnmappedCount += 1;
+						}
+					}
+					const topCount = Math.max(1, Math.min(5, probeItems.length));
+					const simulatedItems = [...probeItems].sort((a, b) => {
+						const score = (item: MemoryRoleProbeItem): number => {
+							if (item.mapping === "unmapped" && item.role === "recap") return 2;
+							if (item.mapping === "unmapped") return 1;
+							return 0;
+						};
+						return score(a) - score(b);
+					});
+					const simulatedTopRoleCounts: Record<MemoryRole, number> = {
+						recap: 0,
+						durable: 0,
+						ephemeral: 0,
+						general: 0,
+					};
+					const simulatedTopMappingCounts = { mapped: 0, unmapped: 0 };
+					let simulatedRecapUnmappedCount = 0;
+					for (const item of simulatedItems.slice(0, 5)) {
+						simulatedTopRoleCounts[item.role] += 1;
+						simulatedTopMappingCounts[item.mapping] += 1;
+						if (item.role === "recap" && item.mapping === "unmapped") {
+							simulatedRecapUnmappedCount += 1;
+						}
+					}
+					const simulatedItems2 = [...probeItems].sort((a, b) => {
+						const score = (item: MemoryRoleProbeItem): number => {
+							if (item.mapping === "unmapped" && item.role === "recap") return 3;
+							if (item.mapping === "unmapped" && item.role === "ephemeral") return 2;
+							if (item.mapping === "unmapped") return 1;
+							return 0;
+						};
+						return score(a) - score(b);
+					});
+					const simulated2TopRoleCounts: Record<MemoryRole, number> = {
+						recap: 0,
+						durable: 0,
+						ephemeral: 0,
+						general: 0,
+					};
+					const simulated2TopMappingCounts = { mapped: 0, unmapped: 0 };
+					let simulated2RecapUnmappedCount = 0;
+					for (const item of simulatedItems2.slice(0, 5)) {
+						simulated2TopRoleCounts[item.role] += 1;
+						simulated2TopMappingCounts[item.mapping] += 1;
+						if (item.role === "recap" && item.mapping === "unmapped") {
+							simulated2RecapUnmappedCount += 1;
+						}
+					}
 					probeResults.push({
 						query,
 						mode: String(pack.metrics.mode ?? "default"),
 						item_ids: pack.item_ids,
 						items: probeItems,
+						top_role_counts: topRoleCounts,
+						top_mapping_counts: topMappingCounts,
+						top_burden: {
+							recap_share: topRoleCounts.recap / topCount,
+							unmapped_share: topMappingCounts.unmapped / topCount,
+							recap_unmapped_share: recapUnmappedCount / topCount,
+						},
+						simulated_demoted_unmapped_recap: {
+							item_ids: simulatedItems.map((item) => item.id),
+							top_role_counts: simulatedTopRoleCounts,
+							top_mapping_counts: simulatedTopMappingCounts,
+							top_burden: {
+								recap_share: simulatedTopRoleCounts.recap / topCount,
+								unmapped_share: simulatedTopMappingCounts.unmapped / topCount,
+								recap_unmapped_share: simulatedRecapUnmappedCount / topCount,
+							},
+						},
+						simulated_demoted_unmapped_recap_and_ephemeral: {
+							item_ids: simulatedItems2.map((item) => item.id),
+							top_role_counts: simulated2TopRoleCounts,
+							top_mapping_counts: simulated2TopMappingCounts,
+							top_burden: {
+								recap_share: simulated2TopRoleCounts.recap / topCount,
+								unmapped_share: simulated2TopMappingCounts.unmapped / topCount,
+								recap_unmapped_share: simulated2RecapUnmappedCount / topCount,
+							},
+						},
 					});
 				}
 			} finally {
@@ -314,9 +522,14 @@ export function getMemoryRoleReport(
 			},
 			counts_by_kind: kindCounts,
 			counts_by_role: roleCounts,
+			counts_by_mapping: mappingCounts,
 			summary_lineages: {
 				session_summary: sessionSummaryCount,
 				legacy_metadata_summary: legacySummaryCount,
+			},
+			summary_mapping: {
+				mapped: mappedSummaryCount,
+				unmapped: unmappedSummaryCount,
 			},
 			project_quality: projectQuality,
 			session_duration_buckets: sessionDurationBuckets,
