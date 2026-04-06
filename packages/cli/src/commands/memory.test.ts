@@ -13,6 +13,7 @@ describe("memory command aliases", () => {
 			"forget",
 			"remember",
 			"inject",
+			"role-report",
 		]);
 	});
 
@@ -28,5 +29,18 @@ describe("memory command aliases", () => {
 		expect(inject?.registeredArguments[0]?.required).toBe(true);
 		expect(inject?.registeredArguments[0]?.name()).toBe("context");
 		expect(inject?.options.some((option) => option.long === "--working-set-file")).toBe(true);
+	});
+
+	it("registers role-report under memory with shared analysis options", () => {
+		const roleReport = memoryCommand.commands.find((command) => command.name() === "role-report");
+		expect(roleReport).toBeDefined();
+		const longs = roleReport?.options.map((option) => option.long) ?? [];
+		expect(longs).toContain("--db");
+		expect(longs).toContain("--db-path");
+		expect(longs).toContain("--project");
+		expect(longs).toContain("--all-projects");
+		expect(longs).toContain("--probe");
+		expect(longs).toContain("--inactive");
+		expect(longs).toContain("--json");
 	});
 });

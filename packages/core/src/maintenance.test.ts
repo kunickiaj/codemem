@@ -7,6 +7,7 @@ import {
 	backfillTagsText,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
+	getMemoryRoleReport,
 	getRawEventStatus,
 	getReliabilityMetrics,
 	initDatabase,
@@ -269,5 +270,94 @@ describe("maintenance", () => {
 		} finally {
 			db.close();
 		}
+	});
+
+	it("reports inferred memory roles and summary lineages", () => {
+		const dbPath = createDbPath("memory-role-report");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test'),
+				  (2, '2026-03-01T10:20:00Z', '2026-03-01T10:20:20Z', '/tmp/repo', '', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+				  (2, 1, 'decision', 'OAuth callback fix', 'Durable auth decision', 1, '2026-03-01T10:10:01Z', '2026-03-01T10:10:01Z', '{}', 'k2'),
+				  (3, 2, 'change', 'Legacy recap', '## Request\nfoo\n\n## Completed\nbar', 1, '2026-03-01T10:20:20Z', '2026-03-01T10:20:20Z', '{"is_summary":true}', 'k3'),
+				  (4, 2, 'change', 'Micro change', 'small procedural update', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k4');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getMemoryRoleReport(dbPath, {});
+
+		expect(report.totals.memories).toBe(4);
+		expect(report.counts_by_kind.session_summary).toBe(1);
+		expect(report.counts_by_kind.change).toBe(2);
+		expect(report.summary_lineages).toEqual({
+			session_summary: 1,
+			legacy_metadata_summary: 1,
+		});
+		expect(report.counts_by_role.recap).toBe(2);
+		expect(report.counts_by_role.durable).toBe(1);
+		expect(report.counts_by_role.ephemeral).toBe(1);
+		expect(report.project_quality.empty).toBe(2);
+		expect(report.role_examples.recap?.map((item) => item.id)).toEqual([1, 3]);
+		expect(report.session_duration_buckets["5-30m"]).toBe(1);
+		expect(report.session_duration_buckets["<1m"]).toBe(1);
+	});
+
+	it("tolerates malformed metadata JSON in role reports", () => {
+		const dbPath = createDbPath("memory-role-report-malformed-metadata");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'change', 'Broken metadata row', 'Still should not crash the report', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{not-json', 'k1');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getMemoryRoleReport(dbPath, {});
+
+		expect(report.totals.memories).toBe(1);
+		expect(report.counts_by_role.ephemeral).toBe(1);
+	});
+
+	it("supports probe queries in memory role reports", () => {
+		const dbPath = createDbPath("memory-role-report-probes");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
+				  (2, 1, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:10:01Z', '2026-03-01T10:10:01Z', '{}', 'k2');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getMemoryRoleReport(dbPath, { probes: ["oauth callback"] });
+
+		expect(report.probe_results).toHaveLength(1);
+		expect(report.probe_results[0]?.query).toBe("oauth callback");
+		expect(report.probe_results[0]?.items[0]).toEqual(
+			expect.objectContaining({ kind: "decision", role: "durable", title: "OAuth callback fix" }),
+		);
 	});
 });

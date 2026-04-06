@@ -9,9 +9,11 @@ import {
 	resolveDbPath,
 } from "./db.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
+import { buildMemoryPack } from "./pack.js";
 import { projectClause } from "./project.js";
 import * as schema from "./schema.js";
 import { bootstrapSchema } from "./schema-bootstrap.js";
+import { MemoryStore } from "./store.js";
 
 export interface RawEventStatusItem {
 	source: string;
@@ -34,6 +36,51 @@ export interface RawEventStatusResult {
 	ingest: { available: true; mode: "stream_queue"; max_body_bytes: number };
 }
 
+export type MemoryRole = "recap" | "durable" | "ephemeral" | "general";
+
+export interface MemoryRoleReportOptions {
+	project?: string | null;
+	allProjects?: boolean;
+	includeInactive?: boolean;
+	probes?: string[];
+}
+
+export interface MemoryRoleProbeItem {
+	id: number;
+	kind: string;
+	title: string;
+	role: MemoryRole;
+}
+
+export interface MemoryRoleProbeResult {
+	query: string;
+	mode: string;
+	item_ids: number[];
+	items: MemoryRoleProbeItem[];
+}
+
+export interface MemoryRoleReport {
+	totals: {
+		memories: number;
+		active: number;
+		sessions: number;
+	};
+	counts_by_kind: Record<string, number>;
+	counts_by_role: Record<MemoryRole, number>;
+	summary_lineages: {
+		session_summary: number;
+		legacy_metadata_summary: number;
+	};
+	project_quality: {
+		normal: number;
+		empty: number;
+		garbage_like: number;
+	};
+	session_duration_buckets: Record<string, number>;
+	role_examples: Partial<Record<MemoryRole, Array<{ id: number; kind: string; title: string }>>>;
+	probe_results: MemoryRoleProbeResult[];
+}
+
 function withDb<T>(dbPath: string | undefined, fn: (db: Database, resolvedPath: string) => T): T {
 	const resolvedPath = resolveDbPath(dbPath);
 	const db = connect(resolvedPath);
@@ -43,6 +90,240 @@ function withDb<T>(dbPath: string | undefined, fn: (db: Database, resolvedPath: 
 	} finally {
 		db.close();
 	}
+}
+
+function classifyProjectQuality(project: unknown): "normal" | "empty" | "garbage_like" {
+	const value = typeof project === "string" ? project.trim() : "";
+	if (!value) return "empty";
+	if (value === "T" || value === "adam" || value === "opencode" || value.startsWith("fatal:")) {
+		return "garbage_like";
+	}
+	return "normal";
+}
+
+function safeParseMetadata(raw: string | null): Record<string, unknown> {
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: {};
+	} catch {
+		return {};
+	}
+}
+
+function inferMemoryRole(row: {
+	kind: string;
+	title: string;
+	body_text: string;
+	project: string | null;
+	metadata_json: string | null;
+	session_minutes: number | null;
+}): MemoryRole {
+	const metadata = safeParseMetadata(row.metadata_json);
+	const isSummary = row.kind === "session_summary" || metadata?.is_summary === true;
+	if (isSummary) return "recap";
+
+	const text = `${row.title} ${row.body_text}`.toLowerCase();
+	const projectQuality = classifyProjectQuality(row.project);
+
+	if (["decision", "bugfix", "discovery", "exploration"].includes(row.kind)) {
+		if (projectQuality !== "normal") return "general";
+		if (text.includes("task:") || text.includes("todo") || text.includes("need to")) {
+			return "ephemeral";
+		}
+		return "durable";
+	}
+
+	if (["feature", "refactor"].includes(row.kind)) {
+		if ((row.session_minutes ?? 0) < 1) return "ephemeral";
+		return "durable";
+	}
+
+	if (row.kind === "change") {
+		if ((row.session_minutes ?? 0) < 1) return "ephemeral";
+		if (
+			text.includes("## request") ||
+			text.includes("## completed") ||
+			text.includes("## learned")
+		) {
+			return "ephemeral";
+		}
+		return projectQuality !== "normal" ? "general" : "ephemeral";
+	}
+
+	return projectQuality !== "normal" ? "general" : "ephemeral";
+}
+
+export function getMemoryRoleReport(
+	dbPath?: string,
+	opts: MemoryRoleReportOptions = {},
+): MemoryRoleReport {
+	return withDb(dbPath, (db, resolvedPath) => {
+		const projectFilter = opts.allProjects ? null : opts.project?.trim() || null;
+		const activeClause = opts.includeInactive ? "" : "AND m.active = 1";
+		const projectClause = projectFilter ? "AND s.project = ?" : "";
+		const params = projectFilter ? [projectFilter] : [];
+
+		const rows = db
+			.prepare(
+				`SELECT
+					m.id,
+					m.session_id,
+					m.kind,
+					m.title,
+					m.body_text,
+					m.active,
+					m.metadata_json,
+					s.project,
+					CASE
+						WHEN s.ended_at IS NOT NULL THEN (julianday(s.ended_at) - julianday(s.started_at)) * 24 * 60
+						ELSE NULL
+					END AS session_minutes
+				FROM memory_items m
+				JOIN sessions s ON s.id = m.session_id
+				WHERE 1 = 1 ${activeClause} ${projectClause}`,
+			)
+			.all(...params) as Array<{
+			id: number;
+			session_id: number;
+			kind: string;
+			title: string;
+			body_text: string;
+			active: number;
+			metadata_json: string | null;
+			project: string | null;
+			session_minutes: number | null;
+		}>;
+
+		const roleCounts: Record<MemoryRole, number> = {
+			recap: 0,
+			durable: 0,
+			ephemeral: 0,
+			general: 0,
+		};
+		const kindCounts: Record<string, number> = {};
+		const projectQuality = { normal: 0, empty: 0, garbage_like: 0 };
+		const sessionDurationBuckets: Record<string, number> = {
+			"<1m": 0,
+			"1-5m": 0,
+			"5-30m": 0,
+			"30-120m": 0,
+			"120m+": 0,
+			open: 0,
+		};
+		const roleExamples: MemoryRoleReport["role_examples"] = {};
+		let sessionSummaryCount = 0;
+		let legacySummaryCount = 0;
+		const seenSessionBuckets = new Set<number>();
+
+		for (const row of rows) {
+			kindCounts[row.kind] = (kindCounts[row.kind] ?? 0) + 1;
+			const quality = classifyProjectQuality(row.project);
+			projectQuality[quality] += 1;
+
+			const metadata = safeParseMetadata(row.metadata_json);
+			if (row.kind === "session_summary") sessionSummaryCount += 1;
+			if (row.kind === "change" && metadata?.is_summary === true) legacySummaryCount += 1;
+
+			const role = inferMemoryRole(row);
+			roleCounts[role] += 1;
+			if (!roleExamples[role]) {
+				roleExamples[role] = [];
+			}
+			const examples = roleExamples[role] as Array<{ id: number; kind: string; title: string }>;
+			if (examples.length < 3) {
+				examples.push({ id: row.id, kind: row.kind, title: row.title });
+			}
+
+			if (!seenSessionBuckets.has(row.session_id)) {
+				seenSessionBuckets.add(row.session_id);
+				const minutes = row.session_minutes;
+				const bucket: keyof typeof sessionDurationBuckets =
+					minutes == null
+						? "open"
+						: minutes < 1
+							? "<1m"
+							: minutes < 5
+								? "1-5m"
+								: minutes < 30
+									? "5-30m"
+									: minutes < 120
+										? "30-120m"
+										: "120m+";
+				sessionDurationBuckets[bucket] = (sessionDurationBuckets[bucket] ?? 0) + 1;
+			}
+		}
+
+		const totalsRow = db
+			.prepare(
+				`SELECT
+					COUNT(*) AS memories,
+					SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active,
+					COUNT(DISTINCT session_id) AS sessions
+				 FROM memory_items m
+				 JOIN sessions s ON s.id = m.session_id
+				 WHERE 1 = 1 ${projectClause}`,
+			)
+			.get(...params) as { memories: number; active: number; sessions: number };
+
+		const probeResults: MemoryRoleProbeResult[] = [];
+		if ((opts.probes?.length ?? 0) > 0) {
+			const store = new MemoryStore(resolvedPath);
+			try {
+				for (const query of opts.probes ?? []) {
+					const pack = buildMemoryPack(
+						store,
+						query,
+						10,
+						null,
+						projectFilter ? { project: projectFilter } : undefined,
+					);
+					const probeItems = pack.items.map((item) => {
+						const source = rows.find((row) => row.id === item.id);
+						const role = source
+							? inferMemoryRole(source)
+							: item.kind === "session_summary"
+								? "recap"
+								: "ephemeral";
+						return {
+							id: item.id,
+							kind: item.kind,
+							title: item.title,
+							role,
+						};
+					});
+					probeResults.push({
+						query,
+						mode: String(pack.metrics.mode ?? "default"),
+						item_ids: pack.item_ids,
+						items: probeItems,
+					});
+				}
+			} finally {
+				store.close();
+			}
+		}
+
+		return {
+			totals: {
+				memories: Number(totalsRow.memories ?? 0),
+				active: Number(totalsRow.active ?? 0),
+				sessions: Number(totalsRow.sessions ?? 0),
+			},
+			counts_by_kind: kindCounts,
+			counts_by_role: roleCounts,
+			summary_lineages: {
+				session_summary: sessionSummaryCount,
+				legacy_metadata_summary: legacySummaryCount,
+			},
+			project_quality: projectQuality,
+			session_duration_buckets: sessionDurationBuckets,
+			role_examples: roleExamples,
+			probe_results: probeResults,
+		};
+	});
 }
 
 export function initDatabase(dbPath?: string): { path: string; sizeBytes: number } {

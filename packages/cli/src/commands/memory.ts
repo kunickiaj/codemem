@@ -6,7 +6,7 @@
  */
 
 import * as p from "@clack/prompts";
-import { MemoryStore, resolveDbPath, resolveProject } from "@codemem/core";
+import { getMemoryRoleReport, MemoryStore, resolveDbPath, resolveProject } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
@@ -225,6 +225,84 @@ function createInjectMemoryCommand(): Command {
 	return cmd;
 }
 
+function createMemoryRoleReportCommand(): Command {
+	const cmd = new Command("role-report")
+		.configureHelp(helpStyle)
+		.description("Analyze inferred memory roles in a DB snapshot")
+		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--all-projects", "analyze across all projects")
+		.option(
+			"--probe <query>",
+			"run a retrieval probe query against the snapshot",
+			(value, prev: string[]) => [...prev, value],
+			[],
+		)
+		.option("--inactive", "include inactive memories");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(
+		(
+			opts: DbOpts &
+				JsonOpts & {
+					project?: string;
+					allProjects?: boolean;
+					probe?: string[];
+					inactive?: boolean;
+				},
+		) => {
+			const project =
+				opts.allProjects === true
+					? null
+					: opts.project?.trim() ||
+						process.env.CODEMEM_PROJECT?.trim() ||
+						resolveProject(process.cwd(), null);
+			const result = getMemoryRoleReport(resolveDbOpt(opts), {
+				project,
+				allProjects: opts.allProjects === true,
+				includeInactive: opts.inactive === true,
+				probes: opts.probe,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			p.intro("codemem memory role-report");
+			p.log.info(
+				[
+					`Memories: ${result.totals.memories}`,
+					`Active: ${result.totals.active}`,
+					`Sessions: ${result.totals.sessions}`,
+				].join("\n"),
+			);
+			p.log.info("Counts by role:");
+			for (const [role, count] of Object.entries(result.counts_by_role)) {
+				p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
+			}
+			p.log.info("Summary lineages:");
+			p.log.message(`  session_summary         ${result.summary_lineages.session_summary}`);
+			p.log.message(`  legacy_metadata_summary ${result.summary_lineages.legacy_metadata_summary}`);
+			p.log.info("Project quality:");
+			for (const [bucket, count] of Object.entries(result.project_quality)) {
+				p.log.message(`  ${bucket.padEnd(12)} ${String(count)}`);
+			}
+			if (result.probe_results.length > 0) {
+				p.log.info("Probe results:");
+				for (const probe of result.probe_results) {
+					p.log.message(`  query: ${probe.query}`);
+					p.log.message(`    mode: ${probe.mode}`);
+					for (const item of probe.items.slice(0, 5)) {
+						p.log.message(`    [${item.id}] (${item.kind}/${item.role}) ${item.title}`);
+					}
+				}
+			}
+			p.outro("done");
+		},
+	);
+	return cmd;
+}
+
 export const showMemoryCommand = createShowMemoryCommand();
 export const forgetMemoryCommand = createForgetMemoryCommand();
 export const rememberMemoryCommand = createRememberMemoryCommand();
@@ -237,3 +315,4 @@ memoryCommand.addCommand(createShowMemoryCommand());
 memoryCommand.addCommand(createForgetMemoryCommand());
 memoryCommand.addCommand(createRememberMemoryCommand());
 memoryCommand.addCommand(createInjectMemoryCommand());
+memoryCommand.addCommand(createMemoryRoleReportCommand());
