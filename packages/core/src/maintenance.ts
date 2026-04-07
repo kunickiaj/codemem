@@ -143,6 +143,12 @@ export interface MemoryRoleReportComparisonOptions extends MemoryRoleReportOptio
 
 export interface MemoryRoleProbeComparison {
 	query: string;
+	baseline_scenario_id?: string;
+	candidate_scenario_id?: string;
+	baseline_scenario_title?: string;
+	candidate_scenario_title?: string;
+	baseline_scenario_category?: string;
+	candidate_scenario_category?: string;
 	baseline_mode: string | null;
 	candidate_mode: string | null;
 	baseline_item_ids: number[];
@@ -154,6 +160,11 @@ export interface MemoryRoleProbeComparison {
 	baseline_top_mapping_counts: Record<"mapped" | "unmapped", number> | null;
 	candidate_top_mapping_counts: Record<"mapped" | "unmapped", number> | null;
 	delta_top_mapping_counts: Record<"mapped" | "unmapped", number> | null;
+	baseline_scenario_score?: MemoryRoleProbeResult["scenario_score"];
+	candidate_scenario_score?: MemoryRoleProbeResult["scenario_score"];
+	delta_scenario_score?: Partial<
+		Record<keyof NonNullable<MemoryRoleProbeResult["scenario_score"]>, number>
+	>;
 }
 
 export interface MemoryRoleReportComparison {
@@ -355,6 +366,12 @@ function compareProbeResults(
 			const sharedItemKeys = baselineKeys.filter((key) => candidateKeySet.has(key));
 			return {
 				query,
+				baseline_scenario_id: baselineProbe?.scenario_id,
+				candidate_scenario_id: candidateProbe?.scenario_id,
+				baseline_scenario_title: baselineProbe?.scenario_title,
+				candidate_scenario_title: candidateProbe?.scenario_title,
+				baseline_scenario_category: baselineProbe?.scenario_category,
+				candidate_scenario_category: candidateProbe?.scenario_category,
 				baseline_mode: baselineProbe?.mode ?? null,
 				candidate_mode: candidateProbe?.mode ?? null,
 				baseline_item_ids: baselineIds,
@@ -375,6 +392,41 @@ function compareProbeResults(
 								candidateProbe.top_mapping_counts,
 							)
 						: null,
+				baseline_scenario_score: baselineProbe?.scenario_score,
+				candidate_scenario_score: candidateProbe?.scenario_score,
+				delta_scenario_score:
+					baselineProbe?.scenario_score && candidateProbe?.scenario_score
+						? {
+								mode_match:
+									Number(candidateProbe.scenario_score.mode_match) -
+									Number(baselineProbe.scenario_score.mode_match),
+								primary_in_top1:
+									Number(candidateProbe.scenario_score.primary_in_top1) -
+									Number(baselineProbe.scenario_score.primary_in_top1),
+								primary_in_top3_count:
+									candidateProbe.scenario_score.primary_in_top3_count -
+									baselineProbe.scenario_score.primary_in_top3_count,
+								anti_signal_in_top1:
+									Number(candidateProbe.scenario_score.anti_signal_in_top1) -
+									Number(baselineProbe.scenario_score.anti_signal_in_top1),
+								primary_match_count:
+									candidateProbe.scenario_score.primary_match_count -
+									baselineProbe.scenario_score.primary_match_count,
+								anti_signal_count:
+									candidateProbe.scenario_score.anti_signal_count -
+									baselineProbe.scenario_score.anti_signal_count,
+								recap_count:
+									candidateProbe.scenario_score.recap_count -
+									baselineProbe.scenario_score.recap_count,
+								unmapped_recap_count:
+									candidateProbe.scenario_score.unmapped_recap_count -
+									baselineProbe.scenario_score.unmapped_recap_count,
+								administrative_chatter_count:
+									candidateProbe.scenario_score.administrative_chatter_count -
+									baselineProbe.scenario_score.administrative_chatter_count,
+								score: candidateProbe.scenario_score.score - baselineProbe.scenario_score.score,
+							}
+						: undefined,
 			};
 		});
 }
