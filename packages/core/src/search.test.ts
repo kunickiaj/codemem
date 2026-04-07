@@ -57,6 +57,24 @@ describe("expandQuery", () => {
 		expect(expandQuery("hello-world")).toBe("hello OR world");
 		expect(expandQuery("foo_bar")).toBe("foo_bar");
 	});
+
+	it("strips low-signal filler words from broad natural-language queries", () => {
+		expect(expandQuery("what did we decide last time about oauth")).toBe("decide OR oauth");
+		expect(expandQuery("what should we do next about auth")).toBe("should OR next OR auth");
+	});
+
+	it("falls back to non-operator tokens when stopword filtering would empty the query", () => {
+		expect(expandQuery("work")).toBe("work");
+		expect(expandQuery("working")).toBe("working");
+		expect(expandQuery("catch me up")).toBe("catch OR me OR up");
+	});
+
+	it("preserves topical terms for targeted queries", () => {
+		expect(expandQuery("memory retrieval issues")).toBe("memory OR retrieval OR issues");
+		expect(expandQuery("sessionization summary emission")).toBe(
+			"sessionization OR summary OR emission",
+		);
+	});
 });
 
 // ---------------------------------------------------------------------------

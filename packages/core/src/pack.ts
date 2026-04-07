@@ -352,12 +352,29 @@ function prioritizeDefaultResults(
 	const preferSummary = recallQueryPrefersSummary(query);
 	const ordered = [...results];
 	ordered.sort((a, b) => {
-		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
-		if (overlapDelta !== 0) return overlapDelta;
 		if (!preferSummary) {
 			const recapDelta = Number(itemLooksRecapLike(a)) - Number(itemLooksRecapLike(b));
 			if (recapDelta !== 0) return recapDelta;
+			const taskLikeDelta = Number(itemLooksTaskLike(a)) - Number(itemLooksTaskLike(b));
+			if (taskLikeDelta !== 0) return taskLikeDelta;
+			const rank = (item: MemoryResult): number => {
+				if (item.kind === "decision") return 0;
+				if (item.kind === "bugfix") return 1;
+				if (item.kind === "discovery") return 2;
+				if (item.kind === "refactor") return 3;
+				if (item.kind === "feature") return 4;
+				if (item.kind === "exploration") return 5;
+				if (item.kind === "note") return 6;
+				if (item.kind === "observation") return 7;
+				if (item.kind === "change") return 8;
+				if (item.kind === "entities") return 9;
+				return 10;
+			};
+			const rankDelta = rank(a) - rank(b);
+			if (rankDelta !== 0) return rankDelta;
 		}
+		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
+		if (overlapDelta !== 0) return overlapDelta;
 		return 0;
 	});
 	return ordered.slice(0, limit);

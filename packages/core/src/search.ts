@@ -85,6 +85,35 @@ const PERSONAL_QUERY_PATTERNS = [
 /** FTS5 operators that must be stripped from user queries. */
 const FTS5_OPERATORS = new Set(["or", "and", "not", "near", "phrase"]);
 
+/** Low-signal filler words that should not dominate FTS candidate generation. */
+const SEARCH_QUERY_STOP_WORDS = new Set([
+	"a",
+	"about",
+	"an",
+	"and",
+	"catch",
+	"continue",
+	"did",
+	"do",
+	"for",
+	"happened",
+	"how",
+	"i",
+	"last",
+	"me",
+	"on",
+	"previous",
+	"the",
+	"time",
+	"up",
+	"we",
+	"what",
+	"where",
+	"work",
+	"worked",
+	"working",
+]);
+
 /**
  * Expand a user query string into an FTS5 MATCH expression.
  *
@@ -94,10 +123,18 @@ const FTS5_OPERATORS = new Set(["or", "and", "not", "near", "phrase"]);
 export function expandQuery(query: string): string {
 	const rawTokens = query.match(/[A-Za-z0-9_]+/g);
 	if (!rawTokens) return "";
-	const tokens = rawTokens.filter((t) => !FTS5_OPERATORS.has(t.toLowerCase()));
-	if (tokens.length === 0) return "";
-	if (tokens.length === 1) return tokens[0] as string;
-	return tokens.join(" OR ");
+	const operatorFiltered = rawTokens.filter((token) => {
+		const lowered = token.toLowerCase();
+		return !FTS5_OPERATORS.has(lowered);
+	});
+	const tokens = operatorFiltered.filter((token) => {
+		const lowered = token.toLowerCase();
+		return !SEARCH_QUERY_STOP_WORDS.has(lowered);
+	});
+	const effectiveTokens = tokens.length > 0 ? tokens : operatorFiltered;
+	if (effectiveTokens.length === 0) return "";
+	if (effectiveTokens.length === 1) return effectiveTokens[0] as string;
+	return effectiveTokens.join(" OR ");
 }
 
 /**
