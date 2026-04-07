@@ -365,10 +365,12 @@ describe("maintenance", () => {
 			db.close();
 		}
 
-		const report = getMemoryRoleReport(dbPath, { probes: ["oauth callback"] });
+		const report = getMemoryRoleReport(dbPath, {
+			probes: ["what did we decide about recap weighting"],
+		});
 
 		expect(report.probe_results).toHaveLength(1);
-		expect(report.probe_results[0]?.query).toBe("oauth callback");
+		expect(report.probe_results[0]?.query).toBe("what did we decide about recap weighting");
 		expect(report.probe_results[0]?.top_role_counts).toEqual({
 			recap: 1,
 			durable: 1,
@@ -395,13 +397,24 @@ describe("maintenance", () => {
 		});
 		expect(report.probe_results[0]?.items[0]).toEqual(
 			expect.objectContaining({
-				kind: "decision",
+				kind: "session_summary",
 				mapping: "mapped",
-				role: "durable",
-				role_reason: "durable_kind",
+				role: "recap",
+				role_reason: "session_summary_kind",
 				session_class: "unknown",
 				summary_disposition: "unknown",
-				title: "OAuth callback fix",
+				title: "Session recap",
+			}),
+		);
+		expect(report.probe_results[0]).toEqual(
+			expect.objectContaining({
+				scenario_id: "decision-recap-weighting",
+				scenario_category: "decision",
+				scenario_score: expect.objectContaining({
+					primary_match_count: expect.any(Number),
+					anti_signal_count: expect.any(Number),
+					score: expect.any(Number),
+				}),
 			}),
 		);
 		expect(report.session_class_buckets).toEqual({ unknown: 1 });

@@ -14,6 +14,16 @@ export interface InjectionEvalScenarioPack {
 	scenarios: InjectionEvalScenario[];
 }
 
+export function getInjectionEvalScenarioByPrompt(prompt: string): InjectionEvalScenario | null {
+	const normalized = prompt.trim().toLowerCase();
+	for (const pack of INJECTION_EVAL_SCENARIO_PACKS) {
+		for (const scenario of pack.scenarios) {
+			if (scenario.prompt.trim().toLowerCase() === normalized) return scenario;
+		}
+	}
+	return null;
+}
+
 export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 	{
 		id: "track3-core",
