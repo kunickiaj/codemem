@@ -66,7 +66,7 @@ At inspection time:
 
 - `last_received_event_seq`: `1398`
 - `last_flushed_event_seq`: `1356`
-- pending gap: `37` events
+- pending gap: `42` events
 
 The pending tail was not low-value noise. Event-type counts for the tail after
 `1356` were:
