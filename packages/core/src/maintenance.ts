@@ -54,6 +54,8 @@ export interface MemoryRoleProbeItem {
 	role: MemoryRole;
 	role_reason: string;
 	mapping: "mapped" | "unmapped";
+	session_class: string;
+	summary_disposition: string;
 }
 
 export interface MemoryRoleProbeResult {
@@ -113,6 +115,8 @@ export interface MemoryRoleReport {
 		garbage_like: number;
 	};
 	session_duration_buckets: Record<string, number>;
+	session_class_buckets: Record<string, number>;
+	summary_disposition_buckets: Record<string, number>;
 	role_examples: Partial<
 		Record<MemoryRole, Array<{ id: number; kind: string; title: string; role_reason: string }>>
 	>;
@@ -145,6 +149,8 @@ export interface MemoryRoleReportComparison {
 		counts_by_mapping: Record<"mapped" | "unmapped", number>;
 		summary_mapping: Record<"mapped" | "unmapped", number>;
 		session_duration_buckets: Record<string, number>;
+		session_class_buckets: Record<string, number>;
+		summary_disposition_buckets: Record<string, number>;
 	};
 	probe_comparisons: MemoryRoleProbeComparison[];
 }
@@ -748,6 +754,7 @@ export function getMemoryRoleReport(
 					m.active,
 					m.metadata_json,
 					s.project,
+					s.metadata_json AS session_metadata_json,
 					CASE
 						WHEN s.ended_at IS NOT NULL THEN (julianday(s.ended_at) - julianday(s.started_at)) * 24 * 60
 						ELSE NULL
@@ -772,6 +779,7 @@ export function getMemoryRoleReport(
 			active: number;
 			metadata_json: string | null;
 			project: string | null;
+			session_metadata_json: string | null;
 			session_minutes: number | null;
 			has_opencode_mapping: number;
 		}>;
@@ -793,6 +801,8 @@ export function getMemoryRoleReport(
 			"120m+": 0,
 			open: 0,
 		};
+		const sessionClassBuckets: Record<string, number> = {};
+		const summaryDispositionBuckets: Record<string, number> = {};
 		const roleExamples: MemoryRoleReport["role_examples"] = {};
 		let sessionSummaryCount = 0;
 		let legacySummaryCount = 0;
@@ -837,6 +847,19 @@ export function getMemoryRoleReport(
 
 			if (!seenSessionBuckets.has(row.session_id)) {
 				seenSessionBuckets.add(row.session_id);
+				const sessionMeta = safeParseMetadata(row.session_metadata_json);
+				const post =
+					sessionMeta.post &&
+					typeof sessionMeta.post === "object" &&
+					!Array.isArray(sessionMeta.post)
+						? (sessionMeta.post as Record<string, unknown>)
+						: {};
+				const sessionClass = String(post.session_class ?? "unknown").trim() || "unknown";
+				const summaryDisposition =
+					String(post.summary_disposition ?? "unknown").trim() || "unknown";
+				sessionClassBuckets[sessionClass] = (sessionClassBuckets[sessionClass] ?? 0) + 1;
+				summaryDispositionBuckets[summaryDisposition] =
+					(summaryDispositionBuckets[summaryDisposition] ?? 0) + 1;
 				const minutes = row.session_minutes;
 				const bucket: keyof typeof sessionDurationBuckets =
 					minutes == null
@@ -888,6 +911,13 @@ export function getMemoryRoleReport(
 						const mapping: "mapped" | "unmapped" = source?.has_opencode_mapping
 							? "mapped"
 							: "unmapped";
+						const sessionMeta = safeParseMetadata(source?.session_metadata_json ?? null);
+						const post =
+							sessionMeta.post &&
+							typeof sessionMeta.post === "object" &&
+							!Array.isArray(sessionMeta.post)
+								? (sessionMeta.post as Record<string, unknown>)
+								: {};
 						return {
 							id: item.id,
 							stable_key: stableProbeItemKey({
@@ -901,6 +931,8 @@ export function getMemoryRoleReport(
 							role: inferred.role,
 							role_reason: inferred.reason,
 							mapping,
+							session_class: String(post.session_class ?? "unknown"),
+							summary_disposition: String(post.summary_disposition ?? "unknown"),
 						};
 					});
 					const topRoleCounts: Record<MemoryRole, number> = {
@@ -1024,6 +1056,8 @@ export function getMemoryRoleReport(
 			},
 			project_quality: projectQuality,
 			session_duration_buckets: sessionDurationBuckets,
+			session_class_buckets: sessionClassBuckets,
+			summary_disposition_buckets: summaryDispositionBuckets,
 			role_examples: roleExamples,
 			probe_results: probeResults,
 		};
@@ -1055,6 +1089,14 @@ export function compareMemoryRoleReports(
 			session_duration_buckets: subtractKeyedCounts(
 				baseline.session_duration_buckets,
 				candidate.session_duration_buckets,
+			),
+			session_class_buckets: subtractKeyedCounts(
+				baseline.session_class_buckets,
+				candidate.session_class_buckets,
+			),
+			summary_disposition_buckets: subtractKeyedCounts(
+				baseline.summary_disposition_buckets,
+				candidate.summary_disposition_buckets,
 			),
 		},
 		probe_comparisons: compareProbeResults(baseline.probe_results, candidate.probe_results),

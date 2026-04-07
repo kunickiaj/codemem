@@ -278,6 +278,63 @@ describe("rerankResults", () => {
 		expect(reranked[0]?.id).toBe(2);
 	});
 
+	it("penalizes low-value micro-session recap more aggressively than durable recap", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.0,
+				kind: "session_summary",
+				title: "Micro recap",
+				metadata: { session_class: "micro_low_value" },
+			}),
+			makeResult({
+				id: 2,
+				score: 4.0,
+				kind: "session_summary",
+				title: "Durable recap",
+				metadata: { session_class: "durable" },
+			}),
+			makeResult({
+				id: 3,
+				score: 3.4,
+				kind: "decision",
+				title: "Useful decision",
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, undefined, "memory retrieval issues");
+		expect(reranked.map((item) => item.id)).toEqual([3, 2, 1]);
+	});
+
+	it("applies session-class recap multiplier to observer-summary rows", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.0,
+				kind: "session_summary",
+				title: "Micro observer recap",
+				metadata: { source: "observer_summary", session_class: "micro_low_value" },
+			}),
+			makeResult({
+				id: 2,
+				score: 4.0,
+				kind: "session_summary",
+				title: "Durable observer recap",
+				metadata: { source: "observer_summary", session_class: "durable" },
+			}),
+			makeResult({
+				id: 3,
+				score: 3.5,
+				kind: "decision",
+				title: "Useful durable decision",
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, undefined, "memory retrieval issues");
+		const orderedIds = reranked.map((item) => item.id);
+		const microIndex = orderedIds.indexOf(1);
+		const durableIndex = orderedIds.indexOf(2);
+		expect(microIndex).toBeGreaterThan(durableIndex);
+	});
+
 	it("applies a stronger penalty to observer-summary recap blobs than ordinary summary rows", () => {
 		const results = [
 			makeResult({

@@ -18,7 +18,7 @@ import {
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
 import { projectMatchesFilter } from "./project.js";
-import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
+import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
 import * as schema from "./schema.js";
 import { canonicalMemoryKind } from "./summary-memory.js";
 import type {
@@ -290,11 +290,13 @@ function searchQueryLooksTaskLike(query: string): boolean {
 function recapPenaltyForSearch(item: MemoryResult, preferSummary: boolean): number {
 	if (preferSummary || !memoryLooksRecapLike(item)) return 0.0;
 	const metadata = item.metadata ?? {};
-	if (metadata.source === "observer_summary") return NON_SUMMARY_OBSERVER_RECAP_PENALTY;
+	const multiplier = recapPenaltyMultiplier(item, preferSummary);
+	if (metadata.source === "observer_summary")
+		return NON_SUMMARY_OBSERVER_RECAP_PENALTY * multiplier;
 	if (typeof metadata.request === "string" && typeof metadata.completed === "string") {
-		return NON_SUMMARY_OBSERVER_RECAP_PENALTY;
+		return NON_SUMMARY_OBSERVER_RECAP_PENALTY * multiplier;
 	}
-	return NON_SUMMARY_RECAP_PENALTY;
+	return NON_SUMMARY_RECAP_PENALTY * multiplier;
 }
 
 function itemLooksTaskLikeForSearch(item: MemoryResult): boolean {

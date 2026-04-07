@@ -54,7 +54,7 @@ import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-pa
 import type { ObserverClient } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
-import { shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
+import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
 import type { MemoryStore } from "./store.js";
 import { deriveTags } from "./tags.js";
 import { storeVectors } from "./vectors.js";
@@ -433,6 +433,16 @@ export async function ingest(
 			}
 		}
 
+		const sessionClass = classifySessionForInjection({
+			sessionContext,
+			latestPrompt,
+			toolEventCount: toolEvents.length,
+			hasAssistantMessage: Boolean(lastAssistantMessage),
+			observationsCount: observationsToStore.length,
+			hasSummaryCandidate: summaryToStore != null,
+		});
+		let summaryDisposition: "stored" | "suppressed" | "none" = summaryToStore ? "stored" : "none";
+
 		if (
 			shouldSuppressSummaryOnlyOutput({
 				sessionContext,
@@ -445,6 +455,7 @@ export async function ingest(
 			})
 		) {
 			summaryToStore = null;
+			summaryDisposition = "suppressed";
 		}
 
 		const promptOnlyRawEventSummary =
@@ -477,7 +488,10 @@ export async function ingest(
 						skipSummaryReason: parsed.skipSummaryReason,
 					});
 				if (pureLowSignalSkip || locallySuppressedSummaryOnlyMicro) {
-					endSession(store, sessionId, events.length, sessionContext);
+					endSession(store, sessionId, events.length, sessionContext, {
+						session_class: sessionClass,
+						summary_disposition: locallySuppressedSummaryOnlyMicro ? "suppressed" : "none",
+					});
 					return;
 				}
 				throw new Error("observer produced no storable output for raw-event flush");
@@ -549,6 +563,7 @@ export async function ingest(
 						next_steps: summary.nextSteps,
 						notes: summary.notes,
 						prompt_number: promptNumber,
+						session_class: sessionClass,
 						files_read: summary.filesRead,
 						files_modified: summary.filesModified,
 						source: "observer_summary",
@@ -575,6 +590,8 @@ export async function ingest(
 						project,
 						observation_count: observationsToStore.length,
 						has_summary: summaryToStore != null,
+						session_class: sessionClass,
+						summary_disposition: summaryDisposition,
 						provider: response.provider,
 						model: response.model,
 						session_usage_tokens: usageTokenTotal,
@@ -594,7 +611,10 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		// End session
 		// ------------------------------------------------------------------
-		endSession(store, sessionId, events.length, sessionContext);
+		endSession(store, sessionId, events.length, sessionContext, {
+			session_class: sessionClass,
+			summary_disposition: summaryDisposition,
+		});
 	} catch (err) {
 		// End session even on error
 		try {
@@ -615,11 +635,12 @@ function endSession(
 	sessionId: number,
 	eventCount: number,
 	sessionContext: SessionContext,
+	extraPost: Record<string, unknown> = {},
 ): void {
 	// Use store.endSession() which merges metadata instead of replacing it,
 	// preserving fields set during session creation (startedAt, session_context, etc.)
 	store.endSession(sessionId, {
-		post: {},
+		post: extraPost,
 		source: "plugin",
 		event_count: eventCount,
 		session_context: sessionContext,

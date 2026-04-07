@@ -598,6 +598,13 @@ describe("ingest() integration", () => {
 		await ingest(payload, store, { observer: summaryOnlyObserver } as unknown as IngestOptions);
 
 		expect(store.recent(10)).toHaveLength(0);
+		const sessionMeta = store.db
+			.prepare("SELECT metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as { metadata_json: string };
+		expect(JSON.parse(sessionMeta.metadata_json).post).toEqual({
+			session_class: "micro_low_value",
+			summary_disposition: "suppressed",
+		});
 	});
 
 	it("keeps summary-only output for longer sessions", async () => {
@@ -650,10 +657,18 @@ describe("ingest() integration", () => {
 
 		const summaryMemory = store.db
 			.prepare(
-				"SELECT kind FROM memory_items WHERE json_extract(metadata_json, '$.is_summary') = 1 ORDER BY id DESC LIMIT 1",
+				"SELECT kind, metadata_json FROM memory_items WHERE json_extract(metadata_json, '$.is_summary') = 1 ORDER BY id DESC LIMIT 1",
 			)
-			.get() as { kind: string };
+			.get() as { kind: string; metadata_json: string };
 		expect(summaryMemory.kind).toBe("session_summary");
+		expect(JSON.parse(summaryMemory.metadata_json).session_class).toBe("working");
+		const sessionMeta = store.db
+			.prepare("SELECT metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as { metadata_json: string };
+		expect(JSON.parse(sessionMeta.metadata_json).post).toEqual({
+			session_class: "working",
+			summary_disposition: "stored",
+		});
 	});
 
 	it("falls back to cwd basename when payload project is missing", async () => {
