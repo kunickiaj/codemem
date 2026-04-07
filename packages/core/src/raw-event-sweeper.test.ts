@@ -18,10 +18,12 @@ describe("RawEventSweeper auto flush", () => {
 	let store: MemoryStore;
 	let prevAutoFlush: string | undefined;
 	let prevDebounce: string | undefined;
+	let prevWorkerMaxEvents: string | undefined;
 
 	beforeEach(() => {
 		prevAutoFlush = process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
 		prevDebounce = process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS;
+		prevWorkerMaxEvents = process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-raw-event-sweeper-test-"));
 		dbPath = join(tmpDir, "test.sqlite");
 		const db = connect(dbPath);
@@ -36,6 +38,8 @@ describe("RawEventSweeper auto flush", () => {
 		else process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = prevAutoFlush;
 		if (prevDebounce == null) delete process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS;
 		else process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = prevDebounce;
+		if (prevWorkerMaxEvents == null) delete process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS;
+		else process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS = prevWorkerMaxEvents;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -303,6 +307,75 @@ describe("RawEventSweeper auto flush", () => {
 		await sleep(100);
 
 		expect(store.rawEventFlushState("sess-auto")).toBe(1);
+	});
+
+	it("does not postpone debounced auto flush forever during continued activity", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "40";
+		seedSession("sess-bounded-debounce");
+		const sweeper = new RawEventSweeper(store, ingestOpts);
+
+		sweeper.nudge("sess-bounded-debounce");
+		await sleep(20);
+		store.recordRawEvent({
+			opencodeSessionId: "sess-bounded-debounce",
+			eventId: "evt-2",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "still active" },
+			tsWallMs: 300,
+		});
+		store.updateRawEventSessionMeta({
+			opencodeSessionId: "sess-bounded-debounce",
+			cwd: tmpDir,
+			project: "codemem",
+			startedAt: "2026-01-01T00:00:00Z",
+			lastSeenTsWallMs: 300,
+		});
+		sweeper.nudge("sess-bounded-debounce");
+		await sleep(70);
+
+		expect(store.rawEventFlushState("sess-bounded-debounce")).toBeGreaterThanOrEqual(1);
+	});
+
+	it("flushes active sessions in smaller batches by default", async () => {
+		process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = "1";
+		process.env.CODEMEM_RAW_EVENTS_DEBOUNCE_MS = "0";
+		process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS = "2";
+		seedSession("sess-small-batches");
+		store.recordRawEvent({
+			opencodeSessionId: "sess-small-batches",
+			eventId: "evt-2",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "a" },
+			tsWallMs: 300,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: "sess-small-batches",
+			eventId: "evt-3",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "b" },
+			tsWallMs: 400,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: "sess-small-batches",
+			eventId: "evt-4",
+			eventType: "assistant_message",
+			payload: { type: "assistant_message", assistant_text: "c" },
+			tsWallMs: 500,
+		});
+		store.updateRawEventSessionMeta({
+			opencodeSessionId: "sess-small-batches",
+			cwd: tmpDir,
+			project: "codemem",
+			startedAt: "2026-01-01T00:00:00Z",
+			lastSeenTsWallMs: 500,
+		});
+
+		const sweeper = new RawEventSweeper(store, ingestOpts);
+		sweeper.nudge("sess-small-batches");
+		await sleep(120);
+
+		expect(store.rawEventFlushState("sess-small-batches")).toBe(1);
 	});
 
 	it("terminally completes low-signal skip_summary batches and advances the flush cursor", async () => {

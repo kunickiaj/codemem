@@ -206,6 +206,15 @@ function formatToolEvent(event: ToolEvent): string {
 	return parts.join("\n");
 }
 
+function truncateMiddle(text: string, limit: number): string {
+	if (text.length <= limit) return text;
+	if (limit <= 20) return text.slice(0, limit);
+	const keep = Math.floor((limit - 9) / 2);
+	const head = text.slice(0, keep).trimEnd();
+	const tail = text.slice(text.length - keep).trimStart();
+	return `${head}\n[...]\n${tail}`;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -260,6 +269,12 @@ export function buildObserverPrompt(context: ObserverContext): {
 		userBlocks.push(promptBlock.join("\n"));
 	}
 
+	if (context.transcript.trim()) {
+		userBlocks.push(
+			`<conversation_transcript>\n${escapeXml(context.transcript)}\n</conversation_transcript>`,
+		);
+	}
+
 	if (context.diffSummary) {
 		userBlocks.push(
 			`<observed_from_primary_session>\n  <diff_summary>${escapeXml(context.diffSummary)}</diff_summary>\n</observed_from_primary_session>`,
@@ -286,4 +301,10 @@ export function buildObserverPrompt(context: ObserverContext): {
 	const user = userBlocks.join("\n\n").trim();
 
 	return { system, user };
+}
+
+export function truncateObserverTranscript(transcript: string, maxChars: number): string {
+	const trimmed = transcript.trim();
+	if (!trimmed) return "";
+	return truncateMiddle(trimmed, maxChars);
 }
