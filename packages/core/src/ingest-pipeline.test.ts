@@ -549,6 +549,113 @@ describe("ingest() integration", () => {
 		expect(summaryMetadata.learned).toBe("Race condition in handler");
 	});
 
+	it("suppresses summary-only micro-session recap output", async () => {
+		const summaryOnlyObserver = {
+			observe: async () => ({
+				raw: `<summary>
+					<request>Check retrieval noise</request>
+					<investigated>Looked at role report output</investigated>
+					<learned>Recap-heavy rows still dominate</learned>
+					<completed>Reviewed the current ranking behavior</completed>
+					<next_steps>Tighten recap weighting</next_steps>
+					<notes></notes>
+				</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			events: [
+				{
+					type: "user_prompt",
+					prompt_text: "ok",
+					prompt_number: 1,
+					timestamp: new Date().toISOString(),
+				},
+				{
+					type: "assistant_message",
+					assistant_text: "Done.",
+					timestamp: new Date().toISOString(),
+				},
+			],
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-micro-summary",
+				promptCount: 1,
+				toolCount: 0,
+				durationMs: 20_000,
+			},
+		});
+
+		await ingest(payload, store, { observer: summaryOnlyObserver } as unknown as IngestOptions);
+
+		expect(store.recent(10)).toHaveLength(0);
+	});
+
+	it("keeps summary-only output for longer sessions", async () => {
+		const summaryOnlyObserver = {
+			observe: async () => ({
+				raw: `<summary>
+					<request>Check retrieval noise</request>
+					<investigated>Looked at role report output</investigated>
+					<learned>Recap-heavy rows still dominate</learned>
+					<completed>Reviewed the current ranking behavior</completed>
+					<next_steps>Tighten recap weighting</next_steps>
+					<notes></notes>
+				</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			events: [
+				{
+					type: "user_prompt",
+					prompt_text: "ok",
+					prompt_number: 1,
+					timestamp: new Date().toISOString(),
+				},
+				{
+					type: "assistant_message",
+					assistant_text: "Done.",
+					timestamp: new Date().toISOString(),
+				},
+			],
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-long-summary",
+				promptCount: 1,
+				toolCount: 0,
+				durationMs: 120_000,
+			},
+		});
+
+		await ingest(payload, store, { observer: summaryOnlyObserver } as unknown as IngestOptions);
+
+		const summaryMemory = store.db
+			.prepare(
+				"SELECT kind FROM memory_items WHERE json_extract(metadata_json, '$.is_summary') = 1 ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { kind: string };
+		expect(summaryMemory.kind).toBe("session_summary");
+	});
+
 	it("falls back to cwd basename when payload project is missing", async () => {
 		const payload = buildPayload({ cwd: "/tmp/workspaces/codemem" });
 		await ingest(payload, store, { observer: mockObserver } as unknown as IngestOptions);
@@ -705,6 +812,62 @@ describe("ingest() integration", () => {
 		).rejects.toThrow("observer produced no storable output for raw-event flush");
 
 		expect(store.recent(10)).toHaveLength(0);
+	});
+
+	it("treats summary-only micro-session raw-event flushes as terminal no-op", async () => {
+		const summaryOnlyObserver = {
+			observe: async () => ({
+				raw: `<summary>
+					<request>Check retrieval noise</request>
+					<investigated>Looked at role report output</investigated>
+					<learned>Recap-heavy rows still dominate</learned>
+					<completed>Reviewed the current ranking behavior</completed>
+					<next_steps>Tighten recap weighting</next_steps>
+					<notes></notes>
+				</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			events: [
+				{
+					type: "user_prompt",
+					prompt_text: "ok",
+					prompt_number: 1,
+					timestamp: new Date().toISOString(),
+				},
+				{
+					type: "assistant_message",
+					assistant_text: "Done.",
+					timestamp: new Date().toISOString(),
+				},
+			],
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-summary-only-micro",
+				promptCount: 1,
+				toolCount: 0,
+				durationMs: 20_000,
+				flusher: "raw_events",
+			},
+		});
+
+		await ingest(payload, store, { observer: summaryOnlyObserver } as unknown as IngestOptions);
+
+		expect(store.recent(10)).toHaveLength(0);
+		const session = store.db
+			.prepare("SELECT ended_at FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as { ended_at: string | null };
+		expect(session.ended_at).not.toBeNull();
 	});
 
 	it("retries once when observer returns plain text instead of XML during raw-event flush", async () => {

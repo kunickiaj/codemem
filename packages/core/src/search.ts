@@ -19,6 +19,7 @@ import {
 import { parsePositiveMemoryId } from "./integers.js";
 import { projectMatchesFilter } from "./project.js";
 import * as schema from "./schema.js";
+import { canonicalMemoryKind, isSummaryLikeMemory } from "./summary-memory.js";
 import type {
 	ExplainError,
 	ExplainItem,
@@ -297,8 +298,7 @@ function searchQueryLooksTaskLike(query: string): boolean {
 }
 
 function itemIsSummaryLike(item: MemoryResult): boolean {
-	if (item.kind === "session_summary") return true;
-	return item.metadata?.is_summary === true;
+	return isSummaryLikeMemory(item);
 }
 
 function itemLooksRecapLikeForSearch(item: MemoryResult): boolean {
@@ -577,6 +577,7 @@ function searchOnce(
 	params.push(queryLimit);
 
 	const rows = store.db.prepare(sql).all(...params) as Record<string, unknown>[];
+	const preserveFilteredKind = typeof filters?.kind === "string" && filters.kind.trim().length > 0;
 
 	const results: MemoryResult[] = rows.map((row) => {
 		const metadata: Record<string, unknown> = {
@@ -610,7 +611,9 @@ function searchOnce(
 
 		return {
 			id: row.id as number,
-			kind: row.kind as string,
+			kind: preserveFilteredKind
+				? (row.kind as string)
+				: canonicalMemoryKind(row.kind as string, metadata),
 			title: row.title as string,
 			body_text: row.body_text as string,
 			confidence: row.confidence as number,
@@ -902,7 +905,7 @@ function loadItemsByIdsForExplain(
 
 	const items = scopedRows.map((row) => ({
 		id: row.id,
-		kind: row.kind,
+		kind: canonicalMemoryKind(row.kind, row.metadata_json),
 		title: row.title,
 		body_text: row.body_text,
 		confidence: row.confidence ?? 0,

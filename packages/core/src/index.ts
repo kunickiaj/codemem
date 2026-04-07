@@ -278,6 +278,7 @@ export {
 	timeline,
 } from "./search.js";
 export { MemoryStore } from "./store.js";
+export { canonicalMemoryKind, getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
 export type {
 	BuildAuthHeadersOptions,
 	SignRequestOptions,

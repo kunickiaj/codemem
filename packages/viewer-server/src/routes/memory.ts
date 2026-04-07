@@ -3,7 +3,14 @@
  */
 
 import type { MemoryStore } from "@codemem/core";
-import { buildFilterClausesWithContext, fromJson, parseStrictInteger, schema } from "@codemem/core";
+import {
+	buildFilterClausesWithContext,
+	canonicalMemoryKind,
+	fromJson,
+	isSummaryLikeMemory as isCoreSummaryLikeMemory,
+	parseStrictInteger,
+	schema,
+} from "@codemem/core";
 import { desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
@@ -108,19 +115,16 @@ function queryMemoryPage(
 
 	return rows.map((row) => ({
 		...row,
+		kind: canonicalMemoryKind((row.kind as string | null | undefined) ?? null, row.metadata_json),
 		metadata_json: fromJson((row.metadata_json as string) ?? null),
 	}));
 }
 
 function isSummaryLikeMemory(item: Record<string, unknown>): boolean {
-	if (String(item.kind ?? "").toLowerCase() === "session_summary") return true;
-	const metadata = (item.metadata_json ?? {}) as Record<string, unknown>;
-	if (metadata.is_summary === true) return true;
-	return (
-		String(metadata.source ?? "")
-			.trim()
-			.toLowerCase() === "observer_summary"
-	);
+	return isCoreSummaryLikeMemory({
+		kind: item.kind as string | null | undefined,
+		metadata: item.metadata_json,
+	});
 }
 
 function selectMemoryPage(

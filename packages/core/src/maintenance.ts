@@ -14,6 +14,7 @@ import { projectClause } from "./project.js";
 import * as schema from "./schema.js";
 import { bootstrapSchema } from "./schema-bootstrap.js";
 import { MemoryStore } from "./store.js";
+import { canonicalMemoryKind, getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
 
 export interface RawEventStatusItem {
 	source: string;
@@ -255,15 +256,7 @@ function classifyProjectQuality(project: unknown): "normal" | "empty" | "garbage
 }
 
 function safeParseMetadata(raw: string | null): Record<string, unknown> {
-	if (!raw) return {};
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-			? (parsed as Record<string, unknown>)
-			: {};
-	} catch {
-		return {};
-	}
+	return getSummaryMetadata(raw);
 }
 
 function hasAnyMarker(text: string, markers: string[]): boolean {
@@ -658,7 +651,7 @@ function inferMemoryRole(row: {
 	has_opencode_mapping: number;
 }): InferredMemoryRole {
 	const metadata = safeParseMetadata(row.metadata_json);
-	const isSummary = row.kind === "session_summary" || metadata?.is_summary === true;
+	const isSummary = isSummaryLikeMemory({ kind: row.kind, metadata });
 	if (isSummary) {
 		return {
 			role: "recap",
@@ -817,7 +810,7 @@ export function getMemoryRoleReport(
 			const metadata = safeParseMetadata(row.metadata_json);
 			if (row.kind === "session_summary") sessionSummaryCount += 1;
 			if (row.kind === "change" && metadata?.is_summary === true) legacySummaryCount += 1;
-			if (row.kind === "session_summary" || metadata?.is_summary === true) {
+			if (isSummaryLikeMemory({ kind: row.kind, metadata })) {
 				if (mapping === "mapped") mappedSummaryCount += 1;
 				else unmappedSummaryCount += 1;
 			}
@@ -889,7 +882,7 @@ export function getMemoryRoleReport(
 						const source = rows.find((row) => row.id === item.id);
 						const inferred = source
 							? inferMemoryRole(source)
-							: item.kind === "session_summary"
+							: canonicalMemoryKind(item.kind, item.metadata) === "session_summary"
 								? { role: "recap" as const, reason: "session_summary_kind" }
 								: { role: "ephemeral" as const, reason: "missing_source_row" };
 						const mapping: "mapped" | "unmapped" = source?.has_opencode_mapping
@@ -903,7 +896,7 @@ export function getMemoryRoleReport(
 								title: source?.title ?? item.title,
 								body_text: source?.body_text ?? "",
 							}),
-							kind: item.kind,
+							kind: canonicalMemoryKind(item.kind, item.metadata),
 							title: item.title,
 							role: inferred.role,
 							role_reason: inferred.reason,

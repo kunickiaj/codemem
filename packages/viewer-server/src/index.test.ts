@@ -430,6 +430,7 @@ describe("viewer-server", () => {
 					"Legacy summary",
 					"Observer summary memory",
 				]);
+				expect(new Set(summaries.map((item) => item.kind))).toEqual(new Set(["session_summary"]));
 
 				const observationsRes = await app.request("/api/observations");
 				expect(observationsRes.status).toBe(200);
