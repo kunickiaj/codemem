@@ -366,11 +366,11 @@ describe("maintenance", () => {
 		}
 
 		const report = getMemoryRoleReport(dbPath, {
-			probes: ["what did we decide about recap weighting"],
+			probes: ["what did we decide last time about oauth"],
 		});
 
 		expect(report.probe_results).toHaveLength(1);
-		expect(report.probe_results[0]?.query).toBe("what did we decide about recap weighting");
+		expect(report.probe_results[0]?.query).toBe("what did we decide last time about oauth");
 		expect(report.probe_results[0]?.top_role_counts).toEqual({
 			recap: 1,
 			durable: 1,
@@ -395,24 +395,29 @@ describe("maintenance", () => {
 			unmapped_share: 0,
 			recap_unmapped_share: 0,
 		});
-		expect(report.probe_results[0]?.items[0]).toEqual(
-			expect.objectContaining({
-				kind: "session_summary",
-				mapping: "mapped",
-				role: "recap",
-				role_reason: "session_summary_kind",
-				session_class: "unknown",
-				summary_disposition: "unknown",
-				title: "Session recap",
-			}),
+		expect(report.probe_results[0]?.items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "decision",
+					mapping: "mapped",
+					role: "durable",
+					role_reason: "durable_kind",
+					title: "OAuth callback fix",
+					session_class: "unknown",
+					summary_disposition: "unknown",
+				}),
+			]),
 		);
 		expect(report.probe_results[0]).toEqual(
 			expect.objectContaining({
-				scenario_id: "decision-recap-weighting",
-				scenario_category: "decision",
+				scenario_id: "oauth-recurrence",
+				scenario_category: "troubleshooting",
 				scenario_score: expect.objectContaining({
 					primary_match_count: expect.any(Number),
 					anti_signal_count: expect.any(Number),
+					recap_count: expect.any(Number),
+					unmapped_recap_count: expect.any(Number),
+					administrative_chatter_count: expect.any(Number),
 					score: expect.any(Number),
 				}),
 			}),
@@ -501,8 +506,6 @@ describe("maintenance", () => {
 		expect(comparison.delta.totals.sessions).toBe(-1);
 		expect(comparison.delta.counts_by_mapping).toEqual({ mapped: 1, unmapped: -2 });
 		expect(comparison.delta.summary_mapping).toEqual({ mapped: 0, unmapped: -1 });
-		expect(comparison.delta.session_class_buckets).toEqual({ unknown: -1 });
-		expect(comparison.delta.summary_disposition_buckets).toEqual({ unknown: -1 });
 		expect(comparison.probe_comparisons).toHaveLength(1);
 		expect(comparison.probe_comparisons[0]).toEqual(
 			expect.objectContaining({

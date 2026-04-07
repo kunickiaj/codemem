@@ -97,6 +97,9 @@ export interface MemoryRoleProbeResult {
 	scenario_score?: {
 		primary_match_count: number;
 		anti_signal_count: number;
+		recap_count: number;
+		unmapped_recap_count: number;
+		administrative_chatter_count: number;
 		score: number;
 	};
 }
@@ -439,13 +442,26 @@ function scoreProbeScenario(
 			return true;
 		return false;
 	}).length;
+	const recapCount = topItems.filter((item) => item.role === "recap").length;
+	const unmappedRecapCount = topItems.filter(
+		(item) => item.role === "recap" && item.mapping === "unmapped",
+	).length;
+	const administrativeChatterCount = topItems.filter(
+		(item) =>
+			item.role === "ephemeral" &&
+			item.kind !== "decision" &&
+			item.kind !== "bugfix" &&
+			item.kind !== "discovery",
+	).length;
 	return {
 		primary_match_count: primaryMatchCount,
 		anti_signal_count: antiSignalCount,
+		recap_count: recapCount,
+		unmapped_recap_count: unmappedRecapCount,
+		administrative_chatter_count: administrativeChatterCount,
 		score: primaryMatchCount - antiSignalCount,
 	};
 }
-
 function stableProbeItemKey(input: {
 	import_key?: string | null;
 	kind: string;
