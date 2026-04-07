@@ -299,15 +299,68 @@ function queryLooksLikeRecall(query: string): boolean {
 	return false;
 }
 
-function recallQueryPrefersSummary(query: string): boolean {
+function recallQueryWantsTimeline(query: string): boolean {
 	const lowered = query.toLowerCase();
-	for (const token of ["summary", "summarize", "recap"]) {
-		if (lowered.includes(token)) return true;
-	}
-	for (const phrase of ["catch me up", "catch up", "what happened", "where were we"]) {
+	for (const phrase of [
+		"what did we do",
+		"what did we work on",
+		"what did we decide",
+		"what happened",
+		"last time",
+		"previous session",
+		"previous work",
+		"where were we",
+		"catch me up",
+		"catch up",
+	]) {
 		if (lowered.includes(phrase)) return true;
 	}
 	return false;
+}
+
+function recallQueryPrefersSummary(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const token of ["summarize", "recap"]) {
+		if (lowered.includes(token)) return true;
+	}
+	for (const phrase of [
+		"summary of",
+		"summary for",
+		"summary on",
+		"show summary",
+		"session summary",
+		"summarize",
+		"summarise",
+		"recap",
+		"catch me up",
+		"catch up",
+		"what happened",
+		"where were we",
+	]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	if (lowered === "summary") return true;
+	if (lowered.startsWith("summary ")) return true;
+	return false;
+}
+
+function prioritizeDefaultResults(
+	results: MemoryResult[],
+	limit: number,
+	query: string,
+): MemoryResult[] {
+	const preferSummary = recallQueryPrefersSummary(query);
+	const ordered = [...results];
+	ordered.sort((a, b) => {
+		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
+		if (overlapDelta !== 0) return overlapDelta;
+		if (!preferSummary) {
+			const recapDelta = Number(itemLooksRecapLike(a)) - Number(itemLooksRecapLike(b));
+			if (recapDelta !== 0) return recapDelta;
+		}
+		return 0;
+	});
+	return ordered.slice(0, limit);
 }
 
 function toMemoryResult(row: MemoryItemResponse | TimelineItemResponse): MemoryResult {
@@ -344,6 +397,8 @@ function prioritizeTaskResults(results: MemoryResult[], limit: number, query = "
 	ordered.sort((a, b) => {
 		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
 		if (overlapDelta !== 0) return overlapDelta;
+		const taskLikeDelta = Number(itemLooksTaskLike(b)) - Number(itemLooksTaskLike(a));
+		if (taskLikeDelta !== 0) return taskLikeDelta;
 		const rank = (kind: string): number => {
 			if (kind === "note") return 0;
 			if (kind === "decision") return 1;
@@ -365,8 +420,6 @@ function prioritizeRecallResults(
 		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
 	);
 	ordered.sort((a, b) => {
-		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
-		if (overlapDelta !== 0) return overlapDelta;
 		const rank = (item: MemoryResult): number => {
 			if (preferSummary) {
 				if (isSummaryLike(item)) return 0;
@@ -387,6 +440,14 @@ function prioritizeRecallResults(
 			if (item.kind === "entities") return 7;
 			return 5;
 		};
+		if (!preferSummary) {
+			const rankDelta = rank(a) - rank(b);
+			if (rankDelta !== 0) return rankDelta;
+			const recapDelta = Number(itemLooksRecapLike(a)) - Number(itemLooksRecapLike(b));
+			if (recapDelta !== 0) return recapDelta;
+		}
+		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
+		if (overlapDelta !== 0) return overlapDelta;
 		return rank(a) - rank(b);
 	});
 	return ordered.slice(0, limit);
@@ -469,6 +530,19 @@ function isSummaryLike(item: Pick<MemoryResult, "kind" | "metadata">): boolean {
 	if (item.kind === "session_summary") return true;
 	const metadata = parseMetadataObject(item.metadata);
 	return metadata.is_summary === true;
+}
+
+function itemLooksRecapLike(
+	item: Pick<MemoryResult, "kind" | "title" | "body_text" | "metadata">,
+): boolean {
+	if (isSummaryLike(item)) return true;
+	const text = `${item.title} ${item.body_text}`.toLowerCase();
+	if (text.includes("## request") && text.includes("## completed")) return true;
+	if (item.kind !== "change" && item.kind !== "feature") return false;
+	for (const marker of ["session recap", "wrap-up", "wrap up", "recap"]) {
+		if (text.includes(marker)) return true;
+	}
+	return false;
 }
 
 function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): MemoryResult | null {
@@ -701,6 +775,7 @@ export function buildMemoryPack(
 	} else if (recallMode) {
 		const recallQuery = context.trim().length > 0 ? context : RECALL_HINT_QUERY;
 		const preferSummary = recallQueryPrefersSummary(recallQuery);
+		const wantsTimeline = recallQueryWantsTimeline(recallQuery);
 		const topicalRecallQuery = [...queryContentTokens(recallQuery)].join(" ");
 		let recallResults = search(store, recallQuery, effectiveLimit, filters);
 		ftsCount = recallResults.length;
@@ -738,7 +813,7 @@ export function buildMemoryPack(
 			? results[0]
 			: (results.find((item) => !isSummaryLike(item)) ?? results[0]);
 		const anchorId = anchor?.id;
-		if (anchorId != null) {
+		if (wantsTimeline && anchorId != null) {
 			const depthBefore = Math.max(0, Math.floor(effectiveLimit / 2));
 			const depthAfter = Math.max(0, effectiveLimit - depthBefore - 1);
 			const timelineRows = timeline(
@@ -757,11 +832,11 @@ export function buildMemoryPack(
 		const ftsResults = search(store, context, effectiveLimit, filters);
 		if (semanticResults && semanticResults.length > 0) {
 			const merge = mergeResults(store, ftsResults, semanticResults, effectiveLimit, filters);
-			results = merge.merged;
+			results = prioritizeDefaultResults(merge.merged, effectiveLimit, context);
 			ftsCount = merge.ftsCount;
 			semanticCount = merge.semanticCount;
 		} else {
-			results = ftsResults;
+			results = prioritizeDefaultResults(ftsResults, effectiveLimit, context);
 			ftsCount = results.length;
 		}
 		if (results.length === 0) {
@@ -906,7 +981,9 @@ export function buildMemoryPack(
 	const selectedIds = new Set(selectedById.keys());
 	for (const item of results) {
 		if (!selectedIds.has(item.id)) continue;
-		selectedItems.push(selectedById.get(item.id)!);
+		const selected = selectedById.get(item.id);
+		if (!selected) continue;
+		selectedItems.push(selected);
 		selectedIds.delete(item.id);
 	}
 	for (const item of [...budgetedSummary, ...budgetedTimeline, ...budgetedObservations]) {

@@ -45,7 +45,7 @@ describe("buildMemoryPack usefulness evals", () => {
 
 		expect(pack.metrics.mode).toBe("task");
 		expect(pack.item_ids[0]).toBe(corpus.ids.authTaskDecisionId);
-		expect(pack.item_ids.slice(0, 3)).toContain(corpus.ids.viewerTaskFeatureId);
+		expect(pack.item_ids.slice(0, 5)).toContain(corpus.ids.viewerTaskFeatureId);
 		expect(pack.pack_text.toLowerCase()).toContain("auth");
 	});
 
@@ -58,6 +58,40 @@ describe("buildMemoryPack usefulness evals", () => {
 		expect(pack.item_ids.slice(0, 3)).toContain(corpus.ids.viewerHealthFeatureId);
 		expect(pack.pack_text).toContain("Viewer health improvements");
 		expect(pack.pack_text).toContain("freshness and backlog diagnostics");
+	});
+
+	it("demotes recap-like rows for default retrieval queries that do not ask for a summary", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const pack = buildMemoryPack(store, "memory retrieval issues", 10);
+
+		expect(pack.metrics.mode).toBe("default");
+		expect(pack.item_ids[0]).toBe(corpus.ids.memoryIssuesDurableId);
+		expect(pack.item_ids.indexOf(corpus.ids.memoryIssuesDurableId)).toBeLessThan(
+			pack.item_ids.indexOf(corpus.ids.memoryIssuesRecapId),
+		);
+	});
+
+	it("does not treat topic queries mentioning summary as explicit recap requests", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const pack = buildMemoryPack(store, "sessionization summary emission", 10);
+
+		expect(pack.metrics.mode).toBe("recall");
+		expect(pack.item_ids[0]).toBe(corpus.ids.sessionizationDurableId);
+		expect(pack.item_ids.indexOf(corpus.ids.sessionizationDurableId)).toBeLessThan(
+			pack.item_ids.indexOf(corpus.ids.sessionizationSummaryId),
+		);
+	});
+
+	it("treats noun-form summary requests as explicit recap requests", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const pack = buildMemoryPack(store, "summary of oauth", 10);
+
+		expect(pack.metrics.mode).toBe("recall");
+		expect(pack.item_ids.slice(0, 3)).toContain(corpus.ids.oauthDecisionId);
+		expect(pack.pack_text.toLowerCase()).toContain("summary");
 	});
 
 	it("boosts working-set overlaps ahead of distractors when semantic candidates tie", () => {

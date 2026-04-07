@@ -7,6 +7,10 @@ export type PackEvalCorpus = {
 	ids: {
 		oauthDecisionId: number;
 		authTaskDecisionId: number;
+		memoryIssuesDurableId: number;
+		memoryIssuesRecapId: number;
+		sessionizationDurableId: number;
+		sessionizationSummaryId: number;
 		viewerTaskFeatureId: number;
 		viewerHealthFeatureId: number;
 		workingSetPrimaryId: number;
@@ -58,6 +62,36 @@ export function createPackEvalCorpus(store: MemoryStore): PackEvalCorpus {
 		"Need to add OAuth callback validation and replay protection",
 		0.95,
 	);
+	const memoryIssuesRecapId = store.remember(
+		currentSessionId,
+		"change",
+		"Memory retrieval issues recap",
+		"## Request\ninvestigate memory retrieval issues\n\n## Completed\nreviewed recap-heavy retrieval output",
+		0.85,
+		undefined,
+		{ is_summary: true },
+	);
+	const memoryIssuesDurableId = store.remember(
+		currentSessionId,
+		"discovery",
+		"Memory retrieval issue root cause",
+		"Identified ranking and summary weighting issues affecting memory retrieval quality",
+		0.92,
+	);
+	const sessionizationSummaryId = store.remember(
+		currentSessionId,
+		"session_summary",
+		"Session summary emission recap",
+		"Recent summary about short-session recap emission and follow-up notes",
+		0.8,
+	);
+	const sessionizationDurableId = store.remember(
+		currentSessionId,
+		"decision",
+		"Sessionization summary emission policy",
+		"Define when summary emission should be suppressed or delayed for micro-sessions",
+		0.94,
+	);
 	const viewerTaskFeatureId = store.remember(
 		currentSessionId,
 		"feature",
@@ -98,6 +132,10 @@ export function createPackEvalCorpus(store: MemoryStore): PackEvalCorpus {
 		ids: {
 			oauthDecisionId,
 			authTaskDecisionId,
+			memoryIssuesDurableId,
+			memoryIssuesRecapId,
+			sessionizationDurableId,
+			sessionizationSummaryId,
 			viewerTaskFeatureId,
 			viewerHealthFeatureId,
 			workingSetPrimaryId,
