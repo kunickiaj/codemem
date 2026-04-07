@@ -358,7 +358,7 @@ function createMemoryRoleReportCommand(): Command {
 					}
 					if (probe.scenario_score) {
 						p.log.message(
-							`    scenario score: primary=${probe.scenario_score.primary_match_count} anti=${probe.scenario_score.anti_signal_count} net=${probe.scenario_score.score}`,
+							`    scenario score: primary=${probe.scenario_score.primary_match_count} anti=${probe.scenario_score.anti_signal_count} recap=${probe.scenario_score.recap_count} unmapped_recap=${probe.scenario_score.unmapped_recap_count} chatter=${probe.scenario_score.administrative_chatter_count} net=${probe.scenario_score.score}`,
 						);
 					}
 					for (const item of probe.items.slice(0, 5)) {
