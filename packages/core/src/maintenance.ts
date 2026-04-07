@@ -95,6 +95,10 @@ export interface MemoryRoleProbeResult {
 		};
 	};
 	scenario_score?: {
+		mode_match: boolean;
+		primary_in_top1: boolean;
+		primary_in_top3_count: number;
+		anti_signal_in_top1: boolean;
 		primary_match_count: number;
 		anti_signal_count: number;
 		recap_count: number;
@@ -378,12 +382,14 @@ function compareProbeResults(
 function scoreProbeScenario(
 	items: MemoryRoleProbeItem[],
 	query: string,
+	mode: string,
 ): MemoryRoleProbeResult["scenario_score"] | undefined {
 	const scenario = getInjectionEvalScenarioByPrompt(query);
 	if (!scenario) return undefined;
 	const topItems = items.slice(0, 5);
+	const topThree = items.slice(0, 3);
 	const matchToken = (text: string, token: string): boolean => text.includes(token.toLowerCase());
-	const primaryMatchCount = topItems.filter((item) => {
+	const itemMatchesPrimary = (item: MemoryRoleProbeItem): boolean => {
 		const haystack = [
 			item.kind,
 			item.role,
@@ -395,8 +401,8 @@ function scoreProbeScenario(
 			.join(" ")
 			.toLowerCase();
 		return scenario.expectedPrimary.some((token) => matchToken(haystack, token));
-	}).length;
-	const antiSignalCount = topItems.filter((item) => {
+	};
+	const itemMatchesAntiSignal = (item: MemoryRoleProbeItem): boolean => {
 		const genericRecap = item.role === "recap" && item.session_class === "micro_low_value";
 		const unmappedRecap = item.role === "recap" && item.mapping === "unmapped";
 		const wrongThreadSummary = item.role === "recap" && item.summary_disposition === "unknown";
@@ -441,7 +447,18 @@ function scoreProbeScenario(
 		if (scenario.expectedAntiSignals.includes("administrative chatter") && administrativeChatter)
 			return true;
 		return false;
+	};
+	const primaryMatchCount = topItems.filter((item) => {
+		return itemMatchesPrimary(item);
 	}).length;
+	const antiSignalCount = topItems.filter((item) => itemMatchesAntiSignal(item)).length;
+	const expectedModes = scenario.expectedModes ?? [];
+	const modeMatch = expectedModes.length === 0 || expectedModes.includes(mode);
+	const primaryInTop1 =
+		topItems.length > 0 ? itemMatchesPrimary(topItems[0] as MemoryRoleProbeItem) : false;
+	const primaryInTop3Count = topThree.filter((item) => itemMatchesPrimary(item)).length;
+	const antiSignalInTop1 =
+		topItems.length > 0 ? itemMatchesAntiSignal(topItems[0] as MemoryRoleProbeItem) : false;
 	const recapCount = topItems.filter((item) => item.role === "recap").length;
 	const unmappedRecapCount = topItems.filter(
 		(item) => item.role === "recap" && item.mapping === "unmapped",
@@ -454,14 +471,24 @@ function scoreProbeScenario(
 			item.kind !== "discovery",
 	).length;
 	return {
+		mode_match: modeMatch,
+		primary_in_top1: primaryInTop1,
+		primary_in_top3_count: primaryInTop3Count,
+		anti_signal_in_top1: antiSignalInTop1,
 		primary_match_count: primaryMatchCount,
 		anti_signal_count: antiSignalCount,
 		recap_count: recapCount,
 		unmapped_recap_count: unmappedRecapCount,
 		administrative_chatter_count: administrativeChatterCount,
-		score: primaryMatchCount - antiSignalCount,
+		score:
+			primaryMatchCount -
+			antiSignalCount +
+			(modeMatch ? 1 : 0) +
+			(primaryInTop1 ? 1 : 0) -
+			(antiSignalInTop1 ? 1 : 0),
 	};
 }
+
 function stableProbeItemKey(input: {
 	import_key?: string | null;
 	kind: string;
@@ -1133,7 +1160,11 @@ export function getMemoryRoleReport(
 								recap_unmapped_share: simulated2RecapUnmappedCount / topCount,
 							},
 						},
-						scenario_score: scoreProbeScenario(probeItems, query),
+						scenario_score: scoreProbeScenario(
+							probeItems,
+							query,
+							String(pack.metrics.mode ?? "default"),
+						),
 					});
 				}
 			} finally {

@@ -3,6 +3,7 @@ export interface InjectionEvalScenario {
 	title: string;
 	category: "locating" | "decision" | "outcome" | "troubleshooting" | "continuation";
 	prompt: string;
+	expectedModes?: string[];
 	expectedPrimary: string[];
 	expectedAntiSignals: string[];
 }
@@ -36,6 +37,7 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 				title: "Recap weighting decision continuity",
 				category: "decision",
 				prompt: "what did we decide about recap weighting",
+				expectedModes: ["default", "recall"],
 				expectedPrimary: ["decision", "discovery", "durable"],
 				expectedAntiSignals: ["generic recap sludge", "wrong-thread summary"],
 			},
@@ -44,6 +46,7 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 				title: "Memory retrieval topic quality",
 				category: "outcome",
 				prompt: "memory retrieval issues",
+				expectedModes: ["default"],
 				expectedPrimary: ["discovery", "bugfix", "decision"],
 				expectedAntiSignals: ["recap takeover", "unmapped recap"],
 			},
@@ -52,6 +55,7 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 				title: "Sessionization summary emission policy",
 				category: "decision",
 				prompt: "sessionization summary emission",
+				expectedModes: ["recall", "default"],
 				expectedPrimary: ["decision", "durable policy memory"],
 				expectedAntiSignals: ["explicit recap bias", "summary-first sludge"],
 			},
@@ -60,6 +64,7 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 				title: "OAuth recurrence troubleshooting continuity",
 				category: "troubleshooting",
 				prompt: "what did we decide last time about oauth",
+				expectedModes: ["recall"],
 				expectedPrimary: ["decision", "bugfix", "troubleshooting outcome"],
 				expectedAntiSignals: ["wrong-thread latest summary", "recap-only output"],
 			},
@@ -68,6 +73,7 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 				title: "Track 3 continuation context",
 				category: "continuation",
 				prompt: "what should we do next about recap policy",
+				expectedModes: ["task", "default"],
 				expectedPrimary: ["decision", "next-step context", "durable workstream context"],
 				expectedAntiSignals: ["generic summary", "administrative chatter"],
 			},
@@ -83,6 +89,7 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 				title: "Explicit recap request for OAuth work",
 				category: "decision",
 				prompt: "summary of oauth",
+				expectedModes: ["recall"],
 				expectedPrimary: ["session_summary", "recap"],
 				expectedAntiSignals: ["missing summary intent", "topic-only refusal"],
 			},
@@ -91,6 +98,7 @@ export const INJECTION_EVAL_SCENARIO_PACKS: InjectionEvalScenarioPack[] = [
 				title: "Explicit catch-up request",
 				category: "continuation",
 				prompt: "catch me up on memory retrieval work",
+				expectedModes: ["recall"],
 				expectedPrimary: ["session_summary", "recap", "orientation context"],
 				expectedAntiSignals: ["totally summary-free output"],
 			},
