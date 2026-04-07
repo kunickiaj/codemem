@@ -26,6 +26,7 @@ export interface ObserverContext {
 	project: string | null;
 	userPrompt: string;
 	promptNumber: number | null;
+	transcript: string;
 	toolEvents: ToolEvent[];
 	lastAssistantMessage: string | null;
 	includeSummary: boolean;

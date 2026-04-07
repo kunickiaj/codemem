@@ -102,7 +102,7 @@ export class RawEventSweeper {
 	}
 
 	private workerMaxEvents(): number | null {
-		const parsed = envInt("CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS", 250);
+		const parsed = envInt("CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS", 100);
 		return parsed <= 0 ? null : parsed;
 	}
 
@@ -228,7 +228,7 @@ export class RawEventSweeper {
 			return;
 		}
 		const existing = this.autoFlushTimers.get(key);
-		if (existing) clearTimeout(existing);
+		if (existing) return;
 		const timer = setTimeout(() => {
 			this.autoFlushTimers.delete(key);
 			this.trackAutoFlush(this.flushNow(streamId, sourceNorm));
@@ -279,13 +279,14 @@ export class RawEventSweeper {
 			this.autoFlushTimers.delete(key);
 		}
 		try {
+			const maxEvents = this.workerMaxEvents();
 			await flushRawEvents(this.store, this.ingestOpts, {
 				opencodeSessionId,
 				source,
 				cwd: null,
 				project: null,
 				startedAt: null,
-				maxEvents: null,
+				maxEvents,
 			});
 		} catch (exc) {
 			if (exc instanceof ObserverAuthError) {

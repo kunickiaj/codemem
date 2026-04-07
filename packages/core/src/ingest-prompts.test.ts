@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildObserverPrompt } from "./ingest-prompts.js";
+import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
 
 describe("buildObserverPrompt", () => {
 	it("includes the Python parity examples and schema guidance", () => {
@@ -7,6 +7,7 @@ describe("buildObserverPrompt", () => {
 			project: "codemem",
 			userPrompt: "Fix observer quality drift",
 			promptNumber: 1,
+			transcript: "User: Fix observer quality drift",
 			toolEvents: [],
 			lastAssistantMessage: null,
 			diffSummary: "",
@@ -29,6 +30,7 @@ describe("buildObserverPrompt", () => {
 			project: "codemem",
 			userPrompt: "Tighten observer prompt quality",
 			promptNumber: 3,
+			transcript: "User: Tighten observer prompt quality\n\nAssistant: Done.",
 			toolEvents: [],
 			lastAssistantMessage: "Done.",
 			diffSummary: "",
@@ -38,6 +40,18 @@ describe("buildObserverPrompt", () => {
 
 		expect(user).toContain("<project>codemem</project>");
 		expect(user).toContain("<prompt_number>3</prompt_number>");
+		expect(user).toContain("<conversation_transcript>");
+		expect(user).toContain("Assistant: Done.");
 		expect(user).toContain("<assistant_response>Done.</assistant_response>");
+	});
+
+	it("truncates long transcripts while preserving head and tail context", () => {
+		const transcript = `${"A".repeat(120)} middle context ${"Z".repeat(120)}`;
+		const truncated = truncateObserverTranscript(transcript, 80);
+
+		expect(truncated.length).toBeLessThanOrEqual(80);
+		expect(truncated).toContain("[...]");
+		expect(truncated.startsWith("A")).toBe(true);
+		expect(truncated.endsWith("Z".repeat(35))).toBe(true);
 	});
 });

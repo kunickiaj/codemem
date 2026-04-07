@@ -31,7 +31,7 @@ import {
 	projectAdapterToolEvent,
 } from "./ingest-events.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
-import { buildObserverPrompt } from "./ingest-prompts.js";
+import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
 import {
 	buildTranscript,
 	deriveRequest,
@@ -369,10 +369,12 @@ export async function ingest(
 				: `[Session context: ${sessionInfoText}]`;
 		}
 
+		const transcriptBudget = Math.max(1500, Math.min(5000, Math.floor(observerMaxChars * 0.4)));
 		const observerContext: ObserverContext = {
 			project,
 			userPrompt: observerPrompt,
 			promptNumber,
+			transcript: truncateObserverTranscript(transcript, transcriptBudget),
 			toolEvents,
 			lastAssistantMessage: storeSummary ? lastAssistantMessage : null,
 			includeSummary: storeSummary,
