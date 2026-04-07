@@ -34,6 +34,7 @@ describe("buildMemoryPack usefulness evals", () => {
 
 		expect(pack.metrics.mode).toBe("recall");
 		expect(pack.item_ids.slice(0, 3)).toContain(corpus.ids.oauthDecisionId);
+		expect(pack.item_ids).not.toContain(corpus.ids.sessionizationSummaryId);
 		expect(pack.pack_text).toContain("OAuth callback fix");
 		expect(pack.pack_text).toContain("callback verification");
 	});

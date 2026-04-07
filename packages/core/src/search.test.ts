@@ -233,6 +233,107 @@ describe("rerankResults", () => {
 	it("returns empty array for empty input", () => {
 		expect(rerankResults(mockStore, [], 10)).toEqual([]);
 	});
+
+	it("penalizes summary-like rows for non-summary topical queries", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.0,
+				kind: "change",
+				title: "Memory retrieval issues recap",
+				metadata: { is_summary: true },
+			}),
+			makeResult({
+				id: 2,
+				score: 3.7,
+				kind: "discovery",
+				title: "Memory retrieval issue root cause",
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, undefined, "memory retrieval issues");
+		expect(reranked[0]?.id).toBe(2);
+	});
+
+	it("penalizes observer-summary recap blobs for non-summary topical queries", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.2,
+				kind: "change",
+				title: "User wanted to preserve important discussion items",
+				metadata: {
+					source: "observer_summary",
+					request: "investigate memory retrieval issues",
+					completed: "created follow-up tasks",
+				},
+			}),
+			makeResult({
+				id: 2,
+				score: 3.6,
+				kind: "discovery",
+				title: "Memory retrieval issue root cause",
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, undefined, "memory retrieval issues");
+		expect(reranked[0]?.id).toBe(2);
+	});
+
+	it("applies a stronger penalty to observer-summary recap blobs than ordinary summary rows", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.6,
+				kind: "change",
+				title: "Observer recap blob",
+				metadata: {
+					source: "observer_summary",
+					request: "investigate memory retrieval issues",
+					completed: "created follow-up tasks",
+				},
+			}),
+			makeResult({
+				id: 2,
+				score: 4.0,
+				kind: "change",
+				title: "Ordinary recap row",
+				metadata: { is_summary: true },
+			}),
+			makeResult({
+				id: 3,
+				score: 3.5,
+				kind: "discovery",
+				title: "Memory retrieval issue root cause",
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, undefined, "memory retrieval issues");
+		expect(reranked.map((item) => item.id)).toEqual([3, 2, 1]);
+	});
+
+	it("does not penalize summary-like rows when the query explicitly asks for a summary", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.0,
+				kind: "change",
+				title: "Memory retrieval issues recap",
+				metadata: { is_summary: true },
+			}),
+			makeResult({
+				id: 2,
+				score: 3.7,
+				kind: "discovery",
+				title: "Memory retrieval issue root cause",
+			}),
+		];
+		const reranked = rerankResults(
+			mockStore,
+			results,
+			10,
+			undefined,
+			"summarize memory retrieval issues",
+		);
+		expect(reranked[0]?.id).toBe(1);
+	});
 });
 
 // ---------------------------------------------------------------------------

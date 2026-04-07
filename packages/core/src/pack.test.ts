@@ -402,7 +402,7 @@ describe("buildMemoryPack", () => {
 		expect(pack.item_ids[0]).not.toBe(decisionId);
 	});
 
-	it("treats legacy change memories with is_summary metadata as summaries", () => {
+	it("does not inject legacy summary rows into non-summary recall packs", () => {
 		const now = new Date().toISOString();
 		store.db
 			.prepare(
@@ -429,7 +429,7 @@ describe("buildMemoryPack", () => {
 		const pack = buildMemoryPack(store, "what did we do last time about oauth", 10);
 
 		expect(pack.pack_text).toContain("## Summary");
-		expect(pack.pack_text).toContain("Legacy summary");
+		expect(pack.pack_text).not.toContain("Legacy summary");
 		expect(pack.pack_text).toContain("## Timeline\n[2] (decision) OAuth callback fix");
 	});
 

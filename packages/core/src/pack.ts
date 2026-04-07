@@ -728,6 +728,7 @@ function mergeResults(
 	ftsResults: MemoryResult[],
 	semanticResults: MemoryResult[],
 	limit: number,
+	query: string,
 	filters?: MemoryFilters,
 ): { merged: MemoryResult[]; ftsCount: number; semanticCount: number } {
 	const seen = new Map<number, MemoryResult>();
@@ -741,7 +742,7 @@ function mergeResults(
 		const existing = seen.get(r.id);
 		if (!existing || r.score > existing.score) seen.set(r.id, r);
 	}
-	const merged = rerankResults(store, [...seen.values()], limit, filters);
+	const merged = rerankResults(store, [...seen.values()], limit, filters, query);
 	return { merged, ftsCount: ftsResults.length, semanticCount };
 }
 
@@ -766,7 +767,14 @@ export function buildMemoryPack(
 		let taskResults = search(store, taskQuery, effectiveLimit, filters);
 		ftsCount = taskResults.length;
 		if (semanticResults && semanticResults.length > 0) {
-			const merge = mergeResults(store, taskResults, semanticResults, effectiveLimit, filters);
+			const merge = mergeResults(
+				store,
+				taskResults,
+				semanticResults,
+				effectiveLimit,
+				taskQuery,
+				filters,
+			);
 			taskResults = merge.merged;
 			semanticCount = merge.semanticCount;
 		}
@@ -817,7 +825,14 @@ export function buildMemoryPack(
 			ftsCount = recallResults.length;
 		}
 		if (semanticResults && semanticResults.length > 0) {
-			const merge = mergeResults(store, recallResults, semanticResults, effectiveLimit, filters);
+			const merge = mergeResults(
+				store,
+				recallResults,
+				semanticResults,
+				effectiveLimit,
+				recallQuery,
+				filters,
+			);
 			recallResults = merge.merged;
 			semanticCount = merge.semanticCount;
 		}
@@ -848,7 +863,14 @@ export function buildMemoryPack(
 	} else {
 		const ftsResults = search(store, context, effectiveLimit, filters);
 		if (semanticResults && semanticResults.length > 0) {
-			const merge = mergeResults(store, ftsResults, semanticResults, effectiveLimit, filters);
+			const merge = mergeResults(
+				store,
+				ftsResults,
+				semanticResults,
+				effectiveLimit,
+				context,
+				filters,
+			);
 			results = prioritizeDefaultResults(merge.merged, effectiveLimit, context);
 			ftsCount = merge.ftsCount;
 			semanticCount = merge.semanticCount;
@@ -864,9 +886,15 @@ export function buildMemoryPack(
 
 	// Step 2: categorize results
 
-	// Summary: prefer search match, fall back to most recent session_summary
-	let summaryItems = results.filter(isSummaryLike).slice(0, 1);
-	if (summaryItems.length === 0) {
+	// Summary: prefer search match; only inject a global fallback when the user
+	// explicitly wants a summary or we're in non-recall mode.
+	const directSummaryMatches =
+		recallMode && !recallQueryPrefersSummary(context)
+			? results.filter((item) => item.kind === "session_summary")
+			: results.filter(isSummaryLike);
+	let summaryItems = directSummaryMatches.slice(0, 1);
+	const allowGlobalSummaryFallback = !recallMode || recallQueryPrefersSummary(context);
+	if (summaryItems.length === 0 && allowGlobalSummaryFallback) {
 		const s = findLatestSummaryLike(store, filters);
 		if (s) {
 			summaryItems = [
