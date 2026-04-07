@@ -8,6 +8,7 @@ import {
 	getSchemaVersion,
 	resolveDbPath,
 } from "./db.js";
+import { getInjectionEvalScenarioByPrompt } from "./eval-scenarios.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
 import { buildMemoryPack } from "./pack.js";
 import { projectClause } from "./project.js";
@@ -60,6 +61,9 @@ export interface MemoryRoleProbeItem {
 
 export interface MemoryRoleProbeResult {
 	query: string;
+	scenario_id?: string;
+	scenario_title?: string;
+	scenario_category?: string;
 	mode: string;
 	item_ids: number[];
 	items: MemoryRoleProbeItem[];
@@ -89,6 +93,11 @@ export interface MemoryRoleProbeResult {
 			unmapped_share: number;
 			recap_unmapped_share: number;
 		};
+	};
+	scenario_score?: {
+		primary_match_count: number;
+		anti_signal_count: number;
+		score: number;
 	};
 }
 
@@ -361,6 +370,80 @@ function compareProbeResults(
 						: null,
 			};
 		});
+}
+
+function scoreProbeScenario(
+	items: MemoryRoleProbeItem[],
+	query: string,
+): MemoryRoleProbeResult["scenario_score"] | undefined {
+	const scenario = getInjectionEvalScenarioByPrompt(query);
+	if (!scenario) return undefined;
+	const topItems = items.slice(0, 5);
+	const matchToken = (text: string, token: string): boolean => text.includes(token.toLowerCase());
+	const primaryMatchCount = topItems.filter((item) => {
+		const haystack = [
+			item.kind,
+			item.role,
+			item.title,
+			item.role_reason,
+			item.session_class,
+			item.summary_disposition,
+		]
+			.join(" ")
+			.toLowerCase();
+		return scenario.expectedPrimary.some((token) => matchToken(haystack, token));
+	}).length;
+	const antiSignalCount = topItems.filter((item) => {
+		const genericRecap = item.role === "recap" && item.session_class === "micro_low_value";
+		const unmappedRecap = item.role === "recap" && item.mapping === "unmapped";
+		const wrongThreadSummary = item.role === "recap" && item.summary_disposition === "unknown";
+		const administrativeChatter =
+			item.role === "ephemeral" &&
+			item.kind !== "decision" &&
+			item.kind !== "bugfix" &&
+			item.kind !== "discovery";
+		const explicitRecapBias = item.role === "recap" && topItems[0]?.id === item.id;
+		const summaryFirstSludge = item.role === "recap" && item.kind === "session_summary";
+		const missingSummaryIntent =
+			scenario.expectedPrimary.includes("session_summary") && item.role !== "recap";
+		const topicOnlyRefusal = scenario.expectedPrimary.includes("recap") && item.role !== "recap";
+		const totallySummaryFreeOutput =
+			scenario.expectedPrimary.includes("session_summary") &&
+			!topItems.some((candidate) => candidate.role === "recap");
+		if (scenario.expectedAntiSignals.includes("generic recap sludge") && genericRecap) return true;
+		if (scenario.expectedAntiSignals.includes("recap takeover") && item.role === "recap")
+			return true;
+		if (scenario.expectedAntiSignals.includes("unmapped recap") && unmappedRecap) return true;
+		if (scenario.expectedAntiSignals.includes("wrong-thread summary") && wrongThreadSummary)
+			return true;
+		if (scenario.expectedAntiSignals.includes("wrong-thread latest summary") && wrongThreadSummary)
+			return true;
+		if (scenario.expectedAntiSignals.includes("recap-only output") && item.role === "recap")
+			return true;
+		if (scenario.expectedAntiSignals.includes("generic summary") && item.role === "recap")
+			return true;
+		if (scenario.expectedAntiSignals.includes("explicit recap bias") && explicitRecapBias)
+			return true;
+		if (scenario.expectedAntiSignals.includes("summary-first sludge") && summaryFirstSludge)
+			return true;
+		if (scenario.expectedAntiSignals.includes("missing summary intent") && missingSummaryIntent)
+			return true;
+		if (scenario.expectedAntiSignals.includes("topic-only refusal") && topicOnlyRefusal)
+			return true;
+		if (
+			scenario.expectedAntiSignals.includes("totally summary-free output") &&
+			totallySummaryFreeOutput
+		)
+			return true;
+		if (scenario.expectedAntiSignals.includes("administrative chatter") && administrativeChatter)
+			return true;
+		return false;
+	}).length;
+	return {
+		primary_match_count: primaryMatchCount,
+		anti_signal_count: antiSignalCount,
+		score: primaryMatchCount - antiSignalCount,
+	};
 }
 
 function stableProbeItemKey(input: {
@@ -894,6 +977,7 @@ export function getMemoryRoleReport(
 			const store = new MemoryStore(resolvedPath);
 			try {
 				for (const query of opts.probes ?? []) {
+					const scenario = getInjectionEvalScenarioByPrompt(query);
 					const pack = buildMemoryPack(
 						store,
 						query,
@@ -1000,6 +1084,9 @@ export function getMemoryRoleReport(
 					}
 					probeResults.push({
 						query,
+						scenario_id: scenario?.id,
+						scenario_title: scenario?.title,
+						scenario_category: scenario?.category,
 						mode: String(pack.metrics.mode ?? "default"),
 						item_ids: pack.item_ids,
 						items: probeItems,
@@ -1030,6 +1117,7 @@ export function getMemoryRoleReport(
 								recap_unmapped_share: simulated2RecapUnmappedCount / topCount,
 							},
 						},
+						scenario_score: scoreProbeScenario(probeItems, query),
 					});
 				}
 			} finally {

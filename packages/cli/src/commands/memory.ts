@@ -331,6 +331,11 @@ function createMemoryRoleReportCommand(): Command {
 				p.log.info("Probe results:");
 				for (const probe of result.probe_results) {
 					p.log.message(`  query: ${probe.query}`);
+					if (probe.scenario_id) {
+						p.log.message(
+							`    scenario: ${probe.scenario_id} (${probe.scenario_category ?? "unknown"})${probe.scenario_title ? ` — ${probe.scenario_title}` : ""}`,
+						);
+					}
 					p.log.message(`    mode: ${probe.mode}`);
 					p.log.message(
 						`    top roles: durable=${probe.top_role_counts.durable} recap=${probe.top_role_counts.recap} ephemeral=${probe.top_role_counts.ephemeral} general=${probe.top_role_counts.general}`,
@@ -349,6 +354,11 @@ function createMemoryRoleReportCommand(): Command {
 					if (probe.simulated_demoted_unmapped_recap_and_ephemeral) {
 						p.log.message(
 							`    simulated demote-unmapped-recap+ephemeral burden: recap_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_unmapped_share.toFixed(2)}`,
+						);
+					}
+					if (probe.scenario_score) {
+						p.log.message(
+							`    scenario score: primary=${probe.scenario_score.primary_match_count} anti=${probe.scenario_score.anti_signal_count} net=${probe.scenario_score.score}`,
 						);
 					}
 					for (const item of probe.items.slice(0, 5)) {

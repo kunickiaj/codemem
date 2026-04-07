@@ -112,6 +112,7 @@ export {
 } from "./embeddings.js";
 export type { InjectionEvalScenario, InjectionEvalScenarioPack } from "./eval-scenarios.js";
 export {
+	getInjectionEvalScenarioByPrompt,
 	getInjectionEvalScenarioPack,
 	getInjectionEvalScenarioPrompts,
 	INJECTION_EVAL_SCENARIO_PACKS,
