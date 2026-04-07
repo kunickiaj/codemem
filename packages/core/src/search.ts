@@ -18,8 +18,9 @@ import {
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
 import { projectMatchesFilter } from "./project.js";
+import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import * as schema from "./schema.js";
-import { canonicalMemoryKind, isSummaryLikeMemory } from "./summary-memory.js";
+import { canonicalMemoryKind } from "./summary-memory.js";
 import type {
 	ExplainError,
 	ExplainItem,
@@ -269,17 +270,6 @@ function personalBias(
 	return store.memoryOwnedBySelf(item) ? PERSONAL_FIRST_BONUS : 0.0;
 }
 
-function searchQueryPrefersSummary(query: string): boolean {
-	const lowered = query.toLowerCase();
-	for (const token of ["summarize", "summarise", "recap"]) {
-		if (lowered.includes(token)) return true;
-	}
-	for (const phrase of ["session summary", "catch me up", "catch up", "what happened"]) {
-		if (lowered.includes(phrase)) return true;
-	}
-	return false;
-}
-
 function searchQueryLooksTaskLike(query: string): boolean {
 	const lowered = query.toLowerCase();
 	for (const phrase of [
@@ -297,24 +287,8 @@ function searchQueryLooksTaskLike(query: string): boolean {
 	return false;
 }
 
-function itemIsSummaryLike(item: MemoryResult): boolean {
-	return isSummaryLikeMemory(item);
-}
-
-function itemLooksRecapLikeForSearch(item: MemoryResult): boolean {
-	if (itemIsSummaryLike(item)) return true;
-	const metadata = item.metadata ?? {};
-	if (metadata.source === "observer_summary") return true;
-	if (typeof metadata.request === "string" && typeof metadata.completed === "string") return true;
-	const text = `${item.title} ${item.body_text}`.toLowerCase();
-	for (const marker of ["session recap", "wrap-up", "wrap up", "recap", "## request"]) {
-		if (text.includes(marker)) return true;
-	}
-	return false;
-}
-
 function recapPenaltyForSearch(item: MemoryResult, preferSummary: boolean): number {
-	if (preferSummary || !itemLooksRecapLikeForSearch(item)) return 0.0;
+	if (preferSummary || !memoryLooksRecapLike(item)) return 0.0;
 	const metadata = item.metadata ?? {};
 	if (metadata.source === "observer_summary") return NON_SUMMARY_OBSERVER_RECAP_PENALTY;
 	if (typeof metadata.request === "string" && typeof metadata.completed === "string") {
@@ -462,7 +436,7 @@ export function rerankResults(
 ): MemoryResult[] {
 	const referenceNow = new Date();
 	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
-	const preferSummary = searchQueryPrefersSummary(query);
+	const preferSummary = queryPrefersRecap(query);
 	const taskLikeQuery = searchQueryLooksTaskLike(query);
 
 	const scored = results.map((item) => ({

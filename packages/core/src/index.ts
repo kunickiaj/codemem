@@ -110,6 +110,12 @@ export {
 	hashText,
 	serializeFloat32,
 } from "./embeddings.js";
+export type { InjectionEvalScenario, InjectionEvalScenarioPack } from "./eval-scenarios.js";
+export {
+	getInjectionEvalScenarioPack,
+	getInjectionEvalScenarioPrompts,
+	INJECTION_EVAL_SCENARIO_PACKS,
+} from "./eval-scenarios.js";
 export type { ExportOptions, ExportPayload, ImportOptions, ImportResult } from "./export-import.js";
 export {
 	buildImportKey,

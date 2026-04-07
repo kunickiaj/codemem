@@ -8,6 +8,8 @@
 import * as p from "@clack/prompts";
 import {
 	compareMemoryRoleReports,
+	getInjectionEvalScenarioPack,
+	getInjectionEvalScenarioPrompts,
 	getMemoryRoleReport,
 	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
@@ -245,6 +247,12 @@ function createMemoryRoleReportCommand(): Command {
 			(value, prev: string[]) => [...prev, value],
 			[],
 		)
+		.option(
+			"--scenario <id>",
+			"run a named injection-first eval scenario pack (can be repeated)",
+			(value, prev: string[]) => [...prev, value],
+			[],
+		)
 		.option("--inactive", "include inactive memories");
 	addDbOption(cmd);
 	addJsonOption(cmd);
@@ -255,6 +263,7 @@ function createMemoryRoleReportCommand(): Command {
 					project?: string;
 					allProjects?: boolean;
 					probe?: string[];
+					scenario?: string[];
 					inactive?: boolean;
 				},
 		) => {
@@ -264,11 +273,21 @@ function createMemoryRoleReportCommand(): Command {
 					: opts.project?.trim() ||
 						process.env.CODEMEM_PROJECT?.trim() ||
 						resolveProject(process.cwd(), null);
+			const invalidScenario = (opts.scenario ?? []).find(
+				(id) => getInjectionEvalScenarioPack(id) == null,
+			);
+			if (invalidScenario) {
+				throw new Error(`Unknown eval scenario pack: ${invalidScenario}`);
+			}
+			const probes = [
+				...(opts.probe ?? []),
+				...getInjectionEvalScenarioPrompts(opts.scenario ?? []),
+			];
 			const result = getMemoryRoleReport(resolveDbOpt(opts), {
 				project,
 				allProjects: opts.allProjects === true,
 				includeInactive: opts.inactive === true,
-				probes: opts.probe,
+				probes,
 			});
 
 			if (opts.json) {
@@ -351,6 +370,12 @@ function createMemoryRoleCompareCommand(): Command {
 			(value, prev: string[]) => [...prev, value],
 			[],
 		)
+		.option(
+			"--scenario <id>",
+			"run a named injection-first eval scenario pack (can be repeated)",
+			(value, prev: string[]) => [...prev, value],
+			[],
+		)
 		.option("--inactive", "include inactive memories");
 	addJsonOption(cmd);
 	cmd.action(
@@ -361,6 +386,7 @@ function createMemoryRoleCompareCommand(): Command {
 				project?: string;
 				allProjects?: boolean;
 				probe?: string[];
+				scenario?: string[];
 				inactive?: boolean;
 			},
 		) => {
@@ -370,11 +396,21 @@ function createMemoryRoleCompareCommand(): Command {
 					: opts.project?.trim() ||
 						process.env.CODEMEM_PROJECT?.trim() ||
 						resolveProject(process.cwd(), null);
+			const invalidScenario = (opts.scenario ?? []).find(
+				(id) => getInjectionEvalScenarioPack(id) == null,
+			);
+			if (invalidScenario) {
+				throw new Error(`Unknown eval scenario pack: ${invalidScenario}`);
+			}
+			const probes = [
+				...(opts.probe ?? []),
+				...getInjectionEvalScenarioPrompts(opts.scenario ?? []),
+			];
 			const result = compareMemoryRoleReports(baselineDb, candidateDb, {
 				project,
 				allProjects: opts.allProjects === true,
 				includeInactive: opts.inactive === true,
-				probes: opts.probe,
+				probes,
 			});
 
 			if (opts.json) {
