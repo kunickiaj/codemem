@@ -576,7 +576,7 @@ describe("ingest() integration", () => {
 			events: [
 				{
 					type: "user_prompt",
-					prompt_text: "ok",
+					prompt_text: "check retrieval noise",
 					prompt_number: 1,
 					timestamp: new Date().toISOString(),
 				},
@@ -868,6 +868,49 @@ describe("ingest() integration", () => {
 			.prepare("SELECT ended_at FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { ended_at: string | null };
 		expect(session.ended_at).not.toBeNull();
+	});
+
+	it("does not terminally no-op a prompt-only raw-event flush before assistant context arrives", async () => {
+		const observer = {
+			observe: async () => ({
+				raw: `<summary>
+					<request>Check retrieval noise</request>
+					<completed>Reviewed the current ranking behavior</completed>
+				</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			events: [
+				{
+					type: "user_prompt",
+					prompt_text: "ok",
+					prompt_number: 1,
+					timestamp: new Date().toISOString(),
+				},
+			],
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-prompt-only",
+				promptCount: 1,
+				toolCount: 0,
+				durationMs: 20_000,
+				flusher: "raw_events",
+			},
+		});
+
+		await expect(ingest(payload, store, { observer } as unknown as IngestOptions)).rejects.toThrow(
+			"observer produced no storable output for raw-event flush",
+		);
 	});
 
 	it("retries once when observer returns plain text instead of XML during raw-event flush", async () => {

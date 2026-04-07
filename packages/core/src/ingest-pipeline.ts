@@ -54,6 +54,7 @@ import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-pa
 import type { ObserverClient } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
+import { shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
 import type { MemoryStore } from "./store.js";
 import { deriveTags } from "./tags.js";
 import { storeVectors } from "./vectors.js";
@@ -107,32 +108,6 @@ function summaryBody(summary: ParsedSummary): string {
 		.filter(([, value]) => value)
 		.map(([label, value]) => `## ${label}\n${value}`)
 		.join("\n\n");
-}
-
-function shouldSuppressSummaryOnlyMicroSession(
-	sessionContext: SessionContext,
-	observationsCount: number,
-	summaryToStore: { summary: ParsedSummary; request: string; body: string } | null,
-	latestPrompt: string | null,
-	toolEventCount: number,
-	hasAssistantMessage: boolean,
-	skipSummaryReason: string | null,
-): boolean {
-	if (!summaryToStore) return false;
-	if (observationsCount > 0) return false;
-	if (skipSummaryReason) return false;
-	const durationMs = sessionContext.durationMs ?? 0;
-	const promptCount = sessionContext.promptCount ?? 0;
-	const toolCount = sessionContext.toolCount ?? 0;
-	const hasModifiedFiles = (sessionContext.filesModified?.length ?? 0) > 0;
-	if (durationMs <= 0 || durationMs >= 60_000) return false;
-	if (promptCount > 1) return false;
-	if (toolCount > 2) return false;
-	if (hasModifiedFiles) return false;
-	if (!isTrivialRequest(latestPrompt)) return false;
-	if (toolEventCount > 0) return false;
-	if (!hasAssistantMessage) return false;
-	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +306,9 @@ export async function ingest(
 		}
 
 		if (!shouldProcess) {
+			if (sessionContext?.flusher === "raw_events") {
+				throw new Error("observer produced no storable output for raw-event flush");
+			}
 			endSession(store, sessionId, events.length, sessionContext);
 			return;
 		}
@@ -456,16 +434,26 @@ export async function ingest(
 		}
 
 		if (
-			shouldSuppressSummaryOnlyMicroSession(
+			shouldSuppressSummaryOnlyOutput({
 				sessionContext,
-				observationsToStore.length,
-				summaryToStore,
+				observationsCount: observationsToStore.length,
+				hasSummaryCandidate: summaryToStore != null,
 				latestPrompt,
-				toolEvents.length,
-				Boolean(lastAssistantMessage),
-				parsed.skipSummaryReason,
-			)
+				toolEventCount: toolEvents.length,
+				hasAssistantMessage: Boolean(lastAssistantMessage),
+				skipSummaryReason: parsed.skipSummaryReason,
+			})
 		) {
+			summaryToStore = null;
+		}
+
+		const promptOnlyRawEventSummary =
+			sessionContext?.flusher === "raw_events" &&
+			observationsToStore.length === 0 &&
+			summaryToStore != null &&
+			toolEvents.length === 0 &&
+			!lastAssistantMessage;
+		if (promptOnlyRawEventSummary) {
 			summaryToStore = null;
 		}
 
@@ -479,19 +467,15 @@ export async function ingest(
 				const locallySuppressedSummaryOnlyMicro =
 					parsed.observations.length === 0 &&
 					parsed.summary !== null &&
-					shouldSuppressSummaryOnlyMicroSession(
+					shouldSuppressSummaryOnlyOutput({
 						sessionContext,
-						0,
-						{
-							summary: parsed.summary,
-							request: parsed.summary.request,
-							body: summaryBody(parsed.summary),
-						},
+						observationsCount: 0,
+						hasSummaryCandidate: true,
 						latestPrompt,
-						toolEvents.length,
-						Boolean(lastAssistantMessage),
-						parsed.skipSummaryReason,
-					);
+						toolEventCount: toolEvents.length,
+						hasAssistantMessage: Boolean(lastAssistantMessage),
+						skipSummaryReason: parsed.skipSummaryReason,
+					});
 				if (pureLowSignalSkip || locallySuppressedSummaryOnlyMicro) {
 					endSession(store, sessionId, events.length, sessionContext);
 					return;

@@ -43,6 +43,19 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--project");
 		expect(longs).toContain("--all-projects");
 		expect(longs).toContain("--probe");
+		expect(longs).toContain("--scenario");
+		expect(longs).toContain("--inactive");
+		expect(longs).toContain("--json");
+	});
+
+	it("registers role-compare under memory with scenario options", () => {
+		const roleCompare = memoryCommand.commands.find((command) => command.name() === "role-compare");
+		expect(roleCompare).toBeDefined();
+		const longs = roleCompare?.options.map((option) => option.long) ?? [];
+		expect(longs).toContain("--project");
+		expect(longs).toContain("--all-projects");
+		expect(longs).toContain("--probe");
+		expect(longs).toContain("--scenario");
 		expect(longs).toContain("--inactive");
 		expect(longs).toContain("--json");
 	});

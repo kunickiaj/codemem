@@ -17,6 +17,7 @@
 import type { Database } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { projectBasename } from "./project.js";
+import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import type { StoreHandle } from "./search.js";
 import { rerankResults, search, timeline } from "./search.js";
 import {
@@ -324,42 +325,16 @@ function recallQueryWantsTimeline(query: string): boolean {
 	return false;
 }
 
-function recallQueryPrefersSummary(query: string): boolean {
-	const lowered = query.toLowerCase();
-	for (const token of ["summarize", "recap"]) {
-		if (lowered.includes(token)) return true;
-	}
-	for (const phrase of [
-		"summary of",
-		"summary for",
-		"summary on",
-		"show summary",
-		"session summary",
-		"summarize",
-		"summarise",
-		"recap",
-		"catch me up",
-		"catch up",
-		"what happened",
-		"where were we",
-	]) {
-		if (lowered.includes(phrase)) return true;
-	}
-	if (lowered === "summary") return true;
-	if (lowered.startsWith("summary ")) return true;
-	return false;
-}
-
 function prioritizeDefaultResults(
 	results: MemoryResult[],
 	limit: number,
 	query: string,
 ): MemoryResult[] {
-	const preferSummary = recallQueryPrefersSummary(query);
+	const preferSummary = queryPrefersRecap(query);
 	const ordered = [...results];
 	ordered.sort((a, b) => {
 		if (!preferSummary) {
-			const recapDelta = Number(itemLooksRecapLike(a)) - Number(itemLooksRecapLike(b));
+			const recapDelta = Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
 			if (recapDelta !== 0) return recapDelta;
 			const taskLikeDelta = Number(itemLooksTaskLike(a)) - Number(itemLooksTaskLike(b));
 			if (taskLikeDelta !== 0) return taskLikeDelta;
@@ -466,7 +441,7 @@ function prioritizeRecallResults(
 		if (!preferSummary) {
 			const rankDelta = rank(a) - rank(b);
 			if (rankDelta !== 0) return rankDelta;
-			const recapDelta = Number(itemLooksRecapLike(a)) - Number(itemLooksRecapLike(b));
+			const recapDelta = Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
 			if (recapDelta !== 0) return recapDelta;
 		}
 		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
@@ -536,19 +511,6 @@ function parseMetadataObject(value: unknown): Record<string, unknown> {
 
 function isSummaryLike(item: Pick<MemoryResult, "kind" | "metadata">): boolean {
 	return isSummaryLikeMemory(item);
-}
-
-function itemLooksRecapLike(
-	item: Pick<MemoryResult, "kind" | "title" | "body_text" | "metadata">,
-): boolean {
-	if (isSummaryLike(item)) return true;
-	const text = `${item.title} ${item.body_text}`.toLowerCase();
-	if (text.includes("## request") && text.includes("## completed")) return true;
-	if (item.kind !== "change" && item.kind !== "feature") return false;
-	for (const marker of ["session recap", "wrap-up", "wrap up", "recap"]) {
-		if (text.includes(marker)) return true;
-	}
-	return false;
 }
 
 function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): MemoryResult | null {
@@ -788,7 +750,7 @@ export function buildMemoryPack(
 		}
 	} else if (recallMode) {
 		const recallQuery = context.trim().length > 0 ? context : RECALL_HINT_QUERY;
-		const preferSummary = recallQueryPrefersSummary(recallQuery);
+		const preferSummary = queryPrefersRecap(recallQuery);
 		const wantsTimeline = recallQueryWantsTimeline(recallQuery);
 		const topicalRecallQuery = [...queryContentTokens(recallQuery)].join(" ");
 		let recallResults = search(store, recallQuery, effectiveLimit, filters);
@@ -878,11 +840,11 @@ export function buildMemoryPack(
 	// Summary: prefer search match; only inject a global fallback when the user
 	// explicitly wants a summary or we're in non-recall mode.
 	const directSummaryMatches =
-		recallMode && !recallQueryPrefersSummary(context)
+		recallMode && !queryPrefersRecap(context)
 			? results.filter((item) => isNativeSessionSummaryMemory(item))
 			: results.filter(isSummaryLike);
 	let summaryItems = directSummaryMatches.slice(0, 1);
-	const allowGlobalSummaryFallback = !recallMode || recallQueryPrefersSummary(context);
+	const allowGlobalSummaryFallback = !recallMode || queryPrefersRecap(context);
 	if (summaryItems.length === 0 && allowGlobalSummaryFallback) {
 		const s = findLatestSummaryLike(store, filters);
 		if (s) {
