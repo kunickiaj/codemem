@@ -109,6 +109,32 @@ function summaryBody(summary: ParsedSummary): string {
 		.join("\n\n");
 }
 
+function shouldSuppressSummaryOnlyMicroSession(
+	sessionContext: SessionContext,
+	observationsCount: number,
+	summaryToStore: { summary: ParsedSummary; request: string; body: string } | null,
+	latestPrompt: string | null,
+	toolEventCount: number,
+	hasAssistantMessage: boolean,
+	skipSummaryReason: string | null,
+): boolean {
+	if (!summaryToStore) return false;
+	if (observationsCount > 0) return false;
+	if (skipSummaryReason) return false;
+	const durationMs = sessionContext.durationMs ?? 0;
+	const promptCount = sessionContext.promptCount ?? 0;
+	const toolCount = sessionContext.toolCount ?? 0;
+	const hasModifiedFiles = (sessionContext.filesModified?.length ?? 0) > 0;
+	if (durationMs <= 0 || durationMs >= 60_000) return false;
+	if (promptCount > 1) return false;
+	if (toolCount > 2) return false;
+	if (hasModifiedFiles) return false;
+	if (!isTrivialRequest(latestPrompt)) return false;
+	if (toolEventCount > 0) return false;
+	if (!hasAssistantMessage) return false;
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Event normalization (adapter projection)
 // ---------------------------------------------------------------------------
@@ -427,6 +453,20 @@ export async function ingest(
 			}
 		}
 
+		if (
+			shouldSuppressSummaryOnlyMicroSession(
+				sessionContext,
+				observationsToStore.length,
+				summaryToStore,
+				latestPrompt,
+				toolEvents.length,
+				Boolean(lastAssistantMessage),
+				parsed.skipSummaryReason,
+			)
+		) {
+			summaryToStore = null;
+		}
+
 		if (sessionContext?.flusher === "raw_events") {
 			const storableCount = observationsToStore.length + (summaryToStore ? 1 : 0);
 			if (storableCount === 0) {
@@ -434,7 +474,23 @@ export async function ingest(
 					parsed.skipSummaryReason?.trim().toLowerCase() === "low-signal" &&
 					parsed.observations.length === 0 &&
 					parsed.summary === null;
-				if (pureLowSignalSkip) {
+				const locallySuppressedSummaryOnlyMicro =
+					parsed.observations.length === 0 &&
+					parsed.summary !== null &&
+					shouldSuppressSummaryOnlyMicroSession(
+						sessionContext,
+						0,
+						{
+							summary: parsed.summary,
+							request: parsed.summary.request,
+							body: summaryBody(parsed.summary),
+						},
+						latestPrompt,
+						toolEvents.length,
+						Boolean(lastAssistantMessage),
+						parsed.skipSummaryReason,
+					);
+				if (pureLowSignalSkip || locallySuppressedSummaryOnlyMicro) {
 					endSession(store, sessionId, events.length, sessionContext);
 					return;
 				}

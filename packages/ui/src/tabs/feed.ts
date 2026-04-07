@@ -229,6 +229,11 @@ function isSummaryLikeItem(item: any, metadata: any): boolean {
   return source === 'observer_summary';
 }
 
+function canonicalKind(item: any, metadata: any): string {
+  const kindValue = String(item?.kind || '').trim().toLowerCase();
+  return isSummaryLikeItem(item, metadata) ? 'session_summary' : (kindValue || 'change');
+}
+
 function getFactsList(item: any): string[] {
   const summary = getSummaryObject(item);
   if (summary) {
@@ -456,10 +461,9 @@ function TagChip({ tag }: { tag: any }) {
 /* ── Feed item card renderer ─────────────────────────────── */
 
 function FeedItemCard({ item }: { item: any }) {
-  const kindValue = String(item.kind || 'session_summary').toLowerCase();
   const metadata = mergeMetadata(item?.metadata_json);
   const isSessionSummary = isSummaryLikeItem(item, metadata);
-  const displayKindValue = isSessionSummary ? 'session_summary' : kindValue;
+  const displayKindValue = canonicalKind(item, metadata);
   const rowKey = itemKey(item);
   const defaultTitle = item.title || '(untitled)';
   const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;

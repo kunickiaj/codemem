@@ -19,6 +19,12 @@ import { buildFilterClausesWithContext } from "./filters.js";
 import { projectBasename } from "./project.js";
 import type { StoreHandle } from "./search.js";
 import { rerankResults, search, timeline } from "./search.js";
+import {
+	canonicalMemoryKind,
+	getSummaryMetadata,
+	isNativeSessionSummaryMemory,
+	isSummaryLikeMemory,
+} from "./summary-memory.js";
 import type {
 	MemoryFilters,
 	MemoryItemResponse,
@@ -383,7 +389,7 @@ function prioritizeDefaultResults(
 function toMemoryResult(row: MemoryItemResponse | TimelineItemResponse): MemoryResult {
 	return {
 		id: row.id,
-		kind: row.kind,
+		kind: canonicalMemoryKind(row.kind, row.metadata_json),
 		title: row.title,
 		body_text: row.body_text,
 		confidence: row.confidence ?? 0,
@@ -525,28 +531,11 @@ function coercePackItemIds(value: unknown): { ids: number[]; valid: boolean } {
 }
 
 function parseMetadataObject(value: unknown): Record<string, unknown> {
-	if (!value) return {};
-	if (typeof value === "string") {
-		try {
-			const parsed = JSON.parse(value) as unknown;
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				return parsed as Record<string, unknown>;
-			}
-			return {};
-		} catch {
-			return {};
-		}
-	}
-	if (typeof value === "object" && !Array.isArray(value)) {
-		return value as Record<string, unknown>;
-	}
-	return {};
+	return getSummaryMetadata(value);
 }
 
 function isSummaryLike(item: Pick<MemoryResult, "kind" | "metadata">): boolean {
-	if (item.kind === "session_summary") return true;
-	const metadata = parseMetadataObject(item.metadata);
-	return metadata.is_summary === true;
+	return isSummaryLikeMemory(item);
 }
 
 function itemLooksRecapLike(
@@ -890,7 +879,7 @@ export function buildMemoryPack(
 	// explicitly wants a summary or we're in non-recall mode.
 	const directSummaryMatches =
 		recallMode && !recallQueryPrefersSummary(context)
-			? results.filter((item) => item.kind === "session_summary")
+			? results.filter((item) => isNativeSessionSummaryMemory(item))
 			: results.filter(isSummaryLike);
 	let summaryItems = directSummaryMatches.slice(0, 1);
 	const allowGlobalSummaryFallback = !recallMode || recallQueryPrefersSummary(context);

@@ -431,6 +431,25 @@ describe("MemoryStore.search", () => {
 		}
 	});
 
+	it("preserves explicit raw kind filters in emitted search results", () => {
+		const sessionId = insertTestSession(store.db);
+		const legacySummaryId = store.remember(
+			sessionId,
+			"change",
+			"Legacy summary",
+			"## Request\nFix auth timeout\n\n## Completed\nAdded callback validation",
+			0.8,
+			undefined,
+			{ is_summary: true },
+		);
+
+		const filtered = store.search("auth timeout", 10, { kind: "change" });
+		const summary = filtered.find((item) => item.id === legacySummaryId);
+
+		expect(summary).toBeDefined();
+		expect(summary?.kind).toBe("change");
+	});
+
 	it("matches project filters by basename and suffix like Python", () => {
 		const now = new Date().toISOString();
 		const matchingSessionId = Number(
