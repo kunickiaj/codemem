@@ -75,6 +75,9 @@ const TRUST_BIAS_UNREVIEWED_PENALTY = 0.12;
 const WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS = 3;
 const WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE = 0.0;
 const WIDEN_SHARED_MAX_SHARED_RESULTS = 2;
+const NON_SUMMARY_RECAP_PENALTY = 2.5;
+const NON_SUMMARY_OBSERVER_RECAP_PENALTY = 6.5;
+const NON_TASK_TASKLIKE_PENALTY = 0.35;
 const PERSONAL_QUERY_PATTERNS = [
 	/\bwhat did i\b/i,
 	/\bmy notes\b/i,
@@ -265,6 +268,79 @@ function personalBias(
 	return store.memoryOwnedBySelf(item) ? PERSONAL_FIRST_BONUS : 0.0;
 }
 
+function searchQueryPrefersSummary(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const token of ["summarize", "summarise", "recap"]) {
+		if (lowered.includes(token)) return true;
+	}
+	for (const phrase of ["session summary", "catch me up", "catch up", "what happened"]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	return false;
+}
+
+function searchQueryLooksTaskLike(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const phrase of [
+		"what should",
+		"what do next",
+		"next step",
+		"next steps",
+		"todo",
+		"to do",
+		"follow up",
+		"continue",
+	]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	return false;
+}
+
+function itemIsSummaryLike(item: MemoryResult): boolean {
+	if (item.kind === "session_summary") return true;
+	return item.metadata?.is_summary === true;
+}
+
+function itemLooksRecapLikeForSearch(item: MemoryResult): boolean {
+	if (itemIsSummaryLike(item)) return true;
+	const metadata = item.metadata ?? {};
+	if (metadata.source === "observer_summary") return true;
+	if (typeof metadata.request === "string" && typeof metadata.completed === "string") return true;
+	const text = `${item.title} ${item.body_text}`.toLowerCase();
+	for (const marker of ["session recap", "wrap-up", "wrap up", "recap", "## request"]) {
+		if (text.includes(marker)) return true;
+	}
+	return false;
+}
+
+function recapPenaltyForSearch(item: MemoryResult, preferSummary: boolean): number {
+	if (preferSummary || !itemLooksRecapLikeForSearch(item)) return 0.0;
+	const metadata = item.metadata ?? {};
+	if (metadata.source === "observer_summary") return NON_SUMMARY_OBSERVER_RECAP_PENALTY;
+	if (typeof metadata.request === "string" && typeof metadata.completed === "string") {
+		return NON_SUMMARY_OBSERVER_RECAP_PENALTY;
+	}
+	return NON_SUMMARY_RECAP_PENALTY;
+}
+
+function itemLooksTaskLikeForSearch(item: MemoryResult): boolean {
+	const text = `${item.title} ${item.body_text}`.toLowerCase();
+	for (const marker of [
+		"next step",
+		"next steps",
+		"follow-up",
+		"follow up",
+		"todo",
+		"to do",
+		"continue",
+		"should do",
+		"should we",
+	]) {
+		if (text.includes(marker)) return true;
+	}
+	return false;
+}
+
 function sharedTrustPenalty(
 	store: StoreHandle,
 	item: MemoryResult,
@@ -382,9 +458,12 @@ export function rerankResults(
 	results: MemoryResult[],
 	limit: number,
 	filters?: MemoryFilters,
+	query = "",
 ): MemoryResult[] {
 	const referenceNow = new Date();
 	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
+	const preferSummary = searchQueryPrefersSummary(query);
+	const taskLikeQuery = searchQueryLooksTaskLike(query);
 
 	const scored = results.map((item) => ({
 		item,
@@ -394,7 +473,9 @@ export function rerankResults(
 			kindBonus(item.kind) +
 			workingSetOverlapBoost(item, workingSetPaths) +
 			personalBias(store, item, filters) -
-			sharedTrustPenalty(store, item, filters),
+			sharedTrustPenalty(store, item, filters) -
+			recapPenaltyForSearch(item, preferSummary) -
+			(!taskLikeQuery && itemLooksTaskLikeForSearch(item) ? NON_TASK_TASKLIKE_PENALTY : 0.0),
 	}));
 
 	scored.sort((a, b) => b.combinedScore - a.combinedScore);
@@ -542,7 +623,7 @@ function searchOnce(
 		};
 	});
 
-	return rerankResults(store, results, effectiveLimit, filters);
+	return rerankResults(store, results, effectiveLimit, filters, query);
 }
 
 /**
