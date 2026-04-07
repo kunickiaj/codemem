@@ -399,9 +399,37 @@ describe("maintenance", () => {
 				mapping: "mapped",
 				role: "durable",
 				role_reason: "durable_kind",
+				session_class: "unknown",
+				summary_disposition: "unknown",
 				title: "OAuth callback fix",
 			}),
 		);
+		expect(report.session_class_buckets).toEqual({ unknown: 1 });
+		expect(report.summary_disposition_buckets).toEqual({ unknown: 1 });
+	});
+
+	it("reports persisted session policy buckets from session metadata", () => {
+		const dbPath = createDbPath("memory-role-session-policy-buckets");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			db.exec(`
+				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:00:20Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"post":{"session_class":"micro_low_value","summary_disposition":"suppressed"}}'),
+				  (2, '2026-03-01T10:30:00Z', '2026-03-01T10:40:00Z', '/tmp/repo', 'codemem', 'adam', 'test', '{"post":{"session_class":"durable","summary_disposition":"stored"}}');
+				INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
+				) VALUES
+				  (1, 1, 'decision', 'Micro decision', 'body', 1, '2026-03-01T10:00:20Z', '2026-03-01T10:00:20Z', '{}', 'k1'),
+				  (2, 2, 'session_summary', 'Durable summary', 'body', 1, '2026-03-01T10:40:00Z', '2026-03-01T10:40:00Z', '{}', 'k2');
+			`);
+		} finally {
+			db.close();
+		}
+
+		const report = getMemoryRoleReport(dbPath, { project: "codemem" });
+		expect(report.session_class_buckets).toEqual({ micro_low_value: 1, durable: 1 });
+		expect(report.summary_disposition_buckets).toEqual({ suppressed: 1, stored: 1 });
 	});
 
 	it("compares memory role reports across two database snapshots", () => {
@@ -460,6 +488,8 @@ describe("maintenance", () => {
 		expect(comparison.delta.totals.sessions).toBe(-1);
 		expect(comparison.delta.counts_by_mapping).toEqual({ mapped: 1, unmapped: -2 });
 		expect(comparison.delta.summary_mapping).toEqual({ mapped: 0, unmapped: -1 });
+		expect(comparison.delta.session_class_buckets).toEqual({ unknown: -1 });
+		expect(comparison.delta.summary_disposition_buckets).toEqual({ unknown: -1 });
 		expect(comparison.probe_comparisons).toHaveLength(1);
 		expect(comparison.probe_comparisons[0]).toEqual(
 			expect.objectContaining({

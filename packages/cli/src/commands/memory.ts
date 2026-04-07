@@ -319,6 +319,14 @@ function createMemoryRoleReportCommand(): Command {
 			for (const [bucket, count] of Object.entries(result.project_quality)) {
 				p.log.message(`  ${bucket.padEnd(12)} ${String(count)}`);
 			}
+			p.log.info("Session classes:");
+			for (const [bucket, count] of Object.entries(result.session_class_buckets)) {
+				p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
+			}
+			p.log.info("Summary dispositions:");
+			for (const [bucket, count] of Object.entries(result.summary_disposition_buckets)) {
+				p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
+			}
 			if (result.probe_results.length > 0) {
 				p.log.info("Probe results:");
 				for (const probe of result.probe_results) {
@@ -345,7 +353,7 @@ function createMemoryRoleReportCommand(): Command {
 					}
 					for (const item of probe.items.slice(0, 5)) {
 						p.log.message(
-							`    [${item.id}] (${item.kind}/${item.role}/${item.mapping}) ${item.title} — ${item.role_reason}`,
+							`    [${item.id}] (${item.kind}/${item.role}/${item.mapping}/${item.session_class}/${item.summary_disposition}) ${item.title} — ${item.role_reason}`,
 						);
 					}
 				}
@@ -433,6 +441,14 @@ function createMemoryRoleCompareCommand(): Command {
 			p.log.info("Role deltas:");
 			for (const [role, count] of Object.entries(result.delta.counts_by_role)) {
 				p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
+			}
+			p.log.info("Session class deltas:");
+			for (const [bucket, count] of Object.entries(result.delta.session_class_buckets)) {
+				p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
+			}
+			p.log.info("Summary disposition deltas:");
+			for (const [bucket, count] of Object.entries(result.delta.summary_disposition_buckets)) {
+				p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
 			}
 			if (result.probe_comparisons.length > 0) {
 				p.log.info("Probe comparisons:");

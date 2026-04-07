@@ -1,6 +1,9 @@
 import { isSummaryLikeMemory } from "./summary-memory.js";
 import type { MemoryResult } from "./types.js";
 
+export const MICRO_LOW_VALUE_RECAP_PENALTY = 2.0;
+export const DURABLE_RECAP_PENALTY = 0.5;
+
 export function queryPrefersRecap(query: string): boolean {
 	const lowered = query.toLowerCase();
 	for (const token of ["summarize", "summarise", "recap"]) {
@@ -36,4 +39,18 @@ export function memoryLooksRecapLike(
 		if (text.includes(marker)) return true;
 	}
 	return false;
+}
+
+export function recapPenaltyMultiplier(
+	item: Pick<MemoryResult, "metadata">,
+	preferRecap: boolean,
+): number {
+	if (preferRecap) return 0;
+	const metadata = item.metadata ?? {};
+	const sessionClass = String(metadata.session_class ?? "")
+		.trim()
+		.toLowerCase();
+	if (sessionClass === "micro_low_value") return MICRO_LOW_VALUE_RECAP_PENALTY;
+	if (sessionClass === "durable") return DURABLE_RECAP_PENALTY;
+	return 1;
 }
