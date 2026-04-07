@@ -521,6 +521,15 @@ describe("maintenance", () => {
 				},
 			}),
 		);
+		expect(comparison.probe_comparisons[0]).toEqual(
+			expect.objectContaining({
+				baseline_scenario_id: undefined,
+				candidate_scenario_id: undefined,
+				baseline_scenario_score: undefined,
+				candidate_scenario_score: undefined,
+				delta_scenario_score: undefined,
+			}),
+		);
 	});
 
 	it("reports relinkable raw-event session groups", () => {

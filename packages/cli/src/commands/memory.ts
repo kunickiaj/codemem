@@ -480,6 +480,16 @@ function createMemoryRoleCompareCommand(): Command {
 							`    mapping delta: mapped=${probe.delta_top_mapping_counts.mapped} unmapped=${probe.delta_top_mapping_counts.unmapped}`,
 						);
 					}
+					if (probe.baseline_scenario_score || probe.candidate_scenario_score) {
+						p.log.message(
+							`    scenario scores: baseline=${probe.baseline_scenario_score?.score ?? "-"} candidate=${probe.candidate_scenario_score?.score ?? "-"}`,
+						);
+					}
+					if (probe.delta_scenario_score) {
+						p.log.message(
+							`    scenario delta: mode_match=${probe.delta_scenario_score.mode_match ?? "-"} top1_primary=${probe.delta_scenario_score.primary_in_top1 ?? "-"} top3_primary=${probe.delta_scenario_score.primary_in_top3_count ?? "-"} top1_anti=${probe.delta_scenario_score.anti_signal_in_top1 ?? "-"} primary=${probe.delta_scenario_score.primary_match_count ?? "-"} anti=${probe.delta_scenario_score.anti_signal_count ?? "-"} recap=${probe.delta_scenario_score.recap_count ?? "-"} unmapped_recap=${probe.delta_scenario_score.unmapped_recap_count ?? "-"} chatter=${probe.delta_scenario_score.administrative_chatter_count ?? "-"} net=${probe.delta_scenario_score.score ?? "-"}`,
+						);
+					}
 				}
 			}
 			p.outro("done");
