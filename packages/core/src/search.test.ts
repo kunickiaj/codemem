@@ -230,6 +230,87 @@ describe("rerankResults", () => {
 		expect(reranked[0]?.id).toBe(1);
 	});
 
+	it("boosts results that reference file paths mentioned in the query", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 1.0,
+				kind: "decision",
+				title: "Index.ts decision",
+				metadata: { files_modified: ["packages/core/src/index.ts"] },
+			}),
+			makeResult({
+				id: 2,
+				score: 1.0,
+				kind: "decision",
+				title: "Other file decision",
+				metadata: { files_modified: ["packages/core/src/store.ts"] },
+			}),
+		];
+		const reranked = rerankResults(
+			mockStore,
+			results,
+			10,
+			undefined,
+			"what decisions affected packages/core/src/index.ts",
+		);
+		expect(reranked[0]?.id).toBe(1);
+	});
+
+	it("treats non-TS/JS filenames as path hints too", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 1.0,
+				kind: "decision",
+				title: "Package metadata decision",
+				metadata: { files_modified: ["package.json"] },
+			}),
+			makeResult({
+				id: 2,
+				score: 1.0,
+				kind: "decision",
+				title: "Other file decision",
+				metadata: { files_modified: ["src/index.ts"] },
+			}),
+		];
+		const reranked = rerankResults(
+			mockStore,
+			results,
+			10,
+			undefined,
+			"what changed in package.json",
+		);
+		expect(reranked[0]?.id).toBe(1);
+	});
+
+	it("caps query path overlap boosts so large touched-file sets do not dominate", () => {
+		const manyFiles = Array.from({ length: 20 }, (_, i) => `src/feature/${i}/index.ts`);
+		const results = [
+			makeResult({
+				id: 1,
+				score: 1.0,
+				kind: "decision",
+				title: "Broad file touch memory",
+				metadata: { files_modified: manyFiles },
+			}),
+			makeResult({
+				id: 2,
+				score: 1.2,
+				kind: "decision",
+				title: "Focused textual match",
+			}),
+		];
+		const reranked = rerankResults(
+			mockStore,
+			results,
+			10,
+			undefined,
+			"what decisions affected index.ts",
+		);
+		expect(reranked[0]?.id).toBe(2);
+	});
+
 	it("returns empty array for empty input", () => {
 		expect(rerankResults(mockStore, [], 10)).toEqual([]);
 	});

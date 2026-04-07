@@ -397,6 +397,52 @@ function memoryFilesModified(item: MemoryResult): string[] {
 	return normalized;
 }
 
+function memoryFilesTouched(item: MemoryResult): string[] {
+	const metadata = item.metadata ?? {};
+	const collected: string[] = [];
+	for (const key of ["files_modified", "files_read"] as const) {
+		const rawPaths = metadata[key];
+		if (!Array.isArray(rawPaths)) continue;
+		for (const raw of rawPaths) {
+			if (typeof raw !== "string") continue;
+			const path = canonicalPath(raw);
+			if (path) collected.push(path);
+		}
+	}
+	return [...new Set(collected)];
+}
+
+function queryPathHints(query: string): string[] {
+	const rawTokens = query.match(/[A-Za-z0-9_./-]+/g) ?? [];
+	const normalized = rawTokens
+		.map((token) => canonicalPath(token))
+		.filter((token) => token.includes("/") || token.includes("."));
+	return [...new Set(normalized)];
+}
+
+function queryPathOverlapBoost(item: MemoryResult, query: string): number {
+	const hintedPaths = queryPathHints(query);
+	if (hintedPaths.length === 0) return 0.0;
+	const itemPaths = memoryFilesTouched(item);
+	if (itemPaths.length === 0) return 0.0;
+	const itemSegments = itemPaths.map((path) => pathSegments(path));
+	const hintedSegments = hintedPaths.map((path) => pathSegments(path));
+	let directHits = 0;
+	for (const itemSegment of itemSegments) {
+		if (hintedSegments.some((hintSegment) => pathSegmentsOverlap(itemSegment, hintSegment))) {
+			directHits += 1;
+		}
+	}
+	const itemBasenames = new Set(itemPaths.map((path) => pathBasename(path)).filter(Boolean));
+	const hintedBasenames = new Set(hintedPaths.map((path) => pathBasename(path)).filter(Boolean));
+	let basenameHits = 0;
+	for (const basename of itemBasenames) {
+		if (hintedBasenames.has(basename)) basenameHits += 1;
+	}
+	const boost = directHits * 0.18 + basenameHits * 0.06;
+	return Math.min(0.18, boost);
+}
+
 function workingSetOverlapBoost(item: MemoryResult, workingSetPaths: string[]): number {
 	if (workingSetPaths.length === 0) return 0.0;
 	const itemPaths = memoryFilesModified(item);
@@ -448,6 +494,7 @@ export function rerankResults(
 			recencyScore(item.created_at, referenceNow) +
 			kindBonus(item.kind) +
 			workingSetOverlapBoost(item, workingSetPaths) +
+			queryPathOverlapBoost(item, query) +
 			personalBias(store, item, filters) -
 			sharedTrustPenalty(store, item, filters) -
 			recapPenaltyForSearch(item, preferSummary) -
