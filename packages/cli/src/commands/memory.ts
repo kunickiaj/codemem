@@ -7,6 +7,7 @@
 
 import * as p from "@clack/prompts";
 import {
+	compareMemoryRoleReports,
 	getMemoryRoleReport,
 	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
@@ -336,6 +337,95 @@ function createMemoryRoleReportCommand(): Command {
 	return cmd;
 }
 
+function createMemoryRoleCompareCommand(): Command {
+	const cmd = new Command("role-compare")
+		.configureHelp(helpStyle)
+		.description("Compare inferred memory-role and probe metrics across two DB snapshots")
+		.argument("<baseline_db>", "baseline sqlite database path")
+		.argument("<candidate_db>", "candidate sqlite database path")
+		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--all-projects", "analyze across all projects")
+		.option(
+			"--probe <query>",
+			"run a retrieval probe query against both snapshots",
+			(value, prev: string[]) => [...prev, value],
+			[],
+		)
+		.option("--inactive", "include inactive memories");
+	addJsonOption(cmd);
+	cmd.action(
+		(
+			baselineDb: string,
+			candidateDb: string,
+			opts: JsonOpts & {
+				project?: string;
+				allProjects?: boolean;
+				probe?: string[];
+				inactive?: boolean;
+			},
+		) => {
+			const project =
+				opts.allProjects === true
+					? null
+					: opts.project?.trim() ||
+						process.env.CODEMEM_PROJECT?.trim() ||
+						resolveProject(process.cwd(), null);
+			const result = compareMemoryRoleReports(baselineDb, candidateDb, {
+				project,
+				allProjects: opts.allProjects === true,
+				includeInactive: opts.inactive === true,
+				probes: opts.probe,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			p.intro("codemem memory role-compare");
+			p.log.info(
+				[
+					`Baseline sessions: ${result.baseline.totals.sessions}`,
+					`Candidate sessions: ${result.candidate.totals.sessions}`,
+					`Delta sessions: ${result.delta.totals.sessions}`,
+					`Mapped delta: ${result.delta.counts_by_mapping.mapped}`,
+					`Unmapped delta: ${result.delta.counts_by_mapping.unmapped}`,
+					`Summary mapped delta: ${result.delta.summary_mapping.mapped}`,
+					`Summary unmapped delta: ${result.delta.summary_mapping.unmapped}`,
+				].join("\n"),
+			);
+			p.log.info("Role deltas:");
+			for (const [role, count] of Object.entries(result.delta.counts_by_role)) {
+				p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
+			}
+			if (result.probe_comparisons.length > 0) {
+				p.log.info("Probe comparisons:");
+				for (const probe of result.probe_comparisons) {
+					p.log.message(`  query: ${probe.query}`);
+					p.log.message(
+						`    modes: baseline=${probe.baseline_mode ?? "-"} candidate=${probe.candidate_mode ?? "-"}`,
+					);
+					p.log.message(
+						`    overlap: shared_top_keys=${probe.shared_item_keys.length} baseline_top=${probe.baseline_item_ids.slice(0, 5).join(",") || "-"} candidate_top=${probe.candidate_item_ids.slice(0, 5).join(",") || "-"}`,
+					);
+					if (probe.delta_top_burden) {
+						p.log.message(
+							`    burden delta: recap_share=${probe.delta_top_burden.recap_share.toFixed(2)} unmapped_share=${probe.delta_top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.delta_top_burden.recap_unmapped_share.toFixed(2)}`,
+						);
+					}
+					if (probe.delta_top_mapping_counts) {
+						p.log.message(
+							`    mapping delta: mapped=${probe.delta_top_mapping_counts.mapped} unmapped=${probe.delta_top_mapping_counts.unmapped}`,
+						);
+					}
+				}
+			}
+			p.outro("done");
+		},
+	);
+	return cmd;
+}
+
 function createMemoryRelinkReportCommand(): Command {
 	const cmd = new Command("relink-report")
 		.configureHelp(helpStyle)
@@ -475,5 +565,6 @@ memoryCommand.addCommand(createForgetMemoryCommand());
 memoryCommand.addCommand(createRememberMemoryCommand());
 memoryCommand.addCommand(createInjectMemoryCommand());
 memoryCommand.addCommand(createMemoryRoleReportCommand());
+memoryCommand.addCommand(createMemoryRoleCompareCommand());
 memoryCommand.addCommand(createMemoryRelinkReportCommand());
 memoryCommand.addCommand(createMemoryRelinkPlanCommand());
