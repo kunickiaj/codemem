@@ -287,6 +287,70 @@ function searchQueryLooksTaskLike(query: string): boolean {
 	return false;
 }
 
+function searchQueryLooksDecisionLike(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const phrase of ["what did we decide", "decision", "why did we", "rationale", "tradeoff"]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	return false;
+}
+
+function searchQueryLooksTroubleshootingLike(query: string): boolean {
+	const lowered = query.toLowerCase();
+	const wordTokens = new Set(lowered.match(/[a-z0-9_]+/g) ?? []);
+	for (const phrase of [
+		"root cause",
+		"what was the fix",
+		"fix for",
+		"how did we fix",
+		"how did we debug",
+		"what happened last time",
+		"regression",
+	]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	if (wordTokens.has("bug") || wordTokens.has("bugs")) return true;
+	return false;
+}
+
+function searchQueryLooksContinuationLike(query: string): boolean {
+	const lowered = query.toLowerCase();
+	for (const phrase of [
+		"what should we do next",
+		"what remains",
+		"continue",
+		"next step",
+		"next steps",
+		"follow up",
+	]) {
+		if (lowered.includes(phrase)) return true;
+	}
+	return false;
+}
+
+function qualityDimensionBoost(item: MemoryResult, query: string): number {
+	const decisionLike = searchQueryLooksDecisionLike(query);
+	const troubleshootingLike = searchQueryLooksTroubleshootingLike(query);
+	const continuationLike = searchQueryLooksContinuationLike(query);
+	if (!decisionLike && !troubleshootingLike && !continuationLike) return 0.0;
+	let boost = 0.0;
+	if (decisionLike) {
+		if (item.kind === "decision") boost += 0.2;
+		if (item.kind === "discovery") boost += 0.08;
+	}
+	if (troubleshootingLike) {
+		if (item.kind === "bugfix") boost += 0.24;
+		if (item.kind === "discovery") boost += 0.16;
+		if (item.kind === "decision") boost += 0.04;
+	}
+	if (continuationLike) {
+		if (item.kind === "decision") boost += 0.1;
+		if (item.kind === "feature") boost += 0.08;
+		if (item.kind === "discovery") boost += 0.06;
+	}
+	return boost;
+}
+
 function recapPenaltyForSearch(item: MemoryResult, preferSummary: boolean): number {
 	if (preferSummary || !memoryLooksRecapLike(item)) return 0.0;
 	const metadata = item.metadata ?? {};
@@ -493,6 +557,7 @@ export function rerankResults(
 			item.score * 1.5 +
 			recencyScore(item.created_at, referenceNow) +
 			kindBonus(item.kind) +
+			qualityDimensionBoost(item, query) +
 			workingSetOverlapBoost(item, workingSetPaths) +
 			queryPathOverlapBoost(item, query) +
 			personalBias(store, item, filters) -

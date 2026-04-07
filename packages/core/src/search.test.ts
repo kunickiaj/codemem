@@ -257,56 +257,32 @@ describe("rerankResults", () => {
 		expect(reranked[0]?.id).toBe(1);
 	});
 
-	it("treats non-TS/JS filenames as path hints too", () => {
+	it("boosts decisions for decision-oriented queries", () => {
 		const results = [
-			makeResult({
-				id: 1,
-				score: 1.0,
-				kind: "decision",
-				title: "Package metadata decision",
-				metadata: { files_modified: ["package.json"] },
-			}),
-			makeResult({
-				id: 2,
-				score: 1.0,
-				kind: "decision",
-				title: "Other file decision",
-				metadata: { files_modified: ["src/index.ts"] },
-			}),
+			makeResult({ id: 1, score: 1.0, kind: "discovery", title: "Discovery item" }),
+			makeResult({ id: 2, score: 0.95, kind: "decision", title: "Decision item" }),
 		];
 		const reranked = rerankResults(
 			mockStore,
 			results,
 			10,
 			undefined,
-			"what changed in package.json",
+			"what did we decide about recap weighting",
 		);
-		expect(reranked[0]?.id).toBe(1);
+		expect(reranked[0]?.id).toBe(2);
 	});
 
-	it("caps query path overlap boosts so large touched-file sets do not dominate", () => {
-		const manyFiles = Array.from({ length: 20 }, (_, i) => `src/feature/${i}/index.ts`);
+	it("boosts bugfix/discovery for troubleshooting-oriented queries", () => {
 		const results = [
-			makeResult({
-				id: 1,
-				score: 1.0,
-				kind: "decision",
-				title: "Broad file touch memory",
-				metadata: { files_modified: manyFiles },
-			}),
-			makeResult({
-				id: 2,
-				score: 1.2,
-				kind: "decision",
-				title: "Focused textual match",
-			}),
+			makeResult({ id: 1, score: 1.0, kind: "decision", title: "Decision item" }),
+			makeResult({ id: 2, score: 0.94, kind: "bugfix", title: "Bugfix item" }),
 		];
 		const reranked = rerankResults(
 			mockStore,
 			results,
 			10,
 			undefined,
-			"what decisions affected index.ts",
+			"what was the fix for raw-event relinking bug",
 		);
 		expect(reranked[0]?.id).toBe(2);
 	});
