@@ -737,6 +737,81 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns tiered observer routing fields from config", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const previous = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					observer_tier_routing_enabled: true,
+					observer_simple_model: "gpt-5.4-mini",
+					observer_rich_model: "gpt-5.4",
+					observer_rich_openai_use_responses: true,
+				}),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				const config = body.config as Record<string, unknown>;
+				const effective = body.effective as Record<string, unknown>;
+				expect(config.observer_tier_routing_enabled).toBe(true);
+				expect(config.observer_simple_model).toBe("gpt-5.4-mini");
+				expect(config.observer_rich_model).toBe("gpt-5.4");
+				expect(config.observer_rich_openai_use_responses).toBe(true);
+				expect(effective.observer_tier_routing_enabled).toBe(true);
+			} finally {
+				cleanup();
+				if (previous == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previous;
+			}
+		});
+
+		it("writes tiered observer routing config", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const previous = process.env.CODEMEM_CONFIG;
+			process.env.CODEMEM_CONFIG = configPath;
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({
+						config: {
+							observer_tier_routing_enabled: true,
+							observer_simple_model: "gpt-5.4-mini",
+							observer_simple_temperature: 0.2,
+							observer_rich_model: "gpt-5.4",
+							observer_rich_temperature: 0.1,
+							observer_rich_openai_use_responses: true,
+							observer_rich_reasoning_effort: "medium",
+							observer_rich_reasoning_summary: "auto",
+							observer_rich_max_output_tokens: 12000,
+						},
+					}),
+				});
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				const config = body.config as Record<string, unknown>;
+				expect(config.observer_tier_routing_enabled).toBe(true);
+				expect(config.observer_rich_openai_use_responses).toBe(true);
+				const saved = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+				expect(saved.observer_simple_temperature).toBe(0.2);
+				expect(saved.observer_rich_temperature).toBe(0.1);
+				expect(saved.observer_rich_max_output_tokens).toBe(12000);
+			} finally {
+				cleanup();
+				if (previous == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = previous;
+			}
+		});
+
 		it("accepts built-in observer providers on a clean config", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
@@ -840,6 +915,25 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(400);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.error).toBe("sync_enabled must be boolean");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects invalid tiered observer routing values", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/config", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://localhost",
+					},
+					body: JSON.stringify({ config: { observer_simple_temperature: "hot" } }),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("observer_simple_temperature must be non-negative number");
 			} finally {
 				cleanup();
 			}

@@ -31,6 +31,15 @@ type SettingsFormState = {
   claudeCommand: string;
   observerProvider: string;
   observerModel: string;
+  observerTierRoutingEnabled: boolean;
+  observerSimpleModel: string;
+  observerSimpleTemperature: string;
+  observerRichModel: string;
+  observerRichTemperature: string;
+  observerRichOpenAIUseResponses: boolean;
+  observerRichReasoningEffort: string;
+  observerRichReasoningSummary: string;
+  observerRichMaxOutputTokens: string;
   observerRuntime: string;
   observerAuthSource: string;
   observerAuthFile: string;
@@ -85,6 +94,15 @@ const INPUT_TO_CONFIG_KEY: Record<keyof SettingsFormState, string> = {
   claudeCommand: 'claude_command',
   observerProvider: 'observer_provider',
   observerModel: 'observer_model',
+  observerTierRoutingEnabled: 'observer_tier_routing_enabled',
+  observerSimpleModel: 'observer_simple_model',
+  observerSimpleTemperature: 'observer_simple_temperature',
+  observerRichModel: 'observer_rich_model',
+  observerRichTemperature: 'observer_rich_temperature',
+  observerRichOpenAIUseResponses: 'observer_rich_openai_use_responses',
+  observerRichReasoningEffort: 'observer_rich_reasoning_effort',
+  observerRichReasoningSummary: 'observer_rich_reasoning_summary',
+  observerRichMaxOutputTokens: 'observer_rich_max_output_tokens',
   observerRuntime: 'observer_runtime',
   observerAuthSource: 'observer_auth_source',
   observerAuthFile: 'observer_auth_file',
@@ -120,6 +138,15 @@ const EMPTY_FORM_STATE: SettingsFormState = {
   claudeCommand: '',
   observerProvider: '',
   observerModel: '',
+  observerTierRoutingEnabled: false,
+  observerSimpleModel: '',
+  observerSimpleTemperature: '',
+  observerRichModel: '',
+  observerRichTemperature: '',
+  observerRichOpenAIUseResponses: false,
+  observerRichReasoningEffort: '',
+  observerRichReasoningSummary: '',
+  observerRichMaxOutputTokens: '',
   observerRuntime: 'api_http',
   observerAuthSource: 'auto',
   observerAuthFile: '',
@@ -182,6 +209,18 @@ function asInputString(value: unknown): string {
   return String(value);
 }
 
+function asBooleanValue(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return false;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  }
+  return Boolean(value);
+}
+
 function toProviderList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
@@ -229,6 +268,10 @@ function configuredValueForKey(config: any, key: string): unknown {
     }
     case 'observer_provider':
     case 'observer_model':
+    case 'observer_simple_model':
+    case 'observer_rich_model':
+    case 'observer_rich_reasoning_effort':
+    case 'observer_rich_reasoning_summary':
     case 'observer_auth_file':
     case 'sync_host':
     case 'sync_coordinator_url':
@@ -256,6 +299,9 @@ function configuredValueForKey(config: any, key: string): unknown {
     }
     case 'observer_auth_timeout_ms':
     case 'observer_max_chars':
+    case 'observer_simple_temperature':
+    case 'observer_rich_temperature':
+    case 'observer_rich_max_output_tokens':
     case 'pack_observation_limit':
     case 'pack_session_limit':
     case 'raw_events_sweeper_interval_s':
@@ -278,7 +324,9 @@ function configuredValueForKey(config: any, key: string): unknown {
     }
     case 'sync_enabled':
     case 'sync_mdns':
-      return Boolean(config?.[key]);
+    case 'observer_tier_routing_enabled':
+    case 'observer_rich_openai_use_responses':
+      return asBooleanValue(config?.[key]);
     default:
       return hasOwn(config, key) ? config[key] : '';
   }
@@ -300,6 +348,9 @@ function mergeOverrideBaseline(
 
 function getObserverModelHint(): string {
   const values = settingsRenderState.values;
+  if (values.observerTierRoutingEnabled) {
+    return 'Tiered routing is enabled: simple/rich model selection now lives in Processing.';
+  }
   const inferred = inferObserverModel(
     values.observerRuntime.trim() || 'api_http',
     values.observerProvider.trim(),
@@ -310,6 +361,29 @@ function getObserverModelHint(): string {
   );
   const source = overrideActive ? 'Env override' : inferred.source;
   return `${source}: ${inferred.model}`;
+}
+
+function getTieredRoutingHelperText(): string {
+  if (!settingsRenderState.values.observerTierRoutingEnabled) {
+    return 'Off: codemem uses the base observer settings from the Connection tab for all batches.';
+  }
+  return 'On: codemem can route simpler batches to a lighter model and richer batches to a higher-quality configuration.';
+}
+
+function getObserverModelLabel(): string {
+  return settingsRenderState.values.observerTierRoutingEnabled ? 'Base model fallback' : 'Model';
+}
+
+function getObserverModelTooltip(): string {
+  return settingsRenderState.values.observerTierRoutingEnabled
+    ? 'Tiered routing is enabled, so Processing controls the simple/rich models. This base model is only a fallback.'
+    : 'Leave blank to use a recommended model for your selected mode/provider.';
+}
+
+function getObserverModelDescription(): string {
+  return settingsRenderState.values.observerTierRoutingEnabled
+    ? 'Tiered routing is active. Use this only as a fallback while the Processing tab owns simple/rich model selection.'
+    : 'Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.';
 }
 
 function positionHelpTooltipElement(el: HTMLElement, anchor: HTMLElement) {
@@ -717,6 +791,31 @@ function formStateFromPayload(payload: any): SettingsFormState {
     claudeCommand: claudeCommand.length ? JSON.stringify(claudeCommand, null, 2) : '',
     observerProvider: asInputString(effectiveOrConfigured(config, effective, 'observer_provider')),
     observerModel: asInputString(effectiveOrConfigured(config, effective, 'observer_model')),
+    observerTierRoutingEnabled: asBooleanValue(
+      effectiveOrConfigured(config, effective, 'observer_tier_routing_enabled'),
+    ),
+    observerSimpleModel: asInputString(
+      effectiveOrConfigured(config, effective, 'observer_simple_model'),
+    ),
+    observerSimpleTemperature: asInputString(
+      effectiveOrConfigured(config, effective, 'observer_simple_temperature'),
+    ),
+    observerRichModel: asInputString(effectiveOrConfigured(config, effective, 'observer_rich_model')),
+    observerRichTemperature: asInputString(
+      effectiveOrConfigured(config, effective, 'observer_rich_temperature'),
+    ),
+    observerRichOpenAIUseResponses: asBooleanValue(
+      effectiveOrConfigured(config, effective, 'observer_rich_openai_use_responses'),
+    ),
+    observerRichReasoningEffort: asInputString(
+      effectiveOrConfigured(config, effective, 'observer_rich_reasoning_effort'),
+    ),
+    observerRichReasoningSummary: asInputString(
+      effectiveOrConfigured(config, effective, 'observer_rich_reasoning_summary'),
+    ),
+    observerRichMaxOutputTokens: asInputString(
+      effectiveOrConfigured(config, effective, 'observer_rich_max_output_tokens'),
+    ),
     observerRuntime: asInputString(effectiveOrConfigured(config, effective, 'observer_runtime')) || 'api_http',
     observerAuthSource:
       asInputString(effectiveOrConfigured(config, effective, 'observer_auth_source')) || 'auto',
@@ -737,11 +836,11 @@ function formStateFromPayload(payload: any): SettingsFormState {
     rawEventsSweeperIntervalS: asInputString(
       effectiveOrConfigured(config, effective, 'raw_events_sweeper_interval_s'),
     ),
-    syncEnabled: Boolean(effectiveOrConfigured(config, effective, 'sync_enabled')),
+    syncEnabled: asBooleanValue(effectiveOrConfigured(config, effective, 'sync_enabled')),
     syncHost: asInputString(effectiveOrConfigured(config, effective, 'sync_host')),
     syncPort: asInputString(effectiveOrConfigured(config, effective, 'sync_port')),
     syncInterval: asInputString(effectiveOrConfigured(config, effective, 'sync_interval_s')),
-    syncMdns: Boolean(effectiveOrConfigured(config, effective, 'sync_mdns')),
+    syncMdns: asBooleanValue(effectiveOrConfigured(config, effective, 'sync_mdns')),
     syncCoordinatorUrl: asInputString(effectiveOrConfigured(config, effective, 'sync_coordinator_url')),
     syncCoordinatorGroup: asInputString(
       effectiveOrConfigured(config, effective, 'sync_coordinator_group'),
@@ -882,13 +981,42 @@ function collectSettingsPayload(options: { allowUntouchedParseErrors?: boolean }
   }
 
   const authCacheTtlInput = values.observerAuthCacheTtlS.trim();
+  const simpleTemperatureInput = values.observerSimpleTemperature.trim();
+  const richTemperatureInput = values.observerRichTemperature.trim();
+  const richMaxOutputTokensInput = values.observerRichMaxOutputTokens.trim();
   const sweeperIntervalInput = values.rawEventsSweeperIntervalS.trim();
   const authCacheTtl = authCacheTtlInput === '' ? '' : Number(authCacheTtlInput);
+  const simpleTemperature = simpleTemperatureInput === '' ? '' : Number(simpleTemperatureInput);
+  const richTemperature = richTemperatureInput === '' ? '' : Number(richTemperatureInput);
+  const richMaxOutputTokens = richMaxOutputTokensInput === '' ? '' : Number(richMaxOutputTokensInput);
   const sweeperIntervalNum = Number(sweeperIntervalInput);
   const sweeperInterval = sweeperIntervalInput === '' ? '' : sweeperIntervalNum;
 
   if (authCacheTtlInput !== '' && !Number.isFinite(authCacheTtl)) {
     throw new Error('observer auth cache ttl must be a number');
+  }
+  if (
+    simpleTemperatureInput !== '' &&
+    (typeof simpleTemperature !== 'number' || !Number.isFinite(simpleTemperature) || simpleTemperature < 0)
+  ) {
+    throw new Error('simple tier temperature must be a non-negative number');
+  }
+  if (
+    richTemperatureInput !== '' &&
+    (typeof richTemperature !== 'number' || !Number.isFinite(richTemperature) || richTemperature < 0)
+  ) {
+    throw new Error('rich tier temperature must be a non-negative number');
+  }
+  if (
+    richMaxOutputTokensInput !== '' &&
+    (
+      typeof richMaxOutputTokens !== 'number' ||
+      !Number.isFinite(richMaxOutputTokens) ||
+      richMaxOutputTokens <= 0 ||
+      !Number.isInteger(richMaxOutputTokens)
+    )
+  ) {
+    throw new Error('rich tier max output tokens must be a positive integer');
   }
   if (sweeperIntervalInput !== '' && (!Number.isFinite(sweeperIntervalNum) || sweeperIntervalNum <= 0)) {
     throw new Error('raw-event sweeper interval must be a positive number');
@@ -898,6 +1026,15 @@ function collectSettingsPayload(options: { allowUntouchedParseErrors?: boolean }
     claude_command: claudeCommand,
     observer_provider: normalizeTextValue(values.observerProvider),
     observer_model: normalizeTextValue(values.observerModel),
+    observer_tier_routing_enabled: values.observerTierRoutingEnabled,
+    observer_simple_model: normalizeTextValue(values.observerSimpleModel),
+    observer_simple_temperature: simpleTemperature,
+    observer_rich_model: normalizeTextValue(values.observerRichModel),
+    observer_rich_temperature: richTemperature,
+    observer_rich_openai_use_responses: values.observerRichOpenAIUseResponses,
+    observer_rich_reasoning_effort: normalizeTextValue(values.observerRichReasoningEffort),
+    observer_rich_reasoning_summary: normalizeTextValue(values.observerRichReasoningSummary),
+    observer_rich_max_output_tokens: richMaxOutputTokens,
     observer_runtime: normalizeTextValue(values.observerRuntime || 'api_http') || 'api_http',
     observer_auth_source: normalizeTextValue(values.observerAuthSource || 'auto') || 'auto',
     observer_auth_file: normalizeTextValue(values.observerAuthFile),
@@ -1202,6 +1339,7 @@ function SettingsDialogContent() {
   const observerMaxCharsDefault = state.configDefaults?.observer_max_chars || '';
   const showAuthFile = values.observerAuthSource === 'file';
   const showAuthCommand = values.observerAuthSource === 'command';
+  const showTieredRouting = values.observerTierRoutingEnabled;
 
   return (
     <div className="modal-card">
@@ -1302,11 +1440,11 @@ function SettingsDialogContent() {
             </Field>
             <Field>
               <div className="field-label">
-                <label htmlFor="observerModel">Model</label>
-                <button aria-label="About model defaults" className="help-icon" data-tooltip="Leave blank to use a recommended model for your selected mode/provider." type="button">?</button>
+                <label htmlFor="observerModel">{getObserverModelLabel()}</label>
+                <button aria-label="About model defaults" className="help-icon" data-tooltip={getObserverModelTooltip()} type="button">?</button>
               </div>
               <input id="observerModel" onInput={onTextInput('observerModel')} placeholder="leave empty for default" value={values.observerModel} />
-              <div className="small">Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.</div>
+              <div className="small">{getObserverModelDescription()}</div>
               <div className="small" id="observerModelHint">{getObserverModelHint()}</div>
             </Field>
             <Field>
@@ -1393,6 +1531,54 @@ function SettingsDialogContent() {
               </div>
               <input id="rawEventsSweeperIntervalS" min="1" onInput={onTextInput('rawEventsSweeperIntervalS')} type="number" value={values.rawEventsSweeperIntervalS} />
               <div className="small">How often background flush checks pending raw events.</div>
+            </Field>
+          </div>
+          <div className="settings-group">
+            <h3 className="settings-group-title">Tiered observer routing</h3>
+            <div className="field field-checkbox">
+              <input checked={values.observerTierRoutingEnabled} className="cm-checkbox" id="observerTierRoutingEnabled" onChange={onCheckboxInput('observerTierRoutingEnabled')} type="checkbox" />
+              <label htmlFor="observerTierRoutingEnabled">Enable tiered routing</label>
+            </div>
+            <div className="small">{getTieredRoutingHelperText()}</div>
+            <Field hidden={!showTieredRouting}>
+              <div className="field-label">
+                <label htmlFor="observerSimpleModel">Simple tier model</label>
+                <button aria-label="About simple tier model" className="help-icon" data-tooltip="Used for lighter replay batches. Leave blank to keep codemem's routing defaults or base observer fallback." type="button">?</button>
+              </div>
+              <input id="observerSimpleModel" onInput={onTextInput('observerSimpleModel')} placeholder="leave empty for default" value={values.observerSimpleModel} />
+              <div className="small">Used when a batch falls below rich-routing thresholds.</div>
+            </Field>
+            <Field hidden={!showTieredRouting}>
+              <div className="field-label">
+                <label htmlFor="observerRichModel">Rich tier model</label>
+                <button aria-label="About rich tier model" className="help-icon" data-tooltip="Used for larger or more complex replay batches. Leave blank to keep codemem's rich-tier defaults." type="button">?</button>
+              </div>
+              <input id="observerRichModel" onInput={onTextInput('observerRichModel')} placeholder="leave empty for default" value={values.observerRichModel} />
+              <div className="small">Used when routing detects a richer replay batch.</div>
+            </Field>
+            <Field className="field field-checkbox" hidden={!showTieredRouting}>
+              <input checked={values.observerRichOpenAIUseResponses} className="cm-checkbox" id="observerRichOpenAIUseResponses" onChange={onCheckboxInput('observerRichOpenAIUseResponses')} type="checkbox" />
+              <label htmlFor="observerRichOpenAIUseResponses">Use OpenAI Responses API for rich tier</label>
+            </Field>
+            <Field className="field settings-advanced" hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
+              <label htmlFor="observerSimpleTemperature">Simple tier temperature</label>
+              <input id="observerSimpleTemperature" min="0" onInput={onTextInput('observerSimpleTemperature')} step="0.1" type="number" value={values.observerSimpleTemperature} />
+            </Field>
+            <Field className="field settings-advanced" hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
+              <label htmlFor="observerRichTemperature">Rich tier temperature</label>
+              <input id="observerRichTemperature" min="0" onInput={onTextInput('observerRichTemperature')} step="0.1" type="number" value={values.observerRichTemperature} />
+            </Field>
+            <Field className="field settings-advanced" hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
+              <label htmlFor="observerRichReasoningEffort">Rich tier reasoning effort</label>
+              <input id="observerRichReasoningEffort" onInput={onTextInput('observerRichReasoningEffort')} placeholder="leave empty for default" value={values.observerRichReasoningEffort} />
+            </Field>
+            <Field className="field settings-advanced" hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
+              <label htmlFor="observerRichReasoningSummary">Rich tier reasoning summary</label>
+              <input id="observerRichReasoningSummary" onInput={onTextInput('observerRichReasoningSummary')} placeholder="leave empty for default" value={values.observerRichReasoningSummary} />
+            </Field>
+            <Field className="field settings-advanced" hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
+              <label htmlFor="observerRichMaxOutputTokens">Rich tier max output tokens</label>
+              <input id="observerRichMaxOutputTokens" min="1" onInput={onTextInput('observerRichMaxOutputTokens')} step="1" type="number" value={values.observerRichMaxOutputTokens} />
             </Field>
           </div>
           <div className="settings-group settings-advanced" hidden={hiddenUnlessAdvanced()}>

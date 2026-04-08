@@ -47,6 +47,15 @@ const ALLOWED_KEYS = [
 	"observer_base_url",
 	"observer_provider",
 	"observer_model",
+	"observer_tier_routing_enabled",
+	"observer_simple_model",
+	"observer_simple_temperature",
+	"observer_rich_model",
+	"observer_rich_temperature",
+	"observer_rich_openai_use_responses",
+	"observer_rich_reasoning_effort",
+	"observer_rich_reasoning_summary",
+	"observer_rich_max_output_tokens",
 	"observer_runtime",
 	"observer_auth_source",
 	"observer_auth_file",
@@ -76,6 +85,8 @@ const DEFAULTS: ConfigData = {
 	claude_command: ["claude"],
 	observer_runtime: "api_http",
 	observer_auth_source: "auto",
+	observer_tier_routing_enabled: false,
+	observer_rich_openai_use_responses: false,
 	observer_auth_command: [],
 	observer_auth_timeout_ms: 1500,
 	observer_auth_cache_ttl_s: 300,
@@ -203,6 +214,19 @@ function parsePositiveInt(value: unknown, allowZero = false): number | null {
 	return parsed > 0 ? parsed : null;
 }
 
+function parseFiniteNumber(value: unknown, allowZero = true): number | null {
+	if (typeof value === "boolean") return null;
+	const parsed =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && value.trim().length > 0
+				? Number(value.trim())
+				: Number.NaN;
+	if (!Number.isFinite(parsed)) return null;
+	if (allowZero) return parsed >= 0 ? parsed : null;
+	return parsed > 0 ? parsed : null;
+}
+
 function asStringMap(value: unknown): Record<string, string> | null {
 	if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
 	const parsed: Record<string, string> = {};
@@ -285,9 +309,18 @@ function validateAndApplyUpdate(
 		configData[key] = value;
 		return null;
 	}
+	if (key === "observer_tier_routing_enabled" || key === "observer_rich_openai_use_responses") {
+		if (typeof value !== "boolean") return `${key} must be boolean`;
+		configData[key] = value;
+		return null;
+	}
 	if (
 		key === "observer_base_url" ||
 		key === "observer_model" ||
+		key === "observer_simple_model" ||
+		key === "observer_rich_model" ||
+		key === "observer_rich_reasoning_effort" ||
+		key === "observer_rich_reasoning_summary" ||
 		key === "observer_auth_file" ||
 		key === "sync_host" ||
 		key === "sync_coordinator_url" ||
@@ -297,6 +330,12 @@ function validateAndApplyUpdate(
 		const trimmed = value.trim();
 		if (!trimmed) delete configData[key];
 		else configData[key] = trimmed;
+		return null;
+	}
+	if (key === "observer_simple_temperature" || key === "observer_rich_temperature") {
+		const parsed = parseFiniteNumber(value, true);
+		if (parsed == null) return `${key} must be non-negative number`;
+		configData[key] = parsed;
 		return null;
 	}
 	const allowZero = key === "observer_auth_cache_ttl_s";
