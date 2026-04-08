@@ -18,7 +18,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist && pnpm exec tsc --build",
+		"build": "pnpm exec vite build --ssr src/index.ts --outDir dist && pnpm exec tsc --build --force",
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
