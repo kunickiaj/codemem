@@ -17,6 +17,15 @@ describe("loadObserverConfig", () => {
 		"CODEMEM_OBSERVER_API_KEY",
 		"CODEMEM_OBSERVER_BASE_URL",
 		"CODEMEM_OBSERVER_TEMPERATURE",
+		"CODEMEM_OBSERVER_TIER_ROUTING_ENABLED",
+		"CODEMEM_OBSERVER_SIMPLE_MODEL",
+		"CODEMEM_OBSERVER_SIMPLE_TEMPERATURE",
+		"CODEMEM_OBSERVER_RICH_MODEL",
+		"CODEMEM_OBSERVER_RICH_TEMPERATURE",
+		"CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES",
+		"CODEMEM_OBSERVER_RICH_REASONING_EFFORT",
+		"CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
+		"CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
 		"CODEMEM_OBSERVER_AUTH_SOURCE",
 		"CODEMEM_OBSERVER_AUTH_FILE",
 		"CODEMEM_OBSERVER_AUTH_COMMAND",
@@ -101,10 +110,24 @@ describe("loadObserverConfig", () => {
 			process.env.CODEMEM_OBSERVER_PROVIDER = "openai";
 			process.env.CODEMEM_OBSERVER_MAX_CHARS = "5000";
 			process.env.CODEMEM_OBSERVER_TEMPERATURE = "0.15";
+			process.env.CODEMEM_OBSERVER_TIER_ROUTING_ENABLED = "true";
+			process.env.CODEMEM_OBSERVER_SIMPLE_MODEL = "gpt-5.4-mini";
+			process.env.CODEMEM_OBSERVER_SIMPLE_TEMPERATURE = "0.2";
+			process.env.CODEMEM_OBSERVER_RICH_MODEL = "gpt-5.4";
+			process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE = "0.25";
+			process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES = "true";
+			process.env.CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS = "12000";
 			const cfg = loadObserverConfig();
 			expect(cfg.observerProvider).toBe("openai");
 			expect(cfg.observerMaxChars).toBe(5000);
 			expect(cfg.observerTemperature).toBe(0.15);
+			expect(cfg.observerTierRoutingEnabled).toBe(true);
+			expect(cfg.observerSimpleModel).toBe("gpt-5.4-mini");
+			expect(cfg.observerSimpleTemperature).toBe(0.2);
+			expect(cfg.observerRichModel).toBe("gpt-5.4");
+			expect(cfg.observerRichTemperature).toBe(0.25);
+			expect(cfg.observerRichOpenAIUseResponses).toBe(true);
+			expect(cfg.observerRichMaxOutputTokens).toBe(12000);
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}

@@ -24,6 +24,10 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { normalizeProjectLabel } from "./claude-hooks.js";
 import { toJson } from "./db.js";
 import {
+	buildTieredObserverConfig,
+	decideExtractionReplayTier,
+} from "./extraction-tier-routing.js";
+import {
 	budgetToolEvents,
 	eventToToolEvent,
 	extractAdapterEvent,
@@ -51,7 +55,7 @@ import type {
 	ToolEvent,
 } from "./ingest-types.js";
 import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
-import type { ObserverClient } from "./observer-client.js";
+import { type ObserverClient, ObserverClient as ObserverClientImpl } from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
@@ -152,6 +156,8 @@ function normalizeEventsForToolExtraction(
 export interface IngestOptions {
 	/** Observer LLM client. */
 	observer: ObserverClient;
+	/** Optional hook to create a routed observer during tests or controlled integrations. */
+	createTierObserver?: (config: ReturnType<ObserverClient["toConfig"]>) => ObserverClient;
 	/** Maximum chars per tool event payload (from config). Default 12000. */
 	maxChars?: number;
 	/** Maximum chars for observer total budget. Default 12000. */
@@ -360,12 +366,38 @@ export async function ingest(
 			recentFiles: "",
 		};
 
+		let selectedObserver = options.observer;
+		let selectedTier: "simple" | "rich" | null = null;
+		let selectedTierReasons: string[] = [];
+		if (options.observer.tierRoutingEnabled) {
+			const flushBatchId =
+				sessionContext.flushBatch &&
+				typeof sessionContext.flushBatch === "object" &&
+				"batch_id" in sessionContext.flushBatch
+					? Number((sessionContext.flushBatch as Record<string, unknown>).batch_id ?? 0)
+					: 0;
+			const decision = decideExtractionReplayTier({
+				batchId: Number.isFinite(flushBatchId) ? flushBatchId : 0,
+				sessionId,
+				eventSpan: events.length,
+				promptCount: sessionContext.promptCount ?? 0,
+				toolCount: sessionContext.toolCount ?? 0,
+				transcriptLength: transcript.length,
+			});
+			selectedTier = decision.tier;
+			selectedTierReasons = decision.reasons;
+			const tierConfig = buildTieredObserverConfig(options.observer.toConfig(), decision);
+			selectedObserver = options.createTierObserver
+				? options.createTierObserver(tierConfig)
+				: new ObserverClientImpl(tierConfig);
+		}
+
 		const { system, user } = buildObserverPrompt(observerContext);
 
 		// ------------------------------------------------------------------
 		// Call observer LLM
 		// ------------------------------------------------------------------
-		const response = await observeStructuredOutput(options.observer, system, user);
+		const response = await observeStructuredOutput(selectedObserver, system, user);
 
 		if (!response.raw) {
 			// Raw-event flushes must be lossless: if the observer returns no output,
@@ -375,7 +407,7 @@ export async function ingest(
 			}
 
 			// Surface the failure for normal ingest paths.
-			const status = options.observer.getStatus();
+			const status = selectedObserver.getStatus();
 			console.warn(
 				`[codemem] Observer returned no output (provider=${response.provider}, model=${response.model}` +
 					`${status.lastError ? `, error=${status.lastError}` : ""}). No memories will be created for this session.`,
@@ -535,6 +567,11 @@ export async function ingest(
 					files_modified: obs.filesModified,
 					prompt_number: promptNumber,
 					source: "observer",
+					observer_tier: selectedTier,
+					observer_tier_reasons: selectedTierReasons,
+					observer_provider: response.provider,
+					observer_model: response.model,
+					observer_openai_responses: selectedObserver.openaiUseResponses,
 					flush_batch: flushBatchMetadata,
 				});
 				vectorWriteInputs.push({ memoryId, title: memoryTitle, bodyText });
@@ -569,6 +606,11 @@ export async function ingest(
 						notes: summary.notes,
 						prompt_number: promptNumber,
 						session_class: sessionClass,
+						observer_tier: selectedTier,
+						observer_tier_reasons: selectedTierReasons,
+						observer_provider: response.provider,
+						observer_model: response.model,
+						observer_openai_responses: selectedObserver.openaiUseResponses,
 						files_read: summary.filesRead,
 						files_modified: summary.filesModified,
 						source: "observer_summary",
@@ -598,8 +640,11 @@ export async function ingest(
 						has_summary: summaryToStore != null,
 						session_class: sessionClass,
 						summary_disposition: summaryDisposition,
+						observer_tier: selectedTier,
+						observer_tier_reasons: selectedTierReasons,
 						provider: response.provider,
 						model: response.model,
+						openai_responses: selectedObserver.openaiUseResponses,
 						session_usage_tokens: usageTokenTotal,
 					}),
 				})
@@ -620,6 +665,11 @@ export async function ingest(
 		endSession(store, sessionId, events.length, sessionContext, {
 			session_class: sessionClass,
 			summary_disposition: summaryDisposition,
+			observer_tier: selectedTier,
+			observer_tier_reasons: selectedTierReasons,
+			observer_provider: response.provider,
+			observer_model: response.model,
+			observer_openai_responses: selectedObserver.openaiUseResponses,
 		});
 	} catch (err) {
 		// End session even on error
