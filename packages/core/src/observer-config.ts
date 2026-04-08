@@ -371,7 +371,10 @@ export function resolveCodememConfigPath(
 	// Should always find at least the legacy candidate, but guard anyway
 	if (resolvedIndex < 0) resolvedIndex = candidates.length - 1;
 
-	const resolved = candidates[resolvedIndex]!;
+	const resolved = candidates[resolvedIndex] ?? candidates[candidates.length - 1];
+	if (!resolved) {
+		throw new Error("No config path candidates were generated");
+	}
 	const fallbackChain = candidates.filter((_, i) => i !== resolvedIndex);
 
 	// Annotate skipped candidates with why they were not selected
@@ -548,7 +551,7 @@ export function resolveCustomProviderFromModel(
 	model: string,
 	providers: Set<string>,
 ): string | null {
-	if (!model || !model.includes("/")) return null;
+	if (!model?.includes("/")) return null;
 	const prefix = model.split("/")[0] ?? "";
 	return prefix && providers.has(prefix) ? prefix : null;
 }

@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
-import type { ObserverConfig } from "./observer-client.js";
 import {
 	budgetToolEvents,
 	extractToolEvents,
@@ -28,6 +27,7 @@ import {
 } from "./ingest-transcript.js";
 import type { IngestPayload, ParsedSummary, ToolEvent } from "./ingest-types.js";
 import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
+import type { ObserverConfig } from "./observer-client.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
