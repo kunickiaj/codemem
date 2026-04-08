@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/core",
-	"version": "0.23.0",
+	"version": "0.24.0",
 	"type": "module",
 	"types": "./dist/index.d.ts",
 	"exports": {
@@ -20,7 +20,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build && pnpm exec tsc --build",
+		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
 		"typecheck": "pnpm exec tsc --noEmit",
 		"generate:test-schema": "pnpm exec tsx scripts/generate-test-schema.ts"
 	},
