@@ -76,13 +76,49 @@ export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-/** Format a single memory item as a pack line. */
-function formatItem(item: MemoryResult): string {
-	const parts = [`[${item.id}]`, `(${item.kind})`, item.title];
-	if (item.body_text) {
-		parts.push("-", item.body_text);
+/** Parse a JSON-encoded facts string into an array of strings, or null. */
+function parseFacts(raw: string | null): string[] | null {
+	if (!raw) return null;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (Array.isArray(parsed)) {
+			const strings = parsed.filter((item): item is string => typeof item === "string");
+			return strings.length > 0 ? strings : null;
+		}
+	} catch {
+		// not valid JSON — ignore
 	}
-	return parts.join(" ");
+	return null;
+}
+
+/**
+ * Format a single memory item for pack output.
+ *
+ * Prefers structured content (narrative / facts) over body_text when
+ * available. Falls back to the original single-line format when neither
+ * structured field exists.
+ */
+function formatItem(item: MemoryResult): string {
+	const header = `[${item.id}] (${item.kind}) ${item.title}`;
+	const narrative = item.narrative || null;
+	const facts = parseFacts(item.facts);
+
+	if (narrative || facts) {
+		let result = header;
+		if (narrative) {
+			result += `\n${narrative}`;
+		}
+		if (facts) {
+			result += `\n\n${facts.map((f) => `- ${f}`).join("\n")}`;
+		}
+		return result;
+	}
+
+	// Fallback: original single-line format
+	if (item.body_text) {
+		return `${header} - ${item.body_text}`;
+	}
+	return header;
 }
 
 /** Build a formatted section with header and items. */
@@ -102,7 +138,7 @@ function toPackItem(result: MemoryResult, dedupeState?: DedupeState): PackItem {
 		id: result.id,
 		kind: result.kind,
 		title: result.title,
-		body: result.body_text,
+		body: result.narrative || result.body_text,
 		confidence: result.confidence,
 		tags: result.tags_text,
 		metadata: result.metadata,
@@ -1255,7 +1291,7 @@ function buildPackArtifacts(
 			rank: index + 1,
 			kind: item.kind,
 			title: item.title,
-			preview: preview(item.body_text),
+			preview: preview(item.narrative || item.body_text),
 			scores: scoredCandidate,
 			reasons: candidateReasons(item, scoredCandidate, section, disposition),
 			disposition,
