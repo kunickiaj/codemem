@@ -679,6 +679,11 @@ export class ObserverClient {
 	readonly maxChars: number;
 	readonly maxTokens: number;
 	readonly maxOutputTokens: number;
+	readonly authSource: string;
+	readonly authFile: string | null;
+	readonly authCommand: string[];
+	readonly authTimeoutMs: number;
+	readonly authCacheTtlS: number;
 
 	/** Resolved auth material — updated on refresh. */
 	auth: ObserverAuthMaterial;
@@ -805,6 +810,11 @@ export class ObserverClient {
 			Number.isFinite(cfg.observerMaxOutputTokens)
 				? cfg.observerMaxOutputTokens
 				: this.maxTokens;
+		this.authSource = cfg.observerAuthSource;
+		this.authFile = cfg.observerAuthFile;
+		this.authCommand = [...cfg.observerAuthCommand];
+		this.authTimeoutMs = cfg.observerAuthTimeoutMs;
+		this.authCacheTtlS = cfg.observerAuthCacheTtlS;
 		this._observerHeaders = { ...cfg.observerHeaders };
 		this._apiKey = cfg.observerApiKey ?? null;
 
@@ -849,11 +859,11 @@ export class ObserverClient {
 			observerMaxChars: this.maxChars,
 			observerMaxTokens: this.maxTokens,
 			observerHeaders: { ...this._observerHeaders },
-			observerAuthSource: this.authAdapter.source,
-			observerAuthFile: null,
-			observerAuthCommand: [],
-			observerAuthTimeoutMs: 1500,
-			observerAuthCacheTtlS: 300,
+			observerAuthSource: this.authSource,
+			observerAuthFile: this.authFile,
+			observerAuthCommand: [...this.authCommand],
+			observerAuthTimeoutMs: this.authTimeoutMs,
+			observerAuthCacheTtlS: this.authCacheTtlS,
 		};
 	}
 

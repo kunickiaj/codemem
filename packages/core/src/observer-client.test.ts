@@ -252,6 +252,31 @@ describe("ObserverClient", () => {
 			expect(client.maxOutputTokens).toBe(12000);
 		});
 
+		it("preserves auth source details in toConfig", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "file",
+				observerAuthFile: "/tmp/observer-auth.json",
+				observerAuthCommand: ["security", "find-generic-password"],
+				observerAuthTimeoutMs: 2500,
+				observerAuthCacheTtlS: 120,
+			});
+			const config = client.toConfig();
+			expect(config.observerAuthSource).toBe("file");
+			expect(config.observerAuthFile).toBe("/tmp/observer-auth.json");
+			expect(config.observerAuthCommand).toEqual(["security", "find-generic-password"]);
+			expect(config.observerAuthTimeoutMs).toBe(2500);
+			expect(config.observerAuthCacheTtlS).toBe(120);
+		});
+
 		it("infers anthropic from claude model prefix", () => {
 			const client = new ObserverClient({
 				observerProvider: null,

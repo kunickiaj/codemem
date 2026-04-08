@@ -65,9 +65,9 @@ export function buildTieredObserverConfig(
 			RICH_TIER_DEFAULTS.observerTemperature ??
 			baseConfig.observerTemperature,
 		observerOpenAIUseResponses:
-			baseConfig.observerRichOpenAIUseResponses ??
-			RICH_TIER_DEFAULTS.observerOpenAIUseResponses ??
-			false,
+			baseConfig.observerRichOpenAIUseResponses === true
+				? true
+				: (RICH_TIER_DEFAULTS.observerOpenAIUseResponses ?? false),
 		observerReasoningEffort:
 			baseConfig.observerRichReasoningEffort ?? RICH_TIER_DEFAULTS.observerReasoningEffort ?? null,
 		observerReasoningSummary:
