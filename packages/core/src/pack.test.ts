@@ -653,3 +653,196 @@ describe("buildMemoryPack", () => {
 		expect(pack.item_ids[0]).toBe(decisionId);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Structured content tests: narrative and facts rendering
+// ---------------------------------------------------------------------------
+
+describe("buildMemoryPack structured content", () => {
+	let tmpDir: string;
+	let store: MemoryStore;
+	let sessionId: number;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-structured-"));
+		const dbPath = join(tmpDir, "test.db");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		store = new MemoryStore(dbPath);
+		sessionId = insertTestSession(store.db);
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("renders narrative instead of body_text when available", () => {
+		store.remember(
+			sessionId,
+			"discovery",
+			"Found stale branches",
+			"Raw body text blob",
+			0.8,
+			undefined,
+			{ narrative: "The branch audit clarified which branches were real work" },
+		);
+
+		const pack = buildMemoryPack(store, "stale branches");
+
+		expect(pack.pack_text).toContain("Found stale branches");
+		expect(pack.pack_text).toContain("The branch audit clarified");
+		expect(pack.pack_text).not.toContain("Raw body text blob");
+	});
+
+	it("renders facts as bullet points after narrative", () => {
+		store.remember(
+			sessionId,
+			"discovery",
+			"Branch cleanup analysis",
+			"Raw body fallback",
+			0.8,
+			undefined,
+			{
+				narrative: "Audit identified several stale branches",
+				facts: ["Branch A was already merged", "Branch B had no unique commits"],
+			},
+		);
+
+		const pack = buildMemoryPack(store, "branch cleanup");
+
+		expect(pack.pack_text).toContain("Audit identified several stale branches");
+		expect(pack.pack_text).toContain("- Branch A was already merged");
+		expect(pack.pack_text).toContain("- Branch B had no unique commits");
+		expect(pack.pack_text).not.toContain("Raw body fallback");
+	});
+
+	it("renders facts without narrative when only facts exist", () => {
+		store.remember(sessionId, "decision", "Migration rules", "Raw body fallback", 0.9, undefined, {
+			facts: ["Always run migrations in a transaction", "Never drop columns in-place"],
+		});
+
+		const pack = buildMemoryPack(store, "migration rules");
+
+		expect(pack.pack_text).toContain("- Always run migrations in a transaction");
+		expect(pack.pack_text).toContain("- Never drop columns in-place");
+		expect(pack.pack_text).not.toContain("Raw body fallback");
+	});
+
+	it("falls back to body_text when neither narrative nor facts exist", () => {
+		store.remember(
+			sessionId,
+			"bugfix",
+			"Fixed null pointer",
+			"Checked for null before access",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(store, "null pointer");
+
+		expect(pack.pack_text).toContain("Fixed null pointer - Checked for null before access");
+	});
+
+	it("falls back to body_text when narrative is an empty string", () => {
+		store.remember(
+			sessionId,
+			"discovery",
+			"Empty narrative test",
+			"Body text should win here",
+			0.8,
+			undefined,
+			{ narrative: "" },
+		);
+
+		const pack = buildMemoryPack(store, "empty narrative");
+
+		expect(pack.pack_text).toContain("Empty narrative test - Body text should win here");
+
+		const item = pack.items.find((i) => i.title === "Empty narrative test");
+		expect(item).toBeDefined();
+		expect(item?.body).toBe("Body text should win here");
+	});
+
+	it("prefers narrative for PackItem.body in response items", () => {
+		store.remember(sessionId, "feature", "Add search feature", "Raw body text", 0.8, undefined, {
+			narrative: "Implemented FTS5 full-text search with BM25 scoring",
+		});
+
+		const pack = buildMemoryPack(store, "search feature");
+
+		expect(pack.items.length).toBeGreaterThanOrEqual(1);
+		const item = pack.items.find((i) => i.title === "Add search feature");
+		expect(item).toBeDefined();
+		expect(item?.body).toBe("Implemented FTS5 full-text search with BM25 scoring");
+	});
+
+	it("uses body_text for PackItem.body when no narrative exists", () => {
+		store.remember(sessionId, "feature", "Add login page", "Built the login UI", 0.7);
+
+		const pack = buildMemoryPack(store, "login page");
+
+		expect(pack.items.length).toBeGreaterThanOrEqual(1);
+		const item = pack.items.find((i) => i.title === "Add login page");
+		expect(item).toBeDefined();
+		expect(item?.body).toBe("Built the login UI");
+	});
+
+	it("prefers narrative in pack trace preview", () => {
+		store.remember(sessionId, "discovery", "Trace preview test", "Short raw body", 0.8, undefined, {
+			narrative: "Detailed narrative for trace preview rendering",
+		});
+
+		const trace = buildMemoryPackTrace(store, "trace preview test");
+
+		expect(trace.retrieval.candidates.length).toBeGreaterThan(0);
+		const candidate = trace.retrieval.candidates[0];
+		expect(candidate?.preview).toContain("Detailed narrative for trace preview");
+		expect(candidate?.preview).not.toContain("Short raw body");
+	});
+
+	it("still trims correctly under token budget with longer structured content", () => {
+		for (let i = 0; i < 8; i++) {
+			store.remember(
+				sessionId,
+				"discovery",
+				`Structured item ${i} about budgeting`,
+				"Short fallback",
+				0.5,
+				undefined,
+				{
+					narrative: `This is a detailed narrative for item ${i} that provides context about the budgeting work and should consume tokens in the budget calculation`,
+					facts: [
+						`Fact A for item ${i}: something important`,
+						`Fact B for item ${i}: another detail`,
+					],
+				},
+			);
+		}
+
+		const smallPack = buildMemoryPack(store, "budgeting", 10, 40);
+		const fullPack = buildMemoryPack(store, "budgeting", 10, null);
+
+		expect(smallPack.items.length).toBeLessThanOrEqual(fullPack.items.length);
+	});
+
+	it("pack text and trace pack text agree on structured content", () => {
+		store.remember(
+			sessionId,
+			"decision",
+			"Use SQLite for structured test",
+			"Fallback body",
+			0.9,
+			undefined,
+			{
+				narrative: "Chose SQLite for its zero-config embedded nature",
+				facts: ["No server process needed", "Single-file database"],
+			},
+		);
+
+		const pack = buildMemoryPack(store, "SQLite structured test", 10);
+		const trace = buildMemoryPackTrace(store, "SQLite structured test", 10);
+
+		expect(trace.output.pack_text).toBe(pack.pack_text);
+	});
+});
