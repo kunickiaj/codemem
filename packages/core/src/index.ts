@@ -295,7 +295,13 @@ export {
 	writeCodememConfigFile,
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
-export { buildMemoryPack, buildMemoryPackAsync, estimateTokens } from "./pack.js";
+export {
+	buildMemoryPack,
+	buildMemoryPackAsync,
+	buildMemoryPackTrace,
+	buildMemoryPackTraceAsync,
+	estimateTokens,
+} from "./pack.js";
 export {
 	projectBasename,
 	projectClause,
@@ -432,6 +438,12 @@ export type {
 	OpenCodeSession,
 	PackItem,
 	PackResponse,
+	PackTrace,
+	PackTraceCandidate,
+	PackTraceCandidateScores,
+	PackTraceDisposition,
+	PackTraceMode,
+	PackTraceSection,
 	RawEvent,
 	RawEventFlushBatch,
 	RawEventIngestSample,
