@@ -29,6 +29,7 @@ import type {
 	MemoryItem,
 	MemoryItemResponse,
 	MemoryResult,
+	PackTraceCandidateScores,
 	TimelineItemResponse,
 } from "./types.js";
 
@@ -535,6 +536,58 @@ function workingSetOverlapBoost(item: MemoryResult, workingSetPaths: string[]): 
 	return Math.min(0.32, boost);
 }
 
+export function scoreResult(
+	store: StoreHandle,
+	item: MemoryResult,
+	filters?: MemoryFilters,
+	query = "",
+	referenceNow = new Date(),
+): PackTraceCandidateScores {
+	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
+	const preferSummary = queryPrefersRecap(query);
+	const taskLikeQuery = searchQueryLooksTaskLike(query);
+	const recency = recencyScore(item.created_at, referenceNow);
+	const kind = kindBonus(item.kind);
+	const qualityBoost = qualityDimensionBoost(item, query);
+	const workingSetOverlap = workingSetOverlapBoost(item, workingSetPaths);
+	const queryPathOverlap = queryPathOverlapBoost(item, query);
+	const personalBiasValue = personalBias(store, item, filters);
+	const sharedTrustPenaltyValue = sharedTrustPenalty(store, item, filters);
+	const recapPenalty = recapPenaltyForSearch(item, preferSummary);
+	const tasklikePenalty =
+		!taskLikeQuery && itemLooksTaskLikeForSearch(item) ? NON_TASK_TASKLIKE_PENALTY : 0.0;
+	const baseScore = Number.isFinite(item.score) ? item.score : null;
+	const combinedScore =
+		baseScore == null
+			? null
+			: baseScore * 1.5 +
+				recency +
+				kind +
+				qualityBoost +
+				workingSetOverlap +
+				queryPathOverlap +
+				personalBiasValue -
+				sharedTrustPenaltyValue -
+				recapPenalty -
+				tasklikePenalty;
+
+	return {
+		base_score: baseScore,
+		combined_score: combinedScore,
+		recency,
+		kind_bonus: kind,
+		quality_boost: qualityBoost,
+		working_set_overlap: workingSetOverlap,
+		query_path_overlap: queryPathOverlap,
+		personal_bias: personalBiasValue,
+		shared_trust_penalty: sharedTrustPenaltyValue,
+		recap_penalty: recapPenalty,
+		tasklike_penalty: tasklikePenalty,
+		text_overlap: 0,
+		tag_overlap: 0,
+	};
+}
+
 /**
  * Re-rank search results by combining BM25 score, recency, kind bonus,
  * personal bias, and shared trust penalty.
@@ -547,23 +600,12 @@ export function rerankResults(
 	query = "",
 ): MemoryResult[] {
 	const referenceNow = new Date();
-	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
-	const preferSummary = queryPrefersRecap(query);
-	const taskLikeQuery = searchQueryLooksTaskLike(query);
 
 	const scored = results.map((item) => ({
 		item,
 		combinedScore:
-			item.score * 1.5 +
-			recencyScore(item.created_at, referenceNow) +
-			kindBonus(item.kind) +
-			qualityDimensionBoost(item, query) +
-			workingSetOverlapBoost(item, workingSetPaths) +
-			queryPathOverlapBoost(item, query) +
-			personalBias(store, item, filters) -
-			sharedTrustPenalty(store, item, filters) -
-			recapPenaltyForSearch(item, preferSummary) -
-			(!taskLikeQuery && itemLooksTaskLikeForSearch(item) ? NON_TASK_TASKLIKE_PENALTY : 0.0),
+			scoreResult(store, item, filters, query, referenceNow).combined_score ??
+			Number.NEGATIVE_INFINITY,
 	}));
 
 	scored.sort((a, b) => b.combinedScore - a.combinedScore);

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
-import { buildMemoryPack, estimateTokens } from "./pack.js";
+import { buildMemoryPack, buildMemoryPackTrace, estimateTokens } from "./pack.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
@@ -245,6 +245,155 @@ describe("buildMemoryPack", () => {
 	it("includes context in the result", () => {
 		const pack = buildMemoryPack(store, "my test context");
 		expect(pack.context).toBe("my test context");
+	});
+
+	it("builds a deterministic pack trace with pack parity", () => {
+		store.remember(
+			sessionId,
+			"decision",
+			"Use SQLite for local state",
+			"Chosen for portability",
+			0.9,
+			undefined,
+			{
+				files_modified: ["packages/core/src/store.ts"],
+			},
+		);
+		store.remember(
+			sessionId,
+			"feature",
+			"Continue viewer health work",
+			"Next step is to improve the viewer health panel",
+			0.8,
+			undefined,
+			{
+				files_modified: ["packages/ui/src/app.ts"],
+			},
+		);
+
+		const pack = buildMemoryPack(store, "continue viewer health work", 10, null, {
+			working_set_paths: ["packages/ui/src/app.ts"],
+		});
+		const trace = buildMemoryPackTrace(store, "continue viewer health work", 10, null, {
+			working_set_paths: ["packages/ui/src/app.ts"],
+		});
+
+		expect(trace.version).toBe(1);
+		expect(trace.inputs.query).toBe("continue viewer health work");
+		expect(trace.mode.selected).toBe(pack.metrics.mode);
+		expect(trace.output.pack_text).toBe(pack.pack_text);
+		expect(trace.output.estimated_tokens).toBe(pack.metrics.pack_tokens);
+		expect(trace.assembly.sections.summary).toEqual(expect.any(Array));
+		expect(trace.assembly.sections.timeline).toEqual(expect.any(Array));
+		expect(trace.assembly.sections.observations).toEqual(expect.any(Array));
+		expect(trace.retrieval.candidates.length).toBeGreaterThan(0);
+		expect(trace.retrieval.candidates[0]).toEqual(
+			expect.objectContaining({
+				rank: 1,
+				disposition: expect.stringMatching(/selected|dropped|deduped|trimmed/),
+				scores: expect.objectContaining({
+					combined_score: expect.any(Number),
+					text_overlap: expect.any(Number),
+					tag_overlap: expect.any(Number),
+				}),
+			}),
+		);
+	});
+
+	it("marks deduped and trimmed candidates in pack trace", () => {
+		for (let i = 0; i < 6; i++) {
+			store.remember(
+				sessionId,
+				"feature",
+				`Feature item ${i} about tracing`,
+				`This is a long body for tracing item ${i} that should consume budget and ranking space`,
+				0.7,
+			);
+		}
+		const canonicalId = store.remember(
+			sessionId,
+			"decision",
+			"Tracing duplicate title",
+			"Tracing duplicate body",
+			0.9,
+		);
+		const duplicateId = store.remember(
+			sessionId,
+			"decision",
+			"Tracing duplicate title",
+			"Tracing duplicate body",
+			0.8,
+		);
+
+		const trace = buildMemoryPackTrace(store, "tracing", 10, 30);
+		const collapsedGroup = trace.assembly.collapsed_groups.find(
+			(group) => group.kept === canonicalId || group.kept === duplicateId,
+		);
+
+		expect(collapsedGroup).toBeTruthy();
+		expect(collapsedGroup?.support_count).toBe(2);
+		expect(
+			[collapsedGroup?.kept, ...(collapsedGroup?.dropped ?? [])].sort((a, b) => a - b),
+		).toEqual([canonicalId, duplicateId].sort((a, b) => a - b));
+		for (const droppedId of collapsedGroup?.dropped ?? []) {
+			expect(trace.assembly.deduped_ids).toContain(droppedId);
+		}
+		expect(trace.assembly.trimmed_ids.length).toBeGreaterThan(0);
+		expect(trace.output.truncated).toBe(true);
+		expect(
+			trace.retrieval.candidates.some((candidate) => candidate.disposition === "trimmed"),
+		).toBe(true);
+		expect(
+			trace.retrieval.candidates.some((candidate) => candidate.disposition === "deduped"),
+		).toBe(true);
+	});
+
+	it("does not record usage events for trace-only calls", () => {
+		store.remember(sessionId, "feature", "Trace-only item", "Useful trace context", 0.8);
+
+		const before = store.db
+			.prepare("SELECT COUNT(*) AS total FROM usage_events WHERE event = 'pack'")
+			.get() as { total: number };
+		const pack = buildMemoryPack(store, "trace-only item", 10);
+		const afterPack = store.db
+			.prepare("SELECT COUNT(*) AS total FROM usage_events WHERE event = 'pack'")
+			.get() as { total: number };
+		buildMemoryPackTrace(store, "trace-only item", 10);
+		const afterTrace = store.db
+			.prepare("SELECT COUNT(*) AS total FROM usage_events WHERE event = 'pack'")
+			.get() as { total: number };
+
+		expect(pack.items.length).toBeGreaterThan(0);
+		expect(afterPack.total).toBe(before.total + 1);
+		expect(afterTrace.total).toBe(afterPack.total);
+	});
+
+	it("uses the effective retrieval query in task-mode trace scoring", () => {
+		store.remember(
+			sessionId,
+			"feature",
+			"Review unresolved stack comments",
+			"Track the unresolved Graphite review thread and CLI follow-up",
+			0.9,
+		);
+
+		const trace = buildMemoryPackTrace(store, "continue review stack comments", 10);
+		const candidate = trace.retrieval.candidates[0];
+
+		expect(trace.mode.selected).toBe("task");
+		expect(candidate).toBeDefined();
+		expect(candidate.scores.text_overlap).toBeGreaterThan(0);
+		expect(candidate.reasons).toContain("matched query terms");
+	});
+
+	it("keeps retrieval candidates anchored to retrieval instead of fallback assembly", () => {
+		store.remember(sessionId, "session_summary", "Latest summary", "Summary fallback text", 0.9);
+
+		const trace = buildMemoryPackTrace(store, "zzz_nomatch_zzz", 10);
+
+		expect(trace.retrieval.candidate_count).toBe(0);
+		expect(trace.output.pack_text).toContain("## Summary");
+		expect(trace.output.pack_text).toContain("Latest summary");
 	});
 
 	it("with tokenBudget=0 skips budget enforcement (treats as no budget)", () => {

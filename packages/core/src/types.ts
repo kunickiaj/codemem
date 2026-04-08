@@ -73,6 +73,76 @@ export interface Artifact {
 	metadata_json: string | null;
 }
 
+export type PackTraceMode = "default" | "task" | "recall";
+
+export type PackTraceDisposition = "selected" | "dropped" | "deduped" | "trimmed";
+
+export type PackTraceSection = "summary" | "timeline" | "observations";
+
+export type PackTraceCandidateScores = {
+	base_score: number | null;
+	combined_score: number | null;
+	recency: number;
+	kind_bonus: number;
+	quality_boost: number;
+	working_set_overlap: number;
+	query_path_overlap: number;
+	personal_bias: number;
+	shared_trust_penalty: number;
+	recap_penalty: number;
+	tasklike_penalty: number;
+	text_overlap: number;
+	tag_overlap: number;
+};
+
+export type PackTraceCandidate = {
+	id: number;
+	rank: number;
+	kind: string;
+	title: string;
+	preview: string;
+	scores: PackTraceCandidateScores;
+	reasons: string[];
+	disposition: PackTraceDisposition;
+	section: PackTraceSection | null;
+};
+
+export type PackTrace = {
+	version: 1;
+	inputs: {
+		query: string;
+		project: string | null;
+		working_set_files: string[];
+		token_budget: number | null;
+		limit: number;
+	};
+	mode: {
+		selected: PackTraceMode;
+		reasons: string[];
+	};
+	retrieval: {
+		candidate_count: number;
+		candidates: PackTraceCandidate[];
+	};
+	assembly: {
+		deduped_ids: number[];
+		collapsed_groups: Array<{
+			kept: number;
+			dropped: number[];
+			support_count: number;
+		}>;
+		trimmed_ids: number[];
+		trim_reasons: string[];
+		sections: Record<PackTraceSection, number[]>;
+	};
+	output: {
+		estimated_tokens: number;
+		truncated: boolean;
+		section_counts: Record<PackTraceSection, number>;
+		pack_text: string;
+	};
+};
+
 // ---------------------------------------------------------------------------
 // Usage tracking
 // ---------------------------------------------------------------------------

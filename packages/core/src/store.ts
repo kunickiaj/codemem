@@ -33,7 +33,12 @@ import {
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
 import { readCodememConfigFile } from "./observer-config.js";
-import { buildMemoryPack, buildMemoryPackAsync } from "./pack.js";
+import {
+	buildMemoryPack,
+	buildMemoryPackAsync,
+	buildMemoryPackTrace,
+	buildMemoryPackTraceAsync,
+} from "./pack.js";
 import * as schema from "./schema.js";
 import {
 	type ExplainOptions,
@@ -49,6 +54,7 @@ import type {
 	MemoryItemResponse,
 	MemoryResult,
 	PackResponse,
+	PackTrace,
 	StoreStats,
 	TimelineItemResponse,
 } from "./types.js";
@@ -973,6 +979,15 @@ export class MemoryStore {
 		return buildMemoryPack(this, context, limit, tokenBudget ?? null, filters);
 	}
 
+	buildMemoryPackTrace(
+		context: string,
+		limit?: number,
+		tokenBudget?: number | null,
+		filters?: MemoryFilters,
+	): PackTrace {
+		return buildMemoryPackTrace(this, context, limit, tokenBudget ?? null, filters);
+	}
+
 	/**
 	 * Build a memory pack with semantic candidate merging.
 	 *
@@ -987,6 +1002,15 @@ export class MemoryStore {
 		filters?: MemoryFilters,
 	): Promise<PackResponse> {
 		return buildMemoryPackAsync(this, context, limit, tokenBudget ?? null, filters);
+	}
+
+	async buildMemoryPackTraceAsync(
+		context: string,
+		limit?: number,
+		tokenBudget?: number | null,
+		filters?: MemoryFilters,
+	): Promise<PackTrace> {
+		return buildMemoryPackTraceAsync(this, context, limit, tokenBudget ?? null, filters);
 	}
 
 	// Raw event helpers

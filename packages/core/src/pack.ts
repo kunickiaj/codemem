@@ -19,7 +19,7 @@ import { buildFilterClausesWithContext } from "./filters.js";
 import { projectBasename } from "./project.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import type { StoreHandle } from "./search.js";
-import { rerankResults, search, timeline } from "./search.js";
+import { rerankResults, scoreResult, search, timeline } from "./search.js";
 import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
@@ -32,6 +32,11 @@ import type {
 	MemoryResult,
 	PackItem,
 	PackResponse,
+	PackTrace,
+	PackTraceCandidate,
+	PackTraceDisposition,
+	PackTraceMode,
+	PackTraceSection,
 	TimelineItemResponse,
 } from "./types.js";
 import { semanticSearch } from "./vectors.js";
@@ -58,6 +63,9 @@ const TASK_HINT_QUERY =
 	"todo todos task tasks pending follow up follow-up next resume continue backlog pick up pick-up";
 
 const RECALL_HINT_QUERY = "session summary recap remember last time previous work";
+
+const TRACE_CANDIDATE_LIMIT = 20;
+const TRACE_PREVIEW_LIMIT = 160;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -188,6 +196,108 @@ function countOverlap(tags: string, tokens: Set<string>): number {
 		if (tagSet.has(t)) count++;
 	}
 	return count;
+}
+
+function preview(text: string): string {
+	const trimmed = text.trim().replace(/\s+/g, " ");
+	if (trimmed.length <= TRACE_PREVIEW_LIMIT) return trimmed;
+	return `${trimmed.slice(0, TRACE_PREVIEW_LIMIT - 1).trimEnd()}…`;
+}
+
+function modeReasons(_context: string, mode: PackTraceMode, filters?: MemoryFilters): string[] {
+	const reasons: string[] = [];
+	if (mode === "task") {
+		reasons.push("query matched task hints");
+	} else if (mode === "recall") {
+		reasons.push("query matched recap or recall hints");
+	} else {
+		reasons.push("using default retrieval mode");
+	}
+	if ((filters?.working_set_paths?.length ?? 0) > 0) {
+		reasons.push("working set present");
+	}
+	return reasons;
+}
+
+function flattenDuplicateIds(dedupeState: DedupeState): number[] {
+	return [...dedupeState.duplicateIds.values()].flatMap((ids) => [...ids]).sort((a, b) => a - b);
+}
+
+function collapsedGroups(
+	dedupeState: DedupeState,
+): Array<{ kept: number; dropped: number[]; support_count: number }> {
+	return [...dedupeState.duplicateIds.entries()]
+		.map(([kept, dropped]) => ({
+			kept,
+			dropped: [...dropped].sort((a, b) => a - b),
+			support_count: 1 + dropped.size,
+		}))
+		.sort((a, b) => a.kept - b.kept);
+}
+
+function traceSection(
+	itemId: number,
+	sections: Record<PackTraceSection, number[]>,
+): PackTraceSection | null {
+	if (sections.summary.includes(itemId)) return "summary";
+	if (sections.timeline.includes(itemId)) return "timeline";
+	if (sections.observations.includes(itemId)) return "observations";
+	return null;
+}
+
+function candidateReasons(
+	item: MemoryResult,
+	scores: ReturnType<typeof scoreResult>,
+	section: PackTraceSection | null,
+	disposition: PackTraceDisposition,
+): string[] {
+	const reasons: string[] = [];
+	if ((scores.text_overlap ?? 0) > 0) reasons.push("matched query terms");
+	if ((scores.tag_overlap ?? 0) > 0) reasons.push("matched tag overlap");
+	if ((scores.working_set_overlap ?? 0) > 0) reasons.push("working-set overlap");
+	if ((scores.query_path_overlap ?? 0) > 0) reasons.push("matched file path hints");
+	if (isSummaryLike(item)) reasons.push("summary-like memory");
+	if (section) reasons.push(`selected for ${section}`);
+	if (disposition === "deduped") reasons.push("removed by exact dedupe");
+	if (disposition === "trimmed") reasons.push("trimmed by token budget");
+	if (disposition === "dropped") reasons.push("not selected for final pack");
+	return reasons.length > 0 ? reasons : ["included in retrieval pool"];
+}
+
+type PackArtifacts = {
+	response: PackResponse;
+	trace: PackTrace;
+};
+
+type RawSemanticResult = Awaited<ReturnType<typeof semanticSearch>>[number];
+
+function semanticMemoryResults(results: RawSemanticResult[]): MemoryResult[] {
+	return results.map((result) => {
+		let metadata: Record<string, unknown> = {};
+		if (result.metadata_json) {
+			try {
+				const parsed = JSON.parse(result.metadata_json) as unknown;
+				if (parsed != null && typeof parsed === "object" && !Array.isArray(parsed)) {
+					metadata = parsed as Record<string, unknown>;
+				}
+			} catch {
+				// Invalid JSON metadata — use empty object
+			}
+		}
+		return {
+			id: result.id,
+			kind: result.kind,
+			title: result.title,
+			body_text: result.body_text,
+			confidence: result.confidence,
+			created_at: result.created_at,
+			updated_at: result.updated_at,
+			tags_text: result.tags_text,
+			score: result.score,
+			session_id: result.session_id,
+			metadata,
+		};
+	});
 }
 
 function queryContentTokens(query: string): Set<string> {
@@ -697,24 +807,28 @@ function mergeResults(
 	return { merged, ftsCount: ftsResults.length, semanticCount };
 }
 
-export function buildMemoryPack(
+function buildPackArtifacts(
 	store: StoreHandle,
 	context: string,
 	limit = 10,
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
-): PackResponse {
+	options: { recordUsage: boolean } = { recordUsage: true },
+): PackArtifacts {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
+	let retrievalResults: MemoryResult[] = [];
+	let retrievalQuery = context;
 	let results: MemoryResult[];
 	const taskMode = queryLooksLikeTasks(context);
 	const recallMode = !taskMode && queryLooksLikeRecall(context);
 
 	if (taskMode) {
 		const taskQuery = `${context} ${TASK_HINT_QUERY}`.trim();
+		retrievalQuery = taskQuery;
 		let taskResults = search(store, taskQuery, effectiveLimit, filters);
 		ftsCount = taskResults.length;
 		if (semanticResults && semanticResults.length > 0) {
@@ -729,6 +843,7 @@ export function buildMemoryPack(
 			taskResults = merge.merged;
 			semanticCount = merge.semanticCount;
 		}
+		retrievalResults = [...taskResults];
 		if (taskResults.length === 0) {
 			fallbackUsed = true;
 			results = taskFallbackRecent(store, effectiveLimit, filters);
@@ -750,6 +865,7 @@ export function buildMemoryPack(
 		}
 	} else if (recallMode) {
 		const recallQuery = context.trim().length > 0 ? context : RECALL_HINT_QUERY;
+		retrievalQuery = recallQuery;
 		const preferSummary = queryPrefersRecap(recallQuery);
 		const wantsTimeline = recallQueryWantsTimeline(recallQuery);
 		const topicalRecallQuery = [...queryContentTokens(recallQuery)].join(" ");
@@ -766,6 +882,7 @@ export function buildMemoryPack(
 				if (topicalResults.length > 0) {
 					recallResults = topicalResults;
 					ftsCount = topicalResults.length;
+					retrievalQuery = topicalRecallQuery;
 				}
 			}
 		}
@@ -774,6 +891,7 @@ export function buildMemoryPack(
 				isSummaryLike,
 			);
 			ftsCount = recallResults.length;
+			retrievalQuery = RECALL_HINT_QUERY;
 		}
 		if (semanticResults && semanticResults.length > 0) {
 			const merge = mergeResults(
@@ -787,6 +905,7 @@ export function buildMemoryPack(
 			recallResults = merge.merged;
 			semanticCount = merge.semanticCount;
 		}
+		retrievalResults = [...recallResults];
 		results = prioritizeRecallResults(recallResults, effectiveLimit, preferSummary, context);
 		if (results.length === 0) {
 			fallbackUsed = true;
@@ -825,9 +944,11 @@ export function buildMemoryPack(
 			results = prioritizeDefaultResults(merge.merged, effectiveLimit, context);
 			ftsCount = merge.ftsCount;
 			semanticCount = merge.semanticCount;
+			retrievalResults = [...merge.merged];
 		} else {
 			results = prioritizeDefaultResults(ftsResults, effectiveLimit, context);
 			ftsCount = results.length;
+			retrievalResults = [...ftsResults];
 		}
 		if (results.length === 0) {
 			fallbackUsed = true;
@@ -1047,11 +1168,7 @@ export function buildMemoryPack(
 	const compressionRatio = workTokensUnique > 0 ? packTokens / workTokensUnique : null;
 	const overheadTokens = workTokensUnique > 0 ? packTokens - workTokensUnique : null;
 	const fallbackLabel: "recent" | null = fallbackUsed ? "recent" : null;
-	const modeLabel: "default" | "task" | "recall" = taskMode
-		? "task"
-		: recallMode
-			? "recall"
-			: "default";
+	const modeLabel: PackTraceMode = taskMode ? "task" : recallMode ? "recall" : "default";
 
 	const metrics = {
 		total_items: allItems.length,
@@ -1087,15 +1204,127 @@ export function buildMemoryPack(
 		sources: { fts: ftsCount, semantic: semanticCount, fuzzy: 0 },
 	};
 
-	recordPackUsage(store, metrics);
-
-	return {
+	const response: PackResponse = {
 		context,
 		items: allItems,
 		item_ids: allItemIds,
 		pack_text: packText,
 		metrics,
 	};
+
+	const sectionsById: Record<PackTraceSection, number[]> = {
+		summary: budgetedSummary.map((item) => item.id),
+		timeline: budgetedTimeline.map((item) => item.id),
+		observations: budgetedObservations.map((item) => item.id),
+	};
+	const budgetedIds = new Set([...allItemIds]);
+	const trimmedIds = [...summaryItems, ...timelineItems, ...observationItems]
+		.map((item) => item.id)
+		.filter((itemId) => !budgetedIds.has(itemId))
+		.sort((a, b) => a - b);
+	const dedupedIds = flattenDuplicateIds(dedupeState);
+	const dedupedIdSet = new Set(dedupedIds);
+	const trimmedIdSet = new Set(trimmedIds);
+	const referenceNow = new Date();
+	const tracePool = retrievalResults.slice(0, TRACE_CANDIDATE_LIMIT);
+	const traceCandidates: PackTraceCandidate[] = tracePool.map((item, index) => {
+		const section = traceSection(item.id, sectionsById);
+		const disposition: PackTraceDisposition = section
+			? "selected"
+			: dedupedIdSet.has(item.id)
+				? "deduped"
+				: trimmedIdSet.has(item.id)
+					? "trimmed"
+					: "dropped";
+		const baseScores = scoreResult(store, item, filters, retrievalQuery, referenceNow);
+		const scoredCandidate = {
+			...baseScores,
+			text_overlap: textOverlapScore(item, retrievalQuery),
+			tag_overlap: countOverlap(item.tags_text, queryContentTokens(retrievalQuery)),
+		};
+		return {
+			id: item.id,
+			rank: index + 1,
+			kind: item.kind,
+			title: item.title,
+			preview: preview(item.body_text),
+			scores: scoredCandidate,
+			reasons: candidateReasons(item, scoredCandidate, section, disposition),
+			disposition,
+			section,
+		};
+	});
+
+	const trace: PackTrace = {
+		version: 1,
+		inputs: {
+			query: context,
+			project: filters?.project ?? null,
+			working_set_files: [...(filters?.working_set_paths ?? [])],
+			token_budget: tokenBudget,
+			limit: effectiveLimit,
+		},
+		mode: {
+			selected: modeLabel,
+			reasons: modeReasons(context, modeLabel, filters),
+		},
+		retrieval: {
+			candidate_count: traceCandidates.length,
+			candidates: traceCandidates,
+		},
+		assembly: {
+			deduped_ids: dedupedIds,
+			collapsed_groups: collapsedGroups(dedupeState),
+			trimmed_ids: trimmedIds,
+			trim_reasons:
+				trimmedIds.length > 0
+					? ["token budget exceeded; lower-priority items dropped after section ordering"]
+					: [],
+			sections: sectionsById,
+		},
+		output: {
+			estimated_tokens: packTokens,
+			truncated: trimmedIds.length > 0,
+			section_counts: {
+				summary: sectionsById.summary.length,
+				timeline: sectionsById.timeline.length,
+				observations: sectionsById.observations.length,
+			},
+			pack_text: packText,
+		},
+	};
+
+	if (options.recordUsage) {
+		recordPackUsage(store, metrics);
+	}
+
+	return { response, trace };
+}
+
+export function buildMemoryPack(
+	store: StoreHandle,
+	context: string,
+	limit = 10,
+	tokenBudget: number | null = null,
+	filters?: MemoryFilters,
+	semanticResults?: MemoryResult[],
+): PackResponse {
+	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
+		recordUsage: true,
+	}).response;
+}
+
+export function buildMemoryPackTrace(
+	store: StoreHandle,
+	context: string,
+	limit = 10,
+	tokenBudget: number | null = null,
+	filters?: MemoryFilters,
+	semanticResults?: MemoryResult[],
+): PackTrace {
+	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
+		recordUsage: false,
+	}).trace;
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,36 +1355,34 @@ export async function buildMemoryPackAsync(
 		const raw = await semanticSearch(store.db, context, limit, {
 			project: filters?.project,
 		});
-		semResults = raw.map((r) => {
-			// Parse metadata_json if present, matching FTS result shape
-			let metadata: Record<string, unknown> = {};
-			if (r.metadata_json) {
-				try {
-					const parsed = JSON.parse(r.metadata_json) as unknown;
-					if (parsed != null && typeof parsed === "object" && !Array.isArray(parsed)) {
-						metadata = parsed as Record<string, unknown>;
-					}
-				} catch {
-					// Invalid JSON metadata — use empty object
-				}
-			}
-			return {
-				id: r.id,
-				kind: r.kind,
-				title: r.title,
-				body_text: r.body_text,
-				confidence: r.confidence,
-				created_at: r.created_at,
-				updated_at: r.updated_at,
-				tags_text: r.tags_text,
-				score: r.score,
-				session_id: r.session_id,
-				metadata,
-			};
-		});
+		semResults = semanticMemoryResults(raw);
 	} catch {
 		// Semantic search failure is non-fatal — fall through to FTS-only
 	}
 
-	return buildMemoryPack(store, context, limit, tokenBudget, filters, semResults);
+	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
+		recordUsage: true,
+	}).response;
+}
+
+export async function buildMemoryPackTraceAsync(
+	store: StoreHandle & { db: Database },
+	context: string,
+	limit = 10,
+	tokenBudget: number | null = null,
+	filters?: MemoryFilters,
+): Promise<PackTrace> {
+	let semResults: MemoryResult[] = [];
+	try {
+		const raw = await semanticSearch(store.db, context, limit, {
+			project: filters?.project,
+		});
+		semResults = semanticMemoryResults(raw);
+	} catch {
+		// Semantic search failure is non-fatal — fall through to FTS-only
+	}
+
+	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
+		recordUsage: false,
+	}).trace;
 }
