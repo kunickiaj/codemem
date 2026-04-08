@@ -188,6 +188,15 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	observer_provider: "CODEMEM_OBSERVER_PROVIDER",
 	observer_model: "CODEMEM_OBSERVER_MODEL",
 	observer_temperature: "CODEMEM_OBSERVER_TEMPERATURE",
+	observer_tier_routing_enabled: "CODEMEM_OBSERVER_TIER_ROUTING_ENABLED",
+	observer_simple_model: "CODEMEM_OBSERVER_SIMPLE_MODEL",
+	observer_simple_temperature: "CODEMEM_OBSERVER_SIMPLE_TEMPERATURE",
+	observer_rich_model: "CODEMEM_OBSERVER_RICH_MODEL",
+	observer_rich_temperature: "CODEMEM_OBSERVER_RICH_TEMPERATURE",
+	observer_rich_openai_use_responses: "CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES",
+	observer_rich_reasoning_effort: "CODEMEM_OBSERVER_RICH_REASONING_EFFORT",
+	observer_rich_reasoning_summary: "CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
+	observer_rich_max_output_tokens: "CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
 	observer_base_url: "CODEMEM_OBSERVER_BASE_URL",
 	observer_runtime: "CODEMEM_OBSERVER_RUNTIME",
 	observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE",
@@ -362,7 +371,10 @@ export function resolveCodememConfigPath(
 	// Should always find at least the legacy candidate, but guard anyway
 	if (resolvedIndex < 0) resolvedIndex = candidates.length - 1;
 
-	const resolved = candidates[resolvedIndex]!;
+	const resolved = candidates[resolvedIndex] ?? candidates[candidates.length - 1];
+	if (!resolved) {
+		throw new Error("No config path candidates were generated");
+	}
 	const fallbackChain = candidates.filter((_, i) => i !== resolvedIndex);
 
 	// Annotate skipped candidates with why they were not selected
@@ -539,7 +551,7 @@ export function resolveCustomProviderFromModel(
 	model: string,
 	providers: Set<string>,
 ): string | null {
-	if (!model || !model.includes("/")) return null;
+	if (!model?.includes("/")) return null;
 	const prefix = model.split("/")[0] ?? "";
 	return prefix && providers.has(prefix) ? prefix : null;
 }

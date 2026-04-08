@@ -31,6 +31,56 @@ export const RICH_TIER_DEFAULTS: Partial<ObserverConfig> = {
 	observerMaxOutputTokens: 12000,
 };
 
+export function buildTieredObserverConfig(
+	baseConfig: ObserverConfig,
+	decision: ExtractionReplayTierRoutingDecision,
+): ObserverConfig {
+	if (decision.tier === "simple") {
+		return {
+			...baseConfig,
+			observerProvider:
+				baseConfig.observerProvider ?? SIMPLE_TIER_DEFAULTS.observerProvider ?? null,
+			observerModel:
+				baseConfig.observerSimpleModel ??
+				SIMPLE_TIER_DEFAULTS.observerModel ??
+				baseConfig.observerModel,
+			observerTemperature:
+				baseConfig.observerSimpleTemperature ??
+				SIMPLE_TIER_DEFAULTS.observerTemperature ??
+				baseConfig.observerTemperature,
+			observerOpenAIUseResponses: false,
+			observerReasoningEffort: null,
+			observerReasoningSummary: null,
+			observerMaxOutputTokens: baseConfig.observerMaxTokens,
+		};
+	}
+
+	return {
+		...baseConfig,
+		observerProvider: RICH_TIER_DEFAULTS.observerProvider ?? baseConfig.observerProvider,
+		observerModel:
+			baseConfig.observerRichModel ?? RICH_TIER_DEFAULTS.observerModel ?? baseConfig.observerModel,
+		observerTemperature:
+			baseConfig.observerRichTemperature ??
+			RICH_TIER_DEFAULTS.observerTemperature ??
+			baseConfig.observerTemperature,
+		observerOpenAIUseResponses:
+			baseConfig.observerRichOpenAIUseResponses === true
+				? true
+				: (RICH_TIER_DEFAULTS.observerOpenAIUseResponses ?? false),
+		observerReasoningEffort:
+			baseConfig.observerRichReasoningEffort ?? RICH_TIER_DEFAULTS.observerReasoningEffort ?? null,
+		observerReasoningSummary:
+			baseConfig.observerRichReasoningSummary ??
+			RICH_TIER_DEFAULTS.observerReasoningSummary ??
+			null,
+		observerMaxOutputTokens:
+			baseConfig.observerRichMaxOutputTokens ??
+			RICH_TIER_DEFAULTS.observerMaxOutputTokens ??
+			baseConfig.observerMaxTokens,
+	};
+}
+
 export function decideExtractionReplayTier(
 	input: ExtractionReplayTierRoutingInput,
 ): ExtractionReplayTierRoutingDecision {

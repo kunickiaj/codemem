@@ -27,6 +27,7 @@ import {
 } from "./ingest-transcript.js";
 import type { IngestPayload, ParsedSummary, ToolEvent } from "./ingest-types.js";
 import { hasMeaningfulObservation, parseObserverResponse } from "./ingest-xml-parser.js";
+import type { ObserverConfig } from "./observer-client.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -601,10 +602,12 @@ describe("ingest() integration", () => {
 		const sessionMeta = store.db
 			.prepare("SELECT metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { metadata_json: string };
-		expect(JSON.parse(sessionMeta.metadata_json).post).toEqual({
-			session_class: "micro_low_value",
-			summary_disposition: "suppressed",
-		});
+		expect(JSON.parse(sessionMeta.metadata_json).post).toEqual(
+			expect.objectContaining({
+				session_class: "micro_low_value",
+				summary_disposition: "suppressed",
+			}),
+		);
 	});
 
 	it("keeps summary-only output for longer sessions", async () => {
@@ -665,10 +668,12 @@ describe("ingest() integration", () => {
 		const sessionMeta = store.db
 			.prepare("SELECT metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { metadata_json: string };
-		expect(JSON.parse(sessionMeta.metadata_json).post).toEqual({
-			session_class: "working",
-			summary_disposition: "stored",
-		});
+		expect(JSON.parse(sessionMeta.metadata_json).post).toEqual(
+			expect.objectContaining({
+				session_class: "working",
+				summary_disposition: "stored",
+			}),
+		);
 	});
 
 	it("falls back to cwd basename when payload project is missing", async () => {
@@ -1041,6 +1046,155 @@ describe("ingest() integration", () => {
 			.prepare("SELECT * FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as Record<string, unknown>;
 		expect(session.ended_at).not.toBeNull();
+	});
+
+	it("routes live rich batches to the rich observer tier when enabled and persists routing metadata", async () => {
+		const observer = {
+			provider: "openai",
+			model: "gpt-5.4-mini",
+			runtime: "api_http",
+			tierRoutingEnabled: true,
+			openaiUseResponses: false,
+			reasoningEffort: null,
+			reasoningSummary: null,
+			maxChars: 12000,
+			maxTokens: 4000,
+			maxOutputTokens: 4000,
+			temperature: 0.2,
+			getStatus: () => ({
+				provider: "openai",
+				model: "gpt-5.4-mini",
+				runtime: "api_http",
+				auth: { source: "none", type: "api_direct", hasToken: true },
+			}),
+			toConfig: () => ({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerTierRoutingEnabled: true,
+				observerSimpleModel: "gpt-5.4-mini",
+				observerSimpleTemperature: 0.2,
+				observerRichModel: "gpt-5.4",
+				observerRichTemperature: 0.2,
+				observerRichOpenAIUseResponses: true,
+				observerRichReasoningEffort: null,
+				observerRichReasoningSummary: null,
+				observerRichMaxOutputTokens: 12000,
+				observerOpenAIUseResponses: false,
+				observerReasoningEffort: null,
+				observerReasoningSummary: null,
+				observerMaxOutputTokens: 4000,
+				observerMaxChars: 12000,
+				observerMaxTokens: 4000,
+				observerHeaders: {},
+				observerAuthSource: "none",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			}),
+			observe: async () => ({
+				raw: `<observation>
+				  <type>decision</type>
+				  <title>Track 3 reframed around injection-first quality</title>
+				  <subtitle>Rich live routing should preserve this.</subtitle>
+				  <facts><fact>Track 3 was reframed around injection-first quality.</fact></facts>
+				  <narrative>This rich batch kept the durable subthreads visible.</narrative>
+				  <concepts><concept>decision</concept></concepts>
+				  <files_read><file>docs/one.md</file></files_read>
+				  <files_modified><file>packages/core/src/x.ts</file></files_modified>
+				</observation>
+				<summary>
+				  <request>Investigate qd7h and Track 3.</request>
+				  <completed>Captured the rich batch summary.</completed>
+				  <notes>Selected rich routing path.</notes>
+				  <files_read><file>docs/one.md</file></files_read>
+				  <files_modified><file>packages/core/src/x.ts</file></files_modified>
+				</summary>`,
+				parsed: null,
+				provider: "openai",
+				model: "gpt-5.4",
+			}),
+		} as unknown as IngestOptions["observer"];
+		const createTierObserver = (config: ObserverConfig) =>
+			({
+				...observer,
+				model: String(config.observerRichModel ?? config.observerModel ?? "gpt-5.4"),
+				openaiUseResponses: config.observerOpenAIUseResponses === true,
+			}) as IngestOptions["observer"];
+
+		const payload = buildPayload({
+			events: [
+				{
+					type: "user_prompt",
+					prompt_text: "Investigate qd7h and Track 3",
+					timestamp: new Date().toISOString(),
+				},
+				{
+					type: "assistant_message",
+					assistant_text: "We also need release readiness and graph direction.",
+					timestamp: new Date().toISOString(),
+				},
+				{
+					type: "user_prompt",
+					prompt_text: "Capture the durable subthreads",
+					timestamp: new Date().toISOString(),
+				},
+				{
+					type: "assistant_message",
+					assistant_text: "I will summarize the full rich batch.",
+					timestamp: new Date().toISOString(),
+				},
+				...Array.from({ length: 30 }, (_, i) => ({
+					type: "tool.execute.after",
+					tool: "read",
+					args: { filePath: `docs/file-${i}.md` },
+					result: "ok",
+					timestamp: new Date().toISOString(),
+				})),
+			],
+			sessionContext: {
+				promptCount: 3,
+				toolCount: 30,
+				durationMs: 900000,
+				filesRead: ["docs/one.md", "docs/two.md"],
+				filesModified: ["packages/core/src/x.ts"],
+			},
+		});
+
+		await ingest(payload, store, { observer, createTierObserver } as IngestOptions);
+
+		const memoryRow = store.db
+			.prepare(
+				"SELECT metadata_json FROM memory_items WHERE kind = 'decision' ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { metadata_json: string } | undefined;
+		const sessionRow = store.db
+			.prepare("SELECT metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
+			.get() as { metadata_json: string } | undefined;
+
+		const memoryMeta = memoryRow?.metadata_json ? JSON.parse(memoryRow.metadata_json) : {};
+		const sessionMeta = sessionRow?.metadata_json ? JSON.parse(sessionRow.metadata_json) : {};
+
+		expect(memoryMeta).toEqual(
+			expect.objectContaining({
+				observer_tier: "rich",
+				observer_provider: "openai",
+				observer_model: "gpt-5.4",
+				observer_openai_responses: true,
+			}),
+		);
+		expect(sessionMeta.post).toEqual(
+			expect.objectContaining({
+				observer_tier: "rich",
+				observer_provider: "openai",
+				observer_model: "gpt-5.4",
+				observer_openai_responses: true,
+			}),
+		);
 	});
 });
 

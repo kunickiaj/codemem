@@ -77,6 +77,15 @@ export interface ObserverConfig {
 	observerApiKey: string | null;
 	observerBaseUrl: string | null;
 	observerTemperature?: number | null;
+	observerTierRoutingEnabled?: boolean;
+	observerSimpleModel?: string | null;
+	observerSimpleTemperature?: number | null;
+	observerRichModel?: string | null;
+	observerRichTemperature?: number | null;
+	observerRichOpenAIUseResponses?: boolean;
+	observerRichReasoningEffort?: string | null;
+	observerRichReasoningSummary?: string | null;
+	observerRichMaxOutputTokens?: number | null;
 	observerOpenAIUseResponses?: boolean;
 	observerReasoningEffort?: string | null;
 	observerReasoningSummary?: string | null;
@@ -170,6 +179,15 @@ export function loadObserverConfig(): ObserverConfig {
 		observerApiKey: null,
 		observerBaseUrl: null,
 		observerTemperature: 0.2,
+		observerTierRoutingEnabled: false,
+		observerSimpleModel: null,
+		observerSimpleTemperature: null,
+		observerRichModel: null,
+		observerRichTemperature: null,
+		observerRichOpenAIUseResponses: false,
+		observerRichReasoningEffort: null,
+		observerRichReasoningSummary: null,
+		observerRichMaxOutputTokens: null,
 		observerMaxChars: 12_000,
 		observerMaxTokens: 4_000,
 		observerHeaders: {},
@@ -223,6 +241,34 @@ export function loadObserverConfig(): ObserverConfig {
 		const n = Number(data.observer_temperature);
 		cfg.observerTemperature = Number.isFinite(n) ? n : cfg.observerTemperature;
 	}
+	if (data.observer_tier_routing_enabled != null) {
+		cfg.observerTierRoutingEnabled = data.observer_tier_routing_enabled === true;
+	}
+	if (typeof data.observer_simple_model === "string")
+		cfg.observerSimpleModel = data.observer_simple_model;
+	if (data.observer_simple_temperature != null) {
+		const n = Number(data.observer_simple_temperature);
+		cfg.observerSimpleTemperature = Number.isFinite(n) ? n : cfg.observerSimpleTemperature;
+	}
+	if (typeof data.observer_rich_model === "string")
+		cfg.observerRichModel = data.observer_rich_model;
+	if (data.observer_rich_temperature != null) {
+		const n = Number(data.observer_rich_temperature);
+		cfg.observerRichTemperature = Number.isFinite(n) ? n : cfg.observerRichTemperature;
+	}
+	if (data.observer_rich_openai_use_responses != null) {
+		cfg.observerRichOpenAIUseResponses = data.observer_rich_openai_use_responses === true;
+	}
+	if (typeof data.observer_rich_reasoning_effort === "string") {
+		cfg.observerRichReasoningEffort = data.observer_rich_reasoning_effort;
+	}
+	if (typeof data.observer_rich_reasoning_summary === "string") {
+		cfg.observerRichReasoningSummary = data.observer_rich_reasoning_summary;
+	}
+	if (data.observer_rich_max_output_tokens != null) {
+		const n = Number(data.observer_rich_max_output_tokens);
+		cfg.observerRichMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerRichMaxOutputTokens;
+	}
 	cfg.observerMaxChars = parseIntSafe(data.observer_max_chars, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(data.observer_max_tokens, cfg.observerMaxTokens);
 	if (typeof data.observer_auth_source === "string")
@@ -252,6 +298,34 @@ export function loadObserverConfig(): ObserverConfig {
 	if (process.env.CODEMEM_OBSERVER_TEMPERATURE != null) {
 		const n = Number(process.env.CODEMEM_OBSERVER_TEMPERATURE);
 		cfg.observerTemperature = Number.isFinite(n) ? n : cfg.observerTemperature;
+	}
+	if (process.env.CODEMEM_OBSERVER_TIER_ROUTING_ENABLED != null) {
+		cfg.observerTierRoutingEnabled =
+			process.env.CODEMEM_OBSERVER_TIER_ROUTING_ENABLED === "1" ||
+			process.env.CODEMEM_OBSERVER_TIER_ROUTING_ENABLED === "true";
+	}
+	cfg.observerSimpleModel = process.env.CODEMEM_OBSERVER_SIMPLE_MODEL ?? cfg.observerSimpleModel;
+	if (process.env.CODEMEM_OBSERVER_SIMPLE_TEMPERATURE != null) {
+		const n = Number(process.env.CODEMEM_OBSERVER_SIMPLE_TEMPERATURE);
+		cfg.observerSimpleTemperature = Number.isFinite(n) ? n : cfg.observerSimpleTemperature;
+	}
+	cfg.observerRichModel = process.env.CODEMEM_OBSERVER_RICH_MODEL ?? cfg.observerRichModel;
+	if (process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE != null) {
+		const n = Number(process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE);
+		cfg.observerRichTemperature = Number.isFinite(n) ? n : cfg.observerRichTemperature;
+	}
+	if (process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES != null) {
+		cfg.observerRichOpenAIUseResponses =
+			process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES === "1" ||
+			process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES === "true";
+	}
+	cfg.observerRichReasoningEffort =
+		process.env.CODEMEM_OBSERVER_RICH_REASONING_EFFORT ?? cfg.observerRichReasoningEffort;
+	cfg.observerRichReasoningSummary =
+		process.env.CODEMEM_OBSERVER_RICH_REASONING_SUMMARY ?? cfg.observerRichReasoningSummary;
+	if (process.env.CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS != null) {
+		const n = Number(process.env.CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS);
+		cfg.observerRichMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerRichMaxOutputTokens;
 	}
 	cfg.observerAuthSource = process.env.CODEMEM_OBSERVER_AUTH_SOURCE ?? cfg.observerAuthSource;
 	cfg.observerAuthFile = process.env.CODEMEM_OBSERVER_AUTH_FILE ?? cfg.observerAuthFile;
@@ -590,12 +664,26 @@ export class ObserverClient {
 	model: string;
 	readonly runtime: string;
 	readonly temperature: number | null;
+	readonly tierRoutingEnabled: boolean;
+	readonly simpleModel: string | null;
+	readonly simpleTemperature: number | null;
+	readonly richModel: string | null;
+	readonly richTemperature: number | null;
+	readonly richOpenAIUseResponses: boolean;
+	readonly richReasoningEffort: string | null;
+	readonly richReasoningSummary: string | null;
+	readonly richMaxOutputTokens: number | null;
 	readonly openaiUseResponses: boolean;
 	readonly reasoningEffort: string | null;
 	readonly reasoningSummary: string | null;
 	readonly maxChars: number;
 	readonly maxTokens: number;
 	readonly maxOutputTokens: number;
+	readonly authSource: string;
+	readonly authFile: string | null;
+	readonly authCommand: string[];
+	readonly authTimeoutMs: number;
+	readonly authCacheTtlS: number;
 
 	/** Resolved auth material — updated on refresh. */
 	auth: ObserverAuthMaterial;
@@ -672,6 +760,40 @@ export class ObserverClient {
 			typeof cfg.observerTemperature === "number" && Number.isFinite(cfg.observerTemperature)
 				? cfg.observerTemperature
 				: 0.2;
+		this.tierRoutingEnabled = cfg.observerTierRoutingEnabled === true;
+		this.simpleModel =
+			typeof cfg.observerSimpleModel === "string" && cfg.observerSimpleModel.trim()
+				? cfg.observerSimpleModel.trim()
+				: null;
+		this.simpleTemperature =
+			typeof cfg.observerSimpleTemperature === "number" &&
+			Number.isFinite(cfg.observerSimpleTemperature)
+				? cfg.observerSimpleTemperature
+				: null;
+		this.richModel =
+			typeof cfg.observerRichModel === "string" && cfg.observerRichModel.trim()
+				? cfg.observerRichModel.trim()
+				: null;
+		this.richTemperature =
+			typeof cfg.observerRichTemperature === "number" &&
+			Number.isFinite(cfg.observerRichTemperature)
+				? cfg.observerRichTemperature
+				: null;
+		this.richOpenAIUseResponses = cfg.observerRichOpenAIUseResponses === true;
+		this.richReasoningEffort =
+			typeof cfg.observerRichReasoningEffort === "string" && cfg.observerRichReasoningEffort.trim()
+				? cfg.observerRichReasoningEffort.trim()
+				: null;
+		this.richReasoningSummary =
+			typeof cfg.observerRichReasoningSummary === "string" &&
+			cfg.observerRichReasoningSummary.trim()
+				? cfg.observerRichReasoningSummary.trim()
+				: null;
+		this.richMaxOutputTokens =
+			typeof cfg.observerRichMaxOutputTokens === "number" &&
+			Number.isFinite(cfg.observerRichMaxOutputTokens)
+				? cfg.observerRichMaxOutputTokens
+				: null;
 		this.openaiUseResponses = cfg.observerOpenAIUseResponses === true;
 		this.reasoningEffort =
 			typeof cfg.observerReasoningEffort === "string" && cfg.observerReasoningEffort.trim()
@@ -688,6 +810,11 @@ export class ObserverClient {
 			Number.isFinite(cfg.observerMaxOutputTokens)
 				? cfg.observerMaxOutputTokens
 				: this.maxTokens;
+		this.authSource = cfg.observerAuthSource;
+		this.authFile = cfg.observerAuthFile;
+		this.authCommand = [...cfg.observerAuthCommand];
+		this.authTimeoutMs = cfg.observerAuthTimeoutMs;
+		this.authCacheTtlS = cfg.observerAuthCacheTtlS;
 		this._observerHeaders = { ...cfg.observerHeaders };
 		this._apiKey = cfg.observerApiKey ?? null;
 
@@ -706,6 +833,38 @@ export class ObserverClient {
 
 		// Initialize provider client state
 		this._initProvider(false);
+	}
+
+	toConfig(): ObserverConfig {
+		return {
+			observerProvider: this.provider,
+			observerModel: this.model,
+			observerRuntime: this.runtime,
+			observerApiKey: this._apiKey,
+			observerBaseUrl: this._customBaseUrl,
+			observerTemperature: this.temperature,
+			observerTierRoutingEnabled: this.tierRoutingEnabled,
+			observerSimpleModel: this.simpleModel,
+			observerSimpleTemperature: this.simpleTemperature,
+			observerRichModel: this.richModel,
+			observerRichTemperature: this.richTemperature,
+			observerRichOpenAIUseResponses: this.richOpenAIUseResponses,
+			observerRichReasoningEffort: this.richReasoningEffort,
+			observerRichReasoningSummary: this.richReasoningSummary,
+			observerRichMaxOutputTokens: this.richMaxOutputTokens,
+			observerOpenAIUseResponses: this.openaiUseResponses,
+			observerReasoningEffort: this.reasoningEffort,
+			observerReasoningSummary: this.reasoningSummary,
+			observerMaxOutputTokens: this.maxOutputTokens,
+			observerMaxChars: this.maxChars,
+			observerMaxTokens: this.maxTokens,
+			observerHeaders: { ...this._observerHeaders },
+			observerAuthSource: this.authSource,
+			observerAuthFile: this.authFile,
+			observerAuthCommand: [...this.authCommand],
+			observerAuthTimeoutMs: this.authTimeoutMs,
+			observerAuthCacheTtlS: this.authCacheTtlS,
+		};
 	}
 
 	/** Return the resolved runtime state of this observer client. */
