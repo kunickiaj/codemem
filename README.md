@@ -114,6 +114,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem recent` | Recent memories |
 | | `codemem search <query>` | Search memories |
 | | `codemem pack <context>` | Build a context-aware memory pack |
+| | `codemem pack trace <context>` | Inspect retrieval and pack assembly for a manual query |
 | | `codemem embed` | Backfill semantic embeddings |
 | **Memory** | `codemem memory show <id>` | Print a memory item as JSON |
 | | `codemem memory forget <id>` | Deactivate a memory item |

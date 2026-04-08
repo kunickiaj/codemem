@@ -97,6 +97,7 @@ const program = new Command();
 program
 	.name("codemem")
 	.description("codemem — persistent memory for AI coding agents")
+	.enablePositionalOptions()
 	.option("--install-completion", "install shell completion")
 	.option("--show-completion", "show shell completion install guidance")
 	.version(VERSION)
