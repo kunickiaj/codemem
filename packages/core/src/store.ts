@@ -53,6 +53,7 @@ import type {
 	MemoryItem,
 	MemoryItemResponse,
 	MemoryResult,
+	PackRenderOptions,
 	PackResponse,
 	PackTrace,
 	StoreStats,
@@ -1000,8 +1001,9 @@ export class MemoryStore {
 		limit?: number,
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
+		renderOptions?: PackRenderOptions,
 	): Promise<PackResponse> {
-		return buildMemoryPackAsync(this, context, limit, tokenBudget ?? null, filters);
+		return buildMemoryPackAsync(this, context, limit, tokenBudget ?? null, filters, renderOptions);
 	}
 
 	async buildMemoryPackTraceAsync(
@@ -1009,8 +1011,16 @@ export class MemoryStore {
 		limit?: number,
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
+		renderOptions?: PackRenderOptions,
 	): Promise<PackTrace> {
-		return buildMemoryPackTraceAsync(this, context, limit, tokenBudget ?? null, filters);
+		return buildMemoryPackTraceAsync(
+			this,
+			context,
+			limit,
+			tokenBudget ?? null,
+			filters,
+			renderOptions,
+		);
 	}
 
 	// Raw event helpers

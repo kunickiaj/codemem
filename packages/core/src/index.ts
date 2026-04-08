@@ -437,6 +437,7 @@ export type {
 	MemoryResult,
 	OpenCodeSession,
 	PackItem,
+	PackRenderOptions,
 	PackResponse,
 	PackTrace,
 	PackTraceCandidate,

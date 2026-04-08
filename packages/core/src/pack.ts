@@ -31,6 +31,7 @@ import type {
 	MemoryItemResponse,
 	MemoryResult,
 	PackItem,
+	PackRenderOptions,
 	PackResponse,
 	PackTrace,
 	PackTraceCandidate,
@@ -126,6 +127,38 @@ function formatSection(header: string, items: MemoryResult[]): string {
 	const heading = `## ${header}`;
 	if (items.length === 0) return `${heading}\n`;
 	return [heading, ...items.map(formatItem)].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Compact mode rendering
+// ---------------------------------------------------------------------------
+
+const DEFAULT_COMPACT_DETAIL_COUNT = 3;
+const COMPACT_FOOTER = "Use `memory_get` or `memory_search` to fetch detail for any item by [ID].";
+
+/** Single-line index entry for compact mode. */
+function formatIndexLine(item: MemoryResult): string {
+	return `[${item.id}] (${item.kind}) ${item.title}`;
+}
+
+/**
+ * Render a compact pack: scannable index of all items, full detail for
+ * selected items, and a footer guiding the model to fetch more on demand.
+ *
+ * `detailIds` controls which items get full rendering in the Detail section.
+ * Under budget pressure, an item may be demoted from detail to index-only,
+ * so the set may contain fewer items than `compactDetailCount`.
+ */
+function renderCompactPack(items: MemoryResult[], detailIds: Set<number>): string {
+	const indexSection = `## Index\n${items.length > 0 ? items.map(formatIndexLine).join("\n") : "(no items)"}`;
+
+	const detailItems = items.filter((item) => detailIds.has(item.id));
+	const detailSection =
+		detailItems.length > 0
+			? `## Detail\n${detailItems.map(formatItem).join("\n\n")}`
+			: "## Detail\n(no items)";
+
+	return `${indexSection}\n\n${detailSection}\n\n${COMPACT_FOOTER}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -854,7 +887,9 @@ function buildPackArtifacts(
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
-	options: { recordUsage: boolean } = { recordUsage: true },
+	options: { recordUsage: boolean; compact?: boolean; compactDetailCount?: number } = {
+		recordUsage: true,
+	},
 ): PackArtifacts {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
 	let fallbackUsed = false;
@@ -1086,46 +1121,108 @@ function buildPackArtifacts(
 	observationItems = collapseExactDuplicates(observationItems, dedupeState);
 
 	// Step 4: apply token budget
-	let budgetedSummary = summaryItems;
-	let budgetedTimeline = timelineItems;
-	let budgetedObservations = observationItems;
+	// Step 5: format sections
+	//
+	// Compact mode flattens all items into a single list, budgets using
+	// index-line costs for items beyond the detail count, and renders a
+	// scannable Index + Detail layout instead of Summary/Timeline/Observations.
 
-	if (tokenBudget != null && tokenBudget > 0) {
-		let tokensUsed = 0;
+	const compact = options.compact ?? false;
+	const compactDetailCount = options.compactDetailCount ?? DEFAULT_COMPACT_DETAIL_COUNT;
 
+	let budgetedSummary: MemoryResult[];
+	let budgetedTimeline: MemoryResult[];
+	let budgetedObservations: MemoryResult[];
+	let packText: string;
+
+	if (compact) {
+		// Flatten all items, dedupe by id, preserve order
+		const seen = new Set<number>();
+		const allCandidates: MemoryResult[] = [];
+		for (const item of [...summaryItems, ...timelineItems, ...observationItems]) {
+			if (seen.has(item.id)) continue;
+			seen.add(item.id);
+			allCandidates.push(item);
+		}
+
+		const budgetedItems: MemoryResult[] = [];
+		const detailIds = new Set<number>();
+
+		if (tokenBudget != null && tokenBudget > 0) {
+			let tokensUsed = 0;
+			let detailSlots = compactDetailCount;
+			for (const item of allCandidates) {
+				const indexCost = estimateTokens(formatIndexLine(item));
+				if (detailSlots > 0) {
+					// Detail items appear in both Index and Detail — charge both.
+					const fullCost = indexCost + estimateTokens(formatItem(item));
+					if (tokensUsed + fullCost <= tokenBudget) {
+						tokensUsed += fullCost;
+						budgetedItems.push(item);
+						detailIds.add(item.id);
+						detailSlots--;
+						continue;
+					}
+					// Detail too expensive — demote to index-only below.
+				}
+				// Index-only: skip if even the index line doesn't fit.
+				if (tokensUsed + indexCost > tokenBudget) continue;
+				tokensUsed += indexCost;
+				budgetedItems.push(item);
+			}
+		} else {
+			budgetedItems.push(...allCandidates);
+			for (const item of allCandidates.slice(0, compactDetailCount)) {
+				detailIds.add(item.id);
+			}
+		}
+
+		packText = renderCompactPack(budgetedItems, detailIds);
+		// For downstream metrics, put everything in timeline (compact flattens sections)
 		budgetedSummary = [];
-		for (const item of summaryItems) {
-			const cost = estimateTokens(formatItem(item));
-			if (tokensUsed + cost > tokenBudget) break;
-			tokensUsed += cost;
-			budgetedSummary.push(item);
-		}
-
-		budgetedTimeline = [];
-		for (const item of timelineItems) {
-			const cost = estimateTokens(formatItem(item));
-			if (tokensUsed + cost > tokenBudget) break;
-			tokensUsed += cost;
-			budgetedTimeline.push(item);
-		}
-
+		budgetedTimeline = budgetedItems;
 		budgetedObservations = [];
-		for (const item of observationItems) {
-			const cost = estimateTokens(formatItem(item));
-			if (tokensUsed + cost > tokenBudget) break;
-			tokensUsed += cost;
-			budgetedObservations.push(item);
+	} else {
+		budgetedSummary = summaryItems;
+		budgetedTimeline = timelineItems;
+		budgetedObservations = observationItems;
+
+		if (tokenBudget != null && tokenBudget > 0) {
+			let tokensUsed = 0;
+
+			budgetedSummary = [];
+			for (const item of summaryItems) {
+				const cost = estimateTokens(formatItem(item));
+				if (tokensUsed + cost > tokenBudget) break;
+				tokensUsed += cost;
+				budgetedSummary.push(item);
+			}
+
+			budgetedTimeline = [];
+			for (const item of timelineItems) {
+				const cost = estimateTokens(formatItem(item));
+				if (tokensUsed + cost > tokenBudget) break;
+				tokensUsed += cost;
+				budgetedTimeline.push(item);
+			}
+
+			budgetedObservations = [];
+			for (const item of observationItems) {
+				const cost = estimateTokens(formatItem(item));
+				if (tokensUsed + cost > tokenBudget) break;
+				tokensUsed += cost;
+				budgetedObservations.push(item);
+			}
 		}
+
+		const sections = [
+			formatSection("Summary", budgetedSummary),
+			formatSection("Timeline", budgetedTimeline),
+			formatSection("Observations", budgetedObservations),
+		];
+		packText = sections.join("\n\n");
 	}
 
-	// Step 5: format sections
-	const sections = [
-		formatSection("Summary", budgetedSummary),
-		formatSection("Timeline", budgetedTimeline),
-		formatSection("Observations", budgetedObservations),
-	];
-
-	const packText = sections.join("\n\n");
 	const packTokens = estimateTokens(packText);
 
 	// Collect all unique items across sections, but preserve relevance order from
@@ -1352,9 +1449,12 @@ export function buildMemoryPack(
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
+	renderOptions?: PackRenderOptions,
 ): PackResponse {
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
 		recordUsage: true,
+		compact: renderOptions?.compact,
+		compactDetailCount: renderOptions?.compactDetailCount,
 	}).response;
 }
 
@@ -1365,9 +1465,12 @@ export function buildMemoryPackTrace(
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
+	renderOptions?: PackRenderOptions,
 ): PackTrace {
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
 		recordUsage: false,
+		compact: renderOptions?.compact,
+		compactDetailCount: renderOptions?.compactDetailCount,
 	}).trace;
 }
 
@@ -1392,6 +1495,7 @@ export async function buildMemoryPackAsync(
 	limit = 10,
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
+	renderOptions?: PackRenderOptions,
 ): Promise<PackResponse> {
 	// Run semantic search (returns [] when embeddings unavailable)
 	let semResults: MemoryResult[] = [];
@@ -1406,6 +1510,8 @@ export async function buildMemoryPackAsync(
 
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: true,
+		compact: renderOptions?.compact,
+		compactDetailCount: renderOptions?.compactDetailCount,
 	}).response;
 }
 
@@ -1415,6 +1521,7 @@ export async function buildMemoryPackTraceAsync(
 	limit = 10,
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
+	renderOptions?: PackRenderOptions,
 ): Promise<PackTrace> {
 	let semResults: MemoryResult[] = [];
 	try {
@@ -1428,5 +1535,7 @@ export async function buildMemoryPackTraceAsync(
 
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: false,
+		compact: renderOptions?.compact,
+		compactDetailCount: renderOptions?.compactDetailCount,
 	}).trace;
 }
