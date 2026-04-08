@@ -44,8 +44,8 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
-const DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini";
+const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
+const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
 
 const ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -76,6 +76,7 @@ export interface ObserverConfig {
 	observerRuntime: string | null;
 	observerApiKey: string | null;
 	observerBaseUrl: string | null;
+	observerTemperature?: number | null;
 	observerMaxChars: number;
 	observerMaxTokens: number;
 	observerHeaders: Record<string, string>;
@@ -164,6 +165,7 @@ export function loadObserverConfig(): ObserverConfig {
 		observerRuntime: null,
 		observerApiKey: null,
 		observerBaseUrl: null,
+		observerTemperature: 0.2,
 		observerMaxChars: 12_000,
 		observerMaxTokens: 4_000,
 		observerHeaders: {},
@@ -213,6 +215,10 @@ export function loadObserverConfig(): ObserverConfig {
 	if (typeof data.observer_runtime === "string") cfg.observerRuntime = data.observer_runtime;
 	if (typeof data.observer_api_key === "string") cfg.observerApiKey = data.observer_api_key;
 	if (typeof data.observer_base_url === "string") cfg.observerBaseUrl = data.observer_base_url;
+	if (data.observer_temperature != null) {
+		const n = Number(data.observer_temperature);
+		cfg.observerTemperature = Number.isFinite(n) ? n : cfg.observerTemperature;
+	}
 	cfg.observerMaxChars = parseIntSafe(data.observer_max_chars, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(data.observer_max_tokens, cfg.observerMaxTokens);
 	if (typeof data.observer_auth_source === "string")
@@ -239,6 +245,10 @@ export function loadObserverConfig(): ObserverConfig {
 	cfg.observerRuntime = process.env.CODEMEM_OBSERVER_RUNTIME ?? cfg.observerRuntime;
 	cfg.observerApiKey = process.env.CODEMEM_OBSERVER_API_KEY ?? cfg.observerApiKey;
 	cfg.observerBaseUrl = process.env.CODEMEM_OBSERVER_BASE_URL ?? cfg.observerBaseUrl;
+	if (process.env.CODEMEM_OBSERVER_TEMPERATURE != null) {
+		const n = Number(process.env.CODEMEM_OBSERVER_TEMPERATURE);
+		cfg.observerTemperature = Number.isFinite(n) ? n : cfg.observerTemperature;
+	}
 	cfg.observerAuthSource = process.env.CODEMEM_OBSERVER_AUTH_SOURCE ?? cfg.observerAuthSource;
 	cfg.observerAuthFile = process.env.CODEMEM_OBSERVER_AUTH_FILE ?? cfg.observerAuthFile;
 	cfg.observerMaxChars = parseIntSafe(process.env.CODEMEM_OBSERVER_MAX_CHARS, cfg.observerMaxChars);
@@ -399,16 +409,20 @@ function buildOpenAIPayload(
 	systemPrompt: string,
 	userPrompt: string,
 	maxTokens: number,
+	temperature: number | null,
 ): Record<string, unknown> {
-	return {
+	const payload: Record<string, unknown> = {
 		model,
 		max_tokens: maxTokens,
-		temperature: 0,
 		messages: [
 			{ role: "system", content: systemPrompt },
 			{ role: "user", content: userPrompt },
 		],
 	};
+	if (typeof temperature === "number" && Number.isFinite(temperature)) {
+		payload.temperature = temperature;
+	}
+	return payload;
 }
 
 function parseOpenAIResponse(body: Record<string, unknown>): string | null {
@@ -515,6 +529,7 @@ export class ObserverClient {
 	readonly provider: string;
 	model: string;
 	readonly runtime: string;
+	readonly temperature: number | null;
 	readonly maxChars: number;
 	readonly maxTokens: number;
 
@@ -589,6 +604,10 @@ export class ObserverClient {
 				"";
 		}
 
+		this.temperature =
+			typeof cfg.observerTemperature === "number" && Number.isFinite(cfg.observerTemperature)
+				? cfg.observerTemperature
+				: 0.2;
 		this.maxChars = cfg.observerMaxChars;
 		this.maxTokens = cfg.observerMaxTokens;
 		this._observerHeaders = { ...cfg.observerHeaders };
@@ -850,7 +869,13 @@ export class ObserverClient {
 			headers,
 			renderObserverHeaders(this._observerHeaders, this.auth),
 		);
-		const payload = buildOpenAIPayload(this.model, systemPrompt, userPrompt, this.maxTokens);
+		const payload = buildOpenAIPayload(
+			this.model,
+			systemPrompt,
+			userPrompt,
+			this.maxTokens,
+			this.temperature,
+		);
 
 		return this._fetchJSON(url, mergedHeaders, payload, {
 			parseResponse: parseOpenAIResponse,

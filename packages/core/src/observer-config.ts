@@ -187,6 +187,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	claude_command: "CODEMEM_CLAUDE_COMMAND",
 	observer_provider: "CODEMEM_OBSERVER_PROVIDER",
 	observer_model: "CODEMEM_OBSERVER_MODEL",
+	observer_temperature: "CODEMEM_OBSERVER_TEMPERATURE",
 	observer_base_url: "CODEMEM_OBSERVER_BASE_URL",
 	observer_runtime: "CODEMEM_OBSERVER_RUNTIME",
 	observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE",
@@ -514,9 +515,9 @@ export function resolveBuiltInProviderFromModel(model: string): string | null {
 }
 
 export function resolveBuiltInProviderDefaultModel(provider: string): string | null {
-	if (provider === "openai") return "gpt-5.1-codex-mini";
-	if (provider === "anthropic") return "claude-sonnet-4-20250514";
-	if (provider === "opencode") return "opencode/gpt-5.1-codex-mini";
+	if (provider === "openai") return "gpt-5.4-mini";
+	if (provider === "anthropic") return "claude-haiku-4-5";
+	if (provider === "opencode") return "opencode/gpt-5.4-mini";
 	return null;
 }
 

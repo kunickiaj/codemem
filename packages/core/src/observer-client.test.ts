@@ -16,6 +16,7 @@ describe("loadObserverConfig", () => {
 		"CODEMEM_OBSERVER_RUNTIME",
 		"CODEMEM_OBSERVER_API_KEY",
 		"CODEMEM_OBSERVER_BASE_URL",
+		"CODEMEM_OBSERVER_TEMPERATURE",
 		"CODEMEM_OBSERVER_AUTH_SOURCE",
 		"CODEMEM_OBSERVER_AUTH_FILE",
 		"CODEMEM_OBSERVER_AUTH_COMMAND",
@@ -53,6 +54,7 @@ describe("loadObserverConfig", () => {
 		expect(cfg.observerModel).toBeNull();
 		expect(cfg.observerMaxChars).toBe(12_000);
 		expect(cfg.observerMaxTokens).toBe(4_000);
+		expect(cfg.observerTemperature).toBe(0.2);
 		expect(cfg.observerAuthSource).toBe("auto");
 		expect(cfg.observerAuthCommand).toEqual([]);
 		expect(cfg.observerHeaders).toEqual({});
@@ -65,8 +67,9 @@ describe("loadObserverConfig", () => {
 			configPath,
 			JSON.stringify({
 				observer_provider: "anthropic",
-				observer_model: "claude-sonnet-4-20250514",
+				observer_model: "claude-haiku-4-5",
 				observer_max_chars: 8000,
+				observer_temperature: 0.35,
 				observer_headers: { "x-custom": "value" },
 			}),
 		);
@@ -74,8 +77,9 @@ describe("loadObserverConfig", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			const cfg = loadObserverConfig();
 			expect(cfg.observerProvider).toBe("anthropic");
-			expect(cfg.observerModel).toBe("claude-sonnet-4-20250514");
+			expect(cfg.observerModel).toBe("claude-haiku-4-5");
 			expect(cfg.observerMaxChars).toBe(8000);
+			expect(cfg.observerTemperature).toBe(0.35);
 			expect(cfg.observerHeaders).toEqual({ "x-custom": "value" });
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true });
@@ -96,9 +100,11 @@ describe("loadObserverConfig", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_OBSERVER_PROVIDER = "openai";
 			process.env.CODEMEM_OBSERVER_MAX_CHARS = "5000";
+			process.env.CODEMEM_OBSERVER_TEMPERATURE = "0.15";
 			const cfg = loadObserverConfig();
 			expect(cfg.observerProvider).toBe("openai");
 			expect(cfg.observerMaxChars).toBe(5000);
+			expect(cfg.observerTemperature).toBe(0.15);
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
@@ -139,6 +145,7 @@ describe("ObserverClient", () => {
 				observerRuntime: null,
 				observerApiKey: null,
 				observerBaseUrl: null,
+				observerTemperature: 0.2,
 				observerMaxChars: 12_000,
 				observerMaxTokens: 4_000,
 				observerHeaders: {},
@@ -149,13 +156,14 @@ describe("ObserverClient", () => {
 				observerAuthCacheTtlS: 300,
 			});
 			expect(client.provider).toBe("openai");
-			expect(client.model).toBe("gpt-5.1-codex-mini");
+			expect(client.model).toBe("gpt-5.4-mini");
+			expect(client.temperature).toBe(0.2);
 			expect(client.runtime).toBe("api_http");
 		});
 
-		it("uses anthropic provider and default model when configured", () => {
+		it("falls back to deterministic default temperature when omitted", () => {
 			const client = new ObserverClient({
-				observerProvider: "anthropic",
+				observerProvider: "openai",
 				observerModel: null,
 				observerRuntime: null,
 				observerApiKey: null,
@@ -169,8 +177,28 @@ describe("ObserverClient", () => {
 				observerAuthTimeoutMs: 1500,
 				observerAuthCacheTtlS: 300,
 			});
+			expect(client.temperature).toBe(0.2);
+		});
+
+		it("uses anthropic provider and default model when configured", () => {
+			const client = new ObserverClient({
+				observerProvider: "anthropic",
+				observerModel: null,
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
 			expect(client.provider).toBe("anthropic");
-			expect(client.model).toBe("claude-sonnet-4-20250514");
+			expect(client.model).toBe("claude-haiku-4-5");
 		});
 
 		it("uses configured model when provided", () => {
@@ -180,6 +208,7 @@ describe("ObserverClient", () => {
 				observerRuntime: null,
 				observerApiKey: null,
 				observerBaseUrl: null,
+				observerTemperature: 0.2,
 				observerMaxChars: 12_000,
 				observerMaxTokens: 4_000,
 				observerHeaders: {},
@@ -190,15 +219,17 @@ describe("ObserverClient", () => {
 				observerAuthCacheTtlS: 300,
 			});
 			expect(client.model).toBe("gpt-4o");
+			expect(client.temperature).toBe(0.2);
 		});
 
 		it("infers anthropic from claude model prefix", () => {
 			const client = new ObserverClient({
 				observerProvider: null,
-				observerModel: "claude-sonnet-4-20250514",
+				observerModel: "claude-haiku-4-5",
 				observerRuntime: null,
 				observerApiKey: null,
 				observerBaseUrl: null,
+				observerTemperature: 0.2,
 				observerMaxChars: 12_000,
 				observerMaxTokens: 4_000,
 				observerHeaders: {},
@@ -209,7 +240,7 @@ describe("ObserverClient", () => {
 				observerAuthCacheTtlS: 300,
 			});
 			expect(client.provider).toBe("anthropic");
-			expect(client.model).toBe("claude-sonnet-4-20250514");
+			expect(client.model).toBe("claude-haiku-4-5");
 		});
 
 		it("infers opencode provider from prefixed model", () => {
