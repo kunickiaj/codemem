@@ -146,7 +146,19 @@ export {
 	getSessionExtractionEvalScenario,
 } from "./extraction-eval.js";
 export type { ExtractionReplayResult } from "./extraction-replay.js";
-export { replayBatchExtraction } from "./extraction-replay.js";
+export {
+	replayBatchExtraction,
+	replayBatchExtractionWithTierRouting,
+} from "./extraction-replay.js";
+export type {
+	ExtractionReplayTierRoutingDecision,
+	ExtractionReplayTierRoutingInput,
+} from "./extraction-tier-routing.js";
+export {
+	decideExtractionReplayTier,
+	RICH_TIER_DEFAULTS,
+	SIMPLE_TIER_DEFAULTS,
+} from "./extraction-tier-routing.js";
 export { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 // Ingest pipeline
 export {

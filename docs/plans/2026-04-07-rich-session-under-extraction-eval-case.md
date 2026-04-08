@@ -199,6 +199,71 @@ Current benchmark findings:
 The main cost-conscious takeaway is that cheaper/faster models should be judged
 against this benchmark set, not assumed sufficient by default.
 
+## Current routing conclusion
+
+The current replay-only quality-first routing result is stronger than any
+single-model cheap configuration tested so far.
+
+### Replay-only tier routing (current best)
+
+- **simple tier:** `openai / gpt-5.4-mini @ temperature 0.2`
+- **rich tier:** `openai / gpt-5.4` via Responses API, no reasoning, `max_output_tokens = 12000`
+
+### Current benchmark outcome
+
+On `rich-batch-shape-v1`, replay-only tier routing currently yields:
+
+- shape-quality passes: `5 / 5`
+- shape-quality fails: `0`
+- replay robustness no-output cases: `1` (`18476`)
+
+All shape-quality benchmark batches currently route to the rich tier under the
+initial thresholds, which is acceptable for this benchmark because the set is
+explicitly composed of hard rich-batch cases. The next question is whether live
+routing should use the same thresholds or introduce a broader mixed-complexity
+benchmark before rollout.
+
+## Mixed-complexity routing follow-up
+
+A second benchmark profile now checks whether replay-only tier routing can stay
+cheap on genuinely simple batches while still escalating the harder ones.
+
+- **benchmark id:** `mixed-batch-routing-v1`
+
+### Current mixed benchmark result
+
+After refining both the benchmark candidates and the routing thresholds, the
+current replay-only router yields:
+
+- shape-quality passes: `8 / 8`
+- shape-quality fails: `0`
+- replay robustness no-output cases: `1` (`18476`)
+- expected-tier matches: `7 / 9`
+
+### Current routing split
+
+- **simple tier:** `4` batches
+- **rich tier:** `5` batches
+
+On the current mixed benchmark, this is no longer a "rich for everything"
+router. Two moderate working batches (`18524`, `18525`) now intentionally route
+to the rich tier because the cheap tier under-extracted them; that is a quality-
+first tradeoff, not accidental over-escalation.
+
+### Current threshold summary
+
+The current replay-only rich-tier promotion rules are:
+
+- `eventSpan >= 100`
+- `transcriptLength >= 6000`
+- `toolCount >= 25`
+- `toolCount >= 9 && transcriptLength >= 2000`
+- `promptCount >= 3 && toolCount >= 8`
+
+This threshold set currently preserves quality on both the rich-only benchmark
+and the refined mixed benchmark better than the earlier, more aggressive
+transcript-heavy version.
+
 ## Notes
 
 This case should not be interpreted as a repeat of the old structural
