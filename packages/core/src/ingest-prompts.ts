@@ -63,11 +63,26 @@ Aim for ~120-400 words per significant work item.
 Prefer fewer, higher-signal observations over many small ones.
 Include specific details when present: file paths, function names, configuration values.`;
 
+const RICH_SESSION_GUIDANCE = `When the session contains MULTIPLE meaningful threads:
+- Before writing XML, mentally inventory the 2-4 highest-value subthreads that future sessions would most want for rediscovery reduction.
+- Treat the <summary> as the broad session-wide state, not a recap of only the latest thread.
+- Cover the major subthreads in the summary when they materially changed the direction, outcome, or understanding of the work.
+- Do not let recency dominate: a long transcript often ends on only one thread, but the output should still represent the major work across the full observed batch.
+- Emit a SMALL capped set of durable <observation> blocks for the highest-value reusable subthreads (usually 2-4, not a dump of everything).
+- If the session clearly contains 2 or more substantial durable subthreads, emit at least 2 <observation> blocks. Summary-only output is not sufficient for a rich session.
+- Prefer one durable observation per distinct subthread, not several observations for one thread and silence for the others.
+- Prefer coverage diversity: do not emit multiple observations that mostly restate the same dominant thread.
+- Choose subthreads that future sessions would most want for rediscovery reduction: important decisions, durable learnings, shipped changes, closed investigations, or troubleshooting outcomes.
+- If one thread clearly dominates and the rest are trivial, keep a single observation. Do not invent diversity where none exists.`;
+
 const OUTPUT_GUIDANCE =
 	"Output only XML. Do not include commentary outside XML.\n\n" +
 	"ALWAYS emit at least one <observation> block for any meaningful work. " +
 	"Observations are the PRIMARY output - they capture what was built, fixed, learned, or decided. " +
 	"Also emit a <summary> block to track session progress.\n\n" +
+	"For rich multi-thread sessions, prefer one broad summary plus a small set of durable observations covering the highest-value subthreads.\n\n" +
+	"For rich sessions, do not return summary-only output when multiple substantial durable subthreads are present.\n\n" +
+	"Do not collapse a rich batch into only the final or most recent thread when earlier threads produced durable decisions, learnings, or outcomes.\n\n" +
 	"Prefer fewer, more comprehensive observations over many small ones.";
 
 const OBSERVATION_SCHEMA = `<observation>
@@ -158,6 +173,8 @@ file edits, behaviors, or outcomes that are not explicitly observed.
 
 Keep summaries concise (aim for ~150-450 words total across all fields).
 
+For rich sessions, make the summary broad enough that a future reader can see the major subthreads without reading every observation.
+
 This summary helps future sessions understand where this work left off.`;
 
 // ---------------------------------------------------------------------------
@@ -208,11 +225,24 @@ function formatToolEvent(event: ToolEvent): string {
 
 function truncateMiddle(text: string, limit: number): string {
 	if (text.length <= limit) return text;
-	if (limit <= 20) return text.slice(0, limit);
-	const keep = Math.floor((limit - 9) / 2);
-	const head = text.slice(0, keep).trimEnd();
-	const tail = text.slice(text.length - keep).trimStart();
-	return `${head}\n[...]\n${tail}`;
+	if (limit <= 30) return text.slice(0, limit);
+	const marker = "\n[...]\n";
+	const markerCost = marker.length * 2;
+	const available = limit - markerCost;
+	if (available <= 15) {
+		const keep = Math.floor((limit - marker.length) / 2);
+		const head = text.slice(0, keep).trimEnd();
+		const tail = text.slice(text.length - keep).trimStart();
+		return `${head}${marker}${tail}`;
+	}
+	const headLen = Math.floor(available * 0.35);
+	const middleLen = Math.floor(available * 0.3);
+	const tailLen = available - headLen - middleLen;
+	const head = text.slice(0, headLen).trimEnd();
+	const middleStart = Math.max(0, Math.floor((text.length - middleLen) / 2));
+	const middle = text.slice(middleStart, middleStart + middleLen).trim();
+	const tail = text.slice(text.length - tailLen).trimStart();
+	return `${head}${marker}${middle}${marker}${tail}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +272,8 @@ export function buildObserverPrompt(context: ObserverContext): {
 		SKIP_GUIDANCE,
 		"",
 		NARRATIVE_GUIDANCE,
+		"",
+		RICH_SESSION_GUIDANCE,
 		"",
 		OUTPUT_GUIDANCE,
 		"",

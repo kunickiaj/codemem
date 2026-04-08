@@ -15,6 +15,9 @@ describe("memory command aliases", () => {
 			"inject",
 			"role-report",
 			"role-compare",
+			"extraction-report",
+			"extraction-replay",
+			"extraction-benchmark",
 			"relink-report",
 			"relink-plan",
 		]);
@@ -57,6 +60,52 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--probe");
 		expect(longs).toContain("--scenario");
 		expect(longs).toContain("--inactive");
+		expect(longs).toContain("--json");
+	});
+
+	it("registers extraction-report under memory with session eval options", () => {
+		const extractionReport = memoryCommand.commands.find(
+			(command) => command.name() === "extraction-report",
+		);
+		expect(extractionReport).toBeDefined();
+		const longs = extractionReport?.options.map((option) => option.long) ?? [];
+		expect(longs).toContain("--db");
+		expect(longs).toContain("--db-path");
+		expect(longs).toContain("--session-id");
+		expect(longs).toContain("--batch-id");
+		expect(longs).toContain("--scenario");
+		expect(longs).toContain("--inactive");
+		expect(longs).toContain("--json");
+	});
+
+	it("registers extraction-replay under memory with replay eval options", () => {
+		const extractionReplay = memoryCommand.commands.find(
+			(command) => command.name() === "extraction-replay",
+		);
+		expect(extractionReplay).toBeDefined();
+		const longs = extractionReplay?.options.map((option) => option.long) ?? [];
+		expect(longs).toContain("--db");
+		expect(longs).toContain("--db-path");
+		expect(longs).toContain("--batch-id");
+		expect(longs).toContain("--observer-temperature");
+		expect(longs).toContain("--transcript-budget");
+		expect(longs).toContain("--scenario");
+		expect(longs).toContain("--json");
+	});
+
+	it("registers extraction-benchmark under memory with benchmark-runner options", () => {
+		const extractionBenchmark = memoryCommand.commands.find(
+			(command) => command.name() === "extraction-benchmark",
+		);
+		expect(extractionBenchmark).toBeDefined();
+		const longs = extractionBenchmark?.options.map((option) => option.long) ?? [];
+		expect(longs).toContain("--db");
+		expect(longs).toContain("--db-path");
+		expect(longs).toContain("--benchmark");
+		expect(longs).toContain("--observer-provider");
+		expect(longs).toContain("--observer-model");
+		expect(longs).toContain("--observer-temperature");
+		expect(longs).toContain("--transcript-budget");
 		expect(longs).toContain("--json");
 	});
 

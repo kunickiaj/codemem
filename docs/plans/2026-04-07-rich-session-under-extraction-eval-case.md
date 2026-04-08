@@ -155,6 +155,50 @@ For this scenario class, track:
 - whether resulting memory set would materially reduce future scouting and
   rediscovery effort
 
+## Formal benchmark set (current)
+
+This case is now part of a formal replay benchmark profile:
+
+- **benchmark id:** `rich-batch-shape-v1`
+- **generic shape scenario:** `rich-batch-shape`
+- **content-specific scenario for this batch:** `rich-session-under-extraction`
+
+### Shape-quality benchmark batches
+
+These batches should be used when comparing observer models or replay shaping
+changes for output quality:
+
+- `18503` — flagship under-extraction batch (this case)
+- `18502` — adjacent earlier rich batch from the same session
+- `18506` — adjacent later rich batch from the same session
+- `18432` — large snapshot batch from another session
+- `18446` — hard failing snapshot batch from another session
+
+### Replay-robustness bucket
+
+These should **not** be counted as extraction-shape failures when the observer
+returns no output:
+
+- `18476` — stored extraction already passes shape, but replay can return
+  `raw = null`; treat this as observer/replay robustness, not under-extraction
+
+## Current model comparison conclusion
+
+Current benchmark findings:
+
+- **benchmark truth model:** `openai / gpt-5.4`
+  - best overall consistency on the current shape-quality batch set
+- **cheaper candidate worth tracking:** `openai / gpt-5.4-mini @ temperature 0.2`
+  - can pass some hard batches
+  - remains less reliable than full `gpt-5.4`
+- **opencode / claude-sonnet-4-5**
+  - promising on several hard batches
+  - still mixed enough that it should be treated as a candidate, not the current
+    truth baseline
+
+The main cost-conscious takeaway is that cheaper/faster models should be judged
+against this benchmark set, not assumed sufficient by default.
+
 ## Notes
 
 This case should not be interpreted as a repeat of the old structural

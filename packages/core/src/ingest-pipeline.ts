@@ -499,6 +499,10 @@ export async function ingest(
 		}
 
 		const vectorWriteInputs: Array<{ memoryId: number; title: string; bodyText: string }> = [];
+		const flushBatchMetadata =
+			sessionContext.flushBatch && typeof sessionContext.flushBatch === "object"
+				? sessionContext.flushBatch
+				: null;
 
 		// Persist all observations, summary, and usage atomically
 		store.db.transaction(() => {
@@ -531,6 +535,7 @@ export async function ingest(
 					files_modified: obs.filesModified,
 					prompt_number: promptNumber,
 					source: "observer",
+					flush_batch: flushBatchMetadata,
 				});
 				vectorWriteInputs.push({ memoryId, title: memoryTitle, bodyText });
 			}
@@ -567,6 +572,7 @@ export async function ingest(
 						files_read: summary.filesRead,
 						files_modified: summary.filesModified,
 						source: "observer_summary",
+						flush_batch: flushBatchMetadata,
 					},
 				);
 				vectorWriteInputs.push({ memoryId, title: summaryTitle, bodyText: body });

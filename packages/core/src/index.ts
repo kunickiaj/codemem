@@ -125,6 +125,28 @@ export {
 	mergeSummaryMetadata,
 	readImportPayload,
 } from "./export-import.js";
+export type {
+	ExtractionBenchmarkBatch,
+	ExtractionBenchmarkProfile,
+} from "./extraction-benchmarks.js";
+export {
+	getExtractionBenchmarkProfile,
+	listExtractionBenchmarkProfiles,
+} from "./extraction-benchmarks.js";
+export type {
+	SessionExtractionEvalItem,
+	SessionExtractionEvalResult,
+	SessionExtractionEvalScenario,
+	SessionExtractionEvalThread,
+	SessionExtractionEvalThreadResult,
+} from "./extraction-eval.js";
+export {
+	evaluateSessionExtractionItems,
+	getSessionExtractionEval,
+	getSessionExtractionEvalScenario,
+} from "./extraction-eval.js";
+export type { ExtractionReplayResult } from "./extraction-replay.js";
+export { replayBatchExtraction } from "./extraction-replay.js";
 export { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 // Ingest pipeline
 export {
