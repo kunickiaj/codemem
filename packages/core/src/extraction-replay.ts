@@ -3,6 +3,7 @@ import {
 	evaluateSessionExtractionItems,
 	getSessionExtractionEvalScenario,
 } from "./extraction-eval.js";
+import { decideExtractionReplayTier } from "./extraction-tier-routing.js";
 import {
 	budgetToolEvents,
 	eventToToolEvent,
@@ -29,7 +30,11 @@ import type {
 	ToolEvent,
 } from "./ingest-types.js";
 import { parseObserverResponse } from "./ingest-xml-parser.js";
-import type { ObserverClient } from "./observer-client.js";
+import {
+	type ObserverClient,
+	ObserverClient as ObserverClientImpl,
+	type ObserverConfig,
+} from "./observer-client.js";
 import { resolveProject } from "./project.js";
 import { buildSessionContext } from "./raw-event-flush.js";
 
@@ -135,6 +140,7 @@ async function observeStructuredOutput(
 export interface ExtractionReplayResult {
 	scenario: { id: string; title: string; description: string };
 	target: { batchId: number; sessionId: number };
+	analysis: ReplayBatchAnalysis;
 	classification: {
 		status: "pass" | "shape_fail" | "observer_no_output";
 		reason: string;
@@ -151,6 +157,13 @@ export interface ExtractionReplayResult {
 	observer: {
 		provider: string;
 		model: string;
+		tier: "simple" | "rich" | null;
+		tierReasons: string[];
+		openaiUseResponses: boolean;
+		reasoningEffort: string | null;
+		reasoningSummary: string | null;
+		maxOutputTokens: number;
+		temperature: number | null;
 		repairApplied: boolean;
 		initialRaw: string | null;
 		raw: string | null;
@@ -158,6 +171,42 @@ export interface ExtractionReplayResult {
 	};
 	observerContext: ObserverContext;
 	evaluation: ReturnType<typeof evaluateSessionExtractionItems>;
+}
+
+export interface ReplayBatchAnalysis {
+	batchId: number;
+	sessionId: number;
+	eventSpan: number;
+	promptCount: number;
+	toolCount: number;
+	transcriptLength: number;
+}
+
+interface PreparedReplayBatch {
+	scenario: ReturnType<typeof getSessionExtractionEvalScenario> extends infer T
+		? Exclude<T, null>
+		: never;
+	batch: {
+		id: number;
+		source: string;
+		stream_id: string;
+		opencode_session_id: string;
+		start_event_seq: number;
+		end_event_seq: number;
+		updated_at: string;
+		session_id: number;
+		cwd: string | null;
+		project: string | null;
+		started_at: string | null;
+		ended_at: string | null;
+		metadata_json: string | null;
+	};
+	sessionContext: SessionContext;
+	observerContext: ObserverContext;
+	system: string;
+	user: string;
+	sessionPost: Record<string, unknown>;
+	analysis: ReplayBatchAnalysis;
 }
 
 function classifyReplayResult(input: {
@@ -320,9 +369,8 @@ Keep the broad summary, but add 2-4 durable observations for distinct subthreads
 	return observeStructuredOutput(observer, repairSystem, repairUser);
 }
 
-export async function replayBatchExtraction(
+async function prepareReplayBatch(
 	dbPath: string | undefined,
-	observer: ObserverClient,
 	opts: {
 		batchId: number;
 		scenarioId: string;
@@ -330,7 +378,7 @@ export async function replayBatchExtraction(
 		observerMaxChars?: number;
 		transcriptBudget?: number;
 	},
-): Promise<ExtractionReplayResult> {
+): Promise<PreparedReplayBatch> {
 	const scenario = getSessionExtractionEvalScenario(opts.scenarioId);
 	if (!scenario) throw new Error(`Unknown extraction eval scenario: ${opts.scenarioId}`);
 
@@ -423,7 +471,7 @@ export async function replayBatchExtraction(
 		};
 
 		const maxChars = opts.maxChars ?? 12_000;
-		const observerMaxChars = opts.observerMaxChars ?? observer.maxChars;
+		const observerMaxChars = opts.observerMaxChars ?? 12_000;
 		const normalizedEvents = normalizeAdapterEvents(events);
 		const prompts = extractPrompts(normalizedEvents);
 		const promptNumber =
@@ -491,10 +539,6 @@ export async function replayBatchExtraction(
 			recentFiles: "",
 		};
 		const { system, user } = buildObserverPrompt(observerContext);
-		const initialResponse = await observeStructuredOutput(observer, system, user);
-		let finalResponse = initialResponse;
-		let replayItems = buildReplayItems(finalResponse.parsed, batch, sessionContext);
-
 		const sessionMeta = (() => {
 			try {
 				return batch.metadata_json
@@ -508,74 +552,155 @@ export async function replayBatchExtraction(
 			sessionMeta.post && typeof sessionMeta.post === "object" && !Array.isArray(sessionMeta.post)
 				? (sessionMeta.post as Record<string, unknown>)
 				: {};
-		let evaluation = evaluateSessionExtractionItems(
-			{ type: "batch", sessionId: batch.session_id, batchId: batch.id },
-			{
-				id: batch.session_id,
-				project: batch.project,
-				cwd: batch.cwd ?? process.cwd(),
-				startedAt: batch.started_at ?? "",
-				endedAt: batch.ended_at,
-				sessionClass: String(post.session_class ?? "unknown"),
-				summaryDisposition: String(post.summary_disposition ?? "unknown"),
-			},
-			replayItems,
-			scenario,
-		);
-		let repairApplied = false;
-		if (
-			initialResponse.raw &&
-			needsRichSessionRepair(evaluation, observerContext, sessionContext)
-		) {
-			repairApplied = true;
-			finalResponse = await observeRichSessionRepair(
-				observer,
-				system,
-				user,
-				initialResponse.raw,
-				evaluation,
-			);
-			replayItems = buildReplayItems(finalResponse.parsed, batch, sessionContext);
-			evaluation = evaluateSessionExtractionItems(
-				{ type: "batch", sessionId: batch.session_id, batchId: batch.id },
-				{
-					id: batch.session_id,
-					project: batch.project,
-					cwd: batch.cwd ?? process.cwd(),
-					startedAt: batch.started_at ?? "",
-					endedAt: batch.ended_at,
-					sessionClass: String(post.session_class ?? "unknown"),
-					summaryDisposition: String(post.summary_disposition ?? "unknown"),
-				},
-				replayItems,
-				scenario,
-			);
-		}
-
 		return {
-			scenario: {
-				id: scenario.id,
-				title: scenario.title,
-				description: scenario.description,
+			scenario,
+			batch: {
+				...batch,
+				session_id: batch.session_id,
 			},
-			target: { batchId: batch.id, sessionId: batch.session_id },
-			classification: classifyReplayResult({
-				raw: finalResponse.raw,
-				evaluation,
-			}),
-			session: evaluation.session,
-			observer: {
-				provider: finalResponse.provider,
-				model: finalResponse.model,
-				repairApplied,
-				initialRaw: initialResponse.raw,
-				raw: finalResponse.raw,
-				parsed: finalResponse.parsed,
-			},
+			sessionContext,
 			observerContext,
-			evaluation,
+			system,
+			user,
+			sessionPost: post,
+			analysis: {
+				batchId: batch.id,
+				sessionId: batch.session_id,
+				eventSpan: batch.end_event_seq - batch.start_event_seq + 1,
+				promptCount: sessionContext.promptCount ?? 0,
+				toolCount: sessionContext.toolCount ?? 0,
+				transcriptLength: transcript.length,
+			},
 		};
 	} finally {
 		db.close();
 	}
+}
+
+async function replayPreparedBatch(
+	prepared: PreparedReplayBatch,
+	observer: ObserverClient,
+	tier: "simple" | "rich" | null,
+	tierReasons: string[],
+): Promise<ExtractionReplayResult> {
+	const initialResponse = await observeStructuredOutput(observer, prepared.system, prepared.user);
+	let finalResponse = initialResponse;
+	let replayItems = buildReplayItems(finalResponse.parsed, prepared.batch, prepared.sessionContext);
+	let evaluation = evaluateSessionExtractionItems(
+		{ type: "batch", sessionId: prepared.batch.session_id, batchId: prepared.batch.id },
+		{
+			id: prepared.batch.session_id,
+			project: prepared.batch.project,
+			cwd: prepared.batch.cwd ?? process.cwd(),
+			startedAt: prepared.batch.started_at ?? "",
+			endedAt: prepared.batch.ended_at,
+			sessionClass: String(prepared.sessionPost.session_class ?? "unknown"),
+			summaryDisposition: String(prepared.sessionPost.summary_disposition ?? "unknown"),
+		},
+		replayItems,
+		prepared.scenario,
+	);
+	let repairApplied = false;
+	if (
+		initialResponse.raw &&
+		needsRichSessionRepair(evaluation, prepared.observerContext, prepared.sessionContext)
+	) {
+		repairApplied = true;
+		finalResponse = await observeRichSessionRepair(
+			observer,
+			prepared.system,
+			prepared.user,
+			initialResponse.raw,
+			evaluation,
+		);
+		replayItems = buildReplayItems(finalResponse.parsed, prepared.batch, prepared.sessionContext);
+		evaluation = evaluateSessionExtractionItems(
+			{ type: "batch", sessionId: prepared.batch.session_id, batchId: prepared.batch.id },
+			{
+				id: prepared.batch.session_id,
+				project: prepared.batch.project,
+				cwd: prepared.batch.cwd ?? process.cwd(),
+				startedAt: prepared.batch.started_at ?? "",
+				endedAt: prepared.batch.ended_at,
+				sessionClass: String(prepared.sessionPost.session_class ?? "unknown"),
+				summaryDisposition: String(prepared.sessionPost.summary_disposition ?? "unknown"),
+			},
+			replayItems,
+			prepared.scenario,
+		);
+	}
+
+	return {
+		scenario: {
+			id: prepared.scenario.id,
+			title: prepared.scenario.title,
+			description: prepared.scenario.description,
+		},
+		target: { batchId: prepared.batch.id, sessionId: prepared.batch.session_id },
+		analysis: prepared.analysis,
+		classification: classifyReplayResult({
+			raw: finalResponse.raw,
+			evaluation,
+		}),
+		session: evaluation.session,
+		observer: {
+			provider: finalResponse.provider,
+			model: finalResponse.model,
+			tier,
+			tierReasons,
+			openaiUseResponses: observer.openaiUseResponses,
+			reasoningEffort: observer.reasoningEffort,
+			reasoningSummary: observer.reasoningSummary,
+			maxOutputTokens: observer.maxOutputTokens,
+			temperature: observer.temperature,
+			repairApplied,
+			initialRaw: initialResponse.raw,
+			raw: finalResponse.raw,
+			parsed: finalResponse.parsed,
+		},
+		observerContext: prepared.observerContext,
+		evaluation,
+	};
+}
+
+export async function replayBatchExtraction(
+	dbPath: string | undefined,
+	observer: ObserverClient,
+	opts: {
+		batchId: number;
+		scenarioId: string;
+		maxChars?: number;
+		observerMaxChars?: number;
+		transcriptBudget?: number;
+	},
+): Promise<ExtractionReplayResult> {
+	const prepared = await prepareReplayBatch(dbPath, {
+		...opts,
+		observerMaxChars: opts.observerMaxChars ?? observer.maxChars,
+	});
+	return replayPreparedBatch(prepared, observer, null, []);
+}
+
+export async function replayBatchExtractionWithTierRouting(
+	dbPath: string | undefined,
+	baseConfig: ObserverConfig,
+	opts: {
+		batchId: number;
+		scenarioId: string;
+		maxChars?: number;
+		observerMaxChars?: number;
+		transcriptBudget?: number;
+	},
+): Promise<ExtractionReplayResult> {
+	const baseObserver = new ObserverClientImpl(baseConfig);
+	const prepared = await prepareReplayBatch(dbPath, {
+		...opts,
+		observerMaxChars: opts.observerMaxChars ?? baseObserver.maxChars,
+	});
+	const decision = decideExtractionReplayTier(prepared.analysis);
+	const observer = new ObserverClientImpl({
+		...baseConfig,
+		...decision.observer,
+	});
+	return replayPreparedBatch(prepared, observer, decision.tier, decision.reasons);
 }

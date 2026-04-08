@@ -27,6 +27,18 @@ describe("extraction benchmarks", () => {
 		);
 	});
 
+	it("exposes the mixed-complexity routing benchmark profile", () => {
+		const profile = getExtractionBenchmarkProfile("mixed-batch-routing-v1");
+		expect(profile).not.toBeNull();
+		expect(profile?.batches).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ batchId: 18530, complexity: "simple", expectedTier: "simple" }),
+				expect.objectContaining({ batchId: 18524, complexity: "working", expectedTier: "simple" }),
+				expect.objectContaining({ batchId: 18503, complexity: "rich", expectedTier: "rich" }),
+			]),
+		);
+	});
+
 	it("returns defensive copies from the benchmark listing", () => {
 		const profiles = listExtractionBenchmarkProfiles();
 		expect(profiles.length).toBeGreaterThan(0);

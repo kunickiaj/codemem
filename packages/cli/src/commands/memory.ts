@@ -20,6 +20,7 @@ import {
 	MemoryStore,
 	ObserverClient,
 	replayBatchExtraction,
+	replayBatchExtractionWithTierRouting,
 	resolveDbPath,
 	resolveProject,
 } from "@codemem/core";
@@ -612,6 +613,7 @@ function createMemoryExtractionReplayCommand(): Command {
 			"--transcript-budget <chars>",
 			"override replay transcript budget in characters (replay only)",
 		)
+		.option("--observer-tier-routing", "use replay-only benchmark-backed observer tier routing")
 		.option("--observer-temperature <value>", "override observer temperature for replay only")
 		.option("--openai-responses", "use OpenAI Responses API for replay only")
 		.option(
@@ -634,6 +636,7 @@ function createMemoryExtractionReplayCommand(): Command {
 			opts: DbOpts &
 				JsonOpts & {
 					batchId: string;
+					observerTierRouting?: boolean;
 					openaiResponses?: boolean;
 					reasoningEffort?: string;
 					reasoningSummary?: string;
@@ -681,19 +684,31 @@ function createMemoryExtractionReplayCommand(): Command {
 				);
 			}
 			const observerConfig = loadObserverConfig();
-			const observer = new ObserverClient({
+			const observerConfigWithOverrides = {
 				...observerConfig,
 				observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
 				observerOpenAIUseResponses: opts.openaiResponses === true,
 				observerReasoningEffort: opts.reasoningEffort?.trim() || null,
 				observerReasoningSummary: opts.reasoningSummary?.trim() || null,
 				observerMaxOutputTokens: maxOutputTokens ?? observerConfig.observerMaxTokens,
-			});
-			const result = await replayBatchExtraction(resolveDbOpt(opts), observer, {
-				batchId,
-				scenarioId: scenario.id,
-				transcriptBudget: transcriptBudget ?? undefined,
-			});
+			};
+			const observer = new ObserverClient(observerConfigWithOverrides);
+			const result =
+				opts.observerTierRouting === true
+					? await replayBatchExtractionWithTierRouting(
+							resolveDbOpt(opts),
+							observerConfigWithOverrides,
+							{
+								batchId,
+								scenarioId: scenario.id,
+								transcriptBudget: transcriptBudget ?? undefined,
+							},
+						)
+					: await replayBatchExtraction(resolveDbOpt(opts), observer, {
+							batchId,
+							scenarioId: scenario.id,
+							transcriptBudget: transcriptBudget ?? undefined,
+						});
 
 			if (opts.json) {
 				console.log(JSON.stringify(result, null, 2));
@@ -707,8 +722,9 @@ function createMemoryExtractionReplayCommand(): Command {
 					`Batch: ${result.target.batchId}`,
 					`Session: ${result.target.sessionId}`,
 					`Observer: ${result.observer.provider}/${result.observer.model}`,
-					`OpenAI Responses: ${observer.openaiUseResponses ? "yes" : "no"}`,
-					`Reasoning effort: ${observer.reasoningEffort ?? "none"}`,
+					`Tier: ${result.observer.tier ?? "manual"}`,
+					`OpenAI Responses: ${result.observer.openaiUseResponses ? "yes" : "no"}`,
+					`Reasoning effort: ${result.observer.reasoningEffort ?? "none"}`,
 					`Classification: ${result.classification.status}`,
 					`Pass: ${result.evaluation.pass ? "yes" : "no"}`,
 				].join("\n"),
@@ -746,6 +762,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 		.requiredOption("--benchmark <id>", "benchmark profile id")
 		.option("--observer-provider <provider>", "override observer provider for this benchmark run")
 		.option("--observer-model <model>", "override observer model for this benchmark run")
+		.option("--observer-tier-routing", "use replay-only benchmark-backed observer tier routing")
 		.option("--openai-responses", "use OpenAI Responses API for this benchmark run")
 		.option(
 			"--reasoning-effort <level>",
@@ -776,6 +793,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					benchmark: string;
 					observerProvider?: string;
 					observerModel?: string;
+					observerTierRouting?: boolean;
 					openaiResponses?: boolean;
 					reasoningEffort?: string;
 					reasoningSummary?: string;
@@ -817,7 +835,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				);
 			}
 			const observerConfig = loadObserverConfig();
-			const observer = new ObserverClient({
+			const observerConfigWithOverrides = {
 				...observerConfig,
 				observerProvider: opts.observerProvider?.trim() || observerConfig.observerProvider,
 				observerModel: opts.observerModel?.trim() || observerConfig.observerModel,
@@ -826,31 +844,78 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				observerReasoningEffort: opts.reasoningEffort?.trim() || null,
 				observerReasoningSummary: opts.reasoningSummary?.trim() || null,
 				observerMaxOutputTokens: maxOutputTokens ?? observerConfig.observerMaxTokens,
-			});
+			};
+			const observer = new ObserverClient(observerConfigWithOverrides);
 			const runs = [] as Array<{
 				batchId: number;
 				sessionId: number;
 				label: string;
 				purpose: "shape_quality" | "replay_robustness";
+				complexity: string;
+				scenarioId: string;
+				expectedTier: string | null;
+				analysis: {
+					eventSpan: number;
+					promptCount: number;
+					toolCount: number;
+					transcriptLength: number;
+				};
 				status: "pass" | "shape_fail" | "observer_no_output";
 				reason: string;
+				tier: string;
+				provider: string;
+				model: string;
+				openaiUseResponses: boolean;
+				reasoningEffort: string | null;
+				reasoningSummary: string | null;
+				maxOutputTokens: number;
+				temperature: number | null;
 				summaries: number;
 				observations: number;
 				repairApplied: boolean;
 			}>;
 			for (const batch of benchmark.batches) {
-				const result = await replayBatchExtraction(resolveDbOpt(opts), observer, {
-					batchId: batch.batchId,
-					scenarioId: benchmark.scenarioId,
-					transcriptBudget: transcriptBudget ?? undefined,
-				});
+				const scenarioId = batch.scenarioId ?? benchmark.scenarioId;
+				const result =
+					opts.observerTierRouting === true
+						? await replayBatchExtractionWithTierRouting(
+								resolveDbOpt(opts),
+								observerConfigWithOverrides,
+								{
+									batchId: batch.batchId,
+									scenarioId,
+									transcriptBudget: transcriptBudget ?? undefined,
+								},
+							)
+						: await replayBatchExtraction(resolveDbOpt(opts), observer, {
+								batchId: batch.batchId,
+								scenarioId,
+								transcriptBudget: transcriptBudget ?? undefined,
+							});
 				runs.push({
 					batchId: batch.batchId,
 					sessionId: batch.sessionId,
 					label: batch.label,
 					purpose: batch.purpose,
+					complexity: batch.complexity,
+					scenarioId,
+					expectedTier: batch.expectedTier ?? null,
+					analysis: {
+						eventSpan: result.analysis.eventSpan,
+						promptCount: result.analysis.promptCount,
+						toolCount: result.analysis.toolCount,
+						transcriptLength: result.analysis.transcriptLength,
+					},
 					status: result.classification.status,
 					reason: result.classification.reason,
+					tier: result.observer.tier ?? "manual",
+					provider: result.observer.provider,
+					model: result.observer.model,
+					openaiUseResponses: result.observer.openaiUseResponses,
+					reasoningEffort: result.observer.reasoningEffort,
+					reasoningSummary: result.observer.reasoningSummary,
+					maxOutputTokens: result.observer.maxOutputTokens,
+					temperature: result.observer.temperature,
 					summaries: result.evaluation.counts.summaries,
 					observations: result.evaluation.counts.observations,
 					repairApplied: result.observer.repairApplied,
@@ -865,24 +930,71 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				shapeQualityFails: runs.filter(
 					(run) => run.purpose === "shape_quality" && run.status === "shape_fail",
 				).length,
+				expectedTierTotal: runs.filter((run) => run.expectedTier != null).length,
+				expectedTierMatches: runs.filter(
+					(run) => run.expectedTier != null && run.expectedTier === run.tier,
+				).length,
 				robustnessNoOutput: runs.filter((run) => run.status === "observer_no_output").length,
 			};
+			const uniqueObserverKeys = Array.from(
+				new Set(
+					runs.map(
+						(run) =>
+							`${run.provider}::${run.model}::${run.openaiUseResponses ? "responses" : "chat"}`,
+					),
+				),
+			);
+			const observerSummary =
+				opts.observerTierRouting === true
+					? {
+							provider:
+								uniqueObserverKeys.length === 1
+									? (runs[0]?.provider ?? observer.provider)
+									: "mixed",
+							model: uniqueObserverKeys.length === 1 ? (runs[0]?.model ?? observer.model) : "mixed",
+							tierRouting: true,
+							openaiUseResponses:
+								uniqueObserverKeys.length === 1
+									? (runs[0]?.openaiUseResponses ?? observer.openaiUseResponses)
+									: null,
+							reasoningEffort:
+								uniqueObserverKeys.length === 1
+									? (runs[0]?.reasoningEffort ?? observer.reasoningEffort)
+									: "mixed",
+							reasoningSummary:
+								uniqueObserverKeys.length === 1
+									? (runs[0]?.reasoningSummary ?? observer.reasoningSummary)
+									: "mixed",
+							maxOutputTokens:
+								uniqueObserverKeys.length === 1
+									? (runs[0]?.maxOutputTokens ?? observer.maxOutputTokens)
+									: null,
+							temperature:
+								uniqueObserverKeys.length === 1
+									? (runs[0]?.temperature ?? observer.temperature)
+									: null,
+							transcriptBudget: transcriptBudget ?? null,
+							selectedObservers: uniqueObserverKeys,
+						}
+					: {
+							provider: observer.provider,
+							model: observer.model,
+							tierRouting: false,
+							openaiUseResponses: observer.openaiUseResponses,
+							reasoningEffort: observer.reasoningEffort,
+							reasoningSummary: observer.reasoningSummary,
+							maxOutputTokens: observer.maxOutputTokens,
+							temperature: observer.temperature,
+							transcriptBudget: transcriptBudget ?? null,
+							selectedObservers: uniqueObserverKeys,
+						};
 			const output = {
 				benchmark: {
 					id: benchmark.id,
 					title: benchmark.title,
 					scenarioId: benchmark.scenarioId,
 				},
-				observer: {
-					provider: observer.provider,
-					model: observer.model,
-					openaiUseResponses: observer.openaiUseResponses,
-					reasoningEffort: observer.reasoningEffort,
-					reasoningSummary: observer.reasoningSummary,
-					maxOutputTokens: observer.maxOutputTokens,
-					temperature: observer.temperature,
-					transcriptBudget: transcriptBudget ?? null,
-				},
+				observer: observerSummary,
 				summary,
 				runs,
 			};
@@ -896,21 +1008,23 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 			p.log.info(
 				[
 					`Benchmark: ${benchmark.id} — ${benchmark.title}`,
-					`Observer: ${observer.provider}/${observer.model}`,
-					`OpenAI Responses: ${observer.openaiUseResponses ? "yes" : "no"}`,
-					`Reasoning effort: ${observer.reasoningEffort ?? "none"}`,
-					`Reasoning summary: ${observer.reasoningSummary ?? "none"}`,
-					`Max output tokens: ${observer.maxOutputTokens}`,
-					`Temperature: ${observer.temperature ?? "default"}`,
+					`Observer: ${observerSummary.provider}/${observerSummary.model}`,
+					`Tier routing: ${opts.observerTierRouting === true ? "yes" : "no"}`,
+					`OpenAI Responses: ${observerSummary.openaiUseResponses === null ? "mixed" : observerSummary.openaiUseResponses ? "yes" : "no"}`,
+					`Reasoning effort: ${observerSummary.reasoningEffort ?? "none"}`,
+					`Reasoning summary: ${observerSummary.reasoningSummary ?? "none"}`,
+					`Max output tokens: ${observerSummary.maxOutputTokens ?? "mixed"}`,
+					`Temperature: ${observerSummary.temperature ?? "mixed"}`,
 					`Transcript budget override: ${transcriptBudget ?? "default"}`,
 					`Shape-quality passes: ${summary.shapeQualityPasses}/${summary.shapeQualityTotal}`,
 					`Shape-quality fails: ${summary.shapeQualityFails}`,
+					`Expected-tier matches: ${summary.expectedTierMatches}/${summary.expectedTierTotal}`,
 					`Observer no-output cases: ${summary.robustnessNoOutput}`,
 				].join("\n"),
 			);
 			for (const run of runs) {
 				p.log.message(
-					`  [${run.batchId}] ${run.status.padEnd(18)} ${run.purpose.padEnd(18)} summaries=${run.summaries} observations=${run.observations} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
+					`  [${run.batchId}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model}${run.openaiUseResponses ? " [responses]" : ""} summaries=${run.summaries} observations=${run.observations} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
 				);
 			}
 			p.outro("done");

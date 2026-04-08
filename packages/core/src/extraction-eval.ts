@@ -85,6 +85,30 @@ type SessionExtractionEvalTarget =
 
 const EXTRACTION_EVAL_SCENARIOS: SessionExtractionEvalScenario[] = [
 	{
+		id: "simple-batch-shape",
+		title: "Simple batch output shape",
+		description:
+			"Evaluates whether a smaller/simple batch yields one summary and at most one durable observation without unnecessary output sprawl.",
+		summaryCountRange: { min: 1, max: 1 },
+		observationCountRange: { min: 0, max: 1 },
+		minSummaryThreadCoverage: 0,
+		minObservationThreadCoverage: 0,
+		minTotalThreadCoverage: 0,
+		threads: [],
+	},
+	{
+		id: "working-batch-shape",
+		title: "Working batch output shape",
+		description:
+			"Evaluates whether a moderate working batch yields one summary and a small set of 1-2 durable observations without over-compressing or over-emitting.",
+		summaryCountRange: { min: 1, max: 1 },
+		observationCountRange: { min: 1, max: 2 },
+		minSummaryThreadCoverage: 0,
+		minObservationThreadCoverage: 0,
+		minTotalThreadCoverage: 0,
+		threads: [],
+	},
+	{
 		id: "rich-batch-shape",
 		title: "Rich batch output shape",
 		description:

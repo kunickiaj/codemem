@@ -24,6 +24,15 @@ describe("session extraction eval", () => {
 		);
 	});
 
+	it("exposes simple and working batch shape scenarios", () => {
+		expect(getSessionExtractionEvalScenario("simple-batch-shape")?.title).toContain(
+			"Simple batch output shape",
+		);
+		expect(getSessionExtractionEvalScenario("working-batch-shape")?.title).toContain(
+			"Working batch output shape",
+		);
+	});
+
 	it("passes when summary and observations cover the major rich-session threads", () => {
 		const scenario = getSessionExtractionEvalScenario("rich-session-under-extraction");
 		if (!scenario) throw new Error("scenario missing");
