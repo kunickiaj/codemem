@@ -1,3 +1,4 @@
+import type { PackRenderOptions } from "@codemem/core";
 import { resolveProject } from "@codemem/core";
 import type { Command } from "commander";
 
@@ -7,6 +8,7 @@ export type PackRequestOptions = {
 	limit: number;
 	budget: number | undefined;
 	filters: PackFilters;
+	renderOptions?: PackRenderOptions;
 };
 
 export class PackUsageError extends Error {
@@ -32,7 +34,9 @@ export function addPackRequestOptions(command: Command): Command {
 			[],
 		)
 		.option("--project <project>", "project identifier (defaults to git repo root)")
-		.option("--all-projects", "search across all projects");
+		.option("--all-projects", "search across all projects")
+		.option("--compact", "render a scannable index with full detail only for top N items")
+		.option("--compact-detail <n>", "items to show in full detail in compact mode (default 3)");
 }
 
 export function buildPackRequestOptions(
@@ -43,6 +47,8 @@ export function buildPackRequestOptions(
 		workingSetFile?: string[];
 		project?: string;
 		allProjects?: boolean;
+		compact?: boolean;
+		compactDetail?: string;
 	},
 	ctx: {
 		cwd?: string;
@@ -69,7 +75,18 @@ export function buildPackRequestOptions(
 		filters.working_set_paths = opts.workingSetFile;
 	}
 
-	return { limit, budget, filters };
+	let renderOptions: PackRenderOptions | undefined;
+	if (opts.compact || opts.compactDetail != null) {
+		renderOptions = { compact: true };
+		if (opts.compactDetail != null) {
+			renderOptions.compactDetailCount = parseNonNegativeInt(
+				opts.compactDetail,
+				"compact detail count",
+			);
+		}
+	}
+
+	return { limit, budget, filters, renderOptions };
 }
 
 function parsePositiveInt(value: string, label: string): number {

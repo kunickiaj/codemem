@@ -21,6 +21,8 @@ type PackCommandOptions = DbOpts &
 		workingSetFile?: string[];
 		project?: string;
 		allProjects?: boolean;
+		compact?: boolean;
+		compactDetail?: string;
 	};
 
 function describeCandidate(candidate: PackTrace["retrieval"]["candidates"][number]): string[] {
@@ -114,10 +116,10 @@ async function withStore(
 
 async function packAction(context: string, opts: PackCommandOptions): Promise<void> {
 	await withStore(opts, "pack_failed", async (store) => {
-		const { limit, budget, filters } = buildPackRequestOptions(opts, {
+		const { limit, budget, filters, renderOptions } = buildPackRequestOptions(opts, {
 			envProject: process.env.CODEMEM_PROJECT,
 		});
-		const result = await store.buildMemoryPackAsync(context, limit, budget, filters);
+		const result = await store.buildMemoryPackAsync(context, limit, budget, filters, renderOptions);
 
 		if (opts.json) {
 			console.log(JSON.stringify(result, null, 2));
@@ -150,10 +152,16 @@ async function packAction(context: string, opts: PackCommandOptions): Promise<vo
 
 async function traceAction(context: string, opts: PackCommandOptions): Promise<void> {
 	await withStore(opts, "pack_trace_failed", async (store) => {
-		const { limit, budget, filters } = buildPackRequestOptions(opts, {
+		const { limit, budget, filters, renderOptions } = buildPackRequestOptions(opts, {
 			envProject: process.env.CODEMEM_PROJECT,
 		});
-		const trace = await store.buildMemoryPackTraceAsync(context, limit, budget, filters);
+		const trace = await store.buildMemoryPackTraceAsync(
+			context,
+			limit,
+			budget,
+			filters,
+			renderOptions,
+		);
 
 		if (opts.json) {
 			console.log(JSON.stringify(trace, null, 2));
