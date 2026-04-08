@@ -77,6 +77,10 @@ export interface ObserverConfig {
 	observerApiKey: string | null;
 	observerBaseUrl: string | null;
 	observerTemperature?: number | null;
+	observerOpenAIUseResponses?: boolean;
+	observerReasoningEffort?: string | null;
+	observerReasoningSummary?: string | null;
+	observerMaxOutputTokens?: number | null;
 	observerMaxChars: number;
 	observerMaxTokens: number;
 	observerHeaders: Record<string, string>;
@@ -425,6 +429,41 @@ function buildOpenAIPayload(
 	return payload;
 }
 
+function buildOpenAIResponsesPayload(
+	model: string,
+	systemPrompt: string,
+	userPrompt: string,
+	maxOutputTokens: number,
+	reasoningEffort: string | null,
+	reasoningSummary: string | null,
+	temperature: number | null,
+): Record<string, unknown> {
+	const payload: Record<string, unknown> = {
+		model,
+		max_output_tokens: maxOutputTokens,
+		input: [
+			{
+				role: "developer",
+				content: [{ type: "input_text", text: systemPrompt }],
+			},
+			{
+				role: "user",
+				content: [{ type: "input_text", text: userPrompt }],
+			},
+		],
+	};
+	if (typeof temperature === "number" && Number.isFinite(temperature)) {
+		payload.temperature = temperature;
+	}
+	if (reasoningEffort || reasoningSummary) {
+		const reasoning: Record<string, unknown> = {};
+		if (reasoningEffort) reasoning.effort = reasoningEffort;
+		if (reasoningSummary) reasoning.summary = reasoningSummary;
+		payload.reasoning = reasoning;
+	}
+	return payload;
+}
+
 function parseOpenAIResponse(body: Record<string, unknown>): string | null {
 	const choices = body.choices;
 	if (!Array.isArray(choices) || choices.length === 0) return null;
@@ -434,6 +473,27 @@ function parseOpenAIResponse(body: Record<string, unknown>): string | null {
 	if (!message) return null;
 	const content = message.content;
 	return typeof content === "string" ? content : null;
+}
+
+function parseOpenAIResponsesResponse(body: Record<string, unknown>): string | null {
+	const outputText = body.output_text;
+	if (typeof outputText === "string" && outputText.trim()) return outputText;
+	const output = body.output;
+	if (!Array.isArray(output)) return null;
+	const parts: string[] = [];
+	for (const item of output) {
+		if (typeof item !== "object" || item == null) continue;
+		const content = (item as Record<string, unknown>).content;
+		if (!Array.isArray(content)) continue;
+		for (const block of content) {
+			if (typeof block !== "object" || block == null) continue;
+			const record = block as Record<string, unknown>;
+			if (record.type === "output_text" && typeof record.text === "string") {
+				parts.push(record.text);
+			}
+		}
+	}
+	return parts.length > 0 ? parts.join("") : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,8 +590,12 @@ export class ObserverClient {
 	model: string;
 	readonly runtime: string;
 	readonly temperature: number | null;
+	readonly openaiUseResponses: boolean;
+	readonly reasoningEffort: string | null;
+	readonly reasoningSummary: string | null;
 	readonly maxChars: number;
 	readonly maxTokens: number;
+	readonly maxOutputTokens: number;
 
 	/** Resolved auth material — updated on refresh. */
 	auth: ObserverAuthMaterial;
@@ -608,8 +672,22 @@ export class ObserverClient {
 			typeof cfg.observerTemperature === "number" && Number.isFinite(cfg.observerTemperature)
 				? cfg.observerTemperature
 				: 0.2;
+		this.openaiUseResponses = cfg.observerOpenAIUseResponses === true;
+		this.reasoningEffort =
+			typeof cfg.observerReasoningEffort === "string" && cfg.observerReasoningEffort.trim()
+				? cfg.observerReasoningEffort.trim()
+				: null;
+		this.reasoningSummary =
+			typeof cfg.observerReasoningSummary === "string" && cfg.observerReasoningSummary.trim()
+				? cfg.observerReasoningSummary.trim()
+				: null;
 		this.maxChars = cfg.observerMaxChars;
 		this.maxTokens = cfg.observerMaxTokens;
+		this.maxOutputTokens =
+			typeof cfg.observerMaxOutputTokens === "number" &&
+			Number.isFinite(cfg.observerMaxOutputTokens)
+				? cfg.observerMaxOutputTokens
+				: this.maxTokens;
 		this._observerHeaders = { ...cfg.observerHeaders };
 		this._apiKey = cfg.observerApiKey ?? null;
 
@@ -643,10 +721,15 @@ export class ObserverClient {
 			method = "api_direct";
 		}
 
+		const runtime =
+			this.provider === "openai" && this.openaiUseResponses && method === "api_direct"
+				? "responses_api"
+				: this.runtime;
+
 		const status: ObserverStatus = {
 			provider: this.provider,
 			model: this.model,
-			runtime: this.runtime,
+			runtime,
 			auth: {
 				source: this.auth.source,
 				type: method,
@@ -859,9 +942,11 @@ export class ObserverClient {
 	): Promise<string | null> {
 		let url: string;
 		if (this._customBaseUrl) {
-			url = `${this._customBaseUrl.replace(/\/+$/, "")}/chat/completions`;
+			url = `${this._customBaseUrl.replace(/\/+$/, "")}/${this.openaiUseResponses ? "responses" : "chat/completions"}`;
 		} else {
-			url = "https://api.openai.com/v1/chat/completions";
+			url = this.openaiUseResponses
+				? "https://api.openai.com/v1/responses"
+				: "https://api.openai.com/v1/chat/completions";
 		}
 
 		const headers = buildOpenAIHeaders(this.auth.token ?? "");
@@ -869,16 +954,20 @@ export class ObserverClient {
 			headers,
 			renderObserverHeaders(this._observerHeaders, this.auth),
 		);
-		const payload = buildOpenAIPayload(
-			this.model,
-			systemPrompt,
-			userPrompt,
-			this.maxTokens,
-			this.temperature,
-		);
+		const payload = this.openaiUseResponses
+			? buildOpenAIResponsesPayload(
+					this.model,
+					systemPrompt,
+					userPrompt,
+					this.maxOutputTokens,
+					this.reasoningEffort,
+					this.reasoningSummary,
+					this.temperature,
+				)
+			: buildOpenAIPayload(this.model, systemPrompt, userPrompt, this.maxTokens, this.temperature);
 
 		return this._fetchJSON(url, mergedHeaders, payload, {
-			parseResponse: parseOpenAIResponse,
+			parseResponse: this.openaiUseResponses ? parseOpenAIResponsesResponse : parseOpenAIResponse,
 			providerLabel: capitalize(this.provider),
 		});
 	}

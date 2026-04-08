@@ -87,6 +87,10 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--db");
 		expect(longs).toContain("--db-path");
 		expect(longs).toContain("--batch-id");
+		expect(longs).toContain("--openai-responses");
+		expect(longs).toContain("--reasoning-effort");
+		expect(longs).toContain("--reasoning-summary");
+		expect(longs).toContain("--max-output-tokens");
 		expect(longs).toContain("--observer-temperature");
 		expect(longs).toContain("--transcript-budget");
 		expect(longs).toContain("--scenario");
@@ -104,6 +108,10 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--benchmark");
 		expect(longs).toContain("--observer-provider");
 		expect(longs).toContain("--observer-model");
+		expect(longs).toContain("--openai-responses");
+		expect(longs).toContain("--reasoning-effort");
+		expect(longs).toContain("--reasoning-summary");
+		expect(longs).toContain("--max-output-tokens");
 		expect(longs).toContain("--observer-temperature");
 		expect(longs).toContain("--transcript-budget");
 		expect(longs).toContain("--json");
