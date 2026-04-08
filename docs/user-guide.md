@@ -22,8 +22,10 @@
 - Shows effective values (configured or default) to avoid blank/ambiguous fields.
 - Persists only changed settings on save (unchanged effective defaults are not rewritten to config).
 - Uses task-oriented sections: `Connection`, `Processing`, and `Device Sync`.
-- Includes a `Show advanced controls` toggle for technical tuning fields (JSON headers, cache/timeout, network overrides, and pack limits).
+- Includes a `Show advanced controls` toggle for technical tuning fields (JSON headers, cache/timeout, tier-routing tuning, network overrides, and pack limits).
 - Connection/auth settings map to `claude_command`, `observer_runtime`, `observer_provider`, `observer_model`, `observer_base_url`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
+- Processing settings include `raw_events_sweeper_interval_s` plus tiered observer routing controls for `observer_tier_routing_enabled`, `observer_simple_model`, `observer_simple_temperature`, `observer_rich_model`, `observer_rich_temperature`, `observer_rich_openai_use_responses`, `observer_rich_reasoning_effort`, `observer_rich_reasoning_summary`, and `observer_rich_max_output_tokens`.
+- When tiered routing is enabled, the Processing tab becomes the primary place for model selection; the Connection tab's base `observer_model` acts as a fallback rather than a competing primary control.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 - Config resolution supports JSON and JSONC with this precedence:
@@ -49,6 +51,8 @@
 - Header templates can use `${auth.token}`, `${auth.type}`, and `${auth.source}`.
 - Settings are grouped into `Connection`, `Processing`, and `Device Sync` sections with shell-agnostic labels.
 - Queue settings include `raw_events_sweeper_interval_s` (seconds), which controls background pending-event drain cadence.
+- Tiered routing settings live in the Processing tab. The basic view exposes the tier-routing toggle plus simple/rich model choices, while advanced controls reveal the extra rich-tier tuning knobs.
+- To avoid overlapping primary controls, the Connection tab reframes `observer_model` as a fallback whenever tiered routing is enabled.
 
 Example command-token gateway config:
 
