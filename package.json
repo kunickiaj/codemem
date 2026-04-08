@@ -25,14 +25,14 @@
     "release:version": "node scripts/release-version.mjs",
     "release:preflight-tag": "bash scripts/release-tag-preflight.sh"
   },
-	"devDependencies": {
-		"@biomejs/biome": "catalog:",
-		"drizzle-kit": "^0.31.10",
-		"tsx": "catalog:",
-		"typescript": "catalog:",
-		"vite": "catalog:",
-		"vitest": "catalog:"
-	},
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  },
   "engines": {
     "node": ">=24"
   },
@@ -41,7 +41,10 @@
     "strictPeerDependencies": false,
     "onlyBuiltDependencies": [
       "@biomejs/biome",
-      "better-sqlite3"
+      "better-sqlite3",
+      "esbuild",
+      "sharp",
+      "workerd"
     ]
   }
 }
