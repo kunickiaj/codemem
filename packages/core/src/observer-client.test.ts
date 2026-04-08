@@ -209,6 +209,10 @@ describe("ObserverClient", () => {
 				observerApiKey: null,
 				observerBaseUrl: null,
 				observerTemperature: 0.2,
+				observerOpenAIUseResponses: true,
+				observerReasoningEffort: "low",
+				observerReasoningSummary: "auto",
+				observerMaxOutputTokens: 12000,
 				observerMaxChars: 12_000,
 				observerMaxTokens: 4_000,
 				observerHeaders: {},
@@ -219,7 +223,10 @@ describe("ObserverClient", () => {
 				observerAuthCacheTtlS: 300,
 			});
 			expect(client.model).toBe("gpt-4o");
-			expect(client.temperature).toBe(0.2);
+			expect(client.openaiUseResponses).toBe(true);
+			expect(client.reasoningEffort).toBe("low");
+			expect(client.reasoningSummary).toBe("auto");
+			expect(client.maxOutputTokens).toBe(12000);
 		});
 
 		it("infers anthropic from claude model prefix", () => {
@@ -446,6 +453,33 @@ describe("ObserverClient", () => {
 			const status = client.getStatus();
 			expect(status.auth.hasToken).toBe(true);
 			expect(status.auth.type).toBe("api_direct");
+		});
+
+		it("does not report responses_api runtime when OpenAI OAuth codex transport is active", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4",
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerOpenAIUseResponses: true,
+				observerReasoningEffort: "low",
+				observerReasoningSummary: "auto",
+				observerMaxOutputTokens: 12000,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			(client as unknown as { _codexAccess: string | null })._codexAccess = "oauth-token";
+			const status = client.getStatus();
+			expect(status.auth.type).toBe("codex_consumer");
+			expect(status.runtime).toBe("api_http");
 		});
 
 		it("reports sdk_client auth type for opencode cached key auth", () => {

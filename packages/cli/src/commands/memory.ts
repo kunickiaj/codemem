@@ -613,6 +613,19 @@ function createMemoryExtractionReplayCommand(): Command {
 			"override replay transcript budget in characters (replay only)",
 		)
 		.option("--observer-temperature <value>", "override observer temperature for replay only")
+		.option("--openai-responses", "use OpenAI Responses API for replay only")
+		.option(
+			"--reasoning-effort <level>",
+			"set OpenAI reasoning.effort for replay only (responses path)",
+		)
+		.option(
+			"--reasoning-summary <mode>",
+			"set OpenAI reasoning.summary for replay only (responses path)",
+		)
+		.option(
+			"--max-output-tokens <n>",
+			"override OpenAI max_output_tokens for replay only (responses path)",
+		)
 		.requiredOption("--scenario <id>", "built-in extraction eval scenario ID");
 	addDbOption(cmd);
 	addJsonOption(cmd);
@@ -621,6 +634,10 @@ function createMemoryExtractionReplayCommand(): Command {
 			opts: DbOpts &
 				JsonOpts & {
 					batchId: string;
+					openaiResponses?: boolean;
+					reasoningEffort?: string;
+					reasoningSummary?: string;
+					maxOutputTokens?: string;
 					observerTemperature?: string;
 					transcriptBudget?: string;
 					scenario: string;
@@ -655,10 +672,22 @@ function createMemoryExtractionReplayCommand(): Command {
 				}
 				observerTemperature = parsed;
 			}
+			const maxOutputTokensInput = opts.maxOutputTokens?.trim() ?? "";
+			const maxOutputTokens =
+				maxOutputTokensInput.length > 0 ? parseStrictPositiveId(maxOutputTokensInput) : null;
+			if (maxOutputTokensInput.length > 0 && maxOutputTokens === null) {
+				throw new Error(
+					`Invalid max output tokens: ${maxOutputTokensInput || opts.maxOutputTokens}`,
+				);
+			}
 			const observerConfig = loadObserverConfig();
 			const observer = new ObserverClient({
 				...observerConfig,
 				observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
+				observerOpenAIUseResponses: opts.openaiResponses === true,
+				observerReasoningEffort: opts.reasoningEffort?.trim() || null,
+				observerReasoningSummary: opts.reasoningSummary?.trim() || null,
+				observerMaxOutputTokens: maxOutputTokens ?? observerConfig.observerMaxTokens,
 			});
 			const result = await replayBatchExtraction(resolveDbOpt(opts), observer, {
 				batchId,
@@ -678,6 +707,8 @@ function createMemoryExtractionReplayCommand(): Command {
 					`Batch: ${result.target.batchId}`,
 					`Session: ${result.target.sessionId}`,
 					`Observer: ${result.observer.provider}/${result.observer.model}`,
+					`OpenAI Responses: ${observer.openaiUseResponses ? "yes" : "no"}`,
+					`Reasoning effort: ${observer.reasoningEffort ?? "none"}`,
 					`Classification: ${result.classification.status}`,
 					`Pass: ${result.evaluation.pass ? "yes" : "no"}`,
 				].join("\n"),
@@ -715,6 +746,19 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 		.requiredOption("--benchmark <id>", "benchmark profile id")
 		.option("--observer-provider <provider>", "override observer provider for this benchmark run")
 		.option("--observer-model <model>", "override observer model for this benchmark run")
+		.option("--openai-responses", "use OpenAI Responses API for this benchmark run")
+		.option(
+			"--reasoning-effort <level>",
+			"set OpenAI reasoning.effort for this benchmark run (responses path)",
+		)
+		.option(
+			"--reasoning-summary <mode>",
+			"set OpenAI reasoning.summary for this benchmark run (responses path)",
+		)
+		.option(
+			"--max-output-tokens <n>",
+			"override OpenAI max_output_tokens for this benchmark run (responses path)",
+		)
 		.option(
 			"--observer-temperature <value>",
 			"override observer temperature for this benchmark run",
@@ -732,6 +776,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					benchmark: string;
 					observerProvider?: string;
 					observerModel?: string;
+					openaiResponses?: boolean;
+					reasoningEffort?: string;
+					reasoningSummary?: string;
+					maxOutputTokens?: string;
 					observerTemperature?: string;
 					transcriptBudget?: string;
 				},
@@ -760,12 +808,24 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				}
 				observerTemperature = parsed;
 			}
+			const maxOutputTokensInput = opts.maxOutputTokens?.trim() ?? "";
+			const maxOutputTokens =
+				maxOutputTokensInput.length > 0 ? parseStrictPositiveId(maxOutputTokensInput) : null;
+			if (maxOutputTokensInput.length > 0 && maxOutputTokens === null) {
+				throw new Error(
+					`Invalid max output tokens: ${maxOutputTokensInput || opts.maxOutputTokens}`,
+				);
+			}
 			const observerConfig = loadObserverConfig();
 			const observer = new ObserverClient({
 				...observerConfig,
 				observerProvider: opts.observerProvider?.trim() || observerConfig.observerProvider,
 				observerModel: opts.observerModel?.trim() || observerConfig.observerModel,
 				observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
+				observerOpenAIUseResponses: opts.openaiResponses === true,
+				observerReasoningEffort: opts.reasoningEffort?.trim() || null,
+				observerReasoningSummary: opts.reasoningSummary?.trim() || null,
+				observerMaxOutputTokens: maxOutputTokens ?? observerConfig.observerMaxTokens,
 			});
 			const runs = [] as Array<{
 				batchId: number;
@@ -816,6 +876,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				observer: {
 					provider: observer.provider,
 					model: observer.model,
+					openaiUseResponses: observer.openaiUseResponses,
+					reasoningEffort: observer.reasoningEffort,
+					reasoningSummary: observer.reasoningSummary,
+					maxOutputTokens: observer.maxOutputTokens,
 					temperature: observer.temperature,
 					transcriptBudget: transcriptBudget ?? null,
 				},
@@ -833,6 +897,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				[
 					`Benchmark: ${benchmark.id} — ${benchmark.title}`,
 					`Observer: ${observer.provider}/${observer.model}`,
+					`OpenAI Responses: ${observer.openaiUseResponses ? "yes" : "no"}`,
+					`Reasoning effort: ${observer.reasoningEffort ?? "none"}`,
+					`Reasoning summary: ${observer.reasoningSummary ?? "none"}`,
+					`Max output tokens: ${observer.maxOutputTokens}`,
 					`Temperature: ${observer.temperature ?? "default"}`,
 					`Transcript budget override: ${transcriptBudget ?? "default"}`,
 					`Shape-quality passes: ${summary.shapeQualityPasses}/${summary.shapeQualityTotal}`,
