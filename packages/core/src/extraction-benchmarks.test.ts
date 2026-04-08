@@ -1,0 +1,37 @@
+import { describe, expect, it } from "vitest";
+import {
+	getExtractionBenchmarkProfile,
+	listExtractionBenchmarkProfiles,
+} from "./extraction-benchmarks.js";
+
+describe("extraction benchmarks", () => {
+	it("exposes the rich-batch benchmark profile", () => {
+		const profile = getExtractionBenchmarkProfile("rich-batch-shape-v1");
+		expect(profile).not.toBeNull();
+		expect(profile?.scenarioId).toBe("rich-batch-shape");
+		expect(profile?.recommendedTruthModel).toEqual(
+			expect.objectContaining({ provider: "openai", model: "gpt-5.4" }),
+		);
+		expect(profile?.cheapCandidate).toEqual(
+			expect.objectContaining({
+				provider: "openai",
+				model: "gpt-5.4-mini",
+				temperature: 0.2,
+			}),
+		);
+		expect(profile?.batches).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ batchId: 18503, purpose: "shape_quality" }),
+				expect.objectContaining({ batchId: 18476, purpose: "replay_robustness" }),
+			]),
+		);
+	});
+
+	it("returns defensive copies from the benchmark listing", () => {
+		const profiles = listExtractionBenchmarkProfiles();
+		expect(profiles.length).toBeGreaterThan(0);
+		profiles[0]!.batches[0]!.label = "mutated";
+		const fresh = getExtractionBenchmarkProfile("rich-batch-shape-v1");
+		expect(fresh?.batches[0]?.label).not.toBe("mutated");
+	});
+});

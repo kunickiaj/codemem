@@ -8,12 +8,18 @@
 import * as p from "@clack/prompts";
 import {
 	compareMemoryRoleReports,
+	getExtractionBenchmarkProfile,
 	getInjectionEvalScenarioPack,
 	getInjectionEvalScenarioPrompts,
 	getMemoryRoleReport,
 	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
+	getSessionExtractionEval,
+	getSessionExtractionEvalScenario,
+	loadObserverConfig,
 	MemoryStore,
+	ObserverClient,
+	replayBatchExtraction,
 	resolveDbPath,
 	resolveProject,
 } from "@codemem/core";
@@ -498,6 +504,353 @@ function createMemoryRoleCompareCommand(): Command {
 	return cmd;
 }
 
+function createMemoryExtractionReportCommand(): Command {
+	const cmd = new Command("extraction-report")
+		.configureHelp(helpStyle)
+		.description("Score extracted memories for a session against a built-in extraction eval rubric")
+		.option("--session-id <id>", "session ID to evaluate")
+		.option("--batch-id <id>", "raw-event flush batch ID to evaluate")
+		.requiredOption("--scenario <id>", "built-in extraction eval scenario ID")
+		.option("--inactive", "include inactive memories");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(
+		(
+			opts: DbOpts &
+				JsonOpts & {
+					sessionId: string;
+					batchId?: string;
+					scenario: string;
+					inactive?: boolean;
+				},
+		) => {
+			const sessionIdInput = opts.sessionId?.trim() ?? "";
+			const batchIdInput = opts.batchId?.trim() ?? "";
+			const hasSessionId = sessionIdInput.length > 0;
+			const hasBatchId = batchIdInput.length > 0;
+			if (hasSessionId === hasBatchId) {
+				throw new Error("Provide exactly one of --session-id or --batch-id");
+			}
+			const sessionId = hasSessionId ? parseStrictPositiveId(sessionIdInput) : null;
+			if (hasSessionId && sessionId === null) {
+				throw new Error(`Invalid session ID: ${sessionIdInput || opts.sessionId}`);
+			}
+			const batchId = hasBatchId ? parseStrictPositiveId(batchIdInput) : null;
+			if (hasBatchId && batchId === null) {
+				throw new Error(`Invalid batch ID: ${batchIdInput || opts.batchId}`);
+			}
+			const scenarioId = opts.scenario?.trim() ?? "";
+			const scenario = getSessionExtractionEvalScenario(scenarioId);
+			if (!scenario) {
+				throw new Error(`Unknown extraction eval scenario: ${scenarioId || opts.scenario}`);
+			}
+			const result =
+				batchId != null
+					? getSessionExtractionEval(resolveDbOpt(opts), {
+							batchId,
+							scenarioId: scenario.id,
+							includeInactive: opts.inactive === true,
+						})
+					: getSessionExtractionEval(resolveDbOpt(opts), {
+							sessionId: sessionId as number,
+							scenarioId: scenario.id,
+							includeInactive: opts.inactive === true,
+						});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			p.intro("codemem memory extraction-report");
+			p.log.info(
+				[
+					`Scenario: ${result.scenario.id} — ${result.scenario.title}`,
+					`Target: ${result.target.type}${result.target.batchId != null ? ` #${result.target.batchId}` : ""}`,
+					`Session: ${result.session.id} (${result.session.project ?? "no-project"})`,
+					`Session class: ${result.session.sessionClass}`,
+					`Summary disposition: ${result.session.summaryDisposition}`,
+				].join("\n"),
+			);
+			p.log.info(
+				[
+					`Pass: ${result.pass ? "yes" : "no"}`,
+					`Summary count: ${result.counts.summaries}`,
+					`Observation count: ${result.counts.observations}`,
+					`Summary thread coverage: ${result.coverage.summaryThreadCoverage}`,
+					`Observation thread coverage: ${result.coverage.observationThreadCoverage}`,
+					`Total thread coverage: ${result.coverage.totalThreadCoverage}`,
+					`Duplicate observation threads: ${result.coverage.duplicateObservationThreads}`,
+				].join("\n"),
+			);
+			if (result.failureReasons.length > 0) {
+				p.log.warn("Failure reasons:");
+				for (const reason of result.failureReasons) {
+					p.log.message(`  - ${reason}`);
+				}
+			}
+			p.log.info("Thread coverage:");
+			for (const thread of result.threads) {
+				p.log.message(
+					`  ${thread.id.padEnd(22)} summary=${thread.summaryMatch ? "yes" : "no"} observations=${thread.observationMatch ? "yes" : "no"}`,
+				);
+			}
+			p.outro("done");
+		},
+	);
+	return cmd;
+}
+
+function createMemoryExtractionReplayCommand(): Command {
+	const cmd = new Command("extraction-replay")
+		.configureHelp(helpStyle)
+		.description(
+			"Re-run the observer on a historical flush batch without persisting, then score the fresh output",
+		)
+		.requiredOption("--batch-id <id>", "raw-event flush batch ID to replay")
+		.option(
+			"--transcript-budget <chars>",
+			"override replay transcript budget in characters (replay only)",
+		)
+		.option("--observer-temperature <value>", "override observer temperature for replay only")
+		.requiredOption("--scenario <id>", "built-in extraction eval scenario ID");
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(
+		async (
+			opts: DbOpts &
+				JsonOpts & {
+					batchId: string;
+					observerTemperature?: string;
+					transcriptBudget?: string;
+					scenario: string;
+				},
+		) => {
+			const batchIdInput = opts.batchId?.trim() ?? "";
+			const batchId = parseStrictPositiveId(batchIdInput);
+			if (batchId === null) {
+				throw new Error(`Invalid batch ID: ${batchIdInput || opts.batchId}`);
+			}
+			const scenarioId = opts.scenario?.trim() ?? "";
+			const scenario = getSessionExtractionEvalScenario(scenarioId);
+			if (!scenario) {
+				throw new Error(`Unknown extraction eval scenario: ${scenarioId || opts.scenario}`);
+			}
+			const transcriptBudgetInput = opts.transcriptBudget?.trim() ?? "";
+			const transcriptBudget =
+				transcriptBudgetInput.length > 0 ? parseStrictPositiveId(transcriptBudgetInput) : null;
+			if (transcriptBudgetInput.length > 0 && transcriptBudget === null) {
+				throw new Error(
+					`Invalid transcript budget: ${transcriptBudgetInput || opts.transcriptBudget}`,
+				);
+			}
+			const observerTemperatureInput = opts.observerTemperature?.trim() ?? "";
+			let observerTemperature: number | undefined;
+			if (observerTemperatureInput.length > 0) {
+				const parsed = Number(observerTemperatureInput);
+				if (!Number.isFinite(parsed)) {
+					throw new Error(
+						`Invalid observer temperature: ${observerTemperatureInput || opts.observerTemperature}`,
+					);
+				}
+				observerTemperature = parsed;
+			}
+			const observerConfig = loadObserverConfig();
+			const observer = new ObserverClient({
+				...observerConfig,
+				observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
+			});
+			const result = await replayBatchExtraction(resolveDbOpt(opts), observer, {
+				batchId,
+				scenarioId: scenario.id,
+				transcriptBudget: transcriptBudget ?? undefined,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			p.intro("codemem memory extraction-replay");
+			p.log.info(
+				[
+					`Scenario: ${result.scenario.id} — ${result.scenario.title}`,
+					`Batch: ${result.target.batchId}`,
+					`Session: ${result.target.sessionId}`,
+					`Observer: ${result.observer.provider}/${result.observer.model}`,
+					`Classification: ${result.classification.status}`,
+					`Pass: ${result.evaluation.pass ? "yes" : "no"}`,
+				].join("\n"),
+			);
+			if (result.classification.reason) {
+				p.log.message(`Classification reason: ${result.classification.reason}`);
+			}
+			if (result.evaluation.failureReasons.length > 0) {
+				p.log.warn("Failure reasons:");
+				for (const reason of result.evaluation.failureReasons) {
+					p.log.message(`  - ${reason}`);
+				}
+			}
+			p.log.info(
+				[
+					`Fresh summaries: ${result.evaluation.counts.summaries}`,
+					`Fresh observations: ${result.evaluation.counts.observations}`,
+					`Summary thread coverage: ${result.evaluation.coverage.summaryThreadCoverage}`,
+					`Observation thread coverage: ${result.evaluation.coverage.observationThreadCoverage}`,
+					`Total thread coverage: ${result.evaluation.coverage.totalThreadCoverage}`,
+				].join("\n"),
+			);
+			p.outro("done");
+		},
+	);
+	return cmd;
+}
+
+function createMemoryExtractionBenchmarkCommand(): Command {
+	const cmd = new Command("extraction-benchmark")
+		.configureHelp(helpStyle)
+		.description(
+			"Run the formal extraction replay benchmark set and print a cost/quality scoreboard",
+		)
+		.requiredOption("--benchmark <id>", "benchmark profile id")
+		.option("--observer-provider <provider>", "override observer provider for this benchmark run")
+		.option("--observer-model <model>", "override observer model for this benchmark run")
+		.option(
+			"--observer-temperature <value>",
+			"override observer temperature for this benchmark run",
+		)
+		.option(
+			"--transcript-budget <chars>",
+			"override replay transcript budget in characters for this benchmark run",
+		);
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(
+		async (
+			opts: DbOpts &
+				JsonOpts & {
+					benchmark: string;
+					observerProvider?: string;
+					observerModel?: string;
+					observerTemperature?: string;
+					transcriptBudget?: string;
+				},
+		) => {
+			const benchmarkId = opts.benchmark?.trim() ?? "";
+			const benchmark = getExtractionBenchmarkProfile(benchmarkId);
+			if (!benchmark) {
+				throw new Error(`Unknown extraction benchmark: ${benchmarkId || opts.benchmark}`);
+			}
+			const transcriptBudgetInput = opts.transcriptBudget?.trim() ?? "";
+			const transcriptBudget =
+				transcriptBudgetInput.length > 0 ? parseStrictPositiveId(transcriptBudgetInput) : null;
+			if (transcriptBudgetInput.length > 0 && transcriptBudget === null) {
+				throw new Error(
+					`Invalid transcript budget: ${transcriptBudgetInput || opts.transcriptBudget}`,
+				);
+			}
+			const observerTemperatureInput = opts.observerTemperature?.trim() ?? "";
+			let observerTemperature: number | undefined;
+			if (observerTemperatureInput.length > 0) {
+				const parsed = Number(observerTemperatureInput);
+				if (!Number.isFinite(parsed)) {
+					throw new Error(
+						`Invalid observer temperature: ${observerTemperatureInput || opts.observerTemperature}`,
+					);
+				}
+				observerTemperature = parsed;
+			}
+			const observerConfig = loadObserverConfig();
+			const observer = new ObserverClient({
+				...observerConfig,
+				observerProvider: opts.observerProvider?.trim() || observerConfig.observerProvider,
+				observerModel: opts.observerModel?.trim() || observerConfig.observerModel,
+				observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
+			});
+			const runs = [] as Array<{
+				batchId: number;
+				sessionId: number;
+				label: string;
+				purpose: "shape_quality" | "replay_robustness";
+				status: "pass" | "shape_fail" | "observer_no_output";
+				reason: string;
+				summaries: number;
+				observations: number;
+				repairApplied: boolean;
+			}>;
+			for (const batch of benchmark.batches) {
+				const result = await replayBatchExtraction(resolveDbOpt(opts), observer, {
+					batchId: batch.batchId,
+					scenarioId: benchmark.scenarioId,
+					transcriptBudget: transcriptBudget ?? undefined,
+				});
+				runs.push({
+					batchId: batch.batchId,
+					sessionId: batch.sessionId,
+					label: batch.label,
+					purpose: batch.purpose,
+					status: result.classification.status,
+					reason: result.classification.reason,
+					summaries: result.evaluation.counts.summaries,
+					observations: result.evaluation.counts.observations,
+					repairApplied: result.observer.repairApplied,
+				});
+			}
+			const summary = {
+				total: runs.length,
+				shapeQualityTotal: runs.filter((run) => run.purpose === "shape_quality").length,
+				shapeQualityPasses: runs.filter(
+					(run) => run.purpose === "shape_quality" && run.status === "pass",
+				).length,
+				shapeQualityFails: runs.filter(
+					(run) => run.purpose === "shape_quality" && run.status === "shape_fail",
+				).length,
+				robustnessNoOutput: runs.filter((run) => run.status === "observer_no_output").length,
+			};
+			const output = {
+				benchmark: {
+					id: benchmark.id,
+					title: benchmark.title,
+					scenarioId: benchmark.scenarioId,
+				},
+				observer: {
+					provider: observer.provider,
+					model: observer.model,
+					temperature: observer.temperature,
+					transcriptBudget: transcriptBudget ?? null,
+				},
+				summary,
+				runs,
+			};
+
+			if (opts.json) {
+				console.log(JSON.stringify(output, null, 2));
+				return;
+			}
+
+			p.intro("codemem memory extraction-benchmark");
+			p.log.info(
+				[
+					`Benchmark: ${benchmark.id} — ${benchmark.title}`,
+					`Observer: ${observer.provider}/${observer.model}`,
+					`Temperature: ${observer.temperature ?? "default"}`,
+					`Transcript budget override: ${transcriptBudget ?? "default"}`,
+					`Shape-quality passes: ${summary.shapeQualityPasses}/${summary.shapeQualityTotal}`,
+					`Shape-quality fails: ${summary.shapeQualityFails}`,
+					`Observer no-output cases: ${summary.robustnessNoOutput}`,
+				].join("\n"),
+			);
+			for (const run of runs) {
+				p.log.message(
+					`  [${run.batchId}] ${run.status.padEnd(18)} ${run.purpose.padEnd(18)} summaries=${run.summaries} observations=${run.observations} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
+				);
+			}
+			p.outro("done");
+		},
+	);
+	return cmd;
+}
+
 function createMemoryRelinkReportCommand(): Command {
 	const cmd = new Command("relink-report")
 		.configureHelp(helpStyle)
@@ -638,5 +991,8 @@ memoryCommand.addCommand(createRememberMemoryCommand());
 memoryCommand.addCommand(createInjectMemoryCommand());
 memoryCommand.addCommand(createMemoryRoleReportCommand());
 memoryCommand.addCommand(createMemoryRoleCompareCommand());
+memoryCommand.addCommand(createMemoryExtractionReportCommand());
+memoryCommand.addCommand(createMemoryExtractionReplayCommand());
+memoryCommand.addCommand(createMemoryExtractionBenchmarkCommand());
 memoryCommand.addCommand(createMemoryRelinkReportCommand());
 memoryCommand.addCommand(createMemoryRelinkPlanCommand());
