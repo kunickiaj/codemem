@@ -351,6 +351,61 @@ export function memoryRoutes(getStore: StoreFactory) {
 		}
 	});
 
+	app.post("/api/pack/trace", async (c) => {
+		const store = getStore();
+		const parsed = await c.req.json().catch(() => Symbol.for("invalid-json"));
+		if (parsed === Symbol.for("invalid-json")) {
+			return c.json({ error: "invalid json body" }, 400);
+		}
+		const body = parsed as {
+			context?: unknown;
+			limit?: unknown;
+			token_budget?: unknown;
+			project?: unknown;
+			working_set_files?: unknown;
+		} | null;
+		const context = typeof body?.context === "string" ? body.context.trim() : "";
+		if (!context) {
+			return c.json({ error: "context required" }, 400);
+		}
+		const limit =
+			body?.limit == null
+				? 10
+				: typeof body.limit === "number" && Number.isInteger(body.limit) && body.limit >= 1
+					? body.limit
+					: null;
+		if (limit == null) {
+			return c.json({ error: "limit must be a positive int" }, 400);
+		}
+		let tokenBudget: number | null = null;
+		if (body?.token_budget != null) {
+			if (
+				typeof body.token_budget !== "number" ||
+				!Number.isInteger(body.token_budget) ||
+				body.token_budget < 0
+			) {
+				return c.json({ error: "token_budget must be int" }, 400);
+			}
+			tokenBudget = body.token_budget;
+		}
+		const project = typeof body?.project === "string" && body.project.trim() ? body.project : null;
+		if (body?.working_set_files != null && !Array.isArray(body.working_set_files)) {
+			return c.json({ error: "working_set_files must be an array of strings" }, 400);
+		}
+		if (
+			Array.isArray(body?.working_set_files) &&
+			body.working_set_files.some((value) => typeof value !== "string")
+		) {
+			return c.json({ error: "working_set_files must be an array of strings" }, 400);
+		}
+		const workingSetFiles = Array.isArray(body?.working_set_files) ? body.working_set_files : [];
+		const filters: { project?: string; working_set_paths?: string[] } = {};
+		if (project) filters.project = project;
+		if (workingSetFiles.length > 0) filters.working_set_paths = workingSetFiles;
+		const trace = await store.buildMemoryPackTraceAsync(context, limit, tokenBudget, filters);
+		return c.json(trace);
+	});
+
 	// GET /api/memory
 	app.get("/api/memory", (c) => {
 		const store = getStore();

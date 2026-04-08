@@ -213,6 +213,7 @@ async function loadProjects() {
 
 $select('projectFilter')?.addEventListener('change', () => {
   state.currentProject = $select('projectFilter')?.value || '';
+  updateFeedView(true);
   refresh();
 });
 

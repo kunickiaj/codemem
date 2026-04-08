@@ -18,6 +18,68 @@ export interface RuntimeInfo {
   version: string;
 }
 
+export interface PackTraceCandidate {
+  id: number;
+  rank: number;
+  kind: string;
+  title: string;
+  preview: string;
+  reasons: string[];
+  disposition: 'selected' | 'dropped' | 'deduped' | 'trimmed';
+  section: 'summary' | 'timeline' | 'observations' | null;
+  scores: {
+    base_score: number | null;
+    combined_score: number | null;
+    recency: number;
+    kind_bonus: number;
+    quality_boost: number;
+    working_set_overlap: number;
+    query_path_overlap: number;
+    personal_bias: number;
+    shared_trust_penalty: number;
+    recap_penalty: number;
+    tasklike_penalty: number;
+    text_overlap: number;
+    tag_overlap: number;
+  };
+}
+
+export interface PackTrace {
+  version: 1;
+  inputs: {
+    query: string;
+    project: string | null;
+    working_set_files: string[];
+    token_budget: number | null;
+    limit: number;
+  };
+  mode: {
+    selected: 'default' | 'task' | 'recall';
+    reasons: string[];
+  };
+  retrieval: {
+    candidate_count: number;
+    candidates: PackTraceCandidate[];
+  };
+  assembly: {
+    deduped_ids: number[];
+    collapsed_groups: Array<{
+      kept: number;
+      dropped: number[];
+      support_count: number;
+    }>;
+    trimmed_ids: number[];
+    trim_reasons: string[];
+    sections: Record<'summary' | 'timeline' | 'observations', number[]>;
+  };
+  output: {
+    estimated_tokens: number;
+    truncated: boolean;
+    section_counts: Record<'summary' | 'timeline' | 'observations', number>;
+    pack_text: string;
+  };
+}
+
 function payloadError(payload: unknown): string | undefined {
   if (!payload || typeof payload !== 'object') return undefined;
   const maybeError = (payload as { error?: unknown }).error;
@@ -122,6 +184,23 @@ export async function loadSummariesPage(
 ): Promise<any> {
   const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
   return fetchJson(`/api/summaries?${query}`);
+}
+
+export async function tracePack(payload: {
+  context: string;
+  project?: string | null;
+  working_set_files?: string[];
+  token_budget?: number | null;
+  limit?: number;
+}): Promise<PackTrace> {
+  const resp = await fetch('/api/pack/trace', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const { text, payload: data } = await readJsonPayload<PackTrace>(resp);
+  if (!resp.ok) throw new Error(payloadError(data) || text || 'request failed');
+  return data;
 }
 
 export async function loadObserverStatus(): Promise<any> {

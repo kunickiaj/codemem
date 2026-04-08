@@ -576,6 +576,152 @@ describe("viewer-server", () => {
 		});
 	});
 
+	describe("POST /api/pack/trace", () => {
+		it("uses async pack trace builder path", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const expected = {
+					version: 1 as const,
+					inputs: {
+						query: "semantic context",
+						project: "test-project",
+						working_set_files: ["packages/ui/src/app.ts"],
+						token_budget: null,
+						limit: 10,
+					},
+					mode: {
+						selected: "task" as const,
+						reasons: ["query matched task hints"],
+					},
+					retrieval: {
+						candidate_count: 0,
+						candidates: [],
+					},
+					assembly: {
+						deduped_ids: [],
+						collapsed_groups: [],
+						trimmed_ids: [],
+						trim_reasons: [],
+						sections: {
+							summary: [],
+							timeline: [],
+							observations: [],
+						},
+					},
+					output: {
+						estimated_tokens: 0,
+						truncated: false,
+						section_counts: {
+							summary: 0,
+							timeline: 0,
+							observations: 0,
+						},
+						pack_text: "",
+					},
+				};
+
+				const asyncSpy = vi.spyOn(store, "buildMemoryPackTraceAsync").mockResolvedValue(expected);
+
+				const res = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						context: "semantic context",
+						project: "test-project",
+						working_set_files: ["packages/ui/src/app.ts"],
+					}),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toEqual(expected);
+				expect(asyncSpy).toHaveBeenCalledTimes(1);
+				expect(asyncSpy).toHaveBeenCalledWith("semantic context", 10, null, {
+					project: "test-project",
+					working_set_paths: ["packages/ui/src/app.ts"],
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects invalid trace payloads", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const invalidJson = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{not-json",
+				});
+				expect(invalidJson.status).toBe(400);
+				expect(await invalidJson.json()).toEqual({ error: "invalid json body" });
+
+				const missingContext = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ project: "test-project" }),
+				});
+				expect(missingContext.status).toBe(400);
+				expect(await missingContext.json()).toEqual({ error: "context required" });
+
+				const nonStringContext = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ context: { bad: true } }),
+				});
+				expect(nonStringContext.status).toBe(400);
+				expect(await nonStringContext.json()).toEqual({ error: "context required" });
+
+				const badLimit = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ context: "semantic context", limit: 3.5 }),
+				});
+				expect(badLimit.status).toBe(400);
+				expect(await badLimit.json()).toEqual({ error: "limit must be a positive int" });
+
+				const badBudget = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ context: "semantic context", token_budget: 2.5 }),
+				});
+				expect(badBudget.status).toBe(400);
+				expect(await badBudget.json()).toEqual({ error: "token_budget must be int" });
+
+				const badWorkingSet = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						context: "semantic context",
+						working_set_files: "packages/ui/src/app.ts",
+					}),
+				});
+				expect(badWorkingSet.status).toBe(400);
+				expect(await badWorkingSet.json()).toEqual({
+					error: "working_set_files must be an array of strings",
+				});
+
+				const mixedWorkingSet = await app.request("/api/pack/trace", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						context: "semantic context",
+						working_set_files: ["packages/ui/src/app.ts", 123],
+					}),
+				});
+				expect(mixedWorkingSet.status).toBe(400);
+				expect(await mixedWorkingSet.json()).toEqual({
+					error: "working_set_files must be an array of strings",
+				});
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
 	describe("GET /api/observer-status", () => {
 		it("returns live observer status and suppresses stale failures after success", async () => {
 			const { store, cleanup } = createTestStore();
