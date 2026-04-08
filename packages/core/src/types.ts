@@ -595,6 +595,10 @@ export interface MemoryResult {
 	score: number;
 	session_id: number;
 	metadata: Record<string, unknown>;
+	/** Structured narrative from observation (preferred over body_text for display). */
+	narrative: string | null;
+	/** JSON-encoded string array of extracted facts. */
+	facts: string | null;
 }
 
 // ---------------------------------------------------------------------------

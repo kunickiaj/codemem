@@ -753,6 +753,8 @@ function searchOnce(
 			score: Number(row.score),
 			session_id: row.session_id as number,
 			metadata,
+			narrative: (row.narrative as string | null) ?? null,
+			facts: (row.facts as string | null) ?? null,
 		};
 	});
 
@@ -1045,6 +1047,8 @@ function loadItemsByIdsForExplain(
 		score: 0,
 		session_id: row.session_id,
 		metadata: fromJson(row.metadata_json),
+		narrative: row.narrative ?? null,
+		facts: row.facts ?? null,
 	}));
 
 	return { items, missingNotFound, missingProjectMismatch, missingFilterMismatch };

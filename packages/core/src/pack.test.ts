@@ -445,6 +445,8 @@ describe("buildMemoryPack", () => {
 				score: 0.22,
 				session_id: sessionId,
 				metadata: { files_modified: ["src/important.ts"] },
+				narrative: null,
+				facts: null,
 			},
 			{
 				id: 2,
@@ -458,6 +460,8 @@ describe("buildMemoryPack", () => {
 				score: 0.25,
 				session_id: sessionId,
 				metadata: { files_modified: ["src/other.ts"] },
+				narrative: null,
+				facts: null,
 			},
 		];
 

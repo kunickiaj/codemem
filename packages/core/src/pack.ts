@@ -296,6 +296,8 @@ function semanticMemoryResults(results: RawSemanticResult[]): MemoryResult[] {
 			score: result.score,
 			session_id: result.session_id,
 			metadata,
+			narrative: result.narrative ?? null,
+			facts: result.facts ?? null,
 		};
 	});
 }
@@ -484,6 +486,8 @@ function toMemoryResult(row: MemoryItemResponse | TimelineItemResponse): MemoryR
 		score: 0,
 		session_id: row.session_id,
 		metadata: row.metadata_json,
+		narrative: row.narrative ?? null,
+		facts: row.facts ?? null,
 	};
 }
 
@@ -982,6 +986,8 @@ function buildPackArtifacts(
 					score: 0,
 					session_id: s.session_id,
 					metadata: s.metadata,
+					narrative: s.narrative,
+					facts: s.facts,
 				},
 			];
 		}
@@ -1022,6 +1028,8 @@ function buildPackArtifacts(
 			score: 0,
 			session_id: row.session_id,
 			metadata: row.metadata_json,
+			narrative: row.narrative ?? null,
+			facts: row.facts ?? null,
 		}));
 	}
 

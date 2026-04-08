@@ -238,6 +238,10 @@ export interface SemanticSearchResult {
 	session_id: number;
 	score: number;
 	distance: number;
+	/** Structured narrative from observation (carried through from memory_items.*). */
+	narrative: string | null;
+	/** JSON-encoded string array of extracted facts. */
+	facts: string | null;
 }
 
 /**
@@ -302,5 +306,7 @@ export async function semanticSearch(
 		session_id: Number(row.session_id),
 		score: 1.0 / (1.0 + Number(row.distance ?? 0)),
 		distance: Number(row.distance ?? 0),
+		narrative: row.narrative == null ? null : String(row.narrative),
+		facts: row.facts == null ? null : String(row.facts),
 	}));
 }
