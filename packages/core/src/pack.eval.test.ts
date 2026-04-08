@@ -110,6 +110,8 @@ describe("buildMemoryPack usefulness evals", () => {
 				score: 0.24,
 				session_id: corpus.currentSessionId,
 				metadata: { files_modified: ["packages/ui/src/tabs/health.ts"] },
+				narrative: null,
+				facts: null,
 			},
 			{
 				id: corpus.ids.workingSetDistractorId,
@@ -123,6 +125,8 @@ describe("buildMemoryPack usefulness evals", () => {
 				score: 0.24,
 				session_id: corpus.currentSessionId,
 				metadata: { files_modified: ["packages/ui/src/tabs/feed.ts"] },
+				narrative: null,
+				facts: null,
 			},
 		];
 

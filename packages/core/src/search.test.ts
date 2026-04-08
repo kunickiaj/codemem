@@ -171,6 +171,8 @@ describe("rerankResults", () => {
 			score: 1.0,
 			session_id: 1,
 			metadata: {},
+			narrative: null,
+			facts: null,
 			...overrides,
 		};
 	}
