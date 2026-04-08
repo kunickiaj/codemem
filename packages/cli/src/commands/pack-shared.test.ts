@@ -1,5 +1,11 @@
+import { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import { buildPackRequestOptions, collectWorkingSetFile } from "./pack-shared.js";
+import {
+	addPackRequestOptions,
+	buildPackRequestOptions,
+	collectWorkingSetFile,
+	PackUsageError,
+} from "./pack-shared.js";
 
 describe("collectWorkingSetFile", () => {
 	it("appends paths in order", () => {
@@ -73,5 +79,23 @@ describe("buildPackRequestOptions", () => {
 				working_set_paths: ["src/a.ts", "src/b.ts"],
 			},
 		});
+	});
+
+	it("rejects invalid numeric inputs instead of silently coercing them", () => {
+		expect(() => buildPackRequestOptions({ limit: "nope" })).toThrow(PackUsageError);
+		expect(() => buildPackRequestOptions({ tokenBudget: "bad" })).toThrow(PackUsageError);
+	});
+});
+
+describe("addPackRequestOptions", () => {
+	it("attaches the shared pack flags to a command", () => {
+		const command = addPackRequestOptions(new Command("pack-test"));
+		const longs = command.options.map((option) => option.long);
+		expect(longs).toContain("--limit");
+		expect(longs).toContain("--budget");
+		expect(longs).toContain("--token-budget");
+		expect(longs).toContain("--working-set-file");
+		expect(longs).toContain("--project");
+		expect(longs).toContain("--all-projects");
 	});
 });
