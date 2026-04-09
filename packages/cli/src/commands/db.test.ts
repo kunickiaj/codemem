@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initDatabase } from "@codemem/core";
+import { describe, expect, it, vi } from "vitest";
 import { dbCommand } from "./db.js";
 
 describe("db command", () => {
@@ -33,5 +37,44 @@ describe("db command", () => {
 		expect(pruneMemLongs).toContain("--kinds");
 		expect(pruneMemLongs).toContain("--dry-run");
 		expect(pruneMemLongs).toContain("--json");
+	});
+
+	it("registers dedup-memories and backfill-narrative subcommands", () => {
+		const dedup = dbCommand.commands.find((command) => command.name() === "dedup-memories");
+		const narrative = dbCommand.commands.find((command) => command.name() === "backfill-narrative");
+		expect(dedup).toBeDefined();
+		expect(narrative).toBeDefined();
+
+		const dedupLongs = dedup?.options.map((option) => option.long) ?? [];
+		expect(dedupLongs).toContain("--window");
+		expect(dedupLongs).toContain("--limit");
+		expect(dedupLongs).toContain("--dry-run");
+		expect(dedupLongs).toContain("--json");
+
+		const narrativeLongs = narrative?.options.map((option) => option.long) ?? [];
+		expect(narrativeLongs).toContain("--limit");
+		expect(narrativeLongs).toContain("--dry-run");
+		expect(narrativeLongs).toContain("--json");
+	});
+
+	it("rejects invalid dedup window input", async () => {
+		const dedup = dbCommand.commands.find((command) => command.name() === "dedup-memories");
+		expect(dedup).toBeDefined();
+		if (!dedup) throw new Error("expected dedup-memories command");
+
+		const dbPath = join(mkdtempSync(join(tmpdir(), "codemem-db-cmd-")), "test.sqlite");
+		initDatabase(dbPath);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await dedup.parseAsync(["node", "dedup-memories", "--db-path", dbPath, "--window", "foo"], {
+				from: "node",
+			});
+			expect(process.exitCode).toBe(1);
+		} finally {
+			process.exitCode = originalExitCode;
+			errorSpy.mockRestore();
+		}
 	});
 });

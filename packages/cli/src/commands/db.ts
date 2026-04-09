@@ -1,10 +1,12 @@
 import { statSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
+	backfillNarrativeFromBody,
 	backfillTagsText,
 	connect,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
+	dedupNearDuplicateMemories,
 	getRawEventStatus,
 	initDatabase,
 	MemoryStore,
@@ -635,3 +637,103 @@ pruneMemCmd.action(
 	},
 );
 dbCommand.addCommand(pruneMemCmd);
+
+// --- db dedup-memories ---
+const dedupCmd = new Command("dedup-memories")
+	.configureHelp(helpStyle)
+	.description(
+		"Deactivate near-duplicate memories (cross-session, same normalized title within time window)",
+	)
+	.option("--window <ms>", "max time gap in milliseconds between duplicates (default: 3600000)")
+	.option("--limit <n>", "max pairs to check")
+	.option("--dry-run", "preview deactivations without writing");
+addDbOption(dedupCmd);
+addJsonOption(dedupCmd);
+dedupCmd.action(
+	(
+		opts: DbOpts &
+			JsonOpts & {
+				window?: string;
+				limit?: string;
+				dryRun?: boolean;
+			},
+	) => {
+		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+		try {
+			const windowMs = parseOptionalPositiveInt(opts.window);
+			const limit = parseOptionalPositiveInt(opts.limit);
+			const result = dedupNearDuplicateMemories(store.db, {
+				windowMs,
+				limit,
+				dryRun: opts.dryRun === true,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			const action = opts.dryRun ? "Would deactivate" : "Deactivated";
+			p.intro("codemem db dedup-memories");
+			if (result.pairs.length > 0 && result.pairs.length <= 20) {
+				for (const pair of result.pairs) {
+					p.log.info(
+						`${action} [${pair.deactivated_id}] (kept [${pair.kept_id}]): ${pair.title.slice(0, 80)}`,
+					);
+				}
+			}
+			p.outro(`${action} ${result.deactivated} duplicates from ${result.checked} pairs`);
+		} catch (error) {
+			p.log.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		} finally {
+			store.close();
+		}
+	},
+);
+dbCommand.addCommand(dedupCmd);
+
+// --- db backfill-narrative ---
+const backfillNarrativeCmd = new Command("backfill-narrative")
+	.configureHelp(helpStyle)
+	.description(
+		"Extract narrative from session_summary body_text (## Completed / ## Learned sections)",
+	)
+	.option("--limit <n>", "max memories to check")
+	.option("--dry-run", "preview updates without writing");
+addDbOption(backfillNarrativeCmd);
+addJsonOption(backfillNarrativeCmd);
+backfillNarrativeCmd.action(
+	(
+		opts: DbOpts &
+			JsonOpts & {
+				limit?: string;
+				dryRun?: boolean;
+			},
+	) => {
+		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+		try {
+			const limit = parseOptionalPositiveInt(opts.limit);
+			const result = backfillNarrativeFromBody(store.db, {
+				limit,
+				dryRun: opts.dryRun === true,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			const action = opts.dryRun ? "Would update" : "Updated";
+			p.intro("codemem db backfill-narrative");
+			p.log.success(`${action} ${result.updated} memories (skipped ${result.skipped})`);
+			p.outro(`Checked ${result.checked} memories`);
+		} catch (error) {
+			p.log.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		} finally {
+			store.close();
+		}
+	},
+);
+dbCommand.addCommand(backfillNarrativeCmd);

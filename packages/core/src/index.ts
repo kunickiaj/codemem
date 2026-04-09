@@ -227,10 +227,13 @@ export type {
 	ReliabilityMetrics,
 } from "./maintenance.js";
 export {
+	backfillNarrativeFromBody,
 	backfillTagsText,
 	compareMemoryRoleReports,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
+	dedupNearDuplicateMemories,
+	extractNarrativeFromBody,
 	getMemoryRoleReport,
 	getRawEventRelinkPlan,
 	getRawEventRelinkReport,

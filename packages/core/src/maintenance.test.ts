@@ -5,10 +5,13 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
 	applyRawEventRelinkPlan,
+	backfillNarrativeFromBody,
 	backfillTagsText,
 	compareMemoryRoleReports,
 	deactivateLowSignalMemories,
 	deactivateLowSignalObservations,
+	dedupNearDuplicateMemories,
+	extractNarrativeFromBody,
 	getMemoryRoleReport,
 	getRawEventRelinkPlan,
 	getRawEventRelinkReport,
@@ -882,6 +885,290 @@ describe("maintenance", () => {
 			]);
 		} finally {
 			verify.close();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Retroactive near-duplicate deactivation
+// ---------------------------------------------------------------------------
+
+describe("dedupNearDuplicateMemories", () => {
+	function seedMemory(
+		db: Database,
+		sessionId: number,
+		title: string,
+		confidence: number,
+		createdAt: string,
+	): number {
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'discovery', ?, 'body', ?, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, title, confidence, createdAt, createdAt);
+		return Number(info.lastInsertRowid);
+	}
+
+	it("deactivates the lower-confidence duplicate within the time window", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const s1 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const s2 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:30:00Z", "test").lastInsertRowid,
+			);
+			const id1 = seedMemory(db, s1, "Sync orchestrator ported", 0.8, "2026-01-01T00:00:00Z");
+			const id2 = seedMemory(db, s2, "Sync orchestrator ported", 0.5, "2026-01-01T00:30:00Z");
+
+			const result = dedupNearDuplicateMemories(db);
+
+			expect(result.deactivated).toBe(1);
+			expect(result.pairs[0]).toMatchObject({ kept_id: id1, deactivated_id: id2 });
+			const active = (db.prepare("SELECT active FROM memory_items WHERE id = ?").get(id2) as any)
+				.active;
+			expect(active).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("does not deactivate pairs outside the time window", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const s1 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const s2 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T06:00:00Z", "test").lastInsertRowid,
+			);
+			seedMemory(db, s1, "Same title here", 0.8, "2026-01-01T00:00:00Z");
+			seedMemory(db, s2, "Same title here", 0.5, "2026-01-01T06:00:00Z");
+
+			const result = dedupNearDuplicateMemories(db, { windowMs: 3_600_000 });
+
+			expect(result.deactivated).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("keeps the more recent memory on confidence tie", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const s1 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const s2 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:10:00Z", "test").lastInsertRowid,
+			);
+			const id1 = seedMemory(db, s1, "Equal confidence pair", 0.7, "2026-01-01T00:00:00Z");
+			const id2 = seedMemory(db, s2, "Equal confidence pair", 0.7, "2026-01-01T00:10:00Z");
+
+			const result = dedupNearDuplicateMemories(db);
+
+			expect(result.deactivated).toBe(1);
+			expect(result.pairs[0]).toMatchObject({ kept_id: id2, deactivated_id: id1 });
+		} finally {
+			db.close();
+		}
+	});
+
+	it("respects dry-run mode", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const s1 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const s2 = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:05:00Z", "test").lastInsertRowid,
+			);
+			const id2 = seedMemory(db, s1, "Dry run test", 0.5, "2026-01-01T00:00:00Z");
+			seedMemory(db, s2, "Dry run test", 0.8, "2026-01-01T00:05:00Z");
+
+			const result = dedupNearDuplicateMemories(db, { dryRun: true });
+
+			expect(result.deactivated).toBe(1);
+			const active = (db.prepare("SELECT active FROM memory_items WHERE id = ?").get(id2) as any)
+				.active;
+			expect(active).toBe(1); // Not actually deactivated
+		} finally {
+			db.close();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Heuristic narrative extraction
+// ---------------------------------------------------------------------------
+
+describe("extractNarrativeFromBody", () => {
+	it("extracts Completed and Learned sections", () => {
+		const body = `## Request
+Do something important.
+
+## Completed
+Built the widget and integrated it.
+
+## Learned
+Widgets need careful alignment.`;
+
+		const result = extractNarrativeFromBody(body);
+		expect(result).toBe("Built the widget and integrated it.\n\nWidgets need careful alignment.");
+	});
+
+	it("extracts only Completed when Learned is absent", () => {
+		const body = `## Request
+Fix the bug.
+
+## Completed
+Fixed the null pointer in the parser.`;
+
+		expect(extractNarrativeFromBody(body)).toBe("Fixed the null pointer in the parser.");
+	});
+
+	it("returns null when no structured sections exist", () => {
+		expect(extractNarrativeFromBody("Just a plain body with no headers.")).toBeNull();
+	});
+
+	it("returns null for empty body", () => {
+		expect(extractNarrativeFromBody("")).toBeNull();
+	});
+});
+
+describe("backfillNarrativeFromBody", () => {
+	function seedSummary(db: Database, sessionId: number, title: string, body: string): number {
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'session_summary', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, title, body, now, now);
+		return Number(info.lastInsertRowid);
+	}
+
+	it("populates narrative from structured body_text", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedSummary(
+				db,
+				sessionId,
+				"Summary title",
+				"## Request\nDo stuff\n\n## Completed\nDid the stuff.\n\n## Learned\nStuff is easy.",
+			);
+
+			const result = backfillNarrativeFromBody(db);
+
+			expect(result).toMatchObject({ checked: 1, updated: 1, skipped: 0 });
+			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as any;
+			expect(row.narrative).toBe("Did the stuff.\n\nStuff is easy.");
+		} finally {
+			db.close();
+		}
+	});
+
+	it("skips memories without structured sections", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			seedSummary(db, sessionId, "Plain summary", "Just a plain text body.");
+
+			const result = backfillNarrativeFromBody(db);
+
+			expect(result).toMatchObject({ checked: 1, updated: 0, skipped: 1 });
+		} finally {
+			db.close();
+		}
+	});
+
+	it("does not overwrite existing narrative", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedSummary(
+				db,
+				sessionId,
+				"Has narrative",
+				"## Request\nStuff\n\n## Completed\nDone.",
+			);
+			db.prepare("UPDATE memory_items SET narrative = ? WHERE id = ?").run(
+				"Existing narrative",
+				id,
+			);
+
+			const result = backfillNarrativeFromBody(db);
+
+			expect(result.checked).toBe(0); // Already has narrative, not selected
+			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as any;
+			expect(row.narrative).toBe("Existing narrative");
+		} finally {
+			db.close();
+		}
+	});
+
+	it("respects dry-run mode", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedSummary(
+				db,
+				sessionId,
+				"Dry run narrative",
+				"## Request\nDo\n\n## Completed\nDone.\n\n## Learned\nLearned stuff.",
+			);
+
+			const result = backfillNarrativeFromBody(db, { dryRun: true });
+
+			expect(result).toMatchObject({ checked: 1, updated: 1, skipped: 0 });
+			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as any;
+			expect(row.narrative).toBeNull(); // Not actually written
+		} finally {
+			db.close();
 		}
 	});
 });
