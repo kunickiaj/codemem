@@ -2484,13 +2484,8 @@ function sanitizeNarrative(value: string | null): string | null {
 			text.lastIndexOf("?"),
 		);
 		if (lastSentenceEnd >= 20) {
-			const before = text;
 			text = text.slice(0, lastSentenceEnd + 1).trim();
-			console.warn(
-				`[codemem] sanitizeNarrative trimmed: "${before.slice(-30)}" → "${text.slice(-30)}"`,
-			);
 		} else {
-			console.warn(`[codemem] sanitizeNarrative rejected: "${text.slice(0, 50)}"`);
 			return null;
 		}
 	}
