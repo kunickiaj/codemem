@@ -22,12 +22,20 @@
     "typecheck": "pnpm run tsc",
     "check": "pnpm run tsc && pnpm run lint && pnpm run test",
     "codemem": "tsx --conditions source packages/cli/src/index.ts",
+    "prepare": "husky",
     "release:version": "node scripts/release-version.mjs",
     "release:preflight-tag": "bash scripts/release-tag-preflight.sh"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,json,md}": [
+      "pnpm exec biome check --write --files-ignore-unknown=true --no-errors-on-unmatched"
+    ]
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "drizzle-kit": "^0.31.10",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.6",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
