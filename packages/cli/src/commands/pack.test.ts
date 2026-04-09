@@ -132,6 +132,7 @@ describe("pack command", () => {
 			assembly: {
 				deduped_ids: [],
 				collapsed_groups: [],
+				compressed_clusters: [],
 				trimmed_ids: [],
 				trim_reasons: [],
 				sections: {

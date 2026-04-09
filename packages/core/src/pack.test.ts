@@ -941,11 +941,21 @@ describe("buildMemoryPack compact mode", () => {
 	});
 
 	it("compact pack uses fewer tokens than full pack for the same items", () => {
+		const titles = [
+			"Redis coordinator lease handoff",
+			"SQLite migration verification report",
+			"Viewer static asset cache busting",
+			"MCP auth token rotation notes",
+			"Raw-event flush pipeline audit",
+			"OpenCode provider routing experiment",
+		];
 		for (let i = 0; i < 6; i++) {
+			const title = titles[i];
+			if (!title) throw new Error(`missing compact token-savings title at ${i}`);
 			store.remember(
 				sessionId,
 				"discovery",
-				`Verbose item ${i} about token savings`,
+				title,
 				`This is a detailed body for item ${i} that should consume tokens`,
 				0.7,
 			);
@@ -1002,14 +1012,17 @@ describe("buildMemoryPack compact mode", () => {
 	});
 
 	it("defaults to 3 detail items when compactDetailCount is omitted", () => {
-		for (let i = 0; i < 5; i++) {
-			store.remember(
-				sessionId,
-				"discovery",
-				`Default detail item ${i}`,
-				`Body for default detail ${i}`,
-				0.9 - i * 0.1,
-			);
+		const titles = [
+			"Cloudflare tunnel bootstrap",
+			"Viewer auth health indicator",
+			"D1 schema drift report",
+			"OpenAI prompt transform notes",
+			"Beads dependency graph cleanup",
+		];
+		for (let i = 0; i < titles.length; i++) {
+			const title = titles[i];
+			if (!title) throw new Error(`missing default-detail title at ${i}`);
+			store.remember(sessionId, "discovery", title, `Body for default detail ${i}`, 0.9 - i * 0.1);
 		}
 
 		const pack = buildMemoryPack(store, "default detail item", 10, null, undefined, undefined, {
@@ -1031,5 +1044,62 @@ describe("buildMemoryPack compact mode", () => {
 		expect(pack.pack_text).toContain("## Detail");
 		expect(pack.pack_text).toContain("memory_get");
 		expect(pack.items.length).toBe(0);
+	});
+
+	it("does not keep compressed IDs when the representative is dropped by token budget", () => {
+		store.remember(
+			sessionId,
+			"feature",
+			"Thread local memory store pooling for MCP server",
+			"A very long body that will consume the tiny budget and force the representative out of the pack.".repeat(
+				8,
+			),
+			0.9,
+		);
+		store.remember(
+			sessionId,
+			"feature",
+			"Thread local memory store pooling added for MCP server",
+			"A second very long related body that should also disappear when the representative is budgeted out.".repeat(
+				8,
+			),
+			0.7,
+		);
+
+		const pack = buildMemoryPack(store, "thread local memory store pooling mcp server", 10, 5);
+
+		expect(pack.items).toHaveLength(0);
+		expect(pack.item_ids).toHaveLength(0);
+	});
+
+	it("keeps compressed IDs for fallback-only representative clusters", () => {
+		const summaryId = store.remember(
+			sessionId,
+			"session_summary",
+			"Latest summary",
+			"Summary body",
+			0.9,
+			undefined,
+			{ is_summary: true },
+		);
+		const idA = store.remember(
+			sessionId,
+			"feature",
+			"Observer structured output support for legacy memories",
+			"Added structured output support for legacy memories.",
+			0.8,
+		);
+		const idB = store.remember(
+			sessionId,
+			"change",
+			"Observer structured output support added for legacy memories",
+			"Structured output support now covers legacy memories too.",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(store, "remember what happened previously", 10);
+
+		expect(pack.item_ids).toEqual(expect.arrayContaining([summaryId, idA, idB]));
+		expect(pack.items.find((item) => item.id === idB)?.compressed_ids).toEqual([idA]);
 	});
 });
