@@ -24,17 +24,20 @@ describe("MemoryStore", () => {
 	let prevActorId: string | undefined;
 	let prevActorDisplayName: string | undefined;
 	let prevCrossSessionDedupWindowMs: string | undefined;
+	let prevCodememDebug: string | undefined;
 
 	beforeEach(() => {
 		prevCodememConfig = process.env.CODEMEM_CONFIG;
 		prevActorId = process.env.CODEMEM_ACTOR_ID;
 		prevActorDisplayName = process.env.CODEMEM_ACTOR_DISPLAY_NAME;
 		prevCrossSessionDedupWindowMs = process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS;
+		prevCodememDebug = process.env.CODEMEM_DEBUG;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-store-test-"));
 		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
 		delete process.env.CODEMEM_ACTOR_ID;
 		delete process.env.CODEMEM_ACTOR_DISPLAY_NAME;
 		delete process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS;
+		delete process.env.CODEMEM_DEBUG;
 		dbPath = join(tmpDir, "test.sqlite");
 		// Pre-create the schema so MemoryStore constructor's assertSchemaReady passes
 		const setupDb = connect(dbPath);
@@ -57,6 +60,8 @@ describe("MemoryStore", () => {
 		} else {
 			process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS = prevCrossSessionDedupWindowMs;
 		}
+		if (prevCodememDebug === undefined) delete process.env.CODEMEM_DEBUG;
+		else process.env.CODEMEM_DEBUG = prevCodememDebug;
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -284,6 +289,28 @@ describe("MemoryStore", () => {
 			expect(count.count).toBe(1);
 		});
 
+		it("logs same-session dedup hits when CODEMEM_DEBUG=1", () => {
+			process.env.CODEMEM_DEBUG = "1";
+			const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+			try {
+				const sessionId = insertTestSession(store.db);
+				const firstId = store.remember(sessionId, "feature", "Same session title", "Original body");
+				const duplicateId = store.remember(
+					sessionId,
+					"feature",
+					"Same session title",
+					"Duplicate body",
+				);
+
+				expect(duplicateId).toBe(firstId);
+				expect(stderrSpy).toHaveBeenCalledWith(
+					expect.stringContaining("[codemem] memory dedup hit scope=same_session"),
+				);
+			} finally {
+				stderrSpy.mockRestore();
+			}
+		});
+
 		it("returns the existing id for same-session duplicates when normalization strips the title", () => {
 			const sessionId = insertTestSession(store.db);
 			const firstId = store.remember(sessionId, "feature", "PR #77", "Original body");
@@ -319,6 +346,36 @@ describe("MemoryStore", () => {
 				count: number;
 			};
 			expect(count.count).toBe(1);
+		});
+
+		it("logs cross-session dedup hits when CODEMEM_DEBUG=1", () => {
+			process.env.CODEMEM_DEBUG = "1";
+			const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+			try {
+				const sessionA = insertTestSession(store.db);
+				const sessionB = insertTestSession(store.db);
+				const firstId = store.remember(
+					sessionA,
+					"discovery",
+					"Cross session title",
+					"Original body",
+					0.9,
+				);
+				const duplicateId = store.remember(
+					sessionB,
+					"discovery",
+					"Cross session title",
+					"Duplicate body",
+					0.5,
+				);
+
+				expect(duplicateId).toBe(firstId);
+				expect(stderrSpy).toHaveBeenCalledWith(
+					expect.stringContaining("[codemem] memory dedup hit scope=cross_session"),
+				);
+			} finally {
+				stderrSpy.mockRestore();
+			}
 		});
 
 		it("inserts a new row for cross-session duplicates outside the dedup window", () => {
@@ -442,6 +499,19 @@ describe("MemoryStore", () => {
 			expect(duplicateId).toBe(firstId);
 			const row = store.get(firstId);
 			expect(row?.body_text).toBe("First body");
+		});
+
+		it("does not log dedup hits by default", () => {
+			const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+			try {
+				const sessionId = insertTestSession(store.db);
+				store.remember(sessionId, "feature", "Silent dedup title", "Original body");
+				store.remember(sessionId, "feature", "Silent dedup title", "Duplicate body");
+
+				expect(stderrSpy).not.toHaveBeenCalled();
+			} finally {
+				stderrSpy.mockRestore();
+			}
 		});
 	});
 

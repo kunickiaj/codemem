@@ -13781,7 +13781,7 @@ For more information, see https://radix-ui.com/primitives/docs/components/${titl
 		try {
 			const runtime = await loadRuntimeInfo();
 			if (!runtime?.version) return;
-			setRuntimeLabel(runtime.version, "9b37b4d");
+			setRuntimeLabel(runtime.version, "2bc14c4");
 		} catch {}
 	}
 	var lastAnnouncedRefreshState = null;

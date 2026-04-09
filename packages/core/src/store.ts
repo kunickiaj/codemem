@@ -158,6 +158,12 @@ const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
 const DEFAULT_CROSS_SESSION_DEDUP_WINDOW_MS = 3_600_000;
 const CROSS_SESSION_DEDUP_WINDOW_ENV = "CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS";
 const MAX_CROSS_SESSION_DEDUP_WINDOW_MS = 8_640_000_000_000_000;
+const CODEMEM_DEBUG_ENV = "CODEMEM_DEBUG";
+
+type DedupHit = {
+	id: number;
+	scope: "same_session" | "cross_session";
+};
 
 function getMemoryDedupMatchText(title: string): string | null {
 	const normalized = normalizeMemoryDedupTitle(title);
@@ -267,7 +273,7 @@ export class MemoryStore {
 			workspace_id: string;
 		},
 		now: string,
-	): number | null {
+	): DedupHit | null {
 		if (!dedupKey) return null;
 		const matchTitle = getMemoryDedupMatchText(title);
 		if (!matchTitle) return null;
@@ -289,7 +295,9 @@ export class MemoryStore {
 			title: string;
 		}>;
 		for (const row of sameSessionRows) {
-			if (getMemoryDedupMatchText(row.title) === matchTitle) return row.id;
+			if (getMemoryDedupMatchText(row.title) === matchTitle) {
+				return { id: row.id, scope: "same_session" };
+			}
 		}
 
 		// Cross-session matching is intentionally best-effort. We want to avoid
@@ -324,9 +332,18 @@ export class MemoryStore {
 			title: string;
 		}>;
 		for (const row of crossSessionRows) {
-			if (getMemoryDedupMatchText(row.title) === matchTitle) return row.id;
+			if (getMemoryDedupMatchText(row.title) === matchTitle) {
+				return { id: row.id, scope: "cross_session" };
+			}
 		}
 		return null;
+	}
+
+	private logDedupHit(hit: DedupHit, kind: string, title: string): void {
+		if (process.env[CODEMEM_DEBUG_ENV] !== "1") return;
+		process.stderr.write(
+			`[codemem] memory dedup hit scope=${hit.scope} existing_id=${hit.id} kind=${kind} title=${JSON.stringify(title)}\n`,
+		);
 	}
 
 	/**
@@ -559,7 +576,7 @@ export class MemoryStore {
 		// Resolve provenance fields
 		const provenance = this.resolveProvenance(metaPayload);
 
-		const existingId = this.findExistingDuplicateMemory(
+		const existingHit = this.findExistingDuplicateMemory(
 			sessionId,
 			validKind,
 			title,
@@ -567,7 +584,10 @@ export class MemoryStore {
 			provenance,
 			now,
 		);
-		if (existingId != null) return existingId;
+		if (existingHit != null) {
+			this.logDedupHit(existingHit, validKind, title);
+			return existingHit.id;
+		}
 
 		// Block shared-memory writes while sync requires attention.
 		this.assertSharedMutationAllowed(provenance.visibility);
@@ -612,7 +632,7 @@ export class MemoryStore {
 				.all();
 		} catch (error) {
 			if (!isSameSessionDedupConstraintError(error)) throw error;
-			const existingSameSessionId = this.findExistingDuplicateMemory(
+			const existingSameSessionHit = this.findExistingDuplicateMemory(
 				sessionId,
 				validKind,
 				title,
@@ -620,7 +640,10 @@ export class MemoryStore {
 				provenance,
 				now,
 			);
-			if (existingSameSessionId != null) return existingSameSessionId;
+			if (existingSameSessionHit != null) {
+				this.logDedupHit(existingSameSessionHit, validKind, title);
+				return existingSameSessionHit.id;
+			}
 			throw error;
 		}
 
