@@ -1103,3 +1103,165 @@ describe("buildMemoryPack compact mode", () => {
 		expect(pack.items.find((item) => item.id === idB)?.compressed_ids).toEqual([idA]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Phase B Layer 2: near-duplicate cluster compression
+// ---------------------------------------------------------------------------
+
+describe("buildMemoryPack cluster compression", () => {
+	let tmpDir: string;
+	let store: MemoryStore;
+	let sessionId: number;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-cluster-"));
+		const dbPath = join(tmpDir, "test.db");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		store = new MemoryStore(dbPath);
+		sessionId = insertTestSession(store.db);
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("compresses related items into one representative in default mode", () => {
+		const idA = store.remember(
+			sessionId,
+			"discovery",
+			"Sync pass orchestrator ported to TypeScript",
+			"Moved the sync pass orchestrator from Python to TypeScript.",
+			0.6,
+		);
+		const idB = store.remember(
+			sessionId,
+			"feature",
+			"Sync pass orchestrator moved from Python to TypeScript",
+			"The orchestrator now coordinates sync in TypeScript.",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(store, "sync pass orchestrator typescript", 10);
+
+		expect(pack.pack_text).toContain("(+1 related)");
+		expect(pack.pack_text).toContain("Sync pass orchestrator moved from Python to TypeScript");
+		expect(pack.pack_text).not.toContain("Sync pass orchestrator ported to TypeScript -");
+		expect(pack.item_ids).toEqual(expect.arrayContaining([idA, idB]));
+		expect(pack.items).toHaveLength(1);
+		expect(pack.items[0]).toMatchObject({
+			id: idB,
+			support_count: 2,
+			compressed_ids: [idA],
+		});
+	});
+
+	it("chooses highest-confidence representative on clustered items", () => {
+		const idLow = store.remember(
+			sessionId,
+			"change",
+			"Replication retention plan updated for bounded history",
+			"Updated the retention plan.",
+			0.4,
+		);
+		const idHigh = store.remember(
+			sessionId,
+			"decision",
+			"Replication retention plan revised for bounded history",
+			"Revised retention plan and documented bounds.",
+			0.95,
+		);
+
+		const pack = buildMemoryPack(store, "replication retention bounded history", 10);
+		expect(pack.items[0]?.id).toBe(idHigh);
+		expect(pack.items[0]?.compressed_ids).toEqual([idLow]);
+	});
+
+	it("skips cluster compression in task mode", () => {
+		store.remember(
+			sessionId,
+			"discovery",
+			"Sync pass orchestrator ported to TypeScript",
+			"Moved the sync pass orchestrator from Python to TypeScript.",
+			0.6,
+		);
+		store.remember(
+			sessionId,
+			"feature",
+			"Sync pass orchestrator moved from Python to TypeScript",
+			"The orchestrator now coordinates sync in TypeScript.",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(store, "continue sync pass orchestrator work", 10);
+
+		expect(pack.pack_text).not.toContain("(+1 related)");
+		expect(pack.items.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("shows related suffix in compact mode and still preserves all item_ids", () => {
+		const idA = store.remember(
+			sessionId,
+			"discovery",
+			"Viewer context inspector stale error state investigation",
+			"Investigated stale error state in context inspector.",
+			0.7,
+		);
+		const idB = store.remember(
+			sessionId,
+			"bugfix",
+			"Viewer context inspector stale error state fixed",
+			"Fixed stale error state in context inspector.",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(
+			store,
+			"viewer context inspector stale error",
+			10,
+			null,
+			undefined,
+			undefined,
+			{
+				compact: true,
+				compactDetailCount: 1,
+			},
+		);
+
+		expect(pack.pack_text).toContain("(+1 related)");
+		expect(pack.item_ids).toEqual(expect.arrayContaining([idA, idB]));
+		expect(pack.items).toHaveLength(1);
+	});
+
+	it("reports compressed clusters in pack trace and marks compressed candidates", () => {
+		const idA = store.remember(
+			sessionId,
+			"bugfix",
+			"Peer deletion cursor leak fixed in sync worker",
+			"Fixed cursor leak in sync worker.",
+			0.7,
+		);
+		const idB = store.remember(
+			sessionId,
+			"bugfix",
+			"Peer deletion cursor leak resolved in sync worker",
+			"Resolved cursor leak in sync worker and added guardrails.",
+			0.9,
+		);
+
+		const trace = buildMemoryPackTrace(store, "peer deletion cursor leak sync worker", 10);
+
+		expect(trace.assembly.compressed_clusters).toHaveLength(1);
+		expect(trace.assembly.compressed_clusters[0]).toMatchObject({
+			representative_id: idB,
+			compressed_ids: [idA],
+			pattern: "recurring_failure",
+		});
+		const compressedCandidate = trace.retrieval.candidates.find(
+			(candidate) => candidate.id === idA,
+		);
+		expect(compressedCandidate?.disposition).toBe("compressed");
+	});
+});
