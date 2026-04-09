@@ -2219,10 +2219,33 @@ export interface BackfillDedupKeysResult {
 	skipped: number;
 }
 
+export interface BackfillDedupKeysPlan extends BackfillDedupKeysResult {
+	backfillable: number;
+	updates: Array<{ id: number; dedupKey: string }>;
+	lastScannedId: number;
+	exhausted: boolean;
+}
+
 export interface BackfillDedupKeysOptions {
 	limit?: number | null;
 	dryRun?: boolean;
 }
+
+interface BackfillDedupKeysPlanOptions {
+	rowLimit?: number | null;
+	updateLimit?: number | null;
+	afterId?: number | null;
+}
+
+type DedupKeyCandidateRow = {
+	id: number;
+	title: string;
+	session_id: number;
+	kind: string;
+	visibility: string | null;
+	workspace_id: string | null;
+	active: number;
+};
 
 /**
  * Extract a narrative from the structured `## Completed` / `## Learned`
@@ -2304,32 +2327,47 @@ export function backfillNarrativeFromBody(
 	return { checked, updated, skipped };
 }
 
-export function backfillMemoryDedupKeys(
+function selectDedupKeyCandidateRows(
 	db: Database,
-	opts: BackfillDedupKeysOptions = {},
-): BackfillDedupKeysResult {
-	const limitClause = opts.limit != null && opts.limit > 0 ? `LIMIT ${Number(opts.limit)}` : "";
-	const rows = db
+	options: { rowLimit: number | null | undefined; afterId: number | null | undefined },
+): DedupKeyCandidateRow[] {
+	const limitClause =
+		options.rowLimit != null && options.rowLimit > 0 ? `LIMIT ${Number(options.rowLimit)}` : "";
+	const afterId = options.afterId != null && options.afterId > 0 ? options.afterId : 0;
+	return db
 		.prepare(
 			`SELECT id, title, session_id, kind, visibility, workspace_id, active
 			 FROM memory_items
 			 WHERE dedup_key IS NULL
+			   AND id > ?
 			 ORDER BY created_at ASC, id ASC
 			 ${limitClause}`,
 		)
-		.all() as Array<{
-		id: number;
-		title: string;
-		session_id: number;
-		kind: string;
-		visibility: string | null;
-		workspace_id: string | null;
-		active: number;
-	}>;
+		.all(afterId) as DedupKeyCandidateRow[];
+}
+
+function buildDedupActiveScopeKey(row: DedupKeyCandidateRow, dedupKey: string): string {
+	return [row.session_id, row.kind, row.visibility ?? "", row.workspace_id ?? "", dedupKey].join(
+		"\u001f",
+	);
+}
+
+export function planMemoryDedupKeys(
+	db: Database,
+	options: BackfillDedupKeysPlanOptions = {},
+): BackfillDedupKeysPlan {
+	const rowLimit = options.rowLimit ?? null;
+	const rows = selectDedupKeyCandidateRows(db, {
+		rowLimit,
+		afterId: options.afterId ?? null,
+	});
+	const updateLimit =
+		options.updateLimit != null && options.updateLimit > 0 ? options.updateLimit : null;
 
 	let checked = 0;
 	let updated = 0;
 	let skipped = 0;
+	let backfillable = 0;
 	const updates: Array<{ id: number; dedupKey: string }> = [];
 	const seenActiveScopes = new Set<string>();
 	const hasActiveConflict = db.prepare(
@@ -2353,13 +2391,7 @@ export function backfillMemoryDedupKeys(
 			continue;
 		}
 
-		const activeScopeKey = [
-			row.session_id,
-			row.kind,
-			row.visibility ?? "",
-			row.workspace_id ?? "",
-			dedupKey,
-		].join("\u001f");
+		const activeScopeKey = buildDedupActiveScopeKey(row, dedupKey);
 		if (
 			row.active === 1 &&
 			(seenActiveScopes.has(activeScopeKey) ||
@@ -2376,24 +2408,50 @@ export function backfillMemoryDedupKeys(
 			continue;
 		}
 
-		updates.push({ id: row.id, dedupKey });
+		backfillable++;
+		if (updateLimit == null || updates.length < updateLimit) {
+			updates.push({ id: row.id, dedupKey });
+		}
 		if (row.active === 1) seenActiveScopes.add(activeScopeKey);
 		updated++;
 	}
 
-	if (updates.length > 0 && opts.dryRun !== true) {
-		const now = new Date().toISOString();
-		const updateStmt = db.prepare(
-			"UPDATE memory_items SET dedup_key = ?, updated_at = ? WHERE id = ?",
-		);
-		db.transaction(() => {
-			for (const update of updates) {
-				updateStmt.run(update.dedupKey, now, update.id);
-			}
-		})();
-	}
+	return {
+		checked,
+		updated,
+		skipped,
+		backfillable,
+		updates,
+		lastScannedId: rows.at(-1)?.id ?? options.afterId ?? 0,
+		exhausted: rowLimit == null || rows.length < rowLimit,
+	};
+}
 
-	return { checked, updated, skipped };
+export function applyMemoryDedupKeyUpdates(
+	db: Database,
+	updates: Array<{ id: number; dedupKey: string }>,
+): void {
+	if (updates.length <= 0) return;
+	const now = new Date().toISOString();
+	const updateStmt = db.prepare(
+		"UPDATE memory_items SET dedup_key = ?, updated_at = ? WHERE id = ?",
+	);
+	db.transaction(() => {
+		for (const update of updates) {
+			updateStmt.run(update.dedupKey, now, update.id);
+		}
+	})();
+}
+
+export function backfillMemoryDedupKeys(
+	db: Database,
+	opts: BackfillDedupKeysOptions = {},
+): BackfillDedupKeysResult {
+	const plan = planMemoryDedupKeys(db, { rowLimit: opts.limit ?? null });
+	if (opts.dryRun !== true) {
+		applyMemoryDedupKeyUpdates(db, plan.updates);
+	}
+	return { checked: plan.checked, updated: plan.updated, skipped: plan.skipped };
 }
 
 // ---------------------------------------------------------------------------

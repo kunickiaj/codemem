@@ -4,6 +4,8 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
+	DedupKeyBackfillRunner,
+	hasPendingDedupKeyBackfill,
 	initDatabase,
 	isEmbeddingDisabled,
 	type MemoryStore,
@@ -408,6 +410,9 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const vectorMigrationRunner = new VectorModelMigrationRunner({
 		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
 	});
+	const dedupKeyBackfillRunner = new DedupKeyBackfillRunner({
+		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+	});
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -466,6 +471,10 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			if (!isEmbeddingDisabled()) {
 				vectorMigrationRunner.start();
 				p.log.step("Vector maintenance runner started");
+			}
+			if (hasPendingDedupKeyBackfill(store.db)) {
+				dedupKeyBackfillRunner.start();
+				p.log.step("Dedup-key maintenance runner started");
 			}
 			if (syncConfig.syncRetentionEnabled) {
 				retentionRunner.start();
@@ -541,6 +550,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		syncAbort.abort();
 		retentionAbort.abort();
 		await sweeper.stop();
+		await dedupKeyBackfillRunner.stop();
 		await vectorMigrationRunner.stop();
 		await retentionRunner.stop();
 

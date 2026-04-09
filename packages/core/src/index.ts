@@ -101,6 +101,12 @@ export {
 	toJson,
 	toJsonNullable,
 } from "./db.js";
+export {
+	DEDUP_KEY_BACKFILL_JOB,
+	DedupKeyBackfillRunner,
+	hasPendingDedupKeyBackfill,
+	runDedupKeyBackfillPass,
+} from "./dedup-key-backfill.js";
 export type { EmbeddingClient } from "./embeddings.js";
 export {
 	_resetEmbeddingClient,
