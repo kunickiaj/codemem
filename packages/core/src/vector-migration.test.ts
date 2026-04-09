@@ -90,6 +90,11 @@ describe("vector migration", () => {
 			progress: { current: 1, total: 2, unit: "items" },
 		});
 		expect(job?.metadata).toMatchObject({ source_model: "old-model", target_model: "test-model" });
+		expect(job?.metadata).toMatchObject({
+			last_cursor_id: 1,
+			processed_embeddable: 1,
+			embeddable_total: 2,
+		});
 		expect(resolveSemanticSearchModel(db, "test-model")).toBeNull();
 
 		const models = db
@@ -135,12 +140,75 @@ describe("vector migration", () => {
 		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 		expect(job).toMatchObject({
 			status: "completed",
-			progress: { current: 2, total: 2, unit: "items" },
+			progress: { current: 1, total: 1, unit: "items" },
 		});
 
 		const models = db
 			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
 			.all() as Array<{ model: string; c: number }>;
 		expect(models).toEqual([{ model: "test-model", c: 1 }]);
+	});
+
+	it("resumes from the stored cursor instead of rescanning from the beginning", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+		seedMemory(db, 2, sessionId, "Two", "Body two");
+		seedMemory(db, 3, sessionId, "Three", "Body three");
+		seedVector(db, 1, "old-model");
+		seedVector(db, 2, "old-model");
+		seedVector(db, 3, "old-model");
+
+		await runVectorMigrationPass(db, { batchSize: 2 });
+		const runningJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(runningJob?.metadata).toMatchObject({ last_cursor_id: 2, processed_embeddable: 2 });
+
+		await runVectorMigrationPass(db, { batchSize: 2 });
+		const completedJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(completedJob).toMatchObject({
+			status: "completed",
+			progress: { current: 3, total: 3, unit: "items" },
+		});
+
+		const models = db
+			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+			.all() as Array<{ model: string; c: number }>;
+		expect(models).toEqual([{ model: "test-model", c: 3 }]);
+	});
+
+	it("resumes from the stored cursor after a failed job", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+		seedMemory(db, 2, sessionId, "Two", "Body two");
+		seedMemory(db, 3, sessionId, "Three", "Body three");
+		seedVector(db, 1, "old-model");
+		seedVector(db, 2, "old-model");
+		seedVector(db, 3, "old-model");
+
+		// First pass processes batch of 1
+		await runVectorMigrationPass(db, { batchSize: 1 });
+		const runningJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(runningJob).toMatchObject({ status: "running" });
+		expect(runningJob?.metadata).toMatchObject({ last_cursor_id: 1, processed_embeddable: 1 });
+
+		// Simulate failure by making embedTexts throw on next call
+		vi.mocked(embeddings.embedTexts).mockRejectedValueOnce(new Error("provider outage"));
+		try {
+			await runVectorMigrationPass(db, { batchSize: 1 });
+		} catch {
+			// expected — backfillVectors propagates the error
+		}
+
+		// Restore normal behavior and resume — should pick up from cursor
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		const afterResume = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(afterResume).toMatchObject({ status: "completed" });
+		expect(afterResume?.metadata).toMatchObject({ processed_embeddable: 3, embeddable_total: 3 });
+
+		const models = db
+			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+			.all() as Array<{ model: string; c: number }>;
+		expect(models).toEqual([{ model: "test-model", c: 3 }]);
 	});
 });
