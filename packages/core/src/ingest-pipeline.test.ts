@@ -530,6 +530,7 @@ describe("ingest() integration", () => {
 		expect(obs).toBeDefined();
 		expect(obs?.kind).toBe("discovery");
 		expect(obs?.body_text).toContain("race condition");
+		expect(obs?.narrative).toContain("race condition");
 
 		// Session should be ended
 		const session = store.db
