@@ -228,6 +228,7 @@ export type {
 } from "./maintenance.js";
 export {
 	aiBackfillStructuredContent,
+	backfillMemoryDedupKeys,
 	backfillNarrativeFromBody,
 	backfillTagsText,
 	compareMemoryRoleReports,

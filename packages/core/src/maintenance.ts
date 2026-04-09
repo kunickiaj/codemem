@@ -17,6 +17,7 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+import { buildMemoryDedupKey } from "./memory-dedup.js";
 import { loadObserverConfig, ObserverClient } from "./observer-client.js";
 import { buildMemoryPack } from "./pack.js";
 import { projectClause } from "./project.js";
@@ -2212,6 +2213,17 @@ export interface BackfillNarrativeOptions {
 	dryRun?: boolean;
 }
 
+export interface BackfillDedupKeysResult {
+	checked: number;
+	updated: number;
+	skipped: number;
+}
+
+export interface BackfillDedupKeysOptions {
+	limit?: number | null;
+	dryRun?: boolean;
+}
+
 /**
  * Extract a narrative from the structured `## Completed` / `## Learned`
  * sections found in session_summary body_text. Returns null if the body
@@ -2285,6 +2297,98 @@ export function backfillNarrativeFromBody(
 		db.transaction(() => {
 			for (const update of updates) {
 				updateStmt.run(update.narrative, now, update.id);
+			}
+		})();
+	}
+
+	return { checked, updated, skipped };
+}
+
+export function backfillMemoryDedupKeys(
+	db: Database,
+	opts: BackfillDedupKeysOptions = {},
+): BackfillDedupKeysResult {
+	const limitClause = opts.limit != null && opts.limit > 0 ? `LIMIT ${Number(opts.limit)}` : "";
+	const rows = db
+		.prepare(
+			`SELECT id, title, session_id, kind, visibility, workspace_id, active
+			 FROM memory_items
+			 WHERE dedup_key IS NULL
+			 ORDER BY created_at ASC, id ASC
+			 ${limitClause}`,
+		)
+		.all() as Array<{
+		id: number;
+		title: string;
+		session_id: number;
+		kind: string;
+		visibility: string | null;
+		workspace_id: string | null;
+		active: number;
+	}>;
+
+	let checked = 0;
+	let updated = 0;
+	let skipped = 0;
+	const updates: Array<{ id: number; dedupKey: string }> = [];
+	const seenActiveScopes = new Set<string>();
+	const hasActiveConflict = db.prepare(
+		`SELECT 1 AS ok
+		 FROM memory_items
+		 WHERE id != ?
+		   AND active = 1
+		   AND session_id = ?
+		   AND kind = ?
+		   AND visibility IS ?
+		   AND workspace_id IS ?
+		   AND dedup_key = ?
+		 LIMIT 1`,
+	);
+
+	for (const row of rows) {
+		checked++;
+		const dedupKey = buildMemoryDedupKey(row.title);
+		if (!dedupKey) {
+			skipped++;
+			continue;
+		}
+
+		const activeScopeKey = [
+			row.session_id,
+			row.kind,
+			row.visibility ?? "",
+			row.workspace_id ?? "",
+			dedupKey,
+		].join("\u001f");
+		if (
+			row.active === 1 &&
+			(seenActiveScopes.has(activeScopeKey) ||
+				hasActiveConflict.get(
+					row.id,
+					row.session_id,
+					row.kind,
+					row.visibility,
+					row.workspace_id,
+					dedupKey,
+				))
+		) {
+			skipped++;
+			continue;
+		}
+
+		updates.push({ id: row.id, dedupKey });
+		if (row.active === 1) seenActiveScopes.add(activeScopeKey);
+		updated++;
+	}
+
+	if (updates.length > 0 && opts.dryRun !== true) {
+		const now = new Date().toISOString();
+		const updateStmt = db.prepare(
+			"UPDATE memory_items SET dedup_key = ?, updated_at = ? WHERE id = ?",
+		);
+		db.transaction(() => {
+			for (const update of updates) {
+				updateStmt.run(update.dedupKey, now, update.id);
 			}
 		})();
 	}
