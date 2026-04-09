@@ -15,6 +15,7 @@ import {
 	resolveDbPath,
 	runSyncDaemon,
 	SyncRetentionRunner,
+	VectorModelMigrationRunner,
 } from "@codemem/core";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -404,6 +405,9 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
 		signal: retentionAbort.signal,
 	});
+	const vectorMigrationRunner = new VectorModelMigrationRunner({
+		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+	});
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -459,6 +463,10 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			p.log.success(`Listening on http://${info.address}:${info.port}`);
 			p.log.info(`Database: ${preparedDb}`);
 			p.log.step("Raw event sweeper started");
+			if (!isEmbeddingDisabled()) {
+				vectorMigrationRunner.start();
+				p.log.step("Vector maintenance runner started");
+			}
 			if (syncConfig.syncRetentionEnabled) {
 				retentionRunner.start();
 				p.log.step("Retention maintenance runner started");
@@ -533,6 +541,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		syncAbort.abort();
 		retentionAbort.abort();
 		await sweeper.stop();
+		await vectorMigrationRunner.stop();
 		await retentionRunner.stop();
 
 		// Drain both listeners before closing the shared store.

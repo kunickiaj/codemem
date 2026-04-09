@@ -2,8 +2,9 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSqliteVec } from "./db.js";
 import * as embeddings from "./embeddings.js";
+import { startMaintenanceJob } from "./maintenance-jobs.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
-import { backfillVectors, storeVectors } from "./vectors.js";
+import { backfillVectors, semanticSearch, storeVectors } from "./vectors.js";
 
 vi.mock("./embeddings.js", async () => {
 	const actual = await vi.importActual<typeof import("./embeddings.js")>("./embeddings.js");
@@ -11,6 +12,7 @@ vi.mock("./embeddings.js", async () => {
 		...actual,
 		getEmbeddingClient: vi.fn(),
 		embedTexts: vi.fn(),
+		resolveEmbeddingModel: vi.fn(() => "test-model"),
 	};
 });
 
@@ -100,5 +102,57 @@ describe("vectors", () => {
 			chunk_index: 0,
 			model: "test-model",
 		});
+	});
+
+	it("keeps stale-model vectors until a migration cutover removes them", async () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', 'Rebuild title', 'Rebuild body', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, now, now);
+		const memoryId = Number(info.lastInsertRowid);
+
+		// Seed a stale vector row using a different model label.
+		const staleVector = new Float32Array(384);
+		db.exec(`
+			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+			VALUES (
+				vec_f32('${JSON.stringify(Array.from(staleVector))}'),
+				${memoryId},
+				0,
+				'stale-hash',
+				'old-model'
+			)
+		`);
+
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+
+		const result = await backfillVectors(db, { memoryIds: [memoryId] });
+
+		expect(result).toMatchObject({ checked: 1, embedded: 1, inserted: 1 });
+		const models = db
+			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+			.all() as Array<{ model: string; c: number }>;
+		expect(models).toEqual([
+			{ model: "old-model", c: 1 },
+			{ model: "test-model", c: 1 },
+		]);
+	});
+
+	it("skips query embedding when vector search is disabled during migration", async () => {
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Re-indexing memories",
+			metadata: { source_model: "old-model", target_model: "test-model" },
+		});
+
+		const results = await semanticSearch(db, "query text");
+
+		expect(results).toEqual([]);
+		expect(embeddings.embedTexts).not.toHaveBeenCalled();
 	});
 });

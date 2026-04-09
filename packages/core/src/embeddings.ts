@@ -112,6 +112,11 @@ export function _resetEmbeddingClient(): void {
 	_client = undefined;
 }
 
+/** Return the configured embedding model label without loading the client. */
+export function resolveEmbeddingModel(): string {
+	return process.env.CODEMEM_EMBEDDING_MODEL || "Xenova/bge-small-en-v1.5";
+}
+
 /**
  * Get the shared embedding client, creating it lazily on first call.
  * Returns null when embeddings are disabled or the runtime is unavailable.
@@ -122,7 +127,7 @@ export async function getEmbeddingClient(): Promise<EmbeddingClient | null> {
 		_client = null;
 		return null;
 	}
-	const model = process.env.CODEMEM_EMBEDDING_MODEL || "BAAI/bge-small-en-v1.5";
+	const model = resolveEmbeddingModel();
 	try {
 		_client = await createTransformersClient(model);
 	} catch {
@@ -149,7 +154,7 @@ async function createTransformersClient(model: string): Promise<EmbeddingClient>
 	// Dynamic import so the package is optional at install time
 	const { pipeline } = await import("@xenova/transformers");
 	const extractor = await pipeline("feature-extraction", model, {
-		quantized: true,
+		quantized: false,
 	});
 
 	// Infer dimensions from a probe embedding

@@ -15,9 +15,69 @@ import {
 	embedTexts,
 	getEmbeddingClient,
 	hashText,
+	resolveEmbeddingModel,
 	serializeFloat32,
 } from "./embeddings.js";
+import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { projectClause } from "./project.js";
+
+const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
+
+type VectorModelCount = { model: string; rows: number };
+
+type MemoryTextRow = { id: number; title: string | null; body_text: string | null };
+
+function listVectorModelCounts(db: Database): VectorModelCount[] {
+	return db
+		.prepare(
+			"SELECT model, COUNT(*) AS rows FROM memory_vectors GROUP BY model ORDER BY rows DESC, model ASC",
+		)
+		.all() as VectorModelCount[];
+}
+
+export function resolveSemanticSearchModel(
+	db: Database,
+	currentModel = resolveEmbeddingModel(),
+): string | null {
+	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const metadata = job?.metadata ?? {};
+	const sourceModel = typeof metadata.source_model === "string" ? metadata.source_model : null;
+	if (
+		(job?.status === "running" || job?.status === "pending" || job?.status === "failed") &&
+		sourceModel &&
+		sourceModel !== currentModel
+	) {
+		return null;
+	}
+	const rows = listVectorModelCounts(db);
+	if (rows.length === 0) return null;
+	if (rows.some((row) => row.model === currentModel)) return currentModel;
+	return null;
+}
+
+function chunkHashes(text: string): string[] {
+	return chunkText(text).map((chunk) => hashText(chunk));
+}
+
+function memoryText(title: string | null, bodyText: string | null): string {
+	return `${title ?? ""}\n${bodyText ?? ""}`.trim();
+}
+
+export function memoryHasCompleteVectorCoverage(
+	db: Database,
+	memory: MemoryTextRow,
+	model: string,
+): boolean {
+	const expectedHashes = chunkHashes(memoryText(memory.title, memory.body_text));
+	if (expectedHashes.length === 0) return true;
+	const existingRows = db
+		.prepare("SELECT content_hash FROM memory_vectors WHERE memory_id = ? AND model = ?")
+		.all(memory.id, model) as Array<{ content_hash: string | null }>;
+	const existingHashes = new Set(
+		existingRows.map((row) => row.content_hash).filter((hash): hash is string => hash != null),
+	);
+	return expectedHashes.every((hash) => existingHashes.has(hash));
+}
 
 function toSqlStringLiteral(value: string): string {
 	return `'${value.replaceAll("'", "''")}'`;
@@ -102,14 +162,23 @@ export async function storeVectors(
 	if (embeddings.length === 0) return;
 
 	const model = client.model;
+	const insertVectors = db.transaction(
+		(entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }>) => {
+			for (const entry of entries) {
+				insertMemoryVector(db, entry.vector, memoryId, entry.chunkIndex, entry.contentHash, model);
+			}
+		},
+	);
+	const entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }> = [];
 
 	for (let i = 0; i < chunks.length && i < embeddings.length; i++) {
 		const vector = embeddings[i];
 		const chunk = chunks[i];
 		if (!vector || vector.length === 0) continue;
 		if (!chunk) continue;
-		insertMemoryVector(db, vector, memoryId, i, hashText(chunk), model);
+		entries.push({ vector, chunkIndex: i, contentHash: hashText(chunk) });
 	}
+	if (entries.length > 0) insertVectors(entries);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +242,7 @@ export async function backfillVectors(
 
 	for (const row of rows) {
 		checked++;
-		const text = `${row.title ?? ""}\n${row.body_text ?? ""}`.trim();
+		const text = memoryText(row.title, row.body_text);
 		const chunks = chunkText(text);
 		if (chunks.length === 0) continue;
 
@@ -187,7 +256,8 @@ export async function backfillVectors(
 
 		const pendingChunks: string[] = [];
 		const pendingHashes: string[] = [];
-		for (const chunk of chunks) {
+		const pendingChunkIndexes: number[] = [];
+		for (const [chunkIndex, chunk] of chunks.entries()) {
 			const h = hashText(chunk);
 			if (existingHashes.has(h)) {
 				skipped++;
@@ -195,6 +265,7 @@ export async function backfillVectors(
 			}
 			pendingChunks.push(chunk);
 			pendingHashes.push(h);
+			pendingChunkIndexes.push(chunkIndex);
 		}
 
 		if (pendingChunks.length === 0) continue;
@@ -208,13 +279,26 @@ export async function backfillVectors(
 			continue;
 		}
 
+		const insertVectors = db.transaction(
+			(entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }>) => {
+				for (const entry of entries) {
+					insertMemoryVector(db, entry.vector, row.id, entry.chunkIndex, entry.contentHash, model);
+				}
+			},
+		);
+		const entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }> = [];
 		for (let i = 0; i < embeddings.length; i++) {
 			const vector = embeddings[i];
 			const contentHash = pendingHashes[i];
+			const chunkIndex = pendingChunkIndexes[i];
 			if (!vector || vector.length === 0) continue;
 			if (!contentHash) continue;
-			insertMemoryVector(db, vector, row.id, i, contentHash, model);
-			inserted++;
+			if (chunkIndex == null) continue;
+			entries.push({ vector, chunkIndex, contentHash });
+		}
+		if (entries.length > 0) {
+			insertVectors(entries);
+			inserted += entries.length;
 		}
 	}
 
@@ -257,6 +341,8 @@ export async function semanticSearch(
 	filters?: { project?: string | null } | null,
 ): Promise<SemanticSearchResult[]> {
 	if (query.trim().length < 3) return [];
+	const searchModel = resolveSemanticSearchModel(db, resolveEmbeddingModel());
+	if (!searchModel) return [];
 
 	const embeddings = await embedTexts([query]);
 	if (embeddings.length === 0) return [];
@@ -264,7 +350,7 @@ export async function semanticSearch(
 	const firstEmbedding = embeddings[0];
 	if (!firstEmbedding) return [];
 	const queryEmbedding = serializeFloat32(firstEmbedding);
-	const params: unknown[] = [queryEmbedding, limit];
+	const params: unknown[] = [queryEmbedding, limit, searchModel];
 	const whereClauses: string[] = ["memory_items.active = 1"];
 	let joinSessions = false;
 
@@ -287,6 +373,7 @@ export async function semanticSearch(
 		${joinClause}
 		WHERE memory_vectors.embedding MATCH ?
 		  AND k = ?
+		  AND memory_vectors.model = ?
 		  AND ${where}
 		ORDER BY memory_vectors.distance ASC
 	`;
