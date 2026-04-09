@@ -4,7 +4,7 @@
  * Ports Python's viewer_routes/stats.py.
  */
 
-import { type MemoryStore, VERSION } from "@codemem/core";
+import { listMaintenanceJobs, type MemoryStore, VERSION } from "@codemem/core";
 import { Hono } from "hono";
 
 /**
@@ -25,9 +25,23 @@ export function statsRoutes(getStore: () => MemoryStore) {
 
 	app.get("/api/stats", (c) => {
 		const store = getStore();
+		const jobs = listMaintenanceJobs(store.db);
+		const activeJobs = jobs
+			.filter(
+				(job) => job.status === "pending" || job.status === "running" || job.status === "failed",
+			)
+			.map((job) => ({
+				kind: job.kind,
+				title: job.title,
+				status: job.status,
+				message: job.message,
+				progress: job.progress,
+				error: job.error,
+			}));
 		return c.json({
 			...store.stats(),
 			viewer_pid: process.pid,
+			maintenance_jobs: activeJobs,
 		});
 	});
 

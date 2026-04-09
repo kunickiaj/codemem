@@ -115,19 +115,17 @@ export async function runVectorMigrationPass(
 		existingJob?.status === "pending" ||
 		existingJob?.status === "failed";
 	if (!sourceModel && !hasInFlightJob) {
-		// No stale model and no in-flight job — check if there are uncovered memories.
-		const targetCoverage = db
-			.prepare("SELECT COUNT(DISTINCT memory_id) AS c FROM memory_vectors WHERE model = ?")
+		// No stale model and no in-flight job — check if any active memories lack target vectors.
+		const uncovered = db
+			.prepare(
+				`SELECT COUNT(*) AS c FROM memory_items
+				 WHERE active = 1
+				   AND id NOT IN (SELECT DISTINCT memory_id FROM memory_vectors WHERE model = ?)`,
+			)
 			.get(targetModel) as { c?: number } | undefined;
-		const activeCount = db
-			.prepare("SELECT COUNT(*) AS c FROM memory_items WHERE active = 1")
-			.get() as { c?: number } | undefined;
-		const covered = Number(targetCoverage?.c ?? 0);
-		const total = Number(activeCount?.c ?? 0);
-		if (total <= 0 || covered >= total) {
+		if (Number(uncovered?.c ?? 0) <= 0) {
 			return;
 		}
-		// Memories exist without target vectors — proceed to backfill them.
 	}
 	// Use cached embeddable_total from an in-progress job to avoid a full table scan per tick.
 	// Only recompute when starting a fresh migration or when the job is terminal.
