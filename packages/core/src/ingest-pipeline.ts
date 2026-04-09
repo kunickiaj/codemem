@@ -561,6 +561,7 @@ export async function ingest(
 				});
 				const memoryId = store.remember(sessionId, kind, memoryTitle, bodyText, 0.5, tags, {
 					subtitle: obs.subtitle,
+					narrative: obs.narrative,
 					facts: obs.facts,
 					concepts: obs.concepts,
 					files_read: obs.filesRead,
