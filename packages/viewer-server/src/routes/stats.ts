@@ -7,6 +7,25 @@
 import { listMaintenanceJobs, type MemoryStore, VERSION } from "@codemem/core";
 import { Hono } from "hono";
 
+function maintenanceJobSortKey(job: {
+	started_at: string | null;
+	updated_at: string;
+	kind: string;
+}): [string, string] {
+	return [job.started_at ?? job.updated_at, job.kind];
+}
+
+function sortActiveMaintenanceJobs<
+	T extends { started_at: string | null; updated_at: string; kind: string },
+>(jobs: T[]): T[] {
+	return [...jobs].sort((a, b) => {
+		const [aTime, aKind] = maintenanceJobSortKey(a);
+		const [bTime, bKind] = maintenanceJobSortKey(b);
+		if (aTime !== bTime) return aTime.localeCompare(bTime);
+		return aKind.localeCompare(bKind);
+	});
+}
+
 /**
  * Create stats routes. The store factory is called per-request to get a
  * fresh connection (matching the Python viewer pattern).
@@ -26,18 +45,18 @@ export function statsRoutes(getStore: () => MemoryStore) {
 	app.get("/api/stats", (c) => {
 		const store = getStore();
 		const jobs = listMaintenanceJobs(store.db);
-		const activeJobs = jobs
-			.filter(
+		const activeJobs = sortActiveMaintenanceJobs(
+			jobs.filter(
 				(job) => job.status === "pending" || job.status === "running" || job.status === "failed",
-			)
-			.map((job) => ({
-				kind: job.kind,
-				title: job.title,
-				status: job.status,
-				message: job.message,
-				progress: job.progress,
-				error: job.error,
-			}));
+			),
+		).map((job) => ({
+			kind: job.kind,
+			title: job.title,
+			status: job.status,
+			message: job.message,
+			progress: job.progress,
+			error: job.error,
+		}));
 		return c.json({
 			...store.stats(),
 			viewer_pid: process.pid,
