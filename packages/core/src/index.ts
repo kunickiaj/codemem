@@ -489,6 +489,11 @@ export type {
 	UsageEvent,
 	UserPrompt,
 } from "./types.js";
+export {
+	runVectorMigrationPass,
+	VECTOR_MODEL_MIGRATION_JOB,
+	VectorModelMigrationRunner,
+} from "./vector-migration.js";
 export type {
 	BackfillVectorsOptions,
 	BackfillVectorsResult,
