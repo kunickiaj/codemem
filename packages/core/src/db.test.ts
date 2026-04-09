@@ -21,6 +21,13 @@ import {
 	toJson,
 } from "./db.js";
 
+function hasIndex(db: Database, name: string): boolean {
+	const row = db
+		.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1")
+		.get(name) as { ok: number } | undefined;
+	return row?.ok === 1;
+}
+
 describe("connect", () => {
 	let tmpDir: string;
 	let db: Database;
@@ -343,6 +350,33 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "raw_event_flush_batches", "observer_error_code")).toBe(true);
 		expect(columnExists(db, "raw_event_flush_batches", "observer_error_message")).toBe(true);
 		expect(columnExists(db, "raw_event_flush_batches", "attempt_count")).toBe(true);
+	});
+
+	it("adds memory_items dedup_key column and index", () => {
+		db.exec(`
+			CREATE TABLE memory_items (
+				id INTEGER PRIMARY KEY,
+				session_id INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				title TEXT NOT NULL,
+				body_text TEXT NOT NULL,
+				visibility TEXT,
+				workspace_id TEXT,
+				active INTEGER DEFAULT 1,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+
+		expect(columnExists(db, "memory_items", "dedup_key")).toBe(false);
+		expect(hasIndex(db, "idx_memory_items_dedup_key_active_created")).toBe(false);
+		expect(hasIndex(db, "idx_memory_items_same_session_dedup_unique")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnExists(db, "memory_items", "dedup_key")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_dedup_key_active_created")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_same_session_dedup_unique")).toBe(true);
 	});
 
 	it("treats duplicate-column races as benign when column now exists", () => {

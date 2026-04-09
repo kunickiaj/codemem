@@ -492,6 +492,36 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		}
 	}
 
+	if (tableExists(db, "memory_items")) {
+		if (!columnExists(db, "memory_items", "dedup_key")) {
+			try {
+				db.exec("ALTER TABLE memory_items ADD COLUMN dedup_key TEXT");
+			} catch (err) {
+				const message = err instanceof Error ? err.message.toLowerCase() : "";
+				const duplicateColumn = message.includes("duplicate column name");
+				if (!(duplicateColumn && columnExists(db, "memory_items", "dedup_key"))) {
+					throw err;
+				}
+			}
+		}
+
+		try {
+			db.exec(
+				"CREATE INDEX IF NOT EXISTS idx_memory_items_dedup_key_active_created ON memory_items(dedup_key, active, created_at)",
+			);
+		} catch {
+			// Keep additive compatibility best-effort for index creation.
+		}
+
+		try {
+			db.exec(
+				"CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_same_session_dedup_unique ON memory_items(session_id, kind, visibility, workspace_id, dedup_key) WHERE active = 1 AND dedup_key IS NOT NULL",
+			);
+		} catch {
+			// Keep additive compatibility best-effort for index creation.
+		}
+	}
+
 	if (!tableExists(db, "raw_event_flush_batches")) return;
 
 	const additiveColumns: Array<{ name: string; ddl: string }> = [
