@@ -211,4 +211,24 @@ describe("vector migration", () => {
 			.all() as Array<{ model: string; c: number }>;
 		expect(models).toEqual([{ model: "test-model", c: 3 }]);
 	});
+
+	it("backfills memories that have no vectors at all (no source model)", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+		seedMemory(db, 2, sessionId, "Two", "Body two");
+		// No vectors seeded at all — empty memory_vectors table
+
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(job).toMatchObject({
+			status: "completed",
+			progress: { current: 2, total: 2, unit: "items" },
+		});
+
+		const models = db
+			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+			.all() as Array<{ model: string; c: number }>;
+		expect(models).toEqual([{ model: "test-model", c: 2 }]);
+	});
 });
