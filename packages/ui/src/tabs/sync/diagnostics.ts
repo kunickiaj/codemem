@@ -34,7 +34,6 @@ type PingPayloadState = SyncPayloadState & {
 };
 
 type SyncStatusState = {
-	background_maintenance?: MaintenanceJobState[];
 	daemon_detail?: string;
   daemon_state?: string;
   enabled?: boolean;
@@ -67,18 +66,7 @@ type PairingPayloadState = Record<string, unknown> & {
   redacted?: boolean;
 };
 
-type MaintenanceJobState = {
-  kind?: string;
-  title?: string;
-  status?: string;
-  message?: string | null;
-  error?: string | null;
-  progress?: {
-    current?: number;
-    total?: number | null;
-    unit?: string;
-  };
-};
+
 
 const SYNC_REDACT_MOUNT_ID = 'syncRedactMount';
 const SYNC_REDACT_LABEL_ID = 'syncRedactLabel';
@@ -183,10 +171,6 @@ export function renderSyncStatus() {
   hideSkeleton('syncDiagSkeleton');
 
   const status = state.lastSyncStatus as SyncStatusState | null;
-  const maintenanceJobs = Array.isArray(status?.background_maintenance)
-    ? (status.background_maintenance as MaintenanceJobState[])
-        .filter((job) => ['pending', 'running', 'failed'].includes(String(job?.status || '')))
-    : [];
   if (!status) {
     renderSyncEmptyState(syncStatusGrid, diagnosticsLoadingState());
     renderActionList(syncActions, []);
@@ -253,27 +237,7 @@ export function renderSyncStatus() {
           : 'Retention enabled',
       );
     }
-    if (maintenanceJobs.length > 0) {
-      const maintenanceLabel = maintenanceJobs
-        .slice(0, 2)
-        .map((job) => {
-          const current = Number(job.progress?.current || 0);
-          const total = typeof job.progress?.total === 'number' ? job.progress?.total : null;
-          const unit = String(job.progress?.unit || 'items');
-          const progress = total && total > 0
-            ? `${current}/${total} ${unit}`
-            : current > 0
-              ? `${current} ${unit}`
-              : titleCase(String(job.status || 'running'));
-          const detail = String(job.error || job.message || '').trim();
-          if (detail) {
-            return `${String(job.title || job.kind || 'Background maintenance')}: ${progress} — ${detail}`;
-          }
-          return `${String(job.title || job.kind || 'Background maintenance')}: ${progress}`;
-        })
-        .join(' · ');
-      parts.push(`Maintenance: ${maintenanceLabel}`);
-    }
+
     syncMeta.textContent = parts.join(' · ');
   }
 

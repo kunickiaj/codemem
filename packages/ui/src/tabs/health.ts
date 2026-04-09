@@ -239,6 +239,14 @@ export function renderHealthOverview() {
   const usagePayload = state.lastUsagePayload || {};
   const raw = state.lastRawEventsPayload && typeof state.lastRawEventsPayload === 'object' ? state.lastRawEventsPayload : {};
   const syncStatus = state.lastSyncStatus || {};
+  const maintenanceJobs: Array<{
+    kind?: string;
+    title?: string;
+    status?: string;
+    message?: string | null;
+    error?: string | null;
+    progress?: { current?: number; total?: number | null; unit?: string };
+  }> = Array.isArray(stats.maintenance_jobs) ? stats.maintenance_jobs : [];
   const reliability = stats.reliability || {};
   const counts = reliability.counts || {};
   const rates = reliability.rates || {};
@@ -313,8 +321,28 @@ export function renderHealthOverview() {
     : `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
   const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
 
+  // Build maintenance card(s) for active background jobs
+  const maintenanceCards: HealthCardInput[] = maintenanceJobs.map((job) => {
+    const current = Number(job.progress?.current || 0);
+    const total = typeof job.progress?.total === 'number' ? job.progress.total : null;
+    const unit = String(job.progress?.unit || 'items');
+    const pct = total && total > 0 ? ` (${Math.round(100 * current / total)}%)` : '';
+    const progress = total && total > 0 ? `${current.toLocaleString()}/${total.toLocaleString()} ${unit}${pct}` : `${current.toLocaleString()} ${unit}`;
+    const isFailed = job.status === 'failed';
+    const detail = isFailed ? String(job.error || 'unknown error').trim() : undefined;
+    return buildHealthCard({
+      label: String(job.title || job.kind || 'Background maintenance'),
+      value: isFailed ? 'Failed' : progress,
+      detail,
+      icon: isFailed ? 'alert-triangle' : 'loader',
+      className: isFailed ? 'status-attention' : undefined,
+      title: isFailed ? `Error: ${job.error || 'unknown'}` : `${String(job.title || 'Maintenance')} in progress`,
+    });
+  });
+
   const cards = [
     buildHealthCard({ label: 'Overall health', value: statusLabel, detail: `Weighted score ${riskScore}`, icon: 'heart-pulse', className: `health-primary ${statusClass}`, title: drivers.length ? `Main signals: ${drivers.join(', ')}` : 'No major risk signals detected' }),
+    ...maintenanceCards,
     buildHealthCard({ label: 'Pipeline health', value: `${rawPending.toLocaleString()} pending`, detail: pipelineDetail, icon: 'workflow', title: 'Raw-event queue pressure and flush reliability' }),
     buildHealthCard({ label: 'Retrieval impact', value: reductionLabel, detail: retrievalDetail, icon: 'sparkles', title: 'Reduction from memory reuse across recent usage' }),
     buildHealthCard({ label: 'Sync health', value: syncCardValue, detail: syncDetail, icon: 'refresh-cw', title: 'Daemon state and sync recency' }),
