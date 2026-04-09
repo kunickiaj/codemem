@@ -440,16 +440,34 @@ async function main() {
 		{
 			context: z.string().describe("Context description to search for"),
 			limit: z.number().int().min(1).max(50).optional().describe("Max items to include"),
+			compact: z
+				.boolean()
+				.optional()
+				.describe(
+					"When true, render a scannable index of all items with full detail only for the top N (default 3). Saves tokens when broad overview matters more than per-item detail.",
+				),
+			compact_detail_count: z
+				.number()
+				.int()
+				.min(0)
+				.max(50)
+				.optional()
+				.describe("Number of items to show in full detail in compact mode (default 3)"),
 			...filterSchema,
 		},
 		async (args) => {
 			try {
 				const filters = buildFilters(args);
+				const renderOptions =
+					args.compact || args.compact_detail_count != null
+						? { compact: args.compact ?? true, compactDetailCount: args.compact_detail_count }
+						: undefined;
 				const result = await store.buildMemoryPackAsync(
 					args.context,
 					args.limit ?? undefined,
 					null,
 					filters,
+					renderOptions,
 				);
 				return jsonContent(result);
 			} catch (err) {
