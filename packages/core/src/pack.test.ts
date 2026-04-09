@@ -317,13 +317,16 @@ describe("buildMemoryPack", () => {
 			"Tracing duplicate body",
 			0.9,
 		);
-		const duplicateId = store.remember(
-			sessionId,
-			"decision",
-			"Tracing duplicate title",
-			"Tracing duplicate body",
-			0.8,
-		);
+		const now = new Date().toISOString();
+		const info = store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key
+				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+			)
+			.run(sessionId, "Tracing duplicate title", "Tracing duplicate body", 0.8, now, now);
+		const duplicateId = Number(info.lastInsertRowid);
 
 		const trace = buildMemoryPackTrace(store, "tracing", 10, 30);
 		const collapsedGroup = trace.assembly.collapsed_groups.find(

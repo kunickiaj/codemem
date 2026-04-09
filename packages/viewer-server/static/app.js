@@ -1339,14 +1339,14 @@
 	}
 	function observationViewData(item) {
 		const metadata = mergeMetadata(item?.metadata_json);
-		const summary = String(item?.subtitle || item?.body_text || "").trim();
-		const narrative = String(item?.narrative || metadata?.narrative || "").trim();
+		const summary = String(item?.subtitle || metadata?.subtitle || "").trim();
+		const narrative = String(item?.narrative || metadata?.narrative || item?.body_text || "").trim();
 		const normSummary = normalize(summary);
 		const normNarrative = normalize(narrative);
 		const narrativeDistinct = Boolean(narrative) && normNarrative !== normSummary;
 		const explicitFacts = parseJsonArray(item?.facts || metadata?.facts || []);
-		const fallbackFacts = explicitFacts.length ? explicitFacts : extractFactsFromBody(summary || narrative);
-		const derivedFacts = fallbackFacts.length ? fallbackFacts : sentenceFacts(summary);
+		const fallbackFacts = explicitFacts.length ? explicitFacts : extractFactsFromBody(narrative || summary);
+		const derivedFacts = fallbackFacts.length ? fallbackFacts : sentenceFacts(narrative || summary);
 		return {
 			summary,
 			narrative,
@@ -13781,7 +13781,7 @@ For more information, see https://radix-ui.com/primitives/docs/components/${titl
 		try {
 			const runtime = await loadRuntimeInfo();
 			if (!runtime?.version) return;
-			setRuntimeLabel(runtime.version, "0b3b12e");
+			setRuntimeLabel(runtime.version, "9b37b4d");
 		} catch {}
 	}
 	var lastAnnouncedRefreshState = null;

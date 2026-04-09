@@ -2,6 +2,7 @@
  * Drizzle ORM schema for the codemem SQLite database.
  */
 
+import { sql } from "drizzle-orm";
 import {
 	index,
 	integer,
@@ -83,11 +84,20 @@ export const memoryItems = sqliteTable(
 		prompt_number: integer("prompt_number"),
 		deleted_at: text("deleted_at"),
 		rev: integer("rev").default(0),
+		dedup_key: text("dedup_key"),
 		import_key: text("import_key"),
 	},
 	(table) => [
 		index("idx_memory_items_active_created").on(table.active, table.created_at),
 		index("idx_memory_items_session").on(table.session_id),
+		index("idx_memory_items_dedup_key_active_created").on(
+			table.dedup_key,
+			table.active,
+			table.created_at,
+		),
+		uniqueIndex("idx_memory_items_same_session_dedup_unique")
+			.on(table.session_id, table.kind, table.visibility, table.workspace_id, table.dedup_key)
+			.where(sql`active = 1 AND dedup_key IS NOT NULL`),
 	],
 );
 

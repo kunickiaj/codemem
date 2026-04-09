@@ -23,15 +23,18 @@ describe("MemoryStore", () => {
 	let prevCodememConfig: string | undefined;
 	let prevActorId: string | undefined;
 	let prevActorDisplayName: string | undefined;
+	let prevCrossSessionDedupWindowMs: string | undefined;
 
 	beforeEach(() => {
 		prevCodememConfig = process.env.CODEMEM_CONFIG;
 		prevActorId = process.env.CODEMEM_ACTOR_ID;
 		prevActorDisplayName = process.env.CODEMEM_ACTOR_DISPLAY_NAME;
+		prevCrossSessionDedupWindowMs = process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS;
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-store-test-"));
 		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
 		delete process.env.CODEMEM_ACTOR_ID;
 		delete process.env.CODEMEM_ACTOR_DISPLAY_NAME;
+		delete process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS;
 		dbPath = join(tmpDir, "test.sqlite");
 		// Pre-create the schema so MemoryStore constructor's assertSchemaReady passes
 		const setupDb = connect(dbPath);
@@ -49,6 +52,11 @@ describe("MemoryStore", () => {
 		else process.env.CODEMEM_ACTOR_ID = prevActorId;
 		if (prevActorDisplayName === undefined) delete process.env.CODEMEM_ACTOR_DISPLAY_NAME;
 		else process.env.CODEMEM_ACTOR_DISPLAY_NAME = prevActorDisplayName;
+		if (prevCrossSessionDedupWindowMs === undefined) {
+			delete process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS;
+		} else {
+			process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS = prevCrossSessionDedupWindowMs;
+		}
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -252,6 +260,188 @@ describe("MemoryStore", () => {
 			} finally {
 				storeVectorsSpy.mockRestore();
 			}
+		});
+
+		it("returns the existing id for same-session duplicate normalized titles", () => {
+			const sessionId = insertTestSession(store.db);
+			const firstId = store.remember(
+				sessionId,
+				"feature",
+				"PR #123 Sync pass orchestrator ported to TypeScript",
+				"Original body",
+			);
+			const duplicateId = store.remember(
+				sessionId,
+				"feature",
+				"Sync pass orchestrator ported to TypeScript",
+				"Duplicate body",
+			);
+
+			expect(duplicateId).toBe(firstId);
+			const count = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+				count: number;
+			};
+			expect(count.count).toBe(1);
+		});
+
+		it("returns the existing id for same-session duplicates when normalization strips the title", () => {
+			const sessionId = insertTestSession(store.db);
+			const firstId = store.remember(sessionId, "feature", "PR #77", "Original body");
+			const duplicateId = store.remember(sessionId, "feature", "PR #77", "Duplicate body");
+
+			expect(duplicateId).toBe(firstId);
+			const count = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+				count: number;
+			};
+			expect(count.count).toBe(1);
+		});
+
+		it("returns the existing id for cross-session duplicates within the default window", () => {
+			const sessionA = insertTestSession(store.db);
+			const sessionB = insertTestSession(store.db);
+			const firstId = store.remember(
+				sessionA,
+				"discovery",
+				"Issue #649 Context inspector stale query state",
+				"Original body",
+				0.9,
+			);
+			const duplicateId = store.remember(
+				sessionB,
+				"discovery",
+				"Context inspector stale query state",
+				"Duplicate body",
+				0.5,
+			);
+
+			expect(duplicateId).toBe(firstId);
+			const count = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+				count: number;
+			};
+			expect(count.count).toBe(1);
+		});
+
+		it("inserts a new row for cross-session duplicates outside the dedup window", () => {
+			const sessionA = insertTestSession(store.db);
+			const sessionB = insertTestSession(store.db);
+			const firstId = store.remember(
+				sessionA,
+				"discovery",
+				"Duplicate title",
+				"Original body",
+				0.9,
+			);
+			store.db
+				.prepare("UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id = ?")
+				.run("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", firstId);
+
+			const secondId = store.remember(sessionB, "discovery", "Duplicate title", "New body", 0.5);
+
+			expect(secondId).not.toBe(firstId);
+			const count = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+				count: number;
+			};
+			expect(count.count).toBe(2);
+		});
+
+		it("disables cross-session dedup when the window env var is 0", () => {
+			store.close();
+			process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS = "0";
+			store = new MemoryStore(dbPath);
+
+			const sessionA = insertTestSession(store.db);
+			const sessionB = insertTestSession(store.db);
+			const firstId = store.remember(
+				sessionA,
+				"discovery",
+				"Duplicate title",
+				"Original body",
+				0.9,
+			);
+			const secondId = store.remember(sessionB, "discovery", "Duplicate title", "New body", 0.5);
+
+			expect(secondId).not.toBe(firstId);
+			const count = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+				count: number;
+			};
+			expect(count.count).toBe(2);
+		});
+
+		it("clamps absurdly large cross-session dedup windows instead of throwing", () => {
+			store.close();
+			process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS = "9000000000000000";
+			store = new MemoryStore(dbPath);
+
+			const sessionA = insertTestSession(store.db);
+			const sessionB = insertTestSession(store.db);
+
+			expect(() => {
+				store.remember(sessionA, "discovery", "Large window title", "Original body", 0.9);
+				store.remember(sessionB, "discovery", "Large window title", "Duplicate body", 0.5);
+			}).not.toThrow();
+		});
+
+		it("does not dedup across different kinds even with the same normalized title", () => {
+			const sessionA = insertTestSession(store.db);
+			const sessionB = insertTestSession(store.db);
+			const firstId = store.remember(
+				sessionA,
+				"discovery",
+				"Duplicate title",
+				"Original body",
+				0.9,
+			);
+			const secondId = store.remember(
+				sessionB,
+				"session_summary",
+				"Duplicate title",
+				"Summary body",
+				0.5,
+			);
+
+			expect(secondId).not.toBe(firstId);
+			const count = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+				count: number;
+			};
+			expect(count.count).toBe(2);
+		});
+
+		it("returns the existing id before shared-write blocking when a duplicate already exists", () => {
+			const sessionId = insertTestSession(store.db);
+			const firstId = store.remember(sessionId, "discovery", "Shared duplicate", "Body", 0.5, [], {
+				visibility: "shared",
+			});
+
+			setSyncDaemonPhase(store.db, "needs_attention");
+
+			expect(
+				store.remember(sessionId, "discovery", "Shared duplicate", "Body changed", 0.5, [], {
+					visibility: "shared",
+				}),
+			).toBe(firstId);
+		});
+
+		it("intentionally prefers the first row when normalized titles match but bodies differ", () => {
+			const sessionA = insertTestSession(store.db);
+			const sessionB = insertTestSession(store.db);
+			const firstId = store.remember(
+				sessionA,
+				"discovery",
+				"PR #321 observer narrative persistence",
+				"First body",
+				0.9,
+			);
+			const duplicateId = store.remember(
+				sessionB,
+				"discovery",
+				"Observer narrative persistence",
+				"Second body with different details",
+				0.4,
+			);
+
+			expect(duplicateId).toBe(firstId);
+			const row = store.get(firstId);
+			expect(row?.body_text).toBe("First body");
 		});
 	});
 

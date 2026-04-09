@@ -12,7 +12,7 @@
  * memory_owned_by_self check.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -154,6 +154,49 @@ function projectBasename(value: string | null | undefined): string {
 
 const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
 const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
+const DEFAULT_CROSS_SESSION_DEDUP_WINDOW_MS = 3_600_000;
+const CROSS_SESSION_DEDUP_WINDOW_ENV = "CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS";
+const MAX_CROSS_SESSION_DEDUP_WINDOW_MS = 8_640_000_000_000_000;
+
+function normalizeMemoryDedupTitle(title: string): string {
+	return title
+		.toLowerCase()
+		.replace(/\b(?:pr|pull\s+request|issue)\s*#?\d+\b/gi, " ")
+		.replace(/^\s*#\d+\s*/g, " ")
+		.replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function buildMemoryDedupKey(title: string): string | null {
+	const normalized = normalizeMemoryDedupTitle(title);
+	const fallback = title.toLowerCase().replace(/\s+/g, " ").trim();
+	const keySource = normalized || fallback;
+	if (!keySource) return null;
+	return createHash("sha256").update(keySource).digest("hex");
+}
+
+function getMemoryDedupMatchText(title: string): string | null {
+	const normalized = normalizeMemoryDedupTitle(title);
+	const fallback = title.toLowerCase().replace(/\s+/g, " ").trim();
+	return normalized || fallback || null;
+}
+
+function resolveCrossSessionDedupWindowMs(): number {
+	const raw = process.env[CROSS_SESSION_DEDUP_WINDOW_ENV]?.trim();
+	if (!raw) return DEFAULT_CROSS_SESSION_DEDUP_WINDOW_MS;
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_CROSS_SESSION_DEDUP_WINDOW_MS;
+	return Math.min(Math.floor(parsed), MAX_CROSS_SESSION_DEDUP_WINDOW_MS);
+}
+
+function isSameSessionDedupConstraintError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message.toLowerCase() : "";
+	return (
+		message.includes("idx_memory_items_same_session_dedup_unique") ||
+		(message.includes("unique constraint failed") && message.includes("memory_items.session_id"))
+	);
+}
 
 /**
  * Parse a row's metadata_json string into a plain object.
@@ -172,6 +215,7 @@ export class MemoryStore {
 	readonly deviceId: string;
 	readonly actorId: string;
 	readonly actorDisplayName: string;
+	readonly crossSessionDedupWindowMs: number;
 	private readonly pendingVectorWrites = new Set<Promise<void>>();
 
 	/** Lazy Drizzle ORM wrapper — shares the same better-sqlite3 connection. */
@@ -228,6 +272,79 @@ export class MemoryStore {
 			: (cleanStr(config.actor_display_name) ?? null);
 		this.actorDisplayName =
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
+		this.crossSessionDedupWindowMs = resolveCrossSessionDedupWindowMs();
+	}
+
+	private findExistingDuplicateMemory(
+		sessionId: number,
+		kind: string,
+		title: string,
+		dedupKey: string | null,
+		provenance: {
+			visibility: string;
+			workspace_id: string;
+		},
+		now: string,
+	): number | null {
+		if (!dedupKey) return null;
+		const matchTitle = getMemoryDedupMatchText(title);
+		if (!matchTitle) return null;
+
+		const sameSessionRows = this.db
+			.prepare(
+				`SELECT id, title
+				 FROM memory_items
+				 WHERE active = 1
+				   AND session_id = ?
+				   AND kind = ?
+				   AND visibility = ?
+				   AND workspace_id = ?
+				   AND (dedup_key = ? OR dedup_key IS NULL)
+				 ORDER BY created_at DESC, id DESC`,
+			)
+			.all(sessionId, kind, provenance.visibility, provenance.workspace_id, dedupKey) as Array<{
+			id: number;
+			title: string;
+		}>;
+		for (const row of sameSessionRows) {
+			if (getMemoryDedupMatchText(row.title) === matchTitle) return row.id;
+		}
+
+		// Cross-session matching is intentionally best-effort. We want to avoid
+		// obvious duplicate bursts from adjacent sessions, but we do not enforce
+		// a global uniqueness constraint because the time-window heuristic is not
+		// strong enough to be a durable identity rule.
+		if (this.crossSessionDedupWindowMs <= 0) return null;
+
+		const since = new Date(Date.parse(now) - this.crossSessionDedupWindowMs).toISOString();
+		const crossSessionRows = this.db
+			.prepare(
+				`SELECT id, title
+				 FROM memory_items
+				 WHERE active = 1
+				   AND session_id != ?
+				   AND kind = ?
+				   AND visibility = ?
+				   AND workspace_id = ?
+				   AND created_at >= ?
+				   AND (dedup_key = ? OR dedup_key IS NULL)
+				 ORDER BY confidence DESC, created_at DESC, id DESC`,
+			)
+			.all(
+				sessionId,
+				kind,
+				provenance.visibility,
+				provenance.workspace_id,
+				since,
+				dedupKey,
+			) as Array<{
+			id: number;
+			title: string;
+		}>;
+		for (const row of crossSessionRows) {
+			if (getMemoryDedupMatchText(row.title) === matchTitle) return row.id;
+		}
+		return null;
 	}
 
 	/**
@@ -437,6 +554,7 @@ export class MemoryStore {
 		const now = nowIso();
 		const tagsText = tags ? [...new Set(tags)].sort().join(" ") : "";
 		const metaPayload = { ...(metadata ?? {}) };
+		const dedupKey = buildMemoryDedupKey(title);
 
 		metaPayload.clock_device_id ??= this.deviceId;
 		const importKey = (metaPayload.import_key as string) || randomUUID();
@@ -459,46 +577,72 @@ export class MemoryStore {
 		// Resolve provenance fields
 		const provenance = this.resolveProvenance(metaPayload);
 
+		const existingId = this.findExistingDuplicateMemory(
+			sessionId,
+			validKind,
+			title,
+			dedupKey,
+			provenance,
+			now,
+		);
+		if (existingId != null) return existingId;
+
 		// Block shared-memory writes while sync requires attention.
 		this.assertSharedMutationAllowed(provenance.visibility);
 
-		const rows = this.d
-			.insert(schema.memoryItems)
-			.values({
-				session_id: sessionId,
-				kind: validKind,
+		let insertedRows: Array<{ id: number }>;
+		try {
+			insertedRows = this.d
+				.insert(schema.memoryItems)
+				.values({
+					session_id: sessionId,
+					kind: validKind,
+					title,
+					subtitle,
+					body_text: bodyText,
+					confidence,
+					tags_text: tagsText,
+					active: 1,
+					created_at: now,
+					updated_at: now,
+					metadata_json: toJson(metaPayload),
+					actor_id: provenance.actor_id,
+					actor_display_name: provenance.actor_display_name,
+					visibility: provenance.visibility,
+					workspace_id: provenance.workspace_id,
+					workspace_kind: provenance.workspace_kind,
+					origin_device_id: provenance.origin_device_id,
+					origin_source: provenance.origin_source,
+					trust_state: provenance.trust_state,
+					narrative,
+					facts: toJsonNullable(facts),
+					concepts: toJsonNullable(concepts),
+					files_read: toJsonNullable(filesRead),
+					files_modified: toJsonNullable(filesModified),
+					prompt_number: promptNumber,
+					user_prompt_id: userPromptId,
+					deleted_at: null,
+					rev: 1,
+					dedup_key: dedupKey,
+					import_key: importKey,
+				})
+				.returning({ id: schema.memoryItems.id })
+				.all();
+		} catch (error) {
+			if (!isSameSessionDedupConstraintError(error)) throw error;
+			const existingSameSessionId = this.findExistingDuplicateMemory(
+				sessionId,
+				validKind,
 				title,
-				subtitle,
-				body_text: bodyText,
-				confidence,
-				tags_text: tagsText,
-				active: 1,
-				created_at: now,
-				updated_at: now,
-				metadata_json: toJson(metaPayload),
-				actor_id: provenance.actor_id,
-				actor_display_name: provenance.actor_display_name,
-				visibility: provenance.visibility,
-				workspace_id: provenance.workspace_id,
-				workspace_kind: provenance.workspace_kind,
-				origin_device_id: provenance.origin_device_id,
-				origin_source: provenance.origin_source,
-				trust_state: provenance.trust_state,
-				narrative,
-				facts: toJsonNullable(facts),
-				concepts: toJsonNullable(concepts),
-				files_read: toJsonNullable(filesRead),
-				files_modified: toJsonNullable(filesModified),
-				prompt_number: promptNumber,
-				user_prompt_id: userPromptId,
-				deleted_at: null,
-				rev: 1,
-				import_key: importKey,
-			})
-			.returning({ id: schema.memoryItems.id })
-			.all();
+				dedupKey,
+				provenance,
+				now,
+			);
+			if (existingSameSessionId != null) return existingSameSessionId;
+			throw error;
+		}
 
-		const memoryId = rows[0]?.id;
+		const memoryId = insertedRows[0]?.id;
 		if (memoryId == null) throw new Error("memory insert returned no id");
 
 		// Record replication op for sync propagation
