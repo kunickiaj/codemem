@@ -76,25 +76,36 @@ const SYNC_PROTOCOL_VERSION = "2";
 const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
 const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
 
+function sortActiveMaintenanceJobs<
+	T extends { started_at: string | null; updated_at: string; kind: string },
+>(jobs: T[]): T[] {
+	return [...jobs].sort((a, b) => {
+		const aTime = a.started_at ?? a.updated_at;
+		const bTime = b.started_at ?? b.updated_at;
+		if (aTime !== bTime) return aTime.localeCompare(bTime);
+		return a.kind.localeCompare(b.kind);
+	});
+}
+
 function summarizeMaintenanceJobs(
 	jobs: MaintenanceJobSnapshot[],
 	showDiagnostics: boolean,
 ): Array<Record<string, unknown>> {
-	return jobs
-		.filter((job) => ["pending", "running", "failed"].includes(String(job.status ?? "")))
-		.map((job) => ({
-			kind: job.kind,
-			title: job.title,
-			status: job.status,
-			progress: job.progress,
-			...(showDiagnostics
-				? {
-						message: job.message,
-						error: job.error,
-						metadata: job.metadata,
-					}
-				: {}),
-		}));
+	return sortActiveMaintenanceJobs(
+		jobs.filter((job) => ["pending", "running", "failed"].includes(String(job.status ?? ""))),
+	).map((job) => ({
+		kind: job.kind,
+		title: job.title,
+		status: job.status,
+		progress: job.progress,
+		...(showDiagnostics
+			? {
+					message: job.message,
+					error: job.error,
+					metadata: job.metadata,
+				}
+			: {}),
+	}));
 }
 
 function syncKeysDir(): string | undefined {

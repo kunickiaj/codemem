@@ -17,6 +17,7 @@ import {
 	loadPublicKey,
 	MemoryStore,
 	startMaintenanceJob,
+	updateMaintenanceJob,
 	VERSION,
 } from "@codemem/core";
 import Database from "better-sqlite3";
@@ -200,6 +201,40 @@ describe("viewer-server", () => {
 				expect(db).toHaveProperty("path");
 				expect(db).toHaveProperty("sessions");
 				expect(db).toHaveProperty("memory_items");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("keeps active maintenance jobs in stable started order", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				startMaintenanceJob(store.db, {
+					kind: "job-a",
+					title: "Job A",
+					message: "A",
+					progressTotal: 10,
+				});
+				startMaintenanceJob(store.db, {
+					kind: "job-b",
+					title: "Job B",
+					message: "B",
+					progressTotal: 10,
+				});
+				updateMaintenanceJob(store.db, "job-b", {
+					message: "B updated",
+					progressCurrent: 5,
+				});
+
+				const res = await app.request("/api/stats");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				const jobs = body.maintenance_jobs as Array<Record<string, unknown>>;
+				expect(jobs.map((job) => job.kind)).toEqual(["job-a", "job-b"]);
 			} finally {
 				cleanup();
 			}
