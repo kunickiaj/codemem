@@ -117,6 +117,28 @@ export const usageEvents = sqliteTable(
 export type UsageEvent = typeof usageEvents.$inferSelect;
 export type NewUsageEvent = typeof usageEvents.$inferInsert;
 
+export const maintenanceJobs = sqliteTable(
+	"maintenance_jobs",
+	{
+		kind: text("kind").primaryKey(),
+		title: text("title").notNull(),
+		status: text("status").notNull(),
+		message: text("message"),
+		progress_current: integer("progress_current").notNull().default(0),
+		progress_total: integer("progress_total"),
+		progress_unit: text("progress_unit").notNull().default("items"),
+		metadata_json: text("metadata_json"),
+		started_at: text("started_at"),
+		updated_at: text("updated_at").notNull(),
+		finished_at: text("finished_at"),
+		error: text("error"),
+	},
+	(table) => [index("idx_maintenance_jobs_status_updated").on(table.status, table.updated_at)],
+);
+
+export type MaintenanceJob = typeof maintenanceJobs.$inferSelect;
+export type NewMaintenanceJob = typeof maintenanceJobs.$inferInsert;
+
 export const rawEvents = sqliteTable(
 	"raw_events",
 	{

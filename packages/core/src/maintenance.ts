@@ -10,6 +10,7 @@ import {
 } from "./db.js";
 import { getInjectionEvalScenarioByPrompt } from "./eval-scenarios.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
+import { ensureMaintenanceJobsSchema } from "./maintenance-jobs.js";
 import { buildMemoryPack } from "./pack.js";
 import { projectClause } from "./project.js";
 import * as schema from "./schema.js";
@@ -1382,6 +1383,7 @@ export function initDatabase(dbPath?: string): { path: string; sizeBytes: number
 			bootstrapSchema(db);
 		}
 		assertSchemaReady(db);
+		ensureMaintenanceJobsSchema(db);
 		applyRawEventRelinkPlanWithDb(db);
 		const stats = statSync(resolvedPath);
 		return { path: resolvedPath, sizeBytes: stats.size };

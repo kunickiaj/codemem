@@ -129,15 +129,16 @@ individually.
 - present synthesized sections before the individual memory listing
 - keep individual memories available for detail
 
-**This phase is deliberately underspecified.** The right design depends on what
-Phase D and A reveal about real pack failures once structured content is
-available. Design the synthesis contract after shipping D and A.
+**This phase has been specified** based on a 30-trace empirical audit conducted
+after shipping D and A. See
+[Phase B design doc](./2026-04-08-phase-b-pack-dedup-design.md) for the full
+spec, audit data, and implementation plan.
 
 ## Implementation Order
 
-1. **Phase D** — restore narrative/facts (quick win, high signal)
-2. **Phase A** — compact index + fetch-more (token efficiency, broad context)
-3. **Phase B** — cross-memory synthesis (differentiated product value)
+1. **Phase D** — restore narrative/facts (quick win, high signal) ✅ shipped
+2. **Phase A** — compact index + fetch-more (token efficiency, broad context) ✅ shipped
+3. **Phase B** — cross-memory synthesis (differentiated product value) — [design ready](./2026-04-08-phase-b-pack-dedup-design.md)
 
 ## Files Likely to Change
 

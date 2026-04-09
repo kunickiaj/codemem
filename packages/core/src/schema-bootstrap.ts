@@ -17,6 +17,24 @@ CREATE TABLE IF NOT EXISTS sync_retention_state (
 	last_error_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS maintenance_jobs (
+	kind TEXT PRIMARY KEY,
+	title TEXT NOT NULL,
+	status TEXT NOT NULL,
+	message TEXT,
+	progress_current INTEGER NOT NULL DEFAULT 0,
+	progress_total INTEGER,
+	progress_unit TEXT NOT NULL DEFAULT 'items',
+	metadata_json TEXT,
+	started_at TEXT,
+	updated_at TEXT NOT NULL,
+	finished_at TEXT,
+	error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_status_updated
+	ON maintenance_jobs(status, updated_at);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 	title, body_text, tags_text,
 	content='memory_items',
