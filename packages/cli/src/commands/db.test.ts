@@ -39,13 +39,17 @@ describe("db command", () => {
 		expect(pruneMemLongs).toContain("--json");
 	});
 
-	it("registers dedup-memories, backfill-narrative, and ai-backfill-structured subcommands", () => {
+	it("registers dedup-memories, backfill-dedup-keys, backfill-narrative, and ai-backfill-structured subcommands", () => {
 		const dedup = dbCommand.commands.find((command) => command.name() === "dedup-memories");
+		const dedupKeys = dbCommand.commands.find(
+			(command) => command.name() === "backfill-dedup-keys",
+		);
 		const narrative = dbCommand.commands.find((command) => command.name() === "backfill-narrative");
 		const aiStructured = dbCommand.commands.find(
 			(command) => command.name() === "ai-backfill-structured",
 		);
 		expect(dedup).toBeDefined();
+		expect(dedupKeys).toBeDefined();
 		expect(narrative).toBeDefined();
 		expect(aiStructured).toBeDefined();
 
@@ -54,6 +58,11 @@ describe("db command", () => {
 		expect(dedupLongs).toContain("--limit");
 		expect(dedupLongs).toContain("--dry-run");
 		expect(dedupLongs).toContain("--json");
+
+		const dedupKeysLongs = dedupKeys?.options.map((option) => option.long) ?? [];
+		expect(dedupKeysLongs).toContain("--limit");
+		expect(dedupKeysLongs).toContain("--dry-run");
+		expect(dedupKeysLongs).toContain("--json");
 
 		const narrativeLongs = narrative?.options.map((option) => option.long) ?? [];
 		expect(narrativeLongs).toContain("--limit");

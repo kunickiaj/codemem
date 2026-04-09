@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
 	aiBackfillStructuredContent,
 	applyRawEventRelinkPlan,
+	backfillMemoryDedupKeys,
 	backfillNarrativeFromBody,
 	backfillTagsText,
 	compareMemoryRoleReports,
@@ -934,8 +935,10 @@ describe("dedupNearDuplicateMemories", () => {
 
 			expect(result.deactivated).toBe(1);
 			expect(result.pairs[0]).toMatchObject({ kept_id: id1, deactivated_id: id2 });
-			const active = (db.prepare("SELECT active FROM memory_items WHERE id = ?").get(id2) as any)
-				.active;
+			const row = db.prepare("SELECT active FROM memory_items WHERE id = ?").get(id2) as {
+				active: number;
+			};
+			const active = row.active;
 			expect(active).toBe(0);
 		} finally {
 			db.close();
@@ -1013,8 +1016,10 @@ describe("dedupNearDuplicateMemories", () => {
 			const result = dedupNearDuplicateMemories(db, { dryRun: true });
 
 			expect(result.deactivated).toBe(1);
-			const active = (db.prepare("SELECT active FROM memory_items WHERE id = ?").get(id2) as any)
-				.active;
+			const row = db.prepare("SELECT active FROM memory_items WHERE id = ?").get(id2) as {
+				active: number;
+			};
+			const active = row.active;
 			expect(active).toBe(1); // Not actually deactivated
 		} finally {
 			db.close();
@@ -1092,7 +1097,9 @@ describe("backfillNarrativeFromBody", () => {
 			const result = backfillNarrativeFromBody(db);
 
 			expect(result).toMatchObject({ checked: 1, updated: 1, skipped: 0 });
-			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as any;
+			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as {
+				narrative: string | null;
+			};
 			expect(row.narrative).toBe("Did the stuff.\n\nStuff is easy.");
 		} finally {
 			db.close();
@@ -1141,7 +1148,9 @@ describe("backfillNarrativeFromBody", () => {
 			const result = backfillNarrativeFromBody(db);
 
 			expect(result.checked).toBe(0); // Already has narrative, not selected
-			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as any;
+			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as {
+				narrative: string | null;
+			};
 			expect(row.narrative).toBe("Existing narrative");
 		} finally {
 			db.close();
@@ -1167,8 +1176,147 @@ describe("backfillNarrativeFromBody", () => {
 			const result = backfillNarrativeFromBody(db, { dryRun: true });
 
 			expect(result).toMatchObject({ checked: 1, updated: 1, skipped: 0 });
-			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as any;
+			const row = db.prepare("SELECT narrative FROM memory_items WHERE id = ?").get(id) as {
+				narrative: string | null;
+			};
 			expect(row.narrative).toBeNull(); // Not actually written
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("backfillMemoryDedupKeys", () => {
+	function seedMemoryWithoutDedupKey(
+		db: Database,
+		sessionId: number,
+		title: string,
+		dedupKey: string | null = null,
+	): number {
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+				 workspace_id, dedup_key)
+				 VALUES (?, 'discovery', ?, 'Body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', ?)`,
+			)
+			.run(sessionId, title, now, now, dedupKey);
+		return Number(info.lastInsertRowid);
+	}
+
+	it("populates missing dedup_key values for legacy rows", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedMemoryWithoutDedupKey(db, sessionId, "PR #123 Sync pass orchestrator ported");
+
+			const result = backfillMemoryDedupKeys(db);
+
+			expect(result).toMatchObject({ checked: 1, updated: 1, skipped: 0 });
+			const row = db.prepare("SELECT dedup_key FROM memory_items WHERE id = ?").get(id) as {
+				dedup_key: string | null;
+			};
+			expect(row.dedup_key).toBeTruthy();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("uses a fallback key when normalization strips the title", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedMemoryWithoutDedupKey(db, sessionId, "PR #123");
+
+			const result = backfillMemoryDedupKeys(db);
+
+			expect(result).toMatchObject({ checked: 1, updated: 1, skipped: 0 });
+			const row = db.prepare("SELECT dedup_key FROM memory_items WHERE id = ?").get(id) as {
+				dedup_key: string | null;
+			};
+			expect(row.dedup_key).toBeTruthy();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("skips conflicting active legacy duplicates instead of aborting the backfill", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const idA = seedMemoryWithoutDedupKey(db, sessionId, "PR #88 duplicate title");
+			const idB = seedMemoryWithoutDedupKey(db, sessionId, "PR #88 duplicate title");
+
+			const result = backfillMemoryDedupKeys(db);
+
+			expect(result).toMatchObject({ checked: 2, updated: 1, skipped: 1 });
+			const rows = db
+				.prepare("SELECT id, dedup_key FROM memory_items WHERE id IN (?, ?) ORDER BY id ASC")
+				.all(idA, idB) as Array<{ id: number; dedup_key: string | null }>;
+			expect(rows.filter((row) => row.dedup_key !== null)).toHaveLength(1);
+			expect(rows.filter((row) => row.dedup_key === null)).toHaveLength(1);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("does not overwrite existing dedup_key values", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedMemoryWithoutDedupKey(db, sessionId, "Existing key", "already-set");
+
+			const result = backfillMemoryDedupKeys(db);
+
+			expect(result).toMatchObject({ checked: 0, updated: 0, skipped: 0 });
+			const row = db.prepare("SELECT dedup_key FROM memory_items WHERE id = ?").get(id) as {
+				dedup_key: string | null;
+			};
+			expect(row.dedup_key).toBe("already-set");
+		} finally {
+			db.close();
+		}
+	});
+
+	it("respects dry-run mode", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedMemoryWithoutDedupKey(db, sessionId, "Dry run title");
+
+			const result = backfillMemoryDedupKeys(db, { dryRun: true });
+
+			expect(result).toMatchObject({ checked: 1, updated: 1, skipped: 0 });
+			const row = db.prepare("SELECT dedup_key FROM memory_items WHERE id = ?").get(id) as {
+				dedup_key: string | null;
+			};
+			expect(row.dedup_key).toBeNull();
 		} finally {
 			db.close();
 		}

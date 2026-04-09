@@ -12,7 +12,7 @@
  * memory_owned_by_self check.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -32,6 +32,7 @@ import {
 	toJsonNullable,
 } from "./db.js";
 import { buildFilterClauses } from "./filters.js";
+import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import {
 	buildMemoryPack,
@@ -158,30 +159,11 @@ const DEFAULT_CROSS_SESSION_DEDUP_WINDOW_MS = 3_600_000;
 const CROSS_SESSION_DEDUP_WINDOW_ENV = "CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS";
 const MAX_CROSS_SESSION_DEDUP_WINDOW_MS = 8_640_000_000_000_000;
 
-function normalizeMemoryDedupTitle(title: string): string {
-	return title
-		.toLowerCase()
-		.replace(/\b(?:pr|pull\s+request|issue)\s*#?\d+\b/gi, " ")
-		.replace(/^\s*#\d+\s*/g, " ")
-		.replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-function buildMemoryDedupKey(title: string): string | null {
-	const normalized = normalizeMemoryDedupTitle(title);
-	const fallback = title.toLowerCase().replace(/\s+/g, " ").trim();
-	const keySource = normalized || fallback;
-	if (!keySource) return null;
-	return createHash("sha256").update(keySource).digest("hex");
-}
-
 function getMemoryDedupMatchText(title: string): string | null {
 	const normalized = normalizeMemoryDedupTitle(title);
 	const fallback = title.toLowerCase().replace(/\s+/g, " ").trim();
 	return normalized || fallback || null;
 }
-
 function resolveCrossSessionDedupWindowMs(): number {
 	const raw = process.env[CROSS_SESSION_DEDUP_WINDOW_ENV]?.trim();
 	if (!raw) return DEFAULT_CROSS_SESSION_DEDUP_WINDOW_MS;

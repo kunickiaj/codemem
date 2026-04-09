@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
 	aiBackfillStructuredContent,
+	backfillMemoryDedupKeys,
 	backfillNarrativeFromBody,
 	backfillTagsText,
 	connect,
@@ -693,6 +694,48 @@ dedupCmd.action(
 	},
 );
 dbCommand.addCommand(dedupCmd);
+
+const backfillDedupKeysCmd = new Command("backfill-dedup-keys")
+	.configureHelp(helpStyle)
+	.description("Populate missing memory_items.dedup_key values for legacy rows")
+	.option("--limit <n>", "max memories to check")
+	.option("--dry-run", "preview updates without writing");
+addDbOption(backfillDedupKeysCmd);
+addJsonOption(backfillDedupKeysCmd);
+backfillDedupKeysCmd.action(
+	(
+		opts: DbOpts &
+			JsonOpts & {
+				limit?: string;
+				dryRun?: boolean;
+			},
+	) => {
+		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+		try {
+			const limit = parseOptionalPositiveInt(opts.limit);
+			const result = backfillMemoryDedupKeys(store.db, {
+				limit,
+				dryRun: opts.dryRun === true,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			const action = opts.dryRun ? "Would update" : "Updated";
+			p.intro("codemem db backfill-dedup-keys");
+			p.log.success(`${action} ${result.updated} memories (skipped ${result.skipped})`);
+			p.outro(`Checked ${result.checked} memories`);
+		} catch (error) {
+			p.log.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		} finally {
+			store.close();
+		}
+	},
+);
+dbCommand.addCommand(backfillDedupKeysCmd);
 
 // --- db backfill-narrative ---
 const backfillNarrativeCmd = new Command("backfill-narrative")
