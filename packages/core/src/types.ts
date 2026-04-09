@@ -630,3 +630,21 @@ export interface MemoryFilters {
 	widen_shared_min_personal_results?: number;
 	widen_shared_min_personal_score?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Pack rendering options
+// ---------------------------------------------------------------------------
+
+/** Controls how pack text is rendered. Passed separately from retrieval filters. */
+export interface PackRenderOptions {
+	/**
+	 * When true, render a scannable index of all items with full
+	 * narrative/facts detail only for the top N items. Default: false.
+	 */
+	compact?: boolean;
+	/**
+	 * Number of items to show in full detail in compact mode.
+	 * Ignored when compact is false. Default: 3.
+	 */
+	compactDetailCount?: number;
+}
