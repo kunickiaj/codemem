@@ -16,6 +16,7 @@ import {
 	insertTestSession,
 	loadPublicKey,
 	MemoryStore,
+	startMaintenanceJob,
 	VERSION,
 } from "@codemem/core";
 import Database from "better-sqlite3";
@@ -2433,6 +2434,68 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body.daemon_state).toBe("starting");
 				expect(body.daemon_detail).toBe("Running initial sync in background");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("includes detailed maintenance summaries only when diagnostics are enabled", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/sync/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				startMaintenanceJob(store.db, {
+					kind: "vector_model_migration",
+					title: "Re-indexing memories",
+					message: "Building new embeddings",
+					progressTotal: 10,
+					metadata: { source_model: "old-model", target_model: "new-model" },
+				});
+
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				const status = body.status as Record<string, unknown>;
+				const jobs = status.background_maintenance as Array<Record<string, unknown>>;
+				expect(jobs).toHaveLength(1);
+				expect(jobs[0]).toMatchObject({
+					kind: "vector_model_migration",
+					title: "Re-indexing memories",
+					message: "Building new embeddings",
+					metadata: { source_model: "old-model", target_model: "new-model" },
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("redacts maintenance details when diagnostics are disabled", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/sync/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				startMaintenanceJob(store.db, {
+					kind: "vector_model_migration",
+					title: "Re-indexing memories",
+					message: "Building new embeddings",
+					progressTotal: 10,
+					metadata: { source_model: "old-model", target_model: "new-model" },
+				});
+
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				const status = body.status as Record<string, unknown>;
+				const jobs = status.background_maintenance as Array<Record<string, unknown>>;
+				expect(jobs).toHaveLength(1);
+				expect(jobs[0]).toMatchObject({
+					kind: "vector_model_migration",
+					title: "Re-indexing memories",
+				});
+				expect(jobs[0]).not.toHaveProperty("message");
+				expect(jobs[0]).not.toHaveProperty("metadata");
 			} finally {
 				cleanup();
 			}

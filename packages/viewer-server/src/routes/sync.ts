@@ -8,6 +8,7 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import type {
 	CoordinatorBootstrapGrantVerification,
+	MaintenanceJobSnapshot,
 	MemoryStore,
 	ReplicationOp,
 } from "@codemem/core";
@@ -28,6 +29,7 @@ import {
 	fingerprintPublicKey,
 	getSyncResetState,
 	listCoordinatorJoinRequests,
+	listMaintenanceJobs,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	lookupCoordinatorPeers,
@@ -73,6 +75,27 @@ const SYNC_STALE_AFTER_SECONDS = 10 * 60;
 const SYNC_PROTOCOL_VERSION = "2";
 const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
 const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
+
+function summarizeMaintenanceJobs(
+	jobs: MaintenanceJobSnapshot[],
+	showDiagnostics: boolean,
+): Array<Record<string, unknown>> {
+	return jobs
+		.filter((job) => ["pending", "running", "failed"].includes(String(job.status ?? "")))
+		.map((job) => ({
+			kind: job.kind,
+			title: job.title,
+			status: job.status,
+			progress: job.progress,
+			...(showDiagnostics
+				? {
+						message: job.message,
+						error: job.error,
+						metadata: job.metadata,
+					}
+				: {}),
+		}));
+}
 
 function syncKeysDir(): string | undefined {
 	return process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
@@ -1306,13 +1329,13 @@ export function syncRoutes(
 				.limit(25)
 				.all();
 			const peerAddressMap = new Map<string, string[]>();
-			store.db
+			const peerAddressRows = store.db
 				.prepare("SELECT peer_device_id, addresses_json FROM sync_peers")
-				.all()
-				.forEach((peerRow: any) => {
-					const addrs = safeJsonList(peerRow.addresses_json as string | null);
-					if (addrs.length) peerAddressMap.set(String(peerRow.peer_device_id ?? ""), addrs);
-				});
+				.all() as Array<{ peer_device_id: string | null; addresses_json: string | null }>;
+			peerAddressRows.forEach((peerRow) => {
+				const addrs = safeJsonList(peerRow.addresses_json as string | null);
+				if (addrs.length) peerAddressMap.set(String(peerRow.peer_device_id ?? ""), addrs);
+			});
 			const attemptsItems = attemptRows.map((row) => {
 				const addrs = showDiag ? peerAddressMap.get(String(row.peer_device_id ?? "")) : undefined;
 				return {
@@ -1325,6 +1348,7 @@ export function syncRoutes(
 
 			const statusBlock: Record<string, unknown> = {
 				...statusPayload,
+				background_maintenance: summarizeMaintenanceJobs(listMaintenanceJobs(store.db), showDiag),
 				peers: peersMap,
 				pending: 0,
 				sync: {},
@@ -1571,17 +1595,17 @@ export function syncRoutes(
 			if (!peerId) return c.json({ error: "unknown peer address" }, 404);
 			peerIds = [peerId];
 		} else if (requestedPeerId) {
-			peerIds = store.db
+			const requestedPeerRows = store.db
 				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
-				.all(requestedPeerId)
-				.map((row: any) => String(row.peer_device_id ?? "").trim())
+				.all(requestedPeerId) as Array<{ peer_device_id: string | null }>;
+			peerIds = requestedPeerRows
+				.map((row) => String(row.peer_device_id ?? "").trim())
 				.filter(Boolean);
 		} else {
-			peerIds = store.db
-				.prepare("SELECT peer_device_id FROM sync_peers")
-				.all()
-				.map((row: any) => String(row.peer_device_id ?? "").trim())
-				.filter(Boolean);
+			const allPeerRows = store.db.prepare("SELECT peer_device_id FROM sync_peers").all() as Array<{
+				peer_device_id: string | null;
+			}>;
+			peerIds = allPeerRows.map((row) => String(row.peer_device_id ?? "").trim()).filter(Boolean);
 		}
 		const items = [] as Array<Record<string, unknown>>;
 		for (const peerId of peerIds) {
