@@ -846,3 +846,190 @@ describe("buildMemoryPack structured content", () => {
 		expect(trace.output.pack_text).toBe(pack.pack_text);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Compact mode tests
+// ---------------------------------------------------------------------------
+
+describe("buildMemoryPack compact mode", () => {
+	let tmpDir: string;
+	let store: MemoryStore;
+	let sessionId: number;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-compact-"));
+		const dbPath = join(tmpDir, "test.db");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		store = new MemoryStore(dbPath);
+		sessionId = insertTestSession(store.db);
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("renders Index and Detail sections with footer", () => {
+		store.remember(sessionId, "discovery", "Found issue A", "Details about A", 0.8);
+		store.remember(sessionId, "bugfix", "Fixed issue B", "Details about B", 0.9);
+
+		const pack = buildMemoryPack(store, "issue", 10, null, undefined, undefined, {
+			compact: true,
+		});
+
+		expect(pack.pack_text).toContain("## Index");
+		expect(pack.pack_text).toContain("## Detail");
+		expect(pack.pack_text).toContain("memory_get");
+		expect(pack.pack_text).toContain("memory_search");
+	});
+
+	it("shows index lines for all items", () => {
+		const ids: number[] = [];
+		for (let i = 0; i < 5; i++) {
+			ids.push(store.remember(sessionId, "feature", `Feature item ${i}`, `Body for ${i}`, 0.7));
+		}
+
+		const pack = buildMemoryPack(store, "feature item", 10, null, undefined, undefined, {
+			compact: true,
+			compactDetailCount: 2,
+		});
+
+		// Every item should appear in the index section
+		const indexSection = pack.pack_text.split("## Detail")[0] ?? "";
+		for (const id of ids) {
+			expect(indexSection).toContain(`[${id}]`);
+		}
+	});
+
+	it("shows full content only for top N items", () => {
+		store.remember(sessionId, "discovery", "Top item alpha", "Alpha body content", 0.9);
+		store.remember(sessionId, "discovery", "Top item beta", "Beta body content", 0.8);
+		store.remember(sessionId, "discovery", "Index only gamma", "Gamma body content", 0.7);
+
+		const pack = buildMemoryPack(store, "item", 10, null, undefined, undefined, {
+			compact: true,
+			compactDetailCount: 2,
+		});
+
+		const detailSection = pack.pack_text.split("## Detail")[1] ?? "";
+
+		// Top 2 items should have full content in detail
+		const detailedTitles = ["Top item alpha", "Top item beta"].filter((title) =>
+			detailSection.includes(title),
+		);
+		expect(detailedTitles.length).toBe(2);
+
+		// Third item body should NOT appear in detail (only in index)
+		expect(detailSection).not.toContain("Gamma body content");
+	});
+
+	it("returns the same item_ids regardless of compact mode", () => {
+		for (let i = 0; i < 4; i++) {
+			store.remember(sessionId, "feature", `Parity item ${i}`, `Body ${i}`, 0.7);
+		}
+
+		const full = buildMemoryPack(store, "parity item", 10);
+		const compact = buildMemoryPack(store, "parity item", 10, null, undefined, undefined, {
+			compact: true,
+		});
+
+		// Same items selected, same relevance order
+		expect(compact.item_ids).toEqual(full.item_ids);
+		expect(compact.items.length).toBe(full.items.length);
+	});
+
+	it("compact pack uses fewer tokens than full pack for the same items", () => {
+		for (let i = 0; i < 6; i++) {
+			store.remember(
+				sessionId,
+				"discovery",
+				`Verbose item ${i} about token savings`,
+				`This is a detailed body for item ${i} that should consume tokens`,
+				0.7,
+			);
+		}
+
+		const full = buildMemoryPack(store, "verbose item token", 10);
+		const compact = buildMemoryPack(store, "verbose item token", 10, null, undefined, undefined, {
+			compact: true,
+			compactDetailCount: 2,
+		});
+
+		expect(compact.metrics.pack_tokens).toBeLessThan(full.metrics.pack_tokens);
+	});
+
+	it("respects token budget with compact sizing", () => {
+		for (let i = 0; i < 8; i++) {
+			store.remember(
+				sessionId,
+				"feature",
+				`Budget item ${i} for compact test`,
+				`Substantial body text for budget item ${i} to consume token space`,
+				0.5,
+			);
+		}
+
+		const budgeted = buildMemoryPack(store, "budget item compact", 10, 30, undefined, undefined, {
+			compact: true,
+			compactDetailCount: 2,
+		});
+		const unbounded = buildMemoryPack(
+			store,
+			"budget item compact",
+			10,
+			null,
+			undefined,
+			undefined,
+			{ compact: true, compactDetailCount: 2 },
+		);
+
+		expect(budgeted.items.length).toBeLessThanOrEqual(unbounded.items.length);
+	});
+
+	it("compact trace and pack agree on pack_text", () => {
+		store.remember(sessionId, "decision", "Trace compact test", "Decision body", 0.9);
+
+		const pack = buildMemoryPack(store, "trace compact", 10, null, undefined, undefined, {
+			compact: true,
+		});
+		const trace = buildMemoryPackTrace(store, "trace compact", 10, null, undefined, undefined, {
+			compact: true,
+		});
+
+		expect(trace.output.pack_text).toBe(pack.pack_text);
+	});
+
+	it("defaults to 3 detail items when compactDetailCount is omitted", () => {
+		for (let i = 0; i < 5; i++) {
+			store.remember(
+				sessionId,
+				"discovery",
+				`Default detail item ${i}`,
+				`Body for default detail ${i}`,
+				0.9 - i * 0.1,
+			);
+		}
+
+		const pack = buildMemoryPack(store, "default detail item", 10, null, undefined, undefined, {
+			compact: true,
+		});
+
+		const detailSection = pack.pack_text.split("## Detail")[1] ?? "";
+		// Count how many items appear with body content in detail
+		const detailMatches = detailSection.match(/\[\d+\] \(/g) ?? [];
+		expect(detailMatches.length).toBe(3);
+	});
+
+	it("handles empty database in compact mode", () => {
+		const pack = buildMemoryPack(store, "anything", 10, null, undefined, undefined, {
+			compact: true,
+		});
+
+		expect(pack.pack_text).toContain("## Index");
+		expect(pack.pack_text).toContain("## Detail");
+		expect(pack.pack_text).toContain("memory_get");
+		expect(pack.items.length).toBe(0);
+	});
+});
