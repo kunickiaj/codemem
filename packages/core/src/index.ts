@@ -241,6 +241,22 @@ export {
 	retryRawEventFailures,
 	vacuumDatabase,
 } from "./maintenance.js";
+export type {
+	MaintenanceJobRecord,
+	MaintenanceJobSnapshot,
+	MaintenanceJobStatus,
+	StartMaintenanceJobInput,
+	UpdateMaintenanceJobInput,
+} from "./maintenance-jobs.js";
+export {
+	completeMaintenanceJob,
+	ensureMaintenanceJobsSchema,
+	failMaintenanceJob,
+	getMaintenanceJob,
+	listMaintenanceJobs,
+	startMaintenanceJob,
+	updateMaintenanceJob,
+} from "./maintenance-jobs.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,
@@ -312,6 +328,7 @@ export {
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
+export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
 export * as schema from "./schema.js";
 export type { StoreHandle } from "./search.js";
 export {
