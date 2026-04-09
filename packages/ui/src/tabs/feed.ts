@@ -259,16 +259,16 @@ function getFactsList(item: any): string[] {
 
 /* ── Observation view helpers ────────────────────────────── */
 
-function observationViewData(item: any) {
+export function observationViewData(item: any) {
   const metadata = mergeMetadata(item?.metadata_json);
-  const summary = String(item?.subtitle || item?.body_text || '').trim();
-  const narrative = String(item?.narrative || metadata?.narrative || '').trim();
+  const summary = String(item?.subtitle || metadata?.subtitle || '').trim();
+  const narrative = String(item?.narrative || metadata?.narrative || item?.body_text || '').trim();
   const normSummary = normalize(summary);
   const normNarrative = normalize(narrative);
   const narrativeDistinct = Boolean(narrative) && normNarrative !== normSummary;
   const explicitFacts = parseJsonArray(item?.facts || metadata?.facts || []);
-  const fallbackFacts = explicitFacts.length ? explicitFacts : extractFactsFromBody(summary || narrative);
-  const derivedFacts = fallbackFacts.length ? fallbackFacts : sentenceFacts(summary);
+  const fallbackFacts = explicitFacts.length ? explicitFacts : extractFactsFromBody(narrative || summary);
+  const derivedFacts = fallbackFacts.length ? fallbackFacts : sentenceFacts(narrative || summary);
   return { summary, narrative, facts: derivedFacts, hasSummary: Boolean(summary), hasFacts: derivedFacts.length > 0, hasNarrative: narrativeDistinct };
 }
 
