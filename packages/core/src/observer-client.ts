@@ -107,6 +107,14 @@ export interface ObserverResponse {
 	model: string;
 }
 
+export interface ObserverStructuredJsonResponse {
+	raw: string | null;
+	parsed: Record<string, unknown> | null;
+	provider: string;
+	model: string;
+	usedStructuredOutputs: boolean;
+}
+
 export interface ObserverStatus {
 	provider: string;
 	model: string;
@@ -409,6 +417,27 @@ function buildAnthropicPayload(
 	};
 }
 
+function buildAnthropicStructuredPayload(
+	model: string,
+	systemPrompt: string,
+	userPrompt: string,
+	maxTokens: number,
+	schema: Record<string, unknown>,
+): Record<string, unknown> {
+	return {
+		model: normalizeAnthropicModel(model),
+		max_tokens: maxTokens,
+		system: systemPrompt,
+		messages: [{ role: "user", content: userPrompt }],
+		output_config: {
+			format: {
+				type: "json_schema",
+				schema,
+			},
+		},
+	};
+}
+
 function parseAnthropicResponse(body: Record<string, unknown>): string | null {
 	const content = body.content;
 	if (!Array.isArray(content)) {
@@ -535,6 +564,37 @@ function buildOpenAIResponsesPayload(
 		if (reasoningSummary) reasoning.summary = reasoningSummary;
 		payload.reasoning = reasoning;
 	}
+	return payload;
+}
+
+function buildOpenAIResponsesStructuredPayload(
+	model: string,
+	systemPrompt: string,
+	userPrompt: string,
+	maxOutputTokens: number,
+	reasoningEffort: string | null,
+	reasoningSummary: string | null,
+	temperature: number | null,
+	schemaName: string,
+	schema: Record<string, unknown>,
+): Record<string, unknown> {
+	const payload = buildOpenAIResponsesPayload(
+		model,
+		systemPrompt,
+		userPrompt,
+		maxOutputTokens,
+		reasoningEffort,
+		reasoningSummary,
+		temperature,
+	);
+	payload.text = {
+		format: {
+			type: "json_schema",
+			name: schemaName,
+			schema,
+			strict: true,
+		},
+	};
 	return payload;
 }
 
@@ -955,6 +1015,113 @@ export class ObserverClient {
 			}
 			throw err;
 		}
+	}
+
+	/**
+	 * Request structured JSON output when the current provider/runtime supports it.
+	 * Falls back to plain `observe()` + caller-side parsing for unsupported paths.
+	 */
+	async observeStructuredJson(
+		systemPrompt: string,
+		userPrompt: string,
+		schemaName: string,
+		schema: Record<string, unknown>,
+	): Promise<ObserverStructuredJsonResponse> {
+		if (this.provider === "openai" && this.openaiUseResponses && !this._codexAccess) {
+			if (!this.auth.token) {
+				this._initProvider(true);
+				if (!this.auth.token) {
+					return {
+						raw: null,
+						parsed: null,
+						provider: this.provider,
+						model: this.model,
+						usedStructuredOutputs: true,
+					};
+				}
+			}
+
+			let url: string;
+			if (this._customBaseUrl) {
+				url = `${this._customBaseUrl.replace(/\/+$/, "")}/responses`;
+			} else {
+				url = "https://api.openai.com/v1/responses";
+			}
+			const headers = buildOpenAIHeaders(this.auth.token ?? "");
+			const mergedHeaders = mergeHeadersCaseInsensitive(
+				headers,
+				renderObserverHeaders(this._observerHeaders, this.auth),
+			);
+			const payload = buildOpenAIResponsesStructuredPayload(
+				this.model,
+				systemPrompt,
+				userPrompt,
+				this.maxOutputTokens,
+				this.reasoningEffort,
+				this.reasoningSummary,
+				this.temperature,
+				schemaName,
+				schema,
+			);
+			const raw = await this._fetchJSON(url, mergedHeaders, payload, {
+				parseResponse: parseOpenAIResponsesResponse,
+				providerLabel: "OpenAI",
+			});
+			return {
+				raw,
+				parsed: raw ? tryParseJSON(raw) : null,
+				provider: this.provider,
+				model: this.model,
+				usedStructuredOutputs: true,
+			};
+		}
+
+		if (this.provider === "anthropic") {
+			// Anthropic OAuth consumer uses SSE streaming which may not support
+			// structured output_config reliably. Fall back to observe() for OAuth.
+			// Direct API key path supports non-streaming structured outputs.
+			if (!this._anthropicOAuthAccess) {
+				if (!this.auth.token) {
+					this._initProvider(true);
+				}
+				if (this.auth.token) {
+					const headers = buildAnthropicHeaders(this.auth.token, false);
+					const mergedHeaders = mergeHeadersCaseInsensitive(
+						headers,
+						renderObserverHeaders(this._observerHeaders, this.auth),
+					);
+					const raw = await this._fetchJSON(
+						resolveAnthropicEndpoint(),
+						mergedHeaders,
+						buildAnthropicStructuredPayload(
+							this.model,
+							systemPrompt,
+							userPrompt,
+							this.maxTokens,
+							schema,
+						),
+						{ parseResponse: parseAnthropicResponse, providerLabel: "Anthropic" },
+					);
+					return {
+						raw,
+						parsed: raw ? tryParseJSON(raw) : null,
+						provider: this.provider,
+						model: this.model,
+						usedStructuredOutputs: true,
+					};
+				}
+			}
+			// OAuth or no token — fall through to observe() fallback below
+		}
+
+		const fallback = await this.observe(systemPrompt, userPrompt);
+		return {
+			raw: fallback.raw,
+			parsed: fallback.parsed,
+			provider: fallback.provider,
+			model: fallback.model,
+			usedStructuredOutputs: false,
+		};
 	}
 
 	// -----------------------------------------------------------------------

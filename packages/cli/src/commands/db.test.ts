@@ -39,11 +39,15 @@ describe("db command", () => {
 		expect(pruneMemLongs).toContain("--json");
 	});
 
-	it("registers dedup-memories and backfill-narrative subcommands", () => {
+	it("registers dedup-memories, backfill-narrative, and ai-backfill-structured subcommands", () => {
 		const dedup = dbCommand.commands.find((command) => command.name() === "dedup-memories");
 		const narrative = dbCommand.commands.find((command) => command.name() === "backfill-narrative");
+		const aiStructured = dbCommand.commands.find(
+			(command) => command.name() === "ai-backfill-structured",
+		);
 		expect(dedup).toBeDefined();
 		expect(narrative).toBeDefined();
+		expect(aiStructured).toBeDefined();
 
 		const dedupLongs = dedup?.options.map((option) => option.long) ?? [];
 		expect(dedupLongs).toContain("--window");
@@ -55,6 +59,13 @@ describe("db command", () => {
 		expect(narrativeLongs).toContain("--limit");
 		expect(narrativeLongs).toContain("--dry-run");
 		expect(narrativeLongs).toContain("--json");
+
+		const aiLongs = aiStructured?.options.map((option) => option.long) ?? [];
+		expect(aiLongs).toContain("--limit");
+		expect(aiLongs).toContain("--kinds");
+		expect(aiLongs).toContain("--overwrite");
+		expect(aiLongs).toContain("--dry-run");
+		expect(aiLongs).toContain("--json");
 	});
 
 	it("rejects invalid dedup window input", async () => {

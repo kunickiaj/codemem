@@ -227,6 +227,7 @@ export type {
 	ReliabilityMetrics,
 } from "./maintenance.js";
 export {
+	aiBackfillStructuredContent,
 	backfillNarrativeFromBody,
 	backfillTagsText,
 	compareMemoryRoleReports,

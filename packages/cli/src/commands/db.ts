@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
+	aiBackfillStructuredContent,
 	backfillNarrativeFromBody,
 	backfillTagsText,
 	connect,
@@ -737,3 +738,60 @@ backfillNarrativeCmd.action(
 	},
 );
 dbCommand.addCommand(backfillNarrativeCmd);
+
+// --- db ai-backfill-structured ---
+const aiBackfillStructuredCmd = new Command("ai-backfill-structured")
+	.configureHelp(helpStyle)
+	.description(
+		"Use GPT-5.4 to populate missing narrative/facts/concepts for older non-session-summary memories",
+	)
+	.option("--limit <n>", "max memories to check")
+	.option("--kinds <csv>", "comma-separated kinds to target")
+	.option(
+		"--overwrite",
+		"overwrite existing structured fields instead of only filling missing ones",
+	)
+	.option("--dry-run", "preview updates without writing");
+addDbOption(aiBackfillStructuredCmd);
+addJsonOption(aiBackfillStructuredCmd);
+aiBackfillStructuredCmd.action(
+	async (
+		opts: DbOpts &
+			JsonOpts & {
+				limit?: string;
+				kinds?: string;
+				overwrite?: boolean;
+				dryRun?: boolean;
+			},
+	) => {
+		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+		try {
+			const limit = parseOptionalPositiveInt(opts.limit);
+			const kinds = parseKindsCsv(opts.kinds);
+			const result = await aiBackfillStructuredContent(store.db, {
+				limit,
+				kinds,
+				overwrite: opts.overwrite === true,
+				dryRun: opts.dryRun === true,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			const action = opts.dryRun ? "Would update" : "Updated";
+			p.intro("codemem db ai-backfill-structured");
+			p.log.success(
+				`${action} ${result.updated} memories (skipped ${result.skipped}, failed ${result.failed})`,
+			);
+			p.outro(`Checked ${result.checked} memories`);
+		} catch (error) {
+			p.log.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		} finally {
+			store.close();
+		}
+	},
+);
+dbCommand.addCommand(aiBackfillStructuredCmd);
