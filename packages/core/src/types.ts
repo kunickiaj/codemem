@@ -75,7 +75,7 @@ export interface Artifact {
 
 export type PackTraceMode = "default" | "task" | "recall";
 
-export type PackTraceDisposition = "selected" | "dropped" | "deduped" | "trimmed";
+export type PackTraceDisposition = "selected" | "dropped" | "deduped" | "trimmed" | "compressed";
 
 export type PackTraceSection = "summary" | "timeline" | "observations";
 
@@ -130,6 +130,17 @@ export type PackTrace = {
 			kept: number;
 			dropped: number[];
 			support_count: number;
+		}>;
+		compressed_clusters: Array<{
+			representative_id: number;
+			compressed_ids: number[];
+			overlap_words: string[];
+			pattern:
+				| "related_work"
+				| "session_echo"
+				| "operational_rule"
+				| "recurring_failure"
+				| "thematic_overlap";
 		}>;
 		trimmed_ids: number[];
 		trim_reasons: string[];
@@ -537,6 +548,8 @@ export interface PackItem {
 	support_count?: number;
 	/** IDs of duplicates that were collapsed into this canonical item. Only present when non-empty. */
 	duplicate_ids?: number[];
+	/** IDs of near-duplicate items compressed into this representative item. */
+	compressed_ids?: number[];
 }
 
 /** Pack response from buildMemoryPack() */

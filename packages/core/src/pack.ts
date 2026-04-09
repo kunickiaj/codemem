@@ -99,8 +99,13 @@ function parseFacts(raw: string | null): string[] | null {
  * available. Falls back to the original single-line format when neither
  * structured field exists.
  */
-function formatItem(item: MemoryResult): string {
-	const header = `[${item.id}] (${item.kind}) ${item.title}`;
+function relatedSuffix(item: MemoryResult, clusterState?: ClusterCompressionState): string {
+	const relatedCount = clusterState?.compressedByRepresentative.get(item.id)?.size ?? 0;
+	return relatedCount > 0 ? ` (+${relatedCount} related)` : "";
+}
+
+function formatItem(item: MemoryResult, clusterState?: ClusterCompressionState): string {
+	const header = `[${item.id}] (${item.kind}) ${item.title}${relatedSuffix(item, clusterState)}`;
 	const narrative = item.narrative || null;
 	const facts = parseFacts(item.facts);
 
@@ -123,10 +128,14 @@ function formatItem(item: MemoryResult): string {
 }
 
 /** Build a formatted section with header and items. */
-function formatSection(header: string, items: MemoryResult[]): string {
+function formatSection(
+	header: string,
+	items: MemoryResult[],
+	clusterState?: ClusterCompressionState,
+): string {
 	const heading = `## ${header}`;
 	if (items.length === 0) return `${heading}\n`;
-	return [heading, ...items.map(formatItem)].join("\n");
+	return [heading, ...items.map((item) => formatItem(item, clusterState))].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -137,8 +146,8 @@ const DEFAULT_COMPACT_DETAIL_COUNT = 3;
 const COMPACT_FOOTER = "Use `memory_get` or `memory_search` to fetch detail for any item by [ID].";
 
 /** Single-line index entry for compact mode. */
-function formatIndexLine(item: MemoryResult): string {
-	return `[${item.id}] (${item.kind}) ${item.title}`;
+function formatIndexLine(item: MemoryResult, clusterState?: ClusterCompressionState): string {
+	return `[${item.id}] (${item.kind}) ${item.title}${relatedSuffix(item, clusterState)}`;
 }
 
 /**
@@ -149,13 +158,17 @@ function formatIndexLine(item: MemoryResult): string {
  * Under budget pressure, an item may be demoted from detail to index-only,
  * so the set may contain fewer items than `compactDetailCount`.
  */
-function renderCompactPack(items: MemoryResult[], detailIds: Set<number>): string {
-	const indexSection = `## Index\n${items.length > 0 ? items.map(formatIndexLine).join("\n") : "(no items)"}`;
+function renderCompactPack(
+	items: MemoryResult[],
+	detailIds: Set<number>,
+	clusterState?: ClusterCompressionState,
+): string {
+	const indexSection = `## Index\n${items.length > 0 ? items.map((item) => formatIndexLine(item, clusterState)).join("\n") : "(no items)"}`;
 
 	const detailItems = items.filter((item) => detailIds.has(item.id));
 	const detailSection =
 		detailItems.length > 0
-			? `## Detail\n${detailItems.map(formatItem).join("\n\n")}`
+			? `## Detail\n${detailItems.map((item) => formatItem(item, clusterState)).join("\n\n")}`
 			: "## Detail\n(no items)";
 
 	return `${indexSection}\n\n${detailSection}\n\n${COMPACT_FOOTER}`;
@@ -165,8 +178,13 @@ function renderCompactPack(items: MemoryResult[], detailIds: Set<number>): strin
 // Pack item shape (what goes into items array)
 // ---------------------------------------------------------------------------
 
-function toPackItem(result: MemoryResult, dedupeState?: DedupeState): PackItem {
+function toPackItem(
+	result: MemoryResult,
+	dedupeState?: DedupeState,
+	clusterState?: ClusterCompressionState,
+): PackItem {
 	const dupes = dedupeState?.duplicateIds.get(result.id);
+	const compressed = clusterState?.compressedByRepresentative.get(result.id);
 	const item: PackItem = {
 		id: result.id,
 		kind: result.kind,
@@ -176,9 +194,15 @@ function toPackItem(result: MemoryResult, dedupeState?: DedupeState): PackItem {
 		tags: result.tags_text,
 		metadata: result.metadata,
 	};
+	const supportCount = 1 + (dupes?.size ?? 0) + (compressed?.size ?? 0);
+	if (supportCount > 1) {
+		item.support_count = supportCount;
+	}
 	if (dupes && dupes.size > 0) {
-		item.support_count = 1 + dupes.size;
 		item.duplicate_ids = [...dupes].sort((a, b) => a - b);
+	}
+	if (compressed && compressed.size > 0) {
+		item.compressed_ids = [...compressed].sort((a, b) => a - b);
 	}
 	return item;
 }
@@ -210,6 +234,22 @@ interface DedupeState {
 	duplicateIds: Map<number, Set<number>>;
 }
 
+interface ClusterCompressionState {
+	compressedByRepresentative: Map<number, Set<number>>;
+	representativeByCompressedId: Map<number, number>;
+	clusters: Array<{
+		representative_id: number;
+		compressed_ids: number[];
+		overlap_words: string[];
+		pattern:
+			| "related_work"
+			| "session_echo"
+			| "operational_rule"
+			| "recurring_failure"
+			| "thematic_overlap";
+	}>;
+}
+
 /**
  * Collapse exact duplicates: same kind+title+body → keep first (canonical).
  * Tracks duplicate IDs so support_count can report how many were collapsed.
@@ -238,6 +278,151 @@ function collapseExactDuplicates(items: MemoryResult[], state: DedupeState): Mem
 		else state.duplicateIds.set(canonicalId, new Set([item.id]));
 	}
 	return collapsed;
+}
+
+// ---------------------------------------------------------------------------
+// Near-duplicate cluster compression (Phase B Layer 2)
+// ---------------------------------------------------------------------------
+
+const CLUSTER_STOP_WORDS = new Set([
+	"the",
+	"a",
+	"an",
+	"and",
+	"or",
+	"to",
+	"in",
+	"for",
+	"of",
+	"on",
+	"with",
+	"is",
+	"was",
+	"are",
+	"were",
+	"from",
+	"this",
+	"that",
+	"it",
+	"not",
+	"no",
+]);
+
+function significantWords(title: string): Set<string> {
+	return new Set(
+		(title.toLowerCase().match(/\w+/g) ?? []).filter(
+			(word) => word.length > 2 && !CLUSTER_STOP_WORDS.has(word),
+		),
+	);
+}
+
+function overlapWords(a: Set<string>, b: Set<string>): string[] {
+	return [...a].filter((word) => b.has(word)).sort();
+}
+
+function chooseRepresentative(cluster: MemoryResult[]): MemoryResult {
+	const sorted = [...cluster].sort((a, b) => {
+		if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+		if (b.created_at !== a.created_at) return b.created_at.localeCompare(a.created_at);
+		const aHasNarrative = a.narrative?.trim() ? 1 : 0;
+		const bHasNarrative = b.narrative?.trim() ? 1 : 0;
+		if (bHasNarrative !== aHasNarrative) return bHasNarrative - aHasNarrative;
+		return a.id - b.id;
+	});
+	const first = sorted[0];
+	if (!first) throw new Error("expected non-empty cluster");
+	return first;
+}
+
+function clusterPattern(
+	cluster: MemoryResult[],
+): "related_work" | "session_echo" | "operational_rule" | "recurring_failure" | "thematic_overlap" {
+	if (cluster.some((item) => isSummaryLike(item)) && cluster.some((item) => !isSummaryLike(item))) {
+		return "session_echo";
+	}
+	if (cluster.every((item) => item.kind === "bugfix")) return "recurring_failure";
+	if (cluster.some((item) => item.kind === "decision")) return "operational_rule";
+	if (
+		cluster.some((item) =>
+			["change", "feature", "discovery", "refactor", "decision"].includes(item.kind),
+		)
+	) {
+		return "related_work";
+	}
+	return "thematic_overlap";
+}
+
+function compressClusters(
+	items: MemoryResult[],
+	mode: PackTraceMode,
+	state: ClusterCompressionState,
+): MemoryResult[] {
+	if (mode === "task" || items.length < 2) return items;
+
+	const wordSets = new Map<number, Set<string>>();
+	for (const item of items) wordSets.set(item.id, significantWords(item.title));
+
+	const parent = new Map<number, number>();
+	for (const item of items) parent.set(item.id, item.id);
+	const find = (id: number): number => {
+		const p = parent.get(id);
+		if (p == null) throw new Error(`missing cluster parent for ${id}`);
+		if (p === id) return id;
+		const root = find(p);
+		parent.set(id, root);
+		return root;
+	};
+	const union = (a: number, b: number): void => {
+		const ra = find(a);
+		const rb = find(b);
+		if (ra !== rb) parent.set(rb, ra);
+	};
+
+	for (let i = 0; i < items.length; i++) {
+		for (let j = i + 1; j < items.length; j++) {
+			const a = items[i];
+			const b = items[j];
+			if (!a || !b) continue;
+			const words = overlapWords(wordSets.get(a.id) ?? new Set(), wordSets.get(b.id) ?? new Set());
+			if (words.length >= 3) union(a.id, b.id);
+		}
+	}
+
+	const clustersByRoot = new Map<number, MemoryResult[]>();
+	for (const item of items) {
+		const root = find(item.id);
+		const cluster = clustersByRoot.get(root);
+		if (cluster) cluster.push(item);
+		else clustersByRoot.set(root, [item]);
+	}
+
+	const compressedIds = new Set<number>();
+	for (const cluster of clustersByRoot.values()) {
+		if (cluster.length < 2) continue;
+		const representative = chooseRepresentative(cluster);
+		const related = cluster
+			.filter((item) => item.id !== representative.id)
+			.map((item) => item.id)
+			.sort((a, b) => a - b);
+		const allWords = cluster.map((item) => wordSets.get(item.id) ?? new Set<string>());
+		const sharedWords = [...(allWords[0] ?? new Set<string>())]
+			.filter((word) => allWords.every((set) => set.has(word)))
+			.sort();
+
+		state.compressedByRepresentative.set(representative.id, new Set(related));
+		for (const id of related) {
+			compressedIds.add(id);
+			state.representativeByCompressedId.set(id, representative.id);
+		}
+		state.clusters.push({
+			representative_id: representative.id,
+			compressed_ids: related,
+			overlap_words: sharedWords,
+			pattern: clusterPattern(cluster),
+		});
+	}
+
+	return items.filter((item) => !compressedIds.has(item.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +477,12 @@ function flattenDuplicateIds(dedupeState: DedupeState): number[] {
 	return [...dedupeState.duplicateIds.values()].flatMap((ids) => [...ids]).sort((a, b) => a - b);
 }
 
+function flattenCompressedIds(state: ClusterCompressionState): number[] {
+	return [...state.compressedByRepresentative.values()]
+		.flatMap((ids) => [...ids])
+		.sort((a, b) => a - b);
+}
+
 function collapsedGroups(
 	dedupeState: DedupeState,
 ): Array<{ kept: number; dropped: number[]; support_count: number }> {
@@ -328,6 +519,7 @@ function candidateReasons(
 	if (isSummaryLike(item)) reasons.push("summary-like memory");
 	if (section) reasons.push(`selected for ${section}`);
 	if (disposition === "deduped") reasons.push("removed by exact dedupe");
+	if (disposition === "compressed") reasons.push("compressed into a related representative item");
 	if (disposition === "trimmed") reasons.push("trimmed by token budget");
 	if (disposition === "dropped") reasons.push("not selected for final pack");
 	return reasons.length > 0 ? reasons : ["included in retrieval pool"];
@@ -1116,9 +1308,28 @@ function buildPackArtifacts(
 		canonicalByKey: new Map(),
 		duplicateIds: new Map(),
 	};
+	const modeLabel: PackTraceMode = taskMode ? "task" : recallMode ? "recall" : "default";
 	summaryItems = collapseExactDuplicates(summaryItems, dedupeState);
 	timelineItems = collapseExactDuplicates(timelineItems, dedupeState);
 	observationItems = collapseExactDuplicates(observationItems, dedupeState);
+
+	const clusterState: ClusterCompressionState = {
+		compressedByRepresentative: new Map(),
+		representativeByCompressedId: new Map(),
+		clusters: [],
+	};
+	const compressionPoolSeen = new Set<number>();
+	const compressionPool: MemoryResult[] = [];
+	for (const item of [...summaryItems, ...timelineItems, ...observationItems]) {
+		if (compressionPoolSeen.has(item.id)) continue;
+		compressionPoolSeen.add(item.id);
+		compressionPool.push(item);
+	}
+	compressClusters(compressionPool, modeLabel, clusterState);
+	const compressedSectionIds = new Set(flattenCompressedIds(clusterState));
+	summaryItems = summaryItems.filter((item) => !compressedSectionIds.has(item.id));
+	timelineItems = timelineItems.filter((item) => !compressedSectionIds.has(item.id));
+	observationItems = observationItems.filter((item) => !compressedSectionIds.has(item.id));
 
 	// Step 4: apply token budget
 	// Step 5: format sections
@@ -1152,10 +1363,10 @@ function buildPackArtifacts(
 			let tokensUsed = 0;
 			let detailSlots = compactDetailCount;
 			for (const item of allCandidates) {
-				const indexCost = estimateTokens(formatIndexLine(item));
+				const indexCost = estimateTokens(formatIndexLine(item, clusterState));
 				if (detailSlots > 0) {
 					// Detail items appear in both Index and Detail — charge both.
-					const fullCost = indexCost + estimateTokens(formatItem(item));
+					const fullCost = indexCost + estimateTokens(formatItem(item, clusterState));
 					if (tokensUsed + fullCost <= tokenBudget) {
 						tokensUsed += fullCost;
 						budgetedItems.push(item);
@@ -1177,7 +1388,7 @@ function buildPackArtifacts(
 			}
 		}
 
-		packText = renderCompactPack(budgetedItems, detailIds);
+		packText = renderCompactPack(budgetedItems, detailIds, clusterState);
 		// For downstream metrics, put everything in timeline (compact flattens sections)
 		budgetedSummary = [];
 		budgetedTimeline = budgetedItems;
@@ -1192,7 +1403,7 @@ function buildPackArtifacts(
 
 			budgetedSummary = [];
 			for (const item of summaryItems) {
-				const cost = estimateTokens(formatItem(item));
+				const cost = estimateTokens(formatItem(item, clusterState));
 				if (tokensUsed + cost > tokenBudget) break;
 				tokensUsed += cost;
 				budgetedSummary.push(item);
@@ -1200,7 +1411,7 @@ function buildPackArtifacts(
 
 			budgetedTimeline = [];
 			for (const item of timelineItems) {
-				const cost = estimateTokens(formatItem(item));
+				const cost = estimateTokens(formatItem(item, clusterState));
 				if (tokensUsed + cost > tokenBudget) break;
 				tokensUsed += cost;
 				budgetedTimeline.push(item);
@@ -1208,7 +1419,7 @@ function buildPackArtifacts(
 
 			budgetedObservations = [];
 			for (const item of observationItems) {
-				const cost = estimateTokens(formatItem(item));
+				const cost = estimateTokens(formatItem(item, clusterState));
 				if (tokensUsed + cost > tokenBudget) break;
 				tokensUsed += cost;
 				budgetedObservations.push(item);
@@ -1216,17 +1427,17 @@ function buildPackArtifacts(
 		}
 
 		const sections = [
-			formatSection("Summary", budgetedSummary),
-			formatSection("Timeline", budgetedTimeline),
-			formatSection("Observations", budgetedObservations),
+			formatSection("Summary", budgetedSummary, clusterState),
+			formatSection("Timeline", budgetedTimeline, clusterState),
+			formatSection("Observations", budgetedObservations, clusterState),
 		];
 		packText = sections.join("\n\n");
 	}
 
 	const packTokens = estimateTokens(packText);
 
-	// Collect all unique items across sections, but preserve relevance order from
-	// the ranked results when reporting item_ids/items.
+	// Collect all unique rendered items across sections, but preserve relevance order.
+	// `item_ids` should still include compressed-away IDs for fetch-more behavior.
 	const seenIds = new Set<number>();
 	const selectedById = new Map<number, MemoryResult>();
 	for (const item of [...budgetedSummary, ...budgetedTimeline, ...budgetedObservations]) {
@@ -1234,10 +1445,24 @@ function buildPackArtifacts(
 		seenIds.add(item.id);
 		selectedById.set(item.id, item);
 	}
+	const allSelectedIds = new Set<number>();
+	for (const representativeId of selectedById.keys()) {
+		allSelectedIds.add(representativeId);
+		for (const compressedId of clusterState.compressedByRepresentative.get(representativeId) ??
+			[]) {
+			allSelectedIds.add(compressedId);
+		}
+	}
 
 	const selectedItems: MemoryResult[] = [];
 	const selectedIds = new Set(selectedById.keys());
+	const allItemIds: number[] = [];
+	const orderedAllSelectedIds = new Set(allSelectedIds);
 	for (const item of results) {
+		if (orderedAllSelectedIds.has(item.id)) {
+			allItemIds.push(item.id);
+			orderedAllSelectedIds.delete(item.id);
+		}
 		if (!selectedIds.has(item.id)) continue;
 		const selected = selectedById.get(item.id);
 		if (!selected) continue;
@@ -1249,9 +1474,28 @@ function buildPackArtifacts(
 		selectedItems.push(item);
 		selectedIds.delete(item.id);
 	}
+	for (const item of [...budgetedSummary, ...budgetedTimeline, ...budgetedObservations]) {
+		if (!orderedAllSelectedIds.has(item.id)) continue;
+		allItemIds.push(item.id);
+		orderedAllSelectedIds.delete(item.id);
+		for (const compressedId of clusterState.compressedByRepresentative.get(item.id) ?? []) {
+			if (!orderedAllSelectedIds.has(compressedId)) continue;
+			allItemIds.push(compressedId);
+			orderedAllSelectedIds.delete(compressedId);
+		}
+	}
+	for (const cluster of clusterState.clusters) {
+		if (!orderedAllSelectedIds.has(cluster.representative_id)) continue;
+		allItemIds.push(cluster.representative_id);
+		orderedAllSelectedIds.delete(cluster.representative_id);
+		for (const compressedId of cluster.compressed_ids) {
+			if (!orderedAllSelectedIds.has(compressedId)) continue;
+			allItemIds.push(compressedId);
+			orderedAllSelectedIds.delete(compressedId);
+		}
+	}
 
-	const allItems = selectedItems.map((item) => toPackItem(item, dedupeState));
-	const allItemIds = selectedItems.map((item) => item.id);
+	const allItems = selectedItems.map((item) => toPackItem(item, dedupeState, clusterState));
 
 	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(
 		store,
@@ -1309,8 +1553,6 @@ function buildPackArtifacts(
 	const compressionRatio = workTokensUnique > 0 ? packTokens / workTokensUnique : null;
 	const overheadTokens = workTokensUnique > 0 ? packTokens - workTokensUnique : null;
 	const fallbackLabel: "recent" | null = fallbackUsed ? "recent" : null;
-	const modeLabel: PackTraceMode = taskMode ? "task" : recallMode ? "recall" : "default";
-
 	const metrics = {
 		total_items: allItems.length,
 		pack_tokens: packTokens,
@@ -1365,6 +1607,8 @@ function buildPackArtifacts(
 		.sort((a, b) => a - b);
 	const dedupedIds = flattenDuplicateIds(dedupeState);
 	const dedupedIdSet = new Set(dedupedIds);
+	const compressedIds = flattenCompressedIds(clusterState);
+	const compressedIdSet = new Set(compressedIds);
 	const trimmedIdSet = new Set(trimmedIds);
 	const referenceNow = new Date();
 	const tracePool = retrievalResults.slice(0, TRACE_CANDIDATE_LIMIT);
@@ -1374,9 +1618,11 @@ function buildPackArtifacts(
 			? "selected"
 			: dedupedIdSet.has(item.id)
 				? "deduped"
-				: trimmedIdSet.has(item.id)
-					? "trimmed"
-					: "dropped";
+				: compressedIdSet.has(item.id)
+					? "compressed"
+					: trimmedIdSet.has(item.id)
+						? "trimmed"
+						: "dropped";
 		const baseScores = scoreResult(store, item, filters, retrievalQuery, referenceNow);
 		const scoredCandidate = {
 			...baseScores,
@@ -1416,6 +1662,7 @@ function buildPackArtifacts(
 		assembly: {
 			deduped_ids: dedupedIds,
 			collapsed_groups: collapsedGroups(dedupeState),
+			compressed_clusters: clusterState.clusters,
 			trimmed_ids: trimmedIds,
 			trim_reasons:
 				trimmedIds.length > 0
