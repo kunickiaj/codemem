@@ -61,11 +61,19 @@ function emitStructuredError(errorCode: string, message: string): void {
 
 /** Try to POST the hook payload to the running viewer server.
  *
- * Returns `ok: true` only when the viewer accepted the payload AND
- * actually inserted it. The viewer may legitimately accept a request
- * but report `skipped > 0` when the payload was deduped or otherwise
- * rejected after parse — those cases must trigger the locked
- * fallback so the durability layer can decide whether to spool.
+ * Returns `ok: true` whenever the viewer accepts the request and
+ * returns a well-shaped JSON body with numeric `inserted` / `skipped`
+ * fields. That includes the `{inserted: 0, skipped: 1}` response the
+ * viewer emits when the payload maps to a null envelope (Stop with no
+ * assistant text, UserPromptSubmit with empty prompt, etc.) — that
+ * determination is deterministic, so retrying via the direct fallback
+ * would produce the exact same null envelope and the same skip. We
+ * accept those as benign no-ops instead of triggering the durability
+ * dance pointlessly.
+ *
+ * If a future server change adds a new `skipped` reason that IS
+ * transient, we'll need a reason field in the response and updated
+ * client handling — not an unconditional fail-over.
  */
 async function tryHttpIngest(
 	payload: Record<string, unknown>,
@@ -99,10 +107,6 @@ async function tryHttpIngest(
 		if (typeof obj.inserted !== "number" || typeof obj.skipped !== "number") {
 			logHookFailure("codemem claude-hook-ingest HTTP accepted with unexpected response body");
 			return { ok: false, inserted: 0, skipped: 0 };
-		}
-		if (obj.skipped > 0) {
-			logHookFailure("codemem claude-hook-ingest HTTP accepted but skipped payload");
-			return { ok: false, inserted: obj.inserted, skipped: obj.skipped };
 		}
 		return { ok: true, inserted: obj.inserted, skipped: obj.skipped };
 	} catch {
