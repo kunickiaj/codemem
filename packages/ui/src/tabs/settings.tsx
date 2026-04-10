@@ -1255,8 +1255,29 @@ function hiddenUnlessAdvanced(): boolean {
 	return !settingsShowAdvanced;
 }
 
+type ObserverStatusShape = {
+	active?: {
+		provider?: string;
+		model?: string;
+		auth?: {
+			method?: string;
+			token_present?: boolean;
+		};
+	} | null;
+	available_credentials?: Record<string, Record<string, boolean>>;
+	latest_failure?: {
+		error_message?: string;
+		observer_provider?: string;
+		observer_model?: string;
+		observer_runtime?: string;
+		updated_at?: string;
+		attempt_count?: number;
+		impact?: string;
+	} | null;
+};
+
 function ObserverStatusBanner() {
-	const status = settingsRenderState.observerStatus as Record<string, any> | null;
+	const status = settingsRenderState.observerStatus as ObserverStatusShape | null;
 	if (!status) {
 		return <div id="observerStatusBanner" className="observer-status-banner" hidden />;
 	}

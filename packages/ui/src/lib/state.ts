@@ -71,7 +71,7 @@ export const state = {
 	pairingCommandRaw: "",
 
 	/* Config */
-	configDefaults: {} as Record<string, any>,
+	configDefaults: {} as Record<string, unknown>,
 	configPath: "",
 	settingsDirty: false,
 	noticeTimer: null as ReturnType<typeof setTimeout> | null,
