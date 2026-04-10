@@ -38,6 +38,7 @@ describe("claude-hook-inject command", () => {
 		expect(result).toEqual({
 			continue: true,
 			hookSpecificOutput: {
+				hookEventName: "UserPromptSubmit",
 				additionalContext: "## Summary\n[1] (decision) Auth fix",
 			},
 		});
@@ -75,6 +76,7 @@ describe("claude-hook-inject command", () => {
 			expect(result).toEqual({
 				continue: true,
 				hookSpecificOutput: {
+					hookEventName: "UserPromptSubmit",
 					additionalContext: "## Timeline\n[4] (feature) Sync continuation",
 				},
 			});
@@ -158,6 +160,7 @@ describe("claude-hook-inject command", () => {
 			expect(result).toEqual({
 				continue: true,
 				hookSpecificOutput: {
+					hookEventName: "UserPromptSubmit",
 					additionalContext: "123456789012",
 				},
 			});
@@ -165,6 +168,54 @@ describe("claude-hook-inject command", () => {
 			if (originalMaxChars === undefined) delete process.env.CODEMEM_INJECT_MAX_CHARS;
 			else process.env.CODEMEM_INJECT_MAX_CHARS = originalMaxChars;
 		}
+	});
+
+	it("always emits UserPromptSubmit hookEventName even when payload carries a different hook_event_name", async () => {
+		// claude-hook-inject is wired exclusively to UserPromptSubmit and the
+		// hookSpecificOutput.additionalContext field is UserPromptSubmit-specific.
+		// Echoing a different event name would silently produce schema-invalid
+		// output, so the emitted event name must be hardcoded regardless of
+		// what the payload claims.
+		const result = await buildClaudeHookInjection(
+			{
+				hook_event_name: "SessionStart",
+				session_id: "sess-wrong-event",
+				prompt: "investigate flaky test",
+				cwd: "/tmp/codemem",
+			},
+			{},
+			{
+				buildLocalPack: async () => "Remember to run targeted tests.",
+				httpPack: async () => "",
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+
+		expect(result.hookSpecificOutput?.hookEventName).toBe("UserPromptSubmit");
+		expect(result.hookSpecificOutput?.additionalContext).toContain(
+			"Remember to run targeted tests.",
+		);
+	});
+
+	it("emits UserPromptSubmit hookEventName when payload omits hook_event_name", async () => {
+		// Resilience to payload-shape drift: even if Claude Code stops sending
+		// hook_event_name on the inbound side, the emitted output stays valid.
+		const result = await buildClaudeHookInjection(
+			{
+				session_id: "sess-missing-event",
+				prompt: "plan retrieval improvements",
+				cwd: "/tmp/codemem",
+			},
+			{},
+			{
+				buildLocalPack: async () => "## Summary\nmemory pack",
+				httpPack: async () => "",
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+
+		expect(result.hookSpecificOutput?.hookEventName).toBe("UserPromptSubmit");
+		expect(result.hookSpecificOutput?.additionalContext).toBe("## Summary\nmemory pack");
 	});
 
 	it("returns continue without additionalContext when all generation paths fail", async () => {
