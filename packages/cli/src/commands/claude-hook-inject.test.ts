@@ -7,17 +7,24 @@ import { saveSessionState, statePathForSession } from "./claude-hook-session-sta
 
 describe("claude-hook-inject command", () => {
 	let stateDir: string;
+	let pluginLogPath: string;
 	let originalContextDir: string | undefined;
+	let originalPluginLogPath: string | undefined;
 
 	beforeEach(() => {
 		originalContextDir = process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR;
+		originalPluginLogPath = process.env.CODEMEM_PLUGIN_LOG_PATH;
 		stateDir = mkdtempSync(join(tmpdir(), "codemem-cli-inject-state-"));
+		pluginLogPath = join(stateDir, "plugin.log");
 		process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR = stateDir;
+		process.env.CODEMEM_PLUGIN_LOG_PATH = pluginLogPath;
 	});
 
 	afterEach(() => {
 		if (originalContextDir === undefined) delete process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR;
 		else process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR = originalContextDir;
+		if (originalPluginLogPath === undefined) delete process.env.CODEMEM_PLUGIN_LOG_PATH;
+		else process.env.CODEMEM_PLUGIN_LOG_PATH = originalPluginLogPath;
 		rmSync(stateDir, { recursive: true, force: true });
 	});
 
