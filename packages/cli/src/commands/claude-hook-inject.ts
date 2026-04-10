@@ -2,6 +2,13 @@ import { MemoryStore, resolveDbPath, resolveHookProject } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
+import {
+	buildInjectQuery,
+	normalizePromptText,
+	type SessionState,
+	trackHookSessionState,
+	workingSetPathsFromState,
+} from "./claude-hook-session-state.js";
 
 type InjectResult = {
 	continue: true;
@@ -45,6 +52,13 @@ function envNotDisabled(value: string | undefined): boolean {
 	return normalized !== "0" && normalized !== "false" && normalized !== "off";
 }
 
+function envTruthy(value: string | undefined): boolean {
+	const normalized = String(value ?? "")
+		.trim()
+		.toLowerCase();
+	return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
 function parsePositiveInt(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(String(value ?? ""), 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -74,11 +88,18 @@ function truncateAdditionalContext(text: string, maxChars: number): string {
 	if (!Number.isFinite(maxChars) || maxChars <= 0 || normalized.length <= maxChars) {
 		return normalized;
 	}
-	return normalized.slice(0, maxChars);
+	// Strip trailing whitespace from the slice before appending the marker
+	// so the boundary stays readable in chat output.
+	return `${normalized.slice(0, maxChars).trimEnd()}\n\n[pack truncated]`;
 }
 
 function extractInjectContext(payload: Record<string, unknown>): string | null {
-	const prompt = String(payload.prompt ?? "").trim();
+	// Reuse the same normalization the session-state tracker applies so the
+	// `prompt !== first_prompt` comparison in buildInjectQuery is robust to
+	// multi-line prompts (otherwise a "fix\nauth" current prompt would never
+	// match a stored "fix auth" first_prompt and would be appended on every
+	// turn).
+	const prompt = normalizePromptText(payload.prompt);
 	return prompt || null;
 }
 
@@ -91,14 +112,18 @@ async function buildLocalPack(
 	context: string,
 	project: string | null,
 	dbPath: string,
+	workingSetPaths: string[] = [],
 ): Promise<string> {
 	const store = new MemoryStore(dbPath);
 	try {
 		const limit = parsePositiveInt(process.env.CODEMEM_INJECT_LIMIT, 8);
 		const budget = parsePositiveInt(process.env.CODEMEM_INJECT_TOKEN_BUDGET, 800);
-		const filters: { project?: string } = {};
+		const filters: { project?: string; working_set_paths?: string[] } = {};
 		if (project) {
 			filters.project = project;
+		}
+		if (workingSetPaths.length > 0) {
+			filters.working_set_paths = workingSetPaths;
 		}
 		const pack = await store.buildMemoryPackAsync(context, limit, budget, filters);
 		return String(pack.pack_text ?? "").trim();
@@ -146,12 +171,27 @@ export async function buildClaudeHookInjection(
 	opts: InjectOpts,
 	deps: InjectDeps = {},
 ): Promise<InjectResult> {
+	// Honor the global plugin-ignore kill switch first so users can disable
+	// every codemem hook side effect by exporting CODEMEM_PLUGIN_IGNORE=1
+	// without having to know which subcommand is wired to which hook.
+	if (envTruthy(process.env.CODEMEM_PLUGIN_IGNORE)) {
+		return continueResult();
+	}
 	if (!envNotDisabled(process.env.CODEMEM_INJECT_CONTEXT || "1")) {
 		return continueResult();
 	}
 
-	const context = extractInjectContext(payload);
-	if (!context) {
+	// Track session state before the prompt-presence check so SessionEnd /
+	// PostToolUse / SessionStart events still update the per-session store.
+	let state: SessionState | null = null;
+	try {
+		state = trackHookSessionState(payload);
+	} catch {
+		state = null;
+	}
+
+	const promptText = extractInjectContext(payload);
+	if (!promptText) {
 		return continueResult();
 	}
 
@@ -159,6 +199,8 @@ export async function buildClaudeHookInjection(
 	const httpPack = deps.httpPack ?? tryHttpPack;
 	const resolveDb = deps.resolveDb ?? resolveDbPath;
 	const project = resolveInjectProject(payload);
+	const query = buildInjectQuery({ prompt: promptText, project, state });
+	const workingSetPaths = workingSetPathsFromState(state);
 	const maxChars = parsePositiveInt(process.env.CODEMEM_INJECT_MAX_CHARS, DEFAULT_MAX_CHARS);
 	const httpMaxTimeMs =
 		parsePositiveInt(process.env.CODEMEM_INJECT_HTTP_MAX_TIME_S, DEFAULT_HTTP_MAX_TIME_S) * 1000;
@@ -166,13 +208,13 @@ export async function buildClaudeHookInjection(
 	let additionalContext = "";
 	try {
 		const dbPath = resolveDb(resolveDbOpt(opts));
-		additionalContext = await buildPack(context, project, dbPath);
+		additionalContext = await buildPack(query, project, dbPath, workingSetPaths);
 	} catch {
 		additionalContext = "";
 	}
 
 	if (!additionalContext && envNotDisabled(process.env.CODEMEM_INJECT_HTTP_FALLBACK || "1")) {
-		additionalContext = await httpPack(context, project, httpMaxTimeMs);
+		additionalContext = await httpPack(query, project, httpMaxTimeMs);
 	}
 
 	return continueResult(truncateAdditionalContext(additionalContext, maxChars));
