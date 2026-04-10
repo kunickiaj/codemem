@@ -41,6 +41,9 @@ packages/viewer-server/static/
 
 # Agent skill symlink dirs (canonical source is .agents/skills/)
 # Keep .agents/ and .claude/ — ignore other agent tool dirs
+# .claude/worktrees/ is created transiently when agents run in isolated
+# worktrees and should never be tracked.
+.claude/worktrees/
 .adal/
 .agent/
 .augment/
