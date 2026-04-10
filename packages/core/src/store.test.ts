@@ -1030,3 +1030,95 @@ describe("buildFilterClauses", () => {
 		expect(result.params).toEqual(["local:device-1", "device-1"]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Fresh-database auto-bootstrap
+// ---------------------------------------------------------------------------
+
+describe("MemoryStore constructor auto-bootstrap", () => {
+	let tmpDir: string;
+	let prevCodememConfig: string | undefined;
+
+	beforeEach(() => {
+		prevCodememConfig = process.env.CODEMEM_CONFIG;
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-test-"));
+		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
+	});
+
+	afterEach(() => {
+		if (prevCodememConfig === undefined) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = prevCodememConfig;
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("bootstraps schema when constructed against a path with no existing file", () => {
+		const dbPath = join(tmpDir, "fresh.sqlite");
+		// No pre-seeding — let the constructor discover an uninitialized DB.
+		// This mirrors the MCP server / claude-hook-ingest entry points hitting
+		// a fresh plugin install inside a wiped sandbox VM.
+		const store = new MemoryStore(dbPath);
+		try {
+			// If bootstrap worked, basic reads succeed and stats report an empty store.
+			const stats = store.stats();
+			expect(stats.database.memory_items).toBe(0);
+			expect(stats.database.sessions).toBe(0);
+
+			// Real query-path coverage: exercising `recent` / `recentByKinds`
+			// hits memory_items + FTS/provenance joins that assertSchemaReady
+			// alone doesn't catch if any table is missing.
+			expect(store.recent(10)).toEqual([]);
+			expect(store.recentByKinds(["discovery"])).toEqual([]);
+
+			// And a write-then-read round-trip through the same constructor-
+			// bootstrapped handle — the actual MCP-server hot path on fresh DBs.
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(
+				sessionId,
+				"discovery",
+				"post-bootstrap insert",
+				"written on an auto-bootstrapped DB",
+			);
+			expect(store.get(memId)?.title).toBe("post-bootstrap insert");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("bootstraps schema when constructed against an empty existing file", () => {
+		const dbPath = join(tmpDir, "empty.sqlite");
+		// Touch an empty file so connect() opens it as an uninitialized DB.
+		writeFileSync(dbPath, "");
+		const store = new MemoryStore(dbPath);
+		try {
+			const stats = store.stats();
+			expect(stats.database.memory_items).toBe(0);
+			// Same query-path smoke test as the fresh-path case.
+			expect(store.recent(10)).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not re-bootstrap an already-initialized database", () => {
+		const dbPath = join(tmpDir, "existing.sqlite");
+		// First construction bootstraps.
+		const first = new MemoryStore(dbPath);
+		const sessionId = insertTestSession(first.db);
+		const memId = first.remember(
+			sessionId,
+			"discovery",
+			"persisted memory",
+			"should survive a second construction",
+		);
+		first.close();
+
+		// Second construction must not wipe or re-run bootstrap DDL destructively.
+		const second = new MemoryStore(dbPath);
+		try {
+			const fetched = second.get(memId);
+			expect(fetched?.title).toBe("persisted memory");
+		} finally {
+			second.close();
+		}
+	});
+});
