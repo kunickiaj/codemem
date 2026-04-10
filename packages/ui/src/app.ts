@@ -263,7 +263,7 @@ async function doRefresh() {
 		setRefreshStatus("refreshing");
 
 		// Always load health data (for the header health dot) and config
-		const promises: Promise<any>[] = [loadHealthData(), loadConfigData()];
+		const promises: Promise<unknown>[] = [loadHealthData(), loadConfigData()];
 
 		// Load tab-specific data
 		if (state.activeTab === "feed") {

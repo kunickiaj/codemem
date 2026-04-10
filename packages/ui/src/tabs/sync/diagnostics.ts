@@ -366,7 +366,7 @@ export function renderSyncAttempts() {
 		const time = attempt.started_at || attempt.started_at_utc || "";
 		const peerId = String(attempt.peer_device_id || "").trim();
 		const matchedPeer = Array.isArray(state.lastSyncPeers)
-			? state.lastSyncPeers.find((p: any) => String(p?.peer_device_id || "") === peerId)
+			? state.lastSyncPeers.find((p) => String(p?.peer_device_id || "") === peerId)
 			: null;
 		const peerName = String(matchedPeer?.name || "").trim();
 		const peerLabel = peerName || (peerId ? peerId.slice(0, 8) : "unknown");
