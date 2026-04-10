@@ -8,6 +8,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 coverage.xml
+.envrc
 *.egg-info/
 .eggs/
 build/
