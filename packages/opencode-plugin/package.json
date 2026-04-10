@@ -21,7 +21,7 @@
 		"test:packed-artifact": "node ./scripts/packed-artifact-smoke.mjs"
 	},
 	"dependencies": {
-		"@opencode-ai/plugin": "1.4.1"
+		"@opencode-ai/plugin": "1.4.3"
 	},
 	"repository": {
 		"type": "git",
