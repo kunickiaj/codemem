@@ -1,7 +1,159 @@
 /* Global application state — shared across tabs. */
 
+import type { UiSyncViewModel } from "../tabs/sync/view-model";
+
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
 export type TabId = "feed" | "health" | "sync";
+
+/* ── Cached server payload shapes ─────────────────────────── */
+
+/**
+ * Minimal interfaces covering the fields UI code actually reads from the
+ * viewer API responses that get cached in `state`. All fields are optional
+ * and shapes are open (additional fields from the server are just ignored).
+ * When the UI starts reading a new field, add it here.
+ */
+
+export interface UsageTotals {
+	tokens_read?: number;
+	tokens_saved?: number;
+	work_investment_tokens?: number;
+}
+
+export interface RecentPack {
+	created_at?: string;
+	tokens_read?: number;
+	tokens_saved?: number;
+	metadata_json?: {
+		exact_duplicates_collapsed?: number;
+		exact_dedupe_enabled?: boolean;
+	};
+}
+
+export interface CachedStatsPayload {
+	identity?: { actor_id?: string };
+	database?: {
+		path?: string;
+		size_bytes?: number;
+		active_memory_items?: number;
+		vector_coverage?: number;
+		tags_coverage?: number;
+	};
+	usage?: { totals?: UsageTotals };
+	reliability?: {
+		counts?: { errored_batches?: number };
+		rates?: {
+			flush_success_rate?: number;
+			dropped_event_rate?: number;
+		};
+	};
+	maintenance_jobs?: unknown[];
+}
+
+export interface CachedUsagePayload {
+	totals_global?: UsageTotals;
+	totals?: UsageTotals;
+	totals_filtered?: UsageTotals | null;
+	events?: unknown[];
+	recent_packs?: RecentPack[];
+}
+
+export interface CachedRawEventsPayload {
+	pending?: number;
+	sessions?: number;
+	events?: unknown;
+}
+
+export interface CachedSyncStatus {
+	daemon_state?: string;
+	enabled?: boolean;
+	last_sync_at?: string;
+	last_sync_at_utc?: string;
+	presence_status?: string;
+	attentionItems?: unknown[];
+	summary?: unknown;
+	discovered_devices?: unknown[];
+	paired_peer_count?: number;
+}
+
+export interface SyncActor {
+	actor_id?: string;
+	display_name?: string;
+	actor_display_name?: string;
+	is_local?: boolean;
+}
+
+export interface SyncPeerStatus {
+	peer_state?: string;
+	sync_status?: string;
+	ping_status?: string;
+	fresh?: boolean;
+}
+
+export interface SyncPeer {
+	peer_device_id?: string;
+	peer_name?: string;
+	name?: string;
+	display_name?: string;
+	actor_id?: string;
+	fingerprint?: string;
+	addresses?: unknown[];
+	claimed_local_actor?: boolean;
+	private_count?: number;
+	shareable_count?: number;
+	scope_label?: string;
+	status?: SyncPeerStatus;
+	last_error?: string;
+}
+
+export interface SyncSharingReviewRow {
+	actor_display_name?: string;
+	actor_id?: string;
+	peer_name?: string;
+	peer_device_id?: string;
+	private_count?: number;
+	scope_label?: string;
+	shareable_count?: number;
+}
+
+export interface DiscoveredDevice {
+	device_id?: string;
+	display_name?: string;
+	fingerprint?: string;
+	groups?: string[];
+	stale?: boolean;
+	addresses?: string[];
+	needs_local_approval?: boolean;
+	waiting_for_peer_approval?: boolean;
+}
+
+export interface CachedSyncCoordinator {
+	configured?: boolean;
+	groups?: unknown[];
+	coordinator_url?: string;
+	discovered_devices?: DiscoveredDevice[];
+	presence_status?: string;
+	paired_peer_count?: number;
+}
+
+export interface CachedTeamInvite {
+	encoded?: string;
+	warnings?: string[];
+}
+
+export interface CachedTeamJoin {
+	status?: string;
+}
+
+export interface CachedPairingPayload {
+	name?: string;
+}
+
+export interface CachedSyncJoinRequest {
+	display_name?: string;
+	device_id?: string;
+	request_id?: string;
+}
 
 const TAB_KEY = "codemem-tab";
 const FEED_FILTER_KEY = "codemem-feed-filter";
@@ -35,10 +187,10 @@ export const state = {
 	feedTypeFilter: "all" as FeedFilter,
 	feedScopeFilter: "all" as FeedScope,
 	feedQuery: "",
-	lastFeedItems: [] as any[],
+	lastFeedItems: [] as unknown[],
 	lastFeedFilteredCount: 0,
 	lastFeedSignature: "",
-	pendingFeedItems: null as any[] | null,
+	pendingFeedItems: null as unknown[] | null,
 
 	/* Feed item view state */
 	itemViewState: new Map<string, string>(),
@@ -46,28 +198,28 @@ export const state = {
 	newItemKeys: new Set<string>(),
 
 	/* Cached payloads */
-	lastStatsPayload: null as any,
-	lastUsagePayload: null as any,
-	lastRawEventsPayload: null as any,
-	lastSyncStatus: null as any,
-	lastSyncActors: [] as any[],
-	lastSyncPeers: [] as any[],
-	pendingAcceptedSyncPeers: [] as any[],
-	lastSyncSharingReview: [] as any[],
-	lastSyncCoordinator: null as any,
-	lastSyncJoinRequests: [] as any[],
-	lastTeamInvite: null as any,
-	lastTeamJoin: null as any,
+	lastStatsPayload: null as CachedStatsPayload | null,
+	lastUsagePayload: null as CachedUsagePayload | null,
+	lastRawEventsPayload: null as CachedRawEventsPayload | null,
+	lastSyncStatus: null as CachedSyncStatus | null,
+	lastSyncActors: [] as SyncActor[],
+	lastSyncPeers: [] as SyncPeer[],
+	pendingAcceptedSyncPeers: [] as SyncPeer[],
+	lastSyncSharingReview: [] as SyncSharingReviewRow[],
+	lastSyncCoordinator: null as CachedSyncCoordinator | null,
+	lastSyncJoinRequests: [] as CachedSyncJoinRequest[],
+	lastTeamInvite: null as CachedTeamInvite | null,
+	lastTeamJoin: null as CachedTeamJoin | null,
 	syncJoinFlowFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	syncPeerFeedbackById: new Map<string, { message: string; tone: "success" | "warning" }>(),
 	syncPeersSectionFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	syncJoinRequestsFeedback: null as { message: string; tone: "success" | "warning" } | null,
 	syncDiscoveredFeedback: null as { message: string; tone: "success" | "warning" } | null,
-	lastSyncAttempts: [] as any[],
-	lastSyncLegacyDevices: [] as any[],
-	lastSyncViewModel: null as any,
+	lastSyncAttempts: [] as unknown[],
+	lastSyncLegacyDevices: [] as unknown[],
+	lastSyncViewModel: null as UiSyncViewModel | null,
 	lastSyncDuplicatePersonDecisions: {} as Record<string, string>,
-	pairingPayloadRaw: null as any,
+	pairingPayloadRaw: null as CachedPairingPayload | null,
 	pairingCommandRaw: "",
 
 	/* Config */
