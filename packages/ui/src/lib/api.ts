@@ -1,5 +1,29 @@
 /* API fetch wrappers — thin layer over the viewer HTTP endpoints. */
 
+export interface PaginatedResponse<T = unknown> {
+	items: T[];
+	pagination?: {
+		has_more?: boolean;
+		next_offset?: number;
+	};
+}
+
+export interface CoordinatorInviteResult {
+	encoded?: string;
+	warnings?: string[];
+	[key: string]: unknown;
+}
+
+export interface ImportInviteResult {
+	status?: string;
+	[key: string]: unknown;
+}
+
+export interface AcceptDiscoveredPeerResult {
+	name?: string;
+	[key: string]: unknown;
+}
+
 export interface SyncRunItem {
 	peer_device_id: string;
 	ok: boolean;
@@ -117,7 +141,7 @@ async function readJsonPayload<T = Record<string, unknown>>(
 	}
 }
 
-export async function loadStats(): Promise<any> {
+export async function loadStats(): Promise<unknown> {
 	return fetchJson("/api/stats");
 }
 
@@ -125,19 +149,19 @@ export async function loadRuntimeInfo(): Promise<RuntimeInfo> {
 	return fetchJson("/api/runtime");
 }
 
-export async function loadUsage(project: string): Promise<any> {
+export async function loadUsage(project: string): Promise<unknown> {
 	return fetchJson(`/api/usage?project=${encodeURIComponent(project)}`);
 }
 
-export async function loadSession(project: string): Promise<any> {
+export async function loadSession(project: string): Promise<unknown> {
 	return fetchJson(`/api/session?project=${encodeURIComponent(project)}`);
 }
 
-export async function loadRawEvents(project: string): Promise<any> {
+export async function loadRawEvents(project: string): Promise<unknown> {
 	return fetchJson(`/api/raw-events?project=${encodeURIComponent(project)}`);
 }
 
-export async function loadMemories(project: string): Promise<any> {
+export async function loadMemories(project: string): Promise<PaginatedResponse> {
 	return loadMemoriesPage(project);
 }
 
@@ -158,35 +182,35 @@ function buildProjectParams(
 export async function loadMemoriesPage(
 	project: string,
 	options?: { limit?: number; offset?: number; scope?: string },
-): Promise<any> {
+): Promise<PaginatedResponse> {
 	const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
-	return fetchJson(`/api/observations?${query}`);
+	return fetchJson<PaginatedResponse>(`/api/observations?${query}`);
 }
 
 export async function updateMemoryVisibility(
 	memoryId: number,
 	visibility: "private" | "shared",
-): Promise<any> {
+): Promise<{ item?: unknown }> {
 	const resp = await fetch("/api/memories/visibility", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ memory_id: memoryId, visibility }),
 	});
-	const { text, payload } = await readJsonPayload(resp);
+	const { text, payload } = await readJsonPayload<{ item?: unknown }>(resp);
 	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
 	return payload;
 }
 
-export async function loadSummaries(project: string): Promise<any> {
+export async function loadSummaries(project: string): Promise<PaginatedResponse> {
 	return loadSummariesPage(project);
 }
 
 export async function loadSummariesPage(
 	project: string,
 	options?: { limit?: number; offset?: number; scope?: string },
-): Promise<any> {
+): Promise<PaginatedResponse> {
 	const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
-	return fetchJson(`/api/summaries?${query}`);
+	return fetchJson<PaginatedResponse>(`/api/summaries?${query}`);
 }
 
 export async function tracePack(payload: {
@@ -206,30 +230,29 @@ export async function tracePack(payload: {
 	return data;
 }
 
-export async function loadObserverStatus(): Promise<any> {
+export async function loadObserverStatus(): Promise<unknown> {
 	return fetchJson("/api/observer-status");
 }
 
-export async function loadConfig(): Promise<any> {
+export async function loadConfig(): Promise<unknown> {
 	return fetchJson("/api/config");
 }
 
-export async function saveConfig(payload: any): Promise<void> {
+export async function saveConfig(payload: Record<string, unknown>): Promise<unknown> {
 	const resp = await fetch("/api/config", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(payload),
 	});
 	const text = await resp.text();
-	let parsed: any = null;
+	let parsed: unknown = null;
 	if (text) {
 		try {
 			parsed = JSON.parse(text);
 		} catch {}
 	}
 	if (!resp.ok) {
-		const message =
-			parsed && typeof parsed.error === "string" ? parsed.error : text || "request failed";
+		const message = payloadError(parsed) || text || "request failed";
 		throw new Error(message);
 	}
 	return parsed;
@@ -239,7 +262,7 @@ export async function loadSyncStatus(
 	includeDiagnostics: boolean,
 	project = "",
 	options?: { includeJoinRequests?: boolean },
-): Promise<any> {
+): Promise<unknown> {
 	const params = new URLSearchParams();
 	if (includeDiagnostics) params.set("includeDiagnostics", "1");
 	if (project) params.set("project", project);
@@ -253,24 +276,24 @@ export async function createCoordinatorInvite(payload: {
 	coordinator_url?: string;
 	policy: "auto_admit" | "approval_required";
 	ttl_hours: number;
-}): Promise<any> {
+}): Promise<CoordinatorInviteResult> {
 	const resp = await fetch("/api/sync/invites/create", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(payload),
 	});
-	const { text, payload: data } = await readJsonPayload(resp);
+	const { text, payload: data } = await readJsonPayload<CoordinatorInviteResult>(resp);
 	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
 	return data;
 }
 
-export async function importCoordinatorInvite(invite: string): Promise<any> {
+export async function importCoordinatorInvite(invite: string): Promise<ImportInviteResult> {
 	const resp = await fetch("/api/sync/invites/import", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ invite }),
 	});
-	const { text, payload: data } = await readJsonPayload(resp);
+	const { text, payload: data } = await readJsonPayload<ImportInviteResult>(resp);
 	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
 	return data;
 }
@@ -278,7 +301,7 @@ export async function importCoordinatorInvite(invite: string): Promise<any> {
 export async function reviewJoinRequest(
 	requestId: string,
 	action: "approve" | "deny",
-): Promise<any> {
+): Promise<unknown> {
 	const resp = await fetch("/api/sync/join-requests/review", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -289,11 +312,11 @@ export async function reviewJoinRequest(
 	return data;
 }
 
-export async function loadSyncActors(): Promise<any> {
+export async function loadSyncActors(): Promise<unknown> {
 	return fetchJson("/api/sync/actors");
 }
 
-export async function loadPairing(): Promise<any> {
+export async function loadPairing(): Promise<unknown> {
 	return fetchJson("/api/sync/pairing?includeDiagnostics=1");
 }
 
@@ -302,7 +325,7 @@ export async function updatePeerScope(
 	include: string[] | null,
 	exclude: string[] | null,
 	inheritGlobal = false,
-): Promise<any> {
+): Promise<unknown> {
 	const resp = await fetch("/api/sync/peers/scope", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -323,7 +346,7 @@ export async function updatePeerScope(
 export async function updatePeerIdentity(
 	peerDeviceId: string,
 	claimedLocalActor: boolean,
-): Promise<any> {
+): Promise<unknown> {
 	const resp = await fetch("/api/sync/peers/identity", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -337,7 +360,10 @@ export async function updatePeerIdentity(
 	return payload;
 }
 
-export async function assignPeerActor(peerDeviceId: string, actorId: string | null): Promise<any> {
+export async function assignPeerActor(
+	peerDeviceId: string,
+	actorId: string | null,
+): Promise<unknown> {
 	const resp = await fetch("/api/sync/peers/identity", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -351,7 +377,7 @@ export async function assignPeerActor(peerDeviceId: string, actorId: string | nu
 	return payload;
 }
 
-export async function deletePeer(peerDeviceId: string): Promise<any> {
+export async function deletePeer(peerDeviceId: string): Promise<unknown> {
 	const resp = await fetch(`/api/sync/peers/${encodeURIComponent(peerDeviceId)}`, {
 		method: "DELETE",
 	});
@@ -360,7 +386,7 @@ export async function deletePeer(peerDeviceId: string): Promise<any> {
 	return payload;
 }
 
-export async function renamePeer(peerDeviceId: string, name: string): Promise<any> {
+export async function renamePeer(peerDeviceId: string, name: string): Promise<unknown> {
 	const resp = await fetch("/api/sync/peers/rename", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -377,7 +403,7 @@ export async function renamePeer(peerDeviceId: string, name: string): Promise<an
 export async function acceptDiscoveredPeer(
 	peerDeviceId: string,
 	fingerprint: string,
-): Promise<any> {
+): Promise<AcceptDiscoveredPeerResult> {
 	const resp = await fetch("/api/sync/peers/accept-discovered", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -387,18 +413,21 @@ export async function acceptDiscoveredPeer(
 		}),
 	});
 	const text = await resp.text();
-	let payload: any = {};
+	let payload: AcceptDiscoveredPeerResult = {};
 	try {
-		payload = text ? JSON.parse(text) : {};
+		const parsed = text ? JSON.parse(text) : null;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			payload = parsed as AcceptDiscoveredPeerResult;
+		}
 	} catch {
 		payload = {};
 	}
-	const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
+	const detail = typeof payload.detail === "string" ? payload.detail : undefined;
 	if (!resp.ok) throw new Error(detail || payloadError(payload) || text || "request failed");
 	return payload;
 }
 
-export async function createActor(displayName: string): Promise<any> {
+export async function createActor(displayName: string): Promise<unknown> {
 	const resp = await fetch("/api/sync/actors", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -409,7 +438,7 @@ export async function createActor(displayName: string): Promise<any> {
 	return payload;
 }
 
-export async function renameActor(actorId: string, displayName: string): Promise<any> {
+export async function renameActor(actorId: string, displayName: string): Promise<unknown> {
 	const resp = await fetch("/api/sync/actors/rename", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -420,7 +449,10 @@ export async function renameActor(actorId: string, displayName: string): Promise
 	return payload;
 }
 
-export async function mergeActor(primaryActorId: string, secondaryActorId: string): Promise<any> {
+export async function mergeActor(
+	primaryActorId: string,
+	secondaryActorId: string,
+): Promise<unknown> {
 	const resp = await fetch("/api/sync/actors/merge", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -434,7 +466,7 @@ export async function mergeActor(primaryActorId: string, secondaryActorId: strin
 	return payload;
 }
 
-export async function deactivateActor(actorId: string): Promise<any> {
+export async function deactivateActor(actorId: string): Promise<unknown> {
 	const resp = await fetch("/api/sync/actors/deactivate", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -445,7 +477,7 @@ export async function deactivateActor(actorId: string): Promise<any> {
 	return payload;
 }
 
-export async function claimLegacyDeviceIdentity(originDeviceId: string): Promise<any> {
+export async function claimLegacyDeviceIdentity(originDeviceId: string): Promise<unknown> {
 	const resp = await fetch("/api/sync/legacy-devices/claim", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },

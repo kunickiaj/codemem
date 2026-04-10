@@ -1404,7 +1404,7 @@ export async function loadFeedData() {
 	const observationItems = observations.items || [];
 	const filtered = observationItems.filter((i: any) => !isLowSignalObservation(i));
 	const filteredCount = observationItems.length - filtered.length;
-	const firstPageFeedItems = [...summaryItems, ...filtered].sort((a, b) => {
+	const firstPageFeedItems = [...summaryItems, ...filtered].sort((a: any, b: any) => {
 		return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
 	});
 	const feedItems = mergeRefreshFeedItems(state.lastFeedItems, firstPageFeedItems);
