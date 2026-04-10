@@ -9,37 +9,37 @@
 
 declare const __CODEMEM_GIT_COMMIT__: string;
 
-import { $, $select } from './lib/dom';
-import { getTheme, setTheme, initThemeSelect } from './lib/theme';
-import { state, initState, setActiveTab, type TabId } from './lib/state';
-import * as api from './lib/api';
+import * as api from "./lib/api";
+import { $, $select } from "./lib/dom";
+import { initState, setActiveTab, state, type TabId } from "./lib/state";
+import { getTheme, initThemeSelect, setTheme } from "./lib/theme";
 
-import { initFeedTab, loadFeedData, updateFeedView } from './tabs/feed';
-import { initHealthTab, loadHealthData, renderHealthOverview } from './tabs/health';
-import { initSyncTab, loadSyncData, loadPairingData, renderSyncStatus, renderSyncPeers, renderSyncAttempts, renderPairing } from './tabs/sync';
-import { initSettings, loadConfigData, isSettingsOpen } from './tabs/settings';
+import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
+import { initHealthTab, loadHealthData } from "./tabs/health";
+import { initSettings, isSettingsOpen, loadConfigData } from "./tabs/settings";
+import { initSyncTab, loadPairingData, loadSyncData } from "./tabs/sync";
 
 function setRuntimeLabel(version: string, commit: string | null) {
-  const el = $('runtimeLabel');
-  if (!el) return;
-  const label = commit ? `v${version} (${commit})` : `v${version}`;
-  el.textContent = label;
-  el.title = commit ? `codemem ${version} (${commit})` : `codemem ${version}`;
-  el.hidden = false;
+	const el = $("runtimeLabel");
+	if (!el) return;
+	const label = commit ? `v${version} (${commit})` : `v${version}`;
+	el.textContent = label;
+	el.title = commit ? `codemem ${version} (${commit})` : `codemem ${version}`;
+	el.hidden = false;
 }
 
 async function loadRuntimeLabel() {
-  try {
-    const runtime = await api.loadRuntimeInfo();
-    if (!runtime?.version) return;
-    const commit = __CODEMEM_GIT_COMMIT__ || null;
-    setRuntimeLabel(runtime.version, commit);
-  } catch {}
+	try {
+		const runtime = await api.loadRuntimeInfo();
+		if (!runtime?.version) return;
+		const commit = __CODEMEM_GIT_COMMIT__ || null;
+		setRuntimeLabel(runtime.version, commit);
+	} catch {}
 }
 
 /* ── Refresh status ──────────────────────────────────────── */
 
-type RefreshState = 'idle' | 'refreshing' | 'paused' | 'error';
+type RefreshState = "idle" | "refreshing" | "paused" | "error";
 let lastAnnouncedRefreshState: RefreshState | null = null;
 const RECONNECT_POLL_MS = 1500;
 
@@ -47,174 +47,197 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
 
 function setReconnectOverlay(open: boolean, detail?: string) {
-  const overlay = $('viewerReconnectOverlay');
-  const detailEl = $('viewerReconnectDetail');
-  if (!overlay || !detailEl) return;
-  overlay.hidden = !open;
-  detailEl.textContent = detail || 'Trying again automatically while the viewer comes back.';
+	const overlay = $("viewerReconnectOverlay");
+	const detailEl = $("viewerReconnectDetail");
+	if (!overlay || !detailEl) return;
+	overlay.hidden = !open;
+	detailEl.textContent = detail || "Trying again automatically while the viewer comes back.";
 }
 
 async function isViewerReady() {
-  try {
-    await api.pingViewerReady();
-    return true;
-  } catch {
-    return false;
-  }
+	try {
+		await api.pingViewerReady();
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function stopReconnectLoop() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  reconnecting = false;
-  setReconnectOverlay(false);
+	if (reconnectTimer) {
+		clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+	}
+	reconnecting = false;
+	setReconnectOverlay(false);
 }
 
 function canResumeRefresh() {
-  return document.visibilityState !== 'hidden' && !isSettingsOpen();
+	return document.visibilityState !== "hidden" && !isSettingsOpen();
 }
 
 function scheduleReconnectLoop() {
-  if (reconnecting) return;
-  reconnecting = true;
-  stopPolling();
-  setRefreshStatus('error', '(reconnecting)');
-  setReconnectOverlay(true, 'The viewer server is restarting or temporarily unavailable. Trying again automatically…');
+	if (reconnecting) return;
+	reconnecting = true;
+	stopPolling();
+	setRefreshStatus("error", "(reconnecting)");
+	setReconnectOverlay(
+		true,
+		"The viewer server is restarting or temporarily unavailable. Trying again automatically…",
+	);
 
-  const tick = async () => {
-    const ready = await isViewerReady();
-    if (ready) {
-      stopReconnectLoop();
-      if (canResumeRefresh()) {
-        setRefreshStatus('refreshing');
-        startPolling();
-        void doRefresh();
-      } else {
-        setRefreshStatus('paused', document.visibilityState === 'hidden' ? '(tab hidden)' : '(settings open)');
-      }
-      return;
-    }
-    setReconnectOverlay(true, 'Still reconnecting… the viewer will recover automatically as soon as the server responds.');
-    reconnectTimer = setTimeout(tick, RECONNECT_POLL_MS);
-  };
+	const tick = async () => {
+		const ready = await isViewerReady();
+		if (ready) {
+			stopReconnectLoop();
+			if (canResumeRefresh()) {
+				setRefreshStatus("refreshing");
+				startPolling();
+				void doRefresh();
+			} else {
+				setRefreshStatus(
+					"paused",
+					document.visibilityState === "hidden" ? "(tab hidden)" : "(settings open)",
+				);
+			}
+			return;
+		}
+		setReconnectOverlay(
+			true,
+			"Still reconnecting… the viewer will recover automatically as soon as the server responds.",
+		);
+		reconnectTimer = setTimeout(tick, RECONNECT_POLL_MS);
+	};
 
-  reconnectTimer = setTimeout(tick, RECONNECT_POLL_MS);
+	reconnectTimer = setTimeout(tick, RECONNECT_POLL_MS);
 }
 
 function setRefreshStatus(rs: RefreshState, detail?: string) {
-  state.refreshState = rs;
-  const el = $('refreshStatus');
-  if (!el) return;
+	state.refreshState = rs;
+	const el = $("refreshStatus");
+	if (!el) return;
 
-  const announce = (msg: string) => {
-    const announcer = $('refreshAnnouncer');
-    if (!announcer || lastAnnouncedRefreshState === rs) return;
-    announcer.textContent = msg;
-    lastAnnouncedRefreshState = rs;
-  };
+	const announce = (msg: string) => {
+		const announcer = $("refreshAnnouncer");
+		if (!announcer || lastAnnouncedRefreshState === rs) return;
+		announcer.textContent = msg;
+		lastAnnouncedRefreshState = rs;
+	};
 
-  if (rs === 'refreshing') { el.textContent = "refreshing…"; return; }
-  if (rs === 'paused') { el.textContent = "paused"; announce('Auto refresh paused.'); return; }
-  if (rs === 'error' && detail === '(reconnecting)') {
-    el.textContent = 'reconnecting…';
-    announce('Viewer reconnecting.');
-    return;
-  }
-  if (rs === 'error') { el.textContent = "refresh failed"; announce('Refresh failed.'); return; }
-  const suffix = detail ? ` ${detail}` : '';
-  el.textContent = "updated " + new Date().toLocaleTimeString() + suffix;
-  lastAnnouncedRefreshState = null;
+	if (rs === "refreshing") {
+		el.textContent = "refreshing…";
+		return;
+	}
+	if (rs === "paused") {
+		el.textContent = "paused";
+		announce("Auto refresh paused.");
+		return;
+	}
+	if (rs === "error" && detail === "(reconnecting)") {
+		el.textContent = "reconnecting…";
+		announce("Viewer reconnecting.");
+		return;
+	}
+	if (rs === "error") {
+		el.textContent = "refresh failed";
+		announce("Refresh failed.");
+		return;
+	}
+	const suffix = detail ? ` ${detail}` : "";
+	el.textContent = `updated ${new Date().toLocaleTimeString()}${suffix}`;
+	lastAnnouncedRefreshState = null;
 }
 
 /* ── Polling ─────────────────────────────────────────────── */
 
 function stopPolling() {
-  if (state.refreshTimer) { clearInterval(state.refreshTimer); state.refreshTimer = null; }
+	if (state.refreshTimer) {
+		clearInterval(state.refreshTimer);
+		state.refreshTimer = null;
+	}
 }
 
 function startPolling() {
-  if (state.refreshTimer) return;
-  state.refreshTimer = setInterval(() => refresh(), 5000);
+	if (state.refreshTimer) return;
+	state.refreshTimer = setInterval(() => refresh(), 5000);
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') {
-    stopPolling();
-    setRefreshStatus('paused', '(tab hidden)');
-  } else if (!isSettingsOpen() && !reconnecting) {
-    startPolling();
-    refresh();
-  }
+document.addEventListener("visibilitychange", () => {
+	if (document.visibilityState === "hidden") {
+		stopPolling();
+		setRefreshStatus("paused", "(tab hidden)");
+	} else if (!isSettingsOpen() && !reconnecting) {
+		startPolling();
+		refresh();
+	}
 });
 
 /* ── Tab routing ─────────────────────────────────────────── */
 
-const TAB_IDS: TabId[] = ['feed', 'health', 'sync'];
+const TAB_IDS: TabId[] = ["feed", "health", "sync"];
 
 function switchTab(tab: TabId) {
-  setActiveTab(tab);
+	setActiveTab(tab);
 
-  // Toggle tab panels
-  TAB_IDS.forEach((id) => {
-    const panel = $(`tab-${id}`);
-    if (panel) panel.hidden = id !== tab;
-  });
+	// Toggle tab panels
+	TAB_IDS.forEach((id) => {
+		const panel = $(`tab-${id}`);
+		if (panel) panel.hidden = id !== tab;
+	});
 
-  // Toggle tab buttons
-  TAB_IDS.forEach((id) => {
-    const btn = $(`tabBtn-${id}`);
-    if (btn) btn.classList.toggle('active', id === tab);
-  });
+	// Toggle tab buttons
+	TAB_IDS.forEach((id) => {
+		const btn = $(`tabBtn-${id}`);
+		if (btn) btn.classList.toggle("active", id === tab);
+	});
 
-  // Refresh data for active tab
-  refresh();
+	// Refresh data for active tab
+	refresh();
 }
 
 function initTabs() {
-  TAB_IDS.forEach((id) => {
-    const btn = $(`tabBtn-${id}`);
-    btn?.addEventListener('click', () => switchTab(id));
-  });
+	TAB_IDS.forEach((id) => {
+		const btn = $(`tabBtn-${id}`);
+		btn?.addEventListener("click", () => switchTab(id));
+	});
 
-  // Listen for hash changes (back/forward navigation)
-  window.addEventListener('hashchange', () => {
-    const hash = window.location.hash.replace('#', '') as TabId;
-    if (TAB_IDS.includes(hash) && hash !== state.activeTab) {
-      switchTab(hash);
-    }
-  });
+	// Listen for hash changes (back/forward navigation)
+	window.addEventListener("hashchange", () => {
+		const hash = window.location.hash.replace("#", "") as TabId;
+		if (TAB_IDS.includes(hash) && hash !== state.activeTab) {
+			switchTab(hash);
+		}
+	});
 
-  // Set initial tab
-  switchTab(state.activeTab);
+	// Set initial tab
+	switchTab(state.activeTab);
 }
 
 /* ── Project filter ──────────────────────────────────────── */
 
 async function loadProjects() {
-  try {
-    const projects = await api.loadProjects();
-    const projectFilter = $select('projectFilter');
-    if (!projectFilter) return;
-    projectFilter.textContent = '';
-    const allOpt = document.createElement('option');
-    allOpt.value = '';
-    allOpt.textContent = 'All Projects';
-    projectFilter.appendChild(allOpt);
-    projects.forEach((p) => {
-      const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = p;
-      projectFilter.appendChild(opt);
-    });
-  } catch {}
+	try {
+		const projects = await api.loadProjects();
+		const projectFilter = $select("projectFilter");
+		if (!projectFilter) return;
+		projectFilter.textContent = "";
+		const allOpt = document.createElement("option");
+		allOpt.value = "";
+		allOpt.textContent = "All Projects";
+		projectFilter.appendChild(allOpt);
+		projects.forEach((p) => {
+			const opt = document.createElement("option");
+			opt.value = p;
+			opt.textContent = p;
+			projectFilter.appendChild(opt);
+		});
+	} catch {}
 }
 
-$select('projectFilter')?.addEventListener('change', () => {
-  state.currentProject = $select('projectFilter')?.value || '';
-  updateFeedView(true);
-  refresh();
+$select("projectFilter")?.addEventListener("change", () => {
+	state.currentProject = $select("projectFilter")?.value || "";
+	updateFeedView(true);
+	refresh();
 });
 
 /* ── Main refresh ────────────────────────────────────────── */
@@ -222,56 +245,56 @@ $select('projectFilter')?.addEventListener('change', () => {
 let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function refresh() {
-  if (reconnecting) return;
-  // Debounce rapid calls (tab switch + hash change + visibility)
-  if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
-  refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
+	if (reconnecting) return;
+	// Debounce rapid calls (tab switch + hash change + visibility)
+	if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
+	refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
 }
 
 async function doRefresh() {
-  if (reconnecting) return;
-  if (state.refreshInFlight) { state.refreshQueued = true; return; }
-  state.refreshInFlight = true;
+	if (reconnecting) return;
+	if (state.refreshInFlight) {
+		state.refreshQueued = true;
+		return;
+	}
+	state.refreshInFlight = true;
 
-  try {
-    setRefreshStatus('refreshing');
+	try {
+		setRefreshStatus("refreshing");
 
-    // Always load health data (for the header health dot) and config
-    const promises: Promise<any>[] = [
-      loadHealthData(),
-      loadConfigData(),
-    ];
+		// Always load health data (for the header health dot) and config
+		const promises: Promise<any>[] = [loadHealthData(), loadConfigData()];
 
-    // Load tab-specific data
-    if (state.activeTab === 'feed') {
-      promises.push(loadFeedData());
-    }
-    // Sync data is needed by both Sync tab and Health tab (health cards derive sync state)
-    if (state.activeTab === 'sync' || state.activeTab === 'health') {
-      promises.push(loadSyncData());
-    }
+		// Load tab-specific data
+		if (state.activeTab === "feed") {
+			promises.push(loadFeedData());
+		}
+		// Sync data is needed by both Sync tab and Health tab (health cards derive sync state)
+		if (state.activeTab === "sync" || state.activeTab === "health") {
+			promises.push(loadSyncData());
+		}
 
-    // Load pairing if open
-    if (state.syncPairingOpen) {
-      promises.push(loadPairingData());
-    }
+		// Load pairing if open
+		if (state.syncPairingOpen) {
+			promises.push(loadPairingData());
+		}
 
-    await Promise.all(promises);
-    setRefreshStatus('idle');
-  } catch {
-    const ready = await isViewerReady();
-    if (!ready) {
-      scheduleReconnectLoop();
-    } else {
-      setRefreshStatus('error');
-    }
-  } finally {
-    state.refreshInFlight = false;
-    if (state.refreshQueued && !reconnecting) {
-      state.refreshQueued = false;
-      doRefresh();
-    }
-  }
+		await Promise.all(promises);
+		setRefreshStatus("idle");
+	} catch {
+		const ready = await isViewerReady();
+		if (!ready) {
+			scheduleReconnectLoop();
+		} else {
+			setRefreshStatus("error");
+		}
+	} finally {
+		state.refreshInFlight = false;
+		if (state.refreshQueued && !reconnecting) {
+			state.refreshQueued = false;
+			doRefresh();
+		}
+	}
 }
 
 /* ── Boot ────────────────────────────────────────────────── */
@@ -279,7 +302,7 @@ async function doRefresh() {
 initState();
 
 // Theme
-initThemeSelect($select('themeSelect'));
+initThemeSelect($select("themeSelect"));
 setTheme(getTheme());
 
 // Tabs
@@ -294,16 +317,16 @@ initSettings(stopPolling, startPolling, () => refresh());
 // Projects
 loadProjects();
 
-$('viewerReconnectRetry')?.addEventListener('click', async () => {
-  setReconnectOverlay(true, 'Checking whether the viewer server is back…');
-  const ready = await isViewerReady();
-  if (!ready) {
-    scheduleReconnectLoop();
-    return;
-  }
-  stopReconnectLoop();
-  startPolling();
-  void doRefresh();
+$("viewerReconnectRetry")?.addEventListener("click", async () => {
+	setReconnectOverlay(true, "Checking whether the viewer server is back…");
+	const ready = await isViewerReady();
+	if (!ready) {
+		scheduleReconnectLoop();
+		return;
+	}
+	stopReconnectLoop();
+	startPolling();
+	void doRefresh();
 });
 
 // Version label
