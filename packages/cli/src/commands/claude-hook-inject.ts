@@ -2,6 +2,7 @@ import { MemoryStore, resolveDbPath, resolveHookProject } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
+import { logHookFailure } from "./claude-hook-plugin-log.js";
 import {
 	buildInjectQuery,
 	normalizePromptText,
@@ -209,11 +210,18 @@ export async function buildClaudeHookInjection(
 	try {
 		const dbPath = resolveDb(resolveDbOpt(opts));
 		additionalContext = await buildPack(query, project, dbPath, workingSetPaths);
-	} catch {
+	} catch (err) {
 		additionalContext = "";
+		logHookFailure(
+			`codemem claude-hook-inject local pack failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 
 	if (!additionalContext && envNotDisabled(process.env.CODEMEM_INJECT_HTTP_FALLBACK || "1")) {
+		// tryHttpPack swallows its own network errors and returns "" on
+		// failure; don't wrap it here so tests that throw from a stub mock
+		// still surface as failures (the existing
+		// "should not run" assertions rely on this).
 		additionalContext = await httpPack(query, project, httpMaxTimeMs);
 	}
 
