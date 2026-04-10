@@ -2,7 +2,7 @@
 
 import type { RadixSelectOption } from "../../components/primitives/radix-select";
 import { copyToClipboard, el } from "../../lib/dom";
-import { state } from "../../lib/state";
+import { type SyncActor, state } from "../../lib/state";
 import { deriveVisiblePeopleActors } from "./view-model";
 
 /* ── Skeleton helpers ────────────────────────────────────── */
@@ -109,7 +109,7 @@ export function redactIpOctets(text: string): string {
 	return text.replace(/\b(\d{1,3}\.\d{1,3})\.\d{1,3}\.\d{1,3}\b/g, "$1.#.#");
 }
 
-export function redactAddress(address: any): string {
+export function redactAddress(address: unknown): string {
 	const raw = String(address || "");
 	if (!raw) return "";
 	return redactIpOctets(raw);
@@ -130,14 +130,14 @@ export function parseScopeList(value: string): string[] {
 
 /* ── Actor helpers ───────────────────────────────────────── */
 
-export function actorLabel(actor: any): string {
+export function actorLabel(actor: SyncActor | null | undefined): string {
 	if (!actor || typeof actor !== "object") return "Unknown person";
 	const displayName = String(actor.display_name || "").trim();
 	if (!displayName) return String(actor.actor_id || "Unknown person");
 	return displayName;
 }
 
-export function actorDisplayLabel(actor: any): string {
+export function actorDisplayLabel(actor: SyncActor | null | undefined): string {
 	if (!actor || typeof actor !== "object") return "Unknown person";
 	return actor.is_local ? "You" : actorLabel(actor);
 }
@@ -211,7 +211,7 @@ export function buildActorOptions(selectedActorId: string): HTMLOptionElement[] 
 	return options;
 }
 
-export function mergeTargetActors(actorId: string): any[] {
+export function mergeTargetActors(actorId: string): SyncActor[] {
 	const actors = visibleSyncActors();
 	return actors.filter((actor) => String(actor?.actor_id || "") !== actorId);
 }

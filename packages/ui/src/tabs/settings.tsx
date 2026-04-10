@@ -198,9 +198,9 @@ function hasOwn(obj: unknown, key: string): boolean {
 	return typeof obj === "object" && obj !== null && Object.hasOwn(obj, key);
 }
 
-function effectiveOrConfigured(config: any, effective: any, key: string): any {
-	if (hasOwn(effective, key)) return effective[key];
-	if (hasOwn(config, key)) return config[key];
+function effectiveOrConfigured(config: unknown, effective: unknown, key: string): unknown {
+	if (hasOwn(effective, key)) return (effective as Record<string, unknown>)[key];
+	if (hasOwn(config, key)) return (config as Record<string, unknown>)[key];
 	return undefined;
 }
 
@@ -257,10 +257,11 @@ function inferObserverModel(
 	return { model: DEFAULT_OPENAI_MODEL, source: "Recommended (direct API)" };
 }
 
-function configuredValueForKey(config: any, key: string): unknown {
+function configuredValueForKey(config: unknown, key: string): unknown {
+	const cfg = (config ?? {}) as Record<string, unknown>;
 	switch (key) {
 		case "claude_command": {
-			const value = config?.claude_command;
+			const value = cfg.claude_command;
 			if (!Array.isArray(value)) return [];
 			const normalized: string[] = [];
 			value.forEach((item) => {
@@ -280,18 +281,18 @@ function configuredValueForKey(config: any, key: string): unknown {
 		case "sync_host":
 		case "sync_coordinator_url":
 		case "sync_coordinator_group":
-			return normalizeTextValue(asInputString(config?.[key]));
+			return normalizeTextValue(asInputString(cfg[key]));
 		case "observer_runtime":
-			return normalizeTextValue(asInputString(config?.observer_runtime));
+			return normalizeTextValue(asInputString(cfg.observer_runtime));
 		case "observer_auth_source":
-			return normalizeTextValue(asInputString(config?.observer_auth_source));
+			return normalizeTextValue(asInputString(cfg.observer_auth_source));
 		case "observer_auth_command": {
-			const value = config?.observer_auth_command;
+			const value = cfg.observer_auth_command;
 			if (!Array.isArray(value)) return [];
 			return value.filter((item) => typeof item === "string");
 		}
 		case "observer_headers": {
-			const value = config?.observer_headers;
+			const value = cfg.observer_headers;
 			if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 			const headers: Record<string, string> = {};
 			Object.entries(value as Record<string, unknown>).forEach(([header, headerValue]) => {
@@ -311,34 +312,34 @@ function configuredValueForKey(config: any, key: string): unknown {
 		case "raw_events_sweeper_interval_s":
 		case "sync_port":
 		case "sync_interval_s": {
-			if (!hasOwn(config, key)) return "";
-			const parsed = Number(config[key]);
+			if (!hasOwn(cfg, key)) return "";
+			const parsed = Number(cfg[key]);
 			return Number.isFinite(parsed) && parsed !== 0 ? parsed : "";
 		}
 		case "sync_coordinator_timeout_s":
 		case "sync_coordinator_presence_ttl_s": {
-			if (!hasOwn(config, key)) return "";
-			const parsed = Number(config[key]);
+			if (!hasOwn(cfg, key)) return "";
+			const parsed = Number(cfg[key]);
 			return Number.isFinite(parsed) && parsed > 0 ? parsed : "";
 		}
 		case "observer_auth_cache_ttl_s": {
-			if (!hasOwn(config, key)) return "";
-			const parsed = Number(config[key]);
+			if (!hasOwn(cfg, key)) return "";
+			const parsed = Number(cfg[key]);
 			return Number.isFinite(parsed) ? parsed : "";
 		}
 		case "sync_enabled":
 		case "sync_mdns":
 		case "observer_tier_routing_enabled":
 		case "observer_rich_openai_use_responses":
-			return asBooleanValue(config?.[key]);
+			return asBooleanValue(cfg[key]);
 		default:
-			return hasOwn(config, key) ? config[key] : "";
+			return hasOwn(cfg, key) ? cfg[key] : "";
 	}
 }
 
 function mergeOverrideBaseline(
 	baseline: Record<string, unknown>,
-	config: any,
+	config: unknown,
 	envOverrides: Record<string, unknown>,
 ): Record<string, unknown> {
 	const next = { ...baseline };
@@ -709,23 +710,42 @@ function joinPhrases(values: string[]): string {
 	return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
-function buildSettingsNotice(payload: any): { message: string; type: "success" | "warning" } {
-	const effects = payload?.effects && typeof payload.effects === "object" ? payload.effects : {};
+interface SettingsSaveEffects {
+	hot_reloaded_keys?: unknown;
+	live_applied_keys?: unknown;
+	restart_required_keys?: unknown;
+	warnings?: unknown;
+	manual_actions?: unknown;
+	sync?: {
+		attempted?: boolean;
+		message?: string;
+		reason?: string;
+		affected_keys?: unknown;
+		ok?: boolean;
+	};
+}
+
+function buildSettingsNotice(payload: unknown): { message: string; type: "success" | "warning" } {
+	const raw = (payload as { effects?: SettingsSaveEffects } | null | undefined)?.effects;
+	const effects: SettingsSaveEffects =
+		raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
 	const hotReloaded = Array.isArray(effects.hot_reloaded_keys)
-		? effects.hot_reloaded_keys.map(formatSettingsKey)
+		? effects.hot_reloaded_keys.map((key) => formatSettingsKey(String(key)))
 		: [];
 	const liveApplied = Array.isArray(effects.live_applied_keys)
-		? effects.live_applied_keys.map(formatSettingsKey)
+		? effects.live_applied_keys.map((key) => formatSettingsKey(String(key)))
 		: [];
 	const restartRequired = Array.isArray(effects.restart_required_keys)
-		? effects.restart_required_keys.map(formatSettingsKey)
+		? effects.restart_required_keys.map((key) => formatSettingsKey(String(key)))
 		: [];
 	const warnings = Array.isArray(effects.warnings)
 		? effects.warnings.filter(
-				(value: unknown): value is string => typeof value === "string" && value.trim().length > 0,
+				(value): value is string => typeof value === "string" && value.trim().length > 0,
 			)
 		: [];
-	const manualActions = Array.isArray(effects.manual_actions) ? effects.manual_actions : [];
+	const manualActions: Array<{ command?: string }> = Array.isArray(effects.manual_actions)
+		? (effects.manual_actions as Array<{ command?: string }>)
+		: [];
 	const sync = effects.sync && typeof effects.sync === "object" ? effects.sync : {};
 	const lines: string[] = [];
 
@@ -772,7 +792,17 @@ function protectedConfigHelp(key: string): string {
 	return `${key} is read-only in the viewer for security. Edit the config file or environment instead.`;
 }
 
-function formStateFromPayload(payload: any): SettingsFormState {
+interface ConfigPayload {
+	config?: Record<string, unknown>;
+	effective?: Record<string, unknown>;
+	defaults?: Record<string, unknown>;
+	env_overrides?: Record<string, unknown>;
+	protected_keys?: unknown;
+	providers?: unknown;
+	path?: string;
+}
+
+function formStateFromPayload(payload: ConfigPayload): SettingsFormState {
 	const config = payload.config || {};
 	const effective = payload.effective || {};
 	const observerHeadersValue = effectiveOrConfigured(config, effective, "observer_headers");
@@ -869,23 +899,24 @@ function formStateFromPayload(payload: any): SettingsFormState {
 	};
 }
 
-export function renderConfigModal(payload: any) {
+export function renderConfigModal(payload: unknown) {
 	if (!payload || typeof payload !== "object") return;
-	const defaults = payload.defaults || {};
-	const config = payload.config || {};
+	const data = payload as ConfigPayload;
+	const defaults = data.defaults || {};
+	const config = data.config || {};
 	const envOverrides =
-		payload.env_overrides && typeof payload.env_overrides === "object" ? payload.env_overrides : {};
-	const protectedKeys = Array.isArray(payload.protected_keys)
-		? payload.protected_keys.filter(
-				(value: unknown): value is string => typeof value === "string" && value.trim().length > 0,
+		data.env_overrides && typeof data.env_overrides === "object" ? data.env_overrides : {};
+	const protectedKeys = Array.isArray(data.protected_keys)
+		? data.protected_keys.filter(
+				(value): value is string => typeof value === "string" && value.trim().length > 0,
 			)
 		: [];
-	const values = formStateFromPayload(payload);
+	const values = formStateFromPayload(data);
 
 	settingsEnvOverrides = envOverrides;
 	settingsProtectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
-	state.configPath = payload.path || "";
+	state.configPath = data.path || "";
 
 	updateRenderState({
 		effectiveText:
@@ -894,7 +925,7 @@ export function renderConfigModal(payload: any) {
 				: "",
 		overridesVisible: Object.keys(envOverrides).length > 0,
 		pathText: state.configPath ? `Config path: ${state.configPath}` : "Config path: n/a",
-		providers: toProviderList(payload.providers),
+		providers: toProviderList(data.providers),
 		statusText: "Ready",
 		values,
 	});
@@ -1197,8 +1228,11 @@ function formatFailureTimestamp(value: unknown): string {
 	return ts.toLocaleString();
 }
 
-function renderObserverStatusBanner(status: any) {
-	updateRenderState({ observerStatus: status && typeof status === "object" ? status : null });
+function renderObserverStatusBanner(status: unknown) {
+	updateRenderState({
+		observerStatus:
+			status && typeof status === "object" ? (status as Record<string, unknown>) : null,
+	});
 }
 
 export async function loadConfigData() {

@@ -1,6 +1,6 @@
 /* DOM utility helpers — thin wrappers for vanilla element creation. */
 
-export function el(tag: string, className?: string | null, text?: any): HTMLElement {
+export function el(tag: string, className?: string | null, text?: unknown): HTMLElement {
 	const node = document.createElement(tag);
 	if (className) node.className = className;
 	if (text !== undefined && text !== null) node.textContent = String(text);
