@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { replayBatchExtraction } from "./extraction-replay.js";
+import type { ObserverClient } from "./observer-client.js";
 import { initTestSchema } from "./test-utils.js";
 
 function createDbPath(name: string): string {
@@ -91,7 +92,7 @@ describe("extraction replay", () => {
 				runtime: "test",
 				auth: { source: "none", type: "none", hasToken: false },
 			}),
-		} as any;
+		} as unknown as ObserverClient;
 		let callCount = 0;
 
 		const result = await replayBatchExtraction(dbPath, observer, {
@@ -160,7 +161,7 @@ describe("extraction replay", () => {
 				runtime: "test",
 				auth: { source: "none", type: "none", hasToken: false },
 			}),
-		} as any;
+		} as unknown as ObserverClient;
 
 		const result = await replayBatchExtraction(dbPath, observer, {
 			batchId: 19001,

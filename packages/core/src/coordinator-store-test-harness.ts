@@ -197,7 +197,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					});
 					const peers = await store.listGroupPeers("g1", "d1");
 					expect(peers).toHaveLength(1);
-					const peer = peers[0]!;
+					const peer = peers[0];
+					if (!peer) throw new Error("expected peer[0]");
 					expect(peer.device_id).toBe("d2");
 					expect(peer.public_key).toBe("pk2");
 					expect(peer.stale).toBe(false);
@@ -218,7 +219,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					});
 					const peers = await store.listGroupPeers("g1", "d1");
 					expect(peers).toHaveLength(1);
-					const peer = peers[0]!;
+					const peer = peers[0];
+					if (!peer) throw new Error("expected peer[0]");
 					expect(peer.stale).toBe(true);
 					expect(peer.addresses).toEqual([]);
 				});
@@ -231,7 +233,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					await store.enrollDevice("g1", { deviceId: "d2", fingerprint: "fp2", publicKey: "pk2" });
 					const peers = await store.listGroupPeers("g1", "d1");
 					expect(peers).toHaveLength(1);
-					const peer = peers[0]!;
+					const peer = peers[0];
+					if (!peer) throw new Error("expected peer[0]");
 					expect(peer.device_id).toBe("d2");
 					expect(peer.stale).toBe(true);
 					expect(peer.addresses).toEqual([]);

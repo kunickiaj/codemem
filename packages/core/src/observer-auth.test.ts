@@ -133,7 +133,9 @@ describe("resolveOAuthProvider", () => {
 describe("renderObserverHeaders", () => {
 	it("substitutes auth template variables", () => {
 		const headers = {
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${...} is the fixture we're substituting
 			Authorization: "Bearer ${auth.token}",
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${...} is the fixture we're substituting
 			"X-Auth-Type": "${auth.type}",
 		};
 		const result = renderObserverHeaders(headers, {
@@ -147,6 +149,7 @@ describe("renderObserverHeaders", () => {
 
 	it("drops headers referencing auth.token when no token", () => {
 		const headers = {
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${...} is the fixture we're substituting
 			Authorization: "Bearer ${auth.token}",
 			"X-Static": "always",
 		};

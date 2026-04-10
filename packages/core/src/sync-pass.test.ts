@@ -464,7 +464,7 @@ describe("syncOnce auto-bootstrap", () => {
 		]);
 		const fetchSpy = vi.spyOn(syncBootstrap, "fetchAllSnapshotPages");
 
-		const result = await syncOnce(db, peerDeviceId, [address]);
+		await syncOnce(db, peerDeviceId, [address]);
 
 		// Should NOT have called bootstrap
 		expect(fetchSpy).not.toHaveBeenCalled();
@@ -488,7 +488,7 @@ describe("syncOnce auto-bootstrap", () => {
 		]);
 		const fetchSpy = vi.spyOn(syncBootstrap, "fetchAllSnapshotPages");
 
-		const result = await syncOnce(db, peerDeviceId, [address]);
+		await syncOnce(db, peerDeviceId, [address]);
 
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});

@@ -42,7 +42,11 @@ describe("extraction benchmarks", () => {
 	it("returns defensive copies from the benchmark listing", () => {
 		const profiles = listExtractionBenchmarkProfiles();
 		expect(profiles.length).toBeGreaterThan(0);
-		profiles[0]!.batches[0]!.label = "mutated";
+		const firstProfile = profiles[0];
+		if (!firstProfile) throw new Error("expected at least one profile");
+		const firstBatch = firstProfile.batches[0];
+		if (!firstBatch) throw new Error("expected at least one batch in the first profile");
+		firstBatch.label = "mutated";
 		const fresh = getExtractionBenchmarkProfile("rich-batch-shape-v1");
 		expect(fresh?.batches[0]?.label).not.toBe("mutated");
 	});
