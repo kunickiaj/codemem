@@ -1,7 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildClaudeHookInjection, claudeHookInjectCommand } from "./claude-hook-inject.js";
+import { saveSessionState, statePathForSession } from "./claude-hook-session-state.js";
 
 describe("claude-hook-inject command", () => {
+	let stateDir: string;
+	let originalContextDir: string | undefined;
+
+	beforeEach(() => {
+		originalContextDir = process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR;
+		stateDir = mkdtempSync(join(tmpdir(), "codemem-cli-inject-state-"));
+		process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR = stateDir;
+	});
+
+	afterEach(() => {
+		if (originalContextDir === undefined) delete process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR;
+		else process.env.CODEMEM_CLAUDE_HOOK_CONTEXT_DIR = originalContextDir;
+		rmSync(stateDir, { recursive: true, force: true });
+	});
+
 	it("registers expected options and help text", () => {
 		const longs = claudeHookInjectCommand.options.map((option) => option.long);
 		expect(longs).toContain("--db");
@@ -22,10 +41,13 @@ describe("claude-hook-inject command", () => {
 			},
 			{},
 			{
-				buildLocalPack: async (context, project, dbPath) => {
-					expect(context).toBe("fix auth callback");
+				buildLocalPack: async (context, project, dbPath, workingSetPaths) => {
+					// Rich query: first_prompt (just persisted) + project; current
+					// prompt is identical to first_prompt and is therefore skipped.
+					expect(context).toBe("fix auth callback codemem");
 					expect(project).toBe("codemem");
 					expect(dbPath).toBe("/tmp/test.sqlite");
+					expect(workingSetPaths).toEqual([]);
 					return "## Summary\n[1] (decision) Auth fix";
 				},
 				httpPack: async () => {
@@ -64,7 +86,8 @@ describe("claude-hook-inject command", () => {
 						throw new Error("local pack failed");
 					},
 					httpPack: async (context, project, maxTimeMs) => {
-						expect(context).toBe("continue sync work");
+						// HTTP fallback receives the same rich query as the local path.
+						expect(context).toBe("continue sync work codemem");
 						expect(project).toBe("codemem");
 						expect(maxTimeMs).toBe(7000);
 						return "## Timeline\n[4] (feature) Sync continuation";
@@ -161,7 +184,7 @@ describe("claude-hook-inject command", () => {
 				continue: true,
 				hookSpecificOutput: {
 					hookEventName: "UserPromptSubmit",
-					additionalContext: "123456789012",
+					additionalContext: "123456789012\n\n[pack truncated]",
 				},
 			});
 		} finally {
@@ -216,6 +239,152 @@ describe("claude-hook-inject command", () => {
 
 		expect(result.hookSpecificOutput?.hookEventName).toBe("UserPromptSubmit");
 		expect(result.hookSpecificOutput?.additionalContext).toBe("## Summary\nmemory pack");
+	});
+
+	it("enriches the retrieval query with prior session state and propagates working_set_paths", async () => {
+		// Pre-seed session state on disk so this prompt looks like the second
+		// turn of an existing session: prior first_prompt + prior modified files.
+		const sessionId = "sess-stateful";
+		saveSessionState(sessionId, {
+			first_prompt: "investigate flaky test",
+			last_prompt: "investigate flaky test",
+			files_modified: ["packages/cli/src/a.ts", "packages/cli/src/b.ts", "packages/cli/src/c.ts"],
+			updated_at: "2026-04-09T00:00:00Z",
+		});
+
+		const result = await buildClaudeHookInjection(
+			{
+				hook_event_name: "UserPromptSubmit",
+				session_id: sessionId,
+				prompt: "now check the fixture",
+				cwd: "/tmp/codemem",
+				project: "codemem",
+			},
+			{},
+			{
+				buildLocalPack: async (context, project, _dbPath, workingSetPaths) => {
+					// Query weaves: original first_prompt + new prompt + project
+					// + recent file basenames (last 5 → all 3 here).
+					expect(context).toBe(
+						"investigate flaky test now check the fixture codemem a.ts b.ts c.ts",
+					);
+					expect(project).toBe("codemem");
+					expect(workingSetPaths).toEqual([
+						"packages/cli/src/a.ts",
+						"packages/cli/src/b.ts",
+						"packages/cli/src/c.ts",
+					]);
+					return "## Memory pack";
+				},
+				httpPack: async () => {
+					throw new Error("http fallback should not run");
+				},
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+
+		expect(result.hookSpecificOutput?.additionalContext).toBe("## Memory pack");
+		// State persists across the call: last_prompt now reflects the new prompt.
+		expect(statePathForSession(sessionId).startsWith(stateDir)).toBe(true);
+	});
+
+	it("appends [pack truncated] marker when additionalContext exceeds CODEMEM_INJECT_MAX_CHARS", async () => {
+		const originalMaxChars = process.env.CODEMEM_INJECT_MAX_CHARS;
+		// 22 cuts the source at "memory_one memory_two " (trailing space).
+		// trimEnd should drop the trailing space before appending the marker.
+		process.env.CODEMEM_INJECT_MAX_CHARS = "22";
+		try {
+			const result = await buildClaudeHookInjection(
+				{
+					hook_event_name: "UserPromptSubmit",
+					session_id: "sess-marker",
+					prompt: "any longer prompt",
+				},
+				{},
+				{
+					buildLocalPack: async () => "memory_one memory_two memory_three memory_four",
+					httpPack: async () => "",
+					resolveDb: () => "/tmp/test.sqlite",
+				},
+			);
+
+			const additionalContext = result.hookSpecificOutput?.additionalContext ?? "";
+			expect(additionalContext.endsWith("\n\n[pack truncated]")).toBe(true);
+			expect(additionalContext).toBe("memory_one memory_two\n\n[pack truncated]");
+		} finally {
+			if (originalMaxChars === undefined) delete process.env.CODEMEM_INJECT_MAX_CHARS;
+			else process.env.CODEMEM_INJECT_MAX_CHARS = originalMaxChars;
+		}
+	});
+
+	it("returns continue without injection when CODEMEM_PLUGIN_IGNORE is truthy", async () => {
+		const originalIgnore = process.env.CODEMEM_PLUGIN_IGNORE;
+		process.env.CODEMEM_PLUGIN_IGNORE = "1";
+		try {
+			const result = await buildClaudeHookInjection(
+				{
+					hook_event_name: "UserPromptSubmit",
+					session_id: "sess-ignored",
+					prompt: "should be ignored",
+				},
+				{},
+				{
+					buildLocalPack: async () => {
+						throw new Error("should not be called when plugin is ignored");
+					},
+					httpPack: async () => {
+						throw new Error("should not be called when plugin is ignored");
+					},
+					resolveDb: () => "/tmp/test.sqlite",
+				},
+			);
+			expect(result).toEqual({ continue: true });
+		} finally {
+			if (originalIgnore === undefined) delete process.env.CODEMEM_PLUGIN_IGNORE;
+			else process.env.CODEMEM_PLUGIN_IGNORE = originalIgnore;
+		}
+	});
+
+	it("normalizes multi-line prompts before composing the rich query", async () => {
+		// The session-state tracker stores first_prompt with newlines collapsed.
+		// extractInjectContext must do the same so the second-turn comparison
+		// `prompt !== first_prompt` works for multi-line prompts — otherwise
+		// the current prompt would be appended on every turn.
+		const sessionId = "sess-multiline";
+		// Pre-seed first_prompt as the canonical (collapsed) form.
+		saveSessionState(sessionId, {
+			first_prompt: "fix the auth callback flow",
+			last_prompt: "fix the auth callback flow",
+			files_modified: [],
+			updated_at: "2026-04-09T00:00:00Z",
+		});
+
+		const result = await buildClaudeHookInjection(
+			{
+				hook_event_name: "UserPromptSubmit",
+				session_id: sessionId,
+				// Same words, but with newlines — the bug would treat this as
+				// a different prompt than the stored first_prompt.
+				prompt: "fix the auth\ncallback flow",
+				cwd: "/tmp/codemem",
+				project: "codemem",
+			},
+			{},
+			{
+				buildLocalPack: async (context) => {
+					// Newlines must be collapsed to spaces, AND the current
+					// prompt must dedupe against first_prompt (skipped because
+					// equal post-normalization).
+					expect(context).not.toContain("\n");
+					expect(context).toBe("fix the auth callback flow codemem");
+					return "## Pack";
+				},
+				httpPack: async () => "",
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+
+		expect(result.hookSpecificOutput?.additionalContext).toBe("## Pack");
 	});
 
 	it("returns continue without additionalContext when all generation paths fail", async () => {

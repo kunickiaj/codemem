@@ -2,9 +2,9 @@
  * codemem claude-hook-ingest — read a single Claude Code hook payload
  * from stdin and enqueue it for processing.
  *
- * Ports codemem/commands/claude_hook_runtime_cmds.py with an HTTP-first
- * strategy: try POST /api/claude-hooks (viewer must be running), then
- * fall back to direct raw-event enqueue via the local store.
+ * HTTP-first strategy: POST to the running viewer's /api/claude-hooks
+ * endpoint, then fall back to direct raw-event enqueue via the local
+ * store when the viewer is unreachable.
  *
  * Usage (from Claude hooks config):
  *   echo '{"hook_event_name":"Stop","session_id":"...","last_assistant_message":"..."}' \
@@ -22,6 +22,7 @@ import {
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, addViewerHostOptions, type DbOpts, resolveDbOpt } from "../shared-options.js";
+import { trackHookSessionState } from "./claude-hook-session-state.js";
 
 type IngestResult = { inserted: number; skipped: number; via: "http" | "direct" };
 
@@ -166,6 +167,15 @@ export async function ingestClaudeHookPayload(
 	const httpIngest = deps.httpIngest ?? tryHttpIngest;
 	const directIngest = deps.directIngest ?? directEnqueue;
 	const resolveDb = deps.resolveDb ?? resolveDbPath;
+
+	// Update per-session state alongside ingestion so claude-hook-inject's
+	// retrieval query can draw on prompts/files seen on the ingest path.
+	// Failures must never crash the hook command.
+	try {
+		trackHookSessionState(payload);
+	} catch {
+		// best-effort
+	}
 
 	const port = typeof opts.port === "number" ? opts.port : Number.parseInt(opts.port, 10);
 	const httpResult = await httpIngest(payload, opts.host, port);
