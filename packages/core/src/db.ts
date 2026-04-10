@@ -1,9 +1,11 @@
 /**
- * Database connection and schema initialization for the codemem TS backend.
+ * Database connection and schema primitives for the codemem store.
  *
- * Mirrors codemem/db.py — same pragmas, same WAL mode, same sqlite-vec loading.
- * During Phase 1 of the migration, Python owns DDL (schema migrations).
- * The TS runtime validates the schema version but does NOT run migrations.
+ * Owns the `connect()` helper (pragmas, WAL mode, sqlite-vec loading, legacy
+ * path migration) and the schema-version introspection helpers
+ * (`getSchemaVersion`, `assertSchemaReady`, `ensureAdditiveSchemaCompatibility`,
+ * `ensurePlannerStats`). Schema bootstrap DDL lives in `schema-bootstrap.ts`;
+ * `MemoryStore` auto-invokes it on first construction against a fresh DB.
  */
 
 import {
@@ -188,8 +190,10 @@ export function migrateLegacyDbPath(dbPath: string): void {
  * Open a better-sqlite3 connection with the standard codemem pragmas.
  *
  * Migrates legacy DB paths if needed, creates parent directories,
- * sets WAL mode, busy timeout, foreign keys.
- * Does NOT initialize or migrate the schema — during Phase 1, Python owns DDL.
+ * sets WAL mode, busy timeout, foreign keys. Does not create or migrate the
+ * schema — callers are responsible for bootstrapping (either via
+ * `MemoryStore`, which auto-bootstraps fresh files, or via `initDatabase` /
+ * `bootstrapSchema` for offline tooling).
  */
 export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 	migrateLegacyDbPath(dbPath);
@@ -263,10 +267,11 @@ export function isEmbeddingDisabled(): boolean {
 }
 
 /**
- * Read the schema user_version from the database.
+ * Read the schema `user_version` pragma from the database.
  *
- * During Phase 1, the TS runtime uses this to verify the schema is initialized
- * (by Python) before operating. It does NOT set or bump the version.
+ * Returns `0` for a freshly-created or empty file, which is the signal
+ * `MemoryStore` / `initDatabase` / `bootstrapSchema` use to decide whether to
+ * run the initial DDL.
  */
 export function getSchemaVersion(db: DatabaseType): number {
 	const row = db.pragma("user_version", { simple: true });

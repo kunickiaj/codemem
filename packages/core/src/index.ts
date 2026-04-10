@@ -341,6 +341,7 @@ export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
 export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
 export * as schema from "./schema.js";
+export { bootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 export type { StoreHandle } from "./search.js";
 export {
 	dedupeOrderedIds,

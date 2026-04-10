@@ -1,5 +1,5 @@
 import type { Database } from "./db.js";
-import { SCHEMA_VERSION } from "./db.js";
+import { getSchemaVersion, SCHEMA_VERSION } from "./db.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 
 const SCHEMA_AUX_DDL = `
@@ -65,4 +65,16 @@ export function bootstrapSchema(db: Database): void {
 	db.exec(TEST_SCHEMA_BASE_DDL);
 	db.exec(SCHEMA_AUX_DDL);
 	db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
+/**
+ * Run `bootstrapSchema` on a database only if it's still at the unbootstrapped
+ * state (`user_version === 0`). Safe to call from any entry point that opens
+ * a raw `connect()` handle and then issues queries expecting the schema to be
+ * in place. Idempotent: already-initialized databases are left untouched.
+ */
+export function ensureSchemaBootstrapped(db: Database): void {
+	if (getSchemaVersion(db) === 0) {
+		bootstrapSchema(db);
+	}
 }

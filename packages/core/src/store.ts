@@ -1,15 +1,12 @@
 /**
- * MemoryStore — TypeScript port of codemem/store/_store.py (Phase 1 CRUD).
+ * MemoryStore — the main read/write surface for the codemem memory store.
  *
- * During Phase 1, Python owns DDL/schema. This TS runtime reads and writes data
- * but does NOT create or migrate tables. The assertSchemaReady() call verifies
- * the schema was initialized by Python before any operations.
- *
- * Methods ported: get, remember, forget, recent, recentByKinds, stats,
- * updateMemoryVisibility, close.
- *
- * NOT ported yet: pack, usage tracking, vectors, provenance resolution,
- * memory_owned_by_self check.
+ * Manages a better-sqlite3 connection to the on-disk database and exposes
+ * CRUD, search, pack, and sync helpers. Fresh databases are auto-bootstrapped
+ * on first construction: if the connected file has no schema (user_version 0),
+ * `bootstrapSchema` runs before `assertSchemaReady` so every CLI/MCP entry
+ * point gets a ready-to-use store without requiring an explicit
+ * `codemem db init` invocation first.
  */
 
 import { randomUUID } from "node:crypto";
@@ -41,6 +38,7 @@ import {
 	buildMemoryPackTraceAsync,
 } from "./pack.js";
 import * as schema from "./schema.js";
+import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 import {
 	type ExplainOptions,
 	explain as explainFn,
@@ -218,6 +216,12 @@ export class MemoryStore {
 		this.db = connect(this.dbPath);
 		try {
 			loadSqliteVec(this.db);
+			// Auto-bootstrap fresh databases: if the file is empty or has no
+			// schema yet, run the full schema DDL before asserting readiness.
+			// This makes `new MemoryStore(...)` safe to call from any entry
+			// point (mcp-server, claude-hook-ingest, CLI commands) without a
+			// prior explicit `codemem db init`.
+			ensureSchemaBootstrapped(this.db);
 			assertSchemaReady(this.db);
 			ensureAdditiveSchemaCompatibility(this.db);
 			ensurePlannerStats(this.db);

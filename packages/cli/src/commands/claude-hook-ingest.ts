@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import {
 	buildRawEventEnvelopeFromHook,
 	connect,
+	ensureSchemaBootstrapped,
 	flushRawEvents,
 	loadSqliteVec,
 	MemoryStore,
@@ -131,6 +132,11 @@ export function directEnqueue(
 		} catch {
 			// sqlite-vec not available — non-fatal for raw event enqueue
 		}
+		// Auto-bootstrap fresh databases before touching raw_events. The MCP
+		// server's MemoryStore constructor normally bootstraps first, but
+		// hooks can race its startup (claude-hook-ingest is a separate CLI
+		// process) so we can't rely on that ordering.
+		ensureSchemaBootstrapped(db);
 		const strippedPayload = stripPrivateObj(envelope.payload) as Record<string, unknown>;
 		const existing = db
 			.prepare(

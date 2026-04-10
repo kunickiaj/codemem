@@ -154,6 +154,41 @@ describe("claude-hook-ingest command", () => {
 		}
 	});
 
+	it("direct enqueue bootstraps fresh databases on demand", () => {
+		// Fresh path without initTestSchema() — the failure mode Cowork sandbox
+		// VMs hit when the hook fires before the MCP server finishes its own
+		// MemoryStore construction. Without ensureSchemaBootstrapped this call
+		// would throw "no such table: raw_events".
+		const dir = mkdtempSync(join(tmpdir(), "codemem-cli-direct-bootstrap-"));
+		const dbPath = join(dir, "fresh.sqlite");
+		try {
+			const result = directEnqueue(
+				{
+					hook_event_name: "SessionStart",
+					session_id: "sess-fresh-bootstrap",
+					timestamp: "2026-01-01T00:00:00Z",
+					cwd: "/tmp/demo",
+				},
+				dbPath,
+			);
+			expect(result).toEqual({ inserted: 1, skipped: 0 });
+
+			// Re-open through a plain connect() and verify the raw event actually
+			// landed in the auto-bootstrapped schema.
+			const db = connect(dbPath);
+			try {
+				const rawCount = db.prepare("SELECT COUNT(*) AS c FROM raw_events").get() as {
+					c: number;
+				};
+				expect(rawCount.c).toBe(1);
+			} finally {
+				db.close();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	describe("durability layer", () => {
 		it("drains spooled backlog on the HTTP-success path so a recovered viewer doesn't strand entries", async () => {
 			// Pre-seed a payload from a previous failed run.
