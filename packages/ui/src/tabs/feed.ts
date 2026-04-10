@@ -16,18 +16,71 @@ import {
 import { showGlobalNotice } from "../lib/notice";
 import { setFeedScopeFilter, setFeedTypeFilter, state } from "../lib/state";
 
-/* ── Helpers ─────────────────────────────────────────────── */
+/* ── Types ───────────────────────────────────────────────── */
 
-function mergeMetadata(metadata: any): any {
-	if (!metadata || typeof metadata !== "object") return {};
-	const importMeta = metadata.import_metadata;
-	if (importMeta && typeof importMeta === "object") {
-		return { ...importMeta, ...metadata };
-	}
-	return metadata;
+/**
+ * A feed item — observations and session summaries are pulled from different
+ * viewer endpoints but render through the same card component. This shape
+ * covers every field we read; the server adds more fields that we ignore,
+ * so shapes are open and all fields optional.
+ */
+export interface FeedItemMetadata {
+	import_metadata?: FeedItemMetadata;
+	subtitle?: string;
+	narrative?: string;
+	facts?: unknown;
+	is_summary?: boolean;
+	source?: string;
+	request?: string;
+	visibility?: string;
+	workspace_kind?: string;
+	origin_source?: string;
+	origin_device_id?: string;
+	trust_state?: string;
+	summary?: unknown;
 }
 
-function extractFactsFromBody(text: any): string[] {
+export interface FeedItem {
+	id?: number;
+	memory_id?: number | string;
+	observation_id?: number | string;
+	session_id?: number | string;
+	created_at?: string;
+	created_at_utc?: string;
+	kind?: string;
+	title?: string;
+	subtitle?: string;
+	body_text?: string;
+	narrative?: string;
+	facts?: unknown;
+	tags?: unknown;
+	files?: unknown;
+	project?: string;
+	actor_id?: string;
+	actor_display_name?: string;
+	owned_by_self?: boolean;
+	visibility?: string;
+	workspace_kind?: string;
+	origin_source?: string;
+	origin_device_id?: string;
+	trust_state?: string;
+	metadata_json?: FeedItemMetadata;
+	summary?: unknown;
+}
+
+/* ── Helpers ─────────────────────────────────────────────── */
+
+function mergeMetadata(metadata: unknown): FeedItemMetadata {
+	if (!metadata || typeof metadata !== "object") return {};
+	const meta = metadata as FeedItemMetadata;
+	const importMeta = meta.import_metadata;
+	if (importMeta && typeof importMeta === "object") {
+		return { ...importMeta, ...meta };
+	}
+	return meta;
+}
+
+function extractFactsFromBody(text: unknown): string[] {
 	if (!text) return [];
 	const lines = String(text)
 		.split("\n")
@@ -55,7 +108,7 @@ function sentenceFacts(text: string, limit = 6): string[] {
 	return facts;
 }
 
-function isLowSignalObservation(item: any): boolean {
+function isLowSignalObservation(item: FeedItem): boolean {
 	const title = normalize(item.title);
 	const body = normalize(item.body_text);
 	if (!title && !body) return true;
@@ -69,7 +122,7 @@ function isLowSignalObservation(item: any): boolean {
 	return false;
 }
 
-function itemSignature(item: any): string {
+function itemSignature(item: FeedItem): string {
 	return String(
 		item.id ??
 			item.memory_id ??
@@ -81,7 +134,7 @@ function itemSignature(item: any): string {
 	);
 }
 
-function itemKey(item: any): string {
+function itemKey(item: FeedItem): string {
 	return `${String(item.kind || "").toLowerCase()}:${itemSignature(item)}`;
 }
 
@@ -132,7 +185,7 @@ function trustStateLabel(trustState: string): string {
 	return trustState.replace(/_/g, " ");
 }
 
-function authorLabel(item: any): string {
+function authorLabel(item: FeedItem): string {
 	if (item?.owned_by_self === true) return "You";
 	const actorId = String(item.actor_id || "").trim();
 	const actorName = String(item.actor_display_name || "").trim();
@@ -163,14 +216,14 @@ function isNearFeedBottom(): boolean {
 	return window.innerHeight + window.scrollY >= height - FEED_SCROLL_THRESHOLD_PX;
 }
 
-function pageHasMore(payload: any, count: number, limit: number): boolean {
-	const value = payload?.pagination?.has_more;
+function pageHasMore(payload: api.PaginatedResponse, count: number, limit: number): boolean {
+	const value = payload.pagination?.has_more;
 	if (typeof value === "boolean") return value;
 	return count >= limit;
 }
 
-function pageNextOffset(payload: any, count: number): number {
-	const value = payload?.pagination?.next_offset;
+function pageNextOffset(payload: api.PaginatedResponse, count: number): number {
+	const value = payload.pagination?.next_offset;
 	if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
 	return count;
 }
@@ -179,8 +232,8 @@ function hasMorePages(): boolean {
 	return observationHasMore || summaryHasMore;
 }
 
-function mergeFeedItems(currentItems: any[], incomingItems: any[]): any[] {
-	const byKey = new Map<string, any>();
+function mergeFeedItems(currentItems: FeedItem[], incomingItems: FeedItem[]): FeedItem[] {
+	const byKey = new Map<string, FeedItem>();
 	currentItems.forEach((item) => {
 		byKey.set(itemKey(item), item);
 	});
@@ -192,15 +245,15 @@ function mergeFeedItems(currentItems: any[], incomingItems: any[]): any[] {
 	});
 }
 
-function mergeRefreshFeedItems(currentItems: any[], firstPageItems: any[]): any[] {
+function mergeRefreshFeedItems(currentItems: FeedItem[], firstPageItems: FeedItem[]): FeedItem[] {
 	const firstPageKeys = new Set(firstPageItems.map(itemKey));
 	const olderItems = currentItems.filter((item) => !firstPageKeys.has(itemKey(item)));
 	return mergeFeedItems(olderItems, firstPageItems);
 }
 
-function replaceFeedItem(updatedItem: any) {
+function replaceFeedItem(updatedItem: FeedItem) {
 	const key = itemKey(updatedItem);
-	state.lastFeedItems = state.lastFeedItems.map((item) =>
+	state.lastFeedItems = (state.lastFeedItems as FeedItem[]).map((item) =>
 		itemKey(item) === key ? updatedItem : item,
 	);
 }
@@ -216,7 +269,7 @@ function replaceFeedItem(updatedItem: any) {
  */
 type FeedSummary = Record<string, unknown>;
 
-function getSummaryObject(item: any): FeedSummary | null {
+function getSummaryObject(item: FeedItem): FeedSummary | null {
 	const preferredKeys = [
 		"request",
 		"outcome",
@@ -236,13 +289,15 @@ function getSummaryObject(item: any): FeedSummary | null {
 			return typeof value === "string" && value.trim().length > 0;
 		});
 	};
-	if (item?.summary && typeof item.summary === "object" && !Array.isArray(item.summary))
-		return item.summary;
-	if (item?.summary?.summary && typeof item.summary.summary === "object")
-		return item.summary.summary;
+	const rawSummary = item?.summary;
+	if (rawSummary && typeof rawSummary === "object" && !Array.isArray(rawSummary)) {
+		const nestedSummary = (rawSummary as { summary?: unknown }).summary;
+		if (looksLikeSummary(rawSummary)) return rawSummary;
+		if (looksLikeSummary(nestedSummary)) return nestedSummary;
+	}
 	const metadata = item?.metadata_json;
 	if (looksLikeSummary(metadata)) return metadata;
-	if (looksLikeSummary(metadata?.summary)) return metadata.summary;
+	if (metadata && looksLikeSummary(metadata.summary)) return metadata.summary;
 	const bodyText = String(item?.body_text || "").trim();
 	if (bodyText.includes("## ")) {
 		const headingMap: Record<string, string> = {
@@ -268,7 +323,7 @@ function getSummaryObject(item: any): FeedSummary | null {
 	return null;
 }
 
-function isSummaryLikeItem(item: any, metadata: any): boolean {
+function isSummaryLikeItem(item: FeedItem, metadata: FeedItemMetadata): boolean {
 	const kindValue = String(item?.kind || "").toLowerCase();
 	if (kindValue === "session_summary") return true;
 	if (metadata?.is_summary === true) return true;
@@ -278,14 +333,14 @@ function isSummaryLikeItem(item: any, metadata: any): boolean {
 	return source === "observer_summary";
 }
 
-function canonicalKind(item: any, metadata: any): string {
+function canonicalKind(item: FeedItem, metadata: FeedItemMetadata): string {
 	const kindValue = String(item?.kind || "")
 		.trim()
 		.toLowerCase();
 	return isSummaryLikeItem(item, metadata) ? "session_summary" : kindValue || "change";
 }
 
-function _getFactsList(item: any): string[] {
+function _getFactsList(item: FeedItem): string[] {
 	const summary = getSummaryObject(item);
 	if (summary) {
 		const preferred = [
@@ -322,7 +377,7 @@ function _getFactsList(item: any): string[] {
 
 /* ── Observation view helpers ────────────────────────────── */
 
-export function observationViewData(item: any) {
+export function observationViewData(item: FeedItem) {
 	const metadata = mergeMetadata(item?.metadata_json);
 	const summary = String(item?.subtitle || metadata?.subtitle || "").trim();
 	const narrative = String(item?.narrative || metadata?.narrative || item?.body_text || "").trim();
@@ -449,7 +504,9 @@ function sanitizeHtml(html: string): string {
 function renderMarkdownSafe(value: string): string {
 	const source = String(value || "");
 	try {
-		const rawHtml = (globalThis as any).marked.parse(source);
+		const globalMarked = (globalThis as { marked?: { parse: (src: string) => string } }).marked;
+		if (!globalMarked) throw new Error("marked is not available");
+		const rawHtml = globalMarked.parse(source);
 		return sanitizeHtml(rawHtml);
 	} catch {
 		const escaped = source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -563,7 +620,7 @@ function FeedViewToggle({
 	);
 }
 
-function TagChip({ tag }: { tag: any }) {
+function TagChip({ tag }: { tag: unknown }) {
 	const display = formatTagLabel(tag);
 	if (!display) return null;
 	return h("span", { className: "tag-chip", title: String(tag) }, display);
@@ -571,7 +628,7 @@ function TagChip({ tag }: { tag: any }) {
 
 /* ── Feed item card renderer ─────────────────────────────── */
 
-function FeedItemCard({ item }: { item: any }) {
+function FeedItemCard({ item }: { item: FeedItem }) {
 	const metadata = mergeMetadata(item?.metadata_json);
 	const isSessionSummary = isSummaryLikeItem(item, metadata);
 	const displayKindValue = canonicalKind(item, metadata);
@@ -589,7 +646,7 @@ function FeedItemCard({ item }: { item: any }) {
 	const originSource = String(item.origin_source || metadata?.origin_source || "").trim();
 	const originDeviceId = String(item.origin_device_id || metadata?.origin_device_id || "").trim();
 	const trustState = String(item.trust_state || metadata?.trust_state || "").trim();
-	const tagContent = tags.length ? ` · ${tags.map((t: any) => formatTagLabel(t)).join(", ")}` : "";
+	const tagContent = tags.length ? ` · ${tags.map((t) => formatTagLabel(t)).join(", ")}` : "";
 	const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
 	const memoryId = Number(item.id || 0);
 	const [isNew, setIsNew] = useState(state.newItemKeys.has(rowKey));
@@ -677,7 +734,7 @@ function FeedItemCard({ item }: { item: any }) {
 		try {
 			const payload = await api.updateMemoryVisibility(memoryId, nextVisibility);
 			if (payload?.item) {
-				replaceFeedItem(payload.item);
+				replaceFeedItem(payload.item as FeedItem);
 				updateFeedView(true);
 			}
 			showGlobalNotice(
@@ -763,8 +820,12 @@ function FeedItemCard({ item }: { item: any }) {
 					? h(
 							"div",
 							{ className: "feed-files" },
-							files.map((file: any, index: number) =>
-								h("span", { className: "feed-file", key: `${file}-${index}` }, file),
+							files.map((file, index) =>
+								h(
+									"span",
+									{ className: "feed-file", key: `${String(file)}-${index}` },
+									String(file),
+								),
 							),
 						)
 					: null,
@@ -772,9 +833,7 @@ function FeedItemCard({ item }: { item: any }) {
 					? h(
 							"div",
 							{ className: "feed-tags" },
-							tags.map((tag: any, index: number) =>
-								h(TagChip, { key: `${String(tag)}-${index}`, tag }),
-							),
+							tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
 						)
 					: null,
 				Boolean(item.owned_by_self) && memoryId > 0
@@ -826,7 +885,7 @@ function FeedItemCard({ item }: { item: any }) {
 	);
 }
 
-function FeedList({ items, loadingText }: { items: any[]; loadingText?: string }) {
+function FeedList({ items, loadingText }: { items: FeedItem[]; loadingText?: string }) {
 	if (loadingText) {
 		return h("div", { className: "small" }, loadingText);
 	}
@@ -842,7 +901,7 @@ function FeedList({ items, loadingText }: { items: any[]; loadingText?: string }
 
 /* ── Filtering ───────────────────────────────────────────── */
 
-function filterByType(items: any[]): any[] {
+function filterByType(items: FeedItem[]): FeedItem[] {
 	if (state.feedTypeFilter === "observations")
 		return items.filter((i) => !isSummaryLikeItem(i, mergeMetadata(i?.metadata_json)));
 	if (state.feedTypeFilter === "summaries")
@@ -850,7 +909,7 @@ function filterByType(items: any[]): any[] {
 	return items;
 }
 
-function filterByQuery(items: any[]): any[] {
+function filterByQuery(items: FeedItem[]): FeedItem[] {
 	const query = normalize(state.feedQuery);
 	if (!query) return items;
 	return items.filter((item) => {
@@ -859,7 +918,7 @@ function filterByQuery(items: any[]): any[] {
 			normalize(item?.body_text),
 			normalize(item?.kind),
 			parseJsonArray(item?.tags || [])
-				.map((t: any) => normalize(t))
+				.map((t) => normalize(t))
 				.join(" "),
 			normalize(item?.project),
 		]
@@ -869,14 +928,14 @@ function filterByQuery(items: any[]): any[] {
 	});
 }
 
-function computeSignature(items: any[]): string {
+function computeSignature(items: FeedItem[]): string {
 	const parts = items.map(
 		(i) => `${itemSignature(i)}:${i.kind || ""}:${i.created_at_utc || i.created_at || ""}`,
 	);
 	return `${state.feedTypeFilter}|${state.feedScopeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join("|")}`;
 }
 
-function countNewItems(nextItems: any[], currentItems: any[]): number {
+function countNewItems(nextItems: FeedItem[], currentItems: FeedItem[]): number {
 	const seen = new Set(currentItems.map(itemKey));
 	return nextItems.filter((i) => !seen.has(itemKey(i))).length;
 }
@@ -919,9 +978,9 @@ async function loadMoreFeedPage() {
 			return;
 		}
 
-		const summaryItems = summaries.items || [];
-		const observationItems = observations.items || [];
-		const filtered = observationItems.filter((i: any) => !isLowSignalObservation(i));
+		const summaryItems = (summaries.items || []) as FeedItem[];
+		const observationItems = (observations.items || []) as FeedItem[];
+		const filtered = observationItems.filter((i) => !isLowSignalObservation(i));
 		state.lastFeedFilteredCount += observationItems.length - filtered.length;
 
 		summaryHasMore = pageHasMore(summaries, summaryItems.length, SUMMARY_PAGE_SIZE);
@@ -933,11 +992,11 @@ async function loadMoreFeedPage() {
 		);
 
 		const incoming = [...summaryItems, ...filtered];
-		const feedItems = mergeFeedItems(state.lastFeedItems, incoming);
-		const newCount = countNewItems(feedItems, state.lastFeedItems);
+		const feedItems = mergeFeedItems(state.lastFeedItems as FeedItem[], incoming);
+		const newCount = countNewItems(feedItems, state.lastFeedItems as FeedItem[]);
 		if (newCount) {
-			const seen = new Set(state.lastFeedItems.map(itemKey));
-			feedItems.forEach((item: any) => {
+			const seen = new Set((state.lastFeedItems as FeedItem[]).map(itemKey));
+			feedItems.forEach((item) => {
 				if (!seen.has(itemKey(item))) state.newItemKeys.add(itemKey(item));
 			});
 		}
@@ -1246,7 +1305,7 @@ function ContextInspectorPanel() {
 	);
 }
 
-function FeedTabView({ items, loadingText }: { items: any[]; loadingText?: string }) {
+function FeedTabView({ items, loadingText }: { items: FeedItem[]; loadingText?: string }) {
 	return h(
 		Fragment,
 		null,
@@ -1306,12 +1365,13 @@ function FeedTabView({ items, loadingText }: { items: any[]; loadingText?: strin
 	);
 }
 
-function renderFeedTab(items: any[], options?: { loadingText?: string }) {
+function renderFeedTab(items: FeedItem[], options?: { loadingText?: string }) {
 	const feedTab = document.getElementById("tab-feed");
 	if (!feedTab) return false;
 	renderIntoFeedMount(feedTab, h(FeedTabView, { items, loadingText: options?.loadingText }));
-	if (typeof (globalThis as any).lucide !== "undefined" && !options?.loadingText) {
-		(globalThis as any).lucide.createIcons();
+	const globalLucide = (globalThis as { lucide?: { createIcons: () => void } }).lucide;
+	if (globalLucide && !options?.loadingText) {
+		globalLucide.createIcons();
 	}
 	return true;
 }
@@ -1356,7 +1416,7 @@ export function updateFeedView(force = false) {
 	if (!feedTab) return;
 
 	const scrollY = window.scrollY;
-	const byType = filterByType(state.lastFeedItems);
+	const byType = filterByType(state.lastFeedItems as FeedItem[]);
 	const visible = filterByQuery(byType);
 
 	const sig = computeSignature(visible);
@@ -1400,19 +1460,19 @@ export async function loadFeedData() {
 		return;
 	}
 
-	const summaryItems = summaries.items || [];
-	const observationItems = observations.items || [];
-	const filtered = observationItems.filter((i: any) => !isLowSignalObservation(i));
+	const summaryItems = (summaries.items || []) as FeedItem[];
+	const observationItems = (observations.items || []) as FeedItem[];
+	const filtered = observationItems.filter((i) => !isLowSignalObservation(i));
 	const filteredCount = observationItems.length - filtered.length;
-	const firstPageFeedItems = [...summaryItems, ...filtered].sort((a: any, b: any) => {
+	const firstPageFeedItems = [...summaryItems, ...filtered].sort((a, b) => {
 		return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
 	});
-	const feedItems = mergeRefreshFeedItems(state.lastFeedItems, firstPageFeedItems);
+	const feedItems = mergeRefreshFeedItems(state.lastFeedItems as FeedItem[], firstPageFeedItems);
 
-	const newCount = countNewItems(feedItems, state.lastFeedItems);
+	const newCount = countNewItems(feedItems, state.lastFeedItems as FeedItem[]);
 	if (newCount) {
-		const seen = new Set(state.lastFeedItems.map(itemKey));
-		feedItems.forEach((item: any) => {
+		const seen = new Set((state.lastFeedItems as FeedItem[]).map(itemKey));
+		feedItems.forEach((item) => {
 			if (!seen.has(itemKey(item))) state.newItemKeys.add(itemKey(item));
 		});
 	}
