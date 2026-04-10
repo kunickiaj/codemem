@@ -74,6 +74,7 @@ describe("buildPackArgs", () => {
     expect(args).toEqual([
       "pack",
       "fix auth",
+      "--json",
       "--limit",
       "4",
       "--token-budget",
@@ -103,7 +104,7 @@ describe("buildPackArgs", () => {
       injectTokenBudget: null,
     });
 
-    expect(args).toEqual(["pack", "recent work"]);
+    expect(args).toEqual(["pack", "recent work", "--json"]);
   });
 });
 
@@ -225,6 +226,34 @@ describe("applyInjectedContextToOutput", () => {
     expect(applied).toBe(false);
     expect(output.system).toEqual(["existing"]);
   });
+
+	test("does not inject stale cached context when query changes and rebuild is empty", async () => {
+		const injectedSessions = new Map([
+			[
+				"sess-5",
+				{
+					query: "old query",
+					text: "[codemem context]\nold",
+					metrics: null,
+				},
+			],
+		]);
+		const output = { system: ["existing"] };
+
+		const applied = await __testUtils.applyInjectedContextToOutput({
+			injectEnabled: true,
+			input: { sessionID: "sess-5" },
+			output,
+			injectedSessions,
+			injectionToastShown: new Set(),
+			showToast: vi.fn(),
+			resolveInjectQuery: () => "new query",
+			buildInjectedContext: vi.fn().mockResolvedValue(""),
+		});
+
+		expect(applied).toBe(false);
+		expect(output.system).toEqual(["existing"]);
+	});
 
   test("returns false immediately when injection is disabled", async () => {
     const buildInjectedContext = vi.fn();
