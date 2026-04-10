@@ -1,10 +1,18 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadSqliteVec } from "./db.js";
 import * as embeddings from "./embeddings.js";
 import { startMaintenanceJob } from "./maintenance-jobs.js";
+import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
-import { backfillVectors, semanticSearch, storeVectors } from "./vectors.js";
+import {
+	backfillVectors,
+	resolveSemanticSearchModel,
+	semanticSearch,
+	storeVectors,
+} from "./vectors.js";
 
 vi.mock("./embeddings.js", async () => {
 	const actual = await vi.importActual<typeof import("./embeddings.js")>("./embeddings.js");
@@ -22,17 +30,9 @@ describe("vectors", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		db = new Database(":memory:");
+		// initTestSchema -> bootstrapSchema loads sqlite-vec and creates the
+		// memory_vectors virtual table as part of normal bootstrap.
 		initTestSchema(db);
-		loadSqliteVec(db);
-		db.exec(`
-			CREATE VIRTUAL TABLE memory_vectors USING vec0(
-				embedding float[384],
-				memory_id INTEGER,
-				chunk_index INTEGER,
-				content_hash TEXT,
-				model TEXT
-			)
-		`);
 		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
 			model: "test-model",
 			dimensions: 384,
@@ -154,5 +154,94 @@ describe("vectors", () => {
 
 		expect(results).toEqual([]);
 		expect(embeddings.embedTexts).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fresh-database bootstrap coverage for memory_vectors.
+// Regression guard for codemem-yco1: bootstrapSchema must create the
+// sqlite-vec virtual table so the unguarded `resolveSemanticSearchModel`
+// query path does not throw on a freshly auto-bootstrapped DB.
+// ---------------------------------------------------------------------------
+
+describe("memory_vectors bootstrap on fresh databases", () => {
+	let tmpDir: string;
+	let prevCodememConfig: string | undefined;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		prevCodememConfig = process.env.CODEMEM_CONFIG;
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-vec-bootstrap-test-"));
+		process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
+		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
+			model: "test-model",
+			dimensions: 384,
+			embed: vi.fn(async () => [new Float32Array(384)]),
+		});
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+	});
+
+	afterEach(() => {
+		if (prevCodememConfig === undefined) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = prevCodememConfig;
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("creates memory_vectors during initTestSchema on an in-memory DB", () => {
+		const scratch = new Database(":memory:");
+		try {
+			initTestSchema(scratch);
+			const row = scratch
+				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_vectors'")
+				.get() as { name: string } | undefined;
+			expect(row?.name).toBe("memory_vectors");
+
+			// resolveSemanticSearchModel must not throw on an empty but
+			// bootstrapped DB — this is the unguarded path that previously
+			// blew up when memory_vectors was missing.
+			expect(() => resolveSemanticSearchModel(scratch, "test-model")).not.toThrow();
+			expect(resolveSemanticSearchModel(scratch, "test-model")).toBeNull();
+		} finally {
+			scratch.close();
+		}
+	});
+
+	it("creates memory_vectors via auto-bootstrap when constructing MemoryStore against a fresh path", async () => {
+		const dbPath = join(tmpDir, "vectors-fresh.sqlite");
+		// No pre-seeding — constructor discovers an uninitialized file and
+		// runs ensureSchemaBootstrapped, which must now create memory_vectors.
+		const store = new MemoryStore(dbPath);
+		try {
+			const tableRow = store.db
+				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_vectors'")
+				.get() as { name: string } | undefined;
+			expect(tableRow?.name).toBe("memory_vectors");
+
+			// Unguarded model-resolution query must succeed on a fresh DB.
+			expect(() => resolveSemanticSearchModel(store.db, "test-model")).not.toThrow();
+
+			// Round-trip: remember → flushPendingVectorWrites → semanticSearch.
+			// With the mocked embedding client, storeVectors writes a vector row.
+			const sessionId = insertTestSession(store.db);
+			store.remember(
+				sessionId,
+				"discovery",
+				"vectors bootstrap smoke test",
+				"body text for semantic search round-trip",
+			);
+			await store.flushPendingVectorWrites();
+
+			const count = store.db
+				.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?")
+				.get("test-model") as { c: number };
+			expect(count.c).toBeGreaterThan(0);
+
+			// After a successful insert, resolveSemanticSearchModel should
+			// return the current model (this is the read path semanticSearch
+			// relies on before embedding the query).
+			expect(resolveSemanticSearchModel(store.db, "test-model")).toBe("test-model");
+		} finally {
+			store.close();
+		}
 	});
 });

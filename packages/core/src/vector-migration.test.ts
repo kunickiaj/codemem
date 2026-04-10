@@ -1,6 +1,5 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadSqliteVec } from "./db.js";
 import * as embeddings from "./embeddings.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
@@ -52,17 +51,9 @@ describe("vector migration", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		db = new Database(":memory:");
+		// initTestSchema -> bootstrapSchema loads sqlite-vec and creates the
+		// memory_vectors virtual table as part of normal bootstrap.
 		initTestSchema(db);
-		loadSqliteVec(db);
-		db.exec(`
-			CREATE VIRTUAL TABLE memory_vectors USING vec0(
-				embedding float[384],
-				memory_id INTEGER,
-				chunk_index INTEGER,
-				content_hash TEXT,
-				model TEXT
-			)
-		`);
 		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValue({
 			model: "test-model",
 			dimensions: 384,
