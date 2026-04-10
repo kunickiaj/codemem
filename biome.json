@@ -57,11 +57,29 @@
 			"packages/**/src/**/*.js",
 			"packages/**/*.json",
 			"packages/**/vite.config.ts",
-			"!packages/ui",
 			"vitest.config.ts",
 			"tsconfig.base.json",
 			"tsconfig.json",
 			"biome.json"
 		]
-	}
+	},
+	"overrides": [
+		{
+			"includes": ["packages/ui/**"],
+			"linter": {
+				"rules": {
+					"a11y": {
+						"noAutofocus": "off",
+						"noLabelWithoutControl": "warn",
+						"noStaticElementInteractions": "warn",
+						"useKeyWithClickEvents": "warn",
+						"useSemanticElements": "warn"
+					},
+					"suspicious": {
+						"noExplicitAny": "warn"
+					}
+				}
+			}
+		}
+	]
 }

@@ -6,7 +6,12 @@ import type { OutputChunk, OutputOptions } from "rollup";
 import { defineConfig } from "vite";
 
 function isOutputChunk(value: unknown): value is OutputChunk {
-	return Boolean(value) && typeof value === "object" && "type" in value && (value as { type?: string }).type === "chunk";
+	return (
+		Boolean(value) &&
+		typeof value === "object" &&
+		"type" in value &&
+		(value as { type?: string }).type === "chunk"
+	);
 }
 
 function resolveGitCommit(): string {

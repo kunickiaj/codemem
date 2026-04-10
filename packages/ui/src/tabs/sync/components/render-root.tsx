@@ -1,21 +1,21 @@
-import { render, type ComponentChildren } from 'preact';
+import { type ComponentChildren, render } from "preact";
 
 function markMount(mount: HTMLElement) {
-  mount.dataset.syncRenderRoot = 'preact';
+	mount.dataset.syncRenderRoot = "preact";
 }
 
 export function ensureSyncRenderBoundary() {
-  const syncTab = document.getElementById('tab-sync');
-  if (!syncTab) return;
-  syncTab.dataset.syncRenderBoundary = 'preact-hybrid';
+	const syncTab = document.getElementById("tab-sync");
+	if (!syncTab) return;
+	syncTab.dataset.syncRenderBoundary = "preact-hybrid";
 }
 
 export function renderIntoSyncMount(mount: HTMLElement, content: ComponentChildren) {
-  markMount(mount);
-  render(content, mount);
+	markMount(mount);
+	render(content, mount);
 }
 
 export function clearSyncMount(mount: HTMLElement) {
-  if (mount.dataset.syncRenderRoot !== 'preact') return;
-  render(null, mount);
+	if (mount.dataset.syncRenderRoot !== "preact") return;
+	render(null, mount);
 }

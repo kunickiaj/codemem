@@ -1,300 +1,301 @@
-import { createPortal } from 'preact/compat';
-import type { ComponentChildren } from 'preact';
-import { useState } from 'preact/hooks';
-import { state } from '../../../lib/state';
-import type { UiSyncAttentionItem } from '../view-model';
-import type { SyncActionFeedback } from './sync-inline-feedback';
-import { SyncInlineFeedback } from './sync-inline-feedback';
+import type { ComponentChildren } from "preact";
+import { createPortal } from "preact/compat";
+import { useState } from "preact/hooks";
+import { state } from "../../../lib/state";
+import type { UiSyncAttentionItem } from "../view-model";
+import type { SyncActionFeedback } from "./sync-inline-feedback";
+import { SyncInlineFeedback } from "./sync-inline-feedback";
 
 export interface TeamSyncStatusSummary {
-  badgeClassName: string;
-  headline: string | null;
-  presenceLabel: string;
-  metricsText: string;
+	badgeClassName: string;
+	headline: string | null;
+	presenceLabel: string;
+	metricsText: string;
 }
 
 export interface TeamSyncDiscoveredRow {
-  actionMessage: string | null;
-  actionLabel: string | null;
-  approvalBadgeLabel: string | null;
-  availabilityLabel: string;
-  deviceId: string;
-  displayName: string;
-  displayTitle: string | null;
-  fingerprint: string;
-  mode: 'accept' | 'ambiguous' | 'conflict' | 'none' | 'paired' | 'scope-pending' | 'stale';
-  note: string;
-  pairedMessage: string | null;
-  connectionLabel: string;
+	actionMessage: string | null;
+	actionLabel: string | null;
+	approvalBadgeLabel: string | null;
+	availabilityLabel: string;
+	deviceId: string;
+	displayName: string;
+	displayTitle: string | null;
+	fingerprint: string;
+	mode: "accept" | "ambiguous" | "conflict" | "none" | "paired" | "scope-pending" | "stale";
+	note: string;
+	pairedMessage: string | null;
+	connectionLabel: string;
 }
 
 export interface TeamSyncPendingJoinRequest {
-  displayName: string;
-  requestId: string;
+	displayName: string;
+	requestId: string;
 }
 
 type TeamSyncPanelProps = {
-  actionItems: UiSyncAttentionItem[];
-  actionableCount: number;
-  children?: ComponentChildren;
-  discoveredListMount: HTMLElement | null;
-  discoveredRows: TeamSyncDiscoveredRow[];
-  joinRequestsMount: HTMLElement | null;
-  listMount: HTMLElement;
-  onApproveJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-  onAttentionAction: (item: UiSyncAttentionItem) => Promise<void>;
-  onDenyJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-  onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
-  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
-  onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
-  pendingJoinRequests: TeamSyncPendingJoinRequest[];
-  presenceStatus: string;
-  statusSummary: TeamSyncStatusSummary;
+	actionItems: UiSyncAttentionItem[];
+	actionableCount: number;
+	children?: ComponentChildren;
+	discoveredListMount: HTMLElement | null;
+	discoveredRows: TeamSyncDiscoveredRow[];
+	joinRequestsMount: HTMLElement | null;
+	listMount: HTMLElement;
+	onApproveJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+	onAttentionAction: (item: UiSyncAttentionItem) => Promise<void>;
+	onDenyJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+	onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
+	onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	pendingJoinRequests: TeamSyncPendingJoinRequest[];
+	presenceStatus: string;
+	statusSummary: TeamSyncStatusSummary;
 };
 
-function SectionHeading({
-  count,
-  label,
-}: {
-  count?: number;
-  label: string;
-}) {
-  return (
-    <div className="sync-section-heading">
-      <div className="sync-action-text sync-section-label">{label}</div>
-      {count ? <span className="badge actor-badge sync-section-count">{count}</span> : null}
-    </div>
-  );
+function SectionHeading({ count, label }: { count?: number; label: string }) {
+	return (
+		<div className="sync-section-heading">
+			<div className="sync-action-text sync-section-label">{label}</div>
+			{count ? <span className="badge actor-badge sync-section-count">{count}</span> : null}
+		</div>
+	);
 }
 
 function AttentionRow({
-  item,
-  onAction,
+	item,
+	onAction,
 }: {
-  item: UiSyncAttentionItem;
-  onAction: (item: UiSyncAttentionItem) => Promise<void>;
+	item: UiSyncAttentionItem;
+	onAction: (item: UiSyncAttentionItem) => Promise<void>;
 }) {
-  const [busy, setBusy] = useState(false);
+	const [busy, setBusy] = useState(false);
 
-  return (
-    <div className="sync-action">
-      <div className="sync-action-text">
-        {item.title}
-        <span className="sync-action-command">{item.summary}</span>
-      </div>
-      <button
-        type="button"
-        className="settings-button"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            await onAction(item);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {item.actionLabel || 'Review'}
-      </button>
-    </div>
-  );
+	return (
+		<div className="sync-action">
+			<div className="sync-action-text">
+				{item.title}
+				<span className="sync-action-command">{item.summary}</span>
+			</div>
+			<button
+				type="button"
+				className="settings-button"
+				disabled={busy}
+				onClick={async () => {
+					setBusy(true);
+					try {
+						await onAction(item);
+					} finally {
+						setBusy(false);
+					}
+				}}
+			>
+				{item.actionLabel || "Review"}
+			</button>
+		</div>
+	);
 }
 
-
 function PendingJoinRequestRow({
-  request,
-  onApprove,
-  onDeny,
+	request,
+	onApprove,
+	onDeny,
 }: {
-  request: TeamSyncPendingJoinRequest;
-  onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-  onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+	request: TeamSyncPendingJoinRequest;
+	onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+	onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
 }) {
-  const [busyAction, setBusyAction] = useState<'approve' | 'deny' | null>(null);
-  const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
-  const [approveLabel, setApproveLabel] = useState('Approve');
-  const [denyLabel, setDenyLabel] = useState('Deny');
+	const [busyAction, setBusyAction] = useState<"approve" | "deny" | null>(null);
+	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
+	const [approveLabel, setApproveLabel] = useState("Approve");
+	const [denyLabel, setDenyLabel] = useState("Deny");
 
-  return (
-    <div className="actor-row">
-      <div className="actor-details">
-        <div className="actor-title" title={request.requestId || undefined}>{request.displayName}</div>
-      </div>
-      <div className="actor-actions">
-        <button
-          type="button"
-          className="settings-button"
-          disabled={busyAction !== null}
-          onClick={async () => {
-            setBusyAction('approve');
-            setApproveLabel('Approving…');
-            try {
-              setFeedback((await onApprove(request)) || null);
-              setApproveLabel('Approve');
-            } catch {
-              setApproveLabel('Retry');
-            } finally {
-              setBusyAction(null);
-            }
-          }}
-        >
-          {approveLabel}
-        </button>
-        <button
-          type="button"
-          className="settings-button"
-          disabled={busyAction !== null}
-          onClick={async () => {
-            setBusyAction('deny');
-            setDenyLabel('Denying…');
-            try {
-              setFeedback((await onDeny(request)) || null);
-              setDenyLabel('Deny');
-            } catch {
-              setDenyLabel('Retry');
-            } finally {
-              setBusyAction(null);
-            }
-          }}
-        >
-          {denyLabel}
-        </button>
-      </div>
-      <SyncInlineFeedback feedback={feedback} />
-    </div>
-  );
+	return (
+		<div className="actor-row">
+			<div className="actor-details">
+				<div className="actor-title" title={request.requestId || undefined}>
+					{request.displayName}
+				</div>
+			</div>
+			<div className="actor-actions">
+				<button
+					type="button"
+					className="settings-button"
+					disabled={busyAction !== null}
+					onClick={async () => {
+						setBusyAction("approve");
+						setApproveLabel("Approving…");
+						try {
+							setFeedback((await onApprove(request)) || null);
+							setApproveLabel("Approve");
+						} catch {
+							setApproveLabel("Retry");
+						} finally {
+							setBusyAction(null);
+						}
+					}}
+				>
+					{approveLabel}
+				</button>
+				<button
+					type="button"
+					className="settings-button"
+					disabled={busyAction !== null}
+					onClick={async () => {
+						setBusyAction("deny");
+						setDenyLabel("Denying…");
+						try {
+							setFeedback((await onDeny(request)) || null);
+							setDenyLabel("Deny");
+						} catch {
+							setDenyLabel("Retry");
+						} finally {
+							setBusyAction(null);
+						}
+					}}
+				>
+					{denyLabel}
+				</button>
+			</div>
+			<SyncInlineFeedback feedback={feedback} />
+		</div>
+	);
 }
 
 function DiscoveredDeviceRow({
-  row,
-  onInspectConflict,
-  onRemoveConflict,
-  onReview,
+	row,
+	onInspectConflict,
+	onRemoveConflict,
+	onReview,
 }: {
-  row: TeamSyncDiscoveredRow;
-  onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
-  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
-  onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	row: TeamSyncDiscoveredRow;
+	onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
+	onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 }) {
-  const [busy, setBusy] = useState<'remove' | 'review' | null>(null);
-  const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
-  const [reviewLabel, setReviewLabel] = useState(row.actionLabel || 'Review device');
-  const [removeLabel, setRemoveLabel] = useState('Remove broken device record');
+	const [busy, setBusy] = useState<"remove" | "review" | null>(null);
+	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
+	const [reviewLabel, setReviewLabel] = useState(row.actionLabel || "Review device");
+	const [removeLabel, setRemoveLabel] = useState("Remove broken device record");
 
-  return (
-    <div className="actor-row" data-discovered-device-id={row.deviceId}>
-      <div className="actor-details">
-        <div className="actor-title">
-          <strong title={row.displayTitle || undefined}>{row.displayName}</strong>
-          <span className={`badge actor-badge${row.availabilityLabel === 'Offline' ? '' : ' local'}`}>
-            {row.availabilityLabel}
-          </span>
-          <span className="badge actor-badge">{row.connectionLabel}</span>
-          {row.approvalBadgeLabel ? (
-            <span className="badge actor-badge">{row.approvalBadgeLabel}</span>
-          ) : null}
-        </div>
-        <div className="peer-meta">{row.note}</div>
-      </div>
-      <div className="actor-actions">
-        {row.mode === 'accept' ? (
-          <button
-            type="button"
-            className="settings-button"
-            disabled={busy !== null}
-              onClick={async () => {
-                setBusy('review');
-                setReviewLabel('Reviewing…');
-                try {
-                  setFeedback((await onReview(row)) || null);
-                  setReviewLabel(row.actionLabel || 'Review device');
-                } catch {
-                  setReviewLabel('Retry');
-                } finally {
-                  setBusy(null);
-                }
-            }}
-          >
-            {reviewLabel}
-          </button>
-        ) : null}
-        {(row.mode === 'stale' || row.mode === 'ambiguous' || row.mode === 'scope-pending') && row.actionMessage ? (
-          <div className="peer-meta">{row.actionMessage}</div>
-        ) : null}
-        {row.mode === 'paired' && row.pairedMessage ? (
-          <div className="peer-meta">{row.pairedMessage}</div>
-        ) : null}
-        {row.mode === 'conflict' ? (
-          <>
-            <button
-              type="button"
-              className="settings-button"
-              disabled={busy !== null}
-              onClick={() => onInspectConflict(row)}
-            >
-              Open device details
-            </button>
-            <button
-              type="button"
-              className="settings-button"
-              disabled={busy !== null}
-              onClick={async () => {
-                setBusy('remove');
-                setRemoveLabel('Removing…');
-                try {
-                  setFeedback((await onRemoveConflict(row)) || null);
-                  setRemoveLabel('Remove broken device record');
-                } catch {
-                  setRemoveLabel('Retry');
-                } finally {
-                  setBusy(null);
-                }
-              }}
-            >
-              {removeLabel}
-            </button>
-          </>
-        ) : null}
-      </div>
-      <SyncInlineFeedback feedback={feedback} />
-    </div>
-  );
+	return (
+		<div className="actor-row" data-discovered-device-id={row.deviceId}>
+			<div className="actor-details">
+				<div className="actor-title">
+					<strong title={row.displayTitle || undefined}>{row.displayName}</strong>
+					<span
+						className={`badge actor-badge${row.availabilityLabel === "Offline" ? "" : " local"}`}
+					>
+						{row.availabilityLabel}
+					</span>
+					<span className="badge actor-badge">{row.connectionLabel}</span>
+					{row.approvalBadgeLabel ? (
+						<span className="badge actor-badge">{row.approvalBadgeLabel}</span>
+					) : null}
+				</div>
+				<div className="peer-meta">{row.note}</div>
+			</div>
+			<div className="actor-actions">
+				{row.mode === "accept" ? (
+					<button
+						type="button"
+						className="settings-button"
+						disabled={busy !== null}
+						onClick={async () => {
+							setBusy("review");
+							setReviewLabel("Reviewing…");
+							try {
+								setFeedback((await onReview(row)) || null);
+								setReviewLabel(row.actionLabel || "Review device");
+							} catch {
+								setReviewLabel("Retry");
+							} finally {
+								setBusy(null);
+							}
+						}}
+					>
+						{reviewLabel}
+					</button>
+				) : null}
+				{(row.mode === "stale" || row.mode === "ambiguous" || row.mode === "scope-pending") &&
+				row.actionMessage ? (
+					<div className="peer-meta">{row.actionMessage}</div>
+				) : null}
+				{row.mode === "paired" && row.pairedMessage ? (
+					<div className="peer-meta">{row.pairedMessage}</div>
+				) : null}
+				{row.mode === "conflict" ? (
+					<>
+						<button
+							type="button"
+							className="settings-button"
+							disabled={busy !== null}
+							onClick={() => onInspectConflict(row)}
+						>
+							Open device details
+						</button>
+						<button
+							type="button"
+							className="settings-button"
+							disabled={busy !== null}
+							onClick={async () => {
+								setBusy("remove");
+								setRemoveLabel("Removing…");
+								try {
+									setFeedback((await onRemoveConflict(row)) || null);
+									setRemoveLabel("Remove broken device record");
+								} catch {
+									setRemoveLabel("Retry");
+								} finally {
+									setBusy(null);
+								}
+							}}
+						>
+							{removeLabel}
+						</button>
+					</>
+				) : null}
+			</div>
+			<SyncInlineFeedback feedback={feedback} />
+		</div>
+	);
 }
 
 function ActionContent(props: TeamSyncPanelProps) {
-  const hasAttentionItems = props.actionItems.length > 0;
-  const hasOtherActionableWork = props.actionableCount > props.actionItems.length;
-  const showNextStepsLabel = hasAttentionItems || hasOtherActionableWork || props.presenceStatus !== 'posted';
+	const hasAttentionItems = props.actionItems.length > 0;
+	const hasOtherActionableWork = props.actionableCount > props.actionItems.length;
+	const showNextStepsLabel =
+		hasAttentionItems || hasOtherActionableWork || props.presenceStatus !== "posted";
 
-  return (
-    <>
-      {showNextStepsLabel ? <SectionHeading label="Next steps" /> : null}
-      {hasAttentionItems
-        ? props.actionItems.map((item) => (
-            <AttentionRow key={item.id} item={item} onAction={props.onAttentionAction} />
-          ))
-        : null}
-      {!hasAttentionItems && !hasOtherActionableWork && props.presenceStatus === 'posted' ? (
-        <div className="sync-action">
-          <div className="sync-action-text">Everything is healthy.</div>
-        </div>
-      ) : null}
-      {!hasAttentionItems && hasOtherActionableWork && props.presenceStatus === 'posted' ? (
-        <div className="sync-action">
-          <div className="sync-action-text">Review the team items below when you are ready.</div>
-        </div>
-      ) : null}
-      {!hasAttentionItems && props.presenceStatus === 'not_enrolled' ? (
-        <div className="sync-action">
-          <div className="sync-action-text">
-            This device needs team enrollment
-            <span className="sync-action-command">Import an invite or ask an admin to enroll it.</span>
-          </div>
-        </div>
-      ) : null}
-    </>
-  );
+	return (
+		<>
+			{showNextStepsLabel ? <SectionHeading label="Next steps" /> : null}
+			{hasAttentionItems
+				? props.actionItems.map((item) => (
+						<AttentionRow key={item.id} item={item} onAction={props.onAttentionAction} />
+					))
+				: null}
+			{!hasAttentionItems && !hasOtherActionableWork && props.presenceStatus === "posted" ? (
+				<div className="sync-action">
+					<div className="sync-action-text">Everything is healthy.</div>
+				</div>
+			) : null}
+			{!hasAttentionItems && hasOtherActionableWork && props.presenceStatus === "posted" ? (
+				<div className="sync-action">
+					<div className="sync-action-text">Review the team items below when you are ready.</div>
+				</div>
+			) : null}
+			{!hasAttentionItems && props.presenceStatus === "not_enrolled" ? (
+				<div className="sync-action">
+					<div className="sync-action-text">
+						This device needs team enrollment
+						<span className="sync-action-command">
+							Import an invite or ask an admin to enroll it.
+						</span>
+					</div>
+				</div>
+			) : null}
+		</>
+	);
 }
 
 function TeamActionsContent({ children }: { children?: ComponentChildren }) {
@@ -308,105 +309,109 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 }
 
 function TeamStatusPortal({
-  mount,
-  statusSummary,
+	mount,
+	statusSummary,
 }: {
-  mount: HTMLElement;
-  statusSummary: TeamSyncStatusSummary;
+	mount: HTMLElement;
+	statusSummary: TeamSyncStatusSummary;
 }) {
-  return createPortal(
-    <div className="sync-team-summary">
-      <div className="sync-team-status-row">
-        <span className="sync-team-status-label">Team status</span>
-        <span className={statusSummary.badgeClassName}>{statusSummary.presenceLabel}</span>
-      </div>
-      {statusSummary.headline ? <div className="sync-team-headline">{statusSummary.headline}</div> : null}
-      <div className="sync-team-metrics sync-team-metrics-secondary">{statusSummary.metricsText}</div>
-    </div>,
-    mount,
-  );
+	return createPortal(
+		<div className="sync-team-summary">
+			<div className="sync-team-status-row">
+				<span className="sync-team-status-label">Team status</span>
+				<span className={statusSummary.badgeClassName}>{statusSummary.presenceLabel}</span>
+			</div>
+			{statusSummary.headline ? (
+				<div className="sync-team-headline">{statusSummary.headline}</div>
+			) : null}
+			<div className="sync-team-metrics sync-team-metrics-secondary">
+				{statusSummary.metricsText}
+			</div>
+		</div>,
+		mount,
+	);
 }
 
 function DiscoveredPortal({
-  mount,
-  rows,
-  onInspectConflict,
-  onRemoveConflict,
-  onReview,
+	mount,
+	rows,
+	onInspectConflict,
+	onRemoveConflict,
+	onReview,
 }: {
-  mount: HTMLElement | null;
-  rows: TeamSyncDiscoveredRow[];
-  onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
-  onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
-  onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	mount: HTMLElement | null;
+	rows: TeamSyncDiscoveredRow[];
+	onInspectConflict: (row: TeamSyncDiscoveredRow) => void;
+	onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 }) {
-  if (!mount || (!rows.length && !state.syncDiscoveredFeedback)) return null;
-  return createPortal(
-    <>
-      <SectionHeading count={rows.length || undefined} label="Devices seen on team" />
-      <SyncInlineFeedback feedback={state.syncDiscoveredFeedback} />
-      {rows.map((row) => (
-        <DiscoveredDeviceRow
-          key={row.deviceId}
-          row={row}
-          onInspectConflict={onInspectConflict}
-          onRemoveConflict={onRemoveConflict}
-          onReview={onReview}
-        />
-      ))}
-    </>,
-    mount,
-  );
+	if (!mount || (!rows.length && !state.syncDiscoveredFeedback)) return null;
+	return createPortal(
+		<>
+			<SectionHeading count={rows.length || undefined} label="Devices seen on team" />
+			<SyncInlineFeedback feedback={state.syncDiscoveredFeedback} />
+			{rows.map((row) => (
+				<DiscoveredDeviceRow
+					key={row.deviceId}
+					row={row}
+					onInspectConflict={onInspectConflict}
+					onRemoveConflict={onRemoveConflict}
+					onReview={onReview}
+				/>
+			))}
+		</>,
+		mount,
+	);
 }
 
 function PendingRequestsPortal({
-  mount,
-  requests,
-  onApprove,
-  onDeny,
+	mount,
+	requests,
+	onApprove,
+	onDeny,
 }: {
-  mount: HTMLElement | null;
-  requests: TeamSyncPendingJoinRequest[];
-  onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
-  onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+	mount: HTMLElement | null;
+	requests: TeamSyncPendingJoinRequest[];
+	onApprove: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
+	onDeny: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
 }) {
-  if (!mount || (!requests.length && !state.syncJoinRequestsFeedback)) return null;
-  return createPortal(
-    <>
-      <SectionHeading count={requests.length || undefined} label="Pending join requests" />
-      <SyncInlineFeedback feedback={state.syncJoinRequestsFeedback} />
-      {requests.map((request) => (
-        <PendingJoinRequestRow
-          key={request.requestId}
-          request={request}
-          onApprove={onApprove}
-          onDeny={onDeny}
-        />
-      ))}
-    </>,
-    mount,
-  );
+	if (!mount || (!requests.length && !state.syncJoinRequestsFeedback)) return null;
+	return createPortal(
+		<>
+			<SectionHeading count={requests.length || undefined} label="Pending join requests" />
+			<SyncInlineFeedback feedback={state.syncJoinRequestsFeedback} />
+			{requests.map((request) => (
+				<PendingJoinRequestRow
+					key={request.requestId}
+					request={request}
+					onApprove={onApprove}
+					onDeny={onDeny}
+				/>
+			))}
+		</>,
+		mount,
+	);
 }
 
 export function TeamSyncPanel(props: TeamSyncPanelProps) {
-  return (
-    <>
-      <ActionContent {...props} />
-      <TeamActionsContent>{props.children}</TeamActionsContent>
-      <TeamStatusPortal mount={props.listMount} statusSummary={props.statusSummary} />
-      <PendingRequestsPortal
-        mount={props.joinRequestsMount}
-        requests={props.pendingJoinRequests}
-        onApprove={props.onApproveJoinRequest}
-        onDeny={props.onDenyJoinRequest}
-      />
-      <DiscoveredPortal
-        mount={props.discoveredListMount}
-        rows={props.discoveredRows}
-        onInspectConflict={props.onInspectConflict}
-        onRemoveConflict={props.onRemoveConflict}
-        onReview={props.onReviewDiscoveredDevice}
-      />
-    </>
-  );
+	return (
+		<>
+			<ActionContent {...props} />
+			<TeamActionsContent>{props.children}</TeamActionsContent>
+			<TeamStatusPortal mount={props.listMount} statusSummary={props.statusSummary} />
+			<PendingRequestsPortal
+				mount={props.joinRequestsMount}
+				requests={props.pendingJoinRequests}
+				onApprove={props.onApproveJoinRequest}
+				onDeny={props.onDenyJoinRequest}
+			/>
+			<DiscoveredPortal
+				mount={props.discoveredListMount}
+				rows={props.discoveredRows}
+				onInspectConflict={props.onInspectConflict}
+				onRemoveConflict={props.onRemoveConflict}
+				onReview={props.onReviewDiscoveredDevice}
+			/>
+		</>
+	);
 }

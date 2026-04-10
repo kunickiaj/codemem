@@ -1,463 +1,476 @@
 /* API fetch wrappers — thin layer over the viewer HTTP endpoints. */
 
 export interface SyncRunItem {
-  peer_device_id: string;
-  ok: boolean;
-  error?: string;
-  address?: string;
-  opsIn: number;
-  opsOut: number;
-  addressErrors: Array<{ address: string; error: string }>;
+	peer_device_id: string;
+	ok: boolean;
+	error?: string;
+	address?: string;
+	opsIn: number;
+	opsOut: number;
+	addressErrors: Array<{ address: string; error: string }>;
 }
 
 export interface SyncRunResponse {
-  items: SyncRunItem[];
+	items: SyncRunItem[];
 }
 
 export interface RuntimeInfo {
-  version: string;
+	version: string;
 }
 
 export interface PackTraceCandidate {
-  id: number;
-  rank: number;
-  kind: string;
-  title: string;
-  preview: string;
-  reasons: string[];
-  disposition: 'selected' | 'dropped' | 'deduped' | 'trimmed';
-  section: 'summary' | 'timeline' | 'observations' | null;
-  scores: {
-    base_score: number | null;
-    combined_score: number | null;
-    recency: number;
-    kind_bonus: number;
-    quality_boost: number;
-    working_set_overlap: number;
-    query_path_overlap: number;
-    personal_bias: number;
-    shared_trust_penalty: number;
-    recap_penalty: number;
-    tasklike_penalty: number;
-    text_overlap: number;
-    tag_overlap: number;
-  };
+	id: number;
+	rank: number;
+	kind: string;
+	title: string;
+	preview: string;
+	reasons: string[];
+	disposition: "selected" | "dropped" | "deduped" | "trimmed";
+	section: "summary" | "timeline" | "observations" | null;
+	scores: {
+		base_score: number | null;
+		combined_score: number | null;
+		recency: number;
+		kind_bonus: number;
+		quality_boost: number;
+		working_set_overlap: number;
+		query_path_overlap: number;
+		personal_bias: number;
+		shared_trust_penalty: number;
+		recap_penalty: number;
+		tasklike_penalty: number;
+		text_overlap: number;
+		tag_overlap: number;
+	};
 }
 
 export interface PackTrace {
-  version: 1;
-  inputs: {
-    query: string;
-    project: string | null;
-    working_set_files: string[];
-    token_budget: number | null;
-    limit: number;
-  };
-  mode: {
-    selected: 'default' | 'task' | 'recall';
-    reasons: string[];
-  };
-  retrieval: {
-    candidate_count: number;
-    candidates: PackTraceCandidate[];
-  };
-  assembly: {
-    deduped_ids: number[];
-    collapsed_groups: Array<{
-      kept: number;
-      dropped: number[];
-      support_count: number;
-    }>;
-    trimmed_ids: number[];
-    trim_reasons: string[];
-    sections: Record<'summary' | 'timeline' | 'observations', number[]>;
-  };
-  output: {
-    estimated_tokens: number;
-    truncated: boolean;
-    section_counts: Record<'summary' | 'timeline' | 'observations', number>;
-    pack_text: string;
-  };
+	version: 1;
+	inputs: {
+		query: string;
+		project: string | null;
+		working_set_files: string[];
+		token_budget: number | null;
+		limit: number;
+	};
+	mode: {
+		selected: "default" | "task" | "recall";
+		reasons: string[];
+	};
+	retrieval: {
+		candidate_count: number;
+		candidates: PackTraceCandidate[];
+	};
+	assembly: {
+		deduped_ids: number[];
+		collapsed_groups: Array<{
+			kept: number;
+			dropped: number[];
+			support_count: number;
+		}>;
+		trimmed_ids: number[];
+		trim_reasons: string[];
+		sections: Record<"summary" | "timeline" | "observations", number[]>;
+	};
+	output: {
+		estimated_tokens: number;
+		truncated: boolean;
+		section_counts: Record<"summary" | "timeline" | "observations", number>;
+		pack_text: string;
+	};
 }
 
 function payloadError(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== 'object') return undefined;
-  const maybeError = (payload as { error?: unknown }).error;
-  return typeof maybeError === 'string' ? maybeError : undefined;
+	if (!payload || typeof payload !== "object") return undefined;
+	const maybeError = (payload as { error?: unknown }).error;
+	return typeof maybeError === "string" ? maybeError : undefined;
 }
 
 async function fetchJson<T = Record<string, unknown>>(url: string): Promise<T> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`${url}: ${resp.status} ${resp.statusText}`);
-  return resp.json() as Promise<T>;
+	const resp = await fetch(url);
+	if (!resp.ok) throw new Error(`${url}: ${resp.status} ${resp.statusText}`);
+	return resp.json() as Promise<T>;
 }
 
 export async function pingViewerReady(timeoutMs = 1200): Promise<void> {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch('/api/stats', {
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    if (!resp.ok) throw new Error(`/api/stats: ${resp.status} ${resp.statusText}`);
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
+	const controller = new AbortController();
+	const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const resp = await fetch("/api/stats", {
+			cache: "no-store",
+			signal: controller.signal,
+		});
+		if (!resp.ok) throw new Error(`/api/stats: ${resp.status} ${resp.statusText}`);
+	} finally {
+		window.clearTimeout(timeoutId);
+	}
 }
 
 async function readJsonPayload<T = Record<string, unknown>>(
-  resp: Response,
+	resp: Response,
 ): Promise<{ text: string; payload: T }> {
-  const text = await resp.text();
-  try {
-    return { text, payload: (text ? JSON.parse(text) : {}) as T };
-  } catch {
-    return { text, payload: {} as T };
-  }
+	const text = await resp.text();
+	try {
+		return { text, payload: (text ? JSON.parse(text) : {}) as T };
+	} catch {
+		return { text, payload: {} as T };
+	}
 }
 
 export async function loadStats(): Promise<any> {
-  return fetchJson('/api/stats');
+	return fetchJson("/api/stats");
 }
 
 export async function loadRuntimeInfo(): Promise<RuntimeInfo> {
-  return fetchJson('/api/runtime');
+	return fetchJson("/api/runtime");
 }
 
 export async function loadUsage(project: string): Promise<any> {
-  return fetchJson(`/api/usage?project=${encodeURIComponent(project)}`);
+	return fetchJson(`/api/usage?project=${encodeURIComponent(project)}`);
 }
 
 export async function loadSession(project: string): Promise<any> {
-  return fetchJson(`/api/session?project=${encodeURIComponent(project)}`);
+	return fetchJson(`/api/session?project=${encodeURIComponent(project)}`);
 }
 
 export async function loadRawEvents(project: string): Promise<any> {
-  return fetchJson(`/api/raw-events?project=${encodeURIComponent(project)}`);
+	return fetchJson(`/api/raw-events?project=${encodeURIComponent(project)}`);
 }
 
 export async function loadMemories(project: string): Promise<any> {
-  return loadMemoriesPage(project);
+	return loadMemoriesPage(project);
 }
 
 function buildProjectParams(
-  project: string,
-  limit?: number,
-  offset?: number,
-  scope?: string,
+	project: string,
+	limit?: number,
+	offset?: number,
+	scope?: string,
 ): string {
-  const params = new URLSearchParams();
-  params.set('project', project || '');
-  if (typeof limit === 'number') params.set('limit', String(limit));
-  if (typeof offset === 'number') params.set('offset', String(offset));
-  if (scope) params.set('scope', scope);
-  return params.toString();
+	const params = new URLSearchParams();
+	params.set("project", project || "");
+	if (typeof limit === "number") params.set("limit", String(limit));
+	if (typeof offset === "number") params.set("offset", String(offset));
+	if (scope) params.set("scope", scope);
+	return params.toString();
 }
 
 export async function loadMemoriesPage(
-  project: string,
-  options?: { limit?: number; offset?: number; scope?: string },
+	project: string,
+	options?: { limit?: number; offset?: number; scope?: string },
 ): Promise<any> {
-  const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
-  return fetchJson(`/api/observations?${query}`);
+	const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
+	return fetchJson(`/api/observations?${query}`);
 }
 
-export async function updateMemoryVisibility(memoryId: number, visibility: 'private' | 'shared'): Promise<any> {
-  const resp = await fetch('/api/memories/visibility', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ memory_id: memoryId, visibility }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+export async function updateMemoryVisibility(
+	memoryId: number,
+	visibility: "private" | "shared",
+): Promise<any> {
+	const resp = await fetch("/api/memories/visibility", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ memory_id: memoryId, visibility }),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function loadSummaries(project: string): Promise<any> {
-  return loadSummariesPage(project);
+	return loadSummariesPage(project);
 }
 
 export async function loadSummariesPage(
-  project: string,
-  options?: { limit?: number; offset?: number; scope?: string },
+	project: string,
+	options?: { limit?: number; offset?: number; scope?: string },
 ): Promise<any> {
-  const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
-  return fetchJson(`/api/summaries?${query}`);
+	const query = buildProjectParams(project, options?.limit, options?.offset, options?.scope);
+	return fetchJson(`/api/summaries?${query}`);
 }
 
 export async function tracePack(payload: {
-  context: string;
-  project?: string | null;
-  working_set_files?: string[];
-  token_budget?: number | null;
-  limit?: number;
+	context: string;
+	project?: string | null;
+	working_set_files?: string[];
+	token_budget?: number | null;
+	limit?: number;
 }): Promise<PackTrace> {
-  const resp = await fetch('/api/pack/trace', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const { text, payload: data } = await readJsonPayload<PackTrace>(resp);
-  if (!resp.ok) throw new Error(payloadError(data) || text || 'request failed');
-  return data;
+	const resp = await fetch("/api/pack/trace", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const { text, payload: data } = await readJsonPayload<PackTrace>(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
 }
 
 export async function loadObserverStatus(): Promise<any> {
-  return fetchJson('/api/observer-status');
+	return fetchJson("/api/observer-status");
 }
 
 export async function loadConfig(): Promise<any> {
-  return fetchJson('/api/config');
+	return fetchJson("/api/config");
 }
 
 export async function saveConfig(payload: any): Promise<void> {
-  const resp = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const text = await resp.text();
-  let parsed: any = null;
-  if (text) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {}
-  }
-  if (!resp.ok) {
-    const message = parsed && typeof parsed.error === 'string' ? parsed.error : text || 'request failed';
-    throw new Error(message);
-  }
-  return parsed;
+	const resp = await fetch("/api/config", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const text = await resp.text();
+	let parsed: any = null;
+	if (text) {
+		try {
+			parsed = JSON.parse(text);
+		} catch {}
+	}
+	if (!resp.ok) {
+		const message =
+			parsed && typeof parsed.error === "string" ? parsed.error : text || "request failed";
+		throw new Error(message);
+	}
+	return parsed;
 }
 
 export async function loadSyncStatus(
-  includeDiagnostics: boolean,
-  project = '',
-  options?: { includeJoinRequests?: boolean },
+	includeDiagnostics: boolean,
+	project = "",
+	options?: { includeJoinRequests?: boolean },
 ): Promise<any> {
-  const params = new URLSearchParams();
-  if (includeDiagnostics) params.set('includeDiagnostics', '1');
-  if (project) params.set('project', project);
-  if (options?.includeJoinRequests) params.set('includeJoinRequests', '1');
-  const suffix = params.size ? `?${params.toString()}` : '';
-  return fetchJson(`/api/sync/status${suffix}`);
+	const params = new URLSearchParams();
+	if (includeDiagnostics) params.set("includeDiagnostics", "1");
+	if (project) params.set("project", project);
+	if (options?.includeJoinRequests) params.set("includeJoinRequests", "1");
+	const suffix = params.size ? `?${params.toString()}` : "";
+	return fetchJson(`/api/sync/status${suffix}`);
 }
 
 export async function createCoordinatorInvite(payload: {
-  group_id: string;
-  coordinator_url?: string;
-  policy: 'auto_admit' | 'approval_required';
-  ttl_hours: number;
+	group_id: string;
+	coordinator_url?: string;
+	policy: "auto_admit" | "approval_required";
+	ttl_hours: number;
 }): Promise<any> {
-  const resp = await fetch('/api/sync/invites/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const { text, payload: data } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(data) || text || 'request failed');
-  return data;
+	const resp = await fetch("/api/sync/invites/create", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
 }
 
 export async function importCoordinatorInvite(invite: string): Promise<any> {
-  const resp = await fetch('/api/sync/invites/import', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ invite }),
-  });
-  const { text, payload: data } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(data) || text || 'request failed');
-  return data;
+	const resp = await fetch("/api/sync/invites/import", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ invite }),
+	});
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
 }
 
-export async function reviewJoinRequest(requestId: string, action: 'approve' | 'deny'): Promise<any> {
-  const resp = await fetch('/api/sync/join-requests/review', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ request_id: requestId, action }),
-  });
-  const { text, payload: data } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(data) || text || 'request failed');
-  return data;
+export async function reviewJoinRequest(
+	requestId: string,
+	action: "approve" | "deny",
+): Promise<any> {
+	const resp = await fetch("/api/sync/join-requests/review", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ request_id: requestId, action }),
+	});
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
 }
 
 export async function loadSyncActors(): Promise<any> {
-  return fetchJson('/api/sync/actors');
+	return fetchJson("/api/sync/actors");
 }
 
 export async function loadPairing(): Promise<any> {
-  return fetchJson('/api/sync/pairing?includeDiagnostics=1');
+	return fetchJson("/api/sync/pairing?includeDiagnostics=1");
 }
 
 export async function updatePeerScope(
-  peerDeviceId: string,
-  include: string[] | null,
-  exclude: string[] | null,
-  inheritGlobal = false,
+	peerDeviceId: string,
+	include: string[] | null,
+	exclude: string[] | null,
+	inheritGlobal = false,
 ): Promise<any> {
-  const resp = await fetch('/api/sync/peers/scope', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      peer_device_id: peerDeviceId,
-      include,
-      exclude,
-      inherit_global: inheritGlobal,
-    }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) {
-    throw new Error(payloadError(payload) || text || 'request failed');
-  }
-  return payload;
+	const resp = await fetch("/api/sync/peers/scope", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			peer_device_id: peerDeviceId,
+			include,
+			exclude,
+			inherit_global: inheritGlobal,
+		}),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) {
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
+	return payload;
 }
 
-export async function updatePeerIdentity(peerDeviceId: string, claimedLocalActor: boolean): Promise<any> {
-  const resp = await fetch('/api/sync/peers/identity', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      peer_device_id: peerDeviceId,
-      claimed_local_actor: claimedLocalActor,
-    }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+export async function updatePeerIdentity(
+	peerDeviceId: string,
+	claimedLocalActor: boolean,
+): Promise<any> {
+	const resp = await fetch("/api/sync/peers/identity", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			peer_device_id: peerDeviceId,
+			claimed_local_actor: claimedLocalActor,
+		}),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function assignPeerActor(peerDeviceId: string, actorId: string | null): Promise<any> {
-  const resp = await fetch('/api/sync/peers/identity', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      peer_device_id: peerDeviceId,
-      actor_id: actorId,
-    }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch("/api/sync/peers/identity", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			peer_device_id: peerDeviceId,
+			actor_id: actorId,
+		}),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function deletePeer(peerDeviceId: string): Promise<any> {
-  const resp = await fetch(`/api/sync/peers/${encodeURIComponent(peerDeviceId)}`, {
-    method: 'DELETE',
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch(`/api/sync/peers/${encodeURIComponent(peerDeviceId)}`, {
+		method: "DELETE",
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function renamePeer(peerDeviceId: string, name: string): Promise<any> {
-  const resp = await fetch('/api/sync/peers/rename', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      peer_device_id: peerDeviceId,
-      name,
-    }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch("/api/sync/peers/rename", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			peer_device_id: peerDeviceId,
+			name,
+		}),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
-export async function acceptDiscoveredPeer(peerDeviceId: string, fingerprint: string): Promise<any> {
-  const resp = await fetch('/api/sync/peers/accept-discovered', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      peer_device_id: peerDeviceId,
-      fingerprint,
-    }),
-  });
-  const text = await resp.text();
-  let payload: any = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = {};
-  }
-  const detail = typeof payload?.detail === 'string' ? payload.detail : undefined;
-  if (!resp.ok) throw new Error(detail || payloadError(payload) || text || 'request failed');
-  return payload;
+export async function acceptDiscoveredPeer(
+	peerDeviceId: string,
+	fingerprint: string,
+): Promise<any> {
+	const resp = await fetch("/api/sync/peers/accept-discovered", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			peer_device_id: peerDeviceId,
+			fingerprint,
+		}),
+	});
+	const text = await resp.text();
+	let payload: any = {};
+	try {
+		payload = text ? JSON.parse(text) : {};
+	} catch {
+		payload = {};
+	}
+	const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
+	if (!resp.ok) throw new Error(detail || payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function createActor(displayName: string): Promise<any> {
-  const resp = await fetch('/api/sync/actors', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ display_name: displayName }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch("/api/sync/actors", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ display_name: displayName }),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function renameActor(actorId: string, displayName: string): Promise<any> {
-  const resp = await fetch('/api/sync/actors/rename', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ actor_id: actorId, display_name: displayName }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch("/api/sync/actors/rename", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ actor_id: actorId, display_name: displayName }),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function mergeActor(primaryActorId: string, secondaryActorId: string): Promise<any> {
-  const resp = await fetch('/api/sync/actors/merge', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      primary_actor_id: primaryActorId,
-      secondary_actor_id: secondaryActorId,
-    }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch("/api/sync/actors/merge", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			primary_actor_id: primaryActorId,
+			secondary_actor_id: secondaryActorId,
+		}),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function deactivateActor(actorId: string): Promise<any> {
-  const resp = await fetch('/api/sync/actors/deactivate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ actor_id: actorId }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch("/api/sync/actors/deactivate", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ actor_id: actorId }),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function claimLegacyDeviceIdentity(originDeviceId: string): Promise<any> {
-  const resp = await fetch('/api/sync/legacy-devices/claim', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ origin_device_id: originDeviceId }),
-  });
-  const { text, payload } = await readJsonPayload(resp);
-  if (!resp.ok) throw new Error(payloadError(payload) || text || 'request failed');
-  return payload;
+	const resp = await fetch("/api/sync/legacy-devices/claim", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ origin_device_id: originDeviceId }),
+	});
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
 }
 
 export async function loadProjects(): Promise<string[]> {
-  const payload = await fetchJson<{ projects?: string[] }>('/api/projects');
-  return payload.projects || [];
+	const payload = await fetchJson<{ projects?: string[] }>("/api/projects");
+	return payload.projects || [];
 }
 
 export async function triggerSync(address?: string): Promise<SyncRunResponse> {
-  const payload = address ? { address } : {};
-  const resp = await fetch('/api/sync/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const { text, payload: body } = await readJsonPayload<SyncRunResponse>(resp);
-  if (!resp.ok) throw new Error(payloadError(body) || text || 'request failed');
-  if (!text) throw new Error('empty sync response');
-  if (!Array.isArray(body?.items)) throw new Error(text || 'invalid sync response');
-  return body;
+	const payload = address ? { address } : {};
+	const resp = await fetch("/api/sync/run", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const { text, payload: body } = await readJsonPayload<SyncRunResponse>(resp);
+	if (!resp.ok) throw new Error(payloadError(body) || text || "request failed");
+	if (!text) throw new Error("empty sync response");
+	if (!Array.isArray(body?.items)) throw new Error(text || "invalid sync response");
+	return body;
 }
