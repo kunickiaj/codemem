@@ -38,6 +38,8 @@ describe("buildActorSelectOptions", () => {
 		];
 		state.lastSyncPeers = [];
 		state.lastSyncViewModel = {
+			summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
+			attentionItems: [],
 			duplicatePeople: [
 				{
 					displayName: "Adam",
@@ -61,6 +63,8 @@ describe("buildActorSelectOptions", () => {
 		];
 		state.lastSyncPeers = [];
 		state.lastSyncViewModel = {
+			summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
+			attentionItems: [],
 			duplicatePeople: [
 				{
 					displayName: "Adam",
@@ -80,7 +84,11 @@ describe("buildActorSelectOptions", () => {
 	it("keeps an explicit unassigned choice in the option list", () => {
 		state.lastSyncActors = [{ actor_id: "actor-local", display_name: "Adam", is_local: true }];
 		state.lastSyncPeers = [];
-		state.lastSyncViewModel = { duplicatePeople: [] };
+		state.lastSyncViewModel = {
+			summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
+			attentionItems: [],
+			duplicatePeople: [],
+		};
 
 		expect(buildActorSelectOptions()).toEqual([
 			{ value: "", label: "No person assigned" },
