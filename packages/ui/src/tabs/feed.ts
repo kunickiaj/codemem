@@ -207,7 +207,16 @@ function replaceFeedItem(updatedItem: any) {
 
 /* ── Summary object extraction ───────────────────────────── */
 
-function getSummaryObject(item: any): Record<string, any> | null {
+/**
+ * A feed summary object parsed from a memory item's metadata, body text,
+ * or adapter output. Keys are semantic sections (request / completed /
+ * learned / etc.) but the server has enough shape variance that values
+ * are typed as `unknown` — callers are expected to coerce via
+ * `String(v || "")` or a `typeof` narrowing before rendering.
+ */
+type FeedSummary = Record<string, unknown>;
+
+function getSummaryObject(item: any): FeedSummary | null {
 	const preferredKeys = [
 		"request",
 		"outcome",
@@ -219,9 +228,13 @@ function getSummaryObject(item: any): Record<string, any> | null {
 		"next_steps",
 		"notes",
 	];
-	const looksLikeSummary = (v: any) => {
+	const looksLikeSummary = (v: unknown): v is FeedSummary => {
 		if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-		return preferredKeys.some((k) => typeof v[k] === "string" && v[k].trim().length > 0);
+		const obj = v as FeedSummary;
+		return preferredKeys.some((k) => {
+			const value = obj[k];
+			return typeof value === "string" && value.trim().length > 0;
+		});
 	};
 	if (item?.summary && typeof item.summary === "object" && !Array.isArray(item.summary))
 		return item.summary;
@@ -446,7 +459,7 @@ function renderMarkdownSafe(value: string): string {
 
 /* ── Rendering functions ─────────────────────────────────── */
 
-function renderSummarySections(summary: Record<string, any>) {
+function renderSummarySections(summary: FeedSummary) {
 	const preferred = [
 		"request",
 		"outcome",
