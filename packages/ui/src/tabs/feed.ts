@@ -490,7 +490,7 @@ function renderSummarySections(summary: FeedSummary) {
 		.filter(Boolean);
 }
 
-function renderFactsContent(facts: string[]) {
+function renderFactsContent(facts: unknown[]) {
 	const trimmed = facts.map((f) => String(f || "").trim()).filter(Boolean);
 	if (!trimmed.length) return null;
 	const labeledFacts = trimmed.every((f) => /.+?:\s+.+/.test(f));

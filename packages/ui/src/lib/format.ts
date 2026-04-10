@@ -1,21 +1,21 @@
 /* Formatting utilities — dates, numbers, text normalization. */
 
-export function formatDate(value: any): string {
+export function formatDate(value: unknown): string {
 	if (!value) return "n/a";
-	const date = new Date(value);
+	const date = new Date(value as string | number | Date);
 	return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
-export function formatTimestamp(value: any): string {
+export function formatTimestamp(value: unknown): string {
 	if (!value) return "never";
-	const date = new Date(value);
+	const date = new Date(value as string | number | Date);
 	if (Number.isNaN(date.getTime())) return String(value);
 	return date.toLocaleString();
 }
 
-export function formatRelativeTime(value: any): string {
+export function formatRelativeTime(value: unknown): string {
 	if (!value) return "n/a";
-	const date = new Date(value);
+	const date = new Date(value as string | number | Date);
 	const ms = date.getTime();
 	if (Number.isNaN(ms)) return String(value);
 	const diff = Date.now() - ms;
@@ -31,9 +31,9 @@ export function formatRelativeTime(value: any): string {
 	return date.toLocaleDateString();
 }
 
-export function secondsSince(value: any): number | null {
+export function secondsSince(value: unknown): number | null {
 	if (!value) return null;
-	const ts = new Date(value).getTime();
+	const ts = new Date(value as string | number | Date).getTime();
 	if (!Number.isFinite(ts)) return null;
 	const delta = Math.floor((Date.now() - ts) / 1e3);
 	return delta >= 0 ? delta : 0;
@@ -47,13 +47,13 @@ export function formatAgeShort(seconds: number | null): string {
 	return `${Math.floor(seconds / 86400)}d`;
 }
 
-export function formatPercent(value: any): string {
+export function formatPercent(value: unknown): string {
 	const num = Number(value);
 	if (!Number.isFinite(num)) return "n/a";
 	return `${Math.round(num * 100)}%`;
 }
 
-export function formatMultiplier(saved: any, read: any): string {
+export function formatMultiplier(saved: unknown, read: unknown): string {
 	const savedNum = Number(saved || 0);
 	const readNum = Number(read || 0);
 	if (!Number.isFinite(savedNum) || !Number.isFinite(readNum) || readNum <= 0) return "n/a";
@@ -62,7 +62,7 @@ export function formatMultiplier(saved: any, read: any): string {
 	return `${factor.toFixed(factor >= 10 ? 0 : 1)}x`;
 }
 
-export function formatReductionPercent(saved: any, read: any): string {
+export function formatReductionPercent(saved: unknown, read: unknown): string {
 	const savedNum = Number(saved || 0);
 	const readNum = Number(read || 0);
 	if (!Number.isFinite(savedNum) || !Number.isFinite(readNum)) return "n/a";
@@ -73,7 +73,7 @@ export function formatReductionPercent(saved: any, read: any): string {
 	return `${Math.round(pct * 100)}%`;
 }
 
-export function parsePercentValue(label: any): number | null {
+export function parsePercentValue(label: unknown): number | null {
 	const text = String(label || "").trim();
 	if (!text.endsWith("%")) return null;
 	const raw = Number(text.replace("%", ""));
@@ -81,14 +81,14 @@ export function parsePercentValue(label: any): number | null {
 	return raw;
 }
 
-export function normalize(text: any): string {
+export function normalize(text: unknown): string {
 	return String(text || "")
 		.replace(/\s+/g, " ")
 		.trim()
 		.toLowerCase();
 }
 
-export function parseJsonArray(value: any): any[] {
+export function parseJsonArray(value: unknown): unknown[] {
 	if (!value) return [];
 	if (Array.isArray(value)) return value;
 	if (typeof value === "string") {
@@ -102,7 +102,7 @@ export function parseJsonArray(value: any): any[] {
 	return [];
 }
 
-export function titleCase(value: any): string {
+export function titleCase(value: unknown): string {
 	const text = String(value || "").trim();
 	if (!text) return "Unknown";
 	return text.charAt(0).toUpperCase() + text.slice(1);
@@ -117,7 +117,7 @@ export function toTitleLabel(value: string): string {
 		.trim();
 }
 
-export function formatFileList(files: any[], limit = 2): string {
+export function formatFileList(files: unknown[], limit = 2): string {
 	if (!files.length) return "";
 	const trimmed = files.map((f) => String(f).trim()).filter(Boolean);
 	const slice = trimmed.slice(0, limit);
@@ -125,7 +125,7 @@ export function formatFileList(files: any[], limit = 2): string {
 	return `${slice.join(", ")}${suffix}`.trim();
 }
 
-export function formatTagLabel(tag: any): string {
+export function formatTagLabel(tag: unknown): string {
 	if (!tag) return "";
 	const trimmed = String(tag).trim();
 	const colonIndex = trimmed.indexOf(":");
