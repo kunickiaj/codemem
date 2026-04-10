@@ -47,10 +47,6 @@ export interface D1DatabaseLike {
 	exec?(query: string): Promise<unknown>;
 }
 
-function notImplemented(method: string): never {
-	throw new Error(`D1CoordinatorStore.${method} is not implemented yet.`);
-}
-
 function rowToRecord<T>(row: unknown): T {
 	if (row == null) throw new Error("expected row");
 	return row as T;

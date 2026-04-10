@@ -300,8 +300,9 @@ describe("recordReplicationOp", () => {
 			.prepare("SELECT payload_json FROM replication_ops WHERE op_id = ?")
 			.get(opId) as { payload_json: string | null };
 
-		expect(row.payload_json).not.toBeNull();
-		const payload = JSON.parse(row.payload_json!) as Record<string, unknown>;
+		const payloadJson = row.payload_json;
+		if (payloadJson === null) throw new Error("expected row.payload_json to be non-null");
+		const payload = JSON.parse(payloadJson) as Record<string, unknown>;
 		// Core fields
 		expect(payload.kind).toBe("feature");
 		expect(payload.title).toBe("Ship TS port");
@@ -325,11 +326,12 @@ describe("recordReplicationOp", () => {
 		const [ops] = loadReplicationOpsSince(db, null);
 		const op = ops.find((o) => o.op_id === opId);
 		expect(op).toBeDefined();
+		if (!op) throw new Error("expected op to be found");
 
 		const db2 = new Database(":memory:");
 		initTestSchema(db2);
 		try {
-			const result = applyReplicationOps(db2, [op!], "dev-local");
+			const result = applyReplicationOps(db2, [op], "dev-local");
 			expect(result.applied).toBe(1);
 
 			const applied = db2
@@ -921,7 +923,7 @@ describe("pruneReplicationOps", () => {
 			snapshot_id: "snapshot-5",
 			baseline_cursor: "2026-01-01T00:00:01Z|base-op",
 			retained_floor_cursor: null,
-		} as any);
+		});
 	});
 
 	afterEach(() => {
@@ -1843,8 +1845,10 @@ describe("replication payload round-trip parity", () => {
 		});
 
 		// Read the op back
-		const op = db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as any;
-		const payload = JSON.parse(op.payload_json);
+		const op = db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as {
+			payload_json: string;
+		};
+		const payload = JSON.parse(op.payload_json) as Record<string, unknown>;
 
 		// Verify the payload includes all the fields we care about
 		expect(payload.project).toBe("test-project");
@@ -1891,7 +1895,7 @@ describe("replication payload round-trip parity", () => {
 			.prepare(
 				"SELECT m.*, s.project as session_project FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.import_key = 'roundtrip-key-1'",
 			)
-			.get() as any;
+			.get() as Record<string, unknown>;
 
 		expect(applied).toBeTruthy();
 		expect(applied.session_project).toBe("test-project");
@@ -1995,7 +1999,7 @@ describe("bootstrap snapshot round-trip parity", () => {
 			.prepare(
 				"SELECT m.*, s.project as session_project FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.import_key = 'bootstrap-roundtrip-key'",
 			)
-			.get() as any;
+			.get() as Record<string, unknown>;
 
 		expect(applied).toBeTruthy();
 		expect(applied.session_project).toBe("bootstrap-project");

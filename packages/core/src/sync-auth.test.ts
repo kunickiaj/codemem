@@ -85,7 +85,8 @@ describe("sync-auth", () => {
 			const db = connect(dbPath);
 			initTestSchema(db);
 			const [deviceId] = ensureDeviceIdentity(db, { keysDir });
-			const publicKey = loadPublicKey(keysDir)!;
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("expected public key after ensureDeviceIdentity");
 			return { db, deviceId, publicKey, keysDir };
 		}
 

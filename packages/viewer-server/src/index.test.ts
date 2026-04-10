@@ -410,7 +410,9 @@ describe("viewer-server", () => {
 					"/api/observations?project=test-project&scope=mine&limit=1&offset=0",
 				);
 
-				const res = await app.request(aliasRes.headers.get("location")!);
+				const aliasLocation = aliasRes.headers.get("location");
+				if (!aliasLocation) throw new Error("expected alias redirect to include Location header");
+				const res = await app.request(aliasLocation);
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as {
 					items: Array<{ title: string }>;
@@ -2263,7 +2265,12 @@ describe("viewer-server", () => {
 					"/api/sync/status?includeDiagnostics=1&includeJoinRequests=1",
 				);
 				expect(res.status).toBe(200);
-				const body = (await res.json()) as Record<string, any>;
+				const body = (await res.json()) as {
+					enabled: boolean;
+					interval_s: number;
+					project_filter_active: boolean;
+					project_filter: { include: string[]; exclude: string[] };
+				};
 				expect(body.enabled).toBe(true);
 				expect(body.interval_s).toBe(45);
 				expect(body.project_filter_active).toBe(true);
@@ -2650,14 +2657,15 @@ describe("viewer-server", () => {
 				if (!store) throw new Error("store not initialized");
 				ensureDeviceIdentity(store.db, { keysDir });
 
+				type PresenceBody = { coordinator: { presence_status: string } };
 				const first = await app.request("/api/sync/status?includeDiagnostics=1");
 				expect(first.status).toBe(200);
-				const firstBody = (await first.json()) as Record<string, any>;
+				const firstBody = (await first.json()) as PresenceBody;
 				expect(firstBody.coordinator.presence_status).toBe("not_enrolled");
 
 				const second = await app.request("/api/sync/status?includeDiagnostics=1");
 				expect(second.status).toBe(200);
-				const secondBody = (await second.json()) as Record<string, any>;
+				const secondBody = (await second.json()) as PresenceBody;
 				expect(secondBody.coordinator.presence_status).toBe("posted");
 				expect(presenceCalls).toBe(2);
 			} finally {
@@ -2733,7 +2741,14 @@ describe("viewer-server", () => {
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/status?includeDiagnostics=1");
 				expect(res.status).toBe(200);
-				const body = (await res.json()) as Record<string, any>;
+				const body = (await res.json()) as {
+					coordinator: {
+						discovered_peer_count: number;
+						fresh_peer_count: number;
+						stale_peer_count: number;
+						discovered_devices: Array<Record<string, unknown>>;
+					};
+				};
 				expect(body.coordinator.discovered_peer_count).toBe(2);
 				expect(body.coordinator.fresh_peer_count).toBe(1);
 				expect(body.coordinator.stale_peer_count).toBe(1);
@@ -2813,7 +2828,9 @@ describe("viewer-server", () => {
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/status");
 				expect(res.status).toBe(200);
-				const body = (await res.json()) as Record<string, any>;
+				const body = (await res.json()) as {
+					coordinator: { discovered_devices: Array<Record<string, unknown>> };
+				};
 				expect(body.coordinator.discovered_devices).toEqual([
 					expect.objectContaining({
 						device_id: "peer-fresh",
@@ -2934,7 +2951,9 @@ describe("viewer-server", () => {
 				expect(deviceId).toBeTruthy();
 				const res = await app.request("/api/sync/status?includeDiagnostics=1");
 				expect(res.status).toBe(200);
-				const body = (await res.json()) as Record<string, any>;
+				const body = (await res.json()) as {
+					coordinator: { discovered_devices: Array<Record<string, unknown>> };
+				};
 				expect(body.coordinator.discovered_devices).toEqual([
 					expect.objectContaining({
 						device_id: "peer-incoming",
@@ -4026,13 +4045,20 @@ describe("viewer-server", () => {
 					.run("Legacy synced peer", "shared:legacy", "Legacy memory");
 				const res = await app.request("/api/sync/status?includeDiagnostics=1&project=codemem");
 				expect(res.status).toBe(200);
-				const body = (await res.json()) as Record<string, any>;
+				const body = (await res.json()) as {
+					legacy_devices: Array<{ origin_device_id: string }>;
+					sharing_review: Array<{
+						peer_device_id: string;
+						actor_display_name: string;
+						shareable_count: number;
+					}>;
+				};
 				expect(body.legacy_devices).toHaveLength(1);
-				expect(body.legacy_devices[0].origin_device_id).toBe("legacy-peer-1");
+				expect(body.legacy_devices[0]?.origin_device_id).toBe("legacy-peer-1");
 				expect(body.sharing_review).toHaveLength(1);
-				expect(body.sharing_review[0].peer_device_id).toBe("peer-actor");
-				expect(body.sharing_review[0].actor_display_name).toBe("Peer Person");
-				expect(body.sharing_review[0].shareable_count).toBe(1);
+				expect(body.sharing_review[0]?.peer_device_id).toBe("peer-actor");
+				expect(body.sharing_review[0]?.actor_display_name).toBe("Peer Person");
+				expect(body.sharing_review[0]?.shareable_count).toBe(1);
 			} finally {
 				cleanup();
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
@@ -4338,7 +4364,10 @@ describe("viewer-server", () => {
 					body: JSON.stringify({ request_id: "req-1", action: "approve" }),
 				});
 				expect(res.status).toBe(200);
-				const body = (await res.json()) as Record<string, any>;
+				const body = (await res.json()) as {
+					ok: boolean;
+					request: { request_id: string; status: string };
+				};
 				expect(body.ok).toBe(true);
 				expect(body.request.request_id).toBe("req-1");
 				expect(body.request.status).toBe("approved");

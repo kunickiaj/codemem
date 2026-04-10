@@ -16,19 +16,22 @@
 		"rules": {
 			"recommended": true,
 			"complexity": {
-				"noUselessTypeConstraint": "error"
+				"noUselessTernary": "error",
+				"noUselessTypeConstraint": "error",
+				"useOptionalChain": "error"
 			},
 			"correctness": {
 				"noUnusedImports": "error",
-				"noUnusedVariables": "warn"
+				"noUnusedVariables": "error"
 			},
 			"style": {
-				"noNonNullAssertion": "warn",
+				"noNonNullAssertion": "error",
 				"useConst": "error",
 				"useImportType": "error"
 			},
 			"suspicious": {
-				"noExplicitAny": "warn"
+				"noExplicitAny": "error",
+				"noTemplateCurlyInString": "error"
 			}
 		}
 	},

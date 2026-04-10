@@ -184,10 +184,11 @@ export function verifySignature(options: VerifySignatureOptions): boolean {
  */
 function sshEd25519ToPublicKey(sshPub: string): ReturnType<typeof createPublicKey> {
 	const parts = sshPub.trim().split(/\s+/);
-	if (parts.length < 2 || parts[0] !== "ssh-ed25519") {
+	const [keyType, keyData] = parts;
+	if (keyType !== "ssh-ed25519" || !keyData) {
 		throw new Error("not an ssh-ed25519 key");
 	}
-	const wireFormat = Buffer.from(parts[1]!, "base64");
+	const wireFormat = Buffer.from(keyData, "base64");
 
 	// Read key type length
 	if (wireFormat.length < 4) throw new Error("truncated wire format");

@@ -213,9 +213,11 @@ describe("resolvePlaceholder", () => {
 		}
 	});
 
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: ${ENV_VAR} is the literal fixture the resolver is supposed to expand
 	it("expands ${ENV_VAR} references", () => {
 		process.env.TEST_OBSERVER_CONFIG_VAR2 = "world";
 		try {
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${...} is the fixture being resolved
 			expect(resolvePlaceholder("${TEST_OBSERVER_CONFIG_VAR2}!")).toBe("world!");
 		} finally {
 			delete process.env.TEST_OBSERVER_CONFIG_VAR2;
@@ -340,7 +342,7 @@ describe("resolveCodememConfigPath", () => {
 		expect(result.resolved.source).toBe("legacy-global");
 		const runtimeEntry = result.fallbackChain.find((c) => c.source === "env-runtime-root");
 		expect(runtimeEntry).toBeDefined();
-		expect(runtimeEntry!.reason).toContain("is relative, not absolute");
+		expect(runtimeEntry?.reason).toContain("is relative, not absolute");
 	});
 
 	it("mode 'write' returns first candidate even if it doesn't exist", () => {
@@ -403,7 +405,7 @@ describe("resolveCodememConfigPath", () => {
 		const result = resolveCodememConfigPath(undefined, "read");
 		const wsEntry = result.fallbackChain.find((c) => c.source === "env-workspace-id");
 		expect(wsEntry).toBeDefined();
-		expect(wsEntry!.reason).toContain("failed safety check");
+		expect(wsEntry?.reason).toContain("failed safety check");
 	});
 
 	it("write mode skips relative runtime root", () => {

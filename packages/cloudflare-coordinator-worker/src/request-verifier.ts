@@ -40,10 +40,11 @@ function buildSpkiDer(rawKey: Uint8Array): Uint8Array {
 
 async function importSshEd25519PublicKey(publicKey: string): Promise<CryptoKey> {
 	const parts = publicKey.trim().split(/\s+/);
-	if (parts.length < 2 || parts[0] !== "ssh-ed25519") {
+	const [keyType, keyData] = parts;
+	if (keyType !== "ssh-ed25519" || !keyData) {
 		throw new Error("not an ssh-ed25519 key");
 	}
-	const wire = base64ToBytes(parts[1]!);
+	const wire = base64ToBytes(keyData);
 	if (wire.length < 4) throw new Error("truncated wire format");
 	const typeLen = readUint32BE(wire, 0);
 	const typeEnd = 4 + typeLen;

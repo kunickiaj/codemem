@@ -278,7 +278,7 @@ async function main() {
 
 				for (const memoryId of orderedIds) {
 					const item = store.get(memoryId);
-					if (!item || !item.active) {
+					if (!item?.active) {
 						missingNotFound.push(memoryId);
 						continue;
 					}

@@ -62,7 +62,7 @@ export function resolveLegacyServeInvocation(opts: LegacyServeOptions): Resolved
 		configPath: opts.config ?? null,
 		host: opts.host,
 		port: parsePort(opts.port),
-		background: opts.restart ? true : opts.background ? true : false,
+		background: Boolean(opts.restart || opts.background),
 	};
 }
 

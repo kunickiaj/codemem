@@ -1326,7 +1326,7 @@ function peerClaimedLocalActor(db: Database, peerDeviceId: string | null): boole
 }
 
 function parsePayload(payloadJson: string | null): Record<string, unknown> | null {
-	if (!payloadJson || !payloadJson.trim()) return null;
+	if (!payloadJson?.trim()) return null;
 	try {
 		const parsed = JSON.parse(payloadJson) as unknown;
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;

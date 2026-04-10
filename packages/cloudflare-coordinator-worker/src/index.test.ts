@@ -189,7 +189,8 @@ describe("createCloudflareCoordinatorWorker", () => {
 			const localDb = connect(dbPath);
 			initTestSchema(localDb);
 			const [deviceId, fingerprint] = ensureDeviceIdentity(localDb, { keysDir });
-			const publicKey = loadPublicKey(keysDir)!;
+			const publicKey = loadPublicKey(keysDir);
+			if (!publicKey) throw new Error("expected public key after ensureDeviceIdentity");
 			return { localDb, keysDir, deviceId, fingerprint, publicKey };
 		}
 
