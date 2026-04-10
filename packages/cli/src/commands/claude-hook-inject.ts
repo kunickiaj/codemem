@@ -6,9 +6,16 @@ import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
 type InjectResult = {
 	continue: true;
 	hookSpecificOutput?: {
+		hookEventName: "UserPromptSubmit";
 		additionalContext: string;
 	};
 };
+
+// claude-hook-inject is wired exclusively to UserPromptSubmit. The
+// hookSpecificOutput schema is event-specific (additionalContext is a
+// UserPromptSubmit-only field), so emitting any other event name would
+// produce invalid output regardless of what the payload claims.
+const HOOK_EVENT_NAME = "UserPromptSubmit" as const;
 
 type InjectOpts = DbOpts;
 
@@ -53,6 +60,7 @@ function continueResult(additionalContext?: string): InjectResult {
 	return {
 		continue: true,
 		hookSpecificOutput: {
+			hookEventName: HOOK_EVENT_NAME,
 			additionalContext,
 		},
 	};
