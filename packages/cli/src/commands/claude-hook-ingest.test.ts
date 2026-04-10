@@ -216,27 +216,32 @@ describe("claude-hook-ingest command", () => {
 			expect(httpCallCount).toBe(1);
 		});
 
-		it("treats HTTP `skipped > 0` as a failure and falls through to direct ingest", async () => {
-			// The viewer accepted the HTTP payload but skipped it (e.g. dedup
-			// miss, malformed shape after parse). The durability layer must
-			// not silently call this a success — it has to fall through to
-			// the locked direct/spool path so the data is captured locally.
-			const directCalls: Array<Record<string, unknown>> = [];
+		it("treats HTTP `skipped > 0` (deterministic null envelope) as a successful no-op", async () => {
+			// The viewer only returns {inserted:0, skipped:1} when
+			// buildRawEventEnvelopeFromHook produces a null envelope — a
+			// deterministic decision for payloads like a Stop event with no
+			// assistant text. Retrying via the direct path would produce the
+			// same null envelope and the same skip, so the ingest command
+			// accepts this as a no-op success instead of triggering the
+			// durability fallback.
+			let directCalls = 0;
 			const result = await ingestClaudeHookPayload(
-				{ hook_event_name: "Stop", session_id: "sess-skipped" },
+				{ hook_event_name: "Stop", session_id: "sess-no-text" },
 				{ host: "127.0.0.1", port: 38888 },
 				{
-					httpIngest: async () => ({ ok: false, inserted: 0, skipped: 1 }),
-					directIngest: (payload) => {
-						directCalls.push(payload);
+					httpIngest: async () => ({ ok: true, inserted: 0, skipped: 1 }),
+					directIngest: () => {
+						directCalls++;
 						return { inserted: 1, skipped: 0 };
 					},
-					boundaryFlush: () => {},
+					boundaryFlush: () => {
+						throw new Error("boundary flush should not run for Stop without flush envs");
+					},
 					resolveDb: () => "/tmp/test.sqlite",
 				},
 			);
-			expect(result.via).toBe("direct");
-			expect(directCalls).toHaveLength(1);
+			expect(result).toEqual({ inserted: 0, skipped: 1, via: "http" });
+			expect(directCalls).toBe(0);
 		});
 
 		it("spools the payload when both HTTP and direct ingest fail", async () => {
