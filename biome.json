@@ -69,14 +69,7 @@
 			"linter": {
 				"rules": {
 					"a11y": {
-						"noAutofocus": "off",
-						"noLabelWithoutControl": "warn",
-						"noStaticElementInteractions": "warn",
-						"useKeyWithClickEvents": "warn",
-						"useSemanticElements": "warn"
-					},
-					"suspicious": {
-						"noExplicitAny": "warn"
+						"noAutofocus": "off"
 					}
 				}
 			}
