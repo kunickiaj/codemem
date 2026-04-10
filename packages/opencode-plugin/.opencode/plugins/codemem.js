@@ -203,7 +203,7 @@ const buildPackArgs = ({ query, filesModified, injectLimit, injectTokenBudget })
     .slice(-8)
     .map((value) => String(value || "").trim())
     .filter(Boolean);
-  const args = ["pack", query];
+  const args = ["pack", query, "--json"];
   if (injectLimit !== null && Number.isFinite(injectLimit) && injectLimit > 0) {
     args.push("--limit", String(injectLimit));
   }
@@ -233,7 +233,8 @@ const applyInjectedContextToOutput = async ({
 
   const query = resolveInjectQuery();
   const cached = injectedSessions.get(input.sessionID);
-  let contextText = cached?.text || "";
+  const queryMatchesCache = cached?.query === query;
+  let contextText = queryMatchesCache ? cached?.text || "" : "";
 
   if (!contextText || cached?.query !== query) {
     const injected = await buildInjectedContext(query);
@@ -1448,6 +1449,18 @@ export const OpencodeMemPlugin = async ({
       filesModified: sessionContext.filesModified,
     });
 
+  const describeInjectQuery = (query) => {
+    const safeQuery = redactLog((query || "").trim(), 240);
+    const projectName = resolveProjectName(project, cwd) || "";
+    return {
+      safeQuery,
+      firstPromptLen: sessionContext.firstPrompt?.trim()?.length || 0,
+      lastPromptLen: lastPromptText?.trim()?.length || 0,
+      projectName,
+      filesModifiedCount: sessionContext.filesModified.size,
+    };
+  };
+
   const parsePackText = (stdout) => {
     if (!stdout || !stdout.trim()) {
       return "";
@@ -1500,9 +1513,27 @@ export const OpencodeMemPlugin = async ({
     }
     const packText = parsePackText(result.stdout);
     if (!packText) {
+      if (debug) {
+        const { safeQuery, firstPromptLen, lastPromptLen, projectName, filesModifiedCount } =
+          describeInjectQuery(query);
+        await logLine(
+          `inject.pack.empty query_len=${query ? query.length : 0} query=${JSON.stringify(safeQuery)} first_prompt_len=${firstPromptLen} last_prompt_len=${lastPromptLen} project=${JSON.stringify(projectName)} files_modified=${filesModifiedCount} stdout=${JSON.stringify(redactLog((result.stdout || "").trim(), 240))}`
+        );
+      }
       return "";
     }
     const metrics = parsePackMetrics(result.stdout);
+    if (debug) {
+      const itemCount = Number.isFinite(Number(metrics?.items))
+        ? Number(metrics.items)
+        : 0;
+      const packTokens = Number.isFinite(Number(metrics?.pack_tokens))
+        ? Number(metrics.pack_tokens)
+        : 0;
+      await logLine(
+        `inject.pack.ok query_len=${query ? query.length : 0} items=${itemCount} pack_tokens=${packTokens}`
+      );
+    }
     if (metrics) {
       return {
         text: `[codemem context]\n${packText}`,
@@ -1743,13 +1774,15 @@ export const OpencodeMemPlugin = async ({
     "experimental.chat.system.transform": async (input, output) => {
       const query = resolveInjectQuery();
       if (debug) {
+        const { safeQuery, firstPromptLen, lastPromptLen, projectName, filesModifiedCount } =
+          describeInjectQuery(query);
         await logLine(
           `inject.transform sessionID=${input.sessionID} query_len=${
             query ? query.length : 0
-          } tui_toast=${Boolean(client.tui?.showToast)}`
+          } inject_enabled=${injectEnabled} tui_toast=${Boolean(client.tui?.showToast)} query=${JSON.stringify(safeQuery)} first_prompt_len=${firstPromptLen} last_prompt_len=${lastPromptLen} project=${JSON.stringify(projectName)} files_modified=${filesModifiedCount}`
         );
       }
-      await applyInjectedContextToOutput({
+      const applied = await applyInjectedContextToOutput({
         injectEnabled,
         input,
         output,
@@ -1768,6 +1801,11 @@ export const OpencodeMemPlugin = async ({
         resolveInjectQuery,
         buildInjectedContext,
       });
+      if (debug) {
+        await logLine(
+          `inject.transform.result sessionID=${input.sessionID} applied=${Boolean(applied)} system_entries=${Array.isArray(output.system) ? output.system.length : 0}`
+        );
+      }
     },
     event: async ({ event }) => {
       const eventType = event?.type || "unknown";
