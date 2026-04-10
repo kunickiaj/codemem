@@ -290,31 +290,37 @@ function DuplicatePersonDialogContent({
 
 	return step === "choice" ? (
 		<div className="sync-dialog-stack">
-			<div className="sync-dialog-choice-list" role="list">
-				<button
-					autoFocus
-					className="settings-button"
-					data-sync-primary-action="true"
-					onClick={() => setStep("merge")}
-					type="button"
-				>
-					These are both me
-				</button>
-				<button
-					className="settings-button"
-					onClick={() => resolveCurrentDialog({ action: "different-people" })}
-					type="button"
-				>
-					These are different people
-				</button>
-				<button
-					className="settings-button"
-					onClick={() => resolveCurrentDialog({ action: "cancel" })}
-					type="button"
-				>
-					Decide later
-				</button>
-			</div>
+			<ul className="sync-dialog-choice-list">
+				<li>
+					<button
+						autoFocus
+						className="settings-button"
+						data-sync-primary-action="true"
+						onClick={() => setStep("merge")}
+						type="button"
+					>
+						These are both me
+					</button>
+				</li>
+				<li>
+					<button
+						className="settings-button"
+						onClick={() => resolveCurrentDialog({ action: "different-people" })}
+						type="button"
+					>
+						These are different people
+					</button>
+				</li>
+				<li>
+					<button
+						className="settings-button"
+						onClick={() => resolveCurrentDialog({ action: "cancel" })}
+						type="button"
+					>
+						Decide later
+					</button>
+				</li>
+			</ul>
 		</div>
 	) : (
 		<div className="sync-dialog-stack">

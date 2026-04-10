@@ -55,7 +55,20 @@ export function RadixDialog({
 						onInteractOutside={onInteractOutside}
 						onOpenAutoFocus={onOpenAutoFocus}
 					>
+						{/*
+						 * Radix hoists the `role="dialog"` + full keyboard semantics
+						 * (including Escape-to-close via `onEscapeKeyDown`) onto this
+						 * element via `asChild`, so biome's interaction-rules don't have
+						 * enough context to see them. The explicit `role="dialog"`
+						 * silences `noStaticElementInteractions`; `useKeyWithClickEvents`
+						 * is suppressed below because the onClick is a background-dismiss
+						 * pattern (only fires when target === currentTarget), not an
+						 * interactive activation — duplicating it as a keyboard handler
+						 * would double-fire Escape and break the settings discard flow.
+						 */}
+						{/* biome-ignore lint/a11y/useKeyWithClickEvents: background-dismiss click; keyboard close is handled by Radix's onEscapeKeyDown */}
 						<div
+							role="dialog"
 							className={contentClassName}
 							id={contentId}
 							onClick={(event) => {

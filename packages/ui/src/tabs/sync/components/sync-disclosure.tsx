@@ -111,7 +111,7 @@ function TeamSetupDisclosure({ open, onOpenChange }: TeamSetupDisclosureProps) {
 						style={{ width: "64px" }}
 						type="number"
 					/>
-					<label>hours</label>
+					<span>hours</span>
 				</div>
 				<button className="settings-button" id="syncCreateInviteButton" type="button">
 					Create invite
