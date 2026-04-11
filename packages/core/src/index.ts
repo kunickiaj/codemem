@@ -8,6 +8,7 @@
 export const VERSION = "0.25.3";
 
 export * as Api from "./api-types.js";
+export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
 export type { CreateBetterSqliteCoordinatorAppOptions } from "./better-sqlite-coordinator-runtime.js";
 export { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
 export type { ClaudeHookAdapterEvent, ClaudeHookRawEventEnvelope } from "./claude-hooks.js";
@@ -197,6 +198,7 @@ export {
 	firstSentence,
 	isTrivialRequest,
 	normalizeAdapterEvents,
+	normalizeEventsForSessionContext,
 	normalizeRequestText,
 	TRIVIAL_REQUESTS,
 } from "./ingest-transcript.js";

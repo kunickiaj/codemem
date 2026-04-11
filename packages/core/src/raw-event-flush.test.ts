@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildRawEventEnvelopeFromHook } from "./claude-hooks.js";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { flushRawEvents } from "./raw-event-flush.js";
@@ -284,5 +285,114 @@ describe("flushRawEvents max retry", () => {
 			)
 			.get() as { count: number };
 		expect(memorySessionCounts.count).toBe(1);
+	});
+
+	it("populates session context fields from Claude Code adapter-enveloped raw events", async () => {
+		const sessionId = "sess-claude-ctx";
+
+		// Seed Claude Code hook events via the same envelope path the viewer/CLI
+		// use. These produce `claude.hook` raw events with an `_adapter` payload.
+		const hookEvents: Record<string, unknown>[] = [
+			{
+				hook_event_name: "UserPromptSubmit",
+				session_id: sessionId,
+				prompt: "Investigate the flush bug",
+				cwd: "/tmp/repo",
+				ts: "2026-03-04T10:00:00Z",
+			},
+			{
+				hook_event_name: "PostToolUse",
+				session_id: sessionId,
+				tool_use_id: "toolu_1",
+				tool_name: "Read",
+				tool_input: { file_path: "/tmp/repo/src/flush.ts" },
+				tool_response: "file contents",
+				cwd: "/tmp/repo",
+				ts: "2026-03-04T10:00:05Z",
+			},
+			{
+				hook_event_name: "PostToolUse",
+				session_id: sessionId,
+				tool_use_id: "toolu_2",
+				tool_name: "Edit",
+				tool_input: { file_path: "/tmp/repo/src/flush.ts" },
+				tool_response: "edited",
+				cwd: "/tmp/repo",
+				ts: "2026-03-04T10:00:10Z",
+			},
+		];
+
+		for (const hook of hookEvents) {
+			const envelope = buildRawEventEnvelopeFromHook(hook);
+			expect(envelope).not.toBeNull();
+			if (envelope == null) throw new Error("envelope");
+			store.recordRawEvent({
+				opencodeSessionId: envelope.opencode_session_id,
+				source: envelope.source,
+				eventId: envelope.event_id,
+				eventType: envelope.event_type,
+				payload: envelope.payload,
+				tsWallMs: envelope.ts_wall_ms,
+			});
+		}
+
+		const summaryResponder = {
+			observe: async () => ({
+				raw: `<summary>
+					<request>Investigate the flush bug</request>
+					<investigated>raw-event-flush.ts session context builder</investigated>
+					<learned>Claude Code events need normalization before scanning</learned>
+					<completed>Added normalization step</completed>
+					<next_steps>Add regression test</next_steps>
+					<notes></notes>
+				</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const ingestOpts = { observer: summaryResponder } as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "claude",
+			cwd: "/tmp/repo",
+			project: "repo",
+			startedAt: "2026-03-04T10:00:00Z",
+			maxEvents: null,
+		};
+
+		const result = await flushRawEvents(store, ingestOpts, flushOpts);
+		expect(result.flushed).toBeGreaterThan(0);
+		expect(result.updatedState).toBe(1);
+
+		// The persisted session metadata is the authoritative regression check:
+		// before the fix these fields were all absent because Claude Code raw
+		// events (type="claude.hook") never populated buildSessionContext's
+		// counts or path lists.
+		const row = store.db
+			.prepare(
+				"SELECT metadata_json FROM sessions WHERE id = (SELECT session_id FROM opencode_sessions WHERE stream_id = ?)",
+			)
+			.get(sessionId) as { metadata_json: string } | undefined;
+		expect(row).toBeDefined();
+		const meta = JSON.parse(row?.metadata_json ?? "{}") as {
+			session_context?: {
+				promptCount?: number;
+				toolCount?: number;
+				firstPrompt?: string;
+				filesRead?: string[];
+			};
+		};
+		expect(meta.session_context?.promptCount).toBe(1);
+		expect(meta.session_context?.toolCount).toBe(2);
+		expect(meta.session_context?.firstPrompt).toBe("Investigate the flush bug");
+		expect(meta.session_context?.filesRead).toEqual(["/tmp/repo/src/flush.ts"]);
 	});
 });
