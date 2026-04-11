@@ -103,9 +103,18 @@ interface MemoryPayload {
 	user_prompt_id: number | null;
 	prompt_number: number | null;
 	deleted_at: string | null;
+	has_deleted_at: boolean;
 	rev: number;
 	import_key: string | null;
 	project?: string | null;
+}
+
+function resolveReplicatedTextUpdate(
+	nextValue: string | null | undefined,
+	currentValue: string | null,
+): string {
+	if (nextValue == null) return currentValue ?? "";
+	return nextValue;
 }
 
 function asNumberOrNull(value: unknown): number | null {
@@ -167,6 +176,7 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 		user_prompt_id: asNumberOrNull(raw.user_prompt_id),
 		prompt_number: asNumberOrNull(raw.prompt_number),
 		deleted_at: asStringOrNull(raw.deleted_at),
+		has_deleted_at: Object.hasOwn(raw, "deleted_at"),
 		rev: asNumberOrNull(raw.rev) ?? 0,
 		import_key: asStringOrNull(raw.import_key),
 		project: asStringOrNull(raw.project),
@@ -1709,6 +1719,7 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
 		user_prompt_id: row.user_prompt_id ?? null,
 		prompt_number: row.prompt_number ?? null,
 		deleted_at: row.deleted_at ?? null,
+		has_deleted_at: row.deleted_at != null,
 		rev: row.rev ?? 0,
 		import_key: row.import_key ?? null,
 	};
@@ -1778,6 +1789,10 @@ export function applyReplicationOps(
 							id: schema.memoryItems.id,
 							rev: schema.memoryItems.rev,
 							updated_at: schema.memoryItems.updated_at,
+							title: schema.memoryItems.title,
+							body_text: schema.memoryItems.body_text,
+							active: schema.memoryItems.active,
+							deleted_at: schema.memoryItems.deleted_at,
 							metadata_json: schema.memoryItems.metadata_json,
 						})
 						.from(schema.memoryItems)
@@ -1804,9 +1819,22 @@ export function applyReplicationOps(
 						const payload = parseMemoryPayload(op, result.errors);
 						if (!payload) continue;
 						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
+						const nextTitle = resolveReplicatedTextUpdate(payload.title, memRow.title);
+						const nextBodyText = resolveReplicatedTextUpdate(payload.body_text, memRow.body_text);
+						const contentChanged =
+							nextTitle !== (memRow.title ?? "") || nextBodyText !== (memRow.body_text ?? "");
+						const wasInactive = Number(memRow.active ?? 1) === 0 || memRow.deleted_at != null;
+						const nextActive =
+							payload.active != null ? Number(payload.active) : Number(memRow.active ?? 1);
+						const nextDeletedAt = payload.has_deleted_at
+							? payload.deleted_at
+							: (memRow.deleted_at ?? null);
+						const becomesActive = nextActive !== 0 && nextDeletedAt == null;
 						const shouldDeleteVectors =
 							payload.deleted_at != null ||
 							(payload.active != null && Number(payload.active) === 0);
+						const shouldQueueVectorUpsert =
+							!shouldDeleteVectors && (contentChanged || (wasInactive && becomesActive));
 
 						d.update(schema.memoryItems)
 							.set({
@@ -1840,7 +1868,7 @@ export function applyReplicationOps(
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
 						if (shouldDeleteVectors) queueVectorDelete(Number(memRow.id));
-						else queueVectorUpsert(Number(memRow.id));
+						else if (shouldQueueVectorUpsert) queueVectorUpsert(Number(memRow.id));
 					} else {
 						// Insert new memory item — skip if malformed
 						const payload = parseMemoryPayload(op, result.errors);

@@ -9,7 +9,7 @@ import {
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
 import type { ReplicationVectorWork } from "./sync-replication.js";
-import { backfillVectors } from "./vectors.js";
+import { backfillVectors, pruneStaleCurrentModelVectors } from "./vectors.js";
 
 export const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
 const SYNC_BOOTSTRAP_TRIGGER = "sync_bootstrap";
@@ -75,6 +75,15 @@ function deleteVectorsForMemoryIds(db: SqliteDatabase, memoryIds: number[]): voi
 	db.prepare(`DELETE FROM memory_vectors WHERE memory_id IN (${placeholders})`).run(...memoryIds);
 }
 
+function sameQueuedSyncMemoryIds(a: MigrationMetadata, b: MigrationMetadata): boolean {
+	return (
+		JSON.stringify(metadataMemoryIds(a.pending_upsert_memory_ids)) ===
+			JSON.stringify(metadataMemoryIds(b.pending_upsert_memory_ids)) &&
+		JSON.stringify(metadataMemoryIds(a.pending_delete_memory_ids)) ===
+			JSON.stringify(metadataMemoryIds(b.pending_delete_memory_ids))
+	);
+}
+
 export function queueVectorBackfillForIncrementalSync(
 	db: SqliteDatabase,
 	work: ReplicationVectorWork,
@@ -128,6 +137,7 @@ export function queueVectorBackfillForIncrementalSync(
 async function runQueuedSyncVectorWork(
 	db: SqliteDatabase,
 	job: NonNullable<ReturnType<typeof getMaintenanceJob>>,
+	targetModel: string,
 	batchSize: number,
 ): Promise<{ completed: boolean; metadata: MigrationMetadata }> {
 	const metadata = (job.metadata ?? {}) as MigrationMetadata;
@@ -143,13 +153,25 @@ async function runQueuedSyncVectorWork(
 	const batchUpsertMemoryIds = pendingUpsertMemoryIds.slice(0, batchSize);
 	if (batchUpsertMemoryIds.length > 0) {
 		await backfillVectors(db, { memoryIds: batchUpsertMemoryIds });
+		pruneStaleCurrentModelVectors(db, batchUpsertMemoryIds, targetModel);
 	}
 
-	const nextMetadata: MigrationMetadata = {
+	const drainedMetadata: MigrationMetadata = {
 		...metadata,
 		pending_delete_memory_ids: [],
 		pending_upsert_memory_ids: pendingUpsertMemoryIds.slice(batchUpsertMemoryIds.length),
 	};
+	const latestJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const latestMetadata = ((latestJob?.metadata ?? {}) as MigrationMetadata) ?? {};
+	const nextMetadata = sameQueuedSyncMemoryIds(latestMetadata, metadata)
+		? drainedMetadata
+		: {
+				...latestMetadata,
+				...mergeQueuedSyncMemoryIds(latestMetadata, {
+					upsertMemoryIds: metadataMemoryIds(drainedMetadata.pending_upsert_memory_ids),
+					deleteMemoryIds: metadataMemoryIds(drainedMetadata.pending_delete_memory_ids),
+				}),
+			};
 	const remainingWorkCount =
 		metadataMemoryIds(nextMetadata.pending_delete_memory_ids).length +
 		metadataMemoryIds(nextMetadata.pending_upsert_memory_ids).length;
@@ -304,8 +326,22 @@ export async function runVectorMigrationPass(
 	const targetModel = client.model;
 	const effectiveBatchSize = Math.max(1, options.batchSize ?? 50);
 	if (existingJob) {
-		const queuedSyncWork = await runQueuedSyncVectorWork(db, existingJob, effectiveBatchSize);
+		const queuedSyncWork = await runQueuedSyncVectorWork(
+			db,
+			existingJob,
+			targetModel,
+			effectiveBatchSize,
+		);
 		if (queuedSyncWork.completed) {
+			return;
+		}
+		const queuedSyncRemainingWork =
+			metadataMemoryIds(queuedSyncWork.metadata.pending_delete_memory_ids).length +
+			metadataMemoryIds(queuedSyncWork.metadata.pending_upsert_memory_ids).length;
+		if (
+			(queuedSyncWork.metadata.trigger ?? SYNC_INCREMENTAL_TRIGGER) === SYNC_INCREMENTAL_TRIGGER &&
+			queuedSyncRemainingWork > 0
+		) {
 			return;
 		}
 		existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);

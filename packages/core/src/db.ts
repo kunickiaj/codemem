@@ -198,22 +198,26 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 	migrateLegacyDbPath(dbPath);
 	mkdirSync(dirname(dbPath), { recursive: true });
 	const db = new Database(dbPath);
+	try {
+		// Match Python's connect() pragmas exactly
+		db.pragma("foreign_keys = ON");
+		db.pragma("busy_timeout = 5000");
 
-	// Match Python's connect() pragmas exactly
-	db.pragma("foreign_keys = ON");
-	db.pragma("busy_timeout = 5000");
+		const journalMode = db.pragma("journal_mode = WAL", { simple: true }) as string;
+		if (journalMode.toLowerCase() !== "wal") {
+			console.warn(
+				`Failed to enable WAL mode (got ${journalMode}). Concurrent access may not work correctly.`,
+			);
+		}
 
-	const journalMode = db.pragma("journal_mode = WAL", { simple: true }) as string;
-	if (journalMode.toLowerCase() !== "wal") {
-		console.warn(
-			`Failed to enable WAL mode (got ${journalMode}). Concurrent access may not work correctly.`,
-		);
+		db.pragma("synchronous = NORMAL");
+		ensureSchemaBootstrapped(db);
+
+		return db;
+	} catch (error) {
+		db.close();
+		throw error;
 	}
-
-	db.pragma("synchronous = NORMAL");
-	ensureSchemaBootstrapped(db);
-
-	return db;
 }
 
 function hasPlannerStats(db: DatabaseType): boolean {
