@@ -1,7 +1,9 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as syncAuth from "./sync-auth.js";
 import * as syncBootstrap from "./sync-bootstrap.js";
 import * as syncHttpClient from "./sync-http-client.js";
+import * as syncIdentity from "./sync-identity.js";
 import {
 	consecutiveConnectivityFailures,
 	cursorAdvances,
@@ -13,6 +15,7 @@ import {
 } from "./sync-pass.js";
 import * as syncReplication from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
+import * as vectors from "./vectors.js";
 
 // ---------------------------------------------------------------------------
 // Schema helper — adds sync tables not in base test schema
@@ -20,7 +23,7 @@ import { initTestSchema } from "./test-utils.js";
 
 function addSyncTables(db: InstanceType<typeof Database>): void {
 	db.exec(`
-		CREATE TABLE IF NOT EXISTS sync_peers (
+			CREATE TABLE IF NOT EXISTS sync_peers (
 			peer_device_id TEXT PRIMARY KEY,
 			name TEXT,
 			pinned_fingerprint TEXT,
@@ -47,19 +50,26 @@ function addSyncTables(db: InstanceType<typeof Database>): void {
 			error TEXT
 		);
 
-		CREATE TABLE IF NOT EXISTS replication_ops (
-			op_id TEXT PRIMARY KEY,
-			entity_type TEXT NOT NULL,
+			CREATE TABLE IF NOT EXISTS replication_ops (
+				op_id TEXT PRIMARY KEY,
+				entity_type TEXT NOT NULL,
 			entity_id TEXT NOT NULL,
 			op_type TEXT NOT NULL,
 			payload_json TEXT,
 			clock_rev INTEGER NOT NULL,
 			clock_updated_at TEXT NOT NULL,
 			clock_device_id TEXT NOT NULL,
-			device_id TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		);
-	`);
+				device_id TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+
+			CREATE TABLE IF NOT EXISTS replication_cursors (
+				peer_device_id TEXT PRIMARY KEY,
+				last_applied_cursor TEXT,
+				last_acked_cursor TEXT,
+				updated_at TEXT
+			);
+		`);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +116,7 @@ describe("syncOnce", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		db.close();
 	});
 
@@ -137,6 +148,87 @@ describe("syncOnce", () => {
 		expect(result.ok).toBe(false);
 		// Either "device identity unavailable" or "no dialable peer addresses"
 		expect(result.error).toBeTruthy();
+	});
+
+	it("runs best-effort vector maintenance after applying incremental inbound ops", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "abc123", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		const maintainSpy = vi
+			.spyOn(vectors, "maintainVectorsForReplicationApply")
+			.mockResolvedValue({ deleted: 0, inserted: 0, errors: ["embedding unavailable"] });
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "abc123",
+					protocol_version: "2",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-1",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [
+						{
+							op_id: "remote-op-1",
+							entity_type: "memory_item",
+							entity_id: "key:sync-pass-1",
+							op_type: "upsert",
+							payload_json: JSON.stringify({
+								kind: "discovery",
+								title: "Remote title",
+								body_text: "Remote body",
+								active: 1,
+								created_at: "2026-01-01T00:00:00Z",
+								updated_at: "2026-01-01T00:00:00Z",
+							}),
+							clock_rev: 1,
+							clock_updated_at: "2026-01-01T00:00:00Z",
+							clock_device_id: "dev-remote",
+							device_id: "dev-remote",
+							created_at: "2026-01-01T00:00:00Z",
+						},
+					],
+					next_cursor: "2026-01-01T00:00:00Z|remote-op-1",
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-1", ["http://127.0.0.1:9090"]);
+
+		if (!result.ok) {
+			throw new Error(`syncOnce failed: ${result.error ?? "unknown error"}`);
+		}
+		expect(result.ok).toBe(true);
+		expect(result.opsIn).toBe(1);
+		expect(maintainSpy).toHaveBeenCalledOnce();
+		expect(maintainSpy).toHaveBeenCalledWith(db, {
+			upsertMemoryIds: [expect.any(Number)],
+			deleteMemoryIds: [],
+		});
+		expect(syncReplication.getReplicationCursor(db, "peer-1")[0]).toBe(
+			"2026-01-01T00:00:00Z|remote-op-1",
+		);
 	});
 });
 

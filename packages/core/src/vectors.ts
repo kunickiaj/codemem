@@ -21,6 +21,7 @@ import {
 } from "./embeddings.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { projectClause } from "./project.js";
+import type { ReplicationVectorWork } from "./sync-replication.js";
 
 const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
 
@@ -143,6 +144,94 @@ export interface BackfillVectorsOptions {
 	activeOnly?: boolean;
 	dryRun?: boolean;
 	memoryIds?: number[] | null;
+}
+
+export interface ReplicationVectorMaintenanceResult {
+	deleted: number;
+	inserted: number;
+	errors: string[];
+}
+
+function uniqueMemoryIds(memoryIds: number[]): number[] {
+	return [...new Set(memoryIds.filter((memoryId) => Number.isInteger(memoryId) && memoryId > 0))];
+}
+
+function deleteVectorsForMemoryIds(db: Database, memoryIds: number[]): number {
+	if (!tableExists(db, "memory_vectors") || memoryIds.length === 0) return 0;
+	const placeholders = memoryIds.map(() => "?").join(", ");
+	const result = db
+		.prepare(`DELETE FROM memory_vectors WHERE memory_id IN (${placeholders})`)
+		.run(...memoryIds);
+	return result.changes;
+}
+
+function pruneStaleCurrentModelVectors(db: Database, memoryIds: number[], model: string): number {
+	if (memoryIds.length === 0) return 0;
+	const placeholders = memoryIds.map(() => "?").join(", ");
+	const rows = db
+		.prepare(
+			`SELECT id, title, body_text FROM memory_items WHERE id IN (${placeholders}) ORDER BY id ASC`,
+		)
+		.all(...memoryIds) as MemoryTextRow[];
+	let deleted = 0;
+
+	for (const row of rows) {
+		const expectedHashes = chunkHashes(memoryText(row.title, row.body_text));
+		if (expectedHashes.length === 0) {
+			deleted += db
+				.prepare("DELETE FROM memory_vectors WHERE memory_id = ? AND model = ?")
+				.run(row.id, model).changes;
+			continue;
+		}
+		const hashPlaceholders = expectedHashes.map(() => "?").join(", ");
+		deleted += db
+			.prepare(
+				`DELETE FROM memory_vectors
+				 WHERE memory_id = ?
+				   AND model = ?
+				   AND content_hash NOT IN (${hashPlaceholders})`,
+			)
+			.run(row.id, model, ...expectedHashes).changes;
+	}
+
+	return deleted;
+}
+
+export async function maintainVectorsForReplicationApply(
+	db: Database,
+	work: ReplicationVectorWork,
+): Promise<ReplicationVectorMaintenanceResult> {
+	const result: ReplicationVectorMaintenanceResult = { deleted: 0, inserted: 0, errors: [] };
+	const deleteMemoryIds = uniqueMemoryIds(work.deleteMemoryIds);
+	const upsertMemoryIds = uniqueMemoryIds(work.upsertMemoryIds);
+
+	if (!tableExists(db, "memory_vectors")) {
+		return result;
+	}
+
+	try {
+		result.deleted += deleteVectorsForMemoryIds(db, deleteMemoryIds);
+	} catch (error) {
+		result.errors.push(
+			`delete vectors failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	if (upsertMemoryIds.length === 0) return result;
+
+	try {
+		const backfill = await backfillVectors(db, { memoryIds: upsertMemoryIds });
+		result.inserted = backfill.inserted;
+		if (backfill.checked > 0) {
+			result.deleted += pruneStaleCurrentModelVectors(db, upsertMemoryIds, resolveEmbeddingModel());
+		}
+	} catch (error) {
+		result.errors.push(
+			`backfill vectors failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	return result;
 }
 
 // ---------------------------------------------------------------------------
