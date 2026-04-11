@@ -19,6 +19,7 @@ import { buildAuthHeaders } from "./sync-auth.js";
 import { requestJson } from "./sync-http-client.js";
 import { setReplicationCursor, setSyncResetState } from "./sync-replication.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
+import { queueVectorBackfillForSyncBootstrap } from "./vector-migration.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -161,6 +162,12 @@ function parseSnapshotPayload(item: SyncMemorySnapshotItem): Record<string, unkn
 	}
 }
 
+function isEmbeddableSnapshotPayload(payload: Record<string, unknown>): boolean {
+	const title = typeof payload.title === "string" ? payload.title : "";
+	const bodyText = typeof payload.body_text === "string" ? payload.body_text : "";
+	return `${title}\n${bodyText}`.trim().length > 0;
+}
+
 const bootstrapSessionCache = new Map<string, number>();
 
 function ensureSessionForBootstrap(
@@ -220,6 +227,7 @@ export function applyBootstrapSnapshot(
 
 	db.transaction(() => {
 		const d = drizzle(db, { schema });
+		let embeddableApplied = 0;
 
 		// 1. Delete all local sync-eligible memories that have been synced.
 		// - Only memories with import_key (i.e. previously synced) are deleted.
@@ -259,6 +267,9 @@ export function applyBootstrapSnapshot(
 			meta.clock_device_id = item.clock_device_id;
 
 			const isDeleted = item.op_type === "delete";
+			if (!isDeleted && isEmbeddableSnapshotPayload(payload)) {
+				embeddableApplied++;
+			}
 
 			d.insert(schema.memoryItems)
 				.values({
@@ -319,6 +330,8 @@ export function applyBootstrapSnapshot(
 			snapshot_id: resetInfo.snapshot_id,
 			baseline_cursor: resetInfo.baseline_cursor,
 		});
+
+		queueVectorBackfillForSyncBootstrap(db, { embeddableTotal: embeddableApplied });
 
 		result.ok = true;
 	}).immediate();

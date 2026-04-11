@@ -1,7 +1,12 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as embeddings from "./embeddings.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
+import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
+import { setSyncResetState } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import { runVectorMigrationPass, VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 import { resolveSemanticSearchModel } from "./vectors.js";
@@ -201,6 +206,167 @@ describe("vector migration", () => {
 			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
 			.all() as Array<{ model: string; c: number }>;
 		expect(models).toEqual([{ model: "test-model", c: 3 }]);
+	});
+
+	it("resumes bootstrap-queued vector catch-up after restart", async () => {
+		const dbDir = mkdtempSync(join(tmpdir(), "codemem-vector-bootstrap-"));
+		const dbPath = join(dbDir, "restart-safe.sqlite");
+		let fileDb: Database | null = null;
+		try {
+			fileDb = new Database(dbPath);
+			initTestSchema(fileDb);
+			setSyncResetState(fileDb, {
+				generation: 1,
+				snapshot_id: "snap-1",
+				baseline_cursor: null,
+			});
+			applyBootstrapSnapshot(
+				fileDb,
+				"peer-1",
+				[
+					{
+						entity_id: "bootstrap-1",
+						op_type: "upsert",
+						payload_json: JSON.stringify({
+							kind: "feature",
+							title: "Bootstrap memory",
+							body_text: "Needs vectors after restart",
+							visibility: "shared",
+							workspace_kind: "shared",
+							workspace_id: "shared:default",
+							created_at: "2026-01-01T00:00:01Z",
+							metadata_json: { clock_device_id: "peer-dev" },
+						}),
+						clock_rev: 1,
+						clock_updated_at: "2026-01-01T00:00:02Z",
+						clock_device_id: "peer-dev",
+					},
+				],
+				{
+					reset_required: true,
+					reason: "generation_mismatch",
+					generation: 2,
+					snapshot_id: "snap-2",
+					baseline_cursor: "2026-01-01T00:00:05Z|base-op",
+					retained_floor_cursor: null,
+				},
+			);
+
+			const pendingJob = getMaintenanceJob(fileDb, VECTOR_MODEL_MIGRATION_JOB);
+			expect(pendingJob).toMatchObject({
+				status: "pending",
+				progress: { current: 0, total: 1, unit: "items" },
+			});
+
+			fileDb.close();
+			fileDb = null;
+			fileDb = new Database(dbPath);
+			initTestSchema(fileDb);
+
+			await runVectorMigrationPass(fileDb, { batchSize: 10 });
+
+			const completedJob = getMaintenanceJob(fileDb, VECTOR_MODEL_MIGRATION_JOB);
+			expect(completedJob).toMatchObject({
+				status: "completed",
+				progress: { current: 1, total: 1, unit: "items" },
+			});
+
+			const models = fileDb
+				.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+				.all() as Array<{ model: string; c: number }>;
+			expect(models).toEqual([{ model: "test-model", c: 1 }]);
+		} finally {
+			fileDb?.close();
+			rmSync(dbDir, { recursive: true, force: true });
+		}
+	});
+
+	it("marks a queued bootstrap backfill as failed when the embedding client is unavailable", async () => {
+		setSyncResetState(db, {
+			generation: 1,
+			snapshot_id: "snap-1",
+			baseline_cursor: null,
+		});
+		applyBootstrapSnapshot(
+			db,
+			"peer-1",
+			[
+				{
+					entity_id: "bootstrap-1",
+					op_type: "upsert",
+					payload_json: JSON.stringify({
+						kind: "feature",
+						title: "Bootstrap memory",
+						body_text: "Needs vectors later",
+						visibility: "shared",
+						workspace_kind: "shared",
+						workspace_id: "shared:default",
+						created_at: "2026-01-01T00:00:01Z",
+						metadata_json: { clock_device_id: "peer-dev" },
+					}),
+					clock_rev: 1,
+					clock_updated_at: "2026-01-01T00:00:02Z",
+					clock_device_id: "peer-dev",
+				},
+			],
+			{
+				reset_required: true,
+				reason: "generation_mismatch",
+				generation: 2,
+				snapshot_id: "snap-2",
+				baseline_cursor: "2026-01-01T00:00:05Z|base-op",
+				retained_floor_cursor: null,
+			},
+		);
+
+		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValueOnce(null);
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		const failedJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(failedJob).toMatchObject({
+			status: "failed",
+			message: "Vector re-indexing is waiting for the embedding client",
+			error: "Embedding client unavailable",
+		});
+	});
+
+	it("does not rewrite completed jobs when the embedding client is unavailable", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+		seedVector(db, 1, "old-model");
+
+		await runVectorMigrationPass(db, { batchSize: 10 });
+		const completedBeforeDisable = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(completedBeforeDisable).toMatchObject({ status: "completed" });
+
+		vi.mocked(embeddings.getEmbeddingClient).mockResolvedValueOnce(null);
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		const completedAfterDisable = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(completedAfterDisable).toMatchObject({ status: "completed" });
+	});
+
+	it("removes stale old-model rows when queued work has zero embeddable memories", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "", "");
+		seedVector(db, 1, "old-model");
+
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(job).toMatchObject({
+			status: "completed",
+			metadata: {
+				source_model: "old-model",
+				target_model: "test-model",
+				removed_stale_rows: 1,
+			},
+		});
+
+		const models = db
+			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+			.all() as Array<{ model: string; c: number }>;
+		expect(models).toEqual([]);
 	});
 
 	it("backfills memories that have no vectors at all (no source model)", async () => {

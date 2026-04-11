@@ -4,11 +4,13 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
+import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import { getSyncResetState, setSyncResetState } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
+import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 
 function makeResetInfo(overrides?: Partial<SyncResetRequired>): SyncResetRequired {
 	return {
@@ -156,6 +158,30 @@ describe("applyBootstrapSnapshot", () => {
 			.prepare("SELECT last_applied_cursor FROM replication_cursors WHERE peer_device_id = ?")
 			.get("peer-1") as { last_applied_cursor: string } | undefined;
 		expect(cursor?.last_applied_cursor).toBe("2026-01-01T00:00:05Z|base-op");
+	});
+
+	it("queues a persisted vector backfill job for bootstrap catch-up", () => {
+		const items = [
+			makeSnapshotItem("embeddable-key"),
+			makeSnapshotItem("blank-key", { payload: { title: "", body_text: "" } }),
+			makeSnapshotItem("deleted-key", { op_type: "delete" }),
+		];
+
+		applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(job).toMatchObject({
+			status: "pending",
+			title: "Re-indexing memories",
+			message: "Queued vector catch-up for synced bootstrap data",
+			progress: { current: 0, total: 1, unit: "items" },
+		});
+		expect(job?.metadata).toMatchObject({
+			last_cursor_id: 0,
+			processed_embeddable: 0,
+			embeddable_total: 1,
+			trigger: "sync_bootstrap",
+		});
 	});
 
 	it("applies empty snapshot (wipes shared, inserts nothing)", () => {
