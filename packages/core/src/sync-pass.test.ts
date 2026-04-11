@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getMaintenanceJob } from "./maintenance-jobs.js";
 import * as syncAuth from "./sync-auth.js";
 import * as syncBootstrap from "./sync-bootstrap.js";
 import * as syncHttpClient from "./sync-http-client.js";
@@ -15,7 +16,7 @@ import {
 } from "./sync-pass.js";
 import * as syncReplication from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
-import * as vectors from "./vectors.js";
+import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 
 // ---------------------------------------------------------------------------
 // Schema helper — adds sync tables not in base test schema
@@ -150,7 +151,7 @@ describe("syncOnce", () => {
 		expect(result.error).toBeTruthy();
 	});
 
-	it("runs best-effort vector maintenance after applying incremental inbound ops", async () => {
+	it("queues durable vector catch-up after applying incremental inbound ops", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
 		).run("peer-1", "abc123", new Date().toISOString());
@@ -162,9 +163,6 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		const maintainSpy = vi
-			.spyOn(vectors, "maintainVectorsForReplicationApply")
-			.mockResolvedValue({ deleted: 0, inserted: 0, errors: ["embedding unavailable"] });
 
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
@@ -221,10 +219,14 @@ describe("syncOnce", () => {
 		}
 		expect(result.ok).toBe(true);
 		expect(result.opsIn).toBe(1);
-		expect(maintainSpy).toHaveBeenCalledOnce();
-		expect(maintainSpy).toHaveBeenCalledWith(db, {
-			upsertMemoryIds: [expect.any(Number)],
-			deleteMemoryIds: [],
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)).toMatchObject({
+			status: "pending",
+			message: "Queued vector catch-up for incremental sync data",
+			metadata: {
+				trigger: "sync_incremental",
+				pending_upsert_memory_ids: [expect.any(Number)],
+				pending_delete_memory_ids: [],
+			},
 		});
 		expect(syncReplication.getReplicationCursor(db, "peer-1")[0]).toBe(
 			"2026-01-01T00:00:00Z|remote-op-1",

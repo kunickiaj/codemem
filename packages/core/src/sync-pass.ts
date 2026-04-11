@@ -27,7 +27,7 @@ import {
 	setReplicationCursor,
 } from "./sync-replication.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
-import { maintainVectorsForReplicationApply } from "./vectors.js";
+import { queueVectorBackfillForIncrementalSync } from "./vector-migration.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -615,13 +615,13 @@ export async function syncOnce(
 
 			// -- 3. Apply incoming ops to local entities --
 			const applied = applyReplicationOps(db, inboundOps, deviceId);
+			queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
 
 			const inboundCursorCandidate = inboundCursor || asOptionalCursor(getPayload.next_cursor);
 			if (cursorAdvances(lastApplied, inboundCursorCandidate)) {
 				setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate });
 				lastApplied = inboundCursorCandidate;
 			}
-			await maintainVectorsForReplicationApply(db, applied.vectorWork);
 
 			// -- 5. Push local ops to peer --
 			const [outboundWindow, outboundCursor] = loadLocalOpsSince(db, lastAcked, deviceId, limit);
