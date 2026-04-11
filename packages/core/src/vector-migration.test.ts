@@ -338,6 +338,65 @@ describe("vector migration", () => {
 		}
 	});
 
+	it("prunes stale current-model vectors while replaying queued incremental upserts", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "Incremental memory", "Fresh body");
+		db.exec(`
+			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+			VALUES (
+				vec_f32('${JSON.stringify(Array.from(new Float32Array(384)))}'),
+				1,
+				0,
+				'stale-current-hash',
+				'test-model'
+			)
+		`);
+
+		queueVectorBackfillForIncrementalSync(db, {
+			upsertMemoryIds: [1],
+			deleteMemoryIds: [],
+		});
+
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		const rows = db
+			.prepare(
+				"SELECT content_hash FROM memory_vectors WHERE memory_id = ? AND model = ? ORDER BY content_hash",
+			)
+			.all(1, "test-model") as Array<{ content_hash: string }>;
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.content_hash).not.toBe("stale-current-hash");
+	});
+
+	it("preserves newly queued incremental ids while replaying queued work", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+		seedMemory(db, 2, sessionId, "Two", "Body two");
+		seedVector(db, 2, "test-model");
+
+		queueVectorBackfillForIncrementalSync(db, {
+			upsertMemoryIds: [1],
+			deleteMemoryIds: [],
+		});
+		vi.mocked(embeddings.embedTexts).mockImplementationOnce(async () => {
+			queueVectorBackfillForIncrementalSync(db, {
+				upsertMemoryIds: [],
+				deleteMemoryIds: [2],
+			});
+			return [new Float32Array(384)];
+		});
+
+		await runVectorMigrationPass(db, { batchSize: 10 });
+
+		const runningJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(runningJob).toMatchObject({
+			status: "running",
+			metadata: {
+				pending_delete_memory_ids: [2],
+			},
+		});
+	});
+
 	it("marks a queued bootstrap backfill as failed when the embedding client is unavailable", async () => {
 		setSyncResetState(db, {
 			generation: 1,

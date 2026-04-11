@@ -1796,6 +1796,97 @@ describe("applyReplicationOps", () => {
 		expect(mem.title).toBe("Updated title");
 		expect(mem.tags_text).toBe("existing-tag");
 	});
+
+	it("does not queue vector re-embed for metadata-only updates", () => {
+		const sessionId = insertTestSession(db);
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, visibility, created_at, updated_at, import_key, rev, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Stable title",
+			"stable body",
+			"private",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"key:metadata-only",
+			1,
+			toJson({ clock_device_id: "dev-remote" }),
+		);
+
+		const op = makeReplicationOp({
+			entity_id: "key:metadata-only",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Stable title",
+				body_text: "stable body",
+				visibility: "shared",
+				updated_at: "2026-01-02T00:00:00Z",
+			}),
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+		expect(result.vectorWork.upsertMemoryIds).toEqual([]);
+		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
+
+		const mem = db
+			.prepare("SELECT visibility FROM memory_items WHERE import_key = ?")
+			.get("key:metadata-only") as { visibility: string };
+		expect(mem.visibility).toBe("shared");
+	});
+
+	it("queues vector re-embed when a metadata-only update reactivates a deleted memory", () => {
+		const sessionId = insertTestSession(db);
+		const deletedAt = "2026-01-01T00:00:00Z";
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, active, deleted_at, created_at, updated_at, import_key, rev, metadata_json)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				sessionId,
+				"discovery",
+				"Stable title",
+				"stable body",
+				0,
+				deletedAt,
+				deletedAt,
+				deletedAt,
+				"key:undelete",
+				1,
+				toJson({ clock_device_id: "dev-remote" }),
+			);
+		const memoryId = Number(info.lastInsertRowid);
+
+		const op = makeReplicationOp({
+			entity_id: "key:undelete",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Stable title",
+				body_text: "stable body",
+				active: 1,
+				deleted_at: null,
+				updated_at: "2026-01-02T00:00:00Z",
+			}),
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+		expect(result.vectorWork.upsertMemoryIds).toEqual([memoryId]);
+		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
+
+		const mem = db
+			.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = ?")
+			.get("key:undelete") as { active: number; deleted_at: string | null };
+		expect(mem.active).toBe(1);
+		expect(mem.deleted_at).toBeNull();
+	});
 });
 
 // ---------------------------------------------------------------------------

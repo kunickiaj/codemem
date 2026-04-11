@@ -301,7 +301,11 @@ function deleteVectorsForMemoryIds(db: Database, memoryIds: number[]): number {
 	return result.changes;
 }
 
-function pruneStaleCurrentModelVectors(db: Database, memoryIds: number[], model: string): number {
+export function pruneStaleCurrentModelVectors(
+	db: Database,
+	memoryIds: number[],
+	model: string,
+): number {
 	if (memoryIds.length === 0) return 0;
 	const placeholders = memoryIds.map(() => "?").join(", ");
 	const rows = db
