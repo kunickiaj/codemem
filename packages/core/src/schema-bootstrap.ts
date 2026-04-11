@@ -1,5 +1,5 @@
 import type { Database } from "./db.js";
-import { getSchemaVersion, SCHEMA_VERSION } from "./db.js";
+import { getSchemaVersion, isEmbeddingDisabled, loadSqliteVec, SCHEMA_VERSION } from "./db.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 
 const SCHEMA_AUX_DDL = `
@@ -61,9 +61,58 @@ CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
 END;
 `;
 
+/**
+ * DDL for the sqlite-vec `memory_vectors` virtual table. Drizzle cannot model
+ * virtual tables driven by a loadable extension, so this lives alongside the
+ * other aux DDL and is executed through `ensureVectorSchema` (which first
+ * makes sure the `vec0` module is actually loaded on the connection).
+ *
+ * Columns mirror the Python `_ensure_vector_schema` helper in `codemem/db.py`.
+ * The embedding width (384) matches the default BAAI/bge-small-en-v1.5 model
+ * and the existing vectors tests; changing it requires rebuilding existing
+ * vector rows via the migration helper.
+ */
+const MEMORY_VECTORS_DDL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+	embedding float[384],
+	memory_id INTEGER,
+	chunk_index INTEGER,
+	content_hash TEXT,
+	model TEXT
+);
+`;
+
+/**
+ * Create the `memory_vectors` sqlite-vec virtual table on `db` if it does not
+ * already exist. No-op when embeddings are disabled via
+ * `CODEMEM_EMBEDDING_DISABLED`, matching the Python backend's behavior.
+ *
+ * This function is safe to call from any bootstrap path — it probes for
+ * `vec_version()` first and only attempts to load the sqlite-vec extension if
+ * it is not already present on the connection. That avoids double-loading when
+ * callers (like `MemoryStore`) have already called `loadSqliteVec` directly.
+ */
+export function ensureVectorSchema(db: Database): void {
+	if (isEmbeddingDisabled()) return;
+	if (!isSqliteVecLoaded(db)) {
+		loadSqliteVec(db);
+	}
+	db.exec(MEMORY_VECTORS_DDL);
+}
+
+function isSqliteVecLoaded(db: Database): boolean {
+	try {
+		const row = db.prepare("SELECT vec_version() AS v").get() as { v?: string } | undefined;
+		return typeof row?.v === "string" && row.v.length > 0;
+	} catch {
+		return false;
+	}
+}
+
 export function bootstrapSchema(db: Database): void {
 	db.exec(TEST_SCHEMA_BASE_DDL);
 	db.exec(SCHEMA_AUX_DDL);
+	ensureVectorSchema(db);
 	db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
 
