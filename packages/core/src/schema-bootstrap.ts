@@ -94,10 +94,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
  */
 export function ensureVectorSchema(db: Database): void {
 	if (isEmbeddingDisabled()) return;
-	if (!isSqliteVecLoaded(db)) {
-		loadSqliteVec(db);
+	try {
+		if (!isSqliteVecLoaded(db)) {
+			loadSqliteVec(db);
+		}
+		db.exec(MEMORY_VECTORS_DDL);
+	} catch {
+		return;
 	}
-	db.exec(MEMORY_VECTORS_DDL);
 }
 
 function isSqliteVecLoaded(db: Database): boolean {

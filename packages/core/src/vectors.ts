@@ -10,6 +10,7 @@
  */
 
 import type { Database } from "./db.js";
+import { tableExists } from "./db.js";
 import {
 	chunkText,
 	embedTexts,
@@ -28,11 +29,18 @@ type VectorModelCount = { model: string; rows: number };
 type MemoryTextRow = { id: number; title: string | null; body_text: string | null };
 
 function listVectorModelCounts(db: Database): VectorModelCount[] {
-	return db
-		.prepare(
-			"SELECT model, COUNT(*) AS rows FROM memory_vectors GROUP BY model ORDER BY rows DESC, model ASC",
-		)
-		.all() as VectorModelCount[];
+	if (!tableExists(db, "memory_vectors")) {
+		return [];
+	}
+	try {
+		return db
+			.prepare(
+				"SELECT model, COUNT(*) AS rows FROM memory_vectors GROUP BY model ORDER BY rows DESC, model ASC",
+			)
+			.all() as VectorModelCount[];
+	} catch {
+		return [];
+	}
 }
 
 export function resolveSemanticSearchModel(

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connect } from "./db.js";
+import { connect, tableExists } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 import { MemoryStore } from "./store.js";
 import { setSyncDaemonPhase } from "./sync-daemon.js";
@@ -1062,6 +1062,7 @@ describe("MemoryStore constructor auto-bootstrap", () => {
 			const stats = store.stats();
 			expect(stats.database.memory_items).toBe(0);
 			expect(stats.database.sessions).toBe(0);
+			expect(tableExists(store.db, "memory_vectors")).toBe(true);
 
 			// Real query-path coverage: exercising `recent` / `recentByKinds`
 			// hits memory_items + FTS/provenance joins that assertSchemaReady

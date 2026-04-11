@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as dbModule from "./db.js";
 import * as embeddings from "./embeddings.js";
 import { startMaintenanceJob } from "./maintenance-jobs.js";
+import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import {
@@ -155,6 +157,20 @@ describe("vectors", () => {
 		expect(results).toEqual([]);
 		expect(embeddings.embedTexts).not.toHaveBeenCalled();
 	});
+
+	it("returns empty results on a freshly bootstrapped database with no vectors", async () => {
+		const freshDb = new Database(":memory:");
+		try {
+			initTestSchema(freshDb);
+
+			const results = await semanticSearch(freshDb, "query text");
+
+			expect(results).toEqual([]);
+			expect(embeddings.embedTexts).not.toHaveBeenCalled();
+		} finally {
+			freshDb.close();
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -242,6 +258,23 @@ describe("memory_vectors bootstrap on fresh databases", () => {
 			expect(resolveSemanticSearchModel(store.db, "test-model")).toBe("test-model");
 		} finally {
 			store.close();
+		}
+	});
+
+	it("bootstraps the core schema even when sqlite-vec cannot load", () => {
+		const scratch = new Database(":memory:");
+		const loadSpy = vi.spyOn(dbModule, "loadSqliteVec").mockImplementation(() => {
+			throw new Error("vec unavailable");
+		});
+
+		try {
+			expect(() => ensureSchemaBootstrapped(scratch)).not.toThrow();
+			expect(() => scratch.prepare("SELECT COUNT(*) AS c FROM memory_items").get()).not.toThrow();
+			expect(() => resolveSemanticSearchModel(scratch, "test-model")).not.toThrow();
+			expect(resolveSemanticSearchModel(scratch, "test-model")).toBeNull();
+		} finally {
+			loadSpy.mockRestore();
+			scratch.close();
 		}
 	});
 });
