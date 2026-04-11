@@ -8,10 +8,12 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+import type { ReplicationVectorWork } from "./sync-replication.js";
 import { backfillVectors } from "./vectors.js";
 
 export const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
 const SYNC_BOOTSTRAP_TRIGGER = "sync_bootstrap";
+const SYNC_INCREMENTAL_TRIGGER = "sync_incremental";
 
 export interface VectorModelMigrationOptions {
 	batchSize?: number;
@@ -30,7 +32,155 @@ type MigrationMetadata = {
 	embeddable_total?: number;
 	removed_stale_rows?: number;
 	trigger?: string | null;
+	pending_upsert_memory_ids?: number[];
+	pending_delete_memory_ids?: number[];
 };
+
+function uniquePositiveIds(memoryIds: number[]): number[] {
+	return [
+		...new Set(memoryIds.filter((memoryId) => Number.isInteger(memoryId) && memoryId > 0)),
+	].sort((a, b) => a - b);
+}
+
+function metadataMemoryIds(value: unknown): number[] {
+	if (!Array.isArray(value)) return [];
+	return uniquePositiveIds(value.filter((item): item is number => typeof item === "number"));
+}
+
+function mergeQueuedSyncMemoryIds(
+	metadata: MigrationMetadata,
+	work: ReplicationVectorWork,
+): Pick<MigrationMetadata, "pending_upsert_memory_ids" | "pending_delete_memory_ids"> {
+	const pendingUpsertMemoryIds = new Set(metadataMemoryIds(metadata.pending_upsert_memory_ids));
+	const pendingDeleteMemoryIds = new Set(metadataMemoryIds(metadata.pending_delete_memory_ids));
+
+	for (const memoryId of uniquePositiveIds(work.deleteMemoryIds)) {
+		pendingUpsertMemoryIds.delete(memoryId);
+		pendingDeleteMemoryIds.add(memoryId);
+	}
+	for (const memoryId of uniquePositiveIds(work.upsertMemoryIds)) {
+		pendingDeleteMemoryIds.delete(memoryId);
+		pendingUpsertMemoryIds.add(memoryId);
+	}
+
+	return {
+		pending_upsert_memory_ids: [...pendingUpsertMemoryIds],
+		pending_delete_memory_ids: [...pendingDeleteMemoryIds],
+	};
+}
+
+function deleteVectorsForMemoryIds(db: SqliteDatabase, memoryIds: number[]): void {
+	if (memoryIds.length === 0) return;
+	const placeholders = memoryIds.map(() => "?").join(", ");
+	db.prepare(`DELETE FROM memory_vectors WHERE memory_id IN (${placeholders})`).run(...memoryIds);
+}
+
+export function queueVectorBackfillForIncrementalSync(
+	db: SqliteDatabase,
+	work: ReplicationVectorWork,
+): void {
+	const queuedWork = mergeQueuedSyncMemoryIds({}, work);
+	if (
+		(queuedWork.pending_upsert_memory_ids?.length ?? 0) === 0 &&
+		(queuedWork.pending_delete_memory_ids?.length ?? 0) === 0
+	) {
+		return;
+	}
+
+	const existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const existingMetadata =
+		existingJob && existingJob.status !== "completed" && existingJob.status !== "cancelled"
+			? ((existingJob.metadata ?? {}) as MigrationMetadata)
+			: {};
+	const metadata: MigrationMetadata = {
+		...existingMetadata,
+		...mergeQueuedSyncMemoryIds(existingMetadata, work),
+		trigger: existingMetadata.trigger ?? SYNC_INCREMENTAL_TRIGGER,
+	};
+	const pendingWorkCount =
+		metadataMemoryIds(metadata.pending_upsert_memory_ids).length +
+		metadataMemoryIds(metadata.pending_delete_memory_ids).length;
+
+	if (!existingJob || existingJob.status === "completed" || existingJob.status === "cancelled") {
+		startMaintenanceJob(db, {
+			kind: VECTOR_MODEL_MIGRATION_JOB,
+			title: "Re-indexing memories",
+			status: "pending",
+			message: "Queued vector catch-up for incremental sync data",
+			progressTotal: null,
+			metadata,
+		});
+		return;
+	}
+
+	updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+		status: "pending",
+		message: "Queued vector catch-up for incremental sync data",
+		progressCurrent:
+			existingJob.status === "failed"
+				? 0
+				: Math.min(existingJob.progress.current, pendingWorkCount),
+		progressTotal: existingJob.progress.total,
+		metadata,
+	});
+}
+
+async function runQueuedSyncVectorWork(
+	db: SqliteDatabase,
+	job: NonNullable<ReturnType<typeof getMaintenanceJob>>,
+	batchSize: number,
+): Promise<{ completed: boolean; metadata: MigrationMetadata }> {
+	const metadata = (job.metadata ?? {}) as MigrationMetadata;
+	const pendingDeleteMemoryIds = metadataMemoryIds(metadata.pending_delete_memory_ids);
+	const pendingUpsertMemoryIds = metadataMemoryIds(metadata.pending_upsert_memory_ids);
+	if (pendingDeleteMemoryIds.length === 0 && pendingUpsertMemoryIds.length === 0) {
+		return { completed: false, metadata };
+	}
+
+	if (pendingDeleteMemoryIds.length > 0) {
+		deleteVectorsForMemoryIds(db, pendingDeleteMemoryIds);
+	}
+	const batchUpsertMemoryIds = pendingUpsertMemoryIds.slice(0, batchSize);
+	if (batchUpsertMemoryIds.length > 0) {
+		await backfillVectors(db, { memoryIds: batchUpsertMemoryIds });
+	}
+
+	const nextMetadata: MigrationMetadata = {
+		...metadata,
+		pending_delete_memory_ids: [],
+		pending_upsert_memory_ids: pendingUpsertMemoryIds.slice(batchUpsertMemoryIds.length),
+	};
+	const remainingWorkCount =
+		metadataMemoryIds(nextMetadata.pending_delete_memory_ids).length +
+		metadataMemoryIds(nextMetadata.pending_upsert_memory_ids).length;
+	const incrementalOnly =
+		(metadata.trigger ?? SYNC_INCREMENTAL_TRIGGER) === SYNC_INCREMENTAL_TRIGGER &&
+		!metadata.source_model &&
+		!metadata.last_cursor_id &&
+		metadata.embeddable_total == null;
+
+	if (remainingWorkCount === 0 && incrementalOnly) {
+		completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+			message: "Finished vector catch-up for incremental sync data",
+			progressCurrent: 0,
+			progressTotal: null,
+			metadata: nextMetadata,
+		});
+		return { completed: true, metadata: nextMetadata };
+	}
+
+	updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+		status: remainingWorkCount > 0 ? "running" : job.status,
+		message:
+			remainingWorkCount > 0
+				? `Queued vector catch-up has ${remainingWorkCount} memory change(s) remaining`
+				: job.message,
+		progressCurrent: 0,
+		progressTotal: null,
+		metadata: nextMetadata,
+	});
+	return { completed: false, metadata: nextMetadata };
+}
 
 export function queueVectorBackfillForSyncBootstrap(
 	db: SqliteDatabase,
@@ -132,7 +282,7 @@ export async function runVectorMigrationPass(
 	db: SqliteDatabase,
 	options: { batchSize?: number } = {},
 ): Promise<void> {
-	const existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	let existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 	const isInFlightJob = existingJob?.status === "running" || existingJob?.status === "pending";
 	if (isEmbeddingDisabled()) {
 		if (isInFlightJob) {
@@ -152,6 +302,14 @@ export async function runVectorMigrationPass(
 		return;
 	}
 	const targetModel = client.model;
+	const effectiveBatchSize = Math.max(1, options.batchSize ?? 50);
+	if (existingJob) {
+		const queuedSyncWork = await runQueuedSyncVectorWork(db, existingJob, effectiveBatchSize);
+		if (queuedSyncWork.completed) {
+			return;
+		}
+		existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	}
 	const sourceModel = detectSourceModel(db, targetModel);
 	const hasInFlightJob =
 		existingJob?.status === "running" ||
@@ -232,7 +390,6 @@ export async function runVectorMigrationPass(
 		});
 	}
 
-	const effectiveBatchSize = Math.max(1, options.batchSize ?? 50);
 	const batchRows = selectNextMigrationBatch(db, metadata.last_cursor_id ?? 0, effectiveBatchSize);
 	const batchIds = batchRows.map((row) => row.id);
 	const embeddableInBatch = batchRows.filter(isEmbeddableMemory).length;

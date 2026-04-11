@@ -8,7 +8,11 @@ import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
 import { setSyncResetState } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
-import { runVectorMigrationPass, VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
+import {
+	queueVectorBackfillForIncrementalSync,
+	runVectorMigrationPass,
+	VECTOR_MODEL_MIGRATION_JOB,
+} from "./vector-migration.js";
 import { resolveSemanticSearchModel } from "./vectors.js";
 
 vi.mock("./embeddings.js", async () => {
@@ -269,6 +273,59 @@ describe("vector migration", () => {
 			expect(completedJob).toMatchObject({
 				status: "completed",
 				progress: { current: 1, total: 1, unit: "items" },
+			});
+
+			const models = fileDb
+				.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+				.all() as Array<{ model: string; c: number }>;
+			expect(models).toEqual([{ model: "test-model", c: 1 }]);
+		} finally {
+			fileDb?.close();
+			rmSync(dbDir, { recursive: true, force: true });
+		}
+	});
+
+	it("resumes incremental sync queued vector catch-up after restart", async () => {
+		const dbDir = mkdtempSync(join(tmpdir(), "codemem-vector-incremental-"));
+		const dbPath = join(dbDir, "restart-safe.sqlite");
+		let fileDb: Database | null = null;
+		try {
+			fileDb = new Database(dbPath);
+			initTestSchema(fileDb);
+			const sessionId = insertTestSession(fileDb);
+			seedMemory(fileDb, 1, sessionId, "Incremental memory", "Needs vectors after restart");
+
+			queueVectorBackfillForIncrementalSync(fileDb, {
+				upsertMemoryIds: [1],
+				deleteMemoryIds: [],
+			});
+
+			const pendingJob = getMaintenanceJob(fileDb, VECTOR_MODEL_MIGRATION_JOB);
+			expect(pendingJob).toMatchObject({
+				status: "pending",
+				message: "Queued vector catch-up for incremental sync data",
+				metadata: {
+					trigger: "sync_incremental",
+					pending_upsert_memory_ids: [1],
+					pending_delete_memory_ids: [],
+				},
+			});
+
+			fileDb.close();
+			fileDb = null;
+			fileDb = new Database(dbPath);
+			initTestSchema(fileDb);
+
+			await runVectorMigrationPass(fileDb, { batchSize: 10 });
+
+			const completedJob = getMaintenanceJob(fileDb, VECTOR_MODEL_MIGRATION_JOB);
+			expect(completedJob).toMatchObject({
+				status: "completed",
+				message: "Finished vector catch-up for incremental sync data",
+				metadata: {
+					pending_upsert_memory_ids: [],
+					pending_delete_memory_ids: [],
+				},
 			});
 
 			const models = fileDb
