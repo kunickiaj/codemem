@@ -11,8 +11,8 @@ import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import {
 	backfillVectors,
+	bestEffortMaintainVectorsForSyncFallback,
 	getSemanticIndexDiagnostics,
-	maintainVectorsForReplicationApply,
 	resolveSemanticSearchModel,
 	semanticSearch,
 	storeVectors,
@@ -108,7 +108,7 @@ describe("vectors", () => {
 		});
 	});
 
-	it("runs best-effort replication vector maintenance without throwing on embedding failures", async () => {
+	it("runs best-effort sync fallback vector maintenance without throwing on embedding failures", async () => {
 		const sessionId = insertTestSession(db);
 		const now = new Date().toISOString();
 		const info = db
@@ -122,7 +122,7 @@ describe("vectors", () => {
 
 		vi.mocked(embeddings.embedTexts).mockRejectedValue(new Error("embedding unavailable"));
 
-		const result = await maintainVectorsForReplicationApply(db, {
+		const result = await bestEffortMaintainVectorsForSyncFallback(db, {
 			upsertMemoryIds: [memoryId],
 			deleteMemoryIds: [],
 		});
@@ -325,7 +325,7 @@ describe("vectors", () => {
 			)
 		`);
 
-		const result = await maintainVectorsForReplicationApply(db, {
+		const result = await bestEffortMaintainVectorsForSyncFallback(db, {
 			upsertMemoryIds: [],
 			deleteMemoryIds: [321],
 		});
@@ -362,7 +362,7 @@ describe("vectors", () => {
 		`);
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
 
-		const result = await maintainVectorsForReplicationApply(db, {
+		const result = await bestEffortMaintainVectorsForSyncFallback(db, {
 			upsertMemoryIds: [memoryId],
 			deleteMemoryIds: [],
 		});

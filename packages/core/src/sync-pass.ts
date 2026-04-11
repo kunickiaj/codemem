@@ -28,6 +28,7 @@ import {
 } from "./sync-replication.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForIncrementalSync } from "./vector-migration.js";
+import { bestEffortMaintainVectorsForSyncFallback } from "./vectors.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -615,7 +616,17 @@ export async function syncOnce(
 
 			// -- 3. Apply incoming ops to local entities --
 			const applied = applyReplicationOps(db, inboundOps, deviceId);
-			queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
+			try {
+				queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
+			} catch (queueError) {
+				const fallback = await bestEffortMaintainVectorsForSyncFallback(db, applied.vectorWork);
+				if (fallback.errors.length > 0) {
+					const details = fallback.errors.join("; ");
+					throw new Error(
+						`vector catch-up queue failed: ${queueError instanceof Error ? queueError.message : String(queueError)}; fallback failed: ${details}`,
+					);
+				}
+			}
 
 			const inboundCursorCandidate = inboundCursor || asOptionalCursor(getPayload.next_cursor);
 			if (cursorAdvances(lastApplied, inboundCursorCandidate)) {

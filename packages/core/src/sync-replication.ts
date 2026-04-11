@@ -103,6 +103,9 @@ interface MemoryPayload {
 	user_prompt_id: number | null;
 	prompt_number: number | null;
 	deleted_at: string | null;
+	// Wire payloads use this as "sender explicitly included deleted_at" so we can
+	// distinguish a tombstone clear (`deleted_at: null`) from an omitted field.
+	// Row-derived payloads set it from current storage truth instead.
 	has_deleted_at: boolean;
 	rev: number;
 	import_key: string | null;

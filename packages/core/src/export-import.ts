@@ -12,7 +12,6 @@ import {
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
 import * as schema from "./schema.js";
-import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 
 type JsonObject = Record<string, unknown>;
 type MemoryInsert = typeof schema.memoryItems.$inferInsert;
@@ -206,9 +205,6 @@ function fetchBySessionIds(
 export function exportMemories(opts: ExportOptions = {}): ExportPayload {
 	const db = connect(resolveDbPath(opts.dbPath));
 	try {
-		// Auto-bootstrap fresh databases so `codemem export-memories` does not
-		// crash on a brand-new install (empty export is a valid outcome).
-		ensureSchemaBootstrapped(db);
 		assertSchemaReady(db);
 		const resolvedProject = resolveExportProject(opts);
 		const filters: JsonObject = {};
@@ -443,9 +439,6 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 
 	const db = connect(resolveDbPath(opts.dbPath));
 	try {
-		// Auto-bootstrap fresh databases so restoring a backup into a fresh
-		// install works without an explicit `codemem db init` first.
-		ensureSchemaBootstrapped(db);
 		assertSchemaReady(db);
 		const d = drizzle(db, { schema });
 		return db.transaction(() => {

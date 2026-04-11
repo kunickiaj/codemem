@@ -23,7 +23,7 @@ import { loadObserverConfig, ObserverClient } from "./observer-client.js";
 import { buildMemoryPack } from "./pack.js";
 import { projectClause } from "./project.js";
 import * as schema from "./schema.js";
-import { bootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
+import { bootstrapSchema } from "./schema-bootstrap.js";
 import { MemoryStore } from "./store.js";
 import { canonicalMemoryKind, getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
 
@@ -282,13 +282,6 @@ function withDb<T>(dbPath: string | undefined, fn: (db: Database, resolvedPath: 
 	const resolvedPath = resolveDbPath(dbPath);
 	const db = connect(resolvedPath);
 	try {
-		// Auto-bootstrap fresh databases before asserting readiness. This
-		// helper backs several exported maintenance functions that are hit
-		// from CLI commands (`db vacuum`, `db raw-events-status`,
-		// `db raw-events-retry`, `db raw-events-gate`, `memory roles`,
-		// `memory relink-report`), any of which a user can run before
-		// `codemem db init`.
-		ensureSchemaBootstrapped(db);
 		assertSchemaReady(db);
 		return fn(db, resolvedPath);
 	} finally {
