@@ -509,6 +509,12 @@ export {
 export type {
 	BackfillVectorsOptions,
 	BackfillVectorsResult,
+	SemanticIndexDiagnostics,
 	SemanticSearchResult,
 } from "./vectors.js";
-export { backfillVectors, semanticSearch, storeVectors } from "./vectors.js";
+export {
+	backfillVectors,
+	getSemanticIndexDiagnostics,
+	semanticSearch,
+	storeVectors,
+} from "./vectors.js";

@@ -2543,6 +2543,78 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("includes semantic-index diagnostics in sync status output", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/sync/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				startMaintenanceJob(store.db, {
+					kind: "vector_model_migration",
+					title: "Re-indexing memories",
+					status: "pending",
+					message: "Queued vector catch-up for synced bootstrap data",
+					progressTotal: 4,
+					metadata: {
+						trigger: "sync_bootstrap",
+						processed_embeddable: 1,
+						embeddable_total: 4,
+					},
+				});
+
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.semantic_index).toMatchObject({
+					state: "pending",
+					pending_memory_count: 3,
+					maintenance_job: { status: "pending" },
+				});
+				const status = body.status as Record<string, unknown>;
+				expect(status.semantic_index).toMatchObject({
+					state: "pending",
+					pending_memory_count: 3,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("redacts semantic-index job details when diagnostics are disabled", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/sync/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				startMaintenanceJob(store.db, {
+					kind: "vector_model_migration",
+					title: "Re-indexing memories",
+					status: "pending",
+					message: "Queued vector catch-up for synced bootstrap data",
+					progressTotal: 4,
+					metadata: {
+						processed_embeddable: 1,
+						embeddable_total: 4,
+					},
+				});
+
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.semantic_index).toMatchObject({
+					state: "pending",
+					summary: "Semantic-index catch-up is pending",
+					maintenance_job: {
+						status: "pending",
+						message: null,
+						error: null,
+					},
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("includes retention telemetry in sync status output", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
