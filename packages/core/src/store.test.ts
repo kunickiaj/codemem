@@ -1087,7 +1087,7 @@ describe("MemoryStore constructor auto-bootstrap", () => {
 
 	it("bootstraps schema when constructed against an empty existing file", () => {
 		const dbPath = join(tmpDir, "empty.sqlite");
-		// Touch an empty file so connect() opens it as an uninitialized DB.
+		// Touch an empty file so connect() has to bootstrap an existing empty DB.
 		writeFileSync(dbPath, "");
 		const store = new MemoryStore(dbPath);
 		try {

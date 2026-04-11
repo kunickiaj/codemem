@@ -5,7 +5,7 @@
  * path migration) and the schema-version introspection helpers
  * (`getSchemaVersion`, `assertSchemaReady`, `ensureAdditiveSchemaCompatibility`,
  * `ensurePlannerStats`). Schema bootstrap DDL lives in `schema-bootstrap.ts`;
- * `MemoryStore` auto-invokes it on first construction against a fresh DB.
+ * `connect()` now enforces the fresh-database bootstrap invariant.
  */
 
 import {
@@ -26,6 +26,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { expandUserPath } from "./observer-config.js";
+import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 
 // Re-export the Database type for consumers
 export type { DatabaseType as Database };
@@ -190,10 +191,8 @@ export function migrateLegacyDbPath(dbPath: string): void {
  * Open a better-sqlite3 connection with the standard codemem pragmas.
  *
  * Migrates legacy DB paths if needed, creates parent directories,
- * sets WAL mode, busy timeout, foreign keys. Does not create or migrate the
- * schema — callers are responsible for bootstrapping (either via
- * `MemoryStore`, which auto-bootstraps fresh files, or via `initDatabase` /
- * `bootstrapSchema` for offline tooling).
+ * sets WAL mode, busy timeout, foreign keys, and bootstraps the schema when
+ * opening a brand-new or otherwise uninitialized writable database.
  */
 export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 	migrateLegacyDbPath(dbPath);
@@ -212,6 +211,7 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 	}
 
 	db.pragma("synchronous = NORMAL");
+	ensureSchemaBootstrapped(db);
 
 	return db;
 }

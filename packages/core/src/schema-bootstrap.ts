@@ -122,9 +122,9 @@ export function bootstrapSchema(db: Database): void {
 
 /**
  * Run `bootstrapSchema` on a database only if it's still at the unbootstrapped
- * state (`user_version === 0`). Safe to call from any entry point that opens
- * a raw `connect()` handle and then issues queries expecting the schema to be
- * in place. Idempotent: already-initialized databases are left untouched.
+ * state (`user_version === 0`). `connect()` now calls this by default for
+ * writable handles, but explicit callers may still use it directly. Idempotent:
+ * already-initialized databases are left untouched.
  */
 export function ensureSchemaBootstrapped(db: Database): void {
 	if (getSchemaVersion(db) === 0) {
