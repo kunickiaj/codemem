@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import BetterSqlite3 from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "./db.js";
 import {
@@ -74,6 +75,43 @@ describe("connect", () => {
 
 	it("expands ~/ paths like Python", () => {
 		expect(resolveDbPath("~/codemem-test.sqlite")).toBe(join(homedir(), "codemem-test.sqlite"));
+	});
+
+	it("bootstraps the schema on a fresh database path", () => {
+		db = connect(join(tmpDir, "fresh.sqlite"));
+
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		expect(tableExists(db, "memory_items")).toBe(true);
+		expect(tableExists(db, "sessions")).toBe(true);
+		expect(() => assertSchemaReady(db)).not.toThrow();
+	});
+
+	it("bootstraps the schema on an empty existing database file", () => {
+		const dbPath = join(tmpDir, "empty.sqlite");
+		writeFileSync(dbPath, "");
+
+		db = connect(dbPath);
+
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		expect(tableExists(db, "memory_items")).toBe(true);
+		expect(() => assertSchemaReady(db)).not.toThrow();
+	});
+
+	it("reopens an initialized database without clobbering existing data", () => {
+		const dbPath = join(tmpDir, "reopen.sqlite");
+		db = connect(dbPath);
+		db.exec("CREATE TABLE connect_reopen_guard (id INTEGER PRIMARY KEY, label TEXT NOT NULL)");
+		db.prepare("INSERT INTO connect_reopen_guard(label) VALUES (?)").run("still here");
+		db.close();
+
+		db = connect(dbPath);
+
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+		expect(
+			db.prepare("SELECT label FROM connect_reopen_guard WHERE id = 1").get() as
+				| { label: string }
+				| undefined,
+		).toEqual({ label: "still here" });
 	});
 });
 
@@ -159,7 +197,7 @@ describe("loadSqliteVec", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
-		db = connect(join(tmpDir, "test.sqlite"));
+		db = new BetterSqlite3(join(tmpDir, "test.sqlite"));
 	});
 
 	afterEach(() => {
@@ -204,8 +242,8 @@ describe("getSchemaVersion", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("returns 0 for a fresh database", () => {
-		expect(getSchemaVersion(db)).toBe(0);
+	it("returns the bootstrapped version for a fresh database", () => {
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 	});
 
 	it("returns the version after it is set", () => {
@@ -229,25 +267,15 @@ describe("assertSchemaReady", () => {
 	});
 
 	it("throws for uninitialized schema (version 0)", () => {
-		expect(() => assertSchemaReady(db)).toThrow(/not initialized/);
+		const uninitialized = new BetterSqlite3(join(tmpDir, "uninitialized.sqlite"));
+		try {
+			expect(() => assertSchemaReady(uninitialized)).toThrow(/not initialized/);
+		} finally {
+			uninitialized.close();
+		}
 	});
 
 	it("passes for the current schema version with required tables", () => {
-		db.pragma(`user_version = ${SCHEMA_VERSION}`);
-		// Create all required tables + FTS5 index
-		db.exec(
-			"CREATE TABLE memory_items (id INTEGER PRIMARY KEY, title TEXT, body_text TEXT, tags_text TEXT)",
-		);
-		db.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY)");
-		db.exec("CREATE TABLE artifacts (id INTEGER PRIMARY KEY)");
-		db.exec("CREATE TABLE raw_events (id INTEGER PRIMARY KEY)");
-		db.exec(
-			"CREATE TABLE raw_event_sessions (source TEXT, stream_id TEXT, PRIMARY KEY (source, stream_id))",
-		);
-		db.exec("CREATE TABLE usage_events (id INTEGER PRIMARY KEY)");
-		db.exec(
-			"CREATE VIRTUAL TABLE memory_fts USING fts5(title, body_text, tags_text, content='memory_items', content_rowid='id')",
-		);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
@@ -258,26 +286,17 @@ describe("assertSchemaReady", () => {
 
 	it("warns but continues for a newer schema version", () => {
 		db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
-		// Create all required tables + FTS5 index
-		db.exec(
-			"CREATE TABLE memory_items (id INTEGER PRIMARY KEY, title TEXT, body_text TEXT, tags_text TEXT)",
-		);
-		db.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY)");
-		db.exec("CREATE TABLE artifacts (id INTEGER PRIMARY KEY)");
-		db.exec("CREATE TABLE raw_events (id INTEGER PRIMARY KEY)");
-		db.exec(
-			"CREATE TABLE raw_event_sessions (source TEXT, stream_id TEXT, PRIMARY KEY (source, stream_id))",
-		);
-		db.exec("CREATE TABLE usage_events (id INTEGER PRIMARY KEY)");
-		db.exec(
-			"CREATE VIRTUAL TABLE memory_fts USING fts5(title, body_text, tags_text, content='memory_items', content_rowid='id')",
-		);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
 	it("throws when required tables are missing", () => {
-		db.pragma(`user_version = ${SCHEMA_VERSION}`);
-		expect(() => assertSchemaReady(db)).toThrow(/Required tables missing/);
+		const missingTables = new BetterSqlite3(join(tmpDir, "missing-tables.sqlite"));
+		try {
+			missingTables.pragma(`user_version = ${SCHEMA_VERSION}`);
+			expect(() => assertSchemaReady(missingTables)).toThrow(/Required tables missing/);
+		} finally {
+			missingTables.close();
+		}
 	});
 });
 
@@ -311,7 +330,7 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
-		db = connect(join(tmpDir, "test.sqlite"));
+		db = new BetterSqlite3(join(tmpDir, "test.sqlite"));
 	});
 
 	afterEach(() => {
@@ -425,7 +444,7 @@ describe("ensurePlannerStats", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
-		db = connect(join(tmpDir, "test.sqlite"));
+		db = new BetterSqlite3(join(tmpDir, "test.sqlite"));
 	});
 
 	afterEach(() => {
