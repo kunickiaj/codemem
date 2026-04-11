@@ -611,6 +611,64 @@ describe("ingest() integration", () => {
 		);
 	});
 
+	it("persists session class on typed observer memories", async () => {
+		const typedObserver = {
+			observe: async () => ({
+				raw: `<observation>
+					<type>decision</type>
+					<title>Keep session class on typed memories</title>
+					<narrative>Typed memories should carry the same session class as the source session.</narrative>
+					<files_read>
+						<file>src/session-policy.ts</file>
+					</files_read>
+				</observation>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const payload = buildPayload({
+			events: [
+				{
+					type: "user_prompt",
+					prompt_text: "investigate session classification persistence",
+					prompt_number: 1,
+					timestamp: new Date().toISOString(),
+				},
+				{
+					type: "assistant_message",
+					assistant_text: "Tracked the policy gap.",
+					timestamp: new Date().toISOString(),
+				},
+			],
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-typed-session-class",
+				promptCount: 2,
+				toolCount: 3,
+				durationMs: 240_000,
+				filesRead: ["/tmp/repo/src/session-policy.ts"],
+			},
+		});
+
+		await ingest(payload, store, { observer: typedObserver } as unknown as IngestOptions);
+
+		const memory = store.db
+			.prepare(
+				"SELECT kind, metadata_json FROM memory_items WHERE json_extract(metadata_json, '$.source') = 'observer' ORDER BY id DESC LIMIT 1",
+			)
+			.get() as { kind: string; metadata_json: string };
+		expect(memory.kind).toBe("decision");
+		expect(JSON.parse(memory.metadata_json).session_class).toBe("working");
+	});
+
 	it("keeps summary-only output for longer sessions", async () => {
 		const summaryOnlyObserver = {
 			observe: async () => ({
