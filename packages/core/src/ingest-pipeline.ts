@@ -567,6 +567,7 @@ export async function ingest(
 					files_read: obs.filesRead,
 					files_modified: obs.filesModified,
 					prompt_number: promptNumber,
+					session_class: sessionClass,
 					source: "observer",
 					observer_tier: selectedTier,
 					observer_tier_reasons: selectedTierReasons,
