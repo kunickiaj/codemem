@@ -351,6 +351,67 @@ describe("buildMemoryPack", () => {
 		).toBe(true);
 	});
 
+	it("adds support_count and duplicate_ids to the kept item for exact duplicates", () => {
+		// Arrange
+		const firstId = store.remember(
+			sessionId,
+			"decision",
+			"Pack dedupe metadata",
+			"Exact duplicate body for pack metadata",
+			0.9,
+		);
+		const now = new Date().toISOString();
+		const duplicateInsert = store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key
+				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+			)
+			.run(
+				sessionId,
+				"Pack dedupe metadata",
+				"Exact duplicate body for pack metadata",
+				0.7,
+				now,
+				now,
+			);
+		const secondId = Number(duplicateInsert.lastInsertRowid);
+
+		// Act
+		const pack = buildMemoryPack(store, "pack dedupe metadata", 10);
+
+		// Assert
+		expect(pack.items).toHaveLength(1);
+		expect(pack.item_ids).toHaveLength(1);
+		expect(pack.items[0]).toMatchObject({
+			support_count: 2,
+			duplicate_ids: expect.any(Array),
+		});
+		expect(
+			[pack.items[0]?.id, ...(pack.items[0]?.duplicate_ids ?? [])].sort((a, b) => a - b),
+		).toEqual([firstId, secondId].sort((a, b) => a - b));
+	});
+
+	it("omits duplicate metadata when no exact duplicate was collapsed", () => {
+		// Arrange
+		store.remember(
+			sessionId,
+			"decision",
+			"Unique pack metadata",
+			"Only one matching item should be selected",
+			0.9,
+		);
+
+		// Act
+		const pack = buildMemoryPack(store, "unique pack metadata", 10);
+
+		// Assert
+		expect(pack.items).toHaveLength(1);
+		expect(pack.items[0]?.support_count).toBeUndefined();
+		expect(pack.items[0]?.duplicate_ids).toBeUndefined();
+	});
+
 	it("does not record usage events for trace-only calls", () => {
 		store.remember(sessionId, "feature", "Trace-only item", "Useful trace context", 0.8);
 

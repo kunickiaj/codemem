@@ -1462,6 +1462,11 @@ function buildPackArtifacts(
 		if (orderedAllSelectedIds.has(item.id)) {
 			allItemIds.push(item.id);
 			orderedAllSelectedIds.delete(item.id);
+			for (const compressedId of clusterState.compressedByRepresentative.get(item.id) ?? []) {
+				if (!orderedAllSelectedIds.has(compressedId)) continue;
+				allItemIds.push(compressedId);
+				orderedAllSelectedIds.delete(compressedId);
+			}
 		}
 		if (!selectedIds.has(item.id)) continue;
 		const selected = selectedById.get(item.id);
