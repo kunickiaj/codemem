@@ -10,7 +10,7 @@
  */
 
 import type { Database } from "./db.js";
-import { tableExists } from "./db.js";
+import { isEmbeddingDisabled, tableExists } from "./db.js";
 import {
 	chunkText,
 	embedTexts,
@@ -150,6 +150,142 @@ export interface ReplicationVectorMaintenanceResult {
 	deleted: number;
 	inserted: number;
 	errors: string[];
+}
+
+export type SemanticIndexState = "healthy" | "pending" | "failed" | "degraded";
+
+export interface SemanticIndexDiagnostics {
+	state: SemanticIndexState;
+	summary: string;
+	mode: "semantic" | "keyword_only";
+	current_model: string;
+	semantic_search_model: string | null;
+	embeddable_memory_count: number;
+	indexed_memory_count: number;
+	pending_memory_count: number;
+	maintenance_job: {
+		status: "pending" | "running" | "failed" | "completed" | "cancelled";
+		message: string | null;
+		error: string | null;
+		progress_current: number;
+		progress_total: number | null;
+	} | null;
+}
+
+function countEmbeddableActiveMemories(db: Database): number {
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) AS c
+			 FROM memory_items
+			 WHERE active = 1
+			   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''`,
+		)
+		.get() as { c?: number } | undefined;
+	return Number(row?.c ?? 0);
+}
+
+function countIndexedActiveMemories(db: Database, model: string): number {
+	if (!tableExists(db, "memory_vectors")) return 0;
+	const rows = db
+		.prepare(
+			`SELECT id, title, body_text
+			 FROM memory_items
+			 WHERE active = 1
+			   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''
+			 ORDER BY id ASC`,
+		)
+		.all() as MemoryTextRow[];
+	return rows.filter((row) => memoryHasCompleteVectorCoverage(db, row, model)).length;
+}
+
+function resolvePendingMemoryCount(
+	fallbackPendingCount: number,
+	job: ReturnType<typeof getMaintenanceJob>,
+): number {
+	if (!(job?.status === "pending" || job?.status === "running" || job?.status === "failed")) {
+		return fallbackPendingCount;
+	}
+	const metadata = job?.metadata ?? {};
+	const total = Number(metadata.embeddable_total ?? job?.progress.total ?? Number.NaN);
+	const processed = Number(metadata.processed_embeddable ?? job?.progress.current ?? Number.NaN);
+	if (Number.isFinite(total) && Number.isFinite(processed)) {
+		return Math.max(total - processed, 0);
+	}
+	return fallbackPendingCount;
+}
+
+function summarizeSemanticIndexState(
+	state: SemanticIndexState,
+	counts: { embeddable: number; indexed: number; pending: number },
+	job: ReturnType<typeof getMaintenanceJob>,
+): string {
+	if (state === "failed") {
+		return job?.error ?? job?.message ?? "Semantic-index catch-up failed";
+	}
+	if (state === "degraded") {
+		if (isEmbeddingDisabled()) {
+			return "Embeddings are disabled; sync data is available in keyword-only mode";
+		}
+		return "Semantic-index coverage is unavailable; sync data is effectively running in keyword-only mode";
+	}
+	if (state === "pending") {
+		return job?.message ?? `${counts.pending} memory(s) still need semantic indexing`;
+	}
+	if (counts.embeddable === 0) {
+		return "No embeddable memories need semantic indexing";
+	}
+	return `Semantic index is current for ${counts.indexed} embeddable mem${counts.indexed === 1 ? "ory" : "ories"}`;
+}
+
+export function getSemanticIndexDiagnostics(db: Database): SemanticIndexDiagnostics {
+	const currentModel = resolveEmbeddingModel();
+	const semanticSearchModel = resolveSemanticSearchModel(db, currentModel);
+	const embeddingsDisabled = isEmbeddingDisabled();
+	const embeddableMemoryCount = countEmbeddableActiveMemories(db);
+	const indexedMemoryCount = countIndexedActiveMemories(db, currentModel);
+	const fallbackPendingCount = Math.max(embeddableMemoryCount - indexedMemoryCount, 0);
+	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const pendingMemoryCount = resolvePendingMemoryCount(fallbackPendingCount, job);
+	const degraded = embeddableMemoryCount > 0 && (embeddingsDisabled || semanticSearchModel == null);
+	const activeCatchUp = job?.status === "pending" || job?.status === "running";
+	const state: SemanticIndexState =
+		job?.status === "failed"
+			? "failed"
+			: activeCatchUp
+				? "pending"
+				: degraded
+					? "degraded"
+					: pendingMemoryCount > 0
+						? "pending"
+						: "healthy";
+
+	return {
+		state,
+		summary: summarizeSemanticIndexState(
+			state,
+			{
+				embeddable: embeddableMemoryCount,
+				indexed: indexedMemoryCount,
+				pending: pendingMemoryCount,
+			},
+			job,
+		),
+		mode: embeddingsDisabled || !semanticSearchModel ? "keyword_only" : "semantic",
+		current_model: currentModel,
+		semantic_search_model: semanticSearchModel,
+		embeddable_memory_count: embeddableMemoryCount,
+		indexed_memory_count: indexedMemoryCount,
+		pending_memory_count: pendingMemoryCount,
+		maintenance_job: job
+			? {
+					status: job.status,
+					message: job.message,
+					error: job.error,
+					progress_current: job.progress.current,
+					progress_total: job.progress.total,
+				}
+			: null,
+	};
 }
 
 function uniqueMemoryIds(memoryIds: number[]): number[] {

@@ -16,6 +16,7 @@ import {
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
+	getSemanticIndexDiagnostics,
 	hasUnsyncedSharedMemoryChanges,
 	loadPublicKey,
 	MemoryStore,
@@ -777,6 +778,7 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 			})
 			.from(schema.syncPeers)
 			.all();
+		const semanticIndex = getSemanticIndexDiagnostics(store.db);
 
 		if (opts.json) {
 			console.log(
@@ -786,6 +788,7 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 						host: config.sync_host ?? "0.0.0.0",
 						port: config.sync_port ?? 7337,
 						interval_s: config.sync_interval_s ?? 120,
+						semantic_index: semanticIndex,
 						device_id: deviceRow?.device_id ?? null,
 						fingerprint: deviceRow?.fingerprint ?? null,
 						coordinator_url: config.sync_coordinator_url ?? null,
@@ -828,6 +831,15 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 				);
 			}
 		}
+		p.log.info(
+			[
+				"Semantic index:",
+				`  State: ${semanticIndex.state}`,
+				`  Summary: ${semanticIndex.summary}`,
+				`  Coverage: ${semanticIndex.indexed_memory_count}/${semanticIndex.embeddable_memory_count}`,
+				`  Mode: ${semanticIndex.mode === "semantic" ? `semantic (${semanticIndex.semantic_search_model ?? semanticIndex.current_model})` : "keyword-only"}`,
+			].join("\n"),
+		);
 		p.outro(`${peers.length} peer(s)`);
 	} finally {
 		store.close();

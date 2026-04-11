@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, initTestSchema, MemoryStore } from "@codemem/core";
+import { connect, initTestSchema, MemoryStore, startMaintenanceJob } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import { syncCommand } from "./sync.js";
 import {
@@ -257,6 +257,45 @@ describe("formatSyncAttempt", () => {
 			store.close();
 			rmSync(tmpDbDir, { recursive: true, force: true });
 			process.exitCode = prevExitCode;
+		}
+	});
+
+	it("reports semantic-index diagnostics in sync status json output", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-status-diagnostics-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const configPath = join(tmpDbDir, "config.json");
+		writeFileSync(configPath, JSON.stringify({ sync_enabled: true }, null, 2));
+		const rawDb = connect(dbPath);
+		initTestSchema(rawDb);
+		rawDb.close();
+		const store = new MemoryStore(dbPath);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			startMaintenanceJob(store.db, {
+				kind: "vector_model_migration",
+				title: "Re-indexing memories",
+				status: "pending",
+				message: "Queued vector catch-up for synced bootstrap data",
+				progressTotal: 4,
+				metadata: { processed_embeddable: 1, embeddable_total: 4 },
+			});
+
+			await syncCommand.parseAsync(
+				["status", "--db-path", dbPath, "--config", configPath, "--json"],
+				{ from: "user" },
+			);
+
+			expect(logSpy).toHaveBeenCalledTimes(1);
+			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as Record<string, unknown>;
+			expect(payload.semantic_index).toMatchObject({
+				state: "pending",
+				pending_memory_count: 3,
+				maintenance_job: { status: "pending" },
+			});
+		} finally {
+			logSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
 		}
 	});
 });

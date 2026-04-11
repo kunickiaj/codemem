@@ -530,11 +530,30 @@ export interface ApiSyncRetentionStatus {
 	last_error_at?: string | null;
 }
 
+export interface ApiSemanticIndexDiagnostics {
+	state: "healthy" | "pending" | "failed" | "degraded";
+	summary: string;
+	mode: "semantic" | "keyword_only";
+	current_model: string;
+	semantic_search_model: string | null;
+	embeddable_memory_count: number;
+	indexed_memory_count: number;
+	pending_memory_count: number;
+	maintenance_job: {
+		status: "pending" | "running" | "failed" | "completed" | "cancelled";
+		message: string | null;
+		error: string | null;
+		progress_current: number;
+		progress_total: number | null;
+	} | null;
+}
+
 /** Status block nested in sync status response. */
 export interface ApiSyncStatusBlock {
 	enabled: boolean;
 	interval_s: number;
 	retention: ApiSyncRetentionStatus;
+	semantic_index: ApiSemanticIndexDiagnostics;
 	peer_count: number;
 	last_sync_at: string | null;
 	daemon_state: ApiSyncDaemonState;
@@ -557,6 +576,7 @@ export interface ApiSyncStatusResponse {
 	enabled: boolean;
 	interval_s: number;
 	retention: ApiSyncRetentionStatus;
+	semantic_index: ApiSemanticIndexDiagnostics;
 	peer_count: number;
 	last_sync_at: string | null;
 	daemon_state: ApiSyncDaemonState;

@@ -11,6 +11,7 @@ import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import {
 	backfillVectors,
+	getSemanticIndexDiagnostics,
 	maintainVectorsForReplicationApply,
 	resolveSemanticSearchModel,
 	semanticSearch,
@@ -129,6 +130,186 @@ describe("vectors", () => {
 		expect(result.inserted).toBe(0);
 		expect(result.errors).toEqual(["backfill vectors failed: embedding unavailable"]);
 		expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 0 });
+	});
+
+	it("reports pending semantic-index catch-up from queued maintenance job state", () => {
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Re-indexing memories",
+			status: "pending",
+			message: "Queued vector catch-up for synced bootstrap data",
+			progressTotal: 3,
+			metadata: {
+				trigger: "sync_bootstrap",
+				processed_embeddable: 1,
+				embeddable_total: 3,
+			},
+		});
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+
+		expect(diagnostics).toMatchObject({
+			state: "pending",
+			mode: "keyword_only",
+			pending_memory_count: 2,
+			maintenance_job: {
+				status: "pending",
+				message: "Queued vector catch-up for synced bootstrap data",
+			},
+		});
+	});
+
+	it("reports degraded keyword-only mode when embeddable memories have no current vectors", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', 'Needs vectors', 'Still keyword only', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		).run(sessionId, now, now);
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+
+		expect(diagnostics).toMatchObject({
+			state: "degraded",
+			mode: "keyword_only",
+			embeddable_memory_count: 1,
+			indexed_memory_count: 0,
+			pending_memory_count: 1,
+		});
+	});
+
+	it("does not mark partially covered memories as healthy", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		const bodyText = "semantic chunk ".repeat(5000);
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', 'Chunky memory', ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, bodyText, now, now);
+		const memoryId = Number(info.lastInsertRowid);
+		const chunks = embeddings.chunkText(`Chunky memory\n${bodyText}`);
+		const firstChunk = chunks[0];
+		if (!firstChunk || chunks.length < 2) {
+			throw new Error("expected multi-chunk memory for partial coverage test");
+		}
+
+		db.exec(`
+			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+			VALUES (
+				vec_f32('${JSON.stringify(Array.from(new Float32Array(384)))}'),
+				${memoryId},
+				0,
+				'${embeddings.hashText(firstChunk)}',
+				'test-model'
+			)
+		`);
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+
+		expect(diagnostics).toMatchObject({
+			state: "pending",
+			embeddable_memory_count: 1,
+			indexed_memory_count: 0,
+			pending_memory_count: 1,
+		});
+	});
+
+	it("reports failed semantic-index catch-up from maintenance job state", () => {
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Re-indexing memories",
+			status: "pending",
+			progressTotal: 2,
+		});
+		db.prepare(
+			"UPDATE maintenance_jobs SET status = 'failed', message = ?, error = ? WHERE kind = ?",
+		).run(
+			"Vector re-indexing is waiting for the embedding client",
+			"Embedding client unavailable",
+			"vector_model_migration",
+		);
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+
+		expect(diagnostics).toMatchObject({
+			state: "failed",
+			summary: "Embedding client unavailable",
+			maintenance_job: {
+				status: "failed",
+				error: "Embedding client unavailable",
+			},
+		});
+	});
+
+	it("falls back to live pending counts after a completed job when vectors go missing", () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', 'Needs vectors', 'Coverage regressed', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		).run(sessionId, now, now);
+		startMaintenanceJob(db, {
+			kind: "vector_model_migration",
+			title: "Re-indexing memories",
+			status: "completed",
+			progressCurrent: 2,
+			progressTotal: 2,
+			metadata: {
+				embeddable_total: 2,
+				processed_embeddable: 2,
+			},
+		});
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+
+		expect(diagnostics).toMatchObject({
+			state: "degraded",
+			pending_memory_count: 1,
+			mode: "keyword_only",
+		});
+	});
+
+	it("forces keyword-only degraded diagnostics when embeddings are disabled", async () => {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'feature', 'Has vectors', 'But runtime embeddings are disabled', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(sessionId, now, now);
+		const memoryId = Number(info.lastInsertRowid);
+		db.exec(`
+			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+			VALUES (
+				vec_f32('${JSON.stringify(Array.from(new Float32Array(384)))}'),
+				${memoryId},
+				0,
+				'${embeddings.hashText("Has vectors\nBut runtime embeddings are disabled")}',
+				'test-model'
+			)
+		`);
+		const previous = process.env.CODEMEM_EMBEDDING_DISABLED;
+		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
+
+		const diagnostics = getSemanticIndexDiagnostics(db);
+		if (previous === undefined) {
+			delete process.env.CODEMEM_EMBEDDING_DISABLED;
+		} else {
+			process.env.CODEMEM_EMBEDDING_DISABLED = previous;
+		}
+
+		expect(diagnostics).toMatchObject({
+			state: "degraded",
+			mode: "keyword_only",
+			summary: "Embeddings are disabled; sync data is available in keyword-only mode",
+		});
 	});
 
 	it("deletes vector rows for replicated tombstones", async () => {

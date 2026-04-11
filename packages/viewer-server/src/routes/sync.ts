@@ -11,6 +11,7 @@ import type {
 	MaintenanceJobSnapshot,
 	MemoryStore,
 	ReplicationOp,
+	SemanticIndexDiagnostics,
 } from "@codemem/core";
 import {
 	applyReplicationOps,
@@ -27,6 +28,7 @@ import {
 	ensureDeviceIdentity,
 	extractReplicationOps,
 	fingerprintPublicKey,
+	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	listCoordinatorJoinRequests,
 	listMaintenanceJobs,
@@ -106,6 +108,32 @@ function summarizeMaintenanceJobs(
 				}
 			: {}),
 	}));
+}
+
+function redactSemanticIndexDiagnostics(
+	diagnostics: SemanticIndexDiagnostics,
+	showDiagnostics: boolean,
+): SemanticIndexDiagnostics {
+	if (showDiagnostics || !diagnostics.maintenance_job) {
+		return diagnostics;
+	}
+	const summary =
+		diagnostics.state === "pending"
+			? "Semantic-index catch-up is pending"
+			: diagnostics.state === "failed"
+				? "Semantic-index catch-up failed"
+				: diagnostics.state === "degraded"
+					? "Semantic index is running in degraded mode"
+					: diagnostics.summary;
+	return {
+		...diagnostics,
+		summary,
+		maintenance_job: {
+			...diagnostics.maintenance_job,
+			message: null,
+			error: null,
+		},
+	};
 }
 
 function syncKeysDir(): string | undefined {
@@ -1226,6 +1254,10 @@ export function syncRoutes(
 				.select({ last_sync_at: max(schema.syncPeers.last_sync_at) })
 				.from(schema.syncPeers)
 				.get();
+			const semanticIndex = redactSemanticIndexDiagnostics(
+				getSemanticIndexDiagnostics(store.db),
+				showDiag,
+			);
 
 			const lastError = daemonState?.last_error as string | null;
 			const lastErrorAt = daemonState?.last_error_at as string | null;
@@ -1280,6 +1312,7 @@ export function syncRoutes(
 					last_error: (retentionState?.last_error as string | null) ?? null,
 					last_error_at: (retentionState?.last_error_at as string | null) ?? null,
 				},
+				semantic_index: semanticIndex,
 				peer_count: Number(peerCountRow?.total ?? 0),
 				last_sync_at: lastSyncRow?.last_sync_at ?? null,
 				daemon_state: daemonStateValue,
