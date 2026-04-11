@@ -17,6 +17,7 @@ import {
 	normalizeWorkspaceKinds,
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
+import { inferMemoryRole } from "./memory-quality.js";
 import { projectMatchesFilter } from "./project.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
 import * as schema from "./schema.js";
@@ -81,6 +82,10 @@ const WIDEN_SHARED_MAX_SHARED_RESULTS = 2;
 const NON_SUMMARY_RECAP_PENALTY = 2.5;
 const NON_SUMMARY_OBSERVER_RECAP_PENALTY = 6.5;
 const NON_TASK_TASKLIKE_PENALTY = 0.35;
+const DURABLE_ROLE_BONUS = 0.12;
+const GENERAL_ROLE_BONUS = 0.05;
+const EPHEMERAL_ROLE_PENALTY = 0.45;
+const EXPLICIT_RECAP_ROLE_BONUS = 0.08;
 const PERSONAL_QUERY_PATTERNS = [
 	/\bwhat did i\b/i,
 	/\bmy notes\b/i,
@@ -352,6 +357,29 @@ function qualityDimensionBoost(item: MemoryResult, query: string): number {
 	return boost;
 }
 
+function roleAdjustmentForSearch(
+	item: MemoryResult,
+	preferSummary: boolean,
+	taskLikeQuery: boolean,
+): number {
+	const inferred = inferMemoryRole({
+		kind: item.kind,
+		title: item.title,
+		body_text: item.body_text,
+		metadata: item.metadata,
+	});
+	if (preferSummary) {
+		if (inferred.role === "recap") return EXPLICIT_RECAP_ROLE_BONUS;
+		if (inferred.role === "ephemeral") return -0.1;
+		return 0.0;
+	}
+	if (inferred.role === "durable") return DURABLE_ROLE_BONUS;
+	if (inferred.role === "general") return GENERAL_ROLE_BONUS;
+	if (taskLikeQuery && inferred.role === "ephemeral") return 0.0;
+	if (inferred.role === "ephemeral") return -EPHEMERAL_ROLE_PENALTY;
+	return 0.0;
+}
+
 function recapPenaltyForSearch(item: MemoryResult, preferSummary: boolean): number {
 	if (preferSummary || !memoryLooksRecapLike(item)) return 0.0;
 	const metadata = item.metadata ?? {};
@@ -549,6 +577,7 @@ export function scoreResult(
 	const recency = recencyScore(item.created_at, referenceNow);
 	const kind = kindBonus(item.kind);
 	const qualityBoost = qualityDimensionBoost(item, query);
+	const roleAdjustment = roleAdjustmentForSearch(item, preferSummary, taskLikeQuery);
 	const workingSetOverlap = workingSetOverlapBoost(item, workingSetPaths);
 	const queryPathOverlap = queryPathOverlapBoost(item, query);
 	const personalBiasValue = personalBias(store, item, filters);
@@ -564,6 +593,7 @@ export function scoreResult(
 				recency +
 				kind +
 				qualityBoost +
+				roleAdjustment +
 				workingSetOverlap +
 				queryPathOverlap +
 				personalBiasValue -
@@ -577,6 +607,7 @@ export function scoreResult(
 		recency,
 		kind_bonus: kind,
 		quality_boost: qualityBoost,
+		role_adjustment: roleAdjustment,
 		working_set_overlap: workingSetOverlap,
 		query_path_overlap: queryPathOverlap,
 		personal_bias: personalBiasValue,

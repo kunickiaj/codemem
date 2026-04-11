@@ -364,6 +364,78 @@ describe("rerankResults", () => {
 		expect(reranked.map((item) => item.id)).toEqual([3, 2, 1]);
 	});
 
+	it("penalizes ephemeral procedural changes below durable investigative changes", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.0,
+				kind: "change",
+				title: "Follow-up task note",
+				body_text: "Need to continue this later with next steps.",
+				metadata: { session_class: "micro_low_value" },
+			}),
+			makeResult({
+				id: 2,
+				score: 3.7,
+				kind: "change",
+				title: "Vector migration root cause",
+				body_text: "Identified and resolved the bootstrap ordering issue.",
+				metadata: { session_class: "durable" },
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, undefined, "vector migration issue");
+		expect(reranked[0]?.id).toBe(2);
+	});
+
+	it("does not penalize ephemeral procedural memories for task-intent queries", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 3.9,
+				kind: "change",
+				title: "Next steps for vector migration",
+				body_text: "Continue with the follow-up checklist and next steps.",
+				metadata: { session_class: "micro_low_value" },
+			}),
+			makeResult({
+				id: 2,
+				score: 3.9,
+				kind: "change",
+				title: "Next steps for vector migration",
+				body_text: "Continue with the follow-up checklist and next steps.",
+				metadata: { session_class: "durable" },
+			}),
+		];
+		const reranked = rerankResults(
+			mockStore,
+			results,
+			10,
+			undefined,
+			"what should we do next about vector migration",
+		);
+		expect(reranked[0]?.id).toBe(1);
+	});
+
+	it("still allows recap to win explicit summary queries over durable details", () => {
+		const results = [
+			makeResult({
+				id: 1,
+				score: 4.0,
+				kind: "session_summary",
+				title: "OAuth recap",
+				metadata: { session_class: "durable" },
+			}),
+			makeResult({
+				id: 2,
+				score: 4.0,
+				kind: "decision",
+				title: "OAuth callback decision",
+			}),
+		];
+		const reranked = rerankResults(mockStore, results, 10, undefined, "summary of oauth");
+		expect(reranked[0]?.id).toBe(1);
+	});
+
 	it("applies session-class recap multiplier to observer-summary rows", () => {
 		const results = [
 			makeResult({

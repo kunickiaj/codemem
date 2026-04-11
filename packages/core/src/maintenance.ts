@@ -18,6 +18,7 @@ import {
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
 import { buildMemoryDedupKey } from "./memory-dedup.js";
+import { inferMemoryRole } from "./memory-quality.js";
 import { loadObserverConfig, ObserverClient } from "./observer-client.js";
 import { buildMemoryPack } from "./pack.js";
 import { projectClause } from "./project.js";
@@ -306,10 +307,6 @@ function classifyProjectQuality(project: unknown): "normal" | "empty" | "garbage
 
 function safeParseMetadata(raw: string | null): Record<string, unknown> {
 	return getSummaryMetadata(raw);
-}
-
-function hasAnyMarker(text: string, markers: string[]): boolean {
-	return markers.some((marker) => text.includes(marker));
 }
 
 function hasOutOfGroupBridgeRows(
@@ -841,7 +838,7 @@ function applyRawEventRelinkPlanWithDb(
 	};
 }
 
-function inferMemoryRole(row: {
+function inferMemoryRoleForReport(row: {
 	kind: string;
 	title: string;
 	body_text: string;
@@ -850,80 +847,14 @@ function inferMemoryRole(row: {
 	session_minutes: number | null;
 	has_opencode_mapping: number;
 }): InferredMemoryRole {
-	const metadata = safeParseMetadata(row.metadata_json);
-	const isSummary = isSummaryLikeMemory({ kind: row.kind, metadata });
-	if (isSummary) {
-		return {
-			role: "recap",
-			reason: row.kind === "session_summary" ? "session_summary_kind" : "legacy_summary_metadata",
-		};
-	}
-
-	const text = `${row.title} ${row.body_text}`.toLowerCase();
-	const projectQuality = classifyProjectQuality(row.project);
-	const microSession = (row.session_minutes ?? 0) < 1;
-	const hasTaskMarkers = hasAnyMarker(text, [
-		"task:",
-		"todo",
-		"need to",
-		"next step",
-		"follow up",
-		"continue ",
-	]);
-	const hasRecapMarkers = hasAnyMarker(text, [
-		"## request",
-		"## completed",
-		"## learned",
-		"user asked",
-		"the session",
-		"the goal was",
-	]);
-	const hasInvestigativeMarkers = hasAnyMarker(text, [
-		"identified",
-		"discovered",
-		"confirm",
-		"confirmed",
-		"verified",
-		"investigate",
-		"investigated",
-		"determine whether",
-		"clarified",
-		"resolved",
-	]);
-
-	if (["decision", "bugfix", "discovery", "exploration"].includes(row.kind)) {
-		if (projectQuality !== "normal")
-			return { role: "general", reason: "durable_kind_with_non_normal_project" };
-		if (hasTaskMarkers && !hasInvestigativeMarkers) {
-			return { role: "ephemeral", reason: "durable_kind_task_markers_without_resolution" };
-		}
-		return { role: "durable", reason: "durable_kind" };
-	}
-
-	if (["feature", "refactor"].includes(row.kind)) {
-		if (hasRecapMarkers) return { role: "recap", reason: "implementation_kind_with_recap_markers" };
-		if (microSession && hasTaskMarkers) {
-			return { role: "ephemeral", reason: "micro_session_implementation_task" };
-		}
-		return { role: "durable", reason: "implementation_kind" };
-	}
-
-	if (row.kind === "change") {
-		if (hasRecapMarkers) {
-			return { role: "recap", reason: "change_with_recap_markers" };
-		}
-		if (microSession) return { role: "ephemeral", reason: "micro_session_change" };
-		if (projectQuality !== "normal")
-			return { role: "general", reason: "change_with_non_normal_project" };
-		if (hasInvestigativeMarkers && !hasTaskMarkers) {
-			return { role: "durable", reason: "change_with_investigative_markers" };
-		}
-		return { role: "ephemeral", reason: "default_change_ephemeral" };
-	}
-
-	return projectQuality !== "normal"
-		? { role: "general", reason: "fallback_non_normal_project" }
-		: { role: "ephemeral", reason: "fallback_ephemeral" };
+	return inferMemoryRole({
+		kind: row.kind,
+		title: row.title,
+		body_text: row.body_text,
+		metadata: safeParseMetadata(row.metadata_json),
+		project: row.project,
+		session_minutes: row.session_minutes,
+	});
 }
 
 export function getMemoryRoleReport(
@@ -1019,7 +950,7 @@ export function getMemoryRoleReport(
 				else unmappedSummaryCount += 1;
 			}
 
-			const inferred = inferMemoryRole(row);
+			const inferred = inferMemoryRoleForReport(row);
 			roleCounts[inferred.role] += 1;
 			if (!roleExamples[inferred.role]) {
 				roleExamples[inferred.role] = [];
@@ -1099,7 +1030,7 @@ export function getMemoryRoleReport(
 					const probeItems = pack.items.map((item) => {
 						const source = rows.find((row) => row.id === item.id);
 						const inferred = source
-							? inferMemoryRole(source)
+							? inferMemoryRoleForReport(source)
 							: canonicalMemoryKind(item.kind, item.metadata) === "session_summary"
 								? { role: "recap" as const, reason: "session_summary_kind" }
 								: { role: "ephemeral" as const, reason: "missing_source_row" };
