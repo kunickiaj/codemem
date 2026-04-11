@@ -337,7 +337,12 @@ export function pruneStaleCurrentModelVectors(
 	return deleted;
 }
 
-export async function maintainVectorsForReplicationApply(
+/**
+ * Fallback-only sync maintenance path used when durable incremental queueing
+ * fails after inbound replication has already been applied. New sync code
+ * should prefer queueVectorBackfillForIncrementalSync so work survives restart.
+ */
+export async function bestEffortMaintainVectorsForSyncFallback(
 	db: Database,
 	work: ReplicationVectorWork,
 ): Promise<ReplicationVectorMaintenanceResult> {

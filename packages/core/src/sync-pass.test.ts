@@ -16,7 +16,9 @@ import {
 } from "./sync-pass.js";
 import * as syncReplication from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
+import * as vectorMigration from "./vector-migration.js";
 import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
+import * as vectors from "./vectors.js";
 
 // ---------------------------------------------------------------------------
 // Schema helper — adds sync tables not in base test schema
@@ -230,6 +232,85 @@ describe("syncOnce", () => {
 		});
 		expect(syncReplication.getReplicationCursor(db, "peer-1")[0]).toBe(
 			"2026-01-01T00:00:00Z|remote-op-1",
+		);
+	});
+
+	it("falls back to immediate vector maintenance when durable queueing throws", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "abc123", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(vectorMigration, "queueVectorBackfillForIncrementalSync").mockImplementation(() => {
+			throw new Error("queue write failed");
+		});
+		const fallbackSpy = vi
+			.spyOn(vectors, "bestEffortMaintainVectorsForSyncFallback")
+			.mockResolvedValue({ deleted: 0, inserted: 1, errors: [] });
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "abc123",
+					protocol_version: "2",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-1",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [
+						{
+							op_id: "remote-op-fallback",
+							entity_type: "memory_item",
+							entity_id: "key:sync-pass-fallback",
+							op_type: "upsert",
+							payload_json: JSON.stringify({
+								kind: "discovery",
+								title: "Remote title",
+								body_text: "Remote body",
+								active: 1,
+								created_at: "2026-01-01T00:00:00Z",
+								updated_at: "2026-01-01T00:00:00Z",
+							}),
+							clock_rev: 1,
+							clock_updated_at: "2026-01-01T00:00:00Z",
+							clock_device_id: "dev-remote",
+							device_id: "dev-remote",
+							created_at: "2026-01-01T00:00:00Z",
+						},
+					],
+					next_cursor: "2026-01-01T00:00:00Z|remote-op-fallback",
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-1", ["http://127.0.0.1:9090"]);
+
+		if (!result.ok) {
+			throw new Error(`syncOnce failed: ${result.error ?? "unknown error"}`);
+		}
+		expect(result.ok).toBe(true);
+		expect(fallbackSpy).toHaveBeenCalledWith(
+			db,
+			expect.objectContaining({ upsertMemoryIds: [expect.any(Number)], deleteMemoryIds: [] }),
 		);
 	});
 });

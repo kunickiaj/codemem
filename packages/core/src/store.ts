@@ -38,7 +38,6 @@ import {
 	buildMemoryPackTraceAsync,
 } from "./pack.js";
 import * as schema from "./schema.js";
-import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 import {
 	type ExplainOptions,
 	explain as explainFn,
@@ -216,12 +215,6 @@ export class MemoryStore {
 		this.db = connect(this.dbPath);
 		try {
 			loadSqliteVec(this.db);
-			// Auto-bootstrap fresh databases: if the file is empty or has no
-			// schema yet, run the full schema DDL before asserting readiness.
-			// This makes `new MemoryStore(...)` safe to call from any entry
-			// point (mcp-server, claude-hook-ingest, CLI commands) without a
-			// prior explicit `codemem db init`.
-			ensureSchemaBootstrapped(this.db);
 			assertSchemaReady(this.db);
 			ensureAdditiveSchemaCompatibility(this.db);
 			ensurePlannerStats(this.db);
