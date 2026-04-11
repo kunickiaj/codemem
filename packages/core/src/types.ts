@@ -85,6 +85,7 @@ export type PackTraceCandidateScores = {
 	recency: number;
 	kind_bonus: number;
 	quality_boost: number;
+	role_adjustment: number;
 	working_set_overlap: number;
 	query_path_overlap: number;
 	personal_bias: number;
