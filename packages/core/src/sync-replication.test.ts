@@ -1589,6 +1589,8 @@ describe("applyReplicationOps", () => {
 		expect(mem).toBeDefined();
 		expect(mem.title).toBe("Remote memory");
 		expect(mem.rev).toBe(1);
+		expect(result.vectorWork.upsertMemoryIds).toEqual([Number(mem.id)]);
+		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
 	});
 
 	it("updates existing memory when op clock is newer", () => {
@@ -1629,6 +1631,7 @@ describe("applyReplicationOps", () => {
 			.get("key:test-1") as Record<string, unknown>;
 		expect(mem.title).toBe("Updated title");
 		expect(mem.rev).toBe(2);
+		expect(result.vectorWork.upsertMemoryIds).toEqual([Number(mem.id)]);
 	});
 
 	it("counts conflict when existing memory has newer clock", () => {
@@ -1682,6 +1685,15 @@ describe("applyReplicationOps", () => {
 			.get("key:del-1") as { active: number; deleted_at: string | null };
 		expect(mem.active).toBe(0);
 		expect(mem.deleted_at).not.toBeNull();
+		const memoryId = Number(
+			(
+				db.prepare("SELECT id FROM memory_items WHERE import_key = ?").get("key:del-1") as {
+					id: number;
+				}
+			).id,
+		);
+		expect(result.vectorWork.upsertMemoryIds).toEqual([]);
+		expect(result.vectorWork.deleteMemoryIds).toEqual([memoryId]);
 	});
 
 	it("records applied ops in replication_ops table", () => {

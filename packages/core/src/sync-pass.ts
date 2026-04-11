@@ -27,6 +27,7 @@ import {
 	setReplicationCursor,
 } from "./sync-replication.js";
 import type { ReplicationOp, SyncResetRequired } from "./types.js";
+import { maintainVectorsForReplicationApply } from "./vectors.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -620,6 +621,7 @@ export async function syncOnce(
 				setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate });
 				lastApplied = inboundCursorCandidate;
 			}
+			await maintainVectorsForReplicationApply(db, applied.vectorWork);
 
 			// -- 5. Push local ops to peer --
 			const [outboundWindow, outboundCursor] = loadLocalOpsSince(db, lastAcked, deviceId, limit);

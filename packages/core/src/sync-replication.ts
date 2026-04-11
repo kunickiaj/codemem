@@ -1437,6 +1437,12 @@ export interface ApplyResult {
 	skipped: number;
 	conflicts: number;
 	errors: string[];
+	vectorWork: ReplicationVectorWork;
+}
+
+export interface ReplicationVectorWork {
+	upsertMemoryIds: number[];
+	deleteMemoryIds: number[];
 }
 
 const LEGACY_IMPORT_KEY_OLD_RE = /^legacy:memory_item:(.+)$/;
@@ -1725,7 +1731,25 @@ export function applyReplicationOps(
 	localDeviceId: string,
 ): ApplyResult {
 	const d = drizzle(db, { schema });
-	const result: ApplyResult = { applied: 0, skipped: 0, conflicts: 0, errors: [] };
+	const result: ApplyResult = {
+		applied: 0,
+		skipped: 0,
+		conflicts: 0,
+		errors: [],
+		vectorWork: { upsertMemoryIds: [], deleteMemoryIds: [] },
+	};
+	const upsertMemoryIds = new Set<number>();
+	const deleteMemoryIds = new Set<number>();
+	const queueVectorUpsert = (memoryId: number): void => {
+		if (!Number.isInteger(memoryId) || memoryId <= 0) return;
+		deleteMemoryIds.delete(memoryId);
+		upsertMemoryIds.add(memoryId);
+	};
+	const queueVectorDelete = (memoryId: number): void => {
+		if (!Number.isInteger(memoryId) || memoryId <= 0) return;
+		upsertMemoryIds.delete(memoryId);
+		deleteMemoryIds.add(memoryId);
+	};
 
 	const applyAll = db.transaction(() => {
 		for (const op of ops) {
@@ -1780,6 +1804,9 @@ export function applyReplicationOps(
 						const payload = parseMemoryPayload(op, result.errors);
 						if (!payload) continue;
 						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
+						const shouldDeleteVectors =
+							payload.deleted_at != null ||
+							(payload.active != null && Number(payload.active) === 0);
 
 						d.update(schema.memoryItems)
 							.set({
@@ -1812,6 +1839,8 @@ export function applyReplicationOps(
 							})
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
+						if (shouldDeleteVectors) queueVectorDelete(Number(memRow.id));
+						else queueVectorUpsert(Number(memRow.id));
 					} else {
 						// Insert new memory item — skip if malformed
 						const payload = parseMemoryPayload(op, result.errors);
@@ -1827,8 +1856,8 @@ export function applyReplicationOps(
 							replicatedProject,
 						);
 						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
-
-						d.insert(schema.memoryItems)
+						const insertedRows = d
+							.insert(schema.memoryItems)
 							.values({
 								session_id: sessionId,
 								kind: payload.kind ?? "discovery",
@@ -1860,7 +1889,14 @@ export function applyReplicationOps(
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
 							})
-							.run();
+							.returning({ id: schema.memoryItems.id })
+							.all();
+						const insertedId = Number(insertedRows[0]?.id ?? 0);
+						if (payload.deleted_at != null || Number(payload.active ?? 1) === 0) {
+							queueVectorDelete(insertedId);
+						} else {
+							queueVectorUpsert(insertedId);
+						}
 					}
 				} else if (op.op_type === "delete") {
 					const importKey = op.entity_id;
@@ -1899,6 +1935,7 @@ export function applyReplicationOps(
 							})
 							.where(eq(schema.memoryItems.id, existingForDelete.id))
 							.run();
+						queueVectorDelete(Number(existingForDelete.id));
 					}
 					// If import_key not found, record the op as a tombstone for future resolution
 				} else {
@@ -1917,6 +1954,10 @@ export function applyReplicationOps(
 	});
 
 	applyAll();
+	result.vectorWork = {
+		upsertMemoryIds: [...upsertMemoryIds],
+		deleteMemoryIds: [...deleteMemoryIds],
+	};
 	return result;
 }
 
