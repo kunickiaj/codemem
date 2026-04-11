@@ -11,6 +11,7 @@ import {
 import { backfillVectors } from "./vectors.js";
 
 export const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
+const SYNC_BOOTSTRAP_TRIGGER = "sync_bootstrap";
 
 export interface VectorModelMigrationOptions {
 	batchSize?: number;
@@ -28,7 +29,34 @@ type MigrationMetadata = {
 	processed_embeddable?: number;
 	embeddable_total?: number;
 	removed_stale_rows?: number;
+	trigger?: string | null;
 };
+
+export function queueVectorBackfillForSyncBootstrap(
+	db: SqliteDatabase,
+	options: { embeddableTotal?: number | null } = {},
+): void {
+	const embeddableTotal =
+		typeof options.embeddableTotal === "number" && options.embeddableTotal >= 0
+			? options.embeddableTotal
+			: null;
+	const metadata: MigrationMetadata = {
+		last_cursor_id: 0,
+		processed_embeddable: 0,
+		trigger: SYNC_BOOTSTRAP_TRIGGER,
+	};
+	if (embeddableTotal != null) {
+		metadata.embeddable_total = embeddableTotal;
+	}
+	startMaintenanceJob(db, {
+		kind: VECTOR_MODEL_MIGRATION_JOB,
+		title: "Re-indexing memories",
+		status: "pending",
+		message: "Queued vector catch-up for synced bootstrap data",
+		progressTotal: embeddableTotal,
+		metadata,
+	});
+}
 
 function vectorModels(db: SqliteDatabase): Array<{ model: string; rows: number }> {
 	return db
@@ -104,12 +132,27 @@ export async function runVectorMigrationPass(
 	db: SqliteDatabase,
 	options: { batchSize?: number } = {},
 ): Promise<void> {
-	if (isEmbeddingDisabled()) return;
+	const existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const isInFlightJob = existingJob?.status === "running" || existingJob?.status === "pending";
+	if (isEmbeddingDisabled()) {
+		if (isInFlightJob) {
+			failMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, "Embeddings are disabled", {
+				message: "Vector re-indexing is waiting for embeddings to be enabled",
+			});
+		}
+		return;
+	}
 	const client = await getEmbeddingClient();
-	if (!client) return;
+	if (!client) {
+		if (isInFlightJob) {
+			failMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, "Embedding client unavailable", {
+				message: "Vector re-indexing is waiting for the embedding client",
+			});
+		}
+		return;
+	}
 	const targetModel = client.model;
 	const sourceModel = detectSourceModel(db, targetModel);
-	const existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 	const hasInFlightJob =
 		existingJob?.status === "running" ||
 		existingJob?.status === "pending" ||
@@ -135,6 +178,20 @@ export async function runVectorMigrationPass(
 		isResumingJob && existingMeta.embeddable_total
 			? Number(existingMeta.embeddable_total)
 			: countEmbeddableActiveMemories(db);
+	if (embeddableTotal <= 0 && hasInFlightJob && !sourceModel) {
+		completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+			message: "No embeddable memories to re-index",
+			progressCurrent: 0,
+			progressTotal: 0,
+			metadata: {
+				...existingMeta,
+				last_cursor_id: 0,
+				processed_embeddable: 0,
+				embeddable_total: 0,
+			},
+		});
+		return;
+	}
 	if (sourceModel && embeddableTotal <= 0) {
 		const removed = cleanupStaleModels(db, targetModel);
 		startMaintenanceJob(db, {
