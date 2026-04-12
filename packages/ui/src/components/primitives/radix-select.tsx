@@ -54,7 +54,7 @@ export function RadixSelect({
 			value={encodedValue}
 		>
 			<Select.Trigger
-				aria-label={ariaLabel ?? placeholder}
+				aria-label={ariaLabel}
 				className={triggerClassName ?? className}
 				data-value={value}
 				id={id}

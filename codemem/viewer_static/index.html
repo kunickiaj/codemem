@@ -1423,7 +1423,38 @@
       }
       .modal-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
       .modal-header h2 { margin: 0; font-size: 18px; }
-      .modal-close { border: none; background: transparent; color: var(--text-tertiary); cursor: pointer; font-size: 12px; font-family: var(--font-sans); }
+      .modal-close-button {
+        border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+        background: color-mix(in srgb, var(--surface-0) 78%, transparent);
+        color: var(--text-secondary);
+        border-radius: var(--radius-pill);
+        min-height: 30px;
+        padding: 0 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        cursor: pointer;
+        font-family: var(--font-sans);
+        font-size: 12px;
+        transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+      }
+      .modal-close-button:hover {
+        border-color: var(--border-hover);
+        background: color-mix(in srgb, var(--surface-0) 92%, var(--control-hover-bg));
+        color: var(--text-primary);
+      }
+      .modal-close-button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .modal-close-button-icon {
+        font-size: 11px;
+        color: var(--text-tertiary);
+      }
+      .modal-close-button-label {
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
       .modal-body { display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
       @keyframes noticeSlideIn {
@@ -1528,13 +1559,15 @@
         cursor: pointer;
       }
       .settings-tab:hover { border-color: var(--border-hover); }
-      .settings-tab.active {
+      .settings-tab.active,
+      .settings-tab[data-state="active"] {
         border-color: var(--control-hover-border);
         color: var(--accent);
         background: var(--accent-subtle);
       }
-      .settings-panel { display: none; flex-direction: column; gap: var(--sp-3); }
-      .settings-panel.active { display: flex; }
+      .settings-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
+      .settings-panel[data-state="inactive"] { display: none; }
+      .settings-panel[hidden] { display: none; }
       .observer-status-banner {
         display: flex;
         flex-direction: column;
@@ -1673,6 +1706,56 @@
 
       .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
       .field input:not([type="checkbox"]), .field select, .field textarea { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: 13px; color: var(--text-primary); }
+      .settings-select-trigger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+        padding: var(--sp-2) var(--sp-3);
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        text-align: left;
+      }
+      .settings-select-trigger:hover { border-color: var(--border-hover); }
+      .settings-select-trigger:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--focus-ring);
+      }
+      .settings-select-content {
+        z-index: 30;
+        min-width: var(--radix-select-trigger-width);
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+        box-shadow: var(--shadow-lg);
+      }
+      .settings-select-viewport { padding: 6px; }
+      .settings-select-item {
+        min-height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 12px;
+        border-radius: var(--radius-sm);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .settings-select-item[data-highlighted] {
+        outline: none;
+        background: var(--accent-subtle);
+        color: var(--accent);
+      }
       .field-checkbox { flex-direction: row; align-items: center; gap: 8px; }
       .field-checkbox input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
       .field-checkbox label { margin: 0; }
@@ -1757,6 +1840,59 @@
         display: flex;
         flex-direction: column;
         gap: var(--sp-2);
+      }
+      .sync-dialog-radio-list {
+        display: grid;
+        gap: var(--sp-2);
+      }
+      .sync-dialog-radio-option {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: color-mix(in srgb, var(--surface-1) 86%, var(--surface-0));
+        cursor: pointer;
+        transition: border-color 0.15s ease, background 0.15s ease;
+      }
+      .sync-dialog-radio-option:hover {
+        border-color: var(--border-hover);
+        background: color-mix(in srgb, var(--surface-1) 94%, var(--surface-0));
+      }
+      .sync-dialog-radio-option:has(button[data-state="checked"]) {
+        border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+        background: color-mix(in srgb, var(--accent-subtle) 68%, var(--surface-1));
+      }
+      .sync-dialog-radio-option button {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--text-tertiary) 42%, var(--border));
+        background: var(--surface-0);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        flex: 0 0 auto;
+      }
+      .sync-dialog-radio-option button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .sync-dialog-radio-option button[data-state="checked"] {
+        border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+        background: color-mix(in srgb, var(--accent-subtle) 82%, var(--surface-0));
+      }
+      .sync-dialog-radio-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--accent);
+      }
+      .sync-dialog-radio-label {
+        color: var(--text-primary);
+        font-size: 13px;
       }
       .settings-save:disabled { opacity: 0.6; cursor: not-allowed; }
       .settings-note { color: var(--text-tertiary); font-size: 12px; }
@@ -1876,14 +2012,17 @@
       <div class="modal-card">
         <div class="modal-header">
           <h2 id="settingsTitle">Memory & model settings</h2>
-          <button class="modal-close" id="settingsClose" aria-label="Close settings">close</button>
+          <button class="modal-close-button" id="settingsClose" aria-label="Close settings">
+            <span class="modal-close-button-icon" aria-hidden="true">✕</span>
+            <span class="modal-close-button-label">Close</span>
+          </button>
         </div>
         <div class="modal-body">
           <div class="small" id="settingsDescription">Configure connection, authentication, processing, and sync behavior.</div>
           <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-            <button class="settings-tab active" id="settingsTabObserver" data-settings-tab="observer" role="tab" aria-selected="true">Connection</button>
-            <button class="settings-tab" id="settingsTabQueue" data-settings-tab="queue" role="tab" aria-selected="false">Processing</button>
-            <button class="settings-tab" id="settingsTabSync" data-settings-tab="sync" role="tab" aria-selected="false">Device Sync</button>
+            <button class="settings-tab" id="settingsTabObserver" data-settings-tab="observer" role="tab" aria-selected="true" data-state="active">Connection</button>
+            <button class="settings-tab" id="settingsTabQueue" data-settings-tab="queue" role="tab" aria-selected="false" data-state="inactive">Processing</button>
+            <button class="settings-tab" id="settingsTabSync" data-settings-tab="sync" role="tab" aria-selected="false" data-state="inactive">Device Sync</button>
           </div>
           <div class="settings-advanced-toolbar field-checkbox">
             <input class="cm-checkbox" id="settingsAdvancedToggle" type="checkbox" />
@@ -1891,7 +2030,7 @@
             <button class="help-icon" type="button" data-tooltip="Advanced controls include JSON fields, tuning values, and network overrides." aria-label="About advanced controls">?</button>
           </div>
 
-          <div class="settings-panel active" id="settingsPanelObserver" data-settings-panel="observer">
+          <div class="settings-panel" id="settingsPanelObserver" data-settings-panel="observer" data-state="active">
             <div id="observerStatusBanner" class="observer-status-banner" hidden></div>
             <div class="settings-group">
               <h3 class="settings-group-title">Connection</h3>
@@ -1986,7 +2125,7 @@
             </div>
           </div>
 
-          <div class="settings-panel" id="settingsPanelQueue" data-settings-panel="queue">
+          <div class="settings-panel" id="settingsPanelQueue" data-settings-panel="queue" data-state="inactive" hidden>
             <div class="settings-group">
               <h3 class="settings-group-title">Processing</h3>
               <div class="field">
@@ -2013,7 +2152,7 @@
             </div>
           </div>
 
-          <div class="settings-panel" id="settingsPanelSync" data-settings-panel="sync">
+          <div class="settings-panel" id="settingsPanelSync" data-settings-panel="sync" data-state="inactive" hidden>
             <div class="settings-group">
               <h3 class="settings-group-title">Device Sync</h3>
               <div class="field field-checkbox"><input class="cm-checkbox" id="syncEnabled" type="checkbox" /><label for="syncEnabled">Enable sync</label></div>
