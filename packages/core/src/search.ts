@@ -1258,3 +1258,28 @@ export function explain(
 		},
 	};
 }
+
+/**
+ * Find memory IDs that touch any of the given file paths, using the
+ * memory_file_refs junction table index. Returns up to `limit` distinct
+ * memory IDs ordered by creation date (newest first).
+ *
+ * This is used by the pack builder to source working-set candidates
+ * that FTS/vector search would miss.
+ */
+export function findCandidatesByFile(db: Database, filePaths: string[], limit = 50): number[] {
+	if (filePaths.length === 0) return [];
+	const placeholders = filePaths.map(() => "?").join(", ");
+	const rows = db
+		.prepare(
+			`SELECT DISTINCT mfr.memory_id
+			 FROM memory_file_refs mfr
+			 JOIN memory_items mi ON mi.id = mfr.memory_id
+			 WHERE mfr.file_path IN (${placeholders})
+			   AND mi.active = 1
+			 ORDER BY mi.created_at DESC
+			 LIMIT ?`,
+		)
+		.all(...filePaths, limit) as Array<{ memory_id: number }>;
+	return rows.map((r) => r.memory_id);
+}

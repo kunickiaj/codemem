@@ -19,7 +19,7 @@ import { buildFilterClausesWithContext } from "./filters.js";
 import { projectBasename } from "./project.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import type { StoreHandle } from "./search.js";
-import { rerankResults, scoreResult, search, timeline } from "./search.js";
+import { findCandidatesByFile, rerankResults, scoreResult, search, timeline } from "./search.js";
 import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
@@ -1217,6 +1217,26 @@ function buildPackArtifacts(
 			ftsCount = results.length;
 			retrievalResults = [...ftsResults];
 		}
+		// Merge working-set candidates from file ref index
+		const workingSetPaths = filters?.working_set_paths;
+		if (workingSetPaths && Array.isArray(workingSetPaths) && workingSetPaths.length > 0) {
+			const existingIds = new Set(results.map((r) => r.id));
+			const refCandidateIds = findCandidatesByFile(
+				store.db,
+				workingSetPaths as string[],
+				effectiveLimit,
+			);
+			const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
+			if (newIds.length > 0) {
+				const refMemories = newIds
+					.map((id) => store.get(id))
+					.filter((m): m is NonNullable<typeof m> => m != null)
+					.map(toMemoryResult);
+				results = [...results, ...refMemories];
+				results = prioritizeDefaultResults(results, effectiveLimit, context);
+			}
+		}
+
 		if (results.length === 0) {
 			fallbackUsed = true;
 			results = store.recent(effectiveLimit, filters ?? null).map(toMemoryResult);

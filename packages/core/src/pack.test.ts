@@ -1299,6 +1299,34 @@ describe("buildMemoryPack cluster compression", () => {
 		expect(pack.items).toHaveLength(1);
 	});
 
+	it("surfaces memories via file ref index when FTS misses them", () => {
+		// Create a memory whose title/body have NO overlap with the query
+		// but whose files_modified match the working_set_paths
+		store.remember(
+			sessionId,
+			"decision",
+			"Chose HMAC-SHA256 for token signing",
+			"After evaluating options, selected HMAC-SHA256 for performance and security balance.",
+			0.8,
+			["crypto", "tokens"],
+			{
+				files_modified: ["packages/core/src/auth.ts"],
+				concepts: ["authentication"],
+			},
+		);
+
+		// Query something completely unrelated to the memory text
+		const pack = buildMemoryPack(store, "continue database migration work", 10, null, {
+			working_set_paths: ["packages/core/src/auth.ts"],
+		});
+
+		// The memory should appear because it modified a working-set file
+		expect(pack.item_ids.length).toBeGreaterThan(0);
+		// The decision about HMAC should be in the results
+		const found = pack.items.some((item) => item.title.includes("HMAC-SHA256"));
+		expect(found).toBe(true);
+	});
+
 	it("reports compressed clusters in pack trace and marks compressed candidates", () => {
 		const idA = store.remember(
 			sessionId,
