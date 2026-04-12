@@ -513,6 +513,74 @@ describe("MemoryStore", () => {
 				stderrSpy.mockRestore();
 			}
 		});
+
+		it("populates memory_file_refs for files_read and files_modified", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "File refs test", "Body", 0.5, [], {
+				files_read: ["src/auth.ts", "src/config.ts"],
+				files_modified: ["src/auth.ts"],
+			});
+
+			const fileRefs = store.db
+				.prepare("SELECT * FROM memory_file_refs WHERE memory_id = ? ORDER BY file_path, relation")
+				.all(memId) as Array<{ memory_id: number; file_path: string; relation: string }>;
+
+			expect(fileRefs).toHaveLength(3);
+			expect(fileRefs).toContainEqual({
+				memory_id: memId,
+				file_path: "src/auth.ts",
+				relation: "read",
+			});
+			expect(fileRefs).toContainEqual({
+				memory_id: memId,
+				file_path: "src/config.ts",
+				relation: "read",
+			});
+			expect(fileRefs).toContainEqual({
+				memory_id: memId,
+				file_path: "src/auth.ts",
+				relation: "modified",
+			});
+		});
+
+		it("populates memory_concept_refs with normalized concepts", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Concept refs test", "Body", 0.5, [], {
+				concepts: ["Auth", "security", " oauth "],
+			});
+
+			const conceptRefs = store.db
+				.prepare("SELECT * FROM memory_concept_refs WHERE memory_id = ? ORDER BY concept")
+				.all(memId) as Array<{ memory_id: number; concept: string }>;
+
+			expect(conceptRefs).toHaveLength(3);
+			expect(conceptRefs).toContainEqual({ memory_id: memId, concept: "auth" });
+			expect(conceptRefs).toContainEqual({ memory_id: memId, concept: "security" });
+			expect(conceptRefs).toContainEqual({ memory_id: memId, concept: "oauth" });
+		});
+
+		it("creates no ref rows when files and concepts are null or empty", () => {
+			const sessionId = insertTestSession(store.db);
+			// No metadata at all
+			const memId1 = store.remember(sessionId, "discovery", "No refs test 1", "Body");
+			// Empty arrays
+			const memId2 = store.remember(sessionId, "discovery", "No refs test 2", "Body", 0.5, [], {
+				files_read: [],
+				files_modified: [],
+				concepts: [],
+			});
+
+			for (const memId of [memId1, memId2]) {
+				const fileRefs = store.db
+					.prepare("SELECT * FROM memory_file_refs WHERE memory_id = ?")
+					.all(memId);
+				const conceptRefs = store.db
+					.prepare("SELECT * FROM memory_concept_refs WHERE memory_id = ?")
+					.all(memId);
+				expect(fileRefs).toHaveLength(0);
+				expect(conceptRefs).toHaveLength(0);
+			}
+		});
 	});
 
 	// -- forget --------------------------------------------------------------

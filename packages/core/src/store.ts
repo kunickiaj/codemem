@@ -647,6 +647,8 @@ export class MemoryStore {
 		const memoryId = insertedRows[0]?.id;
 		if (memoryId == null) throw new Error("memory insert returned no id");
 
+		this.populateMemoryRefs(memoryId, filesRead, filesModified, concepts);
+
 		// Record replication op for sync propagation
 		try {
 			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
@@ -657,6 +659,38 @@ export class MemoryStore {
 		this.enqueueVectorWrite(memoryId, title, bodyText);
 
 		return memoryId;
+	}
+
+	// junction-table denormalization
+
+	private populateMemoryRefs(
+		memoryId: number,
+		filesRead: string[] | null,
+		filesModified: string[] | null,
+		concepts: string[] | null,
+	): void {
+		const insertFileRef = this.db.prepare(
+			"INSERT OR IGNORE INTO memory_file_refs (memory_id, file_path, relation) VALUES (?, ?, ?)",
+		);
+		if (filesRead) {
+			for (const path of filesRead) {
+				if (path) insertFileRef.run(memoryId, path, "read");
+			}
+		}
+		if (filesModified) {
+			for (const path of filesModified) {
+				if (path) insertFileRef.run(memoryId, path, "modified");
+			}
+		}
+		const insertConceptRef = this.db.prepare(
+			"INSERT OR IGNORE INTO memory_concept_refs (memory_id, concept) VALUES (?, ?)",
+		);
+		if (concepts) {
+			for (const concept of concepts) {
+				const normalized = concept?.trim().toLowerCase();
+				if (normalized) insertConceptRef.run(memoryId, normalized);
+			}
+		}
 	}
 
 	// provenance resolution
