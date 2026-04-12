@@ -341,6 +341,12 @@ export {
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
 export { buildSessionContext, flushRawEvents } from "./raw-event-flush.js";
 export { RawEventSweeper } from "./raw-event-sweeper.js";
+export {
+	hasPendingRefBackfill,
+	REF_BACKFILL_JOB,
+	RefBackfillRunner,
+	runRefBackfillPass,
+} from "./ref-backfill.js";
 export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
 export * as schema from "./schema.js";
 export { bootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
