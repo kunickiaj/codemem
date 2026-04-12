@@ -62,9 +62,9 @@ function insertTestMemory(
 		createdAt?: string;
 		active?: boolean;
 	},
-) {
+): number {
 	const now = options.createdAt ?? new Date().toISOString();
-	store.db
+	const result = store.db
 		.prepare(
 			`INSERT INTO memory_items (
 				session_id, kind, title, subtitle, body_text, confidence, tags_text, active,
@@ -90,6 +90,7 @@ function insertTestMemory(
 			String(options.metadata?.source ?? "test"),
 			`${options.kind}-${options.title}-${now}`,
 		);
+	return Number(result.lastInsertRowid);
 }
 
 /** Create a test Hono app backed by a fresh in-memory DB. */
@@ -365,16 +366,205 @@ describe("viewer-server", () => {
 
 				const mineRes = await app.request("/api/observations?scope=mine");
 				expect(mineRes.status).toBe(200);
-				const mineItems = ((await mineRes.json()) as { items: Array<{ title: string }> }).items;
+				const mineItems = (
+					(await mineRes.json()) as { items: Array<{ title: string; owned_by_self?: boolean }> }
+				).items;
 				expect(mineItems.map((item) => item.title)).toEqual(["Mine"]);
+				expect(mineItems[0]?.owned_by_self).toBe(true);
 
 				const theirsRes = await app.request("/api/observations?scope=theirs");
 				expect(theirsRes.status).toBe(200);
-				const theirsItems = ((await theirsRes.json()) as { items: Array<{ title: string }> }).items;
+				const theirsItems = (
+					(await theirsRes.json()) as { items: Array<{ title: string; owned_by_self?: boolean }> }
+				).items;
 				expect(theirsItems.map((item) => item.title).sort()).toEqual([
 					"Null owned fields",
 					"Theirs",
 				]);
+				expect(theirsItems.every((item) => item.owned_by_self === false)).toBe(true);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("forgets an owned memory via the viewer API", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "bugfix",
+					title: "Owned memory",
+				});
+
+				const forgetRes = await app.request("/api/memories/forget", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId }),
+				});
+				expect(forgetRes.status).toBe(200);
+				expect(await forgetRes.json()).toEqual({ status: "ok" });
+
+				const observationsRes = await app.request("/api/observations");
+				expect(observationsRes.status).toBe(200);
+				const observations = (
+					(await observationsRes.json()) as { items: Array<{ id?: number; title: string }> }
+				).items;
+				expect(observations.map((item) => item.title)).not.toContain("Owned memory");
+
+				const row = store.db
+					.prepare("SELECT active, deleted_at FROM memory_items WHERE id = ?")
+					.get(memoryId) as { active: number; deleted_at: string | null };
+				expect(row.active).toBe(0);
+				expect(row.deleted_at).toBeTruthy();
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("treats repeated forget requests as a no-op success", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "change",
+					title: "Already forgotten",
+				});
+
+				const firstRes = await app.request("/api/memories/forget", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId }),
+				});
+				expect(firstRes.status).toBe(200);
+
+				const rowAfterFirstForget = store.db
+					.prepare("SELECT rev, deleted_at FROM memory_items WHERE id = ?")
+					.get(memoryId) as { rev: number; deleted_at: string | null };
+
+				const secondRes = await app.request("/api/memories/forget", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId }),
+				});
+				expect(secondRes.status).toBe(200);
+				expect(await secondRes.json()).toEqual({ status: "ok" });
+
+				const rowAfterSecondForget = store.db
+					.prepare("SELECT rev, deleted_at FROM memory_items WHERE id = ?")
+					.get(memoryId) as { rev: number; deleted_at: string | null };
+				expect(rowAfterSecondForget.rev).toBe(rowAfterFirstForget.rev);
+				expect(rowAfterSecondForget.deleted_at).toBe(rowAfterFirstForget.deleted_at);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects forgetting a memory not owned by this device", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "feature",
+					title: "Peer memory",
+					actorId: "peer:other",
+					originDeviceId: "peer-device-002",
+				});
+
+				const forgetRes = await app.request("/api/memories/forget", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId }),
+				});
+				expect(forgetRes.status).toBe(403);
+				const body = (await forgetRes.json()) as { error: string };
+				expect(body.error).toBe("memory not owned by this device");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("treats metadata-only local provenance as owned for forget requests", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "decision",
+					title: "Metadata-owned memory",
+					actorId: null,
+					originDeviceId: null,
+					metadata: {
+						actor_id: "local:test-device-001",
+						origin_device_id: "test-device-001",
+					},
+				});
+
+				const forgetRes = await app.request("/api/memories/forget", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId }),
+				});
+				expect(forgetRes.status).toBe(200);
+				expect(await forgetRes.json()).toEqual({ status: "ok" });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("validates forget requests", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const invalidIdRes = await app.request("/api/memories/forget", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: "abc" }),
+				});
+				expect(invalidIdRes.status).toBe(400);
+				expect(await invalidIdRes.json()).toEqual({ error: "memory_id must be int" });
+
+				const missingRes = await app.request("/api/memories/forget", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: 99999 }),
+				});
+				expect(missingRes.status).toBe(404);
+				expect(await missingRes.json()).toEqual({ error: "memory not found" });
 			} finally {
 				cleanup();
 			}

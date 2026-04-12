@@ -1,5 +1,6 @@
 /* Feed tab — memory feed rendering, filtering, search. */
 
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { type ComponentChildren, Fragment, h, render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../lib/api";
@@ -15,6 +16,7 @@ import {
 } from "../lib/format";
 import { showGlobalNotice } from "../lib/notice";
 import { setFeedScopeFilter, setFeedTypeFilter, state } from "../lib/state";
+import { openSyncConfirmDialog } from "./sync/sync-dialogs";
 
 /* ── Types ───────────────────────────────────────────────── */
 
@@ -255,6 +257,64 @@ function replaceFeedItem(updatedItem: FeedItem) {
 	const key = itemKey(updatedItem);
 	state.lastFeedItems = (state.lastFeedItems as FeedItem[]).map((item) =>
 		itemKey(item) === key ? updatedItem : item,
+	);
+}
+
+function removeFeedItem(memoryId: number) {
+	const removedKeys = new Set<string>();
+	const keepItem = (item: FeedItem) => {
+		const itemMemoryId = Number(item.id || item.memory_id || 0);
+		const keep = itemMemoryId !== memoryId;
+		if (!keep) removedKeys.add(itemKey(item));
+		return keep;
+	};
+	state.lastFeedItems = (state.lastFeedItems as FeedItem[]).filter(keepItem);
+	if (Array.isArray(state.pendingFeedItems)) {
+		state.pendingFeedItems = (state.pendingFeedItems as FeedItem[]).filter(keepItem);
+	}
+	for (const key of removedKeys) {
+		state.newItemKeys.delete(key);
+		state.itemViewState.delete(key);
+		for (const expandKey of Array.from(state.itemExpandState.keys())) {
+			if (expandKey.startsWith(`${key}:`)) state.itemExpandState.delete(expandKey);
+		}
+	}
+}
+
+function FeedItemMenu({
+	disabled,
+	onForget,
+	title,
+}: {
+	disabled: boolean;
+	onForget: () => void;
+	title: string;
+}) {
+	return h(
+		DropdownMenu.Root,
+		null,
+		h(
+			DropdownMenu.Trigger,
+			{ asChild: true },
+			h(
+				"button",
+				{ "aria-label": `Actions for ${title}`, className: "feed-menu-trigger", type: "button" },
+				"⋯",
+			),
+		),
+		h(
+			DropdownMenu.Portal,
+			null,
+			h(
+				DropdownMenu.Content,
+				{ align: "end", className: "feed-menu-panel", side: "bottom", sideOffset: 4 },
+				h(
+					DropdownMenu.Item,
+					{ className: "feed-menu-item danger", disabled, onSelect: () => onForget() },
+					disabled ? "Forgetting…" : "Forget memory",
+				),
+			),
+		),
 	);
 }
 
@@ -670,6 +730,7 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 		visibility === "shared" ? "shared" : "private",
 	);
 	const [savingVisibility, setSavingVisibility] = useState(false);
+	const [deletingMemory, setDeletingMemory] = useState(false);
 	const summarySections = summaryObj ? renderSummarySections(summaryObj) : [];
 
 	useEffect(() => {
@@ -753,6 +814,35 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 		}
 	}
 
+	async function forgetMemory() {
+		const confirmed = await openSyncConfirmDialog({
+			autoFocusAction: "cancel",
+			title: `Forget ${displayTitle}?`,
+			description:
+				"This removes the memory from active results. The underlying record remains soft-deleted for audit and sync safety.",
+			confirmLabel: "Forget memory",
+			cancelLabel: "Keep memory",
+			tone: "danger",
+		});
+		if (!confirmed) return;
+
+		setDeletingMemory(true);
+		try {
+			await api.forgetMemory(memoryId);
+			removeFeedItem(memoryId);
+			updateFeedView(true);
+			await loadFeedData();
+			showGlobalNotice("Memory forgotten and removed from the active feed.");
+		} catch (error) {
+			showGlobalNotice(
+				error instanceof Error ? error.message : "Failed to forget memory.",
+				"warning",
+			);
+		} finally {
+			setDeletingMemory(false);
+		}
+	}
+
 	return h(
 		"div",
 		{
@@ -786,6 +876,13 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 						})
 					: null,
 				h("div", { className: "small feed-age", title: formatDate(createdAtRaw) }, relative),
+				Boolean(item.owned_by_self) && memoryId > 0
+					? h(FeedItemMenu, {
+							disabled: deletingMemory,
+							onForget: () => void forgetMemory(),
+							title: String(displayTitle || "memory"),
+						})
+					: null,
 			),
 		),
 		h(
