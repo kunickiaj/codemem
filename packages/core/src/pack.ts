@@ -1072,6 +1072,32 @@ function mergeResults(
 	return { merged, ftsCount: ftsResults.length, semanticCount };
 }
 
+/**
+ * Merge candidates discovered via the file-ref index into an existing result
+ * set.  Returns the original array unchanged when no working-set paths are
+ * provided or no new candidates are found.
+ */
+function mergeFileRefCandidates(
+	store: StoreHandle,
+	results: MemoryResult[],
+	filters: MemoryFilters | undefined,
+	effectiveLimit: number,
+): MemoryResult[] {
+	const workingSetPaths = filters?.working_set_paths;
+	if (!workingSetPaths || !Array.isArray(workingSetPaths) || workingSetPaths.length === 0) {
+		return results;
+	}
+	const existingIds = new Set(results.map((r) => r.id));
+	const refCandidateIds = findCandidatesByFile(store.db, workingSetPaths, effectiveLimit);
+	const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
+	if (newIds.length === 0) return results;
+	const refMemories = newIds
+		.map((id) => store.get(id))
+		.filter((m): m is NonNullable<typeof m> => m != null)
+		.map(toMemoryResult);
+	return [...results, ...refMemories];
+}
+
 function buildPackArtifacts(
 	store: StoreHandle,
 	context: string,
@@ -1110,6 +1136,7 @@ function buildPackArtifacts(
 			taskResults = merge.merged;
 			semanticCount = merge.semanticCount;
 		}
+		taskResults = mergeFileRefCandidates(store, taskResults, filters, effectiveLimit);
 		retrievalResults = [...taskResults];
 		if (taskResults.length === 0) {
 			fallbackUsed = true;
@@ -1172,6 +1199,7 @@ function buildPackArtifacts(
 			recallResults = merge.merged;
 			semanticCount = merge.semanticCount;
 		}
+		recallResults = mergeFileRefCandidates(store, recallResults, filters, effectiveLimit);
 		retrievalResults = [...recallResults];
 		results = prioritizeRecallResults(recallResults, effectiveLimit, preferSummary, context);
 		if (results.length === 0) {
@@ -1217,25 +1245,8 @@ function buildPackArtifacts(
 			ftsCount = results.length;
 			retrievalResults = [...ftsResults];
 		}
-		// Merge working-set candidates from file ref index
-		const workingSetPaths = filters?.working_set_paths;
-		if (workingSetPaths && Array.isArray(workingSetPaths) && workingSetPaths.length > 0) {
-			const existingIds = new Set(results.map((r) => r.id));
-			const refCandidateIds = findCandidatesByFile(
-				store.db,
-				workingSetPaths as string[],
-				effectiveLimit,
-			);
-			const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
-			if (newIds.length > 0) {
-				const refMemories = newIds
-					.map((id) => store.get(id))
-					.filter((m): m is NonNullable<typeof m> => m != null)
-					.map(toMemoryResult);
-				results = [...results, ...refMemories];
-				results = prioritizeDefaultResults(results, effectiveLimit, context);
-			}
-		}
+		results = mergeFileRefCandidates(store, results, filters, effectiveLimit);
+		results = prioritizeDefaultResults(results, effectiveLimit, context);
 
 		if (results.length === 0) {
 			fallbackUsed = true;
