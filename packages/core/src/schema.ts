@@ -104,6 +104,41 @@ export const memoryItems = sqliteTable(
 export type MemoryItem = typeof memoryItems.$inferSelect;
 export type NewMemoryItem = typeof memoryItems.$inferInsert;
 
+export const memoryFileRefs = sqliteTable(
+	"memory_file_refs",
+	{
+		memory_id: integer("memory_id")
+			.notNull()
+			.references(() => memoryItems.id, { onDelete: "cascade" }),
+		file_path: text("file_path").notNull(),
+		relation: text("relation").notNull(), // 'read' | 'modified'
+	},
+	(table) => [
+		primaryKey({ columns: [table.memory_id, table.file_path, table.relation] }),
+		index("idx_memory_file_refs_path").on(table.file_path),
+	],
+);
+
+export type MemoryFileRef = typeof memoryFileRefs.$inferSelect;
+export type NewMemoryFileRef = typeof memoryFileRefs.$inferInsert;
+
+export const memoryConceptRefs = sqliteTable(
+	"memory_concept_refs",
+	{
+		memory_id: integer("memory_id")
+			.notNull()
+			.references(() => memoryItems.id, { onDelete: "cascade" }),
+		concept: text("concept").notNull(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.memory_id, table.concept] }),
+		index("idx_memory_concept_refs_concept").on(table.concept),
+	],
+);
+
+export type MemoryConceptRef = typeof memoryConceptRefs.$inferSelect;
+export type NewMemoryConceptRef = typeof memoryConceptRefs.$inferInsert;
+
 export const usageEvents = sqliteTable(
 	"usage_events",
 	{
@@ -497,6 +532,8 @@ export const schema = {
 	sessions,
 	artifacts,
 	memoryItems,
+	memoryFileRefs,
+	memoryConceptRefs,
 	usageEvents,
 	rawEvents,
 	rawEventSessions,
