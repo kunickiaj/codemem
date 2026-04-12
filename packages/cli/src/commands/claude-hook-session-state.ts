@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "@codemem/core";
 
 export type SessionState = {
 	first_prompt: string;
@@ -23,10 +24,6 @@ const MAX_FILES_MODIFIED = 64;
 const MAX_WORKING_SET_PATHS = 8;
 const MAX_QUERY_CHARS = 500;
 const MAX_QUERY_FILE_BASENAMES = 5;
-
-const MUTATING_TOOL_NAMES = new Set(["edit", "write", "multiedit", "notebookedit", "apply_patch"]);
-
-const APPLY_PATCH_PATH_PREFIXES = ["*** Add File: ", "*** Update File: ", "*** Delete File: "];
 
 export function defaultSessionState(): SessionState {
 	return {
@@ -122,19 +119,6 @@ export function clearSessionState(sessionId: string): void {
 	} catch {
 		// best-effort: failure to clear an unreachable file is non-fatal
 	}
-}
-
-function extractApplyPatchPaths(patchText: string): string[] {
-	const out: string[] = [];
-	for (const line of patchText.split("\n")) {
-		for (const prefix of APPLY_PATCH_PATH_PREFIXES) {
-			if (line.startsWith(prefix)) {
-				const path = line.slice(prefix.length).trim();
-				if (path) out.push(path);
-			}
-		}
-	}
-	return out;
 }
 
 export function extractModifiedPathsFromHook(payload: Record<string, unknown>): string[] {
