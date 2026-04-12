@@ -6,12 +6,14 @@ import * as p from "@clack/prompts";
 import {
 	DedupKeyBackfillRunner,
 	hasPendingDedupKeyBackfill,
+	hasPendingRefBackfill,
 	hasPendingSessionContextBackfill,
 	initDatabase,
 	isEmbeddingDisabled,
 	type MemoryStore,
 	ObserverClient,
 	RawEventSweeper,
+	RefBackfillRunner,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
@@ -418,6 +420,9 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const sessionContextBackfillRunner = new SessionContextBackfillRunner({
 		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
 	});
+	const refBackfillRunner = new RefBackfillRunner({
+		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+	});
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -484,6 +489,10 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 			if (hasPendingSessionContextBackfill(store.db)) {
 				sessionContextBackfillRunner.start();
 				p.log.step("Session-context backfill runner started");
+			}
+			if (hasPendingRefBackfill(store.db)) {
+				refBackfillRunner.start();
+				p.log.step("Ref backfill runner started");
 			}
 			if (syncConfig.syncRetentionEnabled) {
 				retentionRunner.start();
@@ -560,6 +569,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		retentionAbort.abort();
 		await sweeper.stop();
 		await sessionContextBackfillRunner.stop();
+		await refBackfillRunner.stop();
 		await dedupKeyBackfillRunner.stop();
 		await vectorMigrationRunner.stop();
 		await retentionRunner.stop();
