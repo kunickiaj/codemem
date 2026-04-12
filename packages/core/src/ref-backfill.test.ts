@@ -202,6 +202,32 @@ describe("ref backfill maintenance", () => {
 				db.prepare("SELECT COUNT(*) AS cnt FROM memory_file_refs").get() as { cnt: number }
 			).cnt;
 			expect(fileCount).toBe(0);
+			expect(hasPendingRefBackfill(db)).toBe(false);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("does not mark invalid or empty source arrays as pending forever", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = insertTestSession(db);
+			const now = new Date().toISOString();
+
+			db.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+				 workspace_id, dedup_key,
+				 files_read, files_modified, concepts)
+				 VALUES (?, 'discovery', 'Invalid memory', 'Body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL,
+				 ?, ?, ?)`,
+			).run(sessionId, now, now, "{not-json", JSON.stringify([]), JSON.stringify([]));
+
+			expect(hasPendingRefBackfill(db)).toBe(false);
+			const moreWork = await runRefBackfillPass(db, { batchSize: 10 });
+			expect(moreWork).toBe(false);
+			expect(getMaintenanceJob(db, REF_BACKFILL_JOB)).toBeNull();
 		} finally {
 			db.close();
 		}

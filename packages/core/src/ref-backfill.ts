@@ -36,26 +36,34 @@ export interface RefBackfillRunnerOptions {
 	signal?: AbortSignal;
 }
 
-/**
- * Check if any active memory_items have non-null files/concepts columns.
- * This is a cheap existence check — it does NOT verify whether ref rows
- * already exist (the backfill itself uses INSERT OR IGNORE for that).
- */
+const REF_BACKFILL_PENDING_WHERE = `mi.active = 1
+	AND (
+	  (
+	    (
+	      (json_valid(mi.files_read) AND json_type(mi.files_read) = 'array' AND json_array_length(mi.files_read) > 0)
+	      OR
+	      (json_valid(mi.files_modified) AND json_type(mi.files_modified) = 'array' AND json_array_length(mi.files_modified) > 0)
+	    )
+	    AND NOT EXISTS (
+	      SELECT 1 FROM memory_file_refs mfr WHERE mfr.memory_id = mi.id
+	    )
+	  )
+	  OR
+	  (
+	    json_valid(mi.concepts)
+	    AND json_type(mi.concepts) = 'array'
+	    AND json_array_length(mi.concepts) > 0
+	    AND NOT EXISTS (
+	      SELECT 1 FROM memory_concept_refs mcr WHERE mcr.memory_id = mi.id
+	    )
+	  )
+	)`;
+
 export function hasPendingRefBackfill(db: SqliteDatabase): boolean {
 	const row = db
 		.prepare(
 			`SELECT 1 FROM memory_items mi
-			 WHERE mi.active = 1
-			   AND (mi.files_read IS NOT NULL OR mi.files_modified IS NOT NULL OR mi.concepts IS NOT NULL)
-			   AND (
-			     ((mi.files_read IS NOT NULL OR mi.files_modified IS NOT NULL) AND NOT EXISTS (
-			       SELECT 1 FROM memory_file_refs mfr WHERE mfr.memory_id = mi.id
-			     ))
-			     OR
-			     (mi.concepts IS NOT NULL AND NOT EXISTS (
-			       SELECT 1 FROM memory_concept_refs mcr WHERE mcr.memory_id = mi.id
-			     ))
-			   )
+			 WHERE ${REF_BACKFILL_PENDING_WHERE}
 			 LIMIT 1`,
 		)
 		.get();
@@ -98,9 +106,8 @@ export async function runRefBackfillPass(
 		.prepare(
 			`SELECT mi.id, mi.files_read, mi.files_modified, mi.concepts
 			 FROM memory_items mi
-			 WHERE mi.active = 1
-			   AND mi.id > ?
-			   AND (mi.files_read IS NOT NULL OR mi.files_modified IS NOT NULL OR mi.concepts IS NOT NULL)
+			 WHERE mi.id > ?
+			   AND ${REF_BACKFILL_PENDING_WHERE}
 			 ORDER BY mi.id ASC
 			 LIMIT ?`,
 		)
@@ -129,9 +136,8 @@ export async function runRefBackfillPass(
 	if (!existingJob || existingJob.status === "completed" || existingJob.status === "failed") {
 		const countRow = db
 			.prepare(
-				`SELECT COUNT(*) AS cnt FROM memory_items
-				 WHERE active = 1
-				   AND (files_read IS NOT NULL OR files_modified IS NOT NULL OR concepts IS NOT NULL)`,
+				`SELECT COUNT(*) AS cnt FROM memory_items mi
+				 WHERE ${REF_BACKFILL_PENDING_WHERE}`,
 			)
 			.get() as { cnt: number };
 		const initialTotal = countRow.cnt;

@@ -117,11 +117,11 @@ export async function loadSyncData() {
 		if (useCache) {
 			payload = readCachedSyncStatus(project);
 			if (!payload) {
-				payload = await api.loadSyncStatus(true, project, { includeJoinRequests: false });
+				payload = await api.loadSyncStatus(false, project, { includeJoinRequests: false });
 				fetchedFreshSyncStatus = true;
 			}
 		} else {
-			payload = await api.loadSyncStatus(true, project, { includeJoinRequests });
+			payload = await api.loadSyncStatus(false, project, { includeJoinRequests });
 			fetchedFreshSyncStatus = true;
 		}
 

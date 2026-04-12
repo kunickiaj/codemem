@@ -176,6 +176,17 @@ export interface SemanticIndexDiagnosticsOptions {
 	fastCounts?: boolean;
 }
 
+function traceSemanticDiag<T>(label: string, fn: () => T): T {
+	if (process.env.CODEMEM_TRACE_SEMANTIC_DIAGNOSTICS !== "1") return fn();
+	const startedAt = Date.now();
+	console.warn(`[codemem semantic] ${label} start`);
+	try {
+		return fn();
+	} finally {
+		console.warn(`[codemem semantic] ${label} ${Date.now() - startedAt}ms`);
+	}
+}
+
 function countEmbeddableActiveMemories(db: Database): number {
 	const row = db
 		.prepare(
@@ -260,15 +271,25 @@ export function getSemanticIndexDiagnostics(
 	db: Database,
 	options: SemanticIndexDiagnosticsOptions = {},
 ): SemanticIndexDiagnostics {
-	const currentModel = resolveEmbeddingModel();
-	const semanticSearchModel = resolveSemanticSearchModel(db, currentModel);
-	const embeddingsDisabled = isEmbeddingDisabled();
-	const embeddableMemoryCount = countEmbeddableActiveMemories(db);
-	const indexedMemoryCount = options.fastCounts
-		? countIndexedActiveMemoriesFast(db, currentModel)
-		: countIndexedActiveMemories(db, currentModel);
+	const currentModel = traceSemanticDiag("resolveEmbeddingModel", () => resolveEmbeddingModel());
+	const semanticSearchModel = traceSemanticDiag("resolveSemanticSearchModel", () =>
+		resolveSemanticSearchModel(db, currentModel),
+	);
+	const embeddingsDisabled = traceSemanticDiag("isEmbeddingDisabled", () => isEmbeddingDisabled());
+	const embeddableMemoryCount = traceSemanticDiag("countEmbeddableActiveMemories", () =>
+		countEmbeddableActiveMemories(db),
+	);
+	const indexedMemoryCount = traceSemanticDiag(
+		options.fastCounts ? "countIndexedActiveMemoriesFast" : "countIndexedActiveMemories",
+		() =>
+			options.fastCounts
+				? countIndexedActiveMemoriesFast(db, currentModel)
+				: countIndexedActiveMemories(db, currentModel),
+	);
 	const fallbackPendingCount = Math.max(embeddableMemoryCount - indexedMemoryCount, 0);
-	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const job = traceSemanticDiag("getMaintenanceJob", () =>
+		getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB),
+	);
 	const pendingMemoryCount = resolvePendingMemoryCount(fallbackPendingCount, job);
 	const degraded = embeddableMemoryCount > 0 && (embeddingsDisabled || semanticSearchModel == null);
 	const activeCatchUp = job?.status === "pending" || job?.status === "running";

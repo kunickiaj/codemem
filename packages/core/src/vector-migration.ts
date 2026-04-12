@@ -325,6 +325,17 @@ export async function runVectorMigrationPass(
 	}
 	const targetModel = client.model;
 	const effectiveBatchSize = Math.max(1, options.batchSize ?? 50);
+	const existingMetadata = (existingJob?.metadata ?? {}) as MigrationMetadata;
+	const queuedSyncWorkCount =
+		metadataMemoryIds(existingMetadata.pending_upsert_memory_ids).length +
+		metadataMemoryIds(existingMetadata.pending_delete_memory_ids).length;
+	if (
+		existingJob?.status === "completed" &&
+		existingMetadata.target_model === targetModel &&
+		queuedSyncWorkCount === 0
+	) {
+		return;
+	}
 	if (existingJob) {
 		const queuedSyncWork = await runQueuedSyncVectorWork(
 			db,
