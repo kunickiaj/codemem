@@ -47,12 +47,14 @@ export function populateMemoryRefs(
 	);
 	if (filesRead) {
 		for (const path of filesRead) {
-			if (path) insertFileRef.run(memoryId, path, "read");
+			if (typeof path !== "string" || !path) continue;
+			insertFileRef.run(memoryId, path, "read");
 		}
 	}
 	if (filesModified) {
 		for (const path of filesModified) {
-			if (path) insertFileRef.run(memoryId, path, "modified");
+			if (typeof path !== "string" || !path) continue;
+			insertFileRef.run(memoryId, path, "modified");
 		}
 	}
 	const insertConceptRef = db.prepare(
@@ -60,7 +62,8 @@ export function populateMemoryRefs(
 	);
 	if (concepts) {
 		for (const concept of concepts) {
-			const normalized = normalizeConcept(concept ?? "");
+			if (typeof concept !== "string") continue;
+			const normalized = normalizeConcept(concept);
 			if (normalized) insertConceptRef.run(memoryId, normalized);
 		}
 	}

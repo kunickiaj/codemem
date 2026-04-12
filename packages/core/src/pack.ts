@@ -1087,8 +1087,14 @@ function mergeFileRefCandidates(
 	if (!workingSetPaths || !Array.isArray(workingSetPaths) || workingSetPaths.length === 0) {
 		return results;
 	}
+	const validPaths = workingSetPaths.filter(
+		(p): p is string => typeof p === "string" && p.length > 0,
+	);
+	if (validPaths.length === 0) return results;
 	const existingIds = new Set(results.map((r) => r.id));
-	const refCandidateIds = findCandidatesByFile(store.db, workingSetPaths, effectiveLimit);
+	const refCandidateIds = findCandidatesByFile(store.db, validPaths, effectiveLimit, {
+		project: filters?.project,
+	});
 	const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
 	if (newIds.length === 0) return results;
 	const refMemories = newIds
