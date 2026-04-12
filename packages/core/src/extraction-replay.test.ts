@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import { buildRawEventEnvelopeFromHook } from "./claude-hooks.js";
 import { replayBatchExtraction } from "./extraction-replay.js";
 import type { ObserverClient } from "./observer-client.js";
 import { initTestSchema } from "./test-utils.js";
@@ -171,5 +172,125 @@ describe("extraction replay", () => {
 		expect(result.evaluation.counts.summaries).toBe(1);
 		expect(result.evaluation.counts.observations).toBe(0);
 		expect(result.classification.status).toBe("shape_fail");
+	});
+
+	it("populates session context fields from Claude Code adapter-enveloped raw events during replay", async () => {
+		// Regression: prepareReplayBatch previously called buildSessionContext on
+		// raw events without first projecting adapter-enveloped claude.hook events
+		// into the flat user_prompt / tool.execute.after shapes that
+		// buildSessionContext scans for. As a result, Claude Code replay batches
+		// reported promptCount=0, toolCount=0, and empty filesRead/filesModified,
+		// and the observer prompt lost its "[Session context: ...]" line.
+		const dbPath = createDbPath("extraction-replay-claude-context");
+		const sessionId = "ses-claude-replay";
+
+		const hookEvents: Record<string, unknown>[] = [
+			{
+				hook_event_name: "UserPromptSubmit",
+				session_id: sessionId,
+				prompt: "Investigate the replay session context bug",
+				cwd: "/tmp/repo",
+				ts: "2026-04-10T09:00:00Z",
+			},
+			{
+				hook_event_name: "PostToolUse",
+				session_id: sessionId,
+				tool_use_id: "toolu_1",
+				tool_name: "Read",
+				tool_input: { file_path: "/tmp/repo/src/replay.ts" },
+				tool_response: "file contents",
+				cwd: "/tmp/repo",
+				ts: "2026-04-10T09:00:05Z",
+			},
+			{
+				hook_event_name: "PostToolUse",
+				session_id: sessionId,
+				tool_use_id: "toolu_2",
+				tool_name: "Edit",
+				tool_input: { file_path: "/tmp/repo/src/replay.ts" },
+				tool_response: "edited",
+				cwd: "/tmp/repo",
+				ts: "2026-04-10T09:00:10Z",
+			},
+		];
+
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+
+			db.prepare(
+				`INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version, metadata_json) VALUES
+				  (?, '2026-04-10T09:00:00Z', '2026-04-10T09:00:10Z', '/tmp/repo', 'repo', 'adam', 'test', '{"post":{"session_class":"durable","summary_disposition":"stored"}}')`,
+			).run(300001);
+			db.prepare(
+				`INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+				  ('claude', ?, ?, ?, '2026-04-10T09:00:00Z')`,
+			).run(sessionId, sessionId, 300001);
+			db.prepare(
+				`INSERT INTO raw_event_flush_batches(id, source, stream_id, opencode_session_id, start_event_seq, end_event_seq, extractor_version, status, attempt_count, created_at, updated_at) VALUES
+				  (?, 'claude', ?, ?, 1, 3, 'raw_events_v1', 'completed', 1, '2026-04-10T09:00:00Z', '2026-04-10T09:00:10Z')`,
+			).run(30001, sessionId, sessionId);
+
+			const insertRaw = db.prepare(
+				`INSERT INTO raw_events(source, stream_id, opencode_session_id, event_id, event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			);
+			hookEvents.forEach((hook, index) => {
+				const envelope = buildRawEventEnvelopeFromHook(hook);
+				if (envelope == null) throw new Error("expected envelope");
+				insertRaw.run(
+					envelope.source,
+					envelope.session_stream_id,
+					envelope.opencode_session_id,
+					envelope.event_id,
+					index + 1,
+					envelope.event_type,
+					envelope.ts_wall_ms,
+					index + 1,
+					JSON.stringify(envelope.payload),
+					"2026-04-10T09:00:00Z",
+				);
+			});
+		} finally {
+			db.close();
+		}
+
+		const observer = {
+			observe: async () => ({
+				raw: `<summary>
+				  <request>Investigate the replay session context bug</request>
+				  <investigated>extraction-replay buildSessionContext path</investigated>
+				  <learned>Claude Code events need normalization before scanning.</learned>
+				  <completed>Added the normalization step.</completed>
+				  <next_steps></next_steps>
+				  <notes></notes>
+				</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		} as unknown as ObserverClient;
+
+		const result = await replayBatchExtraction(dbPath, observer, {
+			batchId: 30001,
+			scenarioId: "simple-batch-shape",
+		});
+
+		// Before the fix these were both 0 because claude.hook events fell
+		// through the type-based scan in buildSessionContext.
+		expect(result.analysis.promptCount).toBe(1);
+		expect(result.analysis.toolCount).toBe(2);
+		expect(result.analysis.firstPrompt).toBe("Investigate the replay session context bug");
+		expect(result.analysis.filesRead).toEqual(["/tmp/repo/src/replay.ts"]);
+		expect(result.analysis.filesModified).toEqual(["/tmp/repo/src/replay.ts"]);
+
+		// The observer prompt should include the session-context injection line.
+		expect(result.observerContext.userPrompt).toContain("Session context:");
 	});
 });

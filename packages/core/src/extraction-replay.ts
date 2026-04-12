@@ -21,6 +21,7 @@ import {
 	firstSentence,
 	isTrivialRequest,
 	normalizeAdapterEvents,
+	normalizeEventsForSessionContext,
 } from "./ingest-transcript.js";
 import type {
 	ObserverContext,
@@ -180,6 +181,9 @@ export interface ReplayBatchAnalysis {
 	promptCount: number;
 	toolCount: number;
 	transcriptLength: number;
+	firstPrompt: string | undefined;
+	filesRead: string[];
+	filesModified: string[];
 }
 
 interface PreparedReplayBatch {
@@ -459,7 +463,12 @@ async function prepareReplayBatch(
 			throw new Error(`Flush batch ${opts.batchId} has no raw events in range`);
 		}
 
-		const sessionContext: SessionContext = buildSessionContext(events);
+		// Claude Code raw events arrive as `claude.hook` with an adapter envelope;
+		// normalize them to the flat user_prompt / tool.execute.after shapes before
+		// scanning so promptCount, toolCount, firstPrompt, filesRead, and
+		// filesModified are populated correctly during replay.
+		const normalizedForContext = normalizeEventsForSessionContext(events);
+		const sessionContext: SessionContext = buildSessionContext(normalizedForContext);
 		sessionContext.opencodeSessionId = batch.opencode_session_id;
 		sessionContext.source = batch.source;
 		sessionContext.streamId = batch.stream_id;
@@ -570,6 +579,9 @@ async function prepareReplayBatch(
 				promptCount: sessionContext.promptCount ?? 0,
 				toolCount: sessionContext.toolCount ?? 0,
 				transcriptLength: transcript.length,
+				firstPrompt: sessionContext.firstPrompt,
+				filesRead: sessionContext.filesRead ?? [],
+				filesModified: sessionContext.filesModified ?? [],
 			},
 		};
 	} finally {
