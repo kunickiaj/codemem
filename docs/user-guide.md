@@ -2,8 +2,9 @@
 
 ## Start or restart the viewer
 - `codemem serve` runs the viewer in the foreground.
-- `codemem serve --background` runs it in the background.
+- `codemem serve start` runs it in the background.
 - `codemem serve restart` restarts the background viewer.
+- `codemem serve --background` still works as a deprecated alias for `codemem serve start`.
 
 ## Viewer trust model
 
@@ -15,6 +16,7 @@
 
 ## Seeing UI changes
 - The viewer UI is built from `packages/ui/` and served by `packages/viewer-server/`.
+- Rebuild UI assets after frontend changes: `pnpm --filter @codemem/ui build`.
 - Restart the viewer after updates: `codemem serve restart`.
 
 ## Settings modal

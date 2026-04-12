@@ -9,6 +9,8 @@ pnpm install
 pnpm run codemem --help
 ```
 
+This repo is TypeScript-first. Treat `codemem/` and `tests/` Python code as legacy/reference unless you are explicitly working on those surfaces.
+
 ## Quality checks
 
 Run these before opening a PR:
@@ -23,16 +25,22 @@ pnpm build
 Targeted test examples:
 
 ```text
-pnpm vitest run packages/cli/src/commands/serve.test.ts
-pnpm vitest run packages/viewer-server/src/index.test.ts
-pnpm vitest run packages/core/src/index.test.ts
+pnpm exec vitest run packages/cli/src/commands/serve.test.ts
+pnpm exec vitest run packages/viewer-server/src/index.test.ts
+pnpm exec vitest run packages/core/src/index.test.ts
 ```
 
 ## Viewer/plugin development
 
 - Viewer UI source is `packages/ui/` and is served by `packages/viewer-server/`.
 - OpenCode plugin source is `packages/opencode-plugin/.opencode/plugins/codemem.js`.
-- Restart the viewer after UI changes:
+- If you change the UI or viewer assets, rebuild first so `packages/viewer-server/static/` is restaged:
+
+```text
+pnpm --filter @codemem/ui build
+```
+
+- Then restart the viewer if needed:
 
 ```text
 pnpm run codemem serve restart
