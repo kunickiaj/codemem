@@ -91,7 +91,7 @@ export async function runRefBackfillPass(
 ): Promise<boolean> {
 	const existingJob = getMaintenanceJob(db, REF_BACKFILL_JOB);
 	const existingMetadata = getExistingMetadata(db);
-	const batchSize = Math.max(1, options.batchSize ?? 250);
+	const batchSize = Math.max(1, options.batchSize ?? 50);
 	const lastCursorId = Number(existingMetadata.last_cursor_id ?? 0);
 
 	const rows = db
@@ -158,31 +158,33 @@ export async function runRefBackfillPass(
 		"INSERT OR IGNORE INTO memory_concept_refs (memory_id, concept) VALUES (?, ?)",
 	);
 
-	const insertAll = db.transaction(() => {
-		for (const row of rows) {
-			const filesRead = safeJsonArray(row.files_read);
-			const filesModified = safeJsonArray(row.files_modified);
-			const concepts = safeJsonArray(row.concepts);
+	// Insert refs per-row (not per-batch) to keep write transactions short
+	// and avoid blocking the viewer's read connections on large databases.
+	const insertOneRow = db.transaction((row: BackfillRow) => {
+		const filesRead = safeJsonArray(row.files_read);
+		const filesModified = safeJsonArray(row.files_modified);
+		const concepts = safeJsonArray(row.concepts);
 
-			if (filesRead) {
-				for (const path of filesRead) {
-					if (path) insertFileRef.run(row.id, path, "read");
-				}
+		if (filesRead) {
+			for (const path of filesRead) {
+				if (path) insertFileRef.run(row.id, path, "read");
 			}
-			if (filesModified) {
-				for (const path of filesModified) {
-					if (path) insertFileRef.run(row.id, path, "modified");
-				}
+		}
+		if (filesModified) {
+			for (const path of filesModified) {
+				if (path) insertFileRef.run(row.id, path, "modified");
 			}
-			if (concepts) {
-				for (const concept of concepts) {
-					const normalized = normalizeConcept(concept ?? "");
-					if (normalized) insertConceptRef.run(row.id, normalized);
-				}
+		}
+		if (concepts) {
+			for (const concept of concepts) {
+				const normalized = normalizeConcept(concept ?? "");
+				if (normalized) insertConceptRef.run(row.id, normalized);
 			}
 		}
 	});
-	insertAll();
+	for (const row of rows) {
+		insertOneRow(row);
+	}
 
 	const processedAfter = processedBefore + rows.length;
 	const exhausted = rows.length < batchSize;
@@ -233,7 +235,7 @@ export class RefBackfillRunner {
 	constructor(options: RefBackfillRunnerOptions = {}) {
 		this.dbPath = resolveDbPath(options.dbPath);
 		this.signal = options.signal;
-		this.batchSize = Math.max(1, options.batchSize ?? 250);
+		this.batchSize = Math.max(1, options.batchSize ?? 50);
 		this.intervalMs = Math.max(1000, options.intervalMs ?? 5000);
 	}
 
