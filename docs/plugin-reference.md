@@ -89,6 +89,15 @@ If needed, restart viewer + plugin flow:
 codemem serve restart
 ```
 
+If you override the viewer bind, keep the plugin and viewer aligned on the same target:
+
+```bash
+set -lx CODEMEM_VIEWER_HOST 127.0.0.1
+set -lx CODEMEM_VIEWER_PORT 38892
+```
+
+The plugin now passes that explicit host/port through when it auto-starts, health-checks, stops, or restarts the viewer. Do not run multiple viewers against the same DB/runtime folder unless they intentionally share the same bind target; otherwise `viewer.pid` ownership becomes ambiguous.
+
 If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
 
 ## Plugin tools exposed to the model
@@ -234,7 +243,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RUNNER` | Override auto-detected runner: `codemem` (global), `npx`, `node` (repo/dev), or custom binary name. |
 | `CODEMEM_RUNNER_FROM` | Runner source override: npm package spec for `npx` (for example `codemem@0.20.0-alpha.7`), or repo/CLI entry path for `node`. |
 | `CODEMEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
-| `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Customize the viewer host/port printed on startup. |
+| `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Explicit host/port the plugin-managed viewer should start, probe, stop, and restart. |
 | `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
 | `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` for `~/.codemem/plugin.log`; Claude hook failures are logged to this path by default). |

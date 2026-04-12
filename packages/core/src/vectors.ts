@@ -172,6 +172,10 @@ export interface SemanticIndexDiagnostics {
 	} | null;
 }
 
+export interface SemanticIndexDiagnosticsOptions {
+	fastCounts?: boolean;
+}
+
 function countEmbeddableActiveMemories(db: Database): number {
 	const row = db
 		.prepare(
@@ -196,6 +200,21 @@ function countIndexedActiveMemories(db: Database, model: string): number {
 		)
 		.all() as MemoryTextRow[];
 	return rows.filter((row) => memoryHasCompleteVectorCoverage(db, row, model)).length;
+}
+
+function countIndexedActiveMemoriesFast(db: Database, model: string): number {
+	if (!tableExists(db, "memory_vectors")) return 0;
+	const row = db
+		.prepare(
+			`SELECT COUNT(DISTINCT mi.id) AS c
+			 FROM memory_items mi
+			 JOIN memory_vectors mv ON mv.memory_id = mi.id
+			 WHERE mi.active = 1
+			   AND mv.model = ?
+			   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''`,
+		)
+		.get(model) as { c?: number } | undefined;
+	return Number(row?.c ?? 0);
 }
 
 function resolvePendingMemoryCount(
@@ -237,12 +256,17 @@ function summarizeSemanticIndexState(
 	return `Semantic index is current for ${counts.indexed} embeddable mem${counts.indexed === 1 ? "ory" : "ories"}`;
 }
 
-export function getSemanticIndexDiagnostics(db: Database): SemanticIndexDiagnostics {
+export function getSemanticIndexDiagnostics(
+	db: Database,
+	options: SemanticIndexDiagnosticsOptions = {},
+): SemanticIndexDiagnostics {
 	const currentModel = resolveEmbeddingModel();
 	const semanticSearchModel = resolveSemanticSearchModel(db, currentModel);
 	const embeddingsDisabled = isEmbeddingDisabled();
 	const embeddableMemoryCount = countEmbeddableActiveMemories(db);
-	const indexedMemoryCount = countIndexedActiveMemories(db, currentModel);
+	const indexedMemoryCount = options.fastCounts
+		? countIndexedActiveMemoriesFast(db, currentModel)
+		: countIndexedActiveMemories(db, currentModel);
 	const fallbackPendingCount = Math.max(embeddableMemoryCount - indexedMemoryCount, 0);
 	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 	const pendingMemoryCount = resolvePendingMemoryCount(fallbackPendingCount, job);

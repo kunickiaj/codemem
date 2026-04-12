@@ -703,6 +703,8 @@ export const OpencodeMemPlugin = async ({
   );
   const viewerHost = process.env.CODEMEM_VIEWER_HOST || "127.0.0.1";
   const viewerPort = process.env.CODEMEM_VIEWER_PORT || "38888";
+  const viewerDbPath = process.env.CODEMEM_DB || "";
+  const viewerConfigPath = process.env.CODEMEM_CONFIG || "";
   const commandTimeout = Number.parseInt(
     process.env.CODEMEM_PLUGIN_CMD_TIMEOUT || "20000",
     10
@@ -796,6 +798,17 @@ export const OpencodeMemPlugin = async ({
     }
     lastToastAtBySession.set(sessionID, now);
     return true;
+  };
+
+  const buildViewerCliArgs = (action) => {
+    const args = ["serve", action, "--host", viewerHost, "--port", viewerPort];
+    if (String(viewerDbPath || "").trim()) {
+      args.push("--db-path", viewerDbPath);
+    }
+    if (String(viewerConfigPath || "").trim()) {
+      args.push("--config", viewerConfigPath);
+    }
+    return args;
   };
 
   const emitRawEvent = async ({ sessionID, type, payload }) => {
@@ -1212,7 +1225,8 @@ export const OpencodeMemPlugin = async ({
       return;
     }
     viewerStarted = true;
-    const cmd = [runner, ...runnerArgs, "serve", "start"];
+    const viewerArgs = buildViewerCliArgs("start");
+    const cmd = [runner, ...runnerArgs, ...viewerArgs];
     logLine(`auto-starting viewer: ${cmd.join(" ")}`).catch(() => {});
     try {
       const child = nodeSpawn(cmd[0], cmd.slice(1), {
@@ -1304,7 +1318,7 @@ export const OpencodeMemPlugin = async ({
     if (!viewerEnabled || !viewerAutoStart || !viewerStarted) {
       return { attempted: false, ok: false };
     }
-    const restartResult = await runCli(["serve", "restart"]);
+    const restartResult = await runCli(buildViewerCliArgs("restart"));
     if (restartResult?.exitCode === 0) {
       await logLine("compat.auto_update_viewer_restart ok");
       return { attempted: true, ok: true };
@@ -1550,7 +1564,7 @@ export const OpencodeMemPlugin = async ({
     viewerStarted = false;
     stopHealthCheck();
     await logLine("viewer stop requested");
-    await runCli(["serve", "stop"]);
+    await runCli(buildViewerCliArgs("stop"));
   };
 
   const checkViewerHealth = async () => {
@@ -1581,7 +1595,7 @@ export const OpencodeMemPlugin = async ({
       healthLastRestartAttempt = Date.now();
       await logLine(`viewer.health restarting viewer after ${healthConsecutiveFailures} consecutive failures`);
       try {
-        const result = await runCli(["serve", "restart"]);
+        const result = await runCli(buildViewerCliArgs("restart"));
         const ok = result?.exitCode === 0;
         await logLine(`viewer.health restart ${ok ? "succeeded" : "failed"} (exit=${result?.exitCode ?? "unknown"})`);
         if (ok) {

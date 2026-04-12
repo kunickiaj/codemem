@@ -1255,7 +1255,7 @@ export function syncRoutes(
 				.from(schema.syncPeers)
 				.get();
 			const semanticIndex = redactSemanticIndexDiagnostics(
-				getSemanticIndexDiagnostics(store.db),
+				getSemanticIndexDiagnostics(store.db, { fastCounts: true }),
 				showDiag,
 			);
 
