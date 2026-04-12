@@ -63,7 +63,7 @@ END;
 CREATE TABLE IF NOT EXISTS memory_file_refs (
 	memory_id INTEGER NOT NULL,
 	file_path TEXT NOT NULL,
-	relation TEXT NOT NULL,
+	relation TEXT NOT NULL CHECK(relation IN ('read', 'modified')),
 	PRIMARY KEY (memory_id, file_path, relation),
 	FOREIGN KEY (memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
 );

@@ -436,6 +436,35 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 	it("is a no-op when raw_event_flush_batches does not exist", () => {
 		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
 	});
+
+	it("creates memory_file_refs and memory_concept_refs on v6 databases missing them", () => {
+		// Simulate a v6 database that has memory_items but lacks the junction tables.
+		db.exec(`
+			CREATE TABLE memory_items (
+				id INTEGER PRIMARY KEY,
+				session_id INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				title TEXT NOT NULL,
+				body_text TEXT NOT NULL,
+				visibility TEXT,
+				workspace_id TEXT,
+				active INTEGER DEFAULT 1,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		db.pragma("user_version = 6");
+
+		expect(tableExists(db, "memory_file_refs")).toBe(false);
+		expect(tableExists(db, "memory_concept_refs")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(tableExists(db, "memory_file_refs")).toBe(true);
+		expect(tableExists(db, "memory_concept_refs")).toBe(true);
+		expect(hasIndex(db, "idx_memory_file_refs_path")).toBe(true);
+		expect(hasIndex(db, "idx_memory_concept_refs_concept")).toBe(true);
+	});
 });
 
 describe("ensurePlannerStats", () => {

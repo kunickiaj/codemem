@@ -531,6 +531,31 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		}
 	}
 
+	// Junction tables for structured file/concept references on memories.
+	// Added in schema v7; existing v6 databases need these created additively.
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS memory_file_refs (
+				memory_id INTEGER NOT NULL,
+				file_path TEXT NOT NULL,
+				relation TEXT NOT NULL CHECK(relation IN ('read', 'modified')),
+				PRIMARY KEY (memory_id, file_path, relation),
+				FOREIGN KEY (memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+			);
+			CREATE INDEX IF NOT EXISTS idx_memory_file_refs_path ON memory_file_refs(file_path);
+
+			CREATE TABLE IF NOT EXISTS memory_concept_refs (
+				memory_id INTEGER NOT NULL,
+				concept TEXT NOT NULL,
+				PRIMARY KEY (memory_id, concept),
+				FOREIGN KEY (memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+			);
+			CREATE INDEX IF NOT EXISTS idx_memory_concept_refs_concept ON memory_concept_refs(concept);
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for optional additive tables.
+	}
+
 	if (!tableExists(db, "raw_event_flush_batches")) return;
 
 	const additiveColumns: Array<{ name: string; ddl: string }> = [
