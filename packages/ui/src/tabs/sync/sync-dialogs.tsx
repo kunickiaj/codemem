@@ -6,6 +6,7 @@ type DialogTone = "default" | "danger";
 
 type ConfirmDialogRequest = {
 	kind: "confirm";
+	autoFocusAction?: "cancel" | "confirm";
 	cancelLabel?: string;
 	confirmLabel?: string;
 	description: string;
@@ -106,9 +107,21 @@ function SyncDialogHost() {
 	};
 
 	const handleOpenAutoFocus = (event: Event) => {
-		const primary = document.querySelector<HTMLElement>(
+		const legacyPrimary = document.querySelector<HTMLElement>(
 			'#syncDialog [data-sync-primary-action="true"]',
 		);
+		if (request?.kind === "input" && legacyPrimary) {
+			event.preventDefault();
+			legacyPrimary.focus();
+			return;
+		}
+		const preferredAction =
+			request?.kind === "confirm" ? (request.autoFocusAction ?? "confirm") : "confirm";
+		const selector =
+			preferredAction === "cancel"
+				? '#syncDialog [data-sync-dialog-action="cancel"]'
+				: '#syncDialog [data-sync-dialog-action="confirm"]';
+		const primary = document.querySelector<HTMLElement>(selector);
 		if (!primary) return;
 		event.preventDefault();
 		primary.focus();
@@ -237,6 +250,7 @@ function SyncDialogBody({
 				<div className="sync-dialog-actions">
 					<button
 						className="settings-button"
+						data-sync-dialog-action="cancel"
 						onClick={() => resolveCurrentDialog(request.kind === "confirm" ? false : null)}
 						type="button"
 					>
@@ -246,7 +260,7 @@ function SyncDialogBody({
 						<button
 							autoFocus
 							className={`settings-button ${dialogToneClassName(request.kind === "confirm" ? request.tone : undefined)}`}
-							data-sync-primary-action="true"
+							data-sync-dialog-action="confirm"
 							onClick={submit}
 							type="button"
 						>

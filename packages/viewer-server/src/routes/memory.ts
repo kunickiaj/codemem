@@ -18,6 +18,63 @@ import { queryInt } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
 
+type OwnershipContext = {
+	actorId: string;
+	claimedPeerIds: Set<string>;
+	deviceId: string;
+	legacyActorIds: Set<string>;
+};
+
+function cleanOwnershipValue(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed ? trimmed : null;
+}
+
+function buildOwnershipContext(store: MemoryStore): OwnershipContext {
+	const claimedPeerIds = new Set(store.sameActorPeerIds());
+	return {
+		actorId: store.actorId,
+		claimedPeerIds,
+		deviceId: store.deviceId,
+		legacyActorIds: new Set(Array.from(claimedPeerIds, (peerId) => `legacy-sync:${peerId}`)),
+	};
+}
+
+function memoryOwnedBySelf(
+	row: Record<string, unknown>,
+	ownership: OwnershipContext,
+	metadata = fromJson((row.metadata_json as string) ?? null),
+): boolean {
+	const meta = metadata as Record<string, unknown>;
+	const actorId = cleanOwnershipValue(row.actor_id) ?? cleanOwnershipValue(meta.actor_id);
+	if (actorId === ownership.actorId) return true;
+
+	const deviceId =
+		cleanOwnershipValue(row.origin_device_id) ?? cleanOwnershipValue(meta.origin_device_id);
+	if (deviceId === ownership.deviceId) return true;
+	if (deviceId && ownership.claimedPeerIds.has(deviceId)) return true;
+	if (actorId && ownership.legacyActorIds.has(actorId)) return true;
+
+	return false;
+}
+
+function serializeMemoryRow(
+	ownership: OwnershipContext,
+	row: Record<string, unknown>,
+): Record<string, unknown> {
+	const metadata = fromJson((row.metadata_json as string) ?? null);
+	const item = {
+		...row,
+		kind: canonicalMemoryKind((row.kind as string | null | undefined) ?? null, row.metadata_json),
+		metadata_json: metadata,
+	};
+	return {
+		...item,
+		owned_by_self: memoryOwnedBySelf(row, ownership, metadata),
+	};
+}
+
 /**
  * Attach session project/cwd fields to memory items.
  */
@@ -113,11 +170,8 @@ function queryMemoryPage(
 		)
 		.all(...filterResult.params, options.limit + 1, options.offset) as Record<string, unknown>[];
 
-	return rows.map((row) => ({
-		...row,
-		kind: canonicalMemoryKind((row.kind as string | null | undefined) ?? null, row.metadata_json),
-		metadata_json: fromJson((row.metadata_json as string) ?? null),
-	}));
+	const ownership = buildOwnershipContext(store);
+	return rows.map((row) => serializeMemoryRow(ownership, row));
 }
 
 function isSummaryLikeMemory(item: Record<string, unknown>): boolean {
@@ -471,6 +525,50 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (msg.includes("not found")) return c.json({ error: msg }, 404);
 			if (msg.includes("not owned")) return c.json({ error: msg }, 403);
+			return c.json({ error: msg }, 400);
+		}
+	});
+
+	// POST /api/memories/forget
+	app.post("/api/memories/forget", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid JSON" }, 400);
+		}
+		const memoryId = parseStrictInteger(
+			typeof body.memory_id === "string" ? body.memory_id : String(body.memory_id ?? ""),
+		);
+		if (memoryId == null || memoryId <= 0) {
+			return c.json({ error: "memory_id must be int" }, 400);
+		}
+
+		const row = drizzle(store.db, { schema })
+			.select()
+			.from(schema.memoryItems)
+			.where(eq(schema.memoryItems.id, memoryId))
+			.get();
+		if (!row) {
+			return c.json({ error: "memory not found" }, 404);
+		}
+		const ownership = buildOwnershipContext(store);
+		if (!memoryOwnedBySelf(row, ownership)) {
+			return c.json({ error: "memory not owned by this device" }, 403);
+		}
+		if (Number(row.active ?? 1) === 0 || row.deleted_at != null) {
+			return c.json({ status: "ok" });
+		}
+
+		try {
+			store.forget(memoryId);
+			return c.json({ status: "ok" });
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes("not found")) return c.json({ error: msg }, 404);
+			if (msg.includes("not owned")) return c.json({ error: msg }, 403);
+			if (msg.includes("sync_rebootstrap_in_progress")) return c.json({ error: msg }, 409);
 			return c.json({ error: msg }, 400);
 		}
 	});

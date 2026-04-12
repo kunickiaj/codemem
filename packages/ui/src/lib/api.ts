@@ -201,6 +201,17 @@ export async function updateMemoryVisibility(
 	return payload;
 }
 
+export async function forgetMemory(memoryId: number): Promise<{ status?: string }> {
+	const resp = await fetch("/api/memories/forget", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ memory_id: memoryId }),
+	});
+	const { text, payload } = await readJsonPayload<{ status?: string }>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
+}
+
 export async function loadSummaries(project: string): Promise<PaginatedResponse> {
 	return loadSummariesPage(project);
 }
