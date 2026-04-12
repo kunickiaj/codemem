@@ -1357,3 +1357,80 @@ describe("buildMemoryPack cluster compression", () => {
 		expect(compressedCandidate?.disposition).toBe("compressed");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// File-ref candidate sourcing across retrieval modes
+// ---------------------------------------------------------------------------
+
+describe("buildMemoryPack file-ref candidates in task and recall modes", () => {
+	let tmpDir: string;
+	let store: MemoryStore;
+	let sessionId: number;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-fileref-"));
+		const dbPath = join(tmpDir, "test.db");
+		const db = connect(dbPath);
+		initTestSchema(db);
+		db.close();
+		store = new MemoryStore(dbPath);
+		sessionId = insertTestSession(store.db);
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("surfaces file-ref candidates in task mode", () => {
+		// Memory whose text has NO overlap with the task query
+		// but whose files_modified match the working_set_paths
+		store.remember(
+			sessionId,
+			"decision",
+			"Chose HMAC-SHA256 for token signing",
+			"Selected HMAC-SHA256 for performance and security balance.",
+			0.8,
+			["crypto", "tokens"],
+			{
+				files_modified: ["packages/core/src/auth.ts"],
+				concepts: ["authentication"],
+			},
+		);
+
+		// Task-like query that will trigger task mode
+		const pack = buildMemoryPack(store, "what should I do next", 10, null, {
+			working_set_paths: ["packages/core/src/auth.ts"],
+		});
+
+		expect(pack.metrics.mode).toBe("task");
+		const found = pack.items.some((item) => item.title.includes("HMAC-SHA256"));
+		expect(found).toBe(true);
+	});
+
+	it("surfaces file-ref candidates in recall mode", () => {
+		// Memory whose text has NO overlap with the recall query
+		// but whose files_modified match the working_set_paths
+		store.remember(
+			sessionId,
+			"decision",
+			"Chose HMAC-SHA256 for token signing",
+			"Selected HMAC-SHA256 for performance and security balance.",
+			0.8,
+			["crypto", "tokens"],
+			{
+				files_modified: ["packages/core/src/auth.ts"],
+				concepts: ["authentication"],
+			},
+		);
+
+		// Recall-like query that will trigger recall mode
+		const pack = buildMemoryPack(store, "what did I work on last time", 10, null, {
+			working_set_paths: ["packages/core/src/auth.ts"],
+		});
+
+		expect(pack.metrics.mode).toBe("recall");
+		const found = pack.items.some((item) => item.title.includes("HMAC-SHA256"));
+		expect(found).toBe(true);
+	});
+});
