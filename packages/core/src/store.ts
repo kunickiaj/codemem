@@ -37,6 +37,7 @@ import {
 	buildMemoryPackTrace,
 	buildMemoryPackTraceAsync,
 } from "./pack.js";
+import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
@@ -591,44 +592,60 @@ export class MemoryStore {
 		// Block shared-memory writes while sync requires attention.
 		this.assertSharedMutationAllowed(provenance.visibility);
 
-		let insertedRows: Array<{ id: number }>;
+		let memoryId: number;
 		try {
-			insertedRows = this.d
-				.insert(schema.memoryItems)
-				.values({
-					session_id: sessionId,
-					kind: validKind,
-					title,
-					subtitle,
-					body_text: bodyText,
-					confidence,
-					tags_text: tagsText,
-					active: 1,
-					created_at: now,
-					updated_at: now,
-					metadata_json: toJson(metaPayload),
-					actor_id: provenance.actor_id,
-					actor_display_name: provenance.actor_display_name,
-					visibility: provenance.visibility,
-					workspace_id: provenance.workspace_id,
-					workspace_kind: provenance.workspace_kind,
-					origin_device_id: provenance.origin_device_id,
-					origin_source: provenance.origin_source,
-					trust_state: provenance.trust_state,
-					narrative,
-					facts: toJsonNullable(facts),
-					concepts: toJsonNullable(concepts),
-					files_read: toJsonNullable(filesRead),
-					files_modified: toJsonNullable(filesModified),
-					prompt_number: promptNumber,
-					user_prompt_id: userPromptId,
-					deleted_at: null,
-					rev: 1,
-					dedup_key: dedupKey,
-					import_key: importKey,
-				})
-				.returning({ id: schema.memoryItems.id })
-				.all();
+			memoryId = this.db.transaction(() => {
+				const insertedRows = this.d
+					.insert(schema.memoryItems)
+					.values({
+						session_id: sessionId,
+						kind: validKind,
+						title,
+						subtitle,
+						body_text: bodyText,
+						confidence,
+						tags_text: tagsText,
+						active: 1,
+						created_at: now,
+						updated_at: now,
+						metadata_json: toJson(metaPayload),
+						actor_id: provenance.actor_id,
+						actor_display_name: provenance.actor_display_name,
+						visibility: provenance.visibility,
+						workspace_id: provenance.workspace_id,
+						workspace_kind: provenance.workspace_kind,
+						origin_device_id: provenance.origin_device_id,
+						origin_source: provenance.origin_source,
+						trust_state: provenance.trust_state,
+						narrative,
+						facts: toJsonNullable(facts),
+						concepts: toJsonNullable(concepts),
+						files_read: toJsonNullable(filesRead),
+						files_modified: toJsonNullable(filesModified),
+						prompt_number: promptNumber,
+						user_prompt_id: userPromptId,
+						deleted_at: null,
+						rev: 1,
+						dedup_key: dedupKey,
+						import_key: importKey,
+					})
+					.returning({ id: schema.memoryItems.id })
+					.all();
+
+				const id = insertedRows[0]?.id;
+				if (id == null) throw new Error("memory insert returned no id");
+
+				populateMemoryRefs(this.db, id, filesRead, filesModified, concepts);
+
+				// Record replication op for sync propagation (non-fatal)
+				try {
+					recordReplicationOp(this.db, { memoryId: id, opType: "upsert", deviceId: this.deviceId });
+				} catch {
+					// Non-fatal — don't block memory creation
+				}
+
+				return id;
+			})();
 		} catch (error) {
 			if (!isSameSessionDedupConstraintError(error)) throw error;
 			const existingSameSessionHit = this.findExistingDuplicateMemory(
@@ -646,53 +663,9 @@ export class MemoryStore {
 			throw error;
 		}
 
-		const memoryId = insertedRows[0]?.id;
-		if (memoryId == null) throw new Error("memory insert returned no id");
-
-		this.populateMemoryRefs(memoryId, filesRead, filesModified, concepts);
-
-		// Record replication op for sync propagation
-		try {
-			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
-		} catch {
-			// Non-fatal — don't block memory creation
-		}
-
 		this.enqueueVectorWrite(memoryId, title, bodyText);
 
 		return memoryId;
-	}
-
-	// junction-table denormalization
-
-	private populateMemoryRefs(
-		memoryId: number,
-		filesRead: string[] | null,
-		filesModified: string[] | null,
-		concepts: string[] | null,
-	): void {
-		const insertFileRef = this.db.prepare(
-			"INSERT OR IGNORE INTO memory_file_refs (memory_id, file_path, relation) VALUES (?, ?, ?)",
-		);
-		if (filesRead) {
-			for (const path of filesRead) {
-				if (path) insertFileRef.run(memoryId, path, "read");
-			}
-		}
-		if (filesModified) {
-			for (const path of filesModified) {
-				if (path) insertFileRef.run(memoryId, path, "modified");
-			}
-		}
-		const insertConceptRef = this.db.prepare(
-			"INSERT OR IGNORE INTO memory_concept_refs (memory_id, concept) VALUES (?, ?)",
-		);
-		if (concepts) {
-			for (const concept of concepts) {
-				const normalized = concept?.trim().toLowerCase();
-				if (normalized) insertConceptRef.run(memoryId, normalized);
-			}
-		}
 	}
 
 	// provenance resolution

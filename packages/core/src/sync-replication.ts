@@ -14,6 +14,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
+import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import { deriveTags } from "./tags.js";
 import type {
@@ -133,6 +134,12 @@ function asNumberOrNull(value: unknown): number | null {
 function asStringOrNull(value: unknown): string | null {
 	if (value == null) return null;
 	return String(value);
+}
+
+/** Coerce an unknown payload field to `string[] | null` for ref population. */
+function asStringArrayOrNull(value: unknown): string[] | null {
+	if (!Array.isArray(value)) return null;
+	return value.map(String);
 }
 
 function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload | null {
@@ -1870,6 +1877,15 @@ export function applyReplicationOps(
 							})
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
+						// Re-populate junction tables with updated file/concept refs
+						clearMemoryRefs(db, Number(memRow.id));
+						populateMemoryRefs(
+							db,
+							Number(memRow.id),
+							asStringArrayOrNull(payload.files_read),
+							asStringArrayOrNull(payload.files_modified),
+							asStringArrayOrNull(payload.concepts),
+						);
 						if (shouldDeleteVectors) queueVectorDelete(Number(memRow.id));
 						else if (shouldQueueVectorUpsert) queueVectorUpsert(Number(memRow.id));
 					} else {
@@ -1923,6 +1939,14 @@ export function applyReplicationOps(
 							.returning({ id: schema.memoryItems.id })
 							.all();
 						const insertedId = Number(insertedRows[0]?.id ?? 0);
+						// Populate junction tables for the new memory
+						populateMemoryRefs(
+							db,
+							insertedId,
+							asStringArrayOrNull(payload.files_read),
+							asStringArrayOrNull(payload.files_modified),
+							asStringArrayOrNull(payload.concepts),
+						);
 						if (payload.deleted_at != null || Number(payload.active ?? 1) === 0) {
 							queueVectorDelete(insertedId);
 						} else {

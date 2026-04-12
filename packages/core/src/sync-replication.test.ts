@@ -1593,6 +1593,115 @@ describe("applyReplicationOps", () => {
 		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
 	});
 
+	it("populates ref tables when inserting a new memory with files and concepts", () => {
+		const op = makeReplicationOp({
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Remote with refs",
+				body_text: "Remote body",
+				files_read: ["src/auth.ts", "src/config.ts"],
+				files_modified: ["src/auth.ts"],
+				concepts: ["Auth", " security "],
+			}),
+		});
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+
+		const mem = db
+			.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+			.get("key:test-1") as { id: number };
+
+		const fileRefs = db
+			.prepare("SELECT * FROM memory_file_refs WHERE memory_id = ? ORDER BY file_path, relation")
+			.all(mem.id) as Array<{ memory_id: number; file_path: string; relation: string }>;
+
+		expect(fileRefs).toHaveLength(3);
+		expect(fileRefs).toContainEqual({
+			memory_id: mem.id,
+			file_path: "src/auth.ts",
+			relation: "read",
+		});
+		expect(fileRefs).toContainEqual({
+			memory_id: mem.id,
+			file_path: "src/config.ts",
+			relation: "read",
+		});
+		expect(fileRefs).toContainEqual({
+			memory_id: mem.id,
+			file_path: "src/auth.ts",
+			relation: "modified",
+		});
+
+		const conceptRefs = db
+			.prepare("SELECT * FROM memory_concept_refs WHERE memory_id = ? ORDER BY concept")
+			.all(mem.id) as Array<{ memory_id: number; concept: string }>;
+
+		expect(conceptRefs).toHaveLength(2);
+		expect(conceptRefs).toContainEqual({ memory_id: mem.id, concept: "auth" });
+		expect(conceptRefs).toContainEqual({ memory_id: mem.id, concept: "security" });
+	});
+
+	it("repopulates ref tables when updating existing memory with new files/concepts", () => {
+		// Insert initial memory with some refs
+		const insertOp = makeReplicationOp({
+			entity_id: "key:update-refs",
+			clock_rev: 1,
+			clock_updated_at: "2026-01-01T00:00:00Z",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Refs update test",
+				body_text: "Body",
+				files_read: ["src/old.ts"],
+				concepts: ["old-concept"],
+			}),
+		});
+		applyReplicationOps(db, [insertOp], "dev-local");
+
+		const mem = db
+			.prepare("SELECT id FROM memory_items WHERE import_key = ?")
+			.get("key:update-refs") as { id: number };
+
+		// Verify initial refs
+		let fileRefs = db
+			.prepare("SELECT file_path FROM memory_file_refs WHERE memory_id = ?")
+			.all(mem.id) as Array<{ file_path: string }>;
+		expect(fileRefs).toHaveLength(1);
+		expect(fileRefs[0]?.file_path).toBe("src/old.ts");
+
+		// Update with new files/concepts
+		const updateOp = makeReplicationOp({
+			op_id: `op-update-${Date.now()}`,
+			entity_id: "key:update-refs",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Refs update test",
+				body_text: "Body",
+				files_read: ["src/new.ts"],
+				files_modified: ["src/new.ts"],
+				concepts: ["new-concept"],
+			}),
+		});
+		applyReplicationOps(db, [updateOp], "dev-local");
+
+		// Old refs should be gone, new refs should be present
+		fileRefs = db
+			.prepare(
+				"SELECT file_path, relation FROM memory_file_refs WHERE memory_id = ? ORDER BY file_path, relation",
+			)
+			.all(mem.id) as Array<{ file_path: string; relation: string }>;
+		expect(fileRefs).toHaveLength(2);
+		expect(fileRefs).toContainEqual({ file_path: "src/new.ts", relation: "read" });
+		expect(fileRefs).toContainEqual({ file_path: "src/new.ts", relation: "modified" });
+
+		const conceptRefs = db
+			.prepare("SELECT concept FROM memory_concept_refs WHERE memory_id = ?")
+			.all(mem.id) as Array<{ concept: string }>;
+		expect(conceptRefs).toHaveLength(1);
+		expect(conceptRefs[0]?.concept).toBe("new-concept");
+	});
+
 	it("updates existing memory when op clock is newer", () => {
 		// Insert initial memory
 		const sessionId = insertTestSession(db);
