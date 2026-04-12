@@ -59,6 +59,27 @@ CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
 	INSERT INTO memory_fts(memory_fts, rowid, title, body_text, tags_text)
 	VALUES('delete', old.id, old.title, old.body_text, old.tags_text);
 END;
+
+CREATE TABLE IF NOT EXISTS memory_file_refs (
+	memory_id INTEGER NOT NULL,
+	file_path TEXT NOT NULL,
+	relation TEXT NOT NULL,
+	PRIMARY KEY (memory_id, file_path, relation),
+	FOREIGN KEY (memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_refs_path
+	ON memory_file_refs(file_path);
+
+CREATE TABLE IF NOT EXISTS memory_concept_refs (
+	memory_id INTEGER NOT NULL,
+	concept TEXT NOT NULL,
+	PRIMARY KEY (memory_id, concept),
+	FOREIGN KEY (memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_concept_refs_concept
+	ON memory_concept_refs(concept);
 `;
 
 /**

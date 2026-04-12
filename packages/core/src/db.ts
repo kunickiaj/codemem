@@ -32,7 +32,7 @@ import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * Minimum schema version the TS runtime can operate with.
