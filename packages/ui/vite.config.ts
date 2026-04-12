@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import preact from "@preact/preset-vite";
 import type { OutputChunk, OutputOptions } from "rollup";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 function isOutputChunk(value: unknown): value is OutputChunk {
 	return (
@@ -79,5 +79,9 @@ export default defineConfig(({ mode }) => ({
 	],
 	esbuild: {
 		legalComments: "none",
+	},
+	test: {
+		environment: "jsdom",
+		name: "ui",
 	},
 }));
