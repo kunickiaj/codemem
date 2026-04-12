@@ -1,5 +1,6 @@
 import type { TargetedInputEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
+import { RadixSelect } from "../../../components/primitives/radix-select";
 import {
 	actorDisplayLabel,
 	actorLabel,
@@ -65,6 +66,16 @@ function SyncActorRow({
 	const mergeNote = !mergeTargets.length
 		? "No people available to combine yet. Create another person or use You."
 		: actorMergeNote(mergeTargetId, actorId);
+	const mergeOptions = [
+		{ label: "Combine into person", value: "" },
+		...mergeTargets.map((target) => {
+			const targetId = String(target.actor_id || "");
+			return {
+				label: target.is_local ? actorDisplayLabel(target) : actorLabel(target),
+				value: targetId,
+			};
+		}),
+	];
 
 	async function rename() {
 		const nextName = name.trim();
@@ -156,27 +167,22 @@ function SyncActorRow({
 							{renameLabel}
 						</button>
 						<div className="actor-merge-controls">
-							<select
-								aria-label={`Combine ${label} into another person`}
-								className="sync-actor-select actor-merge-select"
-								disabled={mergeBusy}
+							<RadixSelect
+								ariaLabel={`Combine ${label} into another person`}
+								contentClassName="sync-radix-select-content sync-actor-select-content"
+								disabled={mergeBusy || mergeTargets.length === 0}
+								itemClassName="sync-radix-select-item"
+								onValueChange={setMergeTargetId}
+								options={mergeOptions}
+								placeholder="Combine into person"
+								triggerClassName="sync-radix-select-trigger sync-actor-select actor-merge-select"
 								value={mergeTargetId}
-								onChange={(event) => setMergeTargetId(event.currentTarget.value)}
-							>
-								<option value="">Combine into person</option>
-								{mergeTargets.map((target) => {
-									const targetId = String(target.actor_id || "");
-									return (
-										<option key={targetId} value={targetId}>
-											{target.is_local ? actorDisplayLabel(target) : actorLabel(target)}
-										</option>
-									);
-								})}
-							</select>
+								viewportClassName="sync-radix-select-viewport"
+							/>
 							<button
 								type="button"
 								className="settings-button"
-								disabled={mergeBusy || mergeTargets.length === 0}
+								disabled={mergeBusy || mergeTargets.length === 0 || !mergeTargetId}
 								onClick={() => void merge()}
 							>
 								{mergeLabel}
