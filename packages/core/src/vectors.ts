@@ -172,6 +172,21 @@ export interface SemanticIndexDiagnostics {
 	} | null;
 }
 
+export interface SemanticIndexDiagnosticsOptions {
+	fastCounts?: boolean;
+}
+
+function traceSemanticDiag<T>(label: string, fn: () => T): T {
+	if (process.env.CODEMEM_TRACE_SEMANTIC_DIAGNOSTICS !== "1") return fn();
+	const startedAt = Date.now();
+	console.warn(`[codemem semantic] ${label} start`);
+	try {
+		return fn();
+	} finally {
+		console.warn(`[codemem semantic] ${label} ${Date.now() - startedAt}ms`);
+	}
+}
+
 function countEmbeddableActiveMemories(db: Database): number {
 	const row = db
 		.prepare(
@@ -196,6 +211,21 @@ function countIndexedActiveMemories(db: Database, model: string): number {
 		)
 		.all() as MemoryTextRow[];
 	return rows.filter((row) => memoryHasCompleteVectorCoverage(db, row, model)).length;
+}
+
+function countIndexedActiveMemoriesFast(db: Database, model: string): number {
+	if (!tableExists(db, "memory_vectors")) return 0;
+	const row = db
+		.prepare(
+			`SELECT COUNT(DISTINCT mi.id) AS c
+			 FROM memory_items mi
+			 JOIN memory_vectors mv ON mv.memory_id = mi.id
+			 WHERE mi.active = 1
+			   AND mv.model = ?
+			   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''`,
+		)
+		.get(model) as { c?: number } | undefined;
+	return Number(row?.c ?? 0);
 }
 
 function resolvePendingMemoryCount(
@@ -237,14 +267,29 @@ function summarizeSemanticIndexState(
 	return `Semantic index is current for ${counts.indexed} embeddable mem${counts.indexed === 1 ? "ory" : "ories"}`;
 }
 
-export function getSemanticIndexDiagnostics(db: Database): SemanticIndexDiagnostics {
-	const currentModel = resolveEmbeddingModel();
-	const semanticSearchModel = resolveSemanticSearchModel(db, currentModel);
-	const embeddingsDisabled = isEmbeddingDisabled();
-	const embeddableMemoryCount = countEmbeddableActiveMemories(db);
-	const indexedMemoryCount = countIndexedActiveMemories(db, currentModel);
+export function getSemanticIndexDiagnostics(
+	db: Database,
+	options: SemanticIndexDiagnosticsOptions = {},
+): SemanticIndexDiagnostics {
+	const currentModel = traceSemanticDiag("resolveEmbeddingModel", () => resolveEmbeddingModel());
+	const semanticSearchModel = traceSemanticDiag("resolveSemanticSearchModel", () =>
+		resolveSemanticSearchModel(db, currentModel),
+	);
+	const embeddingsDisabled = traceSemanticDiag("isEmbeddingDisabled", () => isEmbeddingDisabled());
+	const embeddableMemoryCount = traceSemanticDiag("countEmbeddableActiveMemories", () =>
+		countEmbeddableActiveMemories(db),
+	);
+	const indexedMemoryCount = traceSemanticDiag(
+		options.fastCounts ? "countIndexedActiveMemoriesFast" : "countIndexedActiveMemories",
+		() =>
+			options.fastCounts
+				? countIndexedActiveMemoriesFast(db, currentModel)
+				: countIndexedActiveMemories(db, currentModel),
+	);
 	const fallbackPendingCount = Math.max(embeddableMemoryCount - indexedMemoryCount, 0);
-	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const job = traceSemanticDiag("getMaintenanceJob", () =>
+		getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB),
+	);
 	const pendingMemoryCount = resolvePendingMemoryCount(fallbackPendingCount, job);
 	const degraded = embeddableMemoryCount > 0 && (embeddingsDisabled || semanticSearchModel == null);
 	const activeCatchUp = job?.status === "pending" || job?.status === "running";

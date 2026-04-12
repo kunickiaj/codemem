@@ -462,6 +462,28 @@ describe("vector migration", () => {
 		expect(completedAfterDisable).toMatchObject({ status: "completed" });
 	});
 
+	it("returns early for completed current-model jobs without rescanning vectors", async () => {
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+
+		await runVectorMigrationPass(db, { batchSize: 10 });
+		const completedJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(completedJob).toMatchObject({ status: "completed" });
+
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			if (sql.includes("SELECT model, COUNT(*) AS rows FROM memory_vectors")) {
+				throw new Error("unexpected vector model scan");
+			}
+			return Database.prototype.prepare.call(db, sql);
+		});
+
+		await expect(runVectorMigrationPass(db, { batchSize: 10 })).resolves.toBeUndefined();
+		expect(getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)).toMatchObject({
+			status: "completed",
+		});
+	});
+
 	it("removes stale old-model rows when queued work has zero embeddable memories", async () => {
 		const sessionId = insertTestSession(db);
 		seedMemory(db, 1, sessionId, "", "");

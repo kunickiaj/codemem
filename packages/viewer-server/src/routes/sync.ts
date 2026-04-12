@@ -1204,30 +1204,42 @@ export function syncRoutes(
 	app.get("/api/sync/status", async (c) => {
 		const store = getStore();
 		{
+			const traceSync = <T>(label: string, fn: () => T): T => {
+				if (process.env.CODEMEM_TRACE_SYNC_STATUS !== "1") return fn();
+				const startedAt = Date.now();
+				console.warn(`[codemem sync-status] ${label} start`);
+				try {
+					return fn();
+				} finally {
+					console.warn(`[codemem sync-status] ${label} ${Date.now() - startedAt}ms`);
+				}
+			};
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
 			const includeJoinRequests = queryBool(c.req.query("includeJoinRequests"));
 			const project = c.req.query("project") || null;
-			const config = readCoordinatorSyncConfig();
-			const syncReset = getSyncResetState(store.db);
+			const config = traceSync("readCoordinatorSyncConfig", () => readCoordinatorSyncConfig());
+			const syncReset = traceSync("getSyncResetState", () => getSyncResetState(store.db));
 
 			const d = drizzle(store.db, { schema });
 
-			const deviceRow = d
-				.select({
-					device_id: schema.syncDevice.device_id,
-					fingerprint: schema.syncDevice.fingerprint,
-				})
-				.from(schema.syncDevice)
-				.limit(1)
-				.get();
+			const deviceRow = traceSync("deviceRow", () =>
+				d
+					.select({
+						device_id: schema.syncDevice.device_id,
+						fingerprint: schema.syncDevice.fingerprint,
+					})
+					.from(schema.syncDevice)
+					.limit(1)
+					.get(),
+			);
 
-			const daemonState = d
-				.select()
-				.from(schema.syncDaemonState)
-				.where(eq(schema.syncDaemonState.id, 1))
-				.get();
+			const daemonState = traceSync("daemonState", () =>
+				d.select().from(schema.syncDaemonState).where(eq(schema.syncDaemonState.id, 1)).get(),
+			);
 
-			const peerCountRow = d.select({ total: count() }).from(schema.syncPeers).get();
+			const peerCountRow = traceSync("peerCountRow", () =>
+				d.select({ total: count() }).from(schema.syncPeers).get(),
+			);
 			let retentionState:
 				| {
 						last_run_at?: string | null;
@@ -1241,28 +1253,34 @@ export function syncRoutes(
 				  }
 				| undefined;
 			try {
-				retentionState = d
-					.select()
-					.from(schema.syncRetentionState)
-					.where(eq(schema.syncRetentionState.id, 1))
-					.get();
+				retentionState = traceSync("retentionState", () =>
+					d
+						.select()
+						.from(schema.syncRetentionState)
+						.where(eq(schema.syncRetentionState.id, 1))
+						.get(),
+				);
 			} catch {
 				retentionState = undefined;
 			}
 
-			const lastSyncRow = d
-				.select({ last_sync_at: max(schema.syncPeers.last_sync_at) })
-				.from(schema.syncPeers)
-				.get();
-			const semanticIndex = redactSemanticIndexDiagnostics(
-				getSemanticIndexDiagnostics(store.db),
-				showDiag,
+			const lastSyncRow = traceSync("lastSyncRow", () =>
+				d
+					.select({ last_sync_at: max(schema.syncPeers.last_sync_at) })
+					.from(schema.syncPeers)
+					.get(),
+			);
+			const semanticIndex = traceSync("semanticIndex", () =>
+				redactSemanticIndexDiagnostics(
+					getSemanticIndexDiagnostics(store.db, { fastCounts: !showDiag }),
+					showDiag,
+				),
 			);
 
 			const lastError = daemonState?.last_error as string | null;
 			const lastErrorAt = daemonState?.last_error_at as string | null;
 			const lastOkAt = daemonState?.last_ok_at as string | null;
-			const viewerBinding = readViewerBinding(store.dbPath);
+			const viewerBinding = traceSync("readViewerBinding", () => readViewerBinding(store.dbPath));
 			const daemonRunning = viewerBinding
 				? await portOpen(viewerBinding.host, viewerBinding.port)
 				: false;
@@ -1345,7 +1363,10 @@ export function syncRoutes(
 			}
 
 			// Build peers list using deduplicated mapPeerRow
-			const peerRows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
+			const peerRows = traceSync(
+				"peerRows",
+				() => store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[],
+			);
 			const peersItems = peerRows.map((row) => {
 				const peer = mapPeerRow(store, row, showDiag);
 				peer.status = peerStatus(peer);
@@ -1358,24 +1379,31 @@ export function syncRoutes(
 			}
 
 			// Attempts
-			const attemptRows = d
-				.select({
-					peer_device_id: schema.syncAttempts.peer_device_id,
-					ok: schema.syncAttempts.ok,
-					error: schema.syncAttempts.error,
-					started_at: schema.syncAttempts.started_at,
-					finished_at: schema.syncAttempts.finished_at,
-					ops_in: schema.syncAttempts.ops_in,
-					ops_out: schema.syncAttempts.ops_out,
-				})
-				.from(schema.syncAttempts)
-				.orderBy(desc(schema.syncAttempts.finished_at))
-				.limit(25)
-				.all();
+			const attemptRows = traceSync("attemptRows", () =>
+				d
+					.select({
+						peer_device_id: schema.syncAttempts.peer_device_id,
+						ok: schema.syncAttempts.ok,
+						error: schema.syncAttempts.error,
+						started_at: schema.syncAttempts.started_at,
+						finished_at: schema.syncAttempts.finished_at,
+						ops_in: schema.syncAttempts.ops_in,
+						ops_out: schema.syncAttempts.ops_out,
+					})
+					.from(schema.syncAttempts)
+					.orderBy(desc(schema.syncAttempts.finished_at))
+					.limit(25)
+					.all(),
+			);
 			const peerAddressMap = new Map<string, string[]>();
-			const peerAddressRows = store.db
-				.prepare("SELECT peer_device_id, addresses_json FROM sync_peers")
-				.all() as Array<{ peer_device_id: string | null; addresses_json: string | null }>;
+			const peerAddressRows = traceSync(
+				"peerAddressRows",
+				() =>
+					store.db.prepare("SELECT peer_device_id, addresses_json FROM sync_peers").all() as Array<{
+						peer_device_id: string | null;
+						addresses_json: string | null;
+					}>,
+			);
 			peerAddressRows.forEach((peerRow) => {
 				const addrs = safeJsonList(peerRow.addresses_json as string | null);
 				if (addrs.length) peerAddressMap.set(String(peerRow.peer_device_id ?? ""), addrs);
@@ -1398,11 +1426,11 @@ export function syncRoutes(
 				sync: {},
 				ping: {},
 			};
-			const legacyDevices = store.claimableLegacyDeviceIds();
-			const sharingReview = store.sharingReviewSummary(project);
-			const coordinator = redactCoordinatorStatus(
-				await coordinatorStatusSnapshot(store, config),
-				showDiag,
+			const legacyDevices = traceSync("legacyDevices", () => store.claimableLegacyDeviceIds());
+			const sharingReview = traceSync("sharingReview", () => store.sharingReviewSummary(project));
+			const coordinatorSnapshot = await coordinatorStatusSnapshot(store, config);
+			const coordinator = traceSync("coordinator", () =>
+				redactCoordinatorStatus(coordinatorSnapshot, showDiag),
 			);
 			let joinRequests: Record<string, unknown>[] = [];
 			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {

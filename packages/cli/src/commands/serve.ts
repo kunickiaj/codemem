@@ -4,7 +4,9 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
-	connect,
+	DEDUP_KEY_BACKFILL_JOB,
+	DedupKeyBackfillRunner,
+	getMaintenanceJob,
 	hasPendingDedupKeyBackfill,
 	hasPendingRefBackfill,
 	hasPendingSessionContextBackfill,
@@ -13,14 +15,15 @@ import {
 	type MemoryStore,
 	ObserverClient,
 	RawEventSweeper,
+	REF_BACKFILL_JOB,
+	RefBackfillRunner,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	resolveDbPath,
-	runDedupKeyBackfillPass,
-	runRefBackfillPass,
-	runSessionContextBackfillPass,
 	runSyncDaemon,
+	SESSION_CONTEXT_BACKFILL_JOB,
+	SessionContextBackfillRunner,
 	SyncRetentionRunner,
 	VectorModelMigrationRunner,
 } from "@codemem/core";
@@ -164,6 +167,34 @@ function readViewerPidRecord(dbPath: string): ViewerPidRecord | null {
 		}
 	}
 	return null;
+}
+function normalizeViewerHost(host: string): string {
+	const normalized = host.trim().toLowerCase();
+	if (
+		normalized === "localhost" ||
+		normalized === "127.0.0.1" ||
+		normalized === "::1" ||
+		normalized === "[::1]"
+	) {
+		return "loopback";
+	}
+	return normalized;
+}
+
+async function findRuntimeViewerConflict(
+	dbPath: string,
+	target: { host: string; port: number },
+): Promise<ViewerPidRecord | null> {
+	const record = readViewerPidRecord(dbPath);
+	if (!record) return null;
+	if (
+		normalizeViewerHost(record.host) === normalizeViewerHost(target.host) &&
+		record.port === target.port
+	)
+		return null;
+	if (!isProcessRunning(record.pid)) return null;
+	if (!(await respondsLikeCodememViewer(record))) return null;
+	return record;
 }
 
 function isProcessRunning(pid: number): boolean {
@@ -362,71 +393,110 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 	);
 }
 
-/**
- * Run backfill jobs one at a time using direct pass calls (not the timer-based
- * runners). Each job processes its full backlog before the next starts. This
- * prevents WAL lock contention when multiple backfills are pending.
- *
- * Yields to the event loop between passes so the HTTP server stays responsive.
- */
-async function sequenceBackfillRunners(
-	dbPath: string,
-	pending: {
-		dedupKey: boolean;
-		sessionContext: boolean;
-		ref: boolean;
-	},
+type ManagedBackfillRunner = {
+	start(): void;
+	stop(): Promise<void>;
+};
+
+type BackfillJobPlan = {
+	name: string;
+	kind: string;
+	isPending: (db: MemoryStore["db"]) => boolean;
+	createRunner: () => ManagedBackfillRunner;
+};
+
+function createSequentialBackfillCoordinator(
+	store: MemoryStore,
+	jobPlans: BackfillJobPlan[],
 	signal?: AbortSignal,
-): Promise<void> {
-	const jobs: Array<{
-		name: string;
-		run: (db: ReturnType<typeof connect>) => Promise<boolean>;
-	}> = [];
+): { start: () => void; stop: () => Promise<void> } {
+	const pollIntervalMs = 1000;
+	let activeRunner: ManagedBackfillRunner | null = null;
+	let activePlan: BackfillJobPlan | null = null;
+	let activePollTimer: ReturnType<typeof setTimeout> | null = null;
+	let nextJobIndex = 0;
+	let stopped = false;
 
-	if (pending.dedupKey) {
-		jobs.push({
-			name: "Dedup-key",
-			run: (db) => runDedupKeyBackfillPass(db, { batchSize: 10 }),
-		});
-	}
-	if (pending.sessionContext) {
-		jobs.push({
-			name: "Session-context",
-			run: (db) => runSessionContextBackfillPass(db, { batchSize: 10 }),
-		});
-	}
-	if (pending.ref) {
-		jobs.push({
-			name: "Ref",
-			run: (db) => runRefBackfillPass(db, { batchSize: 10 }),
-		});
-	}
+	const clearPollTimer = () => {
+		if (!activePollTimer) return;
+		clearTimeout(activePollTimer);
+		activePollTimer = null;
+	};
 
-	if (jobs.length === 0) return;
-
-	p.log.step(`${jobs.length} backfill job(s) pending — running sequentially`);
-	for (const job of jobs) {
-		if (signal?.aborted) break;
-		p.log.step(`${job.name} backfill started`);
-		// One connection per job (not per pass) to avoid repeated schema bootstrap.
-		const db = connect(dbPath);
-		try {
-			let moreWork = true;
-			while (moreWork && !signal?.aborted) {
-				moreWork = await job.run(db);
-				// Yield to the event loop so the HTTP server can handle requests
-				await new Promise((resolve) => setTimeout(resolve, 200));
-			}
-		} finally {
-			db.close();
+	const schedulePoll = (fn: () => void) => {
+		clearPollTimer();
+		activePollTimer = setTimeout(fn, pollIntervalMs);
+		if (typeof activePollTimer === "object" && "unref" in activePollTimer) {
+			activePollTimer.unref();
 		}
-		if (!signal?.aborted) {
-			p.log.step(`${job.name} backfill complete`);
+	};
+
+	const waitForCurrentJob = () => {
+		if (stopped || signal?.aborted || !activePlan || !activeRunner) return;
+		const job = getMaintenanceJob(store.db, activePlan.kind);
+		if (!activePlan.isPending(store.db)) {
+			const finishedPlan = activePlan;
+			const finishedRunner = activeRunner;
+			activePlan = null;
+			activeRunner = null;
+			void finishedRunner.stop().finally(() => {
+				if (!stopped && !signal?.aborted) {
+					p.log.step(`${finishedPlan.name} backfill complete`);
+					startNextJob();
+				}
+			});
+			return;
 		}
-	}
-	if (!signal?.aborted) {
+		if (job?.status === "failed") {
+			const failedPlan = activePlan;
+			const failedRunner = activeRunner;
+			activePlan = null;
+			activeRunner = null;
+			void failedRunner.stop().finally(() => {
+				if (!stopped && !signal?.aborted) {
+					p.log.warn(`${failedPlan.name} backfill failed and will be retried on a later startup`);
+					startNextJob();
+				}
+			});
+			return;
+		}
+		schedulePoll(waitForCurrentJob);
+	};
+
+	const startNextJob = () => {
+		clearPollTimer();
+		if (stopped || signal?.aborted) return;
+		while (nextJobIndex < jobPlans.length) {
+			const plan = jobPlans[nextJobIndex++];
+			if (!plan) continue;
+			if (!plan.isPending(store.db)) continue;
+			activePlan = plan;
+			activeRunner = plan.createRunner();
+			p.log.step(`${plan.name} backfill started`);
+			activeRunner.start();
+			schedulePoll(waitForCurrentJob);
+			return;
+		}
 		p.log.step("All backfill jobs complete");
-	}
+	};
+
+	return {
+		start: () => {
+			if (stopped || signal?.aborted) return;
+			const pendingCount = jobPlans.filter((plan) => plan.isPending(store.db)).length;
+			if (pendingCount === 0) return;
+			p.log.step(`${pendingCount} backfill job(s) pending — starting sequential runners`);
+			startNextJob();
+		},
+		stop: async () => {
+			stopped = true;
+			clearPollTimer();
+			const runner = activeRunner;
+			activeRunner = null;
+			activePlan = null;
+			if (runner) await runner.stop();
+		},
+	};
 }
 
 async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
@@ -476,15 +546,50 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		: readCodememConfigFile();
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
+	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const retentionRunner = new SyncRetentionRunner({
-		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+		dbPath,
 		signal: retentionAbort.signal,
 	});
 	const vectorMigrationRunner = new VectorModelMigrationRunner({
-		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
+		dbPath,
 	});
-	// Backfill runners removed — sequenceBackfillRunners() now runs passes
-	// directly to avoid concurrent connections and WAL lock contention.
+	const backfillCoordinator = createSequentialBackfillCoordinator(
+		store,
+		[
+			{
+				name: "Dedup-key",
+				kind: DEDUP_KEY_BACKFILL_JOB,
+				isPending: hasPendingDedupKeyBackfill,
+				createRunner: () =>
+					new DedupKeyBackfillRunner({
+						dbPath,
+						signal: backfillAbort.signal,
+					}),
+			},
+			{
+				name: "Session-context",
+				kind: SESSION_CONTEXT_BACKFILL_JOB,
+				isPending: hasPendingSessionContextBackfill,
+				createRunner: () =>
+					new SessionContextBackfillRunner({
+						dbPath,
+						signal: backfillAbort.signal,
+					}),
+			},
+			{
+				name: "Ref",
+				kind: REF_BACKFILL_JOB,
+				isPending: hasPendingRefBackfill,
+				createRunner: () =>
+					new RefBackfillRunner({
+						dbPath,
+						signal: backfillAbort.signal,
+					}),
+			},
+		],
+		backfillAbort.signal,
+	);
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -500,7 +605,6 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		getSyncRuntimeStatus: () => syncRuntimeStatus,
 	};
 	const app = createApp(appOpts);
-	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const pidPath = pidFilePath(dbPath);
 
 	// Sync protocol listener — separate port, network-accessible for peers.
@@ -544,23 +648,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 				vectorMigrationRunner.start();
 				p.log.step("Vector maintenance runner started");
 			}
-			// Sequence backfill jobs so only one batch-heavy job runs at a
-			// time.  On a large database (e.g. first boot after a schema upgrade)
-			// all three can have pending work; running them concurrently causes
-			// WAL lock contention that deadlocks the viewer.
-			void sequenceBackfillRunners(
-				resolveDbPath(invocation.dbPath ?? undefined),
-				{
-					dedupKey: hasPendingDedupKeyBackfill(store.db),
-					sessionContext: hasPendingSessionContextBackfill(store.db),
-					ref: hasPendingRefBackfill(store.db),
-				},
-				backfillAbort.signal,
-			).catch((err) => {
-				p.log.warn(
-					`Backfill sequencer failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			});
+			backfillCoordinator.start();
 			if (syncConfig.syncRetentionEnabled) {
 				retentionRunner.start();
 				p.log.step("Retention maintenance runner started");
@@ -638,6 +726,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		await sweeper.stop();
 		await vectorMigrationRunner.stop();
 		await retentionRunner.stop();
+		await backfillCoordinator.stop();
 
 		// Drain both listeners before closing the shared store.
 		await new Promise<void>((resolve) => {
@@ -684,6 +773,21 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 
 async function runServeInvocation(invocation: ResolvedServeInvocation): Promise<void> {
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
+	const runtimeConflict = await findRuntimeViewerConflict(dbPath, {
+		host: invocation.host,
+		port: invocation.port,
+	});
+	if (runtimeConflict) {
+		p.intro("codemem viewer");
+		p.log.error(
+			`Database runtime at ${dirname(dbPath)} is already managed by viewer ${runtimeConflict.host}:${runtimeConflict.port} (pid ${runtimeConflict.pid})`,
+		);
+		p.log.info(
+			"Use the matching --host/--port, stop the existing viewer first, or use a separate db/runtime folder for another viewer.",
+		);
+		process.exitCode = 1;
+		return;
+	}
 	if (invocation.mode === "stop" || invocation.mode === "restart") {
 		const result = await stopExistingViewer(dbPath, {
 			host: invocation.host,

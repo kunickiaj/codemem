@@ -8,6 +8,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as core from "@codemem/core";
 import {
 	buildAuthHeaders,
 	connect,
@@ -2766,6 +2767,38 @@ describe("viewer-server", () => {
 					pending_memory_count: 3,
 				});
 			} finally {
+				cleanup();
+			}
+		});
+
+		it("uses cheap semantic diagnostics for non-diagnostic sync status requests", async () => {
+			const diagnosticsSpy = vi.spyOn(core, "getSemanticIndexDiagnostics");
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/status");
+				expect(res.status).toBe(200);
+				expect(diagnosticsSpy).toHaveBeenCalled();
+				expect(diagnosticsSpy).toHaveBeenCalledWith(expect.anything(), {
+					fastCounts: true,
+				});
+			} finally {
+				diagnosticsSpy.mockRestore();
+				cleanup();
+			}
+		});
+
+		it("uses full semantic diagnostics when sync diagnostics are explicitly requested", async () => {
+			const diagnosticsSpy = vi.spyOn(core, "getSemanticIndexDiagnostics");
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				expect(diagnosticsSpy).toHaveBeenCalled();
+				expect(diagnosticsSpy).toHaveBeenCalledWith(expect.anything(), {
+					fastCounts: false,
+				});
+			} finally {
+				diagnosticsSpy.mockRestore();
 				cleanup();
 			}
 		});

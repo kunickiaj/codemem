@@ -167,7 +167,12 @@ Common overrides:
 |----------|---------|
 | `CODEMEM_DB` | SQLite database path |
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
+| `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Host/port the plugin-managed viewer should start, probe, and restart |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
+
+Viewer note:
+
+- The plugin manages one explicit viewer target per runtime. If you run multiple viewers, give each one its own DB/runtime folder instead of sharing `viewer.pid` state next to the same SQLite file.
 
 The viewer includes a grouped Settings modal (`Connection`, `Processing`, `Device Sync`) with shell-agnostic labels and an advanced-controls toggle for technical fields.
 - Settings show effective values (configured or default) and only persist changed fields on save.
