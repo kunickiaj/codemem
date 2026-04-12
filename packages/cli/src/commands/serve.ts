@@ -168,6 +168,18 @@ function readViewerPidRecord(dbPath: string): ViewerPidRecord | null {
 	}
 	return null;
 }
+function normalizeViewerHost(host: string): string {
+	const normalized = host.trim().toLowerCase();
+	if (
+		normalized === "localhost" ||
+		normalized === "127.0.0.1" ||
+		normalized === "::1" ||
+		normalized === "[::1]"
+	) {
+		return "loopback";
+	}
+	return normalized;
+}
 
 async function findRuntimeViewerConflict(
 	dbPath: string,
@@ -175,7 +187,11 @@ async function findRuntimeViewerConflict(
 ): Promise<ViewerPidRecord | null> {
 	const record = readViewerPidRecord(dbPath);
 	if (!record) return null;
-	if (record.host === target.host && record.port === target.port) return null;
+	if (
+		normalizeViewerHost(record.host) === normalizeViewerHost(target.host) &&
+		record.port === target.port
+	)
+		return null;
 	if (!isProcessRunning(record.pid)) return null;
 	if (!(await respondsLikeCodememViewer(record))) return null;
 	return record;

@@ -2771,7 +2771,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("uses cheap semantic diagnostics for sync status requests", async () => {
+		it("uses cheap semantic diagnostics for non-diagnostic sync status requests", async () => {
 			const diagnosticsSpy = vi.spyOn(core, "getSemanticIndexDiagnostics");
 			const { app, cleanup } = createTestApp();
 			try {
@@ -2780,6 +2780,22 @@ describe("viewer-server", () => {
 				expect(diagnosticsSpy).toHaveBeenCalled();
 				expect(diagnosticsSpy).toHaveBeenCalledWith(expect.anything(), {
 					fastCounts: true,
+				});
+			} finally {
+				diagnosticsSpy.mockRestore();
+				cleanup();
+			}
+		});
+
+		it("uses full semantic diagnostics when sync diagnostics are explicitly requested", async () => {
+			const diagnosticsSpy = vi.spyOn(core, "getSemanticIndexDiagnostics");
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/status?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				expect(diagnosticsSpy).toHaveBeenCalled();
+				expect(diagnosticsSpy).toHaveBeenCalledWith(expect.anything(), {
+					fastCounts: false,
 				});
 			} finally {
 				diagnosticsSpy.mockRestore();
