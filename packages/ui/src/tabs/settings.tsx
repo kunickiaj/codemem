@@ -3,7 +3,14 @@
 import { type ComponentChildren, type JSX, render } from "preact";
 import { createPortal } from "preact/compat";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
+import { RadixSelect } from "../components/primitives/radix-select";
+import {
+	type RadixTabOption,
+	RadixTabs,
+	RadixTabsContent,
+} from "../components/primitives/radix-tabs";
 import * as api from "../lib/api";
 import { $, $button } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
@@ -24,6 +31,12 @@ let settingsShowAdvanced = loadAdvancedPreference();
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini";
 const DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku";
+
+const SETTINGS_TABS: RadixTabOption[] = [
+	{ value: "observer", label: "Connection" },
+	{ value: "queue", label: "Processing" },
+	{ value: "sync", label: "Device Sync" },
+];
 
 type SettingsTabId = "observer" | "queue" | "sync";
 
@@ -1259,9 +1272,9 @@ function onTextInput<K extends keyof SettingsFormState>(field: K) {
 	};
 }
 
-function onSelectInput<K extends keyof SettingsFormState>(field: K) {
-	return (event: JSX.TargetedEvent<HTMLSelectElement, Event>) => {
-		updateField(field, event.currentTarget.value as SettingsFormState[K]);
+function onSelectValueChange<K extends keyof SettingsFormState>(field: K) {
+	return (value: string) => {
+		updateField(field, value as SettingsFormState[K]);
 	};
 }
 
@@ -1275,14 +1288,6 @@ function onAdvancedToggle(event: JSX.TargetedEvent<HTMLInputElement, Event>) {
 	const checked = event.currentTarget.checked;
 	settingsShowAdvanced = checked;
 	settingsController?.setShowAdvanced(checked);
-}
-
-function tabButtonClass(tab: SettingsTabId): string {
-	return `settings-tab${settingsActiveTab === tab ? " active" : ""}`;
-}
-
-function panelClass(tab: SettingsTabId): string {
-	return `settings-panel${settingsActiveTab === tab ? " active" : ""}`;
 }
 
 function hiddenUnlessAdvanced(): boolean {
@@ -1430,63 +1435,33 @@ function SettingsDialogContent() {
 	const showAuthFile = values.observerAuthSource === "file";
 	const showAuthCommand = values.observerAuthSource === "command";
 	const showTieredRouting = values.observerTierRoutingEnabled;
+	const providerOptions = Array.from(
+		new Set(
+			settingsRenderState.providers.concat(
+				values.observerProvider ? [values.observerProvider] : [],
+			),
+		),
+	)
+		.sort((left, right) => left.localeCompare(right))
+		.map((provider) => ({ label: provider, value: provider }));
 
 	return (
 		<div className="modal-card">
 			<div className="modal-header">
 				<h2 id="settingsTitle">Memory & model settings</h2>
-				<button
-					aria-label="Close settings"
-					className="modal-close"
-					id="settingsClose"
+				<DialogCloseButton
+					ariaLabel="Close settings"
+					className="modal-close-button"
 					onClick={() => {
 						if (settingsStartPolling && settingsRefresh) {
 							closeSettings(settingsStartPolling, settingsRefresh);
 						}
 					}}
-					type="button"
-				>
-					close
-				</button>
+				/>
 			</div>
 			<div className="modal-body">
 				<div className="small" id="settingsDescription">
 					Configure connection, authentication, processing, and sync behavior.
-				</div>
-				<div aria-label="Settings sections" className="settings-tabs" role="tablist">
-					<button
-						aria-selected={settingsActiveTab === "observer" ? "true" : "false"}
-						className={tabButtonClass("observer")}
-						data-settings-tab="observer"
-						id="settingsTabObserver"
-						onClick={() => setSettingsTab("observer")}
-						role="tab"
-						type="button"
-					>
-						Connection
-					</button>
-					<button
-						aria-selected={settingsActiveTab === "queue" ? "true" : "false"}
-						className={tabButtonClass("queue")}
-						data-settings-tab="queue"
-						id="settingsTabQueue"
-						onClick={() => setSettingsTab("queue")}
-						role="tab"
-						type="button"
-					>
-						Processing
-					</button>
-					<button
-						aria-selected={settingsActiveTab === "sync" ? "true" : "false"}
-						className={tabButtonClass("sync")}
-						data-settings-tab="sync"
-						id="settingsTabSync"
-						onClick={() => setSettingsTab("sync")}
-						role="tab"
-						type="button"
-					>
-						Device Sync
-					</button>
 				</div>
 				<div className="settings-advanced-toolbar field-checkbox">
 					<input
@@ -1507,522 +1482,527 @@ function SettingsDialogContent() {
 					</button>
 				</div>
 
-				<div
-					className={panelClass("observer")}
-					data-settings-panel="observer"
-					hidden={settingsActiveTab !== "observer"}
-					id="settingsPanelObserver"
+				<RadixTabs
+					ariaLabel="Settings sections"
+					listClassName="settings-tabs"
+					onValueChange={setSettingsTab}
+					tabs={SETTINGS_TABS}
+					triggerClassName="settings-tab"
+					value={settingsActiveTab}
 				>
-					<ObserverStatusBanner />
-					<div className="settings-group">
-						<h3 className="settings-group-title">Connection</h3>
-						<Field>
-							<div className="field-label">
-								<label htmlFor="observerProvider">Model provider</label>
-								<button
-									aria-label="About model provider"
-									className="help-icon"
-									data-tooltip="Choose where model requests are sent. Use auto for recommended defaults."
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<select
-								id="observerProvider"
-								onChange={onSelectInput("observerProvider")}
-								value={values.observerProvider}
-							>
-								<option value="">auto (default)</option>
-								{Array.from(
-									new Set(
-										settingsRenderState.providers.concat(
-											values.observerProvider ? [values.observerProvider] : [],
-										),
-									),
-								)
-									.sort((left, right) => left.localeCompare(right))
-									.map((provider) => (
-										<option key={provider} value={provider}>
-											{provider}
-										</option>
-									))}
-							</select>
-							<div className="small">
-								`auto` uses recommended defaults for the selected connection mode.
-							</div>
-						</Field>
-						<Field>
-							<div className="field-label">
-								<label htmlFor="observerModel">{getObserverModelLabel()}</label>
-								<button
-									aria-label="About model defaults"
-									className="help-icon"
-									data-tooltip={getObserverModelTooltip()}
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<input
-								id="observerModel"
-								onInput={onTextInput("observerModel")}
-								placeholder="leave empty for default"
-								value={values.observerModel}
-							/>
-							<div className="small">{getObserverModelDescription()}</div>
-							<div className="small" id="observerModelHint">
-								{getObserverModelHint()}
-							</div>
-						</Field>
-						<Field>
-							<div className="field-label">
-								<label htmlFor="observerRuntime">Connection mode</label>
-								<button
-									aria-label="About connection mode"
-									className="help-icon"
-									data-tooltip="Direct API uses provider credentials. Local Claude session uses local Claude runtime auth."
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<select
-								id="observerRuntime"
-								onChange={onSelectInput("observerRuntime")}
-								value={values.observerRuntime}
-							>
-								<option value="api_http">Direct API (default)</option>
-								<option value="claude_sidecar">Local Claude session</option>
-							</select>
-							<div className="small">
-								Switch between provider API credentials and local Claude session auth.
-							</div>
-						</Field>
-						<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="claudeCommand">Claude command (JSON argv)</label>
-							<textarea
-								disabled
-								id="claudeCommand"
-								placeholder='["claude"]'
-								rows={2}
-								value={values.claudeCommand}
-							/>
-							<div className="small">{protectedConfigHelp("claude_command")}</div>
-						</Field>
-						<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="observerMaxChars">Request size limit (chars)</label>
-							<input
-								id="observerMaxChars"
-								min="1"
-								onInput={onTextInput("observerMaxChars")}
-								type="number"
-								value={values.observerMaxChars}
-							/>
-							<div className="small" id="observerMaxCharsHint">
-								{observerMaxCharsDefault ? `Default: ${observerMaxCharsDefault}` : ""}
-							</div>
-						</Field>
-					</div>
-
-					<div className="settings-group">
-						<h3 className="settings-group-title">Authentication</h3>
-						<Field>
-							<div className="field-label">
-								<label htmlFor="observerAuthSource">Authentication method</label>
-								<button
-									aria-label="About authentication method"
-									className="help-icon"
-									data-tooltip="Choose how credentials are resolved: environment, file, command, or none."
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<select
-								id="observerAuthSource"
-								onChange={onSelectInput("observerAuthSource")}
-								value={values.observerAuthSource}
-							>
-								<option value="auto">auto (default)</option>
-								<option value="env">env</option>
-								<option value="file">file</option>
-								<option value="command">command</option>
-								<option value="none">none</option>
-							</select>
-							<div className="small">Use `auto` unless you need a specific token source.</div>
-						</Field>
-						<Field hidden={!showAuthFile} id="observerAuthFileField">
-							<label htmlFor="observerAuthFile">Token file path</label>
-							<input
-								disabled
-								id="observerAuthFile"
-								placeholder="~/.codemem/work-token.txt"
-								value={values.observerAuthFile}
-							/>
-							<div className="small">{protectedConfigHelp("observer_auth_file")}</div>
-						</Field>
-						<Field hidden={!showAuthCommand} id="observerAuthCommandField">
-							<div className="field-label">
-								<label htmlFor="observerAuthCommand">Token command</label>
-								<button
-									aria-label="About token command"
-									className="help-icon"
-									data-tooltip="Runs this command and uses stdout as the token. JSON argv only, no shell parsing."
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<textarea
-								disabled
-								id="observerAuthCommand"
-								placeholder='["iap-auth", "--audience", "gateway"]'
-								rows={3}
-								value={values.observerAuthCommand}
-							/>
-							<div className="small">{protectedConfigHelp("observer_auth_command")}</div>
-						</Field>
-						<div className="small" hidden={!showAuthCommand} id="observerAuthCommandNote">
-							Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
+					<RadixTabsContent className="settings-panel" forceMount value="observer">
+						<ObserverStatusBanner />
+						<div className="settings-group">
+							<h3 className="settings-group-title">Connection</h3>
+							<Field>
+								<div className="field-label">
+									<label htmlFor="observerProvider">Model provider</label>
+									<button
+										aria-label="About model provider"
+										className="help-icon"
+										data-tooltip="Choose where model requests are sent. Use auto for recommended defaults."
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<RadixSelect
+									ariaLabel="Model provider"
+									contentClassName="settings-select-content"
+									id="observerProvider"
+									itemClassName="settings-select-item"
+									onValueChange={onSelectValueChange("observerProvider")}
+									options={[{ label: "auto (default)", value: "" }, ...providerOptions]}
+									placeholder="auto (default)"
+									triggerClassName="settings-select-trigger"
+									value={values.observerProvider}
+									viewportClassName="settings-select-viewport"
+								/>
+								<div className="small">
+									`auto` uses recommended defaults for the selected connection mode.
+								</div>
+							</Field>
+							<Field>
+								<div className="field-label">
+									<label htmlFor="observerModel">{getObserverModelLabel()}</label>
+									<button
+										aria-label="About model defaults"
+										className="help-icon"
+										data-tooltip={getObserverModelTooltip()}
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<input
+									id="observerModel"
+									onInput={onTextInput("observerModel")}
+									placeholder="leave empty for default"
+									value={values.observerModel}
+								/>
+								<div className="small">{getObserverModelDescription()}</div>
+								<div className="small" id="observerModelHint">
+									{getObserverModelHint()}
+								</div>
+							</Field>
+							<Field>
+								<div className="field-label">
+									<label htmlFor="observerRuntime">Connection mode</label>
+									<button
+										aria-label="About connection mode"
+										className="help-icon"
+										data-tooltip="Direct API uses provider credentials. Local Claude session uses local Claude runtime auth."
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<RadixSelect
+									ariaLabel="Connection mode"
+									contentClassName="settings-select-content"
+									id="observerRuntime"
+									itemClassName="settings-select-item"
+									onValueChange={onSelectValueChange("observerRuntime")}
+									options={[
+										{ label: "Direct API (default)", value: "api_http" },
+										{ label: "Local Claude session", value: "claude_sidecar" },
+									]}
+									triggerClassName="settings-select-trigger"
+									value={values.observerRuntime}
+									viewportClassName="settings-select-viewport"
+								/>
+								<div className="small">
+									Switch between provider API credentials and local Claude session auth.
+								</div>
+							</Field>
+							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="claudeCommand">Claude command (JSON argv)</label>
+								<textarea
+									disabled
+									id="claudeCommand"
+									placeholder='["claude"]'
+									rows={2}
+									value={values.claudeCommand}
+								/>
+								<div className="small">{protectedConfigHelp("claude_command")}</div>
+							</Field>
+							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="observerMaxChars">Request size limit (chars)</label>
+								<input
+									id="observerMaxChars"
+									min="1"
+									onInput={onTextInput("observerMaxChars")}
+									type="number"
+									value={values.observerMaxChars}
+								/>
+								<div className="small" id="observerMaxCharsHint">
+									{observerMaxCharsDefault ? `Default: ${observerMaxCharsDefault}` : ""}
+								</div>
+							</Field>
 						</div>
-						<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="observerAuthTimeoutMs">Token command timeout (ms)</label>
-							<input
-								id="observerAuthTimeoutMs"
-								min="1"
-								onInput={onTextInput("observerAuthTimeoutMs")}
-								type="number"
-								value={values.observerAuthTimeoutMs}
-							/>
-						</Field>
-						<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="observerAuthCacheTtlS">Token cache time (s)</label>
-							<input
-								id="observerAuthCacheTtlS"
-								min="0"
-								onInput={onTextInput("observerAuthCacheTtlS")}
-								type="number"
-								value={values.observerAuthCacheTtlS}
-							/>
-						</Field>
-						<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<div className="field-label">
-								<label htmlFor="observerHeaders">Request headers (JSON)</label>
-								<button
-									aria-label="About request headers"
-									className="help-icon"
-									data-tooltip={
-										// biome-ignore lint/suspicious/noTemplateCurlyInString: literal documentation text describing the template placeholder syntax users can use in header values
-										"Optional extra headers. Supports templates like ${auth.token}, ${auth.type}, ${auth.source}."
-									}
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<textarea
-								disabled
-								id="observerHeaders"
-								placeholder='{"Authorization":"Bearer ${auth.token}"}'
-								rows={4}
-								value={values.observerHeaders}
-							/>
-							<div className="small">{protectedConfigHelp("observer_headers")}</div>
-						</Field>
-					</div>
-				</div>
 
-				<div
-					className={panelClass("queue")}
-					data-settings-panel="queue"
-					hidden={settingsActiveTab !== "queue"}
-					id="settingsPanelQueue"
-				>
-					<div className="settings-group">
-						<h3 className="settings-group-title">Processing</h3>
-						<Field>
-							<div className="field-label">
-								<label htmlFor="rawEventsSweeperIntervalS">
-									Background processing interval (seconds)
+						<div className="settings-group">
+							<h3 className="settings-group-title">Authentication</h3>
+							<Field>
+								<div className="field-label">
+									<label htmlFor="observerAuthSource">Authentication method</label>
+									<button
+										aria-label="About authentication method"
+										className="help-icon"
+										data-tooltip="Choose how credentials are resolved: environment, file, command, or none."
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<RadixSelect
+									ariaLabel="Authentication method"
+									contentClassName="settings-select-content"
+									id="observerAuthSource"
+									itemClassName="settings-select-item"
+									onValueChange={onSelectValueChange("observerAuthSource")}
+									options={[
+										{ label: "auto (default)", value: "auto" },
+										{ label: "env", value: "env" },
+										{ label: "file", value: "file" },
+										{ label: "command", value: "command" },
+										{ label: "none", value: "none" },
+									]}
+									triggerClassName="settings-select-trigger"
+									value={values.observerAuthSource}
+									viewportClassName="settings-select-viewport"
+								/>
+								<div className="small">Use `auto` unless you need a specific token source.</div>
+							</Field>
+							<Field hidden={!showAuthFile} id="observerAuthFileField">
+								<label htmlFor="observerAuthFile">Token file path</label>
+								<input
+									disabled
+									id="observerAuthFile"
+									placeholder="~/.codemem/work-token.txt"
+									value={values.observerAuthFile}
+								/>
+								<div className="small">{protectedConfigHelp("observer_auth_file")}</div>
+							</Field>
+							<Field hidden={!showAuthCommand} id="observerAuthCommandField">
+								<div className="field-label">
+									<label htmlFor="observerAuthCommand">Token command</label>
+									<button
+										aria-label="About token command"
+										className="help-icon"
+										data-tooltip="Runs this command and uses stdout as the token. JSON argv only, no shell parsing."
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<textarea
+									disabled
+									id="observerAuthCommand"
+									placeholder='["iap-auth", "--audience", "gateway"]'
+									rows={3}
+									value={values.observerAuthCommand}
+								/>
+								<div className="small">{protectedConfigHelp("observer_auth_command")}</div>
+							</Field>
+							<div className="small" hidden={!showAuthCommand} id="observerAuthCommandNote">
+								Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
+							</div>
+							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="observerAuthTimeoutMs">Token command timeout (ms)</label>
+								<input
+									id="observerAuthTimeoutMs"
+									min="1"
+									onInput={onTextInput("observerAuthTimeoutMs")}
+									type="number"
+									value={values.observerAuthTimeoutMs}
+								/>
+							</Field>
+							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="observerAuthCacheTtlS">Token cache time (s)</label>
+								<input
+									id="observerAuthCacheTtlS"
+									min="0"
+									onInput={onTextInput("observerAuthCacheTtlS")}
+									type="number"
+									value={values.observerAuthCacheTtlS}
+								/>
+							</Field>
+							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<div className="field-label">
+									<label htmlFor="observerHeaders">Request headers (JSON)</label>
+									<button
+										aria-label="About request headers"
+										className="help-icon"
+										data-tooltip={
+											// biome-ignore lint/suspicious/noTemplateCurlyInString: literal documentation text describing the template placeholder syntax users can use in header values
+											"Optional extra headers. Supports templates like ${auth.token}, ${auth.type}, ${auth.source}."
+										}
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<textarea
+									disabled
+									id="observerHeaders"
+									placeholder='{"Authorization":"Bearer ${auth.token}"}'
+									rows={4}
+									value={values.observerHeaders}
+								/>
+								<div className="small">{protectedConfigHelp("observer_headers")}</div>
+							</Field>
+						</div>
+					</RadixTabsContent>
+
+					<RadixTabsContent className="settings-panel" forceMount value="queue">
+						<div className="settings-group">
+							<h3 className="settings-group-title">Processing</h3>
+							<Field>
+								<div className="field-label">
+									<label htmlFor="rawEventsSweeperIntervalS">
+										Background processing interval (seconds)
+									</label>
+									<button
+										aria-label="About background processing interval"
+										className="help-icon"
+										data-tooltip="How often codemem checks for queued events to process in the background."
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<input
+									id="rawEventsSweeperIntervalS"
+									min="1"
+									onInput={onTextInput("rawEventsSweeperIntervalS")}
+									type="number"
+									value={values.rawEventsSweeperIntervalS}
+								/>
+								<div className="small">How often background flush checks pending raw events.</div>
+							</Field>
+						</div>
+						<div className="settings-group">
+							<h3 className="settings-group-title">Tiered observer routing</h3>
+							<div className="field field-checkbox">
+								<input
+									checked={values.observerTierRoutingEnabled}
+									className="cm-checkbox"
+									id="observerTierRoutingEnabled"
+									onChange={onCheckboxInput("observerTierRoutingEnabled")}
+									type="checkbox"
+								/>
+								<label htmlFor="observerTierRoutingEnabled">Enable tiered routing</label>
+							</div>
+							<div className="small">{getTieredRoutingHelperText()}</div>
+							<Field hidden={!showTieredRouting}>
+								<div className="field-label">
+									<label htmlFor="observerSimpleModel">Simple tier model</label>
+									<button
+										aria-label="About simple tier model"
+										className="help-icon"
+										data-tooltip="Used for lighter replay batches. Leave blank to keep codemem's routing defaults or base observer fallback."
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<input
+									id="observerSimpleModel"
+									onInput={onTextInput("observerSimpleModel")}
+									placeholder="leave empty for default"
+									value={values.observerSimpleModel}
+								/>
+								<div className="small">Used when a batch falls below rich-routing thresholds.</div>
+							</Field>
+							<Field hidden={!showTieredRouting}>
+								<div className="field-label">
+									<label htmlFor="observerRichModel">Rich tier model</label>
+									<button
+										aria-label="About rich tier model"
+										className="help-icon"
+										data-tooltip="Used for larger or more complex replay batches. Leave blank to keep codemem's rich-tier defaults."
+										type="button"
+									>
+										?
+									</button>
+								</div>
+								<input
+									id="observerRichModel"
+									onInput={onTextInput("observerRichModel")}
+									placeholder="leave empty for default"
+									value={values.observerRichModel}
+								/>
+								<div className="small">Used when routing detects a richer replay batch.</div>
+							</Field>
+							<Field className="field field-checkbox" hidden={!showTieredRouting}>
+								<input
+									checked={values.observerRichOpenAIUseResponses}
+									className="cm-checkbox"
+									id="observerRichOpenAIUseResponses"
+									onChange={onCheckboxInput("observerRichOpenAIUseResponses")}
+									type="checkbox"
+								/>
+								<label htmlFor="observerRichOpenAIUseResponses">
+									Use OpenAI Responses API for rich tier
 								</label>
-								<button
-									aria-label="About background processing interval"
-									className="help-icon"
-									data-tooltip="How often codemem checks for queued events to process in the background."
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<input
-								id="rawEventsSweeperIntervalS"
-								min="1"
-								onInput={onTextInput("rawEventsSweeperIntervalS")}
-								type="number"
-								value={values.rawEventsSweeperIntervalS}
-							/>
-							<div className="small">How often background flush checks pending raw events.</div>
-						</Field>
-					</div>
-					<div className="settings-group">
-						<h3 className="settings-group-title">Tiered observer routing</h3>
-						<div className="field field-checkbox">
-							<input
-								checked={values.observerTierRoutingEnabled}
-								className="cm-checkbox"
-								id="observerTierRoutingEnabled"
-								onChange={onCheckboxInput("observerTierRoutingEnabled")}
-								type="checkbox"
-							/>
-							<label htmlFor="observerTierRoutingEnabled">Enable tiered routing</label>
+							</Field>
+							<Field
+								className="field settings-advanced"
+								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
+							>
+								<label htmlFor="observerSimpleTemperature">Simple tier temperature</label>
+								<input
+									id="observerSimpleTemperature"
+									min="0"
+									onInput={onTextInput("observerSimpleTemperature")}
+									step="0.1"
+									type="number"
+									value={values.observerSimpleTemperature}
+								/>
+							</Field>
+							<Field
+								className="field settings-advanced"
+								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
+							>
+								<label htmlFor="observerRichTemperature">Rich tier temperature</label>
+								<input
+									id="observerRichTemperature"
+									min="0"
+									onInput={onTextInput("observerRichTemperature")}
+									step="0.1"
+									type="number"
+									value={values.observerRichTemperature}
+								/>
+							</Field>
+							<Field
+								className="field settings-advanced"
+								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
+							>
+								<label htmlFor="observerRichReasoningEffort">Rich tier reasoning effort</label>
+								<input
+									id="observerRichReasoningEffort"
+									onInput={onTextInput("observerRichReasoningEffort")}
+									placeholder="leave empty for default"
+									value={values.observerRichReasoningEffort}
+								/>
+							</Field>
+							<Field
+								className="field settings-advanced"
+								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
+							>
+								<label htmlFor="observerRichReasoningSummary">Rich tier reasoning summary</label>
+								<input
+									id="observerRichReasoningSummary"
+									onInput={onTextInput("observerRichReasoningSummary")}
+									placeholder="leave empty for default"
+									value={values.observerRichReasoningSummary}
+								/>
+							</Field>
+							<Field
+								className="field settings-advanced"
+								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
+							>
+								<label htmlFor="observerRichMaxOutputTokens">Rich tier max output tokens</label>
+								<input
+									id="observerRichMaxOutputTokens"
+									min="1"
+									onInput={onTextInput("observerRichMaxOutputTokens")}
+									step="1"
+									type="number"
+									value={values.observerRichMaxOutputTokens}
+								/>
+							</Field>
 						</div>
-						<div className="small">{getTieredRoutingHelperText()}</div>
-						<Field hidden={!showTieredRouting}>
-							<div className="field-label">
-								<label htmlFor="observerSimpleModel">Simple tier model</label>
-								<button
-									aria-label="About simple tier model"
-									className="help-icon"
-									data-tooltip="Used for lighter replay batches. Leave blank to keep codemem's routing defaults or base observer fallback."
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<input
-								id="observerSimpleModel"
-								onInput={onTextInput("observerSimpleModel")}
-								placeholder="leave empty for default"
-								value={values.observerSimpleModel}
-							/>
-							<div className="small">Used when a batch falls below rich-routing thresholds.</div>
-						</Field>
-						<Field hidden={!showTieredRouting}>
-							<div className="field-label">
-								<label htmlFor="observerRichModel">Rich tier model</label>
-								<button
-									aria-label="About rich tier model"
-									className="help-icon"
-									data-tooltip="Used for larger or more complex replay batches. Leave blank to keep codemem's rich-tier defaults."
-									type="button"
-								>
-									?
-								</button>
-							</div>
-							<input
-								id="observerRichModel"
-								onInput={onTextInput("observerRichModel")}
-								placeholder="leave empty for default"
-								value={values.observerRichModel}
-							/>
-							<div className="small">Used when routing detects a richer replay batch.</div>
-						</Field>
-						<Field className="field field-checkbox" hidden={!showTieredRouting}>
-							<input
-								checked={values.observerRichOpenAIUseResponses}
-								className="cm-checkbox"
-								id="observerRichOpenAIUseResponses"
-								onChange={onCheckboxInput("observerRichOpenAIUseResponses")}
-								type="checkbox"
-							/>
-							<label htmlFor="observerRichOpenAIUseResponses">
-								Use OpenAI Responses API for rich tier
-							</label>
-						</Field>
-						<Field
-							className="field settings-advanced"
-							hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-						>
-							<label htmlFor="observerSimpleTemperature">Simple tier temperature</label>
-							<input
-								id="observerSimpleTemperature"
-								min="0"
-								onInput={onTextInput("observerSimpleTemperature")}
-								step="0.1"
-								type="number"
-								value={values.observerSimpleTemperature}
-							/>
-						</Field>
-						<Field
-							className="field settings-advanced"
-							hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-						>
-							<label htmlFor="observerRichTemperature">Rich tier temperature</label>
-							<input
-								id="observerRichTemperature"
-								min="0"
-								onInput={onTextInput("observerRichTemperature")}
-								step="0.1"
-								type="number"
-								value={values.observerRichTemperature}
-							/>
-						</Field>
-						<Field
-							className="field settings-advanced"
-							hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-						>
-							<label htmlFor="observerRichReasoningEffort">Rich tier reasoning effort</label>
-							<input
-								id="observerRichReasoningEffort"
-								onInput={onTextInput("observerRichReasoningEffort")}
-								placeholder="leave empty for default"
-								value={values.observerRichReasoningEffort}
-							/>
-						</Field>
-						<Field
-							className="field settings-advanced"
-							hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-						>
-							<label htmlFor="observerRichReasoningSummary">Rich tier reasoning summary</label>
-							<input
-								id="observerRichReasoningSummary"
-								onInput={onTextInput("observerRichReasoningSummary")}
-								placeholder="leave empty for default"
-								value={values.observerRichReasoningSummary}
-							/>
-						</Field>
-						<Field
-							className="field settings-advanced"
-							hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-						>
-							<label htmlFor="observerRichMaxOutputTokens">Rich tier max output tokens</label>
-							<input
-								id="observerRichMaxOutputTokens"
-								min="1"
-								onInput={onTextInput("observerRichMaxOutputTokens")}
-								step="1"
-								type="number"
-								value={values.observerRichMaxOutputTokens}
-							/>
-						</Field>
-					</div>
-					<div className="settings-group settings-advanced" hidden={hiddenUnlessAdvanced()}>
-						<h3 className="settings-group-title">Context Pack Limits</h3>
-						<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="packObservationLimit">Observation limit</label>
-							<input
-								id="packObservationLimit"
-								min="1"
-								onInput={onTextInput("packObservationLimit")}
-								type="number"
-								value={values.packObservationLimit}
-							/>
-							<div className="small">Default number of observations to include in a pack.</div>
-						</Field>
-						<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="packSessionLimit">Session summary limit</label>
-							<input
-								id="packSessionLimit"
-								min="1"
-								onInput={onTextInput("packSessionLimit")}
-								type="number"
-								value={values.packSessionLimit}
-							/>
-							<div className="small">Default number of session summaries to include in a pack.</div>
-						</Field>
-					</div>
-				</div>
+						<div className="settings-group settings-advanced" hidden={hiddenUnlessAdvanced()}>
+							<h3 className="settings-group-title">Context Pack Limits</h3>
+							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="packObservationLimit">Observation limit</label>
+								<input
+									id="packObservationLimit"
+									min="1"
+									onInput={onTextInput("packObservationLimit")}
+									type="number"
+									value={values.packObservationLimit}
+								/>
+								<div className="small">Default number of observations to include in a pack.</div>
+							</Field>
+							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="packSessionLimit">Session summary limit</label>
+								<input
+									id="packSessionLimit"
+									min="1"
+									onInput={onTextInput("packSessionLimit")}
+									type="number"
+									value={values.packSessionLimit}
+								/>
+								<div className="small">
+									Default number of session summaries to include in a pack.
+								</div>
+							</Field>
+						</div>
+					</RadixTabsContent>
 
-				<div
-					className={panelClass("sync")}
-					data-settings-panel="sync"
-					hidden={settingsActiveTab !== "sync"}
-					id="settingsPanelSync"
-				>
-					<div className="settings-group">
-						<h3 className="settings-group-title">Device Sync</h3>
-						<div className="field field-checkbox">
-							<input
-								checked={values.syncEnabled}
-								className="cm-checkbox"
-								id="syncEnabled"
-								onChange={onCheckboxInput("syncEnabled")}
-								type="checkbox"
-							/>
-							<label htmlFor="syncEnabled">Enable sync</label>
+					<RadixTabsContent className="settings-panel" forceMount value="sync">
+						<div className="settings-group">
+							<h3 className="settings-group-title">Device Sync</h3>
+							<div className="field field-checkbox">
+								<input
+									checked={values.syncEnabled}
+									className="cm-checkbox"
+									id="syncEnabled"
+									onChange={onCheckboxInput("syncEnabled")}
+									type="checkbox"
+								/>
+								<label htmlFor="syncEnabled">Enable sync</label>
+							</div>
+							<div className="field">
+								<label htmlFor="syncInterval">Sync interval (seconds)</label>
+								<input
+									id="syncInterval"
+									min="10"
+									onInput={onTextInput("syncInterval")}
+									type="number"
+									value={values.syncInterval}
+								/>
+							</div>
+							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="syncHost">Sync host</label>
+								<input
+									id="syncHost"
+									onInput={onTextInput("syncHost")}
+									placeholder="127.0.0.1"
+									value={values.syncHost}
+								/>
+							</div>
+							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="syncPort">Sync port</label>
+								<input
+									id="syncPort"
+									min="1"
+									onInput={onTextInput("syncPort")}
+									type="number"
+									value={values.syncPort}
+								/>
+							</div>
+							<div
+								className="field field-checkbox settings-advanced"
+								hidden={hiddenUnlessAdvanced()}
+							>
+								<input
+									checked={values.syncMdns}
+									className="cm-checkbox"
+									id="syncMdns"
+									onChange={onCheckboxInput("syncMdns")}
+									type="checkbox"
+								/>
+								<label htmlFor="syncMdns">Enable mDNS discovery</label>
+							</div>
+							<div className="field">
+								<label htmlFor="syncCoordinatorUrl">Coordinator URL</label>
+								<input
+									disabled
+									id="syncCoordinatorUrl"
+									placeholder="https://coord.example.com"
+									value={values.syncCoordinatorUrl}
+								/>
+								<div className="small">{protectedConfigHelp("sync_coordinator_url")}</div>
+							</div>
+							<div className="field">
+								<label htmlFor="syncCoordinatorGroup">Coordinator group</label>
+								<input
+									id="syncCoordinatorGroup"
+									onInput={onTextInput("syncCoordinatorGroup")}
+									placeholder="nerdworld"
+									value={values.syncCoordinatorGroup}
+								/>
+								<div className="small">
+									Discovery namespace for peers using the same coordinator.
+								</div>
+							</div>
+							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
+								<input
+									id="syncCoordinatorTimeout"
+									min="1"
+									onInput={onTextInput("syncCoordinatorTimeout")}
+									type="number"
+									value={values.syncCoordinatorTimeout}
+								/>
+							</div>
+							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<label htmlFor="syncCoordinatorPresenceTtl">Presence TTL (seconds)</label>
+								<input
+									id="syncCoordinatorPresenceTtl"
+									min="1"
+									onInput={onTextInput("syncCoordinatorPresenceTtl")}
+									type="number"
+									value={values.syncCoordinatorPresenceTtl}
+								/>
+							</div>
 						</div>
-						<div className="field">
-							<label htmlFor="syncInterval">Sync interval (seconds)</label>
-							<input
-								id="syncInterval"
-								min="10"
-								onInput={onTextInput("syncInterval")}
-								type="number"
-								value={values.syncInterval}
-							/>
-						</div>
-						<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="syncHost">Sync host</label>
-							<input
-								id="syncHost"
-								onInput={onTextInput("syncHost")}
-								placeholder="127.0.0.1"
-								value={values.syncHost}
-							/>
-						</div>
-						<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="syncPort">Sync port</label>
-							<input
-								id="syncPort"
-								min="1"
-								onInput={onTextInput("syncPort")}
-								type="number"
-								value={values.syncPort}
-							/>
-						</div>
-						<div className="field field-checkbox settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<input
-								checked={values.syncMdns}
-								className="cm-checkbox"
-								id="syncMdns"
-								onChange={onCheckboxInput("syncMdns")}
-								type="checkbox"
-							/>
-							<label htmlFor="syncMdns">Enable mDNS discovery</label>
-						</div>
-						<div className="field">
-							<label htmlFor="syncCoordinatorUrl">Coordinator URL</label>
-							<input
-								disabled
-								id="syncCoordinatorUrl"
-								placeholder="https://coord.example.com"
-								value={values.syncCoordinatorUrl}
-							/>
-							<div className="small">{protectedConfigHelp("sync_coordinator_url")}</div>
-						</div>
-						<div className="field">
-							<label htmlFor="syncCoordinatorGroup">Coordinator group</label>
-							<input
-								id="syncCoordinatorGroup"
-								onInput={onTextInput("syncCoordinatorGroup")}
-								placeholder="nerdworld"
-								value={values.syncCoordinatorGroup}
-							/>
-							<div className="small">Discovery namespace for peers using the same coordinator.</div>
-						</div>
-						<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
-							<input
-								id="syncCoordinatorTimeout"
-								min="1"
-								onInput={onTextInput("syncCoordinatorTimeout")}
-								type="number"
-								value={values.syncCoordinatorTimeout}
-							/>
-						</div>
-						<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<label htmlFor="syncCoordinatorPresenceTtl">Presence TTL (seconds)</label>
-							<input
-								id="syncCoordinatorPresenceTtl"
-								min="1"
-								onInput={onTextInput("syncCoordinatorPresenceTtl")}
-								type="number"
-								value={values.syncCoordinatorPresenceTtl}
-							/>
-						</div>
-					</div>
-				</div>
+					</RadixTabsContent>
+				</RadixTabs>
 
 				<div className="small mono" id="settingsPath">
 					{settingsRenderState.pathText}
