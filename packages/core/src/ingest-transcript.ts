@@ -5,6 +5,7 @@
  * from codemem/plugin_ingest.py.
  */
 
+import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
 import { stripPrivate } from "./ingest-sanitize.js";
 import type { ParsedSummary } from "./ingest-types.js";
 
@@ -157,6 +158,60 @@ export function extractPrompts(
 		});
 	}
 	return prompts;
+}
+
+/**
+ * Normalize raw events (including adapter-enveloped Claude Code hook events)
+ * into the flat `user_prompt` / `tool.execute.after` shapes that
+ * buildSessionContext() scans for.
+ *
+ * Preserves `timestamp_wall_ms` on each resulting event so that durationMs
+ * continues to be computed correctly.
+ *
+ * This complements `normalizeAdapterEvents`, which targets the
+ * prompt/assistant side. `normalizeEventsForSessionContext` additionally
+ * projects adapter tool_result events into flat `tool.execute.after`
+ * entries via `projectAdapterToolEvent`, which is what
+ * `buildSessionContext` needs to count tools and extract file paths.
+ */
+export function normalizeEventsForSessionContext(
+	events: Record<string, unknown>[],
+): Record<string, unknown>[] {
+	const normalized: Record<string, unknown>[] = [];
+	for (const event of events) {
+		const wallMs = event.timestamp_wall_ms;
+		const adapter = extractAdapterEvent(event);
+		if (adapter) {
+			const adapterType = String(adapter.event_type ?? "");
+			if (adapterType === "prompt") {
+				const payload = adapter.payload as Record<string, unknown> | undefined;
+				const text = String(payload?.text ?? "").trim();
+				if (text) {
+					normalized.push({
+						type: "user_prompt",
+						prompt_text: text,
+						timestamp: adapter.ts ?? null,
+						timestamp_wall_ms: wallMs,
+					});
+					continue;
+				}
+			} else if (adapterType === "tool_result") {
+				const projected = projectAdapterToolEvent(adapter, event);
+				if (projected) {
+					projected.timestamp_wall_ms = wallMs;
+					normalized.push(projected);
+					continue;
+				}
+			}
+			// Other adapter event types (assistant, session_*, error, tool_call)
+			// are not relevant to buildSessionContext. Keep the original so that
+			// durationMs sees the wall timestamp.
+			normalized.push(event);
+			continue;
+		}
+		normalized.push(event);
+	}
+	return normalized;
 }
 
 /**

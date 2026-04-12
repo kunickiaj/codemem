@@ -10,7 +10,7 @@
 
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
-import { normalizeAdapterEvents } from "./ingest-transcript.js";
+import { normalizeAdapterEvents, normalizeEventsForSessionContext } from "./ingest-transcript.js";
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
 import { ObserverAuthError } from "./observer-client.js";
 import type { MemoryStore } from "./store.js";
@@ -113,8 +113,11 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 		const tool = String(e.tool ?? "").toLowerCase();
 		const args = e.args;
 		if (args == null || typeof args !== "object") continue;
-		const filePath =
-			(args as Record<string, unknown>).filePath ?? (args as Record<string, unknown>).path;
+		const argsObj = args as Record<string, unknown>;
+		// Support both OpenCode-style camelCase (`filePath`) and Claude Code-style
+		// snake_case (`file_path`) tool input keys. Claude Code hook payloads use
+		// `file_path` verbatim from the Claude Code schema.
+		const filePath = argsObj.filePath ?? argsObj.file_path ?? argsObj.path;
 		if (typeof filePath !== "string" || !filePath) continue;
 		if (tool === "write" || tool === "edit") filesModified.add(filePath);
 		if (tool === "read") filesRead.add(filePath);
@@ -283,8 +286,12 @@ export async function flushRawEvents(
 		return { flushed: 0, updatedState: 0 };
 	}
 
-	// Build session context
-	const sessionContext: SessionContext = buildSessionContext(events);
+	// Build session context. Claude Code raw events arrive as `claude.hook`
+	// with an adapter envelope; normalize them to the flat user_prompt /
+	// tool.execute.after shapes before scanning so promptCount, toolCount,
+	// firstPrompt, filesRead, and filesModified are populated correctly.
+	const normalizedForContext = normalizeEventsForSessionContext(events);
+	const sessionContext: SessionContext = buildSessionContext(normalizedForContext);
 	sessionContext.opencodeSessionId = opencodeSessionId;
 	sessionContext.source = source;
 	sessionContext.streamId = opencodeSessionId;
