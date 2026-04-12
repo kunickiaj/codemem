@@ -195,13 +195,13 @@ Share project knowledge with teammates or back up memories across machines.
 
 ```text
 # Export current project
-codemem export-memories project.json
+codemem memory export project.json
 
 # Import on another machine (idempotent, safe to re-run)
-codemem import-memories project.json --remap-project ~/workspace/myproject
+codemem memory import project.json --remap-project ~/workspace/myproject
 ```
 
-See `codemem export-memories --help` and `codemem import-memories --help` for full options.
+See `codemem memory export --help` and `codemem memory import --help` for full options. Legacy top-level aliases still work but are hidden from help.
 
 ## Peer-to-peer sync
 
