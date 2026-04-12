@@ -536,6 +536,15 @@ function queryPathOverlapBoost(item: MemoryResult, query: string): number {
 	return Math.min(0.18, boost);
 }
 
+/**
+ * Boost score for memories whose files_modified overlap the current working set.
+ *
+ * Operates on in-memory metadata from already-fetched results, NOT the
+ * memory_file_refs junction table. The junction table is used at candidate
+ * sourcing time (see findCandidatesByFile and pack.ts integration) to pull
+ * in memories that FTS/vector search missed. This reranker then scores them
+ * alongside all other candidates using the metadata they already carry.
+ */
 function workingSetOverlapBoost(item: MemoryResult, workingSetPaths: string[]): number {
 	if (workingSetPaths.length === 0) return 0.0;
 	const itemPaths = memoryFilesModified(item);
