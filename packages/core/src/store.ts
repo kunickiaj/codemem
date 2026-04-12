@@ -37,6 +37,8 @@ import {
 	buildMemoryPackTrace,
 	buildMemoryPackTraceAsync,
 } from "./pack.js";
+import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
+import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
 import {
 	type ExplainOptions,
@@ -2311,6 +2313,18 @@ export class MemoryStore {
 				String(a.peer_name ?? "").localeCompare(String(b.peer_name ?? "")) ||
 				String(a.peer_device_id ?? "").localeCompare(String(b.peer_device_id ?? "")),
 		);
+	}
+
+	// ref queries
+
+	/** Find memories associated with a file path via the junction table index. */
+	findByFile(filePath: string, options?: RefQueryOptions): RefQueryResult[] {
+		return findByFileFn(this.db, filePath, options);
+	}
+
+	/** Find memories associated with a concept via the junction table index. */
+	findByConcept(concept: string, options?: RefQueryOptions): RefQueryResult[] {
+		return findByConceptFn(this.db, concept, options);
 	}
 
 	// close

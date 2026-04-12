@@ -347,6 +347,8 @@ export {
 	RefBackfillRunner,
 	runRefBackfillPass,
 } from "./ref-backfill.js";
+export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
+export { findByConcept, findByFile } from "./ref-queries.js";
 export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
 export * as schema from "./schema.js";
 export { bootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
