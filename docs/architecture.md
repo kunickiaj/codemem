@@ -41,10 +41,11 @@ flowchart LR
 3. Claude hook ingestion posts to `POST /api/claude-hooks` first and falls back to `codemem claude-hook-ingest` direct enqueue when the local viewer API is unavailable.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
-6. Ingest builds a transcript from user prompts and assistant messages, then hands it to the observer.
-7. The observer returns typed observations and an optional session summary as XML.
-8. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
-9. The viewer, MCP server, and CLI all read from the same SQLite database.
+6. Before building session context, raw events are passed through `normalizeEventsForSessionContext` (in `ingest-transcript.ts`) which projects adapter-enveloped events (`_adapter` schema v1.0) into the flat `user_prompt` / `tool.execute.after` shapes that `buildSessionContext` scans. This is critical for Claude Code hook events which always arrive wrapped in the adapter envelope.
+7. Ingest builds a transcript from user prompts and assistant messages, then hands it to the observer.
+8. The observer returns typed observations and an optional session summary as XML.
+9. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
+10. The viewer, MCP server, and CLI all read from the same SQLite database.
 
 ## Adapter support matrix and rollout
 
