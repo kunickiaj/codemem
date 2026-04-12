@@ -388,11 +388,127 @@ describe("flushRawEvents max retry", () => {
 				toolCount?: number;
 				firstPrompt?: string;
 				filesRead?: string[];
+				filesModified?: string[];
 			};
 		};
 		expect(meta.session_context?.promptCount).toBe(1);
 		expect(meta.session_context?.toolCount).toBe(2);
 		expect(meta.session_context?.firstPrompt).toBe("Investigate the flush bug");
 		expect(meta.session_context?.filesRead).toEqual(["/tmp/repo/src/flush.ts"]);
+		expect(meta.session_context?.filesModified).toEqual(["/tmp/repo/src/flush.ts"]);
+	});
+
+	it("populates filesModified from OpenCode apply_patch adapter events end-to-end", async () => {
+		const sessionId = "ses_opencode_apply_patch";
+		const patchText = [
+			"*** Begin Patch",
+			"*** Add File: /repo/src/new.ts",
+			"+export const created = 1;",
+			"*** Update File: /repo/src/existing.ts",
+			"@@ -1 +1 @@",
+			"-export const value = 1;",
+			"+export const value = 2;",
+			"*** End Patch",
+		].join("\n");
+
+		// Seed a PURE adapter-enveloped tool_result event — this is the shape
+		// OpenCode actually emits for apply_patch. No outer `tool` / `args` /
+		// `type: "tool.execute.after"` fields; the adapter envelope is the only
+		// thing that carries the tool name and patchText. This forces the flush
+		// path through `normalizeEventsForSessionContext` +
+		// `projectAdapterToolEvent` and proves the adapter projection populates
+		// `filesModified` via the `apply_patch` branch of `buildSessionContext`.
+		const adapterEvent = {
+			schema_version: "1.0",
+			source: "opencode",
+			session_id: sessionId,
+			event_id: "oc:apply_patch:1",
+			event_type: "tool_result",
+			ts: "2026-04-11T12:00:05Z",
+			ordering_confidence: "low",
+			payload: {
+				tool_name: "apply_patch",
+				status: "ok",
+				tool_input: { patchText },
+				tool_output:
+					"Success. Updated the following files:\nA /repo/src/new.ts\nU /repo/src/existing.ts",
+				error: null,
+			},
+			meta: { original_event_type: "tool.execute.after" },
+		};
+
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			eventId: "evt-prompt",
+			eventType: "user_prompt",
+			payload: {
+				type: "user_prompt",
+				prompt_text: "Ship the apply_patch fix",
+				timestamp: "2026-04-11T12:00:00Z",
+			},
+			tsWallMs: Date.parse("2026-04-11T12:00:00Z"),
+		});
+		store.recordRawEvent({
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			eventId: adapterEvent.event_id,
+			eventType: "tool.execute.after",
+			payload: { _adapter: adapterEvent },
+			tsWallMs: Date.parse(adapterEvent.ts),
+		});
+
+		const summaryResponder = {
+			observe: async () => ({
+				raw: `<summary>
+					<request>Ship the apply_patch fix</request>
+					<investigated>raw-event-flush session context</investigated>
+					<learned>apply_patch needs explicit handling</learned>
+					<completed>Added handling</completed>
+					<next_steps></next_steps>
+					<notes></notes>
+				</summary>`,
+				parsed: null,
+				provider: "test",
+				model: "test-model",
+			}),
+			getStatus: () => ({
+				provider: "test",
+				model: "test-model",
+				runtime: "test",
+				auth: { source: "none", type: "none", hasToken: false },
+			}),
+		};
+
+		const ingestOpts = { observer: summaryResponder } as unknown as IngestOptions;
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: "/repo",
+			project: "repo",
+			startedAt: "2026-04-11T12:00:00Z",
+			maxEvents: null,
+		};
+
+		const result = await flushRawEvents(store, ingestOpts, flushOpts);
+		expect(result.flushed).toBeGreaterThan(0);
+
+		const row = store.db
+			.prepare(
+				"SELECT metadata_json FROM sessions WHERE id = (SELECT session_id FROM opencode_sessions WHERE stream_id = ?)",
+			)
+			.get(sessionId) as { metadata_json: string } | undefined;
+		expect(row).toBeDefined();
+		const meta = JSON.parse(row?.metadata_json ?? "{}") as {
+			session_context?: {
+				filesModified?: string[];
+				toolCount?: number;
+			};
+		};
+		expect(meta.session_context?.filesModified).toEqual([
+			"/repo/src/existing.ts",
+			"/repo/src/new.ts",
+		]);
+		expect(meta.session_context?.toolCount).toBe(1);
 	});
 });

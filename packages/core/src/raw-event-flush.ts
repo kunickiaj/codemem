@@ -8,6 +8,7 @@
  * and updates flush state on success (or records failure details).
  */
 
+import { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
 import { normalizeAdapterEvents, normalizeEventsForSessionContext } from "./ingest-transcript.js";
@@ -114,12 +115,35 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 		const args = e.args;
 		if (args == null || typeof args !== "object") continue;
 		const argsObj = args as Record<string, unknown>;
+
+		// OpenCode's primary file-mutation tool is `apply_patch`, which does not
+		// expose a `filePath` key — the paths live inside the `patchText` string
+		// using the standard `*** Add File: <path>` / `*** Update File: <path>` /
+		// `*** Delete File: <path>` markers. Extract those explicitly so the
+		// session context reflects writes from `apply_patch` sessions.
+		//
+		// `*** Delete File:` entries are also recorded as `filesModified` because
+		// session context tracks "files the session touched", not just writes —
+		// a deletion is a mutation and downstream session-aware surfaces (pack,
+		// injection) want to see deleted paths too.
+		if (tool === "apply_patch") {
+			const patchText = argsObj.patchText ?? argsObj.patch;
+			if (typeof patchText === "string" && patchText) {
+				for (const path of extractApplyPatchPaths(patchText)) {
+					filesModified.add(path);
+				}
+			}
+			continue;
+		}
+
 		// Support both OpenCode-style camelCase (`filePath`) and Claude Code-style
 		// snake_case (`file_path`) tool input keys. Claude Code hook payloads use
 		// `file_path` verbatim from the Claude Code schema.
 		const filePath = argsObj.filePath ?? argsObj.file_path ?? argsObj.path;
 		if (typeof filePath !== "string" || !filePath) continue;
-		if (tool === "write" || tool === "edit") filesModified.add(filePath);
+		if (MUTATING_TOOL_NAMES.has(tool)) {
+			filesModified.add(filePath);
+		}
 		if (tool === "read") filesRead.add(filePath);
 	}
 
