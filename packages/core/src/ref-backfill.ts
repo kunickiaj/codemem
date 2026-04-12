@@ -18,6 +18,7 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+import { normalizeConcept } from "./ref-populate.js";
 
 export const REF_BACKFILL_JOB = "memory_ref_backfill";
 
@@ -171,7 +172,7 @@ export async function runRefBackfillPass(
 			}
 			if (concepts) {
 				for (const concept of concepts) {
-					const normalized = concept?.trim().toLowerCase();
+					const normalized = normalizeConcept(concept ?? "");
 					if (normalized) insertConceptRef.run(row.id, normalized);
 				}
 			}

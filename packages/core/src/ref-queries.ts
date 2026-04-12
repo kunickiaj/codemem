@@ -10,6 +10,7 @@
  */
 
 import type { Database } from "./db.js";
+import { normalizeConcept } from "./ref-populate.js";
 
 export interface RefQueryOptions {
 	/** Filter by memory kind (e.g. "decision", "bugfix") */
@@ -109,7 +110,7 @@ export function findByConcept(
 	options?: RefQueryOptions,
 ): RefQueryResult[] {
 	const limit = options?.limit ?? 20;
-	const normalized = concept.trim().toLowerCase();
+	const normalized = normalizeConcept(concept);
 
 	const clauses: string[] = ["mcr.concept = ?", "mi.active = 1"];
 	const params: unknown[] = [normalized];

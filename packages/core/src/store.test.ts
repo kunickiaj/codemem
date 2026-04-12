@@ -581,6 +581,25 @@ describe("MemoryStore", () => {
 				expect(conceptRefs).toHaveLength(0);
 			}
 		});
+
+		it("rolls back memory_items insert when ref population fails", () => {
+			const sessionId = insertTestSession(store.db);
+
+			// Sabotage the memory_file_refs table so INSERT OR IGNORE still throws
+			store.db.exec("DROP TABLE memory_file_refs");
+
+			expect(() =>
+				store.remember(sessionId, "discovery", "Rollback test", "Body", 0.5, [], {
+					files_read: ["src/oops.ts"],
+				}),
+			).toThrow();
+
+			// The memory_items insert should have been rolled back
+			const row = store.db
+				.prepare("SELECT id FROM memory_items WHERE title = ?")
+				.get("Rollback test");
+			expect(row).toBeUndefined();
+		});
 	});
 
 	// -- forget --------------------------------------------------------------

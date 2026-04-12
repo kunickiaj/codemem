@@ -347,6 +347,7 @@ export {
 	RefBackfillRunner,
 	runRefBackfillPass,
 } from "./ref-backfill.js";
+export { clearMemoryRefs, normalizeConcept, populateMemoryRefs } from "./ref-populate.js";
 export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 export { findByConcept, findByFile } from "./ref-queries.js";
 export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
