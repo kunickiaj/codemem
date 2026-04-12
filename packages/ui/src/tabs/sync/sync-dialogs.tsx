@@ -1,6 +1,9 @@
 import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
+import { DialogCloseButton } from "../../components/primitives/dialog-close-button";
 import { RadixDialog } from "../../components/primitives/radix-dialog";
+import { RadixRadioGroup } from "../../components/primitives/radix-radio-group";
+import { RadixSelect } from "../../components/primitives/radix-select";
 
 type DialogTone = "default" | "danger";
 
@@ -195,13 +198,10 @@ function SyncDialogBody({
 		<div className="modal-card sync-dialog-card">
 			<div className="modal-header">
 				<h2 id={titleId}>{request.title}</h2>
-				<button
-					className="modal-close"
+				<DialogCloseButton
+					ariaLabel={`Close ${request.title}`}
 					onClick={() => resolveCurrentDialog(request.kind === "confirm" ? false : null)}
-					type="button"
-				>
-					close
-				</button>
+				/>
 			</div>
 			<div className="modal-body">
 				{request.kind !== "duplicate-person" ? (
@@ -301,6 +301,19 @@ function DuplicatePersonDialogContent({
 	const mergeCandidates = request.actors.filter((actor) => actor.actorId !== primaryActorId);
 	const secondary =
 		mergeCandidates.find((actor) => actor.actorId === secondaryActorId) || mergeCandidates[0];
+	const primaryOptions = request.actors.map((actor) => ({
+		label: (
+			<>
+				{actor.label}
+				{actor.isLocal ? " (You)" : ""}
+			</>
+		),
+		value: actor.actorId,
+	}));
+	const mergeOptions = mergeCandidates.map((actor) => ({
+		label: `${actor.label}${actor.isLocal ? " (You)" : ""}`,
+		value: actor.actorId,
+	}));
 
 	return step === "choice" ? (
 		<div className="sync-dialog-stack">
@@ -341,48 +354,36 @@ function DuplicatePersonDialogContent({
 			<div className="small" id={descriptionId}>
 				Choose which person should remain after combining these duplicates.
 			</div>
-			<div
-				className="sync-dialog-radio-list"
-				role="radiogroup"
-				aria-describedby={descriptionId}
-				aria-label="Person to keep after combining duplicates"
-			>
-				{request.actors.map((actor) => (
-					<label className="sync-dialog-radio-option" key={actor.actorId}>
-						<input
-							autoFocus={primaryActorId === actor.actorId}
-							checked={primaryActorId === actor.actorId}
-							data-sync-primary-action={primaryActorId === actor.actorId ? "true" : undefined}
-							name="syncDuplicatePrimaryActor"
-							onChange={() => setPrimaryActorId(actor.actorId)}
-							type="radio"
-							value={actor.actorId}
-						/>
-						<span>
-							{actor.label}
-							{actor.isLocal ? " (You)" : ""}
-						</span>
-					</label>
-				))}
-			</div>
+			<RadixRadioGroup
+				ariaDescribedby={descriptionId}
+				ariaLabel="Person to keep after combining duplicates"
+				autoFocusValue={primaryActorId}
+				indicatorClassName="sync-dialog-radio-indicator"
+				itemClassName="sync-dialog-radio-option"
+				itemLabelClassName="sync-dialog-radio-label"
+				name="syncDuplicatePrimaryActor"
+				onValueChange={setPrimaryActorId}
+				options={primaryOptions}
+				rootClassName="sync-dialog-radio-list"
+				value={primaryActorId}
+			/>
 			<div className="field">
 				<label className="small" htmlFor="syncDuplicateSecondaryActor">
 					Person to combine into the selected record
 				</label>
-				<select
-					className="sync-dialog-input"
-					data-sync-primary-action="true"
+				<RadixSelect
+					ariaLabel="Person to combine into the selected record"
+					contentClassName="sync-radix-select-content sync-actor-select-content"
+					disabled={mergeOptions.length === 0}
 					id="syncDuplicateSecondaryActor"
+					itemClassName="sync-radix-select-item"
+					onValueChange={setSecondaryActorId}
+					options={mergeOptions}
+					placeholder="No merge target available"
+					triggerClassName="sync-radix-select-trigger sync-dialog-input"
 					value={secondary?.actorId || ""}
-					onChange={(event) => setSecondaryActorId(event.currentTarget.value)}
-				>
-					{mergeCandidates.map((actor) => (
-						<option key={actor.actorId} value={actor.actorId}>
-							{actor.label}
-							{actor.isLocal ? " (You)" : ""}
-						</option>
-					))}
-				</select>
+					viewportClassName="sync-radix-select-viewport"
+				/>
 			</div>
 			<div className="sync-dialog-actions">
 				<button className="settings-button" onClick={() => setStep("choice")} type="button">
