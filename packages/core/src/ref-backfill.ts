@@ -47,11 +47,14 @@ export function hasPendingRefBackfill(db: SqliteDatabase): boolean {
 			`SELECT 1 FROM memory_items mi
 			 WHERE mi.active = 1
 			   AND (mi.files_read IS NOT NULL OR mi.files_modified IS NOT NULL OR mi.concepts IS NOT NULL)
-			   AND NOT EXISTS (
-			     SELECT 1 FROM memory_file_refs mfr WHERE mfr.memory_id = mi.id
-			   )
-			   AND NOT EXISTS (
-			     SELECT 1 FROM memory_concept_refs mcr WHERE mcr.memory_id = mi.id
+			   AND (
+			     ((mi.files_read IS NOT NULL OR mi.files_modified IS NOT NULL) AND NOT EXISTS (
+			       SELECT 1 FROM memory_file_refs mfr WHERE mfr.memory_id = mi.id
+			     ))
+			     OR
+			     (mi.concepts IS NOT NULL AND NOT EXISTS (
+			       SELECT 1 FROM memory_concept_refs mcr WHERE mcr.memory_id = mi.id
+			     ))
 			   )
 			 LIMIT 1`,
 		)
@@ -74,7 +77,8 @@ function safeJsonArray(value: string | null): string[] | null {
 	if (!value) return null;
 	try {
 		const parsed: unknown = JSON.parse(value);
-		if (Array.isArray(parsed)) return parsed as string[];
+		if (!Array.isArray(parsed)) return null;
+		return parsed.filter((v): v is string => typeof v === "string");
 	} catch {
 		// corrupt JSON — skip gracefully
 	}

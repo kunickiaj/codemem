@@ -18,7 +18,7 @@ import {
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
 import { inferMemoryRole } from "./memory-quality.js";
-import { projectMatchesFilter } from "./project.js";
+import { projectClause, projectMatchesFilter } from "./project.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
 import * as schema from "./schema.js";
 import { canonicalMemoryKind } from "./summary-memory.js";
@@ -1276,19 +1276,38 @@ export function explain(
  * This is used by the pack builder to source working-set candidates
  * that FTS/vector search would miss.
  */
-export function findCandidatesByFile(db: Database, filePaths: string[], limit = 50): number[] {
+export function findCandidatesByFile(
+	db: Database,
+	filePaths: string[],
+	limit = 50,
+	options?: { project?: string },
+): number[] {
 	if (filePaths.length === 0) return [];
 	const placeholders = filePaths.map(() => "?").join(", ");
+	const params: unknown[] = [...filePaths];
+
+	let projectJoin = "";
+	let projectWhere = "";
+	if (options?.project) {
+		const { clause, params: projectParams } = projectClause(options.project);
+		if (clause) {
+			projectJoin = " JOIN sessions ON sessions.id = mi.session_id";
+			projectWhere = ` AND ${clause}`;
+			params.push(...projectParams);
+		}
+	}
+
+	params.push(limit);
 	const rows = db
 		.prepare(
 			`SELECT DISTINCT mfr.memory_id
 			 FROM memory_file_refs mfr
-			 JOIN memory_items mi ON mi.id = mfr.memory_id
+			 JOIN memory_items mi ON mi.id = mfr.memory_id${projectJoin}
 			 WHERE mfr.file_path IN (${placeholders})
-			   AND mi.active = 1
+			   AND mi.active = 1${projectWhere}
 			 ORDER BY mi.created_at DESC
 			 LIMIT ?`,
 		)
-		.all(...filePaths, limit) as Array<{ memory_id: number }>;
+		.all(...params) as Array<{ memory_id: number }>;
 	return rows.map((r) => r.memory_id);
 }

@@ -52,45 +52,56 @@ export function findByFile(
 	filePath: string,
 	options?: RefQueryOptions,
 ): RefQueryResult[] {
-	const limit = options?.limit ?? 20;
-	const isDir = filePath.endsWith("/");
+	const trimmed = filePath.trim();
+	if (!trimmed) return [];
 
-	const clauses: string[] = ["mi.active = 1"];
-	const params: unknown[] = [];
+	const limit = options?.limit ?? 20;
+	const isDir = trimmed.endsWith("/");
+
+	const refClauses: string[] = [];
+	const refParams: unknown[] = [];
 
 	if (isDir) {
-		clauses.push("mfr.file_path LIKE ? || '%'");
-		params.push(filePath);
+		const escaped = trimmed.replace(/%/g, "\\%").replace(/_/g, "\\_");
+		refClauses.push("mfr.file_path LIKE ? ESCAPE '\\'");
+		refParams.push(`${escaped}%`);
 	} else {
-		clauses.push("mfr.file_path = ?");
-		params.push(filePath);
+		refClauses.push("mfr.file_path = ?");
+		refParams.push(trimmed);
 	}
 
 	if (options?.relation) {
-		clauses.push("mfr.relation = ?");
-		params.push(options.relation);
+		refClauses.push("mfr.relation = ?");
+		refParams.push(options.relation);
 	}
 
+	const outerClauses: string[] = ["mi.active = 1"];
+	const outerParams: unknown[] = [];
+
 	if (options?.kind) {
-		clauses.push("mi.kind = ?");
-		params.push(options.kind);
+		outerClauses.push("mi.kind = ?");
+		outerParams.push(options.kind);
 	}
 
 	if (options?.since) {
-		clauses.push("mi.created_at > ?");
-		params.push(options.since);
+		outerClauses.push("mi.created_at > ?");
+		outerParams.push(options.since);
 	}
 
-	params.push(limit);
+	const params: unknown[] = [...refParams, ...outerParams, limit];
 
 	const sql = `
-		SELECT DISTINCT mi.id, mi.session_id, mi.kind, mi.title, mi.subtitle,
+		SELECT mi.id, mi.session_id, mi.kind, mi.title, mi.subtitle,
 			mi.body_text, mi.narrative, mi.confidence, mi.tags_text,
 			mi.created_at, mi.updated_at, mi.files_read, mi.files_modified,
 			mi.concepts, mi.metadata_json
-		FROM memory_file_refs mfr
-		JOIN memory_items mi ON mi.id = mfr.memory_id
-		WHERE ${clauses.join(" AND ")}
+		FROM memory_items mi
+		WHERE mi.id IN (
+			SELECT DISTINCT mfr.memory_id
+			FROM memory_file_refs mfr
+			WHERE ${refClauses.join(" AND ")}
+		)
+		AND ${outerClauses.join(" AND ")}
 		ORDER BY mi.created_at DESC
 		LIMIT ?
 	`;
@@ -109,32 +120,38 @@ export function findByConcept(
 	concept: string,
 	options?: RefQueryOptions,
 ): RefQueryResult[] {
-	const limit = options?.limit ?? 20;
 	const normalized = normalizeConcept(concept);
+	if (!normalized) return [];
 
-	const clauses: string[] = ["mcr.concept = ?", "mi.active = 1"];
-	const params: unknown[] = [normalized];
+	const limit = options?.limit ?? 20;
+
+	const outerClauses: string[] = ["mi.active = 1"];
+	const outerParams: unknown[] = [];
 
 	if (options?.kind) {
-		clauses.push("mi.kind = ?");
-		params.push(options.kind);
+		outerClauses.push("mi.kind = ?");
+		outerParams.push(options.kind);
 	}
 
 	if (options?.since) {
-		clauses.push("mi.created_at > ?");
-		params.push(options.since);
+		outerClauses.push("mi.created_at > ?");
+		outerParams.push(options.since);
 	}
 
-	params.push(limit);
+	const params: unknown[] = [normalized, ...outerParams, limit];
 
 	const sql = `
-		SELECT DISTINCT mi.id, mi.session_id, mi.kind, mi.title, mi.subtitle,
+		SELECT mi.id, mi.session_id, mi.kind, mi.title, mi.subtitle,
 			mi.body_text, mi.narrative, mi.confidence, mi.tags_text,
 			mi.created_at, mi.updated_at, mi.files_read, mi.files_modified,
 			mi.concepts, mi.metadata_json
-		FROM memory_concept_refs mcr
-		JOIN memory_items mi ON mi.id = mcr.memory_id
-		WHERE ${clauses.join(" AND ")}
+		FROM memory_items mi
+		WHERE mi.id IN (
+			SELECT DISTINCT mcr.memory_id
+			FROM memory_concept_refs mcr
+			WHERE mcr.concept = ?
+		)
+		AND ${outerClauses.join(" AND ")}
 		ORDER BY mi.created_at DESC
 		LIMIT ?
 	`;

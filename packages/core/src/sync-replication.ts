@@ -139,7 +139,8 @@ function asStringOrNull(value: unknown): string | null {
 /** Coerce an unknown payload field to `string[] | null` for ref population. */
 function asStringArrayOrNull(value: unknown): string[] | null {
 	if (!Array.isArray(value)) return null;
-	return value.map(String);
+	const strings = value.filter((v): v is string => typeof v === "string");
+	return strings.length > 0 ? strings : null;
 }
 
 function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload | null {
