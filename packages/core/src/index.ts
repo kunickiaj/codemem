@@ -355,6 +355,12 @@ export {
 	search,
 	timeline,
 } from "./search.js";
+export {
+	hasPendingSessionContextBackfill,
+	runSessionContextBackfillPass,
+	SESSION_CONTEXT_BACKFILL_JOB,
+	SessionContextBackfillRunner,
+} from "./session-context-backfill.js";
 export { MemoryStore } from "./store.js";
 export { canonicalMemoryKind, getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
 export type {
