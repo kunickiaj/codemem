@@ -4,7 +4,7 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
-	DedupKeyBackfillRunner,
+	connect,
 	hasPendingDedupKeyBackfill,
 	hasPendingRefBackfill,
 	hasPendingSessionContextBackfill,
@@ -13,13 +13,14 @@ import {
 	type MemoryStore,
 	ObserverClient,
 	RawEventSweeper,
-	RefBackfillRunner,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	resolveDbPath,
+	runDedupKeyBackfillPass,
+	runRefBackfillPass,
+	runSessionContextBackfillPass,
 	runSyncDaemon,
-	SessionContextBackfillRunner,
 	SyncRetentionRunner,
 	VectorModelMigrationRunner,
 } from "@codemem/core";
@@ -361,6 +362,73 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 	);
 }
 
+/**
+ * Run backfill jobs one at a time using direct pass calls (not the timer-based
+ * runners). Each job processes its full backlog before the next starts. This
+ * prevents WAL lock contention when multiple backfills are pending.
+ *
+ * Yields to the event loop between passes so the HTTP server stays responsive.
+ */
+async function sequenceBackfillRunners(
+	dbPath: string,
+	pending: {
+		dedupKey: boolean;
+		sessionContext: boolean;
+		ref: boolean;
+	},
+	signal?: AbortSignal,
+): Promise<void> {
+	const jobs: Array<{
+		name: string;
+		run: (db: ReturnType<typeof connect>) => Promise<boolean>;
+	}> = [];
+
+	if (pending.dedupKey) {
+		jobs.push({
+			name: "Dedup-key",
+			run: (db) => runDedupKeyBackfillPass(db, { batchSize: 10 }),
+		});
+	}
+	if (pending.sessionContext) {
+		jobs.push({
+			name: "Session-context",
+			run: (db) => runSessionContextBackfillPass(db, { batchSize: 10 }),
+		});
+	}
+	if (pending.ref) {
+		jobs.push({
+			name: "Ref",
+			run: (db) => runRefBackfillPass(db, { batchSize: 10 }),
+		});
+	}
+
+	if (jobs.length === 0) return;
+
+	p.log.step(`${jobs.length} backfill job(s) pending — running sequentially`);
+	for (const job of jobs) {
+		if (signal?.aborted) break;
+		p.log.step(`${job.name} backfill started`);
+		// One connection per job (not per pass) to avoid repeated schema bootstrap.
+		const db = connect(dbPath);
+		try {
+			let moreWork = true;
+			while (moreWork && !signal?.aborted) {
+				moreWork = await job.run(db);
+				// Yield to the event loop so the HTTP server can handle requests
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+		} finally {
+			db.close();
+		}
+		if (!signal?.aborted) {
+			p.log.step(`${job.name} backfill complete`);
+		}
+	}
+	if (!signal?.aborted) {
+		p.log.step("All backfill jobs complete");
+	}
+}
+
 async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const { createApp, createSyncApp, closeStore, getStore } = await import("@codemem/server");
 	const { serve } = await import("@hono/node-server");
@@ -402,6 +470,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 
 	const syncAbort = new AbortController();
 	const retentionAbort = new AbortController();
+	const backfillAbort = new AbortController();
 	const config = invocation.configPath
 		? readCodememConfigFileAtPath(invocation.configPath)
 		: readCodememConfigFile();
@@ -414,15 +483,8 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const vectorMigrationRunner = new VectorModelMigrationRunner({
 		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
 	});
-	const dedupKeyBackfillRunner = new DedupKeyBackfillRunner({
-		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
-	});
-	const sessionContextBackfillRunner = new SessionContextBackfillRunner({
-		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
-	});
-	const refBackfillRunner = new RefBackfillRunner({
-		dbPath: resolveDbPath(invocation.dbPath ?? undefined),
-	});
+	// Backfill runners removed — sequenceBackfillRunners() now runs passes
+	// directly to avoid concurrent connections and WAL lock contention.
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -482,18 +544,23 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 				vectorMigrationRunner.start();
 				p.log.step("Vector maintenance runner started");
 			}
-			if (hasPendingDedupKeyBackfill(store.db)) {
-				dedupKeyBackfillRunner.start();
-				p.log.step("Dedup-key maintenance runner started");
-			}
-			if (hasPendingSessionContextBackfill(store.db)) {
-				sessionContextBackfillRunner.start();
-				p.log.step("Session-context backfill runner started");
-			}
-			if (hasPendingRefBackfill(store.db)) {
-				refBackfillRunner.start();
-				p.log.step("Ref backfill runner started");
-			}
+			// Sequence backfill jobs so only one batch-heavy job runs at a
+			// time.  On a large database (e.g. first boot after a schema upgrade)
+			// all three can have pending work; running them concurrently causes
+			// WAL lock contention that deadlocks the viewer.
+			void sequenceBackfillRunners(
+				resolveDbPath(invocation.dbPath ?? undefined),
+				{
+					dedupKey: hasPendingDedupKeyBackfill(store.db),
+					sessionContext: hasPendingSessionContextBackfill(store.db),
+					ref: hasPendingRefBackfill(store.db),
+				},
+				backfillAbort.signal,
+			).catch((err) => {
+				p.log.warn(
+					`Backfill sequencer failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
 			if (syncConfig.syncRetentionEnabled) {
 				retentionRunner.start();
 				p.log.step("Retention maintenance runner started");
@@ -567,10 +634,8 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		clearInterval(walCheckpointTimer);
 		syncAbort.abort();
 		retentionAbort.abort();
+		backfillAbort.abort();
 		await sweeper.stop();
-		await sessionContextBackfillRunner.stop();
-		await refBackfillRunner.stop();
-		await dedupKeyBackfillRunner.stop();
 		await vectorMigrationRunner.stop();
 		await retentionRunner.stop();
 
