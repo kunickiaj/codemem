@@ -503,6 +503,31 @@
         margin: 0;
       }
 
+      .coordinator-admin-form-grid {
+        display: grid;
+        gap: var(--sp-3);
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      }
+
+      .coordinator-admin-field {
+        display: grid;
+        gap: var(--sp-2);
+      }
+
+      .coordinator-admin-field > span {
+        font-size: 12px;
+        color: var(--text-secondary);
+        font-weight: 600;
+      }
+
+      .coordinator-admin-output {
+        min-height: 108px;
+      }
+
+      .coordinator-admin-warning-list {
+        color: var(--status-attention);
+      }
+
       .coordinator-admin-list {
         padding-left: var(--sp-4);
         display: grid;

@@ -4409,6 +4409,55 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("creates coordinator invites through the coordinator admin route", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/invites")) {
+					return new Response(
+						JSON.stringify({
+							encoded: "invite-blob",
+							link: "https://example.test/invite",
+							payload: { group_id: "team-a" },
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			globalThis.fetch = fetchMock as typeof fetch;
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_coordinator_url: "https://coord.example.test",
+					sync_coordinator_group: "team-a",
+					sync_coordinator_admin_secret: "secret",
+				}),
+			);
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/coordinator/admin/invites", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ policy: "auto_admit", ttl_hours: 24 }),
+				});
+				expect(res.status).toBe(200);
+				expect(await res.json()).toMatchObject({
+					encoded: "invite-blob",
+					group_id: "team-a",
+					status: expect.objectContaining({ readiness: "ready", active_group: "team-a" }),
+				});
+			} finally {
+				cleanup();
+				globalThis.fetch = prevFetch;
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
 		it("returns invite warnings for private-looking coordinator URLs", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;

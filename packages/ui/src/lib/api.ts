@@ -292,7 +292,7 @@ export async function createCoordinatorInvite(payload: {
 	policy: "auto_admit" | "approval_required";
 	ttl_hours: number;
 }): Promise<CoordinatorInviteResult> {
-	const resp = await fetch("/api/sync/invites/create", {
+	const resp = await fetch("/api/coordinator/admin/invites", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(payload),

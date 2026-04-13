@@ -2053,6 +2053,51 @@ export function syncRoutes(
 		return c.json(status);
 	});
 
+	app.post("/api/coordinator/admin/invites", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json", status }, 400);
+		}
+		const groupId = resolveCoordinatorAdminGroup(String(body.group_id ?? "").trim(), status);
+		const coordinatorUrl = body.coordinator_url == null ? null : String(body.coordinator_url ?? "");
+		const policy = String(body.policy ?? "auto_admit").trim();
+		const ttlHours = Number.parseInt(String(body.ttl_hours ?? 24), 10);
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		if (body.coordinator_url != null && typeof body.coordinator_url !== "string") {
+			return c.json({ error: "coordinator_url must be string", status }, 400);
+		}
+		if (!["auto_admit", "approval_required"].includes(policy)) {
+			return c.json({ error: "policy must be auto_admit or approval_required", status }, 400);
+		}
+		if (!Number.isFinite(ttlHours)) {
+			return c.json({ error: "ttl_hours must be int", status }, 400);
+		}
+		try {
+			const result = await coordinatorCreateInviteAction({
+				groupId,
+				coordinatorUrl,
+				policy,
+				ttlHours,
+				createdBy: null,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ ...result, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
 	app.get("/api/coordinator/admin/join-requests", async (c) => {
 		const config = readCoordinatorSyncConfig();
 		const status = coordinatorAdminStatusPayload(config);
