@@ -1,11 +1,17 @@
 import { h, render } from "preact";
+import { RadixSelect } from "../components/primitives/radix-select";
 import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
 import * as api from "../lib/api";
+import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 
 type AdminSection = "overview" | "invites" | "join-requests" | "devices";
 
 let activeSection: AdminSection = "overview";
+let inviteGroup = "";
+let inviteTtlHours = "24";
+let invitePolicy: "auto_admit" | "approval_required" = "auto_admit";
+let invitePending = false;
 
 function coordinatorAdminSummary() {
 	const status = state.lastCoordinatorAdminStatus;
@@ -42,6 +48,160 @@ function coordinatorAdminSummary() {
 	};
 }
 
+async function createInviteFromAdminPanel() {
+	if (invitePending) return;
+	const status = state.lastCoordinatorAdminStatus;
+	const defaultGroup = String(status?.active_group || "").trim();
+	const groupId = inviteGroup.trim() || defaultGroup;
+	const ttlHours = Number(inviteTtlHours);
+	if (!groupId) {
+		showGlobalNotice("Choose a coordinator group before creating an invite.", "warning");
+		return;
+	}
+	if (!Number.isFinite(ttlHours) || ttlHours < 1) {
+		showGlobalNotice("Invite lifetime must be at least 1 hour.", "warning");
+		return;
+	}
+	invitePending = true;
+	renderShell();
+	try {
+		const result = await api.createCoordinatorInvite({
+			group_id: groupId,
+			policy: invitePolicy,
+			ttl_hours: ttlHours,
+		});
+		state.lastTeamInvite = result;
+		inviteGroup = groupId;
+		const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+		showGlobalNotice(
+			warnings.length
+				? `Invite created. Review ${warnings.length === 1 ? "the warning" : `${warnings.length} warnings`} before sharing it.`
+				: "Invite created. Copy it from Coordinator Admin and share it with your teammate.",
+			warnings.length ? "warning" : "success",
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Failed to create invite.";
+		showGlobalNotice(message, "warning");
+	} finally {
+		invitePending = false;
+		renderShell();
+	}
+}
+
+function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>) {
+	const status = state.lastCoordinatorAdminStatus;
+	const groups = Array.isArray(status?.groups) ? status.groups.filter(Boolean) : [];
+	const activeGroup = String(status?.active_group || "").trim();
+	const effectiveGroup = inviteGroup.trim() || activeGroup;
+	const output = String(state.lastTeamInvite?.encoded || "").trim();
+	const warnings = Array.isArray(state.lastTeamInvite?.warnings)
+		? state.lastTeamInvite?.warnings
+		: [];
+	return h(
+		RadixTabsContent,
+		{ className: "coordinator-admin-panel", forceMount: true, value: "invites" },
+		h("h3", null, "Create teammate invite"),
+		h(
+			"p",
+			{ class: "peer-submeta" },
+			summary.readiness === "ready"
+				? "Generate a coordinator-backed invite from the same operator surface that will later handle join requests and device administration."
+				: "Finish setup first. Invite creation stays disabled until the local coordinator admin configuration is ready.",
+		),
+		h(
+			"div",
+			{ class: "coordinator-admin-form-grid" },
+			h(
+				"label",
+				{ class: "coordinator-admin-field" },
+				h("span", null, "Group"),
+				h("input", {
+					class: "peer-scope-input",
+					disabled: summary.readiness !== "ready",
+					onInput: (event) => {
+						inviteGroup = String((event.currentTarget as HTMLInputElement).value || "");
+					},
+					placeholder: activeGroup || "team-alpha",
+					value: inviteGroup,
+				}),
+			),
+			h(
+				"label",
+				{ class: "coordinator-admin-field" },
+				h("span", null, "Join policy"),
+				h(RadixSelect, {
+					ariaLabel: "Invite join policy",
+					contentClassName: "sync-radix-select-content sync-actor-select-content",
+					disabled: summary.readiness !== "ready",
+					id: "coordinatorAdminInvitePolicy",
+					itemClassName: "sync-radix-select-item",
+					onValueChange: (value) => {
+						invitePolicy = value === "approval_required" ? "approval_required" : "auto_admit";
+						renderShell();
+					},
+					options: [
+						{ value: "auto_admit", label: "Auto-admit" },
+						{ value: "approval_required", label: "Approval required" },
+					],
+					triggerClassName: "sync-radix-select-trigger sync-actor-select",
+					value: invitePolicy,
+					viewportClassName: "sync-radix-select-viewport",
+				}),
+			),
+			h(
+				"label",
+				{ class: "coordinator-admin-field" },
+				h("span", null, "Expires in (hours)"),
+				h("input", {
+					class: "peer-scope-input",
+					disabled: summary.readiness !== "ready",
+					min: "1",
+					onInput: (event) => {
+						inviteTtlHours = String((event.currentTarget as HTMLInputElement).value || "");
+					},
+					type: "number",
+					value: inviteTtlHours,
+				}),
+			),
+		),
+		h(
+			"div",
+			{ class: "section-actions" },
+			h(
+				"button",
+				{
+					class: "settings-button",
+					disabled: summary.readiness !== "ready" || invitePending,
+					onClick: () => {
+						void createInviteFromAdminPanel();
+					},
+					type: "button",
+				},
+				invitePending ? "Creating…" : "Create invite",
+			),
+			effectiveGroup ? h("span", { class: "peer-submeta" }, `Using group ${effectiveGroup}`) : null,
+		),
+		groups.length
+			? h("p", { class: "peer-submeta" }, `Available groups: ${groups.join(", ")}`)
+			: null,
+		output
+			? h(
+					"label",
+					{ class: "coordinator-admin-field" },
+					h("span", null, "Generated invite"),
+					h("textarea", {
+						class: "feed-search coordinator-admin-output",
+						readOnly: true,
+						value: output,
+					}),
+				)
+			: null,
+		warnings?.length
+			? h("div", { class: "peer-meta coordinator-admin-warning-list" }, warnings.join(" · "))
+			: null,
+	);
+}
+
 function renderShell() {
 	const mount = document.getElementById("coordinatorAdminMount");
 	if (!mount) return;
@@ -50,8 +210,15 @@ function renderShell() {
 	const groups = Array.isArray(status?.groups) ? status.groups.filter(Boolean) : [];
 	const coordinatorUrl = String(status?.coordinator_url || "").trim();
 	const activeGroup = String(status?.active_group || "").trim();
-
-	const disabledTabs = summary.readiness !== "ready";
+	const invitesEnabled = summary.readiness === "ready";
+	if (
+		activeSection !== "overview" &&
+		!invitesEnabled &&
+		activeSection !== "join-requests" &&
+		activeSection !== "devices"
+	) {
+		activeSection = "overview";
+	}
 
 	render(
 		h(
@@ -99,9 +266,9 @@ function renderShell() {
 						},
 						tabs: [
 							{ value: "overview", label: "Overview" },
-							{ value: "invites", label: "Invites", disabled: disabledTabs },
-							{ value: "join-requests", label: "Join requests", disabled: disabledTabs },
-							{ value: "devices", label: "Devices", disabled: disabledTabs },
+							{ value: "invites", label: "Invites", disabled: !invitesEnabled },
+							{ value: "join-requests", label: "Join requests", disabled: true },
+							{ value: "devices", label: "Devices", disabled: true },
 						],
 						triggerClassName: "coordinator-admin-tab-trigger",
 						value: activeSection,
@@ -118,22 +285,25 @@ function renderShell() {
 							h("li", null, "Manage enrolled devices without mixing admin state into Sync."),
 						),
 					),
-					["invites", "join-requests", "devices"].map((section) =>
+					renderInvitesPanel(summary),
+					h(
+						RadixTabsContent,
+						{ className: "coordinator-admin-panel", forceMount: true, value: "join-requests" },
+						h("h3", null, "Join request tools land in the next slice"),
 						h(
-							RadixTabsContent,
-							{ className: "coordinator-admin-panel", forceMount: true, value: section },
-							h(
-								"h3",
-								null,
-								`${section === "join-requests" ? "Join request" : section.slice(0, 1).toUpperCase() + section.slice(1)} tools land in the next slice`,
-							),
-							h(
-								"p",
-								{ class: "peer-submeta" },
-								summary.readiness === "ready"
-									? "This shell is intentionally keeping the operator boundary and readiness UX honest before the real admin workflows land."
-									: "Finish setup first. This panel stays disabled until the local coordinator admin configuration is ready.",
-							),
+							"p",
+							{ class: "peer-submeta" },
+							"This shell is intentionally separating the operator control plane before the review workflow lands.",
+						),
+					),
+					h(
+						RadixTabsContent,
+						{ className: "coordinator-admin-panel", forceMount: true, value: "devices" },
+						h("h3", null, "Device admin tools land in the next slice"),
+						h(
+							"p",
+							{ class: "peer-submeta" },
+							"Device management will live here once the tab shell and invite workflow settle.",
 						),
 					),
 				),
