@@ -282,6 +282,10 @@ export async function loadSyncStatus(
 	return fetchJson(`/api/sync/status${suffix}`);
 }
 
+export async function loadCoordinatorAdminStatus(): Promise<unknown> {
+	return fetchJson("/api/coordinator/admin/status");
+}
+
 export async function createCoordinatorInvite(payload: {
 	group_id: string;
 	coordinator_url?: string;

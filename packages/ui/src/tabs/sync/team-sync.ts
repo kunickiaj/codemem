@@ -49,6 +49,31 @@ const INVITE_POLICY_OPTIONS: RadixSelectOption[] = [
 
 let invitePolicyValue: "auto_admit" | "approval_required" = "auto_admit";
 
+function applySyncInviteReadinessState() {
+	const syncCreateInviteButton = document.getElementById(
+		"syncCreateInviteButton",
+	) as HTMLButtonElement | null;
+	const hint = document.getElementById("syncInviteAdminHint") as HTMLParagraphElement | null;
+	if (!syncCreateInviteButton || !hint) return;
+	const readiness = state.lastCoordinatorAdminStatus?.readiness;
+	const activeGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
+	if (readiness === "ready") {
+		syncCreateInviteButton.disabled = false;
+		hint.hidden = false;
+		hint.textContent = activeGroup
+			? `Remote coordinator admin is ready for ${activeGroup}. Advanced admin tools now live in Coordinator Admin.`
+			: "Remote coordinator admin is ready. Advanced admin tools now live in Coordinator Admin.";
+		return;
+	}
+	const message =
+		readiness === "partial"
+			? "Finish coordinator admin setup before creating remote invites. Use Coordinator Admin to check what is missing."
+			: "Configure a coordinator URL, group, and admin secret before creating remote invites. Use Coordinator Admin to finish setup.";
+	syncCreateInviteButton.disabled = true;
+	hint.hidden = false;
+	hint.textContent = message;
+}
+
 function renderAdminSetupDisclosure() {
 	const mount = document.getElementById("syncAdminDisclosureMount") as HTMLElement | null;
 	if (!mount) return;
@@ -221,6 +246,7 @@ export function renderTeamSync() {
 	renderInvitePolicySelect();
 	setInviteOutputVisibility();
 	setJoinFeedbackVisibility();
+	applySyncInviteReadinessState();
 
 	const invitePanel = document.getElementById("syncInvitePanel");
 	const inviteRestoreParent = document.getElementById("syncAdminSection");
@@ -805,6 +831,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 
 	syncCreateInviteButton?.addEventListener("click", async () => {
 		if (!syncCreateInviteButton || !syncInviteGroup || !syncInviteTtl || !syncInviteOutput) return;
+		if (syncCreateInviteButton.disabled) return;
 		const groupName = syncInviteGroup.value.trim();
 		const ttlValue = Number(syncInviteTtl.value);
 		let valid = true;

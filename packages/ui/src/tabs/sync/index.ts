@@ -126,12 +126,19 @@ export async function loadSyncData() {
 		}
 
 		let actorsPayload: SyncActorListResponseLike | null = null;
+		let coordinatorAdminStatus: Record<string, unknown> | null = null;
 		let actorLoadError = false;
+		let coordinatorAdminLoadError = false;
 		const duplicatePersonDecisions = readDuplicatePersonDecisions();
 		try {
 			actorsPayload = await api.loadSyncActors();
 		} catch {
 			actorLoadError = true;
+		}
+		try {
+			coordinatorAdminStatus = (await api.loadCoordinatorAdminStatus()) as Record<string, unknown>;
+		} catch {
+			coordinatorAdminLoadError = true;
 		}
 
 		if (requestId !== latestSyncLoadRequestId) return;
@@ -141,7 +148,12 @@ export async function loadSyncData() {
 		}
 
 		// Skip re-render if data hasn't changed since last poll
-		const hash = JSON.stringify([payload, actorsPayload, duplicatePersonDecisions]);
+		const hash = JSON.stringify([
+			payload,
+			actorsPayload,
+			coordinatorAdminStatus,
+			duplicatePersonDecisions,
+		]);
 		if (hash === lastSyncHash) return;
 		lastSyncHash = hash;
 
@@ -169,6 +181,10 @@ export async function loadSyncData() {
 		state.lastSyncPeers = [...payloadPeers, ...pendingPeers];
 		state.lastSyncSharingReview = payload.sharing_review || [];
 		state.lastSyncCoordinator = payload.coordinator || null;
+		state.lastCoordinatorAdminStatus =
+			coordinatorAdminStatus && typeof coordinatorAdminStatus === "object"
+				? coordinatorAdminStatus
+				: null;
 		if (Array.isArray(payload.join_requests)) {
 			state.lastSyncJoinRequests = payload.join_requests;
 		}
@@ -192,6 +208,10 @@ export async function loadSyncData() {
 		renderHealthOverview();
 		if (actorLoadError) {
 			renderSyncActorsUnavailable();
+		}
+		if (coordinatorAdminLoadError) {
+			state.lastCoordinatorAdminStatus = null;
+			renderTeamSync();
 		}
 	} catch {
 		if (requestId !== latestSyncLoadRequestId) return;
