@@ -1,6 +1,7 @@
 import { networkInterfaces } from "node:os";
 import { mergeAddresses } from "./address-utils.js";
 import type { CoordinatorReciprocalApproval } from "./coordinator-store-contract.js";
+import type { Database } from "./db.js";
 import { getCodememEnvOverrides, readCodememConfigFile } from "./observer-config.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
@@ -199,11 +200,12 @@ export async function registerCoordinatorPresence(
 }
 
 export async function lookupCoordinatorPeers(
-	store: MemoryStore,
+	store: PresenceStoreLike,
 	config: CoordinatorSyncConfig,
+	options?: { keysDir?: string },
 ): Promise<Record<string, unknown>[]> {
 	if (!coordinatorEnabled(config)) return [];
-	const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	const keysDir = options?.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
 	const baseUrl = buildBaseUrl(config.syncCoordinatorUrl);
 	const merged = new Map<string, Record<string, unknown>>();
@@ -264,6 +266,46 @@ export async function lookupCoordinatorPeers(
 		}
 	}
 	return [...merged.values()];
+}
+
+/**
+ * Fetch the set of coordinator peer device IDs whose presence has expired.
+ *
+ * Returns an empty set when the coordinator is disabled or the lookup fails.
+ * Intended as a best-effort preflight for the sync daemon — failures degrade
+ * gracefully to the existing reactive shouldSkipOfflinePeer backoff.
+ */
+export async function fetchCoordinatorStalePeers(
+	db: Database,
+	dbPath: string,
+	keysDir?: string,
+): Promise<Set<string>> {
+	const config = readCoordinatorSyncConfig();
+	if (!coordinatorEnabled(config)) return new Set();
+	try {
+		const peers = await lookupCoordinatorPeers({ db, dbPath }, config, { keysDir });
+		// A device may appear under multiple fingerprints (key rotation, multi-group).
+		// Only mark a device stale if ALL its entries are stale.
+		const freshDevices = new Set<string>();
+		const staleDevices = new Set<string>();
+		for (const peer of peers) {
+			const deviceId = clean(peer.device_id);
+			if (!deviceId) continue;
+			if (peer.stale) {
+				staleDevices.add(deviceId);
+			} else {
+				freshDevices.add(deviceId);
+			}
+		}
+		// Remove any device that has at least one fresh entry
+		for (const deviceId of freshDevices) {
+			staleDevices.delete(deviceId);
+		}
+		return staleDevices;
+	} catch {
+		// Best-effort: if coordinator lookup fails, skip the optimization.
+		return new Set();
+	}
 }
 
 export async function listCoordinatorReciprocalApprovals(

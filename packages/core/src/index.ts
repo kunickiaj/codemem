@@ -56,6 +56,7 @@ export {
 	coordinatorEnabled,
 	coordinatorStatusSnapshot,
 	createCoordinatorReciprocalApproval,
+	fetchCoordinatorStalePeers,
 	listCoordinatorJoinRequests,
 	listCoordinatorReciprocalApprovals,
 	lookupCoordinatorPeers,
