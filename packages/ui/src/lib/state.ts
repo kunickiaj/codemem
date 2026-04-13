@@ -153,6 +153,13 @@ export interface CachedCoordinatorAdminDevice {
 	fingerprint?: string;
 }
 
+export interface CachedCoordinatorAdminGroup {
+	group_id?: string;
+	display_name?: string | null;
+	archived_at?: string | null;
+	created_at?: string;
+}
+
 export interface CachedTeamInvite {
 	encoded?: string;
 	warnings?: string[];
@@ -225,6 +232,8 @@ export const state = {
 	lastSyncSharingReview: [] as SyncSharingReviewRow[],
 	lastSyncCoordinator: null as CachedSyncCoordinator | null,
 	lastCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
+	coordinatorAdminTargetGroup: "",
+	lastCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
 	lastCoordinatorAdminJoinRequests: [] as CachedSyncJoinRequest[],
 	lastCoordinatorAdminDevices: [] as CachedCoordinatorAdminDevice[],
 	lastSyncJoinRequests: [] as CachedSyncJoinRequest[],

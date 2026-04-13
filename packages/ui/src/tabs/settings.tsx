@@ -1973,7 +1973,7 @@ function SettingsDialogContent() {
 								<input
 									id="syncCoordinatorGroup"
 									onInput={onTextInput("syncCoordinatorGroup")}
-									placeholder="nerdworld"
+									placeholder="team-alpha"
 									value={values.syncCoordinatorGroup}
 								/>
 								<div className="small">

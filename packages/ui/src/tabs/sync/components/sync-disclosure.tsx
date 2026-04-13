@@ -43,7 +43,7 @@ function SyncDisclosure({
 	}, [contentId, triggerId, open]);
 
 	const content = (
-		<Collapsible.Content asChild>
+		<Collapsible.Content forceMount asChild>
 			<div ref={contentRef} id={contentId} className={contentClassName} hidden={!open}>
 				{children}
 			</div>

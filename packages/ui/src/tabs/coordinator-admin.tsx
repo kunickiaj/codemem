@@ -1,23 +1,110 @@
 import { h, render } from "preact";
 import { RadixSelect } from "../components/primitives/radix-select";
+import { RadixSwitch } from "../components/primitives/radix-switch";
 import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
 import * as api from "../lib/api";
+import { copyToClipboard } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openSyncConfirmDialog } from "./sync/sync-dialogs";
 
-type AdminSection = "overview" | "invites" | "join-requests" | "devices";
+type AdminSection = "groups" | "invites" | "join-requests" | "devices";
 
-let activeSection: AdminSection = "overview";
+let activeSection: AdminSection = "groups";
 let inviteGroup = "";
 let inviteTtlHours = "24";
 let invitePolicy: "auto_admit" | "approval_required" = "auto_admit";
 let invitePending = false;
+let showArchivedGroups = false;
+let createGroupId = "";
+let createGroupDisplayName = "";
+let groupActionPendingId = "";
+let groupActionPendingKind: "create" | "rename" | "archive" | "unarchive" | "" = "";
 let joinReviewPendingId = "";
 let joinReviewPendingAction: "approve" | "deny" | "" = "";
 let deviceActionPendingId = "";
 let deviceActionPendingKind: "rename" | "disable" | "remove" | "" = "";
+const groupRenameDrafts = new Map<string, string>();
 const deviceRenameDrafts = new Map<string, string>();
+const ADMIN_TARGET_GROUP_KEY = "codemem-coordinator-admin-target-group";
+
+function adminTargetStorageKey(coordinatorUrl: string | null | undefined): string {
+	return `${ADMIN_TARGET_GROUP_KEY}:${String(coordinatorUrl || "").trim()}`;
+}
+
+function readStoredAdminTargetGroup(coordinatorUrl: string | null | undefined): string {
+	try {
+		return localStorage.getItem(adminTargetStorageKey(coordinatorUrl)) || "";
+	} catch {
+		return "";
+	}
+}
+
+function writeStoredAdminTargetGroup(coordinatorUrl: string | null | undefined, groupId: string) {
+	try {
+		localStorage.setItem(adminTargetStorageKey(coordinatorUrl), groupId);
+	} catch {
+		// ignore storage errors
+	}
+}
+
+function currentAdminTargetGroup(): string {
+	return String(state.coordinatorAdminTargetGroup || "").trim();
+}
+
+function setAdminTargetGroup(groupId: string) {
+	state.coordinatorAdminTargetGroup = groupId;
+	writeStoredAdminTargetGroup(state.lastCoordinatorAdminStatus?.coordinator_url || null, groupId);
+}
+
+function availableCoordinatorGroups(): Array<{
+	group_id: string;
+	display_name: string | null;
+	archived_at: string | null;
+}> {
+	const groups = Array.isArray(state.lastCoordinatorAdminGroups)
+		? state.lastCoordinatorAdminGroups
+		: [];
+	return groups
+		.map((group) => ({
+			archived_at: group.archived_at ?? null,
+			display_name: group.display_name ?? null,
+			group_id: String(group.group_id || "").trim(),
+		}))
+		.filter((group) => group.group_id);
+}
+
+function reconcileGroupRenameDrafts() {
+	const next = new Map<string, string>();
+	for (const group of availableCoordinatorGroups()) {
+		next.set(group.group_id, group.display_name || group.group_id);
+	}
+	groupRenameDrafts.clear();
+	for (const [groupId, name] of next.entries()) {
+		groupRenameDrafts.set(groupId, name);
+	}
+}
+
+function currentAdminTargetGroupRecord() {
+	const target = currentAdminTargetGroup();
+	return availableCoordinatorGroups().find((group) => group.group_id === target) || null;
+}
+
+function resolveAdminTargetGroup() {
+	const status = state.lastCoordinatorAdminStatus;
+	const groups = availableCoordinatorGroups();
+	const configured = String(status?.active_group || "").trim();
+	const stored = readStoredAdminTargetGroup(status?.coordinator_url || null);
+	const current = currentAdminTargetGroup();
+	const availableIds = new Set(groups.map((group) => group.group_id));
+	const candidate = current || stored || configured || groups[0]?.group_id || "";
+	const resolved =
+		candidate && (availableIds.size === 0 || availableIds.has(candidate))
+			? candidate
+			: configured || groups[0]?.group_id || "";
+	setAdminTargetGroup(resolved);
+	return resolved;
+}
 
 function reconcileDeviceRenameDrafts() {
 	const next = new Map<string, string>();
@@ -70,10 +157,86 @@ function coordinatorAdminSummary() {
 	};
 }
 
+async function createGroupFromAdminPanel() {
+	if (groupActionPendingKind) return;
+	const groupId = createGroupId.trim();
+	if (!groupId) {
+		showGlobalNotice("Enter a group id before creating a group.", "warning");
+		return;
+	}
+	groupActionPendingKind = "create";
+	renderShell();
+	try {
+		await api.createCoordinatorAdminGroup({
+			group_id: groupId,
+			display_name: createGroupDisplayName.trim() || null,
+		});
+		createGroupId = "";
+		createGroupDisplayName = "";
+		showGlobalNotice("Group created.", "success");
+		await loadCoordinatorAdminData();
+	} catch (error) {
+		showGlobalNotice(error instanceof Error ? error.message : "Failed to create group.", "warning");
+	} finally {
+		groupActionPendingKind = "";
+		renderShell();
+	}
+}
+
+async function runGroupAction(
+	groupId: string,
+	displayName: string,
+	kind: "rename" | "archive" | "unarchive",
+) {
+	if (!groupId || groupActionPendingId) return;
+	if (
+		(kind === "archive" || kind === "unarchive") &&
+		!(await openSyncConfirmDialog({
+			title: `${kind === "archive" ? "Archive" : "Unarchive"} ${displayName || groupId}?`,
+			description:
+				kind === "archive"
+					? "Archived groups stay visible and restorable, but they stop being operational for new invites and joins."
+					: "This group will become operational again for invites and coordinator-backed joins.",
+			confirmLabel: kind === "archive" ? "Archive group" : "Unarchive group",
+			cancelLabel: kind === "archive" ? "Keep group active" : "Keep group archived",
+			tone: "danger",
+		}))
+	) {
+		return;
+	}
+	groupActionPendingId = groupId;
+	groupActionPendingKind = kind;
+	renderShell();
+	try {
+		if (kind === "rename") {
+			await api.renameCoordinatorAdminGroup(groupId, displayName);
+			showGlobalNotice("Group renamed.", "success");
+		}
+		if (kind === "archive") {
+			await api.archiveCoordinatorAdminGroup(groupId);
+			showGlobalNotice("Group archived.", "success");
+		}
+		if (kind === "unarchive") {
+			await api.unarchiveCoordinatorAdminGroup(groupId);
+			showGlobalNotice("Group unarchived.", "success");
+		}
+		await loadCoordinatorAdminData();
+	} catch (error) {
+		showGlobalNotice(
+			error instanceof Error ? error.message : `Failed to ${kind} group.`,
+			"warning",
+		);
+	} finally {
+		groupActionPendingId = "";
+		groupActionPendingKind = "";
+		renderShell();
+	}
+}
+
 async function createInviteFromAdminPanel() {
 	if (invitePending) return;
 	const status = state.lastCoordinatorAdminStatus;
-	const defaultGroup = String(status?.active_group || "").trim();
+	const defaultGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
 	const groupId = inviteGroup.trim() || defaultGroup;
 	const ttlHours = Number(inviteTtlHours);
 	if (!groupId) {
@@ -112,8 +275,7 @@ async function createInviteFromAdminPanel() {
 
 function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>) {
 	const status = state.lastCoordinatorAdminStatus;
-	const groups = Array.isArray(status?.groups) ? status.groups.filter(Boolean) : [];
-	const activeGroup = String(status?.active_group || "").trim();
+	const activeGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
 	const effectiveGroup = inviteGroup.trim() || activeGroup;
 	const output = String(state.lastTeamInvite?.encoded || "").trim();
 	const warnings = Array.isArray(state.lastTeamInvite?.warnings)
@@ -121,7 +283,7 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 		: [];
 	return h(
 		RadixTabsContent,
-		{ className: "coordinator-admin-panel", forceMount: true, value: "invites" },
+		{ className: "coordinator-admin-panel", value: "invites" },
 		h("h3", null, "Create teammate invite"),
 		h(
 			"p",
@@ -203,9 +365,6 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 			),
 			effectiveGroup ? h("span", { class: "peer-submeta" }, `Using group ${effectiveGroup}`) : null,
 		),
-		groups.length
-			? h("p", { class: "peer-submeta" }, `Available groups: ${groups.join(", ")}`)
-			: null,
 		output
 			? h(
 					"label",
@@ -216,11 +375,229 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 						readOnly: true,
 						value: output,
 					}),
+					h(
+						"button",
+						{
+							class: "settings-button sync-action-copy",
+							type: "button",
+							onClick: (event: MouseEvent) =>
+								copyToClipboard(output, event.currentTarget as HTMLButtonElement),
+						},
+						"Copy",
+					),
 				)
 			: null,
 		warnings?.length
 			? h("div", { class: "peer-meta coordinator-admin-warning-list" }, warnings.join(" · "))
 			: null,
+	);
+}
+
+function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) {
+	const configuredGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
+	const selectedGroup = currentAdminTargetGroup();
+	const groups = availableCoordinatorGroups();
+	const activeGroups = groups.filter((group) => !group.archived_at);
+	const archivedGroups = groups.filter((group) => group.archived_at);
+	const visibleGroups = showArchivedGroups ? groups : activeGroups;
+	const targetExists = selectedGroup
+		? groups.some((group) => group.group_id === selectedGroup)
+		: false;
+	const countParts = [`${activeGroups.length} active`];
+	if (archivedGroups.length) countParts.push(`${archivedGroups.length} archived`);
+	return h(
+		RadixTabsContent,
+		{ className: "coordinator-admin-panel", value: "groups" },
+		h("h3", null, "Groups"),
+		h(
+			"p",
+			{ class: "peer-submeta" },
+			selectedGroup
+				? `Managing ${selectedGroup}${configuredGroup && configuredGroup !== selectedGroup ? ` · this node uses ${configuredGroup} for discovery` : ""}`
+				: configuredGroup
+					? `This node uses ${configuredGroup} for discovery. Select a group below to manage it.`
+					: "No group selected yet. Create one or select an existing group to manage.",
+		),
+		groups.length ? h("p", { class: "peer-submeta" }, countParts.join(" · ")) : null,
+		!targetExists && selectedGroup
+			? h(
+					"div",
+					{ class: "peer-meta coordinator-admin-inline-warning" },
+					`The selected admin target group (${selectedGroup}) is configured locally but does not exist in the coordinator yet. Create it below or switch to another group once one exists.`,
+				)
+			: null,
+		h(
+			"div",
+			{ class: "coordinator-admin-form-grid" },
+			h(
+				"label",
+				{ class: "coordinator-admin-field" },
+				h("span", null, "New group id"),
+				h("input", {
+					class: "peer-scope-input",
+					disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
+					onInput: (event) => {
+						createGroupId = String((event.currentTarget as HTMLInputElement).value || "");
+					},
+					placeholder: "team-alpha",
+					value: createGroupId,
+				}),
+			),
+			h(
+				"label",
+				{ class: "coordinator-admin-field" },
+				h("span", null, "Display name"),
+				h("input", {
+					class: "peer-scope-input",
+					disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
+					onInput: (event) => {
+						createGroupDisplayName = String((event.currentTarget as HTMLInputElement).value || "");
+					},
+					placeholder: "Team Alpha",
+					value: createGroupDisplayName,
+				}),
+			),
+		),
+		h(
+			"div",
+			{ class: "section-actions coordinator-admin-groups-toolbar" },
+			h(
+				"div",
+				{ class: "coordinator-admin-primary-actions" },
+				h(
+					"button",
+					{
+						class: "settings-button",
+						disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
+						onClick: () => void createGroupFromAdminPanel(),
+						type: "button",
+					},
+					groupActionPendingKind === "create" ? "Creating…" : "Create group",
+				),
+			),
+			h(
+				"div",
+				{ class: "coordinator-admin-secondary-actions" },
+				h(
+					"label",
+					{ class: "coordinator-admin-inline-filter" },
+					h(
+						"span",
+						{ class: "section-meta", id: "coordinatorAdminShowArchivedLabel" },
+						"Show archived",
+					),
+					h(RadixSwitch, {
+						"aria-labelledby": "coordinatorAdminShowArchivedLabel",
+						checked: showArchivedGroups,
+						className: "coordinator-admin-switch",
+						disabled: summary.readiness !== "ready",
+						onCheckedChange: (checked) => {
+							showArchivedGroups = checked;
+							renderShell();
+						},
+						thumbClassName: "coordinator-admin-switch-thumb",
+					}),
+				),
+			),
+		),
+		!visibleGroups.length
+			? h(
+					"div",
+					{ class: "peer-meta coordinator-admin-empty-state" },
+					summary.readiness === "ready"
+						? showArchivedGroups
+							? "No coordinator groups are available yet."
+							: "No active groups yet. Create one to get started."
+						: "Group browsing will appear here once setup is complete.",
+				)
+			: h(
+					"div",
+					{ class: "coordinator-admin-request-list" },
+					visibleGroups.map((group) => {
+						const selected = group.group_id === selectedGroup;
+						const pending = groupActionPendingId === group.group_id;
+						const archived = Boolean(group.archived_at);
+						const draftName =
+							groupRenameDrafts.get(group.group_id) ?? group.display_name ?? group.group_id;
+						return h(
+							"div",
+							{ class: "peer-card", key: group.group_id },
+							h("div", { class: "peer-title" }, h("strong", null, draftName)),
+							h("div", { class: "peer-meta" }, `Group ID: ${group.group_id}`),
+							h("div", { class: "peer-submeta" }, archived ? "Archived" : "Active"),
+							configuredGroup === group.group_id
+								? h(
+										"div",
+										{ class: "peer-submeta" },
+										"This node is configured to use this group for coordinator-backed discovery.",
+									)
+								: null,
+							h(
+								"label",
+								{ class: "coordinator-admin-field" },
+								h("span", null, "Display name"),
+								h("input", {
+									class: "peer-scope-input",
+									disabled: summary.readiness !== "ready" || pending,
+									onInput: (event) => {
+										groupRenameDrafts.set(
+											group.group_id,
+											String((event.currentTarget as HTMLInputElement).value || ""),
+										);
+									},
+									value: draftName,
+								}),
+							),
+							h(
+								"div",
+								{ class: "peer-actions" },
+								h(
+									"button",
+									{
+										class: "settings-button",
+										disabled: summary.readiness !== "ready" || selected,
+										onClick: () => {
+											setAdminTargetGroup(group.group_id);
+											void loadCoordinatorAdminData();
+										},
+										type: "button",
+									},
+									selected ? "Managing" : "Manage",
+								),
+								h(
+									"button",
+									{
+										disabled: summary.readiness !== "ready" || pending,
+										onClick: () => void runGroupAction(group.group_id, draftName, "rename"),
+										type: "button",
+									},
+									pending && groupActionPendingKind === "rename" ? "Renaming…" : "Rename",
+								),
+								h(
+									"button",
+									{
+										class: archived ? undefined : "danger",
+										disabled: summary.readiness !== "ready" || pending,
+										onClick: () =>
+											void runGroupAction(
+												group.group_id,
+												group.display_name || group.group_id,
+												archived ? "unarchive" : "archive",
+											),
+										type: "button",
+									},
+									pending && groupActionPendingKind === (archived ? "unarchive" : "archive")
+										? archived
+											? "Restoring…"
+											: "Archiving…"
+										: archived
+											? "Unarchive"
+											: "Archive",
+								),
+							),
+						);
+					}),
+				),
 	);
 }
 
@@ -252,7 +629,7 @@ function renderJoinRequestsPanel(summary: ReturnType<typeof coordinatorAdminSumm
 		: [];
 	return h(
 		RadixTabsContent,
-		{ className: "coordinator-admin-panel", forceMount: true, value: "join-requests" },
+		{ className: "coordinator-admin-panel", value: "join-requests" },
 		h("h3", null, "Pending join requests"),
 		h(
 			"p",
@@ -297,6 +674,7 @@ function renderJoinRequestsPanel(summary: ReturnType<typeof coordinatorAdminSumm
 								h(
 									"button",
 									{
+										class: "danger",
 										disabled: !requestId || pending,
 										onClick: () => void reviewJoinRequestFromAdminPanel(requestId, "deny"),
 										type: "button",
@@ -370,7 +748,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 		: [];
 	return h(
 		RadixTabsContent,
-		{ className: "coordinator-admin-panel", forceMount: true, value: "devices" },
+		{ className: "coordinator-admin-panel", value: "devices" },
 		h("h3", null, "Enrolled devices"),
 		h(
 			"p",
@@ -441,6 +819,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 								h(
 									"button",
 									{
+										class: "danger",
 										disabled: !deviceId || pending || summary.readiness !== "ready" || !enabled,
 										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "disable"),
 										type: "button",
@@ -450,6 +829,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 								h(
 									"button",
 									{
+										class: "danger",
 										disabled: !deviceId || pending || summary.readiness !== "ready",
 										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "remove"),
 										type: "button",
@@ -468,19 +848,40 @@ function renderShell() {
 	if (!mount) return;
 	const status = state.lastCoordinatorAdminStatus;
 	const summary = coordinatorAdminSummary();
-	const groups = Array.isArray(status?.groups) ? status.groups.filter(Boolean) : [];
 	const coordinatorUrl = String(status?.coordinator_url || "").trim();
 	const activeGroup = String(status?.active_group || "").trim();
-	const invitesEnabled = summary.readiness === "ready";
+	const targetGroupRecord = currentAdminTargetGroupRecord();
+	const targetArchived = Boolean(targetGroupRecord?.archived_at);
+	const groupsEnabled = summary.readiness === "ready";
+	const invitesEnabled = summary.readiness === "ready" && !targetArchived;
 	const joinRequestsEnabled = summary.readiness === "ready";
 	const devicesEnabled = summary.readiness === "ready";
+	const targetGroup = currentAdminTargetGroup();
+	const activeGroupCount = availableCoordinatorGroups().filter(
+		(group) => !group.archived_at,
+	).length;
+	const archivedGroupCount = availableCoordinatorGroups().filter(
+		(group) => group.archived_at,
+	).length;
+	const joinRequestCount = Array.isArray(state.lastCoordinatorAdminJoinRequests)
+		? state.lastCoordinatorAdminJoinRequests.length
+		: 0;
+	const deviceCount = Array.isArray(state.lastCoordinatorAdminDevices)
+		? state.lastCoordinatorAdminDevices.length
+		: 0;
+	const headerMessage =
+		summary.readiness !== "ready"
+			? summary.detail
+			: targetArchived
+				? "The selected admin target group is archived. Restore it or switch groups before creating invites."
+				: "";
 	if (
-		activeSection !== "overview" &&
-		((activeSection === "invites" && !invitesEnabled) ||
-			(activeSection === "join-requests" && !joinRequestsEnabled) ||
-			(activeSection === "devices" && !devicesEnabled))
+		(activeSection === "invites" && !invitesEnabled) ||
+		(activeSection === "groups" && !groupsEnabled) ||
+		(activeSection === "join-requests" && !joinRequestsEnabled) ||
+		(activeSection === "devices" && !devicesEnabled)
 	) {
-		activeSection = "overview";
+		activeSection = summary.readiness === "ready" ? "groups" : "invites";
 	}
 
 	render(
@@ -489,30 +890,49 @@ function renderShell() {
 			{ class: "coordinator-admin-shell" },
 			h(
 				"div",
-				{ class: "card coordinator-admin-hero" },
+				{ class: "card coordinator-admin-header" },
 				h("div", { class: "section-header" }, h("h2", null, "Coordinator Admin")),
-				h("p", { class: "peer-meta" }, summary.title),
-				h("p", { class: "peer-submeta" }, summary.detail),
 				h(
-					"dl",
-					{ class: "coordinator-admin-meta-grid" },
-					h("div", null, h("dt", null, "Readiness"), h("dd", null, summary.readiness)),
+					"div",
+					{ class: "coordinator-admin-summary-grid" },
 					h(
 						"div",
-						null,
-						h("dt", null, "Coordinator URL"),
-						h("dd", null, coordinatorUrl || "Not configured"),
+						{ class: "coordinator-admin-summary-card" },
+						h("span", { class: "section-meta" }, "Admin target"),
+						h("strong", null, targetGroup || "None selected"),
 					),
-					h("div", null, h("dt", null, "Active group"), h("dd", null, activeGroup || "None")),
 					h(
 						"div",
-						null,
-						h("dt", null, "Admin secret"),
-						h("dd", null, status?.has_admin_secret ? "Available locally" : "Missing"),
+						{ class: "coordinator-admin-summary-card" },
+						h("span", { class: "section-meta" }, "Node discovery group"),
+						h("strong", null, activeGroup || "None"),
+					),
+					h(
+						"div",
+						{ class: "coordinator-admin-summary-card" },
+						h("span", { class: "section-meta" }, "Groups"),
+						h(
+							"strong",
+							null,
+							`${activeGroupCount} active${archivedGroupCount ? ` · ${archivedGroupCount} archived` : ""}`,
+						),
+					),
+					h(
+						"div",
+						{ class: "coordinator-admin-summary-card" },
+						h("span", { class: "section-meta" }, "Selected group activity"),
+						h("strong", null, `${joinRequestCount} join requests · ${deviceCount} devices`),
 					),
 				),
-				groups.length
-					? h("p", { class: "peer-submeta" }, `Configured groups: ${groups.join(", ")}`)
+				headerMessage
+					? h("div", { class: "peer-meta coordinator-admin-inline-warning" }, headerMessage)
+					: null,
+				coordinatorUrl
+					? h(
+							"div",
+							{ class: "section-meta coordinator-admin-inline-meta" },
+							`Coordinator: ${coordinatorUrl}`,
+						)
 					: null,
 			),
 			h(
@@ -524,11 +944,11 @@ function renderShell() {
 						ariaLabel: "Coordinator admin sections",
 						listClassName: "coordinator-admin-tabs-list",
 						onValueChange: (value) => {
-							activeSection = (value as AdminSection) || "overview";
+							activeSection = (value as AdminSection) || "groups";
 							renderShell();
 						},
 						tabs: [
-							{ value: "overview", label: "Overview" },
+							{ value: "groups", label: "Groups", disabled: !groupsEnabled },
 							{ value: "invites", label: "Invites", disabled: !invitesEnabled },
 							{ value: "join-requests", label: "Join requests", disabled: !joinRequestsEnabled },
 							{ value: "devices", label: "Devices", disabled: !devicesEnabled },
@@ -536,21 +956,19 @@ function renderShell() {
 						triggerClassName: "coordinator-admin-tab-trigger",
 						value: activeSection,
 					},
-					h(
-						RadixTabsContent,
-						{ className: "coordinator-admin-panel", forceMount: true, value: "overview" },
-						h("h3", null, "What lives here"),
-						h(
-							"ul",
-							{ class: "coordinator-admin-list" },
-							h("li", null, "Create teammate invites with clear policy choices."),
-							h("li", null, "Review and approve or deny pending join requests."),
-							h("li", null, "Manage enrolled devices without mixing admin state into Sync."),
-						),
-					),
+					renderGroupsPanel(summary),
 					renderInvitesPanel(summary),
 					renderJoinRequestsPanel(summary),
 					renderDevicesPanel(summary),
+				),
+				h(
+					"div",
+					{ class: "section-meta coordinator-admin-context-line" },
+					targetArchived
+						? `Selected group ${targetGroup || "—"} is archived. Switch or restore it to enable invite operations.`
+						: targetGroup
+							? `Actions below apply to ${targetGroup}.`
+							: "Select a group to start managing coordinator state.",
 				),
 			),
 		),
@@ -575,9 +993,24 @@ export async function loadCoordinatorAdminData() {
 		return;
 	}
 	const activeGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
+	resolveAdminTargetGroup();
 	if (state.lastCoordinatorAdminStatus?.readiness === "ready") {
 		try {
-			const payload = (await api.loadCoordinatorAdminJoinRequests(activeGroup)) as {
+			const groupsPayload = (await api.loadCoordinatorAdminGroupsFiltered(showArchivedGroups)) as {
+				items?: typeof state.lastCoordinatorAdminGroups;
+			};
+			state.lastCoordinatorAdminGroups = Array.isArray(groupsPayload?.items)
+				? groupsPayload.items
+				: [];
+			reconcileGroupRenameDrafts();
+			resolveAdminTargetGroup();
+		} catch {
+			state.lastCoordinatorAdminGroups = [];
+			groupRenameDrafts.clear();
+		}
+		const targetGroup = currentAdminTargetGroup();
+		try {
+			const payload = (await api.loadCoordinatorAdminJoinRequests(targetGroup || activeGroup)) as {
 				items?: typeof state.lastCoordinatorAdminJoinRequests;
 			};
 			state.lastCoordinatorAdminJoinRequests = Array.isArray(payload?.items) ? payload.items : [];
@@ -585,7 +1018,10 @@ export async function loadCoordinatorAdminData() {
 			state.lastCoordinatorAdminJoinRequests = [];
 		}
 		try {
-			const devicesPayload = (await api.loadCoordinatorAdminDevices(activeGroup, true)) as {
+			const devicesPayload = (await api.loadCoordinatorAdminDevices(
+				targetGroup || activeGroup,
+				true,
+			)) as {
 				items?: typeof state.lastCoordinatorAdminDevices;
 			};
 			state.lastCoordinatorAdminDevices = Array.isArray(devicesPayload?.items)
@@ -597,6 +1033,8 @@ export async function loadCoordinatorAdminData() {
 			deviceRenameDrafts.clear();
 		}
 	} else {
+		state.lastCoordinatorAdminGroups = [];
+		groupRenameDrafts.clear();
 		state.lastCoordinatorAdminJoinRequests = [];
 		state.lastCoordinatorAdminDevices = [];
 		deviceRenameDrafts.clear();
