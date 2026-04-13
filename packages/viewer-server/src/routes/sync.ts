@@ -41,6 +41,8 @@ import {
 	requestJson,
 	runSyncPass,
 	schema,
+	syncProjectAllowedByFilters,
+	syncVisibilityAllowed,
 	verifySignature,
 } from "@codemem/core";
 import { and, count, desc, eq, max, ne } from "drizzle-orm";
@@ -342,15 +344,6 @@ async function authorizeBootstrapGrantRequest(
 	const cutoff = new Date(Date.now() - DEFAULT_TIME_WINDOW_S * 2 * 1000).toISOString();
 	cleanupNonces(store.db, cutoff);
 	return { ok: true, reason: "ok", deviceId };
-}
-
-function projectBasename(value: string | null | undefined): string {
-	const project = String(value ?? "")
-		.trim()
-		.replaceAll("\\", "/");
-	if (!project) return "";
-	const parts = project.split("/").filter(Boolean);
-	return parts.length > 0 ? (parts[parts.length - 1] ?? "") : "";
 }
 
 function parseJsonList(value: unknown): string[] {
@@ -686,61 +679,6 @@ async function acceptDiscoveredPeer(
 	return result;
 }
 
-function isSharedVisibility(payload: Record<string, unknown> | null): boolean {
-	if (!payload) return false;
-	let visibility = String(payload.visibility ?? "")
-		.trim()
-		.toLowerCase();
-	const metadata =
-		payload.metadata_json &&
-		typeof payload.metadata_json === "object" &&
-		!Array.isArray(payload.metadata_json)
-			? (payload.metadata_json as Record<string, unknown>)
-			: {};
-	const metadataVisibility = String(metadata.visibility ?? "")
-		.trim()
-		.toLowerCase();
-	if (!visibility && metadataVisibility) visibility = metadataVisibility;
-	if (!visibility) {
-		let workspaceKind = String(payload.workspace_kind ?? "")
-			.trim()
-			.toLowerCase();
-		let workspaceId = String(payload.workspace_id ?? "")
-			.trim()
-			.toLowerCase();
-		if (!workspaceKind)
-			workspaceKind = String(metadata.workspace_kind ?? "")
-				.trim()
-				.toLowerCase();
-		if (!workspaceId)
-			workspaceId = String(metadata.workspace_id ?? "")
-				.trim()
-				.toLowerCase();
-		if (workspaceKind === "shared" || workspaceId.startsWith("shared:")) {
-			visibility = "shared";
-		} else {
-			return true;
-		}
-	}
-	return visibility === "shared";
-}
-
-function projectAllowed(
-	projectValue: string | null,
-	filters: { include: string[]; exclude: string[] },
-): boolean {
-	const value = String(projectValue ?? "").trim();
-	const valueBase = projectBasename(value);
-	for (const blocked of filters.exclude) {
-		if (blocked === value || blocked === valueBase) return false;
-	}
-	if (filters.include.length === 0) return true;
-	for (const allowed of filters.include) {
-		if (allowed === value || allowed === valueBase) return true;
-	}
-	return false;
-}
-
 function filterOpsForPeer(
 	store: MemoryStore,
 	peerDeviceId: string,
@@ -756,12 +694,12 @@ function filterOpsForPeer(
 			continue;
 		}
 		const payload = parseOpPayload(op);
-		if (!allowPrivate && !isSharedVisibility(payload)) {
+		if (!allowPrivate && !syncVisibilityAllowed(payload)) {
 			skipped++;
 			continue;
 		}
 		const project = payload && typeof payload.project === "string" ? payload.project : null;
-		if (!projectAllowed(project, filters)) {
+		if (!syncProjectAllowedByFilters(project, filters)) {
 			skipped++;
 			continue;
 		}

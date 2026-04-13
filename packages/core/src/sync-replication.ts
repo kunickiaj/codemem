@@ -14,6 +14,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
+import { projectBasename } from "./project.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import { deriveTags } from "./tags.js";
@@ -1228,15 +1229,6 @@ function parseJsonList(valuesJson: string | null | undefined): string[] {
 	}
 }
 
-function projectBasename(value: string | null | undefined): string {
-	const raw = String(value ?? "")
-		.trim()
-		.replaceAll("\\", "/");
-	if (!raw) return "";
-	const parts = raw.split("/").filter(Boolean);
-	return parts.length > 0 ? (parts[parts.length - 1] ?? "") : "";
-}
-
 function effectiveSyncProjectFilters(
 	db: Database,
 	peerDeviceId: string | null,
@@ -1283,15 +1275,26 @@ function syncProjectAllowed(
 	peerDeviceId: string | null,
 ): boolean {
 	const { include, exclude } = effectiveSyncProjectFilters(db, peerDeviceId);
-	const projectName = String(project ?? "").trim();
-	const basename = projectBasename(projectName);
-
-	if (exclude.some((item) => item === projectName || item === basename)) return false;
-	if (include.length === 0) return true;
-	return include.some((item) => item === projectName || item === basename);
+	return syncProjectAllowedByFilters(project, { include, exclude });
 }
 
-function syncVisibilityAllowed(payload: Record<string, unknown> | null): boolean {
+export function syncProjectAllowedByFilters(
+	projectValue: string | null,
+	filters: { include: string[]; exclude: string[] },
+): boolean {
+	const value = String(projectValue ?? "").trim();
+	const valueBase = projectBasename(value);
+	for (const blocked of filters.exclude) {
+		if (blocked === value || blocked === valueBase) return false;
+	}
+	if (filters.include.length === 0) return true;
+	for (const allowed of filters.include) {
+		if (allowed === value || allowed === valueBase) return true;
+	}
+	return false;
+}
+
+export function syncVisibilityAllowed(payload: Record<string, unknown> | null): boolean {
 	if (!payload) return false;
 	let visibility = String(payload.visibility ?? "")
 		.trim()

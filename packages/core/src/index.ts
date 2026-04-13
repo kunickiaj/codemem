@@ -465,6 +465,8 @@ export {
 	recordReplicationOp,
 	setReplicationCursor,
 	setSyncResetState,
+	syncProjectAllowedByFilters,
+	syncVisibilityAllowed,
 } from "./sync-replication.js";
 export { SyncRetentionRunner } from "./sync-retention-runner.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
