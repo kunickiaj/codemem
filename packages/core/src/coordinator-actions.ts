@@ -222,9 +222,26 @@ export async function coordinatorListDevicesAction(opts: {
 	groupId: string;
 	includeDisabled?: boolean;
 	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
 }): Promise<CoordinatorEnrollment[]> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
+	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
+	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"GET",
+			`${remote.replace(/\/+$/, "")}/v1/admin/devices?group_id=${encodeURIComponent(groupId)}&include_disabled=${opts.includeDisabled ? "1" : "0"}`,
+			adminSecret,
+		);
+		return Array.isArray(payload?.items)
+			? payload.items.filter(
+					(row): row is CoordinatorEnrollment => Boolean(row) && typeof row === "object",
+				)
+			: [];
+	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.listEnrolledDevices(groupId, opts.includeDisabled === true);
