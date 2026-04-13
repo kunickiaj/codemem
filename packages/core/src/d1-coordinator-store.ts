@@ -191,7 +191,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async createGroup(_groupId: string, _displayName?: string | null): Promise<void> {
 		await this.db
-			.prepare("INSERT OR IGNORE INTO groups(group_id, display_name, created_at) VALUES (?, ?, ?)")
+			.prepare(
+				"INSERT OR IGNORE INTO groups(group_id, display_name, archived_at, created_at) VALUES (?, ?, NULL, ?)",
+			)
 			.bind(_groupId, _displayName ?? null, nowISO())
 			.run();
 	}
@@ -199,20 +201,55 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	async getGroup(_groupId: string): Promise<CoordinatorGroup | null> {
 		const row = await firstRow<CoordinatorGroup>(
 			this.db
-				.prepare("SELECT group_id, display_name, created_at FROM groups WHERE group_id = ?")
+				.prepare(
+					"SELECT group_id, display_name, archived_at, created_at FROM groups WHERE group_id = ?",
+				)
 				.bind(_groupId),
 		);
 		return row ? rowToRecord<CoordinatorGroup>(row) : null;
 	}
 
-	async listGroups(): Promise<CoordinatorGroup[]> {
+	async listGroups(_includeArchived = false): Promise<CoordinatorGroup[]> {
+		const where = _includeArchived ? "" : "WHERE archived_at IS NULL";
 		return (
 			await allRows<CoordinatorGroup>(
 				this.db.prepare(
-					"SELECT group_id, display_name, created_at FROM groups ORDER BY created_at ASC",
+					`SELECT group_id, display_name, archived_at, created_at FROM groups ${where} ORDER BY created_at ASC`,
 				),
 			)
 		).map((row) => rowToRecord<CoordinatorGroup>(row));
+	}
+
+	async renameGroup(_groupId: string, _displayName: string): Promise<boolean> {
+		return (
+			(await runChanges(
+				this.db
+					.prepare("UPDATE groups SET display_name = ? WHERE group_id = ?")
+					.bind(_displayName, _groupId),
+			)) > 0
+		);
+	}
+
+	async archiveGroup(_groupId: string, _archivedAt = nowISO()): Promise<boolean> {
+		return (
+			(await runChanges(
+				this.db
+					.prepare("UPDATE groups SET archived_at = ? WHERE group_id = ? AND archived_at IS NULL")
+					.bind(_archivedAt, _groupId),
+			)) > 0
+		);
+	}
+
+	async unarchiveGroup(_groupId: string): Promise<boolean> {
+		return (
+			(await runChanges(
+				this.db
+					.prepare(
+						"UPDATE groups SET archived_at = NULL WHERE group_id = ? AND archived_at IS NOT NULL",
+					)
+					.bind(_groupId),
+			)) > 0
+		);
 	}
 
 	async enrollDevice(_groupId: string, _opts: CoordinatorEnrollDeviceInput): Promise<void> {

@@ -4784,6 +4784,149 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("lists coordinator groups through the admin route", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/groups")) {
+					return new Response(
+						JSON.stringify({
+							items: [
+								{ group_id: "team-a", display_name: "Team A" },
+								{ group_id: "nerdworld", display_name: "Nerdworld" },
+							],
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const res = await app.request("/api/coordinator/admin/groups");
+					expect(res.status).toBe(200);
+					expect(await res.json()).toMatchObject({
+						items: [
+							expect.objectContaining({ group_id: "team-a" }),
+							expect.objectContaining({ group_id: "nerdworld" }),
+						],
+						status: expect.objectContaining({ readiness: "ready" }),
+					});
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
+		it("runs coordinator group lifecycle actions through the admin routes", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (
+					url.includes("/v1/admin/groups") &&
+					!url.includes("rename") &&
+					!url.includes("archive") &&
+					!url.includes("unarchive")
+				) {
+					return new Response(
+						JSON.stringify({
+							group: { group_id: "team-a", display_name: "Team A", archived_at: null },
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/admin/groups/rename")) {
+					return new Response(
+						JSON.stringify({
+							group: { group_id: "team-a", display_name: "Renamed", archived_at: null },
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/admin/groups/archive")) {
+					return new Response(
+						JSON.stringify({
+							group: {
+								group_id: "team-a",
+								display_name: "Renamed",
+								archived_at: "2026-04-14T00:00:00Z",
+							},
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/admin/groups/unarchive")) {
+					return new Response(
+						JSON.stringify({
+							group: { group_id: "team-a", display_name: "Renamed", archived_at: null },
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const created = await app.request("/api/coordinator/admin/groups", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ group_id: "team-a", display_name: "Team A" }),
+					});
+					expect(created.status).toBe(200);
+					const renamed = await app.request("/api/coordinator/admin/groups/team-a/rename", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ display_name: "Renamed" }),
+					});
+					expect(renamed.status).toBe(200);
+					const archived = await app.request("/api/coordinator/admin/groups/team-a/archive", {
+						method: "POST",
+					});
+					expect(archived.status).toBe(200);
+					const unarchived = await app.request("/api/coordinator/admin/groups/team-a/unarchive", {
+						method: "POST",
+					});
+					expect(unarchived.status).toBe(200);
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
 		it("reviews coordinator join requests through the admin route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
