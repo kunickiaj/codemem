@@ -17,17 +17,22 @@ import {
 	applyReplicationOps,
 	buildBaseUrl,
 	cleanupNonces,
+	coordinatorArchiveGroupAction,
+	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorDisableDeviceAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
 	coordinatorListDevicesAction,
+	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
+	coordinatorRenameGroupAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
 	coordinatorStatusSnapshot,
+	coordinatorUnarchiveGroupAction,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
 	ensureDeviceIdentity,
@@ -2027,6 +2032,141 @@ export function syncRoutes(
 	app.get("/api/coordinator/admin/status", async (c) => {
 		const status = coordinatorAdminStatusPayload();
 		return c.json(status);
+	});
+
+	app.get("/api/coordinator/admin/groups", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const includeArchived = queryBool(c.req.query("include_archived"));
+		try {
+			const items = await coordinatorListGroupsAction({
+				includeArchived,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ items, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown";
+			return c.json({ error: message, status }, 502);
+		}
+	});
+
+	app.post("/api/coordinator/admin/groups", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json", status }, 400);
+		}
+		const groupId = String(body.group_id ?? "").trim();
+		const displayName = String(body.display_name ?? "").trim() || null;
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		try {
+			const group = await coordinatorCreateGroupAction({
+				groupId,
+				displayName,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ ok: true, group, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
+	app.post("/api/coordinator/admin/groups/:group_id/rename", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json", status }, 400);
+		}
+		const displayName = String(body.display_name ?? "").trim();
+		if (!displayName) return c.json({ error: "display_name required", status }, 400);
+		try {
+			const group = await coordinatorRenameGroupAction({
+				groupId,
+				displayName,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!group) return c.json({ error: "group_not_found", status }, 404);
+			return c.json({ ok: true, group, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
+	app.post("/api/coordinator/admin/groups/:group_id/archive", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		try {
+			const group = await coordinatorArchiveGroupAction({
+				groupId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!group) return c.json({ error: "group_not_found_or_already_archived", status }, 404);
+			return c.json({ ok: true, group, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
+	app.post("/api/coordinator/admin/groups/:group_id/unarchive", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		try {
+			const group = await coordinatorUnarchiveGroupAction({
+				groupId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!group) return c.json({ error: "group_not_found_or_not_archived", status }, 404);
+			return c.json({ ok: true, group, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
 	});
 
 	app.post("/api/coordinator/admin/invites", async (c) => {

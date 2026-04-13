@@ -161,9 +161,26 @@ export async function coordinatorCreateGroupAction(opts: {
 	groupId: string;
 	displayName?: string | null;
 	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
 }): Promise<CoordinatorGroup> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
+	const remote = opts.remoteUrl ?? null;
+	const adminSecret = opts.adminSecret ?? null;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"POST",
+			`${remote.replace(/\/+$/, "")}/v1/admin/groups`,
+			adminSecret,
+			{ group_id: groupId, display_name: opts.displayName ?? null },
+		);
+		const group = payload?.group;
+		if (!group || typeof group !== "object")
+			throw new Error("Remote coordinator did not return group payload.");
+		return group as CoordinatorGroup;
+	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		await store.createGroup(groupId, opts.displayName ?? null);
@@ -175,12 +192,146 @@ export async function coordinatorCreateGroupAction(opts: {
 	}
 }
 
+export async function coordinatorRenameGroupAction(opts: {
+	groupId: string;
+	displayName: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorGroup | null> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const displayName = String(opts.displayName ?? "").trim();
+	if (!groupId || !displayName) throw new Error("group_id and display_name are required.");
+	const remote = opts.remoteUrl ?? null;
+	const adminSecret = opts.adminSecret ?? null;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		let payload: Record<string, unknown> | null;
+		try {
+			payload = await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/groups/rename`,
+				adminSecret,
+				{ group_id: groupId, display_name: displayName },
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("group_not_found")) return null;
+			throw error;
+		}
+		const group = payload?.group;
+		return group && typeof group === "object" ? (group as CoordinatorGroup) : null;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		const ok = await store.renameGroup(groupId, displayName);
+		if (!ok) return null;
+		return await store.getGroup(groupId);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorArchiveGroupAction(opts: {
+	groupId: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorGroup | null> {
+	const groupId = String(opts.groupId ?? "").trim();
+	if (!groupId) throw new Error("Group id required.");
+	const remote = opts.remoteUrl ?? null;
+	const adminSecret = opts.adminSecret ?? null;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		let payload: Record<string, unknown> | null;
+		try {
+			payload = await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/groups/archive`,
+				adminSecret,
+				{ group_id: groupId },
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("group_not_found_or_already_archived"))
+				return null;
+			throw error;
+		}
+		const group = payload?.group;
+		return group && typeof group === "object" ? (group as CoordinatorGroup) : null;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		const ok = await store.archiveGroup(groupId);
+		if (!ok) return null;
+		return await store.getGroup(groupId);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorUnarchiveGroupAction(opts: {
+	groupId: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorGroup | null> {
+	const groupId = String(opts.groupId ?? "").trim();
+	if (!groupId) throw new Error("Group id required.");
+	const remote = opts.remoteUrl ?? null;
+	const adminSecret = opts.adminSecret ?? null;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		let payload: Record<string, unknown> | null;
+		try {
+			payload = await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/groups/unarchive`,
+				adminSecret,
+				{ group_id: groupId },
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("group_not_found_or_not_archived"))
+				return null;
+			throw error;
+		}
+		const group = payload?.group;
+		return group && typeof group === "object" ? (group as CoordinatorGroup) : null;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		const ok = await store.unarchiveGroup(groupId);
+		if (!ok) return null;
+		return await store.getGroup(groupId);
+	} finally {
+		await store.close();
+	}
+}
+
 export async function coordinatorListGroupsAction(opts?: {
 	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+	includeArchived?: boolean;
 }): Promise<CoordinatorGroup[]> {
+	const remote = opts?.remoteUrl ?? null;
+	const adminSecret = opts?.adminSecret ?? null;
+	const includeArchived = opts?.includeArchived === true;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"GET",
+			`${remote.replace(/\/+$/, "")}/v1/admin/groups${includeArchived ? "?include_archived=1" : ""}`,
+			adminSecret,
+		);
+		return Array.isArray(payload?.items)
+			? payload.items.filter(
+					(row): row is CoordinatorGroup => Boolean(row) && typeof row === "object",
+				)
+			: [];
+	}
 	const store = new BetterSqliteCoordinatorStore(opts?.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
-		return await store.listGroups();
+		return await store.listGroups(includeArchived);
 	} finally {
 		await store.close();
 	}

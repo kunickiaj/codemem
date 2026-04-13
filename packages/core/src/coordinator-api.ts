@@ -521,6 +521,129 @@ export function createCoordinatorApp(
 		return c.json({ ok: true });
 	});
 
+	// GET /v1/admin/groups — list coordinator groups
+	app.get("/v1/admin/groups", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const includeArchived = ["1", "true", "yes"].includes(
+			(c.req.query("include_archived") ?? "0").trim().toLowerCase(),
+		);
+
+		const store = createStore();
+		try {
+			return c.json({ items: await store.listGroups(includeArchived) });
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.post("/v1/admin/groups", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(data.group_id ?? "").trim();
+		const displayName = String(data.display_name ?? "").trim() || null;
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+
+		const store = createStore();
+		try {
+			await store.createGroup(groupId, displayName);
+			return c.json({ ok: true, group: await store.getGroup(groupId) });
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.post("/v1/admin/groups/rename", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(data.group_id ?? "").trim();
+		const displayName = String(data.display_name ?? "").trim();
+		if (!groupId || !displayName) {
+			return c.json({ error: "group_id_and_display_name_required" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const ok = await store.renameGroup(groupId, displayName);
+			if (!ok) return c.json({ error: "group_not_found" }, 404);
+			return c.json({ ok: true, group: await store.getGroup(groupId) });
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.post("/v1/admin/groups/archive", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(data.group_id ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+
+		const store = createStore();
+		try {
+			const ok = await store.archiveGroup(groupId, runtime.now());
+			if (!ok) return c.json({ error: "group_not_found_or_already_archived" }, 404);
+			return c.json({ ok: true, group: await store.getGroup(groupId) });
+		} finally {
+			await store.close();
+		}
+	});
+
+	app.post("/v1/admin/groups/unarchive", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(data.group_id ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+
+		const store = createStore();
+		try {
+			const ok = await store.unarchiveGroup(groupId);
+			if (!ok) return c.json({ error: "group_not_found_or_not_archived" }, 404);
+			return c.json({ ok: true, group: await store.getGroup(groupId) });
+		} finally {
+			await store.close();
+		}
+	});
+
 	// GET /v1/admin/devices — list enrolled devices
 	app.get("/v1/admin/devices", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
@@ -676,6 +799,7 @@ export function createCoordinatorApp(
 		try {
 			const group = await store.getGroup(groupId);
 			if (!group) return c.json({ error: "group_not_found" }, 404);
+			if (group.archived_at) return c.json({ error: "group_archived" }, 409);
 
 			const invite = await store.createInvite({
 				groupId,
@@ -861,6 +985,9 @@ export function createCoordinatorApp(
 		try {
 			const invite = await store.getInviteByToken(token);
 			if (!invite) return c.json({ error: "invalid_token" }, 404);
+			const group = await store.getGroup(String(invite.group_id));
+			if (!group) return c.json({ error: "group_not_found" }, 404);
+			if (group.archived_at) return c.json({ error: "group_archived" }, 409);
 
 			if (invite.revoked_at) return c.json({ error: "revoked_token" }, 400);
 

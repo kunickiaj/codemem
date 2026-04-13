@@ -1,6 +1,7 @@
 export interface CoordinatorGroup {
 	group_id: string;
 	display_name: string | null;
+	archived_at: string | null;
 	created_at: string;
 }
 
@@ -154,7 +155,10 @@ export interface CoordinatorStore {
 	close(): Promise<void>;
 	createGroup(groupId: string, displayName?: string | null): Promise<void>;
 	getGroup(groupId: string): Promise<CoordinatorGroup | null>;
-	listGroups(): Promise<CoordinatorGroup[]>;
+	listGroups(includeArchived?: boolean): Promise<CoordinatorGroup[]>;
+	renameGroup(groupId: string, displayName: string): Promise<boolean>;
+	archiveGroup(groupId: string, archivedAt?: string): Promise<boolean>;
+	unarchiveGroup(groupId: string): Promise<boolean>;
 	enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void>;
 	listEnrolledDevices(groupId: string, includeDisabled?: boolean): Promise<CoordinatorEnrollment[]>;
 	getEnrollment(groupId: string, deviceId: string): Promise<CoordinatorEnrollment | null>;

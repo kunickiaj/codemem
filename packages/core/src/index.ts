@@ -21,6 +21,7 @@ export {
 	resolveHookProject,
 } from "./claude-hooks.js";
 export {
+	coordinatorArchiveGroupAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorDisableDeviceAction,
@@ -32,8 +33,10 @@ export {
 	coordinatorListJoinRequestsAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
+	coordinatorRenameGroupAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
+	coordinatorUnarchiveGroupAction,
 } from "./coordinator-actions.js";
 export type {
 	CoordinatorRequestVerifier,

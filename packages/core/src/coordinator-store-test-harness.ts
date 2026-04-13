@@ -58,6 +58,33 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					expect(await store.listGroups()).toHaveLength(2);
 				});
 			});
+
+			it("renames a group", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Original");
+					expect(await store.renameGroup("g1", "Renamed")).toBe(true);
+					const group = await store.getGroup("g1");
+					expect(group?.display_name).toBe("Renamed");
+				});
+			});
+
+			it("archives and unarchives a group", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("g1", "Team Alpha");
+					expect(await store.archiveGroup("g1", "2026-04-14T00:00:00.000Z")).toBe(true);
+					expect(await store.listGroups()).toEqual([]);
+					expect(await store.listGroups(true)).toEqual([
+						expect.objectContaining({
+							group_id: "g1",
+							archived_at: "2026-04-14T00:00:00.000Z",
+						}),
+					]);
+					expect(await store.unarchiveGroup("g1")).toBe(true);
+					expect(await store.listGroups()).toEqual([
+						expect.objectContaining({ group_id: "g1", archived_at: null }),
+					]);
+				});
+			});
 		});
 
 		describe("devices", () => {
