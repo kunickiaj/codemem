@@ -127,6 +127,7 @@ function TeamSetupDisclosure({ open, onOpenChange }: TeamSetupDisclosureProps) {
 				readOnly
 				hidden
 			/>
+			<div className="peer-meta" id="syncInviteAdminHint" />
 			<div className="peer-meta" id="syncInviteWarnings" hidden />
 		</SyncDisclosure>
 	);

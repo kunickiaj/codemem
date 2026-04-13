@@ -14,6 +14,7 @@ import { $, $select } from "./lib/dom";
 import { initState, setActiveTab, state, type TabId } from "./lib/state";
 import { getTheme, initThemeSelect, setTheme } from "./lib/theme";
 
+import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
 import { initHealthTab, loadHealthData } from "./tabs/health";
 import { initSettings, isSettingsOpen, loadConfigData } from "./tabs/settings";
@@ -174,7 +175,7 @@ document.addEventListener("visibilitychange", () => {
 
 /* ── Tab routing ─────────────────────────────────────────── */
 
-const TAB_IDS: TabId[] = ["feed", "health", "sync"];
+const TAB_IDS: TabId[] = ["feed", "health", "sync", "coordinator-admin"];
 
 function switchTab(tab: TabId) {
 	setActiveTab(tab);
@@ -273,6 +274,9 @@ async function doRefresh() {
 		if (state.activeTab === "sync" || state.activeTab === "health") {
 			promises.push(loadSyncData());
 		}
+		if (state.activeTab === "coordinator-admin") {
+			promises.push(loadCoordinatorAdminData());
+		}
 
 		// Load pairing if open
 		if (state.syncPairingOpen) {
@@ -312,6 +316,7 @@ initTabs();
 initFeedTab();
 initHealthTab();
 initSyncTab(() => refresh());
+initCoordinatorAdminTab();
 initSettings(stopPolling, startPolling, () => refresh());
 
 // Projects

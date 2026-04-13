@@ -3,7 +3,7 @@
 import type { UiSyncViewModel } from "../tabs/sync/view-model";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
-export type TabId = "feed" | "health" | "sync";
+export type TabId = "feed" | "health" | "sync" | "coordinator-admin";
 
 /* ── Cached server payload shapes ─────────────────────────── */
 
@@ -136,6 +136,15 @@ export interface CachedSyncCoordinator {
 	paired_peer_count?: number;
 }
 
+export interface CachedCoordinatorAdminStatus {
+	readiness?: "not_configured" | "partial" | "ready";
+	coordinator_url?: string | null;
+	groups?: string[];
+	active_group?: string | null;
+	has_admin_secret?: boolean;
+	has_groups?: boolean;
+}
+
 export interface CachedTeamInvite {
 	encoded?: string;
 	warnings?: string[];
@@ -207,6 +216,7 @@ export const state = {
 	pendingAcceptedSyncPeers: [] as SyncPeer[],
 	lastSyncSharingReview: [] as SyncSharingReviewRow[],
 	lastSyncCoordinator: null as CachedSyncCoordinator | null,
+	lastCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
 	lastSyncJoinRequests: [] as CachedSyncJoinRequest[],
 	lastTeamInvite: null as CachedTeamInvite | null,
 	lastTeamJoin: null as CachedTeamJoin | null,
@@ -237,9 +247,11 @@ export const state = {
 
 export function getActiveTab(): TabId {
 	const hash = window.location.hash.replace("#", "") as TabId;
-	if (["feed", "health", "sync"].includes(hash)) return hash;
+	if (["feed", "health", "sync", "coordinator-admin"].includes(hash)) return hash;
 	const saved = localStorage.getItem(TAB_KEY);
-	if (saved && ["feed", "health", "sync"].includes(saved)) return saved as TabId;
+	if (saved && ["feed", "health", "sync", "coordinator-admin"].includes(saved)) {
+		return saved as TabId;
+	}
 	return "feed";
 }
 

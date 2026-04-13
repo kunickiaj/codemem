@@ -431,6 +431,84 @@
         margin-bottom: var(--sp-3);
       }
 
+      .coordinator-admin-shell {
+        display: grid;
+        gap: var(--sp-5);
+      }
+
+      .coordinator-admin-hero,
+      .coordinator-admin-sections {
+        display: grid;
+        gap: var(--sp-3);
+      }
+
+      .coordinator-admin-meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: var(--sp-3);
+      }
+
+      .coordinator-admin-meta-grid div {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: var(--sp-3);
+        background: var(--surface-0);
+      }
+
+      .coordinator-admin-meta-grid dt {
+        color: var(--text-tertiary);
+        font-size: 12px;
+        margin-bottom: var(--sp-1);
+      }
+
+      .coordinator-admin-meta-grid dd {
+        font-weight: 600;
+      }
+
+      .coordinator-admin-tabs-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+      }
+
+      .coordinator-admin-tab-trigger {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-pill);
+        background: var(--surface-0);
+        color: var(--text-secondary);
+        padding: var(--sp-2) var(--sp-3);
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .coordinator-admin-tab-trigger[data-state="active"] {
+        background: var(--accent-subtle);
+        border-color: var(--control-border);
+        color: var(--accent);
+      }
+
+      .coordinator-admin-tab-trigger:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .coordinator-admin-panel {
+        display: grid;
+        gap: var(--sp-3);
+        padding-top: var(--sp-2);
+      }
+
+      .coordinator-admin-panel h3 {
+        font-size: 15px;
+        margin: 0;
+      }
+
+      .coordinator-admin-list {
+        padding-left: var(--sp-4);
+        display: grid;
+        gap: var(--sp-2);
+      }
+
       .section-header {
         display: flex;
         align-items: center;
@@ -1987,6 +2065,7 @@
       <button class="tab-btn active" id="tabBtn-feed">Feed</button>
       <button class="tab-btn" id="tabBtn-health">Health</button>
       <button class="tab-btn" id="tabBtn-sync">Sync</button>
+      <button class="tab-btn" id="tabBtn-coordinator-admin">Coordinator Admin</button>
     </nav>
     <div class="app-notice" id="globalNotice" hidden aria-live="polite"></div>
     <div class="viewer-reconnect-overlay" id="viewerReconnectOverlay" hidden>
@@ -2346,6 +2425,10 @@
         <h3 class="settings-group-title" style="margin-top: 20px">Recent sync attempts (advanced)</h3>
         <div class="attempts-list" id="syncAttempts"></div>
       </div>
+    </div>
+
+    <div class="tab-panel" id="tab-coordinator-admin" hidden>
+      <div id="coordinatorAdminMount"></div>
     </div>
 
     <script src="/assets/app.js"></script>
