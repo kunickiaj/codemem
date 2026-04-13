@@ -5,13 +5,15 @@
  * an LLM (Anthropic Messages or OpenAI Chat Completions) via fetch to extract
  * memories from session transcripts.
  *
- * Phase 1 scope: api_http runtime only (no claude_sidecar, no opencode_run).
+ * Supports api_http and claude_sidecar runtimes (no opencode_run).
  * Non-streaming responses via fetch (no SDK deps).
  */
 
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import {
 	buildCodexHeaders,
@@ -53,6 +55,8 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
 const FETCH_TIMEOUT_MS = 60_000;
+
+const CLAUDE_SIDECAR_TIMEOUT_MS = 120_000;
 
 // Anthropic model name aliases (friendly → API id)
 const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
@@ -98,6 +102,7 @@ export interface ObserverConfig {
 	observerAuthCommand: string[];
 	observerAuthTimeoutMs: number;
 	observerAuthCacheTtlS: number;
+	claudeCommand?: string[];
 }
 
 export interface ObserverResponse {
@@ -169,6 +174,35 @@ function coerceCommand(value: unknown): string[] | null {
 			/* not JSON — ignore */
 		}
 		return null;
+	}
+	return null;
+}
+
+/**
+ * Coerce a claude_command value to a string array.
+ * Accepts a string (split on whitespace) or an array of strings.
+ */
+function coerceClaudeCommand(value: unknown): string[] | null {
+	if (value == null) return null;
+	if (Array.isArray(value)) {
+		const parts = value.filter((v): v is string => typeof v === "string" && v.trim() !== "");
+		return parts.length > 0 ? parts : null;
+	}
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (!trimmed) return null;
+		// Try JSON array first
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (Array.isArray(parsed) && parsed.every((v: unknown) => typeof v === "string")) {
+				const parts = (parsed as string[]).filter((v) => v.trim() !== "");
+				return parts.length > 0 ? parts : null;
+			}
+		} catch {
+			/* not JSON — split on whitespace */
+		}
+		const parts = trimmed.split(/\s+/).filter((v) => v !== "");
+		return parts.length > 0 ? parts : null;
 	}
 	return null;
 }
@@ -297,6 +331,10 @@ export function loadObserverConfig(): ObserverConfig {
 	const authCmd = coerceCommand(data.observer_auth_command);
 	if (authCmd) cfg.observerAuthCommand = authCmd;
 
+	// claude_command: string or string[] → string[]
+	const claudeCmd = coerceClaudeCommand(data.claude_command);
+	if (claudeCmd) cfg.claudeCommand = claudeCmd;
+
 	// Apply env var overrides (take precedence over file)
 	cfg.observerProvider = process.env.CODEMEM_OBSERVER_PROVIDER ?? cfg.observerProvider;
 	cfg.observerModel = process.env.CODEMEM_OBSERVER_MODEL ?? cfg.observerModel;
@@ -357,6 +395,27 @@ export function loadObserverConfig(): ObserverConfig {
 	const envAuthCmd = coerceCommand(process.env.CODEMEM_OBSERVER_AUTH_COMMAND);
 	if (envAuthCmd) cfg.observerAuthCommand = envAuthCmd;
 
+	const envClaudeCmd = coerceClaudeCommand(process.env.CODEMEM_CLAUDE_COMMAND);
+	if (envClaudeCmd) cfg.claudeCommand = envClaudeCmd;
+
+	// Auto-detect Claude environment for runtime default.
+	// If running inside Claude Code (CLAUDE_CODE_ENTRYPOINT or CLAUDE_CODE_SESSION set),
+	// no explicit runtime configured, and no API key available from any provider,
+	// default to claude_sidecar.
+	const hasAnyApiKey =
+		!!cfg.observerApiKey ||
+		!!process.env.ANTHROPIC_API_KEY ||
+		!!process.env.OPENAI_API_KEY ||
+		!!process.env.OPENCODE_API_KEY ||
+		!!process.env.CODEX_API_KEY;
+	if (
+		!cfg.observerRuntime &&
+		!hasAnyApiKey &&
+		(process.env.CLAUDE_CODE_ENTRYPOINT || process.env.CLAUDE_CODE_SESSION)
+	) {
+		cfg.observerRuntime = "claude_sidecar";
+	}
+
 	return cfg;
 }
 
@@ -373,6 +432,61 @@ export class ObserverAuthError extends Error {
 
 function isAuthStatus(status: number): boolean {
 	return status === 401 || status === 403;
+}
+
+// ---------------------------------------------------------------------------
+// Claude sidecar helpers
+// ---------------------------------------------------------------------------
+
+/** Extract the last `{type: "result"}` JSON object from Claude CLI stdout. */
+function extractClaudeResultPayload(output: string): Record<string, unknown> | null {
+	if (!output) return null;
+	const lines = output.split("\n");
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i];
+		if (line == null) continue;
+		const text = line.trim();
+		if (!text) continue;
+		try {
+			const payload = JSON.parse(text) as Record<string, unknown>;
+			if (typeof payload === "object" && payload !== null && payload.type === "result") {
+				return payload;
+			}
+		} catch {}
+	}
+	return null;
+}
+
+/**
+ * Detect model-related errors from Claude CLI output.
+ * Preserves the Python implementation's generous matching strategy.
+ */
+function isSidecarModelError(message: string): boolean {
+	const lowered = message.toLowerCase();
+	return (
+		lowered.includes("issue with the selected model") ||
+		lowered.includes("run --model to pick a different model") ||
+		(lowered.includes("model") && lowered.includes("may not exist"))
+	);
+}
+
+/**
+ * Detect auth-related errors from Claude CLI output.
+ * Preserves the Python implementation's broad phrase matching.
+ */
+function isSidecarAuthError(message: string): boolean {
+	const lowered = message.toLowerCase();
+	const checks = [
+		"not logged in",
+		"login",
+		"authentication",
+		"unauthorized",
+		"permission denied",
+		"api key",
+		"anthropic_api_key",
+		"setup-token",
+	];
+	return checks.some((token) => lowered.includes(token));
 }
 
 // ---------------------------------------------------------------------------
@@ -753,6 +867,10 @@ export class ObserverClient {
 	private _customBaseUrl: string | null;
 	private readonly _apiKey: string | null;
 
+	// Claude sidecar state
+	private readonly _claudeCommand: string[];
+	private readonly _sidecarModel: string;
+
 	// OAuth consumer state
 	private _codexAccess: string | null = null;
 	private _codexAccountId: string | null = null;
@@ -797,10 +915,10 @@ export class ObserverClient {
 		}
 		this.provider = resolved;
 
-		// Resolve runtime (Phase 1: api_http only)
+		// Resolve runtime
 		const runtimeRaw = cfg.observerRuntime;
 		const runtime = typeof runtimeRaw === "string" ? runtimeRaw.trim().toLowerCase() : "api_http";
-		this.runtime = runtime === "api_http" ? "api_http" : "api_http"; // only api_http supported
+		this.runtime = runtime === "claude_sidecar" ? "claude_sidecar" : "api_http";
 
 		// Resolve model
 		if (model) {
@@ -814,6 +932,15 @@ export class ObserverClient {
 				resolveBuiltInProviderDefaultModel(resolved) ??
 				resolveCustomProviderDefaultModel(resolved) ??
 				"";
+		}
+
+		// Claude sidecar config
+		const claudeCmd = cfg.claudeCommand;
+		this._claudeCommand =
+			Array.isArray(claudeCmd) && claudeCmd.length > 0 ? [...claudeCmd] : ["claude"];
+		this._sidecarModel = model || DEFAULT_ANTHROPIC_MODEL;
+		if (this.runtime === "claude_sidecar") {
+			this.model = this._sidecarModel;
 		}
 
 		this.temperature =
@@ -891,8 +1018,10 @@ export class ObserverClient {
 		});
 		this.auth = { token: null, authType: "none", source: "none" };
 
-		// Initialize provider client state
-		this._initProvider(false);
+		// Initialize provider client state — skip for claude_sidecar (no API key needed)
+		if (this.runtime !== "claude_sidecar") {
+			this._initProvider(false);
+		}
 	}
 
 	toConfig(): ObserverConfig {
@@ -924,13 +1053,16 @@ export class ObserverClient {
 			observerAuthCommand: [...this.authCommand],
 			observerAuthTimeoutMs: this.authTimeoutMs,
 			observerAuthCacheTtlS: this.authCacheTtlS,
+			claudeCommand: [...this._claudeCommand],
 		};
 	}
 
 	/** Return the resolved runtime state of this observer client. */
 	getStatus(): ObserverStatus {
 		let method = "none";
-		if (this._anthropicOAuthAccess) {
+		if (this.runtime === "claude_sidecar") {
+			method = "claude_sidecar";
+		} else if (this._anthropicOAuthAccess) {
 			method = "anthropic_consumer";
 		} else if (this._codexAccess) {
 			method = "codex_consumer";
@@ -1207,6 +1339,11 @@ export class ObserverClient {
 	// -----------------------------------------------------------------------
 
 	private async _callOnce(systemPrompt: string, userPrompt: string): Promise<string | null> {
+		// Claude sidecar path — dispatches before any API-based paths
+		if (this.runtime === "claude_sidecar") {
+			return this._callSidecar(systemPrompt, userPrompt);
+		}
+
 		// Codex consumer path (OpenAI OAuth)
 		if (this._codexAccess) {
 			return this._callCodexConsumer(systemPrompt, userPrompt);
@@ -1372,6 +1509,132 @@ export class ObserverClient {
 			providerLabel: "Anthropic",
 			authErrorMessage: "Anthropic authentication failed. Refresh credentials and retry.",
 		});
+	}
+
+	// -----------------------------------------------------------------------
+	// Claude sidecar (subprocess)
+	// -----------------------------------------------------------------------
+
+	private _buildSidecarCommand(prompt: string, useModel: boolean): string[] {
+		const cmd = [
+			...this._claudeCommand,
+			"-p",
+			"--output-format",
+			"json",
+			"--permission-mode",
+			"bypassPermissions",
+		];
+		if (useModel && this._sidecarModel) {
+			cmd.push("--model", this._sidecarModel);
+		}
+		cmd.push(prompt);
+		return cmd;
+	}
+
+	private async _invokeSidecar(
+		prompt: string,
+		useModel: boolean,
+	): Promise<[string | null, string | null]> {
+		const cmd = this._buildSidecarCommand(prompt, useModel);
+		const executable = cmd[0] ?? "claude";
+		const args = cmd.slice(1);
+		const env = {
+			...process.env,
+			CODEMEM_PLUGIN_IGNORE: "1",
+			CODEMEM_VIEWER: "0",
+			CODEMEM_VIEWER_AUTO: "0",
+			CODEMEM_VIEWER_AUTO_STOP: "0",
+		};
+
+		const execFileAsync = promisify(execFile);
+		try {
+			const { stdout } = await execFileAsync(executable, args, {
+				env,
+				timeout: CLAUDE_SIDECAR_TIMEOUT_MS,
+				maxBuffer: 10 * 1024 * 1024,
+			});
+
+			const payload = extractClaudeResultPayload(stdout);
+			if (payload !== null) {
+				const message = String(payload.result ?? "").trim();
+				const isError = Boolean(payload.is_error);
+				if (isError) {
+					return [null, message || "claude sidecar returned an error"];
+				}
+				return [message || null, null];
+			}
+
+			// No result payload found — treat non-empty stdout as raw output
+			const text = (stdout || "").trim();
+			return [text || null, null];
+		} catch (err: unknown) {
+			const error = err as NodeJS.ErrnoException & {
+				killed?: boolean;
+				code?: string;
+				stderr?: string;
+				stdout?: string;
+			};
+
+			// Command not found
+			if (error.code === "ENOENT") {
+				console.warn(
+					"[codemem] observer claude_sidecar unavailable: configured claude command not found",
+				);
+				return [null, "configured claude command not found"];
+			}
+
+			// Timeout (killed by signal or timeout error)
+			if (error.killed || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+				console.warn("[codemem] observer claude_sidecar timed out");
+				return [null, "claude sidecar call timed out"];
+			}
+
+			// Non-zero exit — check for result payload in stdout first
+			if (error.stdout) {
+				const payload = extractClaudeResultPayload(error.stdout);
+				if (payload !== null) {
+					const message = String(payload.result ?? "").trim();
+					const isError = Boolean(payload.is_error);
+					if (isError) {
+						return [null, message || "claude sidecar returned an error"];
+					}
+					return [message || null, null];
+				}
+			}
+
+			const message = (error.stderr || "").trim() || (error.stdout || "").trim() || String(err);
+			return [null, message];
+		}
+	}
+
+	private async _callSidecar(systemPrompt: string, userPrompt: string): Promise<string | null> {
+		const prompt = `${systemPrompt}\n\n${userPrompt}`;
+
+		let [output, error] = await this._invokeSidecar(prompt, true);
+		if (error && this._sidecarModel && isSidecarModelError(error)) {
+			console.warn(
+				`[codemem] observer claude_sidecar model unsupported; retrying with default model (model=${this._sidecarModel})`,
+			);
+			[output, error] = await this._invokeSidecar(prompt, false);
+		}
+		if (error) {
+			if (isSidecarAuthError(error)) {
+				this._setLastError(
+					"Claude authentication failed. Refresh credentials and retry.",
+					"auth_failed",
+				);
+				throw new ObserverAuthError(error);
+			}
+			if (isSidecarModelError(error)) {
+				this._setLastError(
+					`Claude model is unavailable: ${this._sidecarModel || this.model}.`,
+					"invalid_model_id",
+				);
+			}
+			console.warn(`[codemem] observer claude_sidecar call failed: ${error}`);
+			return null;
+		}
+		return output;
 	}
 
 	// -----------------------------------------------------------------------
