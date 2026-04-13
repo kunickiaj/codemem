@@ -217,6 +217,7 @@ export const state = {
 	lastSyncSharingReview: [] as SyncSharingReviewRow[],
 	lastSyncCoordinator: null as CachedSyncCoordinator | null,
 	lastCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
+	lastCoordinatorAdminJoinRequests: [] as CachedSyncJoinRequest[],
 	lastSyncJoinRequests: [] as CachedSyncJoinRequest[],
 	lastTeamInvite: null as CachedTeamInvite | null,
 	lastTeamJoin: null as CachedTeamJoin | null,
