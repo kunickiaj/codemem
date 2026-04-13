@@ -698,7 +698,8 @@ export function createCoordinatorApp(
 		try {
 			const ok = await store.renameDevice(groupId, deviceId, displayName);
 			if (!ok) return c.json({ error: "device_not_found" }, 404);
-			return c.json({ ok: true });
+			const device = await store.getEnrollment(groupId, deviceId);
+			return c.json({ ok: true, device });
 		} finally {
 			await store.close();
 		}

@@ -286,6 +286,66 @@ export async function loadCoordinatorAdminStatus(): Promise<unknown> {
 	return fetchJson("/api/coordinator/admin/status");
 }
 
+export async function loadCoordinatorAdminGroups(): Promise<unknown> {
+	return fetchJson("/api/coordinator/admin/groups");
+}
+
+export async function loadCoordinatorAdminGroupsFiltered(
+	includeArchived: boolean,
+): Promise<unknown> {
+	const suffix = includeArchived ? "?include_archived=1" : "";
+	return fetchJson(`/api/coordinator/admin/groups${suffix}`);
+}
+
+export async function createCoordinatorAdminGroup(payload: {
+	group_id: string;
+	display_name?: string | null;
+}): Promise<unknown> {
+	const resp = await fetch("/api/coordinator/admin/groups", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function renameCoordinatorAdminGroup(
+	groupId: string,
+	displayName: string,
+): Promise<unknown> {
+	const resp = await fetch(`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/rename`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ display_name: displayName }),
+	});
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function archiveCoordinatorAdminGroup(groupId: string): Promise<unknown> {
+	const resp = await fetch(`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/archive`, {
+		method: "POST",
+	});
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function unarchiveCoordinatorAdminGroup(groupId: string): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/unarchive`,
+		{
+			method: "POST",
+		},
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
 export async function loadCoordinatorAdminJoinRequests(groupId?: string | null): Promise<unknown> {
 	const params = new URLSearchParams();
 	if (groupId) params.set("group_id", groupId);
