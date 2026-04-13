@@ -4,6 +4,7 @@ import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs
 import * as api from "../lib/api";
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
+import { openSyncConfirmDialog } from "./sync/sync-dialogs";
 
 type AdminSection = "overview" | "invites" | "join-requests" | "devices";
 
@@ -14,6 +15,25 @@ let invitePolicy: "auto_admit" | "approval_required" = "auto_admit";
 let invitePending = false;
 let joinReviewPendingId = "";
 let joinReviewPendingAction: "approve" | "deny" | "" = "";
+let deviceActionPendingId = "";
+let deviceActionPendingKind: "rename" | "disable" | "remove" | "" = "";
+const deviceRenameDrafts = new Map<string, string>();
+
+function reconcileDeviceRenameDrafts() {
+	const next = new Map<string, string>();
+	const items = Array.isArray(state.lastCoordinatorAdminDevices)
+		? state.lastCoordinatorAdminDevices
+		: [];
+	for (const item of items) {
+		const deviceId = String(item.device_id || "").trim();
+		if (!deviceId) continue;
+		next.set(deviceId, String(item.display_name || ""));
+	}
+	deviceRenameDrafts.clear();
+	for (const [deviceId, name] of next.entries()) {
+		deviceRenameDrafts.set(deviceId, name);
+	}
+}
 
 function coordinatorAdminSummary() {
 	const status = state.lastCoordinatorAdminStatus;
@@ -290,6 +310,159 @@ function renderJoinRequestsPanel(summary: ReturnType<typeof coordinatorAdminSumm
 	);
 }
 
+async function runDeviceAction(
+	deviceId: string,
+	groupId: string,
+	displayName: string,
+	kind: "rename" | "disable" | "remove",
+) {
+	if (!deviceId || deviceActionPendingId) return;
+	if (
+		(kind === "disable" || kind === "remove") &&
+		!(await openSyncConfirmDialog({
+			title: `${kind === "disable" ? "Disable" : "Remove"} ${displayName || deviceId}?`,
+			description:
+				kind === "disable"
+					? "This device will stay enrolled but can no longer participate until you re-enable it from a future admin flow."
+					: "This removes the enrolled device record from the coordinator. The teammate would need a fresh invite or re-enrollment path to come back.",
+			confirmLabel: kind === "disable" ? "Disable device" : "Remove device",
+			cancelLabel: kind === "disable" ? "Keep device enabled" : "Keep device enrolled",
+			tone: "danger",
+		}))
+	) {
+		return;
+	}
+	deviceActionPendingId = deviceId;
+	deviceActionPendingKind = kind;
+	renderShell();
+	try {
+		if (kind === "rename") {
+			const nextName = String(deviceRenameDrafts.get(deviceId) || "").trim();
+			if (!nextName) {
+				showGlobalNotice("Enter a device name before renaming it.", "warning");
+				return;
+			}
+			await api.renameCoordinatorAdminDevice(deviceId, groupId, nextName);
+			showGlobalNotice("Device renamed.", "success");
+		}
+		if (kind === "disable") {
+			await api.disableCoordinatorAdminDevice(deviceId, groupId);
+			showGlobalNotice("Device disabled.", "success");
+		}
+		if (kind === "remove") {
+			await api.removeCoordinatorAdminDevice(deviceId, groupId);
+			showGlobalNotice("Device removed.", "success");
+		}
+		await loadCoordinatorAdminData();
+	} catch (error) {
+		const message = error instanceof Error ? error.message : `Failed to ${kind} device.`;
+		showGlobalNotice(message, "warning");
+	} finally {
+		deviceActionPendingId = "";
+		deviceActionPendingKind = "";
+		renderShell();
+	}
+}
+
+function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>) {
+	const items = Array.isArray(state.lastCoordinatorAdminDevices)
+		? state.lastCoordinatorAdminDevices
+		: [];
+	return h(
+		RadixTabsContent,
+		{ className: "coordinator-admin-panel", forceMount: true, value: "devices" },
+		h("h3", null, "Enrolled devices"),
+		h(
+			"p",
+			{ class: "peer-submeta" },
+			summary.readiness === "ready"
+				? "Rename, disable, or remove enrolled devices from the operator surface without confusing this with direct sync state."
+				: "Finish setup first. Device administration stays disabled until coordinator admin is ready.",
+		),
+		!items.length
+			? h(
+					"div",
+					{ class: "peer-meta" },
+					summary.readiness === "ready"
+						? "No enrolled devices found for the active coordinator group."
+						: "Device administration will appear here once setup is complete.",
+				)
+			: h(
+					"div",
+					{ class: "coordinator-admin-request-list" },
+					items.map((item) => {
+						const deviceId = String(item.device_id || "").trim();
+						const groupId = String(
+							item.group_id || state.lastCoordinatorAdminStatus?.active_group || "",
+						).trim();
+						const displayName = String(item.display_name || deviceId || "Unnamed device");
+						const pending = deviceActionPendingId === deviceId;
+						const draft = deviceRenameDrafts.get(deviceId) ?? String(item.display_name || "");
+						const enabled = item.enabled !== false && item.enabled !== 0;
+						return h(
+							"div",
+							{ class: "peer-card", key: deviceId || String(item.fingerprint || "unknown") },
+							h("div", { class: "peer-title" }, h("strong", null, draft || displayName)),
+							h("div", { class: "peer-meta" }, `Device: ${deviceId || "unknown"}`),
+							groupId ? h("div", { class: "peer-submeta" }, `Group: ${groupId}`) : null,
+							h("div", { class: "peer-submeta" }, enabled ? "Enabled" : "Disabled"),
+							h(
+								"div",
+								{ class: "coordinator-admin-form-grid" },
+								h(
+									"label",
+									{ class: "coordinator-admin-field" },
+									h("span", null, "Display name"),
+									h("input", {
+										class: "peer-scope-input",
+										disabled: summary.readiness !== "ready" || pending,
+										onInput: (event) => {
+											deviceRenameDrafts.set(
+												deviceId,
+												String((event.currentTarget as HTMLInputElement).value || ""),
+											);
+										},
+										value: draft,
+									}),
+								),
+							),
+							h(
+								"div",
+								{ class: "peer-actions" },
+								h(
+									"button",
+									{
+										disabled: !deviceId || pending || summary.readiness !== "ready",
+										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "rename"),
+										type: "button",
+									},
+									pending && deviceActionPendingKind === "rename" ? "Renaming…" : "Rename",
+								),
+								h(
+									"button",
+									{
+										disabled: !deviceId || pending || summary.readiness !== "ready" || !enabled,
+										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "disable"),
+										type: "button",
+									},
+									pending && deviceActionPendingKind === "disable" ? "Disabling…" : "Disable",
+								),
+								h(
+									"button",
+									{
+										disabled: !deviceId || pending || summary.readiness !== "ready",
+										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "remove"),
+										type: "button",
+									},
+									pending && deviceActionPendingKind === "remove" ? "Removing…" : "Remove",
+								),
+							),
+						);
+					}),
+				),
+	);
+}
+
 function renderShell() {
 	const mount = document.getElementById("coordinatorAdminMount");
 	if (!mount) return;
@@ -300,10 +473,12 @@ function renderShell() {
 	const activeGroup = String(status?.active_group || "").trim();
 	const invitesEnabled = summary.readiness === "ready";
 	const joinRequestsEnabled = summary.readiness === "ready";
+	const devicesEnabled = summary.readiness === "ready";
 	if (
 		activeSection !== "overview" &&
 		((activeSection === "invites" && !invitesEnabled) ||
-			(activeSection === "join-requests" && !joinRequestsEnabled))
+			(activeSection === "join-requests" && !joinRequestsEnabled) ||
+			(activeSection === "devices" && !devicesEnabled))
 	) {
 		activeSection = "overview";
 	}
@@ -356,7 +531,7 @@ function renderShell() {
 							{ value: "overview", label: "Overview" },
 							{ value: "invites", label: "Invites", disabled: !invitesEnabled },
 							{ value: "join-requests", label: "Join requests", disabled: !joinRequestsEnabled },
-							{ value: "devices", label: "Devices", disabled: true },
+							{ value: "devices", label: "Devices", disabled: !devicesEnabled },
 						],
 						triggerClassName: "coordinator-admin-tab-trigger",
 						value: activeSection,
@@ -375,16 +550,7 @@ function renderShell() {
 					),
 					renderInvitesPanel(summary),
 					renderJoinRequestsPanel(summary),
-					h(
-						RadixTabsContent,
-						{ className: "coordinator-admin-panel", forceMount: true, value: "devices" },
-						h("h3", null, "Device admin tools land in the next slice"),
-						h(
-							"p",
-							{ class: "peer-submeta" },
-							"Device management will live here once the tab shell and invite workflow settle.",
-						),
-					),
+					renderDevicesPanel(summary),
 				),
 			),
 		),
@@ -400,18 +566,40 @@ export async function loadCoordinatorAdminData() {
 	try {
 		state.lastCoordinatorAdminStatus =
 			(await api.loadCoordinatorAdminStatus()) as typeof state.lastCoordinatorAdminStatus;
-		const activeGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
-		if (state.lastCoordinatorAdminStatus?.readiness === "ready") {
+	} catch {
+		state.lastCoordinatorAdminStatus = null;
+		state.lastCoordinatorAdminJoinRequests = [];
+		state.lastCoordinatorAdminDevices = [];
+		deviceRenameDrafts.clear();
+		renderShell();
+		return;
+	}
+	const activeGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
+	if (state.lastCoordinatorAdminStatus?.readiness === "ready") {
+		try {
 			const payload = (await api.loadCoordinatorAdminJoinRequests(activeGroup)) as {
 				items?: typeof state.lastCoordinatorAdminJoinRequests;
 			};
 			state.lastCoordinatorAdminJoinRequests = Array.isArray(payload?.items) ? payload.items : [];
-		} else {
+		} catch {
 			state.lastCoordinatorAdminJoinRequests = [];
 		}
-	} catch {
-		state.lastCoordinatorAdminStatus = null;
+		try {
+			const devicesPayload = (await api.loadCoordinatorAdminDevices(activeGroup, true)) as {
+				items?: typeof state.lastCoordinatorAdminDevices;
+			};
+			state.lastCoordinatorAdminDevices = Array.isArray(devicesPayload?.items)
+				? devicesPayload.items
+				: [];
+			reconcileDeviceRenameDrafts();
+		} catch {
+			state.lastCoordinatorAdminDevices = [];
+			deviceRenameDrafts.clear();
+		}
+	} else {
 		state.lastCoordinatorAdminJoinRequests = [];
+		state.lastCoordinatorAdminDevices = [];
+		deviceRenameDrafts.clear();
 	}
 	renderShell();
 }

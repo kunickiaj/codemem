@@ -18,10 +18,13 @@ import {
 	buildBaseUrl,
 	cleanupNonces,
 	coordinatorCreateInviteAction,
+	coordinatorDisableDeviceAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
 	coordinatorListDevicesAction,
 	coordinatorListJoinRequestsAction,
+	coordinatorRemoveDeviceAction,
+	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
 	coordinatorStatusSnapshot,
@@ -110,6 +113,12 @@ function resolveCoordinatorAdminGroup(
 	const explicit = String(requestedGroup ?? "").trim();
 	if (explicit) return explicit;
 	return status.active_group;
+}
+
+function parseInviteTtlHours(value: unknown): number | null {
+	const ttlHours = Number(String(value ?? 24));
+	if (!Number.isInteger(ttlHours) || ttlHours < 1) return null;
+	return ttlHours;
 }
 
 function sortActiveMaintenanceJobs<
@@ -1971,7 +1980,7 @@ export function syncRoutes(
 		const groupId = String(body.group_id ?? "").trim();
 		const coordinatorUrl = body.coordinator_url == null ? null : String(body.coordinator_url ?? "");
 		const policy = String(body.policy ?? "auto_admit").trim();
-		const ttlHours = Number.parseInt(String(body.ttl_hours ?? 24), 10);
+		const ttlHours = parseInviteTtlHours(body.ttl_hours);
 		if (!groupId) return c.json({ error: "group_id required" }, 400);
 		if (body.coordinator_url != null && typeof body.coordinator_url !== "string") {
 			return c.json({ error: "coordinator_url must be string" }, 400);
@@ -1979,7 +1988,7 @@ export function syncRoutes(
 		if (!["auto_admit", "approval_required"].includes(policy)) {
 			return c.json({ error: "policy must be auto_admit or approval_required" }, 400);
 		}
-		if (!Number.isFinite(ttlHours)) return c.json({ error: "ttl_hours must be int" }, 400);
+		if (ttlHours == null) return c.json({ error: "ttl_hours must be an integer >= 1" }, 400);
 		try {
 			const config = readCoordinatorSyncConfig();
 			const result = await coordinatorCreateInviteAction({
@@ -2015,39 +2024,6 @@ export function syncRoutes(
 		}
 	});
 
-	app.post("/api/sync/join-requests/review", async (c) => {
-		let body: Record<string, unknown>;
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
-		const requestId = String(body.request_id ?? "").trim();
-		const action = String(body.action ?? "").trim();
-		if (!requestId) return c.json({ error: "request_id required" }, 400);
-		if (!["approve", "deny"].includes(action)) {
-			return c.json({ error: "action must be approve or deny" }, 400);
-		}
-		try {
-			const config = readCoordinatorSyncConfig();
-			const result = await coordinatorReviewJoinRequestAction({
-				requestId,
-				approve: action === "approve",
-				reviewedBy: null,
-				remoteUrl: config.syncCoordinatorUrl || null,
-				adminSecret: config.syncCoordinatorAdminSecret || null,
-			});
-			if (!result) return c.json({ error: "join request not found" }, 404);
-			return c.json({ ok: true, request: result });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return c.json(
-				{ error: message },
-				message.includes("request_not_found") || message.includes("not found") ? 404 : 400,
-			);
-		}
-	});
-
 	app.get("/api/coordinator/admin/status", async (c) => {
 		const status = coordinatorAdminStatusPayload();
 		return c.json(status);
@@ -2071,7 +2047,7 @@ export function syncRoutes(
 		const groupId = resolveCoordinatorAdminGroup(String(body.group_id ?? "").trim(), status);
 		const coordinatorUrl = body.coordinator_url == null ? null : String(body.coordinator_url ?? "");
 		const policy = String(body.policy ?? "auto_admit").trim();
-		const ttlHours = Number.parseInt(String(body.ttl_hours ?? 24), 10);
+		const ttlHours = parseInviteTtlHours(body.ttl_hours);
 		if (!groupId) return c.json({ error: "group_id required", status }, 400);
 		if (body.coordinator_url != null && typeof body.coordinator_url !== "string") {
 			return c.json({ error: "coordinator_url must be string", status }, 400);
@@ -2079,8 +2055,8 @@ export function syncRoutes(
 		if (!["auto_admit", "approval_required"].includes(policy)) {
 			return c.json({ error: "policy must be auto_admit or approval_required", status }, 400);
 		}
-		if (!Number.isFinite(ttlHours)) {
-			return c.json({ error: "ttl_hours must be int", status }, 400);
+		if (ttlHours == null) {
+			return c.json({ error: "ttl_hours must be an integer >= 1", status }, 400);
 		}
 		try {
 			const result = await coordinatorCreateInviteAction({
@@ -2204,6 +2180,96 @@ export function syncRoutes(
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "unknown";
 			return c.json({ error: message, status }, 502);
+		}
+	});
+
+	app.post("/api/coordinator/admin/devices/:device_id/rename", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const deviceId = String(c.req.param("device_id") ?? "").trim();
+		if (!deviceId) return c.json({ error: "device_id required", status }, 400);
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json", status }, 400);
+		}
+		const groupId = resolveCoordinatorAdminGroup(String(body.group_id ?? "").trim(), status);
+		const displayName = String(body.display_name ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		if (!displayName) return c.json({ error: "display_name required", status }, 400);
+		try {
+			const device = await coordinatorRenameDeviceAction({
+				groupId,
+				deviceId,
+				displayName,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!device) return c.json({ error: "device_not_found", status }, 404);
+			return c.json({ ok: true, device, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
+	app.post("/api/coordinator/admin/devices/:device_id/disable", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const deviceId = String(c.req.param("device_id") ?? "").trim();
+		if (!deviceId) return c.json({ error: "device_id required", status }, 400);
+		const groupId = resolveCoordinatorAdminGroup(c.req.query("group_id"), status);
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		try {
+			const ok = await coordinatorDisableDeviceAction({
+				groupId,
+				deviceId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!ok) return c.json({ error: "device_not_found", status }, 404);
+			return c.json({ ok: true, device_id: deviceId, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
+	app.post("/api/coordinator/admin/devices/:device_id/remove", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const deviceId = String(c.req.param("device_id") ?? "").trim();
+		if (!deviceId) return c.json({ error: "device_id required", status }, 400);
+		const groupId = resolveCoordinatorAdminGroup(c.req.query("group_id"), status);
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		try {
+			const ok = await coordinatorRemoveDeviceAction({
+				groupId,
+				deviceId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!ok) return c.json({ error: "device_not_found", status }, 404);
+			return c.json({ ok: true, device_id: deviceId, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
 		}
 	});
 

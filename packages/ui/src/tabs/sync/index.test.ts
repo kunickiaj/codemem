@@ -99,10 +99,10 @@ describe("loadSyncData", () => {
 		await secondLoad;
 		expect(state.lastSyncPeers.map((peer) => peer.peer_device_id)).toEqual(["peer-new"]);
 		expect(api.loadSyncStatus).toHaveBeenNthCalledWith(1, false, "", {
-			includeJoinRequests: true,
+			includeJoinRequests: false,
 		});
 		expect(api.loadSyncStatus).toHaveBeenNthCalledWith(2, false, "", {
-			includeJoinRequests: true,
+			includeJoinRequests: false,
 		});
 
 		first.resolve({

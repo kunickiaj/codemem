@@ -227,8 +227,8 @@ export async function coordinatorListDevicesAction(opts: {
 }): Promise<CoordinatorEnrollment[]> {
 	const groupId = String(opts.groupId ?? "").trim();
 	if (!groupId) throw new Error("Group id required.");
-	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
-	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	const remote = opts.remoteUrl ?? null;
+	const adminSecret = opts.adminSecret ?? null;
 	if (remote) {
 		if (!adminSecret) throw new Error("Admin secret required.");
 		const payload = await remoteRequest(
@@ -255,12 +255,39 @@ export async function coordinatorRenameDeviceAction(opts: {
 	deviceId: string;
 	displayName: string;
 	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
 }): Promise<CoordinatorEnrollment | null> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	const displayName = String(opts.displayName ?? "").trim();
 	if (!groupId || !deviceId || !displayName) {
 		throw new Error("group_id, device_id, and display_name are required.");
+	}
+	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
+	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		let payload: Record<string, unknown> | null;
+		try {
+			payload = await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/devices/rename`,
+				adminSecret,
+				{ group_id: groupId, device_id: deviceId, display_name: displayName },
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message.includes("(404)") &&
+				error.message.includes("device_not_found")
+			) {
+				return null;
+			}
+			throw error;
+		}
+		const device = payload?.device;
+		return device && typeof device === "object" ? (device as CoordinatorEnrollment) : null;
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
@@ -279,10 +306,35 @@ export async function coordinatorDisableDeviceAction(opts: {
 	groupId: string;
 	deviceId: string;
 	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
 }): Promise<boolean> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
+	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
+	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		try {
+			await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/devices/disable`,
+				adminSecret,
+				{ group_id: groupId, device_id: deviceId },
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message.includes("(404)") &&
+				error.message.includes("device_not_found")
+			) {
+				return false;
+			}
+			throw error;
+		}
+		return true;
+	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.setDeviceEnabled(groupId, deviceId, false);
@@ -295,10 +347,35 @@ export async function coordinatorRemoveDeviceAction(opts: {
 	groupId: string;
 	deviceId: string;
 	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
 }): Promise<boolean> {
 	const groupId = String(opts.groupId ?? "").trim();
 	const deviceId = String(opts.deviceId ?? "").trim();
 	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
+	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
+	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		try {
+			await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/devices/remove`,
+				adminSecret,
+				{ group_id: groupId, device_id: deviceId },
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message.includes("(404)") &&
+				error.message.includes("device_not_found")
+			) {
+				return false;
+			}
+			throw error;
+		}
+		return true;
+	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.removeDevice(groupId, deviceId);

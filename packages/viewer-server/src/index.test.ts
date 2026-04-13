@@ -4668,68 +4668,6 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("reviews join requests through the viewer route", async () => {
-			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
-			const prevConfig = process.env.CODEMEM_CONFIG;
-			const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-				const url = String(input);
-				const requestBody = init?.body
-					? JSON.parse(new TextDecoder().decode(init.body as ArrayBufferView))
-					: {};
-				if (url.includes("/v1/admin/join-requests/approve") && requestBody.request_id === "req-1") {
-					return new Response(
-						JSON.stringify({ request: { request_id: "req-1", status: "approved" } }),
-						{ status: 200 },
-					);
-				}
-				if (
-					url.includes("/v1/admin/join-requests/approve") &&
-					requestBody.request_id === "missing"
-				) {
-					return new Response(JSON.stringify({ error: "request_not_found" }), { status: 404 });
-				}
-				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
-			});
-			const prevFetch = globalThis.fetch;
-			globalThis.fetch = fetchMock as typeof fetch;
-			process.env.CODEMEM_CONFIG = configPath;
-			writeFileSync(
-				configPath,
-				JSON.stringify({
-					sync_coordinator_url: "https://coord.example.test",
-					sync_coordinator_admin_secret: "secret",
-				}),
-			);
-			const { app, cleanup } = createTestApp();
-			try {
-				const res = await app.request("/api/sync/join-requests/review", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ request_id: "req-1", action: "approve" }),
-				});
-				expect(res.status).toBe(200);
-				const body = (await res.json()) as {
-					ok: boolean;
-					request: { request_id: string; status: string };
-				};
-				expect(body.ok).toBe(true);
-				expect(body.request.request_id).toBe("req-1");
-				expect(body.request.status).toBe("approved");
-
-				const missing = await app.request("/api/sync/join-requests/review", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ request_id: "missing", action: "approve" }),
-				});
-				expect(missing.status).toBe(404);
-			} finally {
-				cleanup();
-				globalThis.fetch = prevFetch;
-				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
-				else process.env.CODEMEM_CONFIG = prevConfig;
-			}
-		});
-
 		it("reports coordinator admin readiness states", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
@@ -4928,6 +4866,73 @@ describe("viewer-server", () => {
 						items: [expect.objectContaining({ device_id: "device-1", display_name: "Laptop" })],
 						status: expect.objectContaining({ readiness: "ready" }),
 					});
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
+		it("runs coordinator device admin actions through the admin routes", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/devices/rename")) {
+					return new Response(
+						JSON.stringify({
+							device: { device_id: "device-1", group_id: "team-a", display_name: "Renamed" },
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/v1/admin/devices/disable")) {
+					return new Response(JSON.stringify({ ok: true }), { status: 200 });
+				}
+				if (url.includes("/v1/admin/devices/remove")) {
+					return new Response(JSON.stringify({ ok: true }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const renamed = await app.request("/api/coordinator/admin/devices/device-1/rename", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ display_name: "Renamed" }),
+					});
+					expect(renamed.status).toBe(200);
+					expect(await renamed.json()).toMatchObject({
+						ok: true,
+						device: expect.objectContaining({ device_id: "device-1", display_name: "Renamed" }),
+					});
+
+					const disabled = await app.request("/api/coordinator/admin/devices/device-1/disable", {
+						method: "POST",
+					});
+					expect(disabled.status).toBe(200);
+					expect(await disabled.json()).toMatchObject({ ok: true, device_id: "device-1" });
+
+					const removed = await app.request("/api/coordinator/admin/devices/device-1/remove", {
+						method: "POST",
+					});
+					expect(removed.status).toBe(200);
+					expect(await removed.json()).toMatchObject({ ok: true, device_id: "device-1" });
 				} finally {
 					cleanup();
 				}
