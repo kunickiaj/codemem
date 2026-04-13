@@ -17,6 +17,7 @@ import { initTestSchema } from "./test-utils.js";
 
 vi.mock("./coordinator-runtime.js", () => ({
 	coordinatorEnabled: vi.fn().mockReturnValue(false),
+	fetchCoordinatorStalePeers: vi.fn().mockResolvedValue(new Set()),
 	readCoordinatorSyncConfig: vi.fn().mockReturnValue({}),
 	registerCoordinatorPresence: vi.fn().mockResolvedValue(null),
 }));
@@ -89,6 +90,41 @@ describe("syncDaemonTick", () => {
 		expect(results).toHaveLength(1);
 		expect(results[0].skipped).toBe(true);
 		expect(results[0].reason).toContain("backoff");
+	});
+
+	it("skips peers with expired coordinator presence", async () => {
+		const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
+		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "fp1", now);
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-2", "fp2", now);
+
+		const stalePeers = new Set(["peer-1"]);
+		const results = await syncDaemonTick(db, undefined, stalePeers);
+		expect(results).toHaveLength(2);
+		expect(results[0].skipped).toBe(true);
+		expect(results[0].reason).toContain("coordinator presence expired");
+		expect(results[1].ok).toBe(true);
+		expect(runSyncPass).toHaveBeenCalledTimes(1);
+		expect(runSyncPass).toHaveBeenCalledWith(db, "peer-2", expect.anything());
+	});
+
+	it("syncs all peers when stalePeers set is empty", async () => {
+		const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
+		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "fp1", now);
+
+		const results = await syncDaemonTick(db, undefined, new Set());
+		expect(results).toHaveLength(1);
+		expect(results[0].ok).toBe(true);
+		expect(runSyncPass).toHaveBeenCalledTimes(1);
 	});
 });
 

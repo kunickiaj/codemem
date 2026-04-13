@@ -10,6 +10,7 @@ import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import {
 	coordinatorEnabled,
+	fetchCoordinatorStalePeers,
 	readCoordinatorSyncConfig,
 	registerCoordinatorPresence,
 } from "./coordinator-runtime.js";
@@ -137,9 +138,14 @@ export async function refreshCoordinatorPresenceForDaemon(
 /**
  * Run one sync tick: iterate over all enabled peers and sync each.
  *
- * Returns per-peer results. Peers in backoff are skipped.
+ * Returns per-peer results. Peers in backoff or with expired coordinator
+ * presence are skipped.
  */
-export async function syncDaemonTick(db: Database, keysDir?: string): Promise<SyncTickResult[]> {
+export async function syncDaemonTick(
+	db: Database,
+	keysDir?: string,
+	stalePeers?: Set<string>,
+): Promise<SyncTickResult[]> {
 	const d = drizzle(db, { schema });
 	const rows = d
 		.select({ peer_device_id: schema.syncPeers.peer_device_id })
@@ -157,6 +163,15 @@ export async function syncDaemonTick(db: Database, keysDir?: string): Promise<Sy
 	const results: SyncTickResult[] = [];
 	for (const row of rows) {
 		const peerDeviceId = row.peer_device_id;
+
+		if (stalePeers?.has(peerDeviceId)) {
+			results.push({
+				ok: false,
+				skipped: true,
+				reason: "peer offline (coordinator presence expired)",
+			});
+			continue;
+		}
 
 		if (shouldSkipOfflinePeer(db, peerDeviceId)) {
 			results.push({ ok: false, skipped: true, reason: "peer offline (backoff)" });
@@ -269,7 +284,10 @@ export async function runTickOnce(dbPath: string, keysDir?: string): Promise<voi
 			// Coordinator discovery is a supplemental surface. Keep direct peer sync running
 			// even when heartbeat posting fails for this tick.
 		}
-		const results = await syncDaemonTick(db, keysDir);
+		// Best-effort: skip peers the coordinator reports as offline.
+		// Returns empty set when coordinator is disabled or lookup fails.
+		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, keysDir);
+		const results = await syncDaemonTick(db, keysDir, stalePeers);
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {
 			setSyncDaemonPhase(db, "needs_attention");
