@@ -164,6 +164,108 @@ describe("pack command", () => {
 		expect(rendered).toContain("## Summary");
 	});
 
+	it("supports the main pack commander path with json output", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [{ id: 101, kind: "decision", title: "Keep Search", subtitle: null }],
+			metrics: {
+				total_items: 1,
+				pack_tokens: 42,
+				fallback_used: false,
+				sources: { fts: 1, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "## Summary\n[101] (decision) Keep Search",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parsePackCommand([
+			"continue viewer health work",
+			"--json",
+			"--project",
+			"codemem",
+			"--working-set-file",
+			"packages/ui/src/app.ts",
+			"--token-budget",
+			"120",
+			"--compact",
+			"--compact-detail",
+			"2",
+		]);
+
+		expect(buildMemoryPackAsync).toHaveBeenCalledWith(
+			"continue viewer health work",
+			10,
+			120,
+			{ project: "codemem", working_set_paths: ["packages/ui/src/app.ts"] },
+			{ compact: true, compactDetailCount: 2 },
+		);
+		const output = logSpy.mock.calls.at(-1)?.[0];
+		expect(JSON.parse(String(output))).toMatchObject({
+			pack_text: "## Summary\n[101] (decision) Keep Search",
+			metrics: { total_items: 1 },
+		});
+	});
+
+	it("omits project filters for all-projects pack requests", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [],
+			metrics: {
+				total_items: 0,
+				pack_tokens: 0,
+				fallback_used: false,
+				sources: { fts: 0, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parsePackCommand([
+			"continue viewer health work",
+			"--json",
+			"--all-projects",
+			"--working-set-file",
+			"packages/ui/src/app.ts",
+		]);
+
+		expect(buildMemoryPackAsync).toHaveBeenCalledWith(
+			"continue viewer health work",
+			10,
+			undefined,
+			{ working_set_paths: ["packages/ui/src/app.ts"] },
+			undefined,
+		);
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({ items: [] });
+	});
+
+	it("emits structured json errors for pack failures", async () => {
+		buildMemoryPackAsync.mockRejectedValue(new Error("pack blew up"));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await parsePackCommand(["continue viewer health work", "--json"]);
+
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toEqual({
+			error: "pack_failed",
+			message: "pack blew up",
+		});
+		expect(process.exitCode).toBe(1);
+		expect(errorSpy).not.toHaveBeenCalled();
+	});
+
+	it("emits structured usage errors for invalid main pack numeric input", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await parsePackCommand(["continue viewer health work", "--json", "--limit", "nope"]);
+
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toEqual({
+			error: "usage_error",
+			message: "limit must be a positive integer",
+		});
+		expect(process.exitCode).toBe(2);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(buildMemoryPackAsync).not.toHaveBeenCalled();
+	});
+
 	it("supports the commander command path with json output", async () => {
 		buildMemoryPackTraceAsync.mockResolvedValue({
 			version: 1,
