@@ -517,11 +517,7 @@ export function renderTeamSync() {
 		};
 	});
 
-	const pending = Array.isArray(state.lastSyncJoinRequests) ? state.lastSyncJoinRequests : [];
-	const pendingJoinRequests: TeamSyncPendingJoinRequest[] = pending.map((request) => ({
-		displayName: String(request.display_name || request.device_id || "Pending device"),
-		requestId: String(request.request_id || ""),
-	}));
+	const pendingJoinRequests: TeamSyncPendingJoinRequest[] = [];
 	const visibleDiscoveredRows = discoveredRows.filter(
 		(row) => row.mode !== "paired" && row.mode !== "none" && row.mode !== "scope-pending",
 	);
@@ -628,26 +624,7 @@ export function renderTeamSync() {
 			discoveredRows: visibleDiscoveredRows,
 			joinRequestsMount: joinRequests,
 			listMount: list,
-			onApproveJoinRequest: async (request) => {
-				try {
-					await api.reviewJoinRequest(request.requestId, "approve");
-					const feedback = {
-						message: `Approved ${request.displayName}. They can now sync with the team.`,
-						tone: "success",
-					} satisfies SyncActionFeedback;
-					state.syncJoinRequestsFeedback = feedback;
-					await _loadSyncData();
-					return feedback;
-				} catch (error) {
-					return {
-						message: friendlyError(
-							error,
-							"Failed to approve join request. Keep it pending and try again after the coordinator refreshes.",
-						),
-						tone: "warning",
-					} satisfies SyncActionFeedback;
-				}
-			},
+			onApproveJoinRequest: async () => null,
 			onAttentionAction: async (item) => {
 				if (item.kind === "possible-duplicate-person") {
 					await reviewDuplicatePeople(item);
@@ -655,34 +632,7 @@ export function renderTeamSync() {
 				}
 				focusAttentionTarget(item);
 			},
-			onDenyJoinRequest: async (request) => {
-				const confirmed = await openSyncConfirmDialog({
-					title: `Deny join request from ${request.displayName}?`,
-					description: "They will need a new invite to try joining this team again.",
-					confirmLabel: "Deny request",
-					cancelLabel: "Keep request pending",
-					tone: "danger",
-				});
-				if (!confirmed) return null;
-				try {
-					await api.reviewJoinRequest(request.requestId, "deny");
-					const feedback = {
-						message: `Denied join request from ${request.displayName}.`,
-						tone: "success",
-					} satisfies SyncActionFeedback;
-					state.syncJoinRequestsFeedback = feedback;
-					await _loadSyncData();
-					return feedback;
-				} catch (error) {
-					return {
-						message: friendlyError(
-							error,
-							"Failed to deny join request. Leave it pending for now, then retry after the coordinator refreshes.",
-						),
-						tone: "warning",
-					} satisfies SyncActionFeedback;
-				}
-			},
+			onDenyJoinRequest: async () => null,
 			onInspectConflict: (row) => {
 				const peerCard = document.querySelector(
 					`[data-peer-device-id="${CSS.escape(row.deviceId)}"]`,

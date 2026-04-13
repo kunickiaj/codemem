@@ -293,12 +293,69 @@ export async function loadCoordinatorAdminJoinRequests(groupId?: string | null):
 	return fetchJson(`/api/coordinator/admin/join-requests${suffix}`);
 }
 
+export async function loadCoordinatorAdminDevices(
+	groupId?: string | null,
+	includeDisabled = true,
+): Promise<unknown> {
+	const params = new URLSearchParams();
+	if (groupId) params.set("group_id", groupId);
+	if (includeDisabled) params.set("include_disabled", "1");
+	const suffix = params.size ? `?${params.toString()}` : "";
+	return fetchJson(`/api/coordinator/admin/devices${suffix}`);
+}
+
 export async function reviewCoordinatorAdminJoinRequest(
 	requestId: string,
 	action: "approve" | "deny",
 ): Promise<unknown> {
 	const resp = await fetch(
 		`/api/coordinator/admin/join-requests/${encodeURIComponent(requestId)}/${action}`,
+		{
+			method: "POST",
+		},
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function renameCoordinatorAdminDevice(
+	deviceId: string,
+	groupId: string,
+	displayName: string,
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/devices/${encodeURIComponent(deviceId)}/rename`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ group_id: groupId, display_name: displayName }),
+		},
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function disableCoordinatorAdminDevice(
+	deviceId: string,
+	groupId: string,
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/devices/${encodeURIComponent(deviceId)}/disable?group_id=${encodeURIComponent(groupId)}`,
+		{ method: "POST" },
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function removeCoordinatorAdminDevice(
+	deviceId: string,
+	groupId: string,
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/devices/${encodeURIComponent(deviceId)}/remove?group_id=${encodeURIComponent(groupId)}`,
 		{
 			method: "POST",
 		},
@@ -331,20 +388,6 @@ export async function importCoordinatorInvite(invite: string): Promise<ImportInv
 		body: JSON.stringify({ invite }),
 	});
 	const { text, payload: data } = await readJsonPayload<ImportInviteResult>(resp);
-	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
-	return data;
-}
-
-export async function reviewJoinRequest(
-	requestId: string,
-	action: "approve" | "deny",
-): Promise<unknown> {
-	const resp = await fetch("/api/sync/join-requests/review", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ request_id: requestId, action }),
-	});
-	const { text, payload: data } = await readJsonPayload(resp);
 	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
 	return data;
 }

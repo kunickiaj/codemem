@@ -145,6 +145,14 @@ export interface CachedCoordinatorAdminStatus {
 	has_groups?: boolean;
 }
 
+export interface CachedCoordinatorAdminDevice {
+	device_id?: string;
+	group_id?: string;
+	display_name?: string | null;
+	enabled?: number | boolean;
+	fingerprint?: string;
+}
+
 export interface CachedTeamInvite {
 	encoded?: string;
 	warnings?: string[];
@@ -218,6 +226,7 @@ export const state = {
 	lastSyncCoordinator: null as CachedSyncCoordinator | null,
 	lastCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
 	lastCoordinatorAdminJoinRequests: [] as CachedSyncJoinRequest[],
+	lastCoordinatorAdminDevices: [] as CachedCoordinatorAdminDevice[],
 	lastSyncJoinRequests: [] as CachedSyncJoinRequest[],
 	lastTeamInvite: null as CachedTeamInvite | null,
 	lastTeamJoin: null as CachedTeamJoin | null,

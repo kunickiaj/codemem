@@ -109,7 +109,7 @@ export async function loadSyncData() {
 	const requestId = ++latestSyncLoadRequestId;
 	try {
 		const project = state.currentProject || "";
-		const includeJoinRequests = state.activeTab === "sync";
+		const includeJoinRequests = false;
 		const useCache = state.activeTab === "health";
 		let fetchedFreshSyncStatus = false;
 
@@ -185,9 +185,7 @@ export async function loadSyncData() {
 			coordinatorAdminStatus && typeof coordinatorAdminStatus === "object"
 				? coordinatorAdminStatus
 				: null;
-		if (Array.isArray(payload.join_requests)) {
-			state.lastSyncJoinRequests = payload.join_requests;
-		}
+		state.lastSyncJoinRequests = Array.isArray(payload.join_requests) ? payload.join_requests : [];
 		state.lastSyncAttempts = payload.attempts || [];
 		state.lastSyncLegacyDevices = payload.legacy_devices || [];
 		state.lastSyncDuplicatePersonDecisions = duplicatePersonDecisions;
