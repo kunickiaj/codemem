@@ -20,6 +20,8 @@ import {
 	coordinatorCreateInviteAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
+	coordinatorListDevicesAction,
+	coordinatorListJoinRequestsAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
 	coordinatorStatusSnapshot,
@@ -79,6 +81,36 @@ const SYNC_STALE_AFTER_SECONDS = 10 * 60;
 const SYNC_PROTOCOL_VERSION = "2";
 const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
 const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
+
+type CoordinatorAdminReadiness = "not_configured" | "partial" | "ready";
+
+function coordinatorAdminStatusPayload(config = readCoordinatorSyncConfig()) {
+	const groups = config.syncCoordinatorGroups;
+	const activeGroup = groups[0] ?? null;
+	const hasUrl = Boolean(config.syncCoordinatorUrl);
+	const hasGroups = groups.length > 0;
+	const hasAdminSecret = Boolean(config.syncCoordinatorAdminSecret);
+	let readiness: CoordinatorAdminReadiness = "ready";
+	if (!hasUrl) readiness = "not_configured";
+	else if (!hasGroups || !hasAdminSecret) readiness = "partial";
+	return {
+		readiness,
+		coordinator_url: config.syncCoordinatorUrl || null,
+		groups,
+		active_group: activeGroup,
+		has_admin_secret: hasAdminSecret,
+		has_groups: hasGroups,
+	};
+}
+
+function resolveCoordinatorAdminGroup(
+	requestedGroup: string | null | undefined,
+	status: ReturnType<typeof coordinatorAdminStatusPayload>,
+): string | null {
+	const explicit = String(requestedGroup ?? "").trim();
+	if (explicit) return explicit;
+	return status.active_group;
+}
 
 function sortActiveMaintenanceJobs<
 	T extends { started_at: string | null; updated_at: string; kind: string },
@@ -2013,6 +2045,60 @@ export function syncRoutes(
 				{ error: message },
 				message.includes("request_not_found") || message.includes("not found") ? 404 : 400,
 			);
+		}
+	});
+
+	app.get("/api/coordinator/admin/status", async (c) => {
+		const status = coordinatorAdminStatusPayload();
+		return c.json(status);
+	});
+
+	app.get("/api/coordinator/admin/join-requests", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const groupId = resolveCoordinatorAdminGroup(c.req.query("group_id"), status);
+		if (!groupId) return c.json({ error: "group_id_required", status }, 400);
+		try {
+			const items = await coordinatorListJoinRequestsAction({
+				groupId,
+				remoteUrl: status.coordinator_url,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ items, group_id: groupId, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown";
+			return c.json({ error: message, status }, 502);
+		}
+	});
+
+	app.get("/api/coordinator/admin/devices", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const groupId = resolveCoordinatorAdminGroup(c.req.query("group_id"), status);
+		if (!groupId) return c.json({ error: "group_id_required", status }, 400);
+		try {
+			const items = await coordinatorListDevicesAction({
+				groupId,
+				includeDisabled: queryBool(c.req.query("include_disabled")),
+				remoteUrl: status.coordinator_url,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ items, group_id: groupId, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown";
+			return c.json({ error: message, status }, 502);
 		}
 	});
 
