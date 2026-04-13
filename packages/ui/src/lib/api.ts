@@ -286,6 +286,28 @@ export async function loadCoordinatorAdminStatus(): Promise<unknown> {
 	return fetchJson("/api/coordinator/admin/status");
 }
 
+export async function loadCoordinatorAdminJoinRequests(groupId?: string | null): Promise<unknown> {
+	const params = new URLSearchParams();
+	if (groupId) params.set("group_id", groupId);
+	const suffix = params.size ? `?${params.toString()}` : "";
+	return fetchJson(`/api/coordinator/admin/join-requests${suffix}`);
+}
+
+export async function reviewCoordinatorAdminJoinRequest(
+	requestId: string,
+	action: "approve" | "deny",
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/join-requests/${encodeURIComponent(requestId)}/${action}`,
+		{
+			method: "POST",
+		},
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
 export async function createCoordinatorInvite(payload: {
 	group_id: string;
 	coordinator_url?: string;

@@ -4846,6 +4846,52 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("reviews coordinator join requests through the admin route", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/join-requests/approve")) {
+					return new Response(
+						JSON.stringify({ request: { request_id: "req-1", status: "approved" } }),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const res = await app.request("/api/coordinator/admin/join-requests/req-1/approve", {
+						method: "POST",
+					});
+					expect(res.status).toBe(200);
+					expect(await res.json()).toMatchObject({
+						ok: true,
+						request: { request_id: "req-1", status: "approved" },
+						status: expect.objectContaining({ readiness: "ready" }),
+					});
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
 		it("lists coordinator devices through the admin route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;

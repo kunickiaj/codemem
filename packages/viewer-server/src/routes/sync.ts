@@ -2122,6 +2122,66 @@ export function syncRoutes(
 		}
 	});
 
+	app.post("/api/coordinator/admin/join-requests/:request_id/approve", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const requestId = String(c.req.param("request_id") ?? "").trim();
+		if (!requestId) return c.json({ error: "request_id required", status }, 400);
+		try {
+			const result = await coordinatorReviewJoinRequestAction({
+				requestId,
+				approve: true,
+				reviewedBy: null,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!result) return c.json({ error: "join request not found", status }, 404);
+			return c.json({ ok: true, request: result, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json(
+				{ error: message, status },
+				message.includes("request_not_found") || message.includes("not found") ? 404 : 400,
+			);
+		}
+	});
+
+	app.post("/api/coordinator/admin/join-requests/:request_id/deny", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const requestId = String(c.req.param("request_id") ?? "").trim();
+		if (!requestId) return c.json({ error: "request_id required", status }, 400);
+		try {
+			const result = await coordinatorReviewJoinRequestAction({
+				requestId,
+				approve: false,
+				reviewedBy: null,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!result) return c.json({ error: "join request not found", status }, 404);
+			return c.json({ ok: true, request: result, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json(
+				{ error: message, status },
+				message.includes("request_not_found") || message.includes("not found") ? 404 : 400,
+			);
+		}
+	});
+
 	app.get("/api/coordinator/admin/devices", async (c) => {
 		const config = readCoordinatorSyncConfig();
 		const status = coordinatorAdminStatusPayload(config);
