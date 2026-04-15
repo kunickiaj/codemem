@@ -1,6 +1,7 @@
 import type { TargetedInputEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { RadixSelect } from "../../../components/primitives/radix-select";
+import { TextInput } from "../../../components/primitives/text-input";
 import {
 	actorDisplayLabel,
 	actorLabel,
@@ -149,10 +150,11 @@ function SyncActorRow({
 					<div className="peer-meta">Rename in config</div>
 				) : (
 					<>
-						<input
+						<TextInput
 							aria-label={`Rename ${label}`}
 							className="peer-scope-input actor-name-input"
 							disabled={renameBusy || mergeBusy}
+							type="text"
 							value={name}
 							onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
 								setName(event.currentTarget.value)

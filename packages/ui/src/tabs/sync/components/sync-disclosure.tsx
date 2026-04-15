@@ -2,6 +2,8 @@ import * as Collapsible from "@radix-ui/react-collapsible";
 import type { ComponentChildren } from "preact";
 import { createPortal } from "preact/compat";
 import { useLayoutEffect, useRef } from "preact/hooks";
+import { TextArea } from "../../../components/primitives/text-area";
+import { TextInput } from "../../../components/primitives/text-input";
 import { renderIntoSyncMount } from "./render-root";
 
 type SyncDisclosureProps = {
@@ -92,10 +94,11 @@ function TeamSetupDisclosure({ open, onOpenChange }: TeamSetupDisclosureProps) {
 				<label htmlFor="syncInviteGroup" className="sr-only">
 					Team name
 				</label>
-				<input
+				<TextInput
 					className="peer-scope-input"
 					id="syncInviteGroup"
 					placeholder="Team name (e.g. my-team)"
+					type="text"
 				/>
 				<label htmlFor="syncInvitePolicy" className="sr-only">
 					Join policy
@@ -103,7 +106,7 @@ function TeamSetupDisclosure({ open, onOpenChange }: TeamSetupDisclosureProps) {
 				<div className="sync-radix-select-host sync-actor-select-host" id="syncInvitePolicyMount" />
 				<div className="sync-ttl-group">
 					<label htmlFor="syncInviteTtl">Expires in</label>
-					<input
+					<TextInput
 						className="peer-scope-input"
 						defaultValue="24"
 						id="syncInviteTtl"
@@ -120,7 +123,7 @@ function TeamSetupDisclosure({ open, onOpenChange }: TeamSetupDisclosureProps) {
 			<label htmlFor="syncInviteOutput" className="sr-only">
 				Generated invite
 			</label>
-			<textarea
+			<TextArea
 				className="feed-search"
 				id="syncInviteOutput"
 				placeholder="Invite will appear here"

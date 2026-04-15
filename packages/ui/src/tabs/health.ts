@@ -27,6 +27,7 @@ type HealthAction = {
 /* ── Health card builder ─────────────────────────────────── */
 
 type HealthCardInput = {
+	key?: string;
 	label: string;
 	value: string;
 	detail?: string;
@@ -201,7 +202,7 @@ function renderHealthCards(container: HTMLElement | null, cards: HealthCardInput
 		h(
 			Fragment,
 			null,
-			cards.map((card) => h(HealthCard, { ...card, key: `${card.label}-${card.value}` })),
+			cards.map((card) => h(HealthCard, { ...card, key: card.key ?? card.label })),
 		),
 		container,
 	);
@@ -398,6 +399,7 @@ export function renderHealthOverview() {
 		const isFailed = job.status === "failed";
 		const detail = isFailed ? String(job.error || "unknown error").trim() : undefined;
 		return buildHealthCard({
+			key: String(job.kind || job.title || "background-maintenance"),
 			label: String(job.title || job.kind || "Background maintenance"),
 			value: isFailed ? "Failed" : progress,
 			detail,
@@ -411,6 +413,7 @@ export function renderHealthOverview() {
 
 	const cards = [
 		buildHealthCard({
+			key: "overall-health",
 			label: "Overall health",
 			value: statusLabel,
 			detail: `Weighted score ${riskScore}`,
@@ -422,6 +425,7 @@ export function renderHealthOverview() {
 		}),
 		...maintenanceCards,
 		buildHealthCard({
+			key: "pipeline-health",
 			label: "Pipeline health",
 			value: `${rawPending.toLocaleString()} pending`,
 			detail: pipelineDetail,
@@ -429,6 +433,7 @@ export function renderHealthOverview() {
 			title: "Raw-event queue pressure and flush reliability",
 		}),
 		buildHealthCard({
+			key: "retrieval-impact",
 			label: "Retrieval impact",
 			value: reductionLabel,
 			detail: retrievalDetail,
@@ -436,6 +441,7 @@ export function renderHealthOverview() {
 			title: "Reduction from memory reuse across recent usage",
 		}),
 		buildHealthCard({
+			key: "sync-health",
 			label: "Sync health",
 			value: syncCardValue,
 			detail: syncDetail,
@@ -443,6 +449,7 @@ export function renderHealthOverview() {
 			title: "Daemon state and sync recency",
 		}),
 		buildHealthCard({
+			key: "data-freshness",
 			label: "Data freshness",
 			value: formatAgeShort(packAgeSeconds),
 			detail: freshnessDetail,
