@@ -2491,6 +2491,48 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns pairing payload addresses that the CLI accept flow can use", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+			process.env.CODEMEM_CONFIG = configPath;
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					sync_enabled: true,
+					sync_host: "127.0.0.1",
+					sync_port: 7337,
+				}),
+			);
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				ensureDeviceIdentity(store.db, { keysDir });
+				const res = await app.request("/api/sync/pairing?includeDiagnostics=1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					device_id: string;
+					fingerprint: string;
+					public_key: string | null;
+					addresses: string[];
+				};
+				expect(body.device_id).toBeTruthy();
+				expect(body.fingerprint).toBeTruthy();
+				expect(body.public_key).toBeTruthy();
+				expect(body.addresses).toEqual(["127.0.0.1:7337"]);
+			} finally {
+				cleanup();
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+				else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			}
+		});
+
 		it("skips coordinator join request lookup unless includeJoinRequests=1", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const keysDir = mkdtempSync(join(tmpdir(), "codemem-keys-test-"));
@@ -4671,8 +4713,10 @@ describe("viewer-server", () => {
 		it("reports coordinator admin readiness states", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevAdminSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 			try {
 				process.env.CODEMEM_CONFIG = configPath;
+				delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 				writeFileSync(configPath, JSON.stringify({}));
 				const { app, cleanup } = createTestApp();
 				try {
@@ -4735,6 +4779,8 @@ describe("viewer-server", () => {
 			} finally {
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevAdminSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevAdminSecret;
 			}
 		});
 
