@@ -1349,6 +1349,22 @@ describe("buildMemoryPack cluster compression", () => {
 		expect(found).toBe(true);
 	});
 
+	it("surfaces memories via concept ref widening when FTS misses them", () => {
+		store.remember(
+			sessionId,
+			"decision",
+			"Chose HMAC-SHA256 for token signing",
+			"Selected HMAC-SHA256 for performance and security balance.",
+			0.8,
+			["crypto", "tokens"],
+			{ concepts: ["authentication"] },
+		);
+
+		const pack = buildMemoryPack(store, "authentication", 10);
+		const found = pack.items.some((item) => item.title.includes("HMAC-SHA256"));
+		expect(found).toBe(true);
+	});
+
 	it("reports compressed clusters in pack trace and marks compressed candidates", () => {
 		const idA = store.remember(
 			sessionId,

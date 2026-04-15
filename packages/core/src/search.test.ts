@@ -726,6 +726,84 @@ describe("MemoryStore.search", () => {
 		expect(results).toEqual([]);
 	});
 
+	it("widens candidates via file refs when query names a touched file", () => {
+		const sessionId = insertTestSession(store.db);
+		store.remember(
+			sessionId,
+			"discovery",
+			"Database migration note",
+			"General migration cleanup.",
+			0.2,
+		);
+		store.remember(
+			sessionId,
+			"decision",
+			"Chose HMAC-SHA256 for token signing",
+			"Selected HMAC-SHA256 for performance and security balance.",
+			0.8,
+			[],
+			{ files_modified: ["packages/core/src/auth.ts"] },
+		);
+
+		const results = store.search("what decisions affected packages/core/src/auth.ts", 10);
+		expect(results[0]?.title).toContain("HMAC-SHA256");
+	});
+
+	it("preserves case-sensitive file hints for indexed lookup", () => {
+		const sessionId = insertTestSession(store.db);
+		store.remember(
+			sessionId,
+			"decision",
+			"Updated AuthDialog flow",
+			"Adjusted the AuthDialog token handoff.",
+			0.8,
+			[],
+			{ files_modified: ["packages/ui/src/AuthDialog.tsx"] },
+		);
+
+		const results = store.search("what changed in packages/ui/src/AuthDialog.tsx", 10);
+		expect(results[0]?.title).toContain("AuthDialog");
+	});
+
+	it("widens candidates via concept refs when FTS misses the concept term", () => {
+		const sessionId = insertTestSession(store.db);
+		store.remember(
+			sessionId,
+			"discovery",
+			"Authentication rollout note",
+			"General rollout chores.",
+			0.2,
+		);
+		store.remember(
+			sessionId,
+			"decision",
+			"Chose HMAC-SHA256 for token signing",
+			"Selected HMAC-SHA256 for performance and security balance.",
+			0.8,
+			[],
+			{ concepts: ["authentication"] },
+		);
+
+		const results = store.search("authentication", 10);
+		expect(results[0]?.title).toContain("HMAC-SHA256");
+	});
+
+	it("does not widen concept candidates for broad multi-token queries", () => {
+		const sessionId = insertTestSession(store.db);
+		store.remember(
+			sessionId,
+			"decision",
+			"Release policy update",
+			"Unrelated body text that should not match broad natural language queries.",
+			0.8,
+			[],
+			{ concepts: ["retention"] },
+		);
+
+		const results = store.search("was fix retention", 10);
+		expect(results.some((item) => item.title.includes("Release policy update"))).toBe(false);
+	});
+
 	it("sanitizes prompt-prefixed queries before searching", () => {
 		seedMemories();
 		const results = store.search(

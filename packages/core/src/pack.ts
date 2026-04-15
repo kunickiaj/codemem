@@ -19,8 +19,9 @@ import { buildFilterClausesWithContext } from "./filters.js";
 import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
+import { findByFile } from "./ref-queries.js";
 import type { StoreHandle } from "./search.js";
-import { findCandidatesByFile, rerankResults, scoreResult, search, timeline } from "./search.js";
+import { rerankResults, scoreResult, search, timeline } from "./search.js";
 import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
@@ -1093,9 +1094,13 @@ function mergeFileRefCandidates(
 	);
 	if (validPaths.length === 0) return results;
 	const existingIds = new Set(results.map((r) => r.id));
-	const refCandidateIds = findCandidatesByFile(store.db, validPaths, effectiveLimit, {
-		project: filters?.project,
-	});
+	const refCandidateIds = validPaths.flatMap((path) =>
+		findByFile(store.db, path, {
+			limit: effectiveLimit,
+			project: filters?.project,
+			relation: "modified",
+		}).map((row) => row.id),
+	);
 	const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
 	if (newIds.length === 0) return results;
 	const refMemories = newIds
