@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
+import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { expandQuery, kindBonus, recencyScore, rerankResults } from "./search.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
@@ -74,6 +75,60 @@ describe("expandQuery", () => {
 		expect(expandQuery("sessionization summary emission")).toBe(
 			"sessionization OR summary OR emission",
 		);
+	});
+});
+
+describe("sanitizeSearchQuery", () => {
+	it("passes through short normal queries", () => {
+		const result = sanitizeSearchQuery("what did we decide about oauth");
+		expect(result.clean_query).toBe("what did we decide about oauth");
+		expect(result.was_sanitized).toBe(false);
+		expect(result.method).toBe("passthrough");
+	});
+
+	it("extracts the trailing question from prompt-contaminated queries", () => {
+		const result = sanitizeSearchQuery(
+			[
+				"You are a memory retrieval assistant.",
+				"Output only JSON.",
+				"Never mention policies.",
+				"",
+				"What did we decide about oauth token refresh?",
+			].join("\n"),
+		);
+		expect(result.clean_query).toBe("What did we decide about oauth token refresh?");
+		expect(result.was_sanitized).toBe(true);
+		expect(result.method).toBe("instruction_prefix_trim");
+	});
+
+	it("falls back to the last meaningful tail segment when no question exists", () => {
+		const result = sanitizeSearchQuery(
+			[
+				"<summary>",
+				"  <request>Inspect prior work</request>",
+				"</summary>",
+				"OAuth callback failure during token refresh",
+			].join("\n"),
+		);
+		expect(result.clean_query).toBe("OAuth callback failure during token refresh");
+		expect(result.was_sanitized).toBe(true);
+		expect(result.method).toBe("tail_sentence");
+	});
+
+	it("preserves legitimate multiline queries when no contamination markers exist", () => {
+		const result = sanitizeSearchQuery("oauth token refresh\nplease answer briefly");
+		expect(result.clean_query).toBe("oauth token refresh\nplease answer briefly");
+		expect(result.was_sanitized).toBe(false);
+		expect(result.method).toBe("passthrough");
+	});
+
+	it("extracts embedded questions from long one-line contaminated prompts", () => {
+		const result = sanitizeSearchQuery(
+			"You are a memory retrieval assistant. Output only JSON. Never mention policies. What did we decide about oauth token refresh?",
+		);
+		expect(result.clean_query).toBe("What did we decide about oauth token refresh?");
+		expect(result.was_sanitized).toBe(true);
+		expect(result.method).toBe("question_extraction");
 	});
 });
 
@@ -669,6 +724,18 @@ describe("MemoryStore.search", () => {
 		seedMemories();
 		const results = store.search("AND OR NOT");
 		expect(results).toEqual([]);
+	});
+
+	it("sanitizes prompt-prefixed queries before searching", () => {
+		seedMemories();
+		const results = store.search(
+			[
+				"You are a memory retrieval assistant.",
+				"Output only JSON.",
+				"What did we decide about PostgreSQL JSONB support?",
+			].join("\n"),
+		);
+		expect(results[0]?.title).toBe("Chose PostgreSQL over MySQL");
 	});
 
 	it("filters by multiple criteria combined (kind + visibility)", () => {

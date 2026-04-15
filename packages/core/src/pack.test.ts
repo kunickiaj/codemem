@@ -247,6 +247,27 @@ describe("buildMemoryPack", () => {
 		expect(pack.context).toBe("my test context");
 	});
 
+	it("sanitizes prompt-prefixed context before pack retrieval", () => {
+		store.remember(
+			sessionId,
+			"decision",
+			"Use PostgreSQL JSONB",
+			"Chose PostgreSQL because JSONB support simplified auth metadata storage",
+			0.9,
+		);
+
+		const pack = buildMemoryPack(
+			store,
+			[
+				"You are a retrieval assistant.",
+				"Output only XML.",
+				"What did we decide about PostgreSQL JSONB support?",
+			].join("\n"),
+		);
+
+		expect(pack.items.some((item) => item.title === "Use PostgreSQL JSONB")).toBe(true);
+	});
+
 	it("builds a deterministic pack trace with pack parity", () => {
 		store.remember(
 			sessionId,
@@ -335,9 +356,10 @@ describe("buildMemoryPack", () => {
 
 		expect(collapsedGroup).toBeTruthy();
 		expect(collapsedGroup?.support_count).toBe(2);
-		expect(
-			[collapsedGroup?.kept, ...(collapsedGroup?.dropped ?? [])].sort((a, b) => a - b),
-		).toEqual([canonicalId, duplicateId].sort((a, b) => a - b));
+		const collapsedIds = [collapsedGroup?.kept ?? -1, ...(collapsedGroup?.dropped ?? [])];
+		expect(collapsedIds.sort((a, b) => a - b)).toEqual(
+			[canonicalId, duplicateId].sort((a, b) => a - b),
+		);
 		for (const droppedId of collapsedGroup?.dropped ?? []) {
 			expect(trace.assembly.deduped_ids).toContain(droppedId);
 		}
