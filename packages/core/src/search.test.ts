@@ -976,6 +976,26 @@ describe("MemoryStore.timeline", () => {
 		expect(sessionIds.size).toBe(1);
 	});
 
+	it("includes same-timestamp neighbors using id tie-breaks", () => {
+		const sessionId = insertTestSession(store.db);
+		const ts = new Date("2025-01-01T00:00:00Z").toISOString();
+		const ids: number[] = [];
+		for (const title of ["First", "Second", "Third"]) {
+			const info = store.db
+				.prepare(
+					`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+					 tags_text, active, created_at, updated_at, metadata_json, rev)
+					 VALUES (?, 'feature', ?, 'body text', 0.5, '', 1, ?, ?, '{}', 1)`,
+				)
+				.run(sessionId, title, ts, ts);
+			ids.push(Number(info.lastInsertRowid));
+		}
+
+		const anchorId = ids[1] as number;
+		const results = store.timeline(null, anchorId, 1, 1);
+		expect(results.map((item) => item.id)).toEqual([ids[0], anchorId, ids[2]]);
+	});
+
 	it("parses metadata_json on each result", () => {
 		seedTimeline();
 		const results = store.timeline("Database");
