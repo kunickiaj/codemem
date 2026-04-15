@@ -2,7 +2,7 @@
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { type ComponentChildren, Fragment, h, render } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../lib/api";
 import { highlightText } from "../lib/dom";
 import {
@@ -251,6 +251,29 @@ function mergeRefreshFeedItems(currentItems: FeedItem[], firstPageItems: FeedIte
 	const firstPageKeys = new Set(firstPageItems.map(itemKey));
 	const olderItems = currentItems.filter((item) => !firstPageKeys.has(itemKey(item)));
 	return mergeFeedItems(olderItems, firstPageItems);
+}
+
+export function syncInspectorQueryDraft(options: {
+	feedQuery: string;
+	inspectorQuery: string;
+	hasInspectorOverride: boolean;
+}): string {
+	return options.hasInspectorOverride ? options.inspectorQuery : options.feedQuery;
+}
+
+export function parseInspectorWorkingSet(value: string): string[] {
+	return value
+		.split(/\n|,/)
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+export function packTraceContextKey(options: {
+	project: string | null;
+	query: string;
+	workingSetFiles: string[];
+}): string {
+	return JSON.stringify([options.project, options.query.trim(), options.workingSetFiles]);
 }
 
 function replaceFeedItem(updatedItem: FeedItem) {
@@ -1200,23 +1223,39 @@ function TraceCandidateGroup({
 	);
 }
 
-function ContextInspectorPanel() {
-	const [open, setOpen] = useState(false);
+function ContextInspectorPanel({ open }: { open: boolean }) {
+	const [inspectorQuery, setInspectorQuery] = useState(() => String(state.feedQuery || ""));
+	const [hasSeededInspectorQuery, setHasSeededInspectorQuery] = useState(false);
+	const [hasInspectorOverride, setHasInspectorOverride] = useState(false);
 	const [workingSetText, setWorkingSetText] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
 	const [errorContextKey, setErrorContextKey] = useState("");
 	const [trace, setTrace] = useState<api.PackTrace | null>(null);
-	const currentQuery = String(state.feedQuery || "").trim();
+	const latestTraceRequestId = useRef(0);
+	const feedQuery = String(state.feedQuery || "");
+	const currentQuery = String(inspectorQuery || "").trim();
 	const currentProject = state.currentProject || null;
-	const currentContextKey = JSON.stringify([currentProject, currentQuery]);
+	const currentWorkingSetFiles = parseInspectorWorkingSet(workingSetText);
+	const currentContextKey = packTraceContextKey({
+		project: currentProject,
+		query: currentQuery,
+		workingSetFiles: currentWorkingSetFiles,
+	});
 	const visibleTrace =
-		trace && trace.inputs.query === currentQuery && trace.inputs.project === currentProject
+		trace &&
+		packTraceContextKey({
+			project: trace.inputs.project,
+			query: trace.inputs.query,
+			workingSetFiles: trace.inputs.working_set_files,
+		}) === currentContextKey
 			? trace
 			: null;
 	const visibleError = error && errorContextKey === currentContextKey ? error : "";
 
 	useEffect(() => {
+		latestTraceRequestId.current += 1;
+		setLoading(false);
 		setError("");
 		setErrorContextKey("");
 		setTrace((currentTrace) => {
@@ -1229,12 +1268,28 @@ function ContextInspectorPanel() {
 			}
 			return currentTrace;
 		});
-	}, [currentProject, currentQuery]);
+	}, [currentContextKey]);
+
+	useEffect(() => {
+		if (open && !hasSeededInspectorQuery) {
+			setInspectorQuery(
+				syncInspectorQueryDraft({
+					feedQuery,
+					hasInspectorOverride,
+					inspectorQuery,
+				}),
+			);
+			setHasSeededInspectorQuery(true);
+		}
+	}, [feedQuery, hasInspectorOverride, hasSeededInspectorQuery, inspectorQuery, open]);
 
 	const runTrace = async () => {
 		const context = currentQuery;
 		const project = currentProject;
-		const contextKey = JSON.stringify([project, context]);
+		const workingSetFiles = currentWorkingSetFiles;
+		const contextKey = packTraceContextKey({ project, query: context, workingSetFiles });
+		const requestId = latestTraceRequestId.current + 1;
+		latestTraceRequestId.current = requestId;
 		if (!context) {
 			setError("Enter a query to inspect.");
 			setErrorContextKey(contextKey);
@@ -1245,34 +1300,26 @@ function ContextInspectorPanel() {
 		setError("");
 		setErrorContextKey("");
 		try {
-			const workingSetFiles = workingSetText
-				.split(/\n|,/)
-				.map((value) => value.trim())
-				.filter(Boolean);
 			const nextTrace = await api.tracePack({
 				context,
 				project,
 				working_set_files: workingSetFiles,
 			});
-			if (
-				String(state.feedQuery || "").trim() !== context ||
-				(state.currentProject || null) !== project
-			) {
+			if (requestId !== latestTraceRequestId.current) {
 				return;
 			}
 			setTrace(nextTrace);
 		} catch (err) {
-			if (
-				String(state.feedQuery || "").trim() !== context ||
-				(state.currentProject || null) !== project
-			) {
+			if (requestId !== latestTraceRequestId.current) {
 				return;
 			}
 			setError(err instanceof Error ? err.message : String(err));
 			setErrorContextKey(contextKey);
 			setTrace(null);
 		} finally {
-			setLoading(false);
+			if (requestId === latestTraceRequestId.current) {
+				setLoading(false);
+			}
 		}
 	};
 
@@ -1290,119 +1337,132 @@ function ContextInspectorPanel() {
 		visibleTrace?.retrieval.candidates.filter((candidate) => candidate.disposition === "trimmed") ||
 		[];
 
-	return h(
-		"div",
-		{ className: "feed-inspector" },
-		h(
-			"button",
-			{
-				className: "toggle-button",
-				onClick: () => setOpen(!open),
-				type: "button",
-			},
-			open ? "Hide Context Inspector" : "Open Context Inspector",
-		),
-		open
-			? h("div", { className: "feed-card", style: "margin-top:12px;" }, [
-					h("div", { className: "feed-card-header" }, [
-						h("div", { className: "feed-card-title" }, "Context Inspector"),
-						h("div", { className: "feed-card-meta" }, "Tracing the current Search query"),
-					]),
-					h("div", { className: "feed-card-body" }, [
-						h("input", {
-							className: "feed-search",
-							onInput: (event) => {
-								state.feedQuery = String((event.currentTarget as HTMLInputElement).value || "");
-								setTrace(null);
-								setError("");
-								setErrorContextKey("");
-								updateFeedView();
-							},
-							placeholder: "Trace a pack query…",
-							value: state.feedQuery,
-						}),
-						h("textarea", {
-							onInput: (event) =>
-								setWorkingSetText(String((event.currentTarget as HTMLTextAreaElement).value || "")),
-							placeholder: "Optional working-set files, one per line",
-							rows: 3,
-							style: "margin-top:8px; width:100%;",
-							value: workingSetText,
-						}),
-						h(
-							"div",
-							{ style: "display:flex; gap:8px; margin-top:8px; align-items:center;" },
+	return open
+		? h(
+				"div",
+				{ className: "feed-inspector" },
+				h(
+					"div",
+					{ className: "feed-card", id: "contextInspectorPanel", style: "margin-top:12px;" },
+					[
+						h("div", { className: "feed-card-header" }, [
+							h("div", { className: "feed-card-title" }, "Context Inspector"),
 							h(
-								"button",
-								{
-									className: "toggle-button active",
-									disabled: loading,
-									onClick: () => void runTrace(),
-									type: "button",
-								},
-								loading ? "Tracing…" : "Run trace",
+								"div",
+								{ className: "feed-card-meta" },
+								hasInspectorOverride
+									? "Tracing an inspector-specific query"
+									: "Seeded from the feed search on first open",
 							),
-							visibleTrace
+						]),
+						h("div", { className: "feed-card-body" }, [
+							h("input", {
+								className: "feed-search",
+								onInput: (event) => {
+									setInspectorQuery(String((event.currentTarget as HTMLInputElement).value || ""));
+									setHasInspectorOverride(true);
+									setTrace(null);
+									setError("");
+									setErrorContextKey("");
+								},
+								placeholder: "Trace a pack query…",
+								value: inspectorQuery,
+							}),
+							h(
+								"div",
+								{ className: "section-meta", style: "margin-top:8px;" },
+								hasInspectorOverride
+									? "Inspector query is independent from the live feed search."
+									: "Inspector query was seeded from the feed search and will stay independent until you change it.",
+							),
+							h("textarea", {
+								className: "feed-inspector-files",
+								onInput: (event) =>
+									setWorkingSetText(
+										String((event.currentTarget as HTMLTextAreaElement).value || ""),
+									),
+								placeholder: "Optional working-set files, one per line",
+								rows: 3,
+								value: workingSetText,
+							}),
+							h(
+								"div",
+								{ style: "display:flex; gap:8px; margin-top:8px; align-items:center;" },
+								h(
+									"button",
+									{
+										className: "toggle-button active",
+										disabled: loading,
+										onClick: () => void runTrace(),
+										type: "button",
+									},
+									loading ? "Tracing…" : "Run trace",
+								),
+								visibleTrace
+									? h(
+											"span",
+											{ className: "section-meta" },
+											`mode=${visibleTrace.mode.selected} · candidates=${visibleTrace.retrieval.candidate_count} · tokens=${visibleTrace.output.estimated_tokens}`,
+										)
+									: null,
+							),
+							trace && !visibleTrace
 								? h(
-										"span",
-										{ className: "section-meta" },
-										`mode=${visibleTrace.mode.selected} · candidates=${visibleTrace.retrieval.candidate_count} · tokens=${visibleTrace.output.estimated_tokens}`,
+										"div",
+										{ className: "section-meta", style: "margin-top:8px;" },
+										"Trace inputs changed. Run trace again for the current query, project, and working set.",
 									)
 								: null,
-						),
-						trace && !visibleTrace
-							? h(
-									"div",
-									{ className: "section-meta", style: "margin-top:8px;" },
-									"Search context changed. Run trace again for the current query and project.",
-								)
+							visibleError
+								? h(
+										"div",
+										{ className: "section-meta", style: "margin-top:8px; color:#d96c6c;" },
+										visibleError,
+									)
+								: null,
+						]),
+						visibleTrace
+							? h(Fragment, null, [
+									h(TraceCandidateGroup, { label: "Selected", candidates: selected }),
+									h(TraceCandidateGroup, { label: "Dropped", candidates: dropped }),
+									h(TraceCandidateGroup, { label: "Deduped", candidates: deduped }),
+									h(TraceCandidateGroup, { label: "Trimmed", candidates: trimmed }),
+									h("div", { className: "feed-card-body" }, [
+										visibleTrace.assembly.collapsed_groups.length
+											? h(
+													"div",
+													{ className: "section-meta" },
+													`Collapsed duplicates: ${visibleTrace.assembly.collapsed_groups
+														.map(
+															(group) => `kept #${group.kept} from [${group.dropped.join(", ")}]`,
+														)
+														.join(" · ")}`,
+												)
+											: null,
+										visibleTrace.assembly.trim_reasons.length
+											? h(
+													"div",
+													{ className: "section-meta" },
+													`Trim reasons: ${visibleTrace.assembly.trim_reasons.join(", ")}`,
+												)
+											: null,
+										h("div", { className: "section-meta" }, "Final pack"),
+										h(
+											"pre",
+											{ style: "white-space:pre-wrap; overflow:auto;" },
+											visibleTrace.output.pack_text,
+										),
+									]),
+								])
 							: null,
-						visibleError
-							? h(
-									"div",
-									{ className: "section-meta", style: "margin-top:8px; color:#d96c6c;" },
-									visibleError,
-								)
-							: null,
-					]),
-					visibleTrace
-						? h(Fragment, null, [
-								h(TraceCandidateGroup, { label: "Selected", candidates: selected }),
-								h(TraceCandidateGroup, { label: "Dropped", candidates: dropped }),
-								h(TraceCandidateGroup, { label: "Deduped", candidates: deduped }),
-								h(TraceCandidateGroup, { label: "Trimmed", candidates: trimmed }),
-								h("div", { className: "feed-card-body" }, [
-									visibleTrace.assembly.collapsed_groups.length
-										? h(
-												"div",
-												{ className: "section-meta" },
-												`Collapsed duplicates: ${visibleTrace.assembly.collapsed_groups
-													.map((group) => `kept #${group.kept} from [${group.dropped.join(", ")}]`)
-													.join(" · ")}`,
-											)
-										: null,
-									visibleTrace.assembly.trim_reasons.length
-										? h(
-												"div",
-												{ className: "section-meta" },
-												`Trim reasons: ${visibleTrace.assembly.trim_reasons.join(", ")}`,
-											)
-										: null,
-									h("div", { className: "section-meta" }, "Final pack"),
-									h(
-										"pre",
-										{ style: "white-space:pre-wrap; overflow:auto;" },
-										visibleTrace.output.pack_text,
-									),
-								]),
-							])
-						: null,
-				])
-			: null,
-	);
+					],
+				),
+			)
+		: null;
 }
 
 function FeedTabView({ items, loadingText }: { items: FeedItem[]; loadingText?: string }) {
+	const [inspectorOpen, setInspectorOpen] = useState(false);
 	return h(
 		Fragment,
 		null,
@@ -1427,7 +1487,6 @@ function FeedTabView({ items, loadingText }: { items: FeedItem[]; loadingText?: 
 					placeholder: "Search title, body, tags…",
 					value: state.feedQuery,
 				}),
-				h(ContextInspectorPanel, {}),
 				h(FeedToggle, {
 					active: state.feedScopeFilter,
 					id: "feedScopeToggle",
@@ -1456,8 +1515,20 @@ function FeedTabView({ items, loadingText }: { items: FeedItem[]; loadingText?: 
 						{ value: "summaries", label: "Summaries" },
 					],
 				}),
+				h(
+					"button",
+					{
+						"aria-controls": "contextInspectorPanel",
+						"aria-expanded": inspectorOpen,
+						className: "settings-button feed-inspector-button",
+						onClick: () => setInspectorOpen((current) => !current),
+						type: "button",
+					},
+					inspectorOpen ? "Hide Context Inspector" : "Context Inspector",
+				),
 			),
 		),
+		h(ContextInspectorPanel, { open: inspectorOpen }),
 		h("div", { className: "feed-list", id: "feedList" }, h(FeedList, { items, loadingText })),
 	);
 }

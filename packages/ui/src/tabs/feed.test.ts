@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { observationViewData } from "./feed";
+import {
+	observationViewData,
+	packTraceContextKey,
+	parseInspectorWorkingSet,
+	syncInspectorQueryDraft,
+} from "./feed";
 
 describe("observationViewData", () => {
 	it("uses subtitle as summary and narrative as full text when both exist", () => {
@@ -55,5 +60,51 @@ describe("observationViewData", () => {
 		});
 
 		expect(data.facts).toEqual(["First full detail sentence.", "Second full detail sentence."]);
+	});
+});
+
+describe("syncInspectorQueryDraft", () => {
+	it("seeds the inspector query from the current feed search", () => {
+		expect(
+			syncInspectorQueryDraft({
+				feedQuery: "coordinator bug",
+				hasInspectorOverride: false,
+				inspectorQuery: "old value",
+			}),
+		).toBe("coordinator bug");
+	});
+
+	it("keeps the inspector query independent after the user edits it", () => {
+		expect(
+			syncInspectorQueryDraft({
+				feedQuery: "coordinator bug",
+				hasInspectorOverride: true,
+				inspectorQuery: "routing trace",
+			}),
+		).toBe("routing trace");
+	});
+});
+
+describe("parseInspectorWorkingSet", () => {
+	it("normalizes comma and newline separated working-set entries", () => {
+		expect(parseInspectorWorkingSet("a.ts\n b.ts, c.ts ,,\n")).toEqual(["a.ts", "b.ts", "c.ts"]);
+	});
+});
+
+describe("packTraceContextKey", () => {
+	it("includes working-set files in the trace identity", () => {
+		expect(
+			packTraceContextKey({
+				project: "codemem",
+				query: "fix",
+				workingSetFiles: ["a.ts"],
+			}),
+		).not.toBe(
+			packTraceContextKey({
+				project: "codemem",
+				query: "fix",
+				workingSetFiles: ["b.ts"],
+			}),
+		);
 	});
 });
