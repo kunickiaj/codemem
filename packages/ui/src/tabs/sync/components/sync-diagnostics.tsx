@@ -38,9 +38,10 @@ function DiagnosticsGrid({ items }: { items: SyncStatItem[] }) {
 	);
 }
 
-function AttemptsList({ attempts }: { attempts: SyncAttemptItem[] }) {
+function AttemptsList({ attempts, note }: { attempts: SyncAttemptItem[]; note?: string }) {
 	return (
 		<Fragment>
+			{note ? <div class="small">{note}</div> : null}
 			{attempts.map((attempt, index) => (
 				<div class="diag-line" key={`${attempt.startedAt}-${attempt.peerLabel}-${index}`}>
 					<div class="left">
@@ -78,13 +79,13 @@ export function renderDiagnosticsGrid(mount: HTMLElement, items: SyncStatItem[])
 	renderIntoSyncMount(mount, <DiagnosticsGrid items={items} />);
 }
 
-export function renderAttemptsList(mount: HTMLElement, attempts: SyncAttemptItem[]) {
+export function renderAttemptsList(mount: HTMLElement, attempts: SyncAttemptItem[], note?: string) {
 	if (!attempts.length) {
 		clearSyncMount(mount);
 		return;
 	}
 
-	renderIntoSyncMount(mount, <AttemptsList attempts={attempts} />);
+	renderIntoSyncMount(mount, <AttemptsList attempts={attempts} note={note} />);
 }
 
 export function renderSyncEmptyState(mount: HTMLElement, view: SyncEmptyStateView) {

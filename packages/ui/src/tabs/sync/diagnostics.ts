@@ -357,10 +357,16 @@ export function renderSyncAttempts() {
 	if (!syncAttempts) return;
 
 	const attempts = state.lastSyncAttempts as SyncAttemptState[];
+	const daemonState = String(state.lastSyncStatus?.daemon_state || "").trim();
 	if (!Array.isArray(attempts) || !attempts.length) {
 		renderSyncEmptyState(syncAttempts, noAttemptsState());
 		return;
 	}
+
+	const historyOnlyNote = syncAttemptsHistoryNote(
+		daemonState,
+		attempts.slice(0, 5).some((attempt) => attempt.status === "error"),
+	);
 
 	const items: SyncAttemptItem[] = attempts.slice(0, 5).map((attempt) => {
 		const time = attempt.started_at || attempt.started_at_utc || "";
@@ -392,7 +398,13 @@ export function renderSyncAttempts() {
 		};
 	});
 
-	renderAttemptsList(syncAttempts, items);
+	renderAttemptsList(syncAttempts, items, historyOnlyNote);
+}
+
+export function syncAttemptsHistoryNote(daemonState: string, hasVisibleErrors: boolean): string {
+	return daemonState === "offline-peers" && hasVisibleErrors
+		? "Some recent failures may have happened before all peers went offline. Sync will resume automatically when a peer becomes reachable."
+		: "";
 }
 
 export function renderSyncDiagnosticsUnavailable() {
