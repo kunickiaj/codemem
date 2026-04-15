@@ -17,6 +17,7 @@
 import type { Database } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { projectBasename } from "./project.js";
+import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import type { StoreHandle } from "./search.js";
 import { findCandidatesByFile, rerankResults, scoreResult, search, timeline } from "./search.js";
@@ -1116,17 +1117,18 @@ function buildPackArtifacts(
 	},
 ): PackArtifacts {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
+	const retrievalContext = sanitizeSearchQuery(context).clean_query;
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
 	let retrievalResults: MemoryResult[] = [];
-	let retrievalQuery = context;
+	let retrievalQuery = retrievalContext;
 	let results: MemoryResult[];
-	const taskMode = queryLooksLikeTasks(context);
-	const recallMode = !taskMode && queryLooksLikeRecall(context);
+	const taskMode = queryLooksLikeTasks(retrievalContext);
+	const recallMode = !taskMode && queryLooksLikeRecall(retrievalContext);
 
 	if (taskMode) {
-		const taskQuery = `${context} ${TASK_HINT_QUERY}`.trim();
+		const taskQuery = `${retrievalContext} ${TASK_HINT_QUERY}`.trim();
 		retrievalQuery = taskQuery;
 		let taskResults = search(store, taskQuery, effectiveLimit, filters);
 		ftsCount = taskResults.length;
@@ -1160,11 +1162,11 @@ function buildPackArtifacts(
 						? actionableTaskResults
 						: taskResults,
 				effectiveLimit,
-				context,
+				retrievalContext,
 			);
 		}
 	} else if (recallMode) {
-		const recallQuery = context.trim().length > 0 ? context : RECALL_HINT_QUERY;
+		const recallQuery = retrievalContext.trim().length > 0 ? retrievalContext : RECALL_HINT_QUERY;
 		retrievalQuery = recallQuery;
 		const preferSummary = queryPrefersRecap(recallQuery);
 		const wantsTimeline = recallQueryWantsTimeline(recallQuery);
@@ -1207,7 +1209,12 @@ function buildPackArtifacts(
 		}
 		recallResults = mergeFileRefCandidates(store, recallResults, filters, effectiveLimit);
 		retrievalResults = [...recallResults];
-		results = prioritizeRecallResults(recallResults, effectiveLimit, preferSummary, context);
+		results = prioritizeRecallResults(
+			recallResults,
+			effectiveLimit,
+			preferSummary,
+			retrievalContext,
+		);
 		if (results.length === 0) {
 			fallbackUsed = true;
 			results = recallFallbackRecent(store, effectiveLimit, filters);
@@ -1232,27 +1239,27 @@ function buildPackArtifacts(
 			}
 		}
 	} else {
-		const ftsResults = search(store, context, effectiveLimit, filters);
+		const ftsResults = search(store, retrievalContext, effectiveLimit, filters);
 		if (semanticResults && semanticResults.length > 0) {
 			const merge = mergeResults(
 				store,
 				ftsResults,
 				semanticResults,
 				effectiveLimit,
-				context,
+				retrievalContext,
 				filters,
 			);
-			results = prioritizeDefaultResults(merge.merged, effectiveLimit, context);
+			results = prioritizeDefaultResults(merge.merged, effectiveLimit, retrievalContext);
 			ftsCount = merge.ftsCount;
 			semanticCount = merge.semanticCount;
 			retrievalResults = [...merge.merged];
 		} else {
-			results = prioritizeDefaultResults(ftsResults, effectiveLimit, context);
+			results = prioritizeDefaultResults(ftsResults, effectiveLimit, retrievalContext);
 			ftsCount = results.length;
 			retrievalResults = [...ftsResults];
 		}
 		results = mergeFileRefCandidates(store, results, filters, effectiveLimit);
-		results = prioritizeDefaultResults(results, effectiveLimit, context);
+		results = prioritizeDefaultResults(results, effectiveLimit, retrievalContext);
 
 		if (results.length === 0) {
 			fallbackUsed = true;
@@ -1265,11 +1272,11 @@ function buildPackArtifacts(
 	// Summary: prefer search match; only inject a global fallback when the user
 	// explicitly wants a summary or we're in non-recall mode.
 	const directSummaryMatches =
-		recallMode && !queryPrefersRecap(context)
+		recallMode && !queryPrefersRecap(retrievalContext)
 			? results.filter((item) => isNativeSessionSummaryMemory(item))
 			: results.filter(isSummaryLike);
 	let summaryItems = directSummaryMatches.slice(0, 1);
-	const allowGlobalSummaryFallback = !recallMode || queryPrefersRecap(context);
+	const allowGlobalSummaryFallback = !recallMode || queryPrefersRecap(retrievalContext);
 	if (summaryItems.length === 0 && allowGlobalSummaryFallback) {
 		const s = findLatestSummaryLike(store, filters);
 		if (s) {
@@ -1538,6 +1545,14 @@ function buildPackArtifacts(
 	}
 
 	const allItems = selectedItems.map((item) => toPackItem(item, dedupeState, clusterState));
+	const seenAllItemIds = new Set(allItemIds);
+	for (const item of allItems) {
+		for (const compressedId of item.compressed_ids ?? []) {
+			if (seenAllItemIds.has(compressedId)) continue;
+			seenAllItemIds.add(compressedId);
+			allItemIds.push(compressedId);
+		}
+	}
 
 	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(
 		store,
@@ -1788,8 +1803,9 @@ export async function buildMemoryPackAsync(
 ): Promise<PackResponse> {
 	// Run semantic search (returns [] when embeddings unavailable)
 	let semResults: MemoryResult[] = [];
+	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, context, limit, {
+		const raw = await semanticSearch(store.db, semanticQuery, limit, {
 			project: filters?.project,
 		});
 		semResults = semanticMemoryResults(raw);
@@ -1813,8 +1829,9 @@ export async function buildMemoryPackTraceAsync(
 	renderOptions?: PackRenderOptions,
 ): Promise<PackTrace> {
 	let semResults: MemoryResult[] = [];
+	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, context, limit, {
+		const raw = await semanticSearch(store.db, semanticQuery, limit, {
 			project: filters?.project,
 		});
 		semResults = semanticMemoryResults(raw);

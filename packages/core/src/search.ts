@@ -19,6 +19,7 @@ import {
 import { parsePositiveMemoryId } from "./integers.js";
 import { inferMemoryRole } from "./memory-quality.js";
 import { projectClause, projectMatchesFilter } from "./project.js";
+import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
 import * as schema from "./schema.js";
 import { canonicalMemoryKind } from "./summary-memory.js";
@@ -666,11 +667,12 @@ export function search(
 	limit = 10,
 	filters?: MemoryFilters,
 ): MemoryResult[] {
-	const primary = searchOnce(store, query, limit, filters);
+	const effectiveQuery = sanitizeSearchQuery(query).clean_query;
+	const primary = searchOnce(store, effectiveQuery, limit, filters);
 	if (
 		!widenSharedWhenWeakEnabled(filters) ||
-		!query ||
-		queryBlocksSharedWidening(query) ||
+		!effectiveQuery ||
+		queryBlocksSharedWidening(effectiveQuery) ||
 		filtersBlockSharedWidening(filters)
 	) {
 		return primary;
@@ -686,7 +688,7 @@ export function search(
 	const shared = markWideningMetadata(
 		searchOnce(
 			store,
-			query,
+			effectiveQuery,
 			WIDEN_SHARED_MAX_SHARED_RESULTS,
 			sharedWideningFilters(filters),
 		).filter((item) => !store.memoryOwnedBySelf(item)),
