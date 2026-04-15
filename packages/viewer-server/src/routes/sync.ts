@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import net from "node:net";
+import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import type {
 	CoordinatorBootstrapGrantVerification,
@@ -109,6 +110,31 @@ function coordinatorAdminStatusPayload(config = readCoordinatorSyncConfig()) {
 		has_admin_secret: hasAdminSecret,
 		has_groups: hasGroups,
 	};
+}
+
+function pairingAdvertiseAddresses(config = readCoordinatorSyncConfig()): string[] {
+	const advertise = String(config.syncAdvertise || "auto")
+		.trim()
+		.toLowerCase();
+	if (advertise && advertise !== "auto" && advertise !== "default") {
+		return mergeAddresses(
+			[],
+			String(config.syncAdvertise || "")
+				.split(",")
+				.map((item) => item.trim())
+				.filter(Boolean),
+		);
+	}
+	if (config.syncHost && config.syncHost !== "0.0.0.0") {
+		return [`${config.syncHost}:${config.syncPort}`];
+	}
+	const addresses = Object.values(networkInterfaces())
+		.flatMap((entries) => entries ?? [])
+		.filter((entry) => !entry.internal)
+		.map((entry) => entry.address)
+		.filter((address) => address && address !== "127.0.0.1" && address !== "::1")
+		.map((address) => `${address}:${config.syncPort}`);
+	return [...new Set(addresses)];
 }
 
 function resolveCoordinatorAdminGroup(
@@ -1549,6 +1575,7 @@ export function syncRoutes(
 					pairing_filter_hint: PAIRING_FILTER_HINT,
 				});
 			}
+			const config = readCoordinatorSyncConfig();
 			const d = drizzle(store.db, { schema });
 			const deviceRow = d
 				.select({
@@ -1594,7 +1621,7 @@ export function syncRoutes(
 				fingerprint,
 				public_key: publicKey ?? null,
 				pairing_filter_hint: PAIRING_FILTER_HINT,
-				addresses: [],
+				addresses: pairingAdvertiseAddresses(config),
 			});
 		}
 	});
