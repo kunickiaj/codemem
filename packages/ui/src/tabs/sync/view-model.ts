@@ -236,7 +236,7 @@ export function deriveCoordinatorApprovalSummary(input: {
 	device: DiscoveredDeviceLike;
 	pairedLocally?: boolean;
 }): UiCoordinatorApprovalSummary {
-	if (Boolean(input.device?.needs_local_approval) && !input.pairedLocally) {
+	if (input.device?.needs_local_approval) {
 		return {
 			state: "needs-your-approval",
 			badgeLabel: "Needs your approval",
@@ -260,6 +260,20 @@ export function deriveCoordinatorApprovalSummary(input: {
 		description: null,
 		actionLabel: null,
 	};
+}
+
+export function shouldShowCoordinatorReviewAction(input: {
+	device: DiscoveredDeviceLike;
+	pairedLocally?: boolean;
+	hasAmbiguousCoordinatorGroup?: boolean;
+}): boolean {
+	const approvalSummary = deriveCoordinatorApprovalSummary(input);
+	const deviceId = cleanText(input.device?.device_id);
+	const fingerprint = cleanText(input.device?.fingerprint);
+	if (!deviceId || !fingerprint) return false;
+	if (Boolean(input.device?.stale) || Boolean(input.hasAmbiguousCoordinatorGroup)) return false;
+	if (!input.pairedLocally) return true;
+	return approvalSummary.state === "needs-your-approval";
 }
 
 export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
