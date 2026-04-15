@@ -38,6 +38,7 @@ import {
 	deriveCoordinatorApprovalSummary,
 	resolveFriendlyDeviceName,
 	SYNC_TERMINOLOGY,
+	shouldShowCoordinatorReviewAction,
 	summarizeSyncRunResult,
 } from "./view-model";
 
@@ -440,12 +441,11 @@ export function renderTeamSync() {
 			Boolean(fingerprint) &&
 			Boolean(pairedFingerprint) &&
 			pairedFingerprint !== fingerprint;
-		const canAccept =
-			Boolean(deviceId) &&
-			Boolean(fingerprint) &&
-			!pairedPeer &&
-			!device.stale &&
-			!hasAmbiguousCoordinatorGroup;
+		const canAccept = shouldShowCoordinatorReviewAction({
+			device,
+			hasAmbiguousCoordinatorGroup,
+			pairedLocally: Boolean(pairedPeer),
+		});
 		const addresses = Array.isArray(device.addresses) ? device.addresses : [];
 		const addressLabel = addresses.length
 			? addresses
@@ -472,15 +472,15 @@ export function renderTeamSync() {
 			mode = "scope-pending";
 		} else if (pairedPeer?.last_error) {
 			noteParts.push(`error: ${String(pairedPeer.last_error)}`);
-			mode = "paired";
+			if (!canAccept) mode = "paired";
 		} else if (pairedPeer?.status?.peer_state) {
 			noteParts.push(`status: ${String(pairedPeer.status.peer_state)}`);
-			mode = "paired";
+			if (!canAccept) mode = "paired";
 		} else if (!pairedPeer && device.stale) {
 			actionMessage =
 				"Wait for a fresh coordinator presence update, then review this device again here.";
 			mode = "stale";
-		} else if (pairedPeer) {
+		} else if (pairedPeer && !canAccept) {
 			mode = "paired";
 		}
 		if (mode === "paired") {

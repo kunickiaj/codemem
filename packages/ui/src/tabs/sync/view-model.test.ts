@@ -9,6 +9,7 @@ import {
 	deriveVisiblePeopleActors,
 	deviceNeedsFriendlyName,
 	resolveFriendlyDeviceName,
+	shouldShowCoordinatorReviewAction,
 	summarizeSyncRunResult,
 } from "./view-model";
 
@@ -134,6 +135,49 @@ describe("deriveCoordinatorApprovalSummary", () => {
 				"You already trusted this device here. The other device still needs to approve this one before sync can work both ways.",
 			actionLabel: null,
 		});
+	});
+
+	it("still flags devices that need local approval after a prior local peer record exists", () => {
+		expect(
+			deriveCoordinatorApprovalSummary({
+				device: { device_id: "peer-a", needs_local_approval: true },
+				pairedLocally: true,
+			}),
+		).toEqual({
+			state: "needs-your-approval",
+			badgeLabel: "Needs your approval",
+			description:
+				"Another device already trusted this one. Approve it on this device to finish reciprocal onboarding.",
+			actionLabel: "Approve on this device",
+		});
+	});
+});
+
+describe("shouldShowCoordinatorReviewAction", () => {
+	it("keeps rejoined devices actionable when reciprocal local approval is still needed", () => {
+		expect(
+			shouldShowCoordinatorReviewAction({
+				device: {
+					device_id: "peer-a",
+					fingerprint: "fp-a",
+					needs_local_approval: true,
+				},
+				pairedLocally: true,
+			}),
+		).toBe(true);
+	});
+
+	it("keeps already-paired devices hidden when they are only waiting on the other side", () => {
+		expect(
+			shouldShowCoordinatorReviewAction({
+				device: {
+					device_id: "peer-a",
+					fingerprint: "fp-a",
+					waiting_for_peer_approval: true,
+				},
+				pairedLocally: true,
+			}),
+		).toBe(false);
 	});
 });
 
