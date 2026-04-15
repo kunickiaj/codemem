@@ -158,23 +158,27 @@ export function recordPeerSuccess(
 	peerDeviceId: string,
 	address: string | null,
 ): string[] {
-	const addresses = loadPeerAddresses(db, peerDeviceId);
 	const normalized = normalizeAddress(address ?? "");
-	let ordered = addresses;
-	if (normalized) {
-		const remaining = addresses.filter((item) => normalizeAddress(item) !== normalized);
-		ordered = [normalized, ...remaining];
+	const now = new Date().toISOString();
+	const promote = db.transaction((deviceId: string, promotedAddress: string, syncedAt: string) => {
+		const addresses = loadPeerAddresses(db, deviceId);
+		const remaining = promotedAddress
+			? addresses.filter((item) => normalizeAddress(item) !== promotedAddress)
+			: addresses;
+		const ordered = promotedAddress ? [promotedAddress, ...remaining] : addresses;
 		const d = drizzle(db, { schema });
 		d.update(schema.syncPeers)
 			.set({
 				addresses_json: JSON.stringify(ordered),
-				last_sync_at: new Date().toISOString(),
+				last_sync_at: syncedAt,
+				last_seen_at: syncedAt,
 				last_error: null,
 			})
-			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+			.where(eq(schema.syncPeers.peer_device_id, deviceId))
 			.run();
-	}
-	return ordered;
+		return ordered;
+	});
+	return promote.immediate(peerDeviceId, normalized, now);
 }
 
 // ---------------------------------------------------------------------------
