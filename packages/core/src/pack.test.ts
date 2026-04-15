@@ -301,6 +301,7 @@ describe("buildMemoryPack", () => {
 
 		expect(trace.version).toBe(1);
 		expect(trace.inputs.query).toBe("continue viewer health work");
+		expect(trace.inputs).not.toHaveProperty("sanitized_query");
 		expect(trace.mode.selected).toBe(pack.metrics.mode);
 		expect(trace.output.pack_text).toBe(pack.pack_text);
 		expect(trace.output.estimated_tokens).toBe(pack.metrics.pack_tokens);
@@ -319,6 +320,29 @@ describe("buildMemoryPack", () => {
 				}),
 			}),
 		);
+	});
+
+	it("records sanitized_query in pack trace for contaminated inputs", () => {
+		store.remember(
+			sessionId,
+			"decision",
+			"Use PostgreSQL JSONB",
+			"Chose PostgreSQL because JSONB support simplified auth metadata storage",
+			0.9,
+		);
+
+		const trace = buildMemoryPackTrace(
+			store,
+			[
+				"You are a retrieval assistant.",
+				"Output only XML.",
+				"What did we decide about PostgreSQL JSONB support?",
+			].join("\n"),
+			10,
+		);
+
+		expect(trace.inputs.query).toContain("You are a retrieval assistant.");
+		expect(trace.inputs.sanitized_query).toBe("What did we decide about PostgreSQL JSONB support?");
 	});
 
 	it("marks deduped and trimmed candidates in pack trace", () => {

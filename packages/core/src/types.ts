@@ -112,6 +112,7 @@ export type PackTrace = {
 	version: 1;
 	inputs: {
 		query: string;
+		sanitized_query?: string;
 		project: string | null;
 		working_set_files: string[];
 		token_budget: number | null;
@@ -522,6 +523,7 @@ export interface ExplainResponse {
 	errors: ExplainError[];
 	metadata: {
 		query: string | null;
+		sanitized_query?: string;
 		project: string | null;
 		requested_ids_count: number;
 		returned_items_count: number;

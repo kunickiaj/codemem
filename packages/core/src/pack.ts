@@ -1122,7 +1122,8 @@ function buildPackArtifacts(
 	},
 ): PackArtifacts {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
-	const retrievalContext = sanitizeSearchQuery(context).clean_query;
+	const sanitized = sanitizeSearchQuery(context);
+	const retrievalContext = sanitized.clean_query;
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
@@ -1708,6 +1709,7 @@ function buildPackArtifacts(
 		version: 1,
 		inputs: {
 			query: context,
+			...(sanitized.was_sanitized ? { sanitized_query: retrievalContext } : {}),
 			project: filters?.project ?? null,
 			working_set_files: [...(filters?.working_set_paths ?? [])],
 			token_budget: tokenBudget,

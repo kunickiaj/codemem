@@ -65,6 +65,7 @@ describe("pack command", () => {
 			version: 1,
 			inputs: {
 				query: "continue viewer health work",
+				sanitized_query: "viewer health work",
 				project: "codemem",
 				working_set_files: ["packages/ui/src/app.ts"],
 				token_budget: 1800,
@@ -156,6 +157,7 @@ describe("pack command", () => {
 		});
 
 		expect(rendered).toContain("Pack trace");
+		expect(rendered).toContain("Sanitized query: viewer health work");
 		expect(rendered).toContain("Mode reasons: query matched task hints, working set present");
 		expect(rendered).toContain("Selected");
 		expect(rendered).toContain("Dropped");

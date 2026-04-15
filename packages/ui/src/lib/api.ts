@@ -72,6 +72,7 @@ export interface PackTrace {
 	version: 1;
 	inputs: {
 		query: string;
+		sanitized_query?: string;
 		project: string | null;
 		working_set_files: string[];
 		token_budget: number | null;
