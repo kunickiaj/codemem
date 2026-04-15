@@ -12,6 +12,7 @@ import type { Database } from "./db.js";
 import * as schema from "./schema.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
+import { recordPeerSuccess } from "./sync-discovery.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import {
@@ -181,18 +182,6 @@ function recordSyncAttempt(
 			ops_out: options.opsOut ?? 0,
 			error: options.error ?? null,
 		})
-		.run();
-}
-
-/**
- * Update last_sync_at and clear last_error on successful sync.
- */
-function recordPeerSuccess(db: Database, peerDeviceId: string): void {
-	const d = drizzle(db, { schema });
-	const now = new Date().toISOString();
-	d.update(schema.syncPeers)
-		.set({ last_sync_at: now, last_seen_at: now, last_error: null })
-		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 		.run();
 }
 
@@ -458,7 +447,7 @@ export async function syncOnce(
 						if (!bootstrapResult.ok) {
 							throw new Error("initial bootstrap apply failed");
 						}
-						recordPeerSuccess(db, peerDeviceId);
+						recordPeerSuccess(db, peerDeviceId, baseUrl);
 						recordSyncAttempt(db, peerDeviceId, {
 							ok: true,
 							opsIn: bootstrapResult.applied,
@@ -569,7 +558,7 @@ export async function syncOnce(
 					if (!bootstrapResult.ok) {
 						throw new Error("bootstrap apply failed");
 					}
-					recordPeerSuccess(db, peerDeviceId);
+					recordPeerSuccess(db, peerDeviceId, baseUrl);
 					recordSyncAttempt(db, peerDeviceId, {
 						ok: true,
 						opsIn: bootstrapResult.applied,
@@ -655,7 +644,7 @@ export async function syncOnce(
 			}
 
 			// -- 6. Record success --
-			recordPeerSuccess(db, peerDeviceId);
+			recordPeerSuccess(db, peerDeviceId, baseUrl);
 			recordSyncAttempt(db, peerDeviceId, {
 				ok: true,
 				opsIn: applied.applied,

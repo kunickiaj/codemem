@@ -313,6 +313,68 @@ describe("syncOnce", () => {
 			expect.objectContaining({ upsertMemoryIds: [expect.any(Number)], deleteMemoryIds: [] }),
 		);
 	});
+
+	it("promotes the working address after falling back from an unreachable candidate", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+		).run(
+			"peer-1",
+			"abc123",
+			JSON.stringify(["http://10.0.0.9:9090", "http://100.64.0.5:9090"]),
+			new Date().toISOString(),
+		);
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockRejectedValueOnce(new Error("network is unreachable"))
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "abc123",
+					protocol_version: "2",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-1",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-1", ["http://10.0.0.9:9090", "http://100.64.0.5:9090"]);
+
+		if (!result.ok) {
+			throw new Error(`syncOnce failed: ${result.error ?? "unknown error"}`);
+		}
+		expect(result.address).toBe("http://100.64.0.5:9090");
+		const row = db
+			.prepare("SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?")
+			.get("peer-1") as { addresses_json: string };
+		expect(JSON.parse(row.addresses_json)).toEqual([
+			"http://100.64.0.5:9090",
+			"http://10.0.0.9:9090",
+		]);
+	});
 });
 
 describe("syncPassPreflight", () => {
