@@ -4,6 +4,7 @@ import type { UiSyncViewModel } from "../tabs/sync/view-model";
 
 export type RefreshState = "idle" | "refreshing" | "paused" | "error";
 export type TabId = "feed" | "health" | "sync" | "coordinator-admin";
+export const ALL_TAB_IDS: TabId[] = ["feed", "health", "sync", "coordinator-admin"];
 
 /* ── Cached server payload shapes ─────────────────────────── */
 
@@ -262,22 +263,44 @@ export const state = {
 	syncPairingOpen: false,
 };
 
+export function shouldShowCoordinatorAdminTab(
+	status: CachedCoordinatorAdminStatus | null | undefined,
+): boolean {
+	if (!status) return true;
+	return status.has_admin_secret === true;
+}
+
+export function getVisibleTabs(status: CachedCoordinatorAdminStatus | null | undefined): TabId[] {
+	return shouldShowCoordinatorAdminTab(status)
+		? [...ALL_TAB_IDS]
+		: ALL_TAB_IDS.filter((tabId) => tabId !== "coordinator-admin");
+}
+
+export function resolveAccessibleTab(
+	tab: TabId,
+	status: CachedCoordinatorAdminStatus | null | undefined,
+): TabId {
+	return getVisibleTabs(status).includes(tab) ? tab : "sync";
+}
+
 /* ── Persistence helpers ───────────────────────────────────── */
 
 export function getActiveTab(): TabId {
 	const hash = window.location.hash.replace("#", "") as TabId;
-	if (["feed", "health", "sync", "coordinator-admin"].includes(hash)) return hash;
+	if (ALL_TAB_IDS.includes(hash))
+		return resolveAccessibleTab(hash, state.lastCoordinatorAdminStatus);
 	const saved = localStorage.getItem(TAB_KEY);
-	if (saved && ["feed", "health", "sync", "coordinator-admin"].includes(saved)) {
-		return saved as TabId;
+	if (saved && ALL_TAB_IDS.includes(saved as TabId)) {
+		return resolveAccessibleTab(saved as TabId, state.lastCoordinatorAdminStatus);
 	}
 	return "feed";
 }
 
 export function setActiveTab(tab: TabId) {
-	state.activeTab = tab;
-	window.location.hash = tab;
-	localStorage.setItem(TAB_KEY, tab);
+	const nextTab = resolveAccessibleTab(tab, state.lastCoordinatorAdminStatus);
+	state.activeTab = nextTab;
+	window.location.hash = nextTab;
+	localStorage.setItem(TAB_KEY, nextTab);
 }
 
 export function getFeedTypeFilter(): FeedFilter {
