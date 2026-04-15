@@ -1207,6 +1207,8 @@ export function explain(
 ): ExplainResponse {
 	const includePackContext = options?.includePackContext ?? false;
 	const normalizedQuery = (query ?? "").trim();
+	const sanitized = normalizedQuery ? sanitizeSearchQuery(normalizedQuery) : null;
+	const sanitizedQuery = sanitized?.clean_query ?? "";
 	const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(ids ?? []);
 
 	const errors: ExplainError[] = [];
@@ -1285,8 +1287,8 @@ export function explain(
 	}
 
 	// Tokenize query for term matching
-	const queryTokens = normalizedQuery
-		? (normalizedQuery.match(/[A-Za-z0-9_]+/g) ?? []).map((t) => t.toLowerCase())
+	const queryTokens = sanitizedQuery
+		? (sanitizedQuery.match(/[A-Za-z0-9_]+/g) ?? []).map((t) => t.toLowerCase())
 		: [];
 
 	const sessionProjects = loadSessionProjects(
@@ -1341,6 +1343,7 @@ export function explain(
 		errors,
 		metadata: {
 			query: normalizedQuery || null,
+			...(sanitized?.was_sanitized ? { sanitized_query: sanitized.clean_query } : {}),
 			project: filters?.project ?? null,
 			requested_ids_count: orderedIds.length,
 			returned_items_count: itemsPayload.length,

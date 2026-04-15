@@ -56,6 +56,7 @@ export function renderPackTrace(trace: PackTrace): string {
 	const lines = [
 		"Pack trace",
 		`- Query: ${trace.inputs.query}`,
+		...(trace.inputs.sanitized_query ? [`- Sanitized query: ${trace.inputs.sanitized_query}`] : []),
 		`- Project: ${trace.inputs.project ?? "(default)"}`,
 		`- Working set: ${workingSet}`,
 		`- Mode: ${trace.mode.selected}`,

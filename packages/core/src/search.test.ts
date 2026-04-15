@@ -1150,9 +1150,23 @@ describe("MemoryStore.explain", () => {
 		seedMemories();
 		const result = store.explain("database");
 		expect(result.metadata).toHaveProperty("query", "database");
+		expect(result.metadata).not.toHaveProperty("sanitized_query");
 		expect(result.metadata).toHaveProperty("requested_ids_count", 0);
 		expect(typeof result.metadata.returned_items_count).toBe("number");
 		expect(result.metadata.include_pack_context).toBe(false);
+	});
+
+	it("reports sanitized_query in explain metadata for contaminated queries", () => {
+		seedMemories();
+		const result = store.explain(
+			[
+				"You are a memory retrieval assistant.",
+				"Output only JSON.",
+				"What did we decide about PostgreSQL?",
+			].join("\n"),
+		);
+		expect(result.metadata.query).toContain("You are a memory retrieval assistant.");
+		expect(result.metadata.sanitized_query).toBe("What did we decide about PostgreSQL?");
 	});
 
 	it("includes pack_context when includePackContext option is enabled", () => {
