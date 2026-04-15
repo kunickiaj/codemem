@@ -11,7 +11,15 @@ declare const __CODEMEM_GIT_COMMIT__: string;
 
 import * as api from "./lib/api";
 import { $, $select } from "./lib/dom";
-import { initState, setActiveTab, state, type TabId } from "./lib/state";
+import {
+	ALL_TAB_IDS,
+	getVisibleTabs,
+	initState,
+	resolveAccessibleTab,
+	setActiveTab,
+	state,
+	type TabId,
+} from "./lib/state";
 import { getTheme, initThemeSelect, setTheme } from "./lib/theme";
 
 import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
@@ -175,29 +183,32 @@ document.addEventListener("visibilitychange", () => {
 
 /* ── Tab routing ─────────────────────────────────────────── */
 
-const TAB_IDS: TabId[] = ["feed", "health", "sync", "coordinator-admin"];
+function renderTabs(activeTab: TabId) {
+	const visibleTabs = new Set(getVisibleTabs(state.lastCoordinatorAdminStatus));
+	ALL_TAB_IDS.forEach((id) => {
+		const panel = $(`tab-${id}`);
+		if (panel) panel.hidden = id !== activeTab || !visibleTabs.has(id);
+	});
+
+	ALL_TAB_IDS.forEach((id) => {
+		const btn = $(`tabBtn-${id}`);
+		if (!btn) return;
+		btn.hidden = !visibleTabs.has(id);
+		btn.classList.toggle("active", id === activeTab && visibleTabs.has(id));
+	});
+}
 
 function switchTab(tab: TabId) {
-	setActiveTab(tab);
-
-	// Toggle tab panels
-	TAB_IDS.forEach((id) => {
-		const panel = $(`tab-${id}`);
-		if (panel) panel.hidden = id !== tab;
-	});
-
-	// Toggle tab buttons
-	TAB_IDS.forEach((id) => {
-		const btn = $(`tabBtn-${id}`);
-		if (btn) btn.classList.toggle("active", id === tab);
-	});
+	const nextTab = resolveAccessibleTab(tab, state.lastCoordinatorAdminStatus);
+	setActiveTab(nextTab);
+	renderTabs(nextTab);
 
 	// Refresh data for active tab
 	refresh();
 }
 
 function initTabs() {
-	TAB_IDS.forEach((id) => {
+	ALL_TAB_IDS.forEach((id) => {
 		const btn = $(`tabBtn-${id}`);
 		btn?.addEventListener("click", () => switchTab(id));
 	});
@@ -205,7 +216,7 @@ function initTabs() {
 	// Listen for hash changes (back/forward navigation)
 	window.addEventListener("hashchange", () => {
 		const hash = window.location.hash.replace("#", "") as TabId;
-		if (TAB_IDS.includes(hash) && hash !== state.activeTab) {
+		if (ALL_TAB_IDS.includes(hash) && hash !== state.activeTab) {
 			switchTab(hash);
 		}
 	});
@@ -263,18 +274,52 @@ async function doRefresh() {
 	try {
 		setRefreshStatus("refreshing");
 
+		let refreshTab = state.activeTab;
+		if (refreshTab === "coordinator-admin") {
+			try {
+				const status = await api.loadCoordinatorAdminStatus();
+				state.lastCoordinatorAdminStatus =
+					status && typeof status === "object"
+						? (status as typeof state.lastCoordinatorAdminStatus)
+						: null;
+			} catch {
+				state.lastCoordinatorAdminStatus = null;
+			}
+			refreshTab = state.activeTab;
+			refreshTab = resolveAccessibleTab(refreshTab, state.lastCoordinatorAdminStatus);
+			if (refreshTab !== state.activeTab) {
+				setActiveTab(refreshTab);
+				renderTabs(refreshTab);
+			}
+		}
+
 		// Always load health data (for the header health dot) and config
 		const promises: Promise<unknown>[] = [loadHealthData(), loadConfigData()];
+		if (refreshTab === "feed") {
+			promises.push(
+				api
+					.loadCoordinatorAdminStatus()
+					.then((status) => {
+						state.lastCoordinatorAdminStatus =
+							status && typeof status === "object"
+								? (status as typeof state.lastCoordinatorAdminStatus)
+								: null;
+					})
+					.catch(() => {
+						state.lastCoordinatorAdminStatus = null;
+					}),
+			);
+		}
 
 		// Load tab-specific data
-		if (state.activeTab === "feed") {
+		if (refreshTab === "feed") {
 			promises.push(loadFeedData());
 		}
 		// Sync data is needed by both Sync tab and Health tab (health cards derive sync state)
-		if (state.activeTab === "sync" || state.activeTab === "health") {
+		if (refreshTab === "sync" || refreshTab === "health") {
 			promises.push(loadSyncData());
 		}
-		if (state.activeTab === "coordinator-admin") {
+		if (refreshTab === "coordinator-admin") {
 			promises.push(loadCoordinatorAdminData());
 		}
 
@@ -284,6 +329,11 @@ async function doRefresh() {
 		}
 
 		await Promise.all(promises);
+		const nextTab = resolveAccessibleTab(state.activeTab, state.lastCoordinatorAdminStatus);
+		if (nextTab !== state.activeTab) {
+			setActiveTab(nextTab);
+		}
+		renderTabs(state.activeTab);
 		setRefreshStatus("idle");
 	} catch {
 		const ready = await isViewerReady();
