@@ -4,6 +4,7 @@ import { DialogCloseButton } from "../../components/primitives/dialog-close-butt
 import { RadixDialog } from "../../components/primitives/radix-dialog";
 import { RadixRadioGroup } from "../../components/primitives/radix-radio-group";
 import { RadixSelect } from "../../components/primitives/radix-select";
+import { TextInput } from "../../components/primitives/text-input";
 
 type DialogTone = "default" | "danger";
 
@@ -216,7 +217,7 @@ function SyncDialogBody({
 				) : null}
 				{request.kind === "input" ? (
 					<div className="field">
-						<input
+						<TextInput
 							aria-describedby={errorText ? `${descriptionId} ${inputErrorId}` : descriptionId}
 							autoFocus
 							className={errorText ? "sync-dialog-input sync-field-error" : "sync-dialog-input"}

@@ -2,6 +2,8 @@ import { h, render } from "preact";
 import { RadixSelect } from "../components/primitives/radix-select";
 import { RadixSwitch } from "../components/primitives/radix-switch";
 import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
+import { TextArea } from "../components/primitives/text-area";
+import { TextInput } from "../components/primitives/text-input";
 import * as api from "../lib/api";
 import { copyToClipboard } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
@@ -299,13 +301,14 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 				"label",
 				{ class: "coordinator-admin-field" },
 				h("span", null, "Group"),
-				h("input", {
+				h(TextInput, {
 					class: "peer-scope-input",
 					disabled: summary.readiness !== "ready",
 					onInput: (event) => {
 						inviteGroup = String((event.currentTarget as HTMLInputElement).value || "");
 					},
 					placeholder: activeGroup || "team-alpha",
+					type: "text",
 					value: inviteGroup,
 				}),
 			),
@@ -336,7 +339,7 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 				"label",
 				{ class: "coordinator-admin-field" },
 				h("span", null, "Expires in (hours)"),
-				h("input", {
+				h(TextInput, {
 					class: "peer-scope-input",
 					disabled: summary.readiness !== "ready",
 					min: "1",
@@ -370,7 +373,7 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 					"label",
 					{ class: "coordinator-admin-field" },
 					h("span", null, "Generated invite"),
-					h("textarea", {
+					h(TextArea, {
 						class: "feed-search coordinator-admin-output",
 						readOnly: true,
 						value: output,
@@ -433,13 +436,14 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 				"label",
 				{ class: "coordinator-admin-field" },
 				h("span", null, "New group id"),
-				h("input", {
+				h(TextInput, {
 					class: "peer-scope-input",
 					disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
 					onInput: (event) => {
 						createGroupId = String((event.currentTarget as HTMLInputElement).value || "");
 					},
 					placeholder: "team-alpha",
+					type: "text",
 					value: createGroupId,
 				}),
 			),
@@ -447,13 +451,14 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 				"label",
 				{ class: "coordinator-admin-field" },
 				h("span", null, "Display name"),
-				h("input", {
+				h(TextInput, {
 					class: "peer-scope-input",
 					disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
 					onInput: (event) => {
 						createGroupDisplayName = String((event.currentTarget as HTMLInputElement).value || "");
 					},
 					placeholder: "Team Alpha",
+					type: "text",
 					value: createGroupDisplayName,
 				}),
 			),
@@ -536,7 +541,7 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 								"label",
 								{ class: "coordinator-admin-field" },
 								h("span", null, "Display name"),
-								h("input", {
+								h(TextInput, {
 									class: "peer-scope-input",
 									disabled: summary.readiness !== "ready" || pending,
 									onInput: (event) => {
@@ -545,6 +550,7 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 											String((event.currentTarget as HTMLInputElement).value || ""),
 										);
 									},
+									type: "text",
 									value: draftName,
 								}),
 							),
@@ -791,7 +797,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 									"label",
 									{ class: "coordinator-admin-field" },
 									h("span", null, "Display name"),
-									h("input", {
+									h(TextInput, {
 										class: "peer-scope-input",
 										disabled: summary.readiness !== "ready" || pending,
 										onInput: (event) => {
@@ -800,6 +806,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 												String((event.currentTarget as HTMLInputElement).value || ""),
 											);
 										},
+										type: "text",
 										value: draft,
 									}),
 								),

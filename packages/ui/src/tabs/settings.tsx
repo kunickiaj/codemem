@@ -6,11 +6,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import { RadixSelect } from "../components/primitives/radix-select";
+import { RadixSwitch } from "../components/primitives/radix-switch";
 import {
 	type RadixTabOption,
 	RadixTabs,
 	RadixTabsContent,
 } from "../components/primitives/radix-tabs";
+import { TextArea } from "../components/primitives/text-area";
+import { TextInput } from "../components/primitives/text-input";
 import * as api from "../lib/api";
 import { $, $button } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
@@ -1278,16 +1281,60 @@ function onSelectValueChange<K extends keyof SettingsFormState>(field: K) {
 	};
 }
 
-function onCheckboxInput<K extends keyof SettingsFormState>(field: K) {
-	return (event: JSX.TargetedEvent<HTMLInputElement, Event>) => {
-		updateField(field, event.currentTarget.checked as SettingsFormState[K]);
+function onSwitchInput<K extends keyof SettingsFormState>(field: K) {
+	return (checked: boolean) => {
+		updateField(field, checked as SettingsFormState[K]);
 	};
 }
 
-function onAdvancedToggle(event: JSX.TargetedEvent<HTMLInputElement, Event>) {
-	const checked = event.currentTarget.checked;
+function onAdvancedToggle(checked: boolean) {
 	settingsShowAdvanced = checked;
 	settingsController?.setShowAdvanced(checked);
+}
+
+type SettingsSwitchRowProps = {
+	checked: boolean;
+	disabled?: boolean;
+	hidden?: boolean;
+	id: string;
+	label: string;
+	onCheckedChange: (checked: boolean) => void;
+	className?: string;
+};
+
+function SettingsSwitchRow({
+	checked,
+	className,
+	disabled = false,
+	hidden = false,
+	id,
+	label,
+	onCheckedChange,
+}: SettingsSwitchRowProps) {
+	const labelId = `${id}Label`;
+	return (
+		<div
+			className={
+				className
+					? `field-checkbox settings-switch-row ${className}`
+					: "field-checkbox settings-switch-row"
+			}
+			hidden={hidden}
+		>
+			<label className="settings-switch-copy" htmlFor={id} id={labelId}>
+				{label}
+			</label>
+			<RadixSwitch
+				aria-labelledby={labelId}
+				checked={checked}
+				className="settings-switch"
+				disabled={disabled}
+				id={id}
+				onCheckedChange={onCheckedChange}
+				thumbClassName="settings-switch-thumb"
+			/>
+		</div>
+	);
 }
 
 function hiddenUnlessAdvanced(): boolean {
@@ -1463,15 +1510,13 @@ function SettingsDialogContent() {
 				<div className="small" id="settingsDescription">
 					Configure connection, authentication, processing, and sync behavior.
 				</div>
-				<div className="settings-advanced-toolbar field-checkbox">
-					<input
+				<div className="settings-advanced-toolbar">
+					<SettingsSwitchRow
 						checked={settingsShowAdvanced}
-						className="cm-checkbox"
 						id="settingsAdvancedToggle"
-						onChange={onAdvancedToggle}
-						type="checkbox"
+						label="Show advanced controls"
+						onCheckedChange={onAdvancedToggle}
 					/>
-					<label htmlFor="settingsAdvancedToggle">Show advanced controls</label>
 					<button
 						aria-label="About advanced controls"
 						className="help-icon"
@@ -1534,7 +1579,7 @@ function SettingsDialogContent() {
 										?
 									</button>
 								</div>
-								<input
+								<TextInput
 									id="observerModel"
 									onInput={onTextInput("observerModel")}
 									placeholder="leave empty for default"
@@ -1577,7 +1622,7 @@ function SettingsDialogContent() {
 							</Field>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="claudeCommand">Claude command (JSON argv)</label>
-								<textarea
+								<TextArea
 									disabled
 									id="claudeCommand"
 									placeholder='["claude"]'
@@ -1588,7 +1633,7 @@ function SettingsDialogContent() {
 							</Field>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="observerMaxChars">Request size limit (chars)</label>
-								<input
+								<TextInput
 									id="observerMaxChars"
 									min="1"
 									onInput={onTextInput("observerMaxChars")}
@@ -1636,7 +1681,7 @@ function SettingsDialogContent() {
 							</Field>
 							<Field hidden={!showAuthFile} id="observerAuthFileField">
 								<label htmlFor="observerAuthFile">Token file path</label>
-								<input
+								<TextInput
 									disabled
 									id="observerAuthFile"
 									placeholder="~/.codemem/work-token.txt"
@@ -1656,7 +1701,7 @@ function SettingsDialogContent() {
 										?
 									</button>
 								</div>
-								<textarea
+								<TextArea
 									disabled
 									id="observerAuthCommand"
 									placeholder='["iap-auth", "--audience", "gateway"]'
@@ -1670,7 +1715,7 @@ function SettingsDialogContent() {
 							</div>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="observerAuthTimeoutMs">Token command timeout (ms)</label>
-								<input
+								<TextInput
 									id="observerAuthTimeoutMs"
 									min="1"
 									onInput={onTextInput("observerAuthTimeoutMs")}
@@ -1680,7 +1725,7 @@ function SettingsDialogContent() {
 							</Field>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="observerAuthCacheTtlS">Token cache time (s)</label>
-								<input
+								<TextInput
 									id="observerAuthCacheTtlS"
 									min="0"
 									onInput={onTextInput("observerAuthCacheTtlS")}
@@ -1703,7 +1748,7 @@ function SettingsDialogContent() {
 										?
 									</button>
 								</div>
-								<textarea
+								<TextArea
 									disabled
 									id="observerHeaders"
 									placeholder='{"Authorization":"Bearer ${auth.token}"}'
@@ -1732,7 +1777,7 @@ function SettingsDialogContent() {
 										?
 									</button>
 								</div>
-								<input
+								<TextInput
 									id="rawEventsSweeperIntervalS"
 									min="1"
 									onInput={onTextInput("rawEventsSweeperIntervalS")}
@@ -1744,16 +1789,13 @@ function SettingsDialogContent() {
 						</div>
 						<div className="settings-group">
 							<h3 className="settings-group-title">Tiered observer routing</h3>
-							<div className="field field-checkbox">
-								<input
-									checked={values.observerTierRoutingEnabled}
-									className="cm-checkbox"
-									id="observerTierRoutingEnabled"
-									onChange={onCheckboxInput("observerTierRoutingEnabled")}
-									type="checkbox"
-								/>
-								<label htmlFor="observerTierRoutingEnabled">Enable tiered routing</label>
-							</div>
+							<SettingsSwitchRow
+								checked={values.observerTierRoutingEnabled}
+								className="field"
+								id="observerTierRoutingEnabled"
+								label="Enable tiered routing"
+								onCheckedChange={onSwitchInput("observerTierRoutingEnabled")}
+							/>
 							<div className="small">{getTieredRoutingHelperText()}</div>
 							<Field hidden={!showTieredRouting}>
 								<div className="field-label">
@@ -1767,7 +1809,7 @@ function SettingsDialogContent() {
 										?
 									</button>
 								</div>
-								<input
+								<TextInput
 									id="observerSimpleModel"
 									onInput={onTextInput("observerSimpleModel")}
 									placeholder="leave empty for default"
@@ -1787,7 +1829,7 @@ function SettingsDialogContent() {
 										?
 									</button>
 								</div>
-								<input
+								<TextInput
 									id="observerRichModel"
 									onInput={onTextInput("observerRichModel")}
 									placeholder="leave empty for default"
@@ -1795,24 +1837,20 @@ function SettingsDialogContent() {
 								/>
 								<div className="small">Used when routing detects a richer replay batch.</div>
 							</Field>
-							<Field className="field field-checkbox" hidden={!showTieredRouting}>
-								<input
-									checked={values.observerRichOpenAIUseResponses}
-									className="cm-checkbox"
-									id="observerRichOpenAIUseResponses"
-									onChange={onCheckboxInput("observerRichOpenAIUseResponses")}
-									type="checkbox"
-								/>
-								<label htmlFor="observerRichOpenAIUseResponses">
-									Use OpenAI Responses API for rich tier
-								</label>
-							</Field>
+							<SettingsSwitchRow
+								checked={values.observerRichOpenAIUseResponses}
+								className="field"
+								hidden={!showTieredRouting}
+								id="observerRichOpenAIUseResponses"
+								label="Use OpenAI Responses API for rich tier"
+								onCheckedChange={onSwitchInput("observerRichOpenAIUseResponses")}
+							/>
 							<Field
 								className="field settings-advanced"
 								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
 							>
 								<label htmlFor="observerSimpleTemperature">Simple tier temperature</label>
-								<input
+								<TextInput
 									id="observerSimpleTemperature"
 									min="0"
 									onInput={onTextInput("observerSimpleTemperature")}
@@ -1826,7 +1864,7 @@ function SettingsDialogContent() {
 								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
 							>
 								<label htmlFor="observerRichTemperature">Rich tier temperature</label>
-								<input
+								<TextInput
 									id="observerRichTemperature"
 									min="0"
 									onInput={onTextInput("observerRichTemperature")}
@@ -1840,7 +1878,7 @@ function SettingsDialogContent() {
 								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
 							>
 								<label htmlFor="observerRichReasoningEffort">Rich tier reasoning effort</label>
-								<input
+								<TextInput
 									id="observerRichReasoningEffort"
 									onInput={onTextInput("observerRichReasoningEffort")}
 									placeholder="leave empty for default"
@@ -1852,7 +1890,7 @@ function SettingsDialogContent() {
 								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
 							>
 								<label htmlFor="observerRichReasoningSummary">Rich tier reasoning summary</label>
-								<input
+								<TextInput
 									id="observerRichReasoningSummary"
 									onInput={onTextInput("observerRichReasoningSummary")}
 									placeholder="leave empty for default"
@@ -1864,7 +1902,7 @@ function SettingsDialogContent() {
 								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
 							>
 								<label htmlFor="observerRichMaxOutputTokens">Rich tier max output tokens</label>
-								<input
+								<TextInput
 									id="observerRichMaxOutputTokens"
 									min="1"
 									onInput={onTextInput("observerRichMaxOutputTokens")}
@@ -1878,7 +1916,7 @@ function SettingsDialogContent() {
 							<h3 className="settings-group-title">Context Pack Limits</h3>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="packObservationLimit">Observation limit</label>
-								<input
+								<TextInput
 									id="packObservationLimit"
 									min="1"
 									onInput={onTextInput("packObservationLimit")}
@@ -1889,7 +1927,7 @@ function SettingsDialogContent() {
 							</Field>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="packSessionLimit">Session summary limit</label>
-								<input
+								<TextInput
 									id="packSessionLimit"
 									min="1"
 									onInput={onTextInput("packSessionLimit")}
@@ -1906,19 +1944,16 @@ function SettingsDialogContent() {
 					<RadixTabsContent className="settings-panel" forceMount value="sync">
 						<div className="settings-group">
 							<h3 className="settings-group-title">Device Sync</h3>
-							<div className="field field-checkbox">
-								<input
-									checked={values.syncEnabled}
-									className="cm-checkbox"
-									id="syncEnabled"
-									onChange={onCheckboxInput("syncEnabled")}
-									type="checkbox"
-								/>
-								<label htmlFor="syncEnabled">Enable sync</label>
-							</div>
+							<SettingsSwitchRow
+								checked={values.syncEnabled}
+								className="field"
+								id="syncEnabled"
+								label="Enable sync"
+								onCheckedChange={onSwitchInput("syncEnabled")}
+							/>
 							<div className="field">
 								<label htmlFor="syncInterval">Sync interval (seconds)</label>
-								<input
+								<TextInput
 									id="syncInterval"
 									min="10"
 									onInput={onTextInput("syncInterval")}
@@ -1928,7 +1963,7 @@ function SettingsDialogContent() {
 							</div>
 							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="syncHost">Sync host</label>
-								<input
+								<TextInput
 									id="syncHost"
 									onInput={onTextInput("syncHost")}
 									placeholder="127.0.0.1"
@@ -1937,7 +1972,7 @@ function SettingsDialogContent() {
 							</div>
 							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="syncPort">Sync port</label>
-								<input
+								<TextInput
 									id="syncPort"
 									min="1"
 									onInput={onTextInput("syncPort")}
@@ -1945,22 +1980,17 @@ function SettingsDialogContent() {
 									value={values.syncPort}
 								/>
 							</div>
-							<div
-								className="field field-checkbox settings-advanced"
+							<SettingsSwitchRow
+								checked={values.syncMdns}
+								className="field settings-advanced"
 								hidden={hiddenUnlessAdvanced()}
-							>
-								<input
-									checked={values.syncMdns}
-									className="cm-checkbox"
-									id="syncMdns"
-									onChange={onCheckboxInput("syncMdns")}
-									type="checkbox"
-								/>
-								<label htmlFor="syncMdns">Enable mDNS discovery</label>
-							</div>
+								id="syncMdns"
+								label="Enable mDNS discovery"
+								onCheckedChange={onSwitchInput("syncMdns")}
+							/>
 							<div className="field">
 								<label htmlFor="syncCoordinatorUrl">Coordinator URL</label>
-								<input
+								<TextInput
 									disabled
 									id="syncCoordinatorUrl"
 									placeholder="https://coord.example.com"
@@ -1970,7 +2000,7 @@ function SettingsDialogContent() {
 							</div>
 							<div className="field">
 								<label htmlFor="syncCoordinatorGroup">Coordinator group</label>
-								<input
+								<TextInput
 									id="syncCoordinatorGroup"
 									onInput={onTextInput("syncCoordinatorGroup")}
 									placeholder="team-alpha"
@@ -1982,7 +2012,7 @@ function SettingsDialogContent() {
 							</div>
 							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
-								<input
+								<TextInput
 									id="syncCoordinatorTimeout"
 									min="1"
 									onInput={onTextInput("syncCoordinatorTimeout")}
@@ -1992,7 +2022,7 @@ function SettingsDialogContent() {
 							</div>
 							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="syncCoordinatorPresenceTtl">Presence TTL (seconds)</label>
-								<input
+								<TextInput
 									id="syncCoordinatorPresenceTtl"
 									min="1"
 									onInput={onTextInput("syncCoordinatorPresenceTtl")}

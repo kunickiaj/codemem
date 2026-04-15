@@ -1,6 +1,7 @@
 import type { TargetedInputEvent } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { RadixSelect } from "../../../components/primitives/radix-select";
+import { TextInput } from "../../../components/primitives/text-input";
 import { formatTimestamp } from "../../../lib/format";
 import { isSyncRedactionEnabled, state } from "../../../lib/state";
 import {
@@ -335,12 +336,13 @@ function SyncPeerCard({
 				</strong>
 
 				<div className="peer-actions">
-					<input
+					<TextInput
 						aria-label={`Friendly name for ${displayName}`}
 						className="peer-scope-input"
 						data-device-name-input={peerId || undefined}
 						disabled={renameBusy}
 						placeholder="Friendly device name"
+						type="text"
 						value={renameValue}
 						onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
 							setRenameValue(event.currentTarget.value)
