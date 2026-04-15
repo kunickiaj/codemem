@@ -961,11 +961,15 @@ function timelineAround(
 			`SELECT memory_items.*
 			 FROM memory_items
 			 ${joinClause}
-			 WHERE ${whereClause} AND memory_items.created_at < ?
-			 ORDER BY memory_items.created_at DESC
+			 WHERE ${whereClause}
+			   AND (
+					memory_items.created_at < ?
+					OR (memory_items.created_at = ? AND memory_items.id < ?)
+			   )
+			 ORDER BY memory_items.created_at DESC, memory_items.id DESC
 			 LIMIT ?`,
 		)
-		.all(...baseParams, anchorCreatedAt, depthBefore) as MemoryItem[];
+		.all(...baseParams, anchorCreatedAt, anchorCreatedAt, anchorId, depthBefore) as MemoryItem[];
 
 	// After: newer memories, ascending
 	const afterRows = store.db
@@ -973,11 +977,15 @@ function timelineAround(
 			`SELECT memory_items.*
 			 FROM memory_items
 			 ${joinClause}
-			 WHERE ${whereClause} AND memory_items.created_at > ?
-			 ORDER BY memory_items.created_at ASC
+			 WHERE ${whereClause}
+			   AND (
+					memory_items.created_at > ?
+					OR (memory_items.created_at = ? AND memory_items.id > ?)
+			   )
+			 ORDER BY memory_items.created_at ASC, memory_items.id ASC
 			 LIMIT ?`,
 		)
-		.all(...baseParams, anchorCreatedAt, depthAfter) as MemoryItem[];
+		.all(...baseParams, anchorCreatedAt, anchorCreatedAt, anchorId, depthAfter) as MemoryItem[];
 
 	// Re-fetch anchor row to get full columns (anchor from search may be partial)
 	const d = getDrizzle(store.db);
