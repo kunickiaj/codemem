@@ -10,11 +10,14 @@
  */
 
 import type { Database } from "./db.js";
+import { projectClause } from "./project.js";
 import { normalizeConcept } from "./ref-populate.js";
 
 export interface RefQueryOptions {
 	/** Filter by memory kind (e.g. "decision", "bugfix") */
 	kind?: string;
+	/** Filter by session project using projectClause matching */
+	project?: string;
 	/** Filter file refs by relation type */
 	relation?: "read" | "modified";
 	/** Max results to return. Default 20. */
@@ -77,6 +80,16 @@ export function findByFile(
 
 	const outerClauses: string[] = ["mi.active = 1"];
 	const outerParams: unknown[] = [];
+	let joinClause = "";
+
+	if (options?.project) {
+		const { clause, params } = projectClause(options.project);
+		if (clause) {
+			joinClause = " JOIN sessions ON sessions.id = mi.session_id";
+			outerClauses.push(clause);
+			outerParams.push(...params);
+		}
+	}
 
 	if (options?.kind) {
 		outerClauses.push("mi.kind = ?");
@@ -95,7 +108,7 @@ export function findByFile(
 			mi.body_text, mi.narrative, mi.confidence, mi.tags_text,
 			mi.created_at, mi.updated_at, mi.files_read, mi.files_modified,
 			mi.concepts, mi.metadata_json
-		FROM memory_items mi
+		FROM memory_items mi${joinClause}
 		WHERE mi.id IN (
 			SELECT DISTINCT mfr.memory_id
 			FROM memory_file_refs mfr
@@ -127,6 +140,16 @@ export function findByConcept(
 
 	const outerClauses: string[] = ["mi.active = 1"];
 	const outerParams: unknown[] = [];
+	let joinClause = "";
+
+	if (options?.project) {
+		const { clause, params } = projectClause(options.project);
+		if (clause) {
+			joinClause = " JOIN sessions ON sessions.id = mi.session_id";
+			outerClauses.push(clause);
+			outerParams.push(...params);
+		}
+	}
 
 	if (options?.kind) {
 		outerClauses.push("mi.kind = ?");
@@ -145,7 +168,7 @@ export function findByConcept(
 			mi.body_text, mi.narrative, mi.confidence, mi.tags_text,
 			mi.created_at, mi.updated_at, mi.files_read, mi.files_modified,
 			mi.concepts, mi.metadata_json
-		FROM memory_items mi
+		FROM memory_items mi${joinClause}
 		WHERE mi.id IN (
 			SELECT DISTINCT mcr.memory_id
 			FROM memory_concept_refs mcr

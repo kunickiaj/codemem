@@ -18,9 +18,10 @@ import {
 } from "./filters.js";
 import { parsePositiveMemoryId } from "./integers.js";
 import { inferMemoryRole } from "./memory-quality.js";
-import { projectClause, projectMatchesFilter } from "./project.js";
+import { projectMatchesFilter } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
+import { findByConcept, findByFile } from "./ref-queries.js";
 import * as schema from "./schema.js";
 import { canonicalMemoryKind } from "./summary-memory.js";
 import type {
@@ -508,14 +509,32 @@ function memoryFilesTouched(item: MemoryResult): string[] {
 
 function queryPathHints(query: string): string[] {
 	const rawTokens = query.match(/[A-Za-z0-9_./-]+/g) ?? [];
-	const normalized = rawTokens
-		.map((token) => canonicalPath(token))
+	const paths = rawTokens
+		.map((token) => token.trim())
 		.filter((token) => token.includes("/") || token.includes("."));
-	return [...new Set(normalized)];
+	return [...new Set(paths)];
+}
+
+function queryConceptHints(query: string): string[] {
+	const rawTokens = query.match(/[A-Za-z0-9_./-]+/g) ?? [];
+	const contentTokens = rawTokens
+		.map((token) => token.trim().toLowerCase())
+		.filter(
+			(token) =>
+				token.length > 2 &&
+				!token.includes("/") &&
+				!token.includes(".") &&
+				!FTS5_OPERATORS.has(token) &&
+				!SEARCH_QUERY_STOP_WORDS.has(token),
+		);
+	const uniqueTokens = [...new Set(contentTokens)];
+	return uniqueTokens.length === 1 ? uniqueTokens : [];
 }
 
 function queryPathOverlapBoost(item: MemoryResult, query: string): number {
-	const hintedPaths = queryPathHints(query);
+	const hintedPaths = queryPathHints(query)
+		.map((path) => canonicalPath(path))
+		.filter(Boolean);
 	if (hintedPaths.length === 0) return 0.0;
 	const itemPaths = memoryFilesTouched(item);
 	if (itemPaths.length === 0) return 0.0;
@@ -535,6 +554,87 @@ function queryPathOverlapBoost(item: MemoryResult, query: string): number {
 	}
 	const boost = directHits * 0.18 + basenameHits * 0.06;
 	return Math.min(0.18, boost);
+}
+
+function rowToMemoryResult(
+	row: Record<string, unknown>,
+	preserveFilteredKind: boolean,
+): MemoryResult {
+	const metadata: Record<string, unknown> = {
+		...fromJson(row.metadata_json as string | null),
+	};
+	for (const key of [
+		"actor_id",
+		"actor_display_name",
+		"visibility",
+		"workspace_id",
+		"workspace_kind",
+		"origin_device_id",
+		"origin_source",
+		"trust_state",
+	] as const) {
+		const value = row[key];
+		if (value != null) metadata[key] = value;
+	}
+
+	for (const key of ["files_modified", "files_read", "concepts"] as const) {
+		const raw = row[key];
+		if (typeof raw !== "string") continue;
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (Array.isArray(parsed)) metadata[key] ??= parsed;
+		} catch {
+			// not valid JSON — ignore
+		}
+	}
+
+	return {
+		id: row.id as number,
+		kind: preserveFilteredKind
+			? (row.kind as string)
+			: canonicalMemoryKind(row.kind as string, metadata),
+		title: row.title as string,
+		body_text: row.body_text as string,
+		confidence: row.confidence as number,
+		created_at: row.created_at as string,
+		updated_at: row.updated_at as string,
+		tags_text: (row.tags_text as string) ?? "",
+		score: Number(row.score ?? 0),
+		session_id: row.session_id as number,
+		metadata,
+		narrative: (row.narrative as string | null) ?? null,
+		facts: (row.facts as string | null) ?? null,
+	};
+}
+
+function fetchResultsByIds(
+	store: StoreHandle,
+	ids: number[],
+	filters: MemoryFilters | undefined,
+	preserveFilteredKind: boolean,
+): MemoryResult[] {
+	if (ids.length === 0) return [];
+	const placeholders = ids.map(() => "?").join(", ");
+	const params: unknown[] = [...ids];
+	const whereClauses = [`memory_items.id IN (${placeholders})`, "memory_items.active = 1"];
+	const filterResult = buildFilterClausesWithContext(filters, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+	});
+	whereClauses.push(...filterResult.clauses);
+	params.push(...filterResult.params);
+	const joinClause = filterResult.joinSessions
+		? "JOIN sessions ON sessions.id = memory_items.session_id"
+		: "";
+	const rows = store.db
+		.prepare(
+			`SELECT memory_items.*, 0 AS score
+			 FROM memory_items
+			 ${joinClause}
+			 WHERE ${whereClauses.join(" AND ")}`,
+		)
+		.all(...params) as Record<string, unknown>[];
+	return rows.map((row) => rowToMemoryResult(row, preserveFilteredKind));
 }
 
 /**
@@ -750,57 +850,36 @@ function searchOnce(
 
 	const rows = store.db.prepare(sql).all(...params) as Record<string, unknown>[];
 	const preserveFilteredKind = typeof filters?.kind === "string" && filters.kind.trim().length > 0;
-
-	const results: MemoryResult[] = rows.map((row) => {
-		const metadata: Record<string, unknown> = {
-			...fromJson(row.metadata_json as string | null),
-		};
-		for (const key of [
-			"actor_id",
-			"actor_display_name",
-			"visibility",
-			"workspace_id",
-			"workspace_kind",
-			"origin_device_id",
-			"origin_source",
-			"trust_state",
-		] as const) {
-			const value = row[key];
-			if (value != null) metadata[key] = value;
-		}
-
-		// Propagate files_modified into metadata when stored as a JSON array
-		if (row.files_modified && typeof row.files_modified === "string") {
-			try {
-				const parsed: unknown = JSON.parse(row.files_modified as string);
-				if (Array.isArray(parsed)) {
-					metadata.files_modified ??= parsed;
-				}
-			} catch {
-				// not valid JSON — ignore
-			}
-		}
-
-		return {
-			id: row.id as number,
-			kind: preserveFilteredKind
-				? (row.kind as string)
-				: canonicalMemoryKind(row.kind as string, metadata),
-			title: row.title as string,
-			body_text: row.body_text as string,
-			confidence: row.confidence as number,
-			created_at: row.created_at as string,
-			updated_at: row.updated_at as string,
-			tags_text: (row.tags_text as string) ?? "",
-			score: Number(row.score),
-			session_id: row.session_id as number,
-			metadata,
-			narrative: (row.narrative as string | null) ?? null,
-			facts: (row.facts as string | null) ?? null,
-		};
+	const results = rows.map((row) => rowToMemoryResult(row, preserveFilteredKind));
+	const indexedCandidateIds = [
+		...queryPathHints(query).flatMap((path) =>
+			findByFile(store.db, path, {
+				limit: queryLimit,
+				project: filters?.project,
+				relation: "modified",
+			}).map((row) => row.id),
+		),
+		...queryConceptHints(query).flatMap((concept) =>
+			findByConcept(store.db, concept, {
+				limit: queryLimit,
+				project: filters?.project,
+				since: filters?.since,
+				kind: filters?.kind,
+			}).map((row) => row.id),
+		),
+	];
+	const seenIds = new Set(results.map((item) => item.id));
+	const newIds = indexedCandidateIds.filter((id) => {
+		if (seenIds.has(id)) return false;
+		seenIds.add(id);
+		return true;
 	});
+	const widened =
+		newIds.length > 0
+			? [...results, ...fetchResultsByIds(store, newIds, filters, preserveFilteredKind)]
+			: results;
 
-	return rerankResults(store, results, effectiveLimit, filters, query);
+	return rerankResults(store, widened, effectiveLimit, filters, query);
 }
 
 /**
@@ -1278,38 +1357,3 @@ export function explain(
  * This is used by the pack builder to source working-set candidates
  * that FTS/vector search would miss.
  */
-export function findCandidatesByFile(
-	db: Database,
-	filePaths: string[],
-	limit = 50,
-	options?: { project?: string },
-): number[] {
-	if (filePaths.length === 0) return [];
-	const placeholders = filePaths.map(() => "?").join(", ");
-	const params: unknown[] = [...filePaths];
-
-	let projectJoin = "";
-	let projectWhere = "";
-	if (options?.project) {
-		const { clause, params: projectParams } = projectClause(options.project);
-		if (clause) {
-			projectJoin = " JOIN sessions ON sessions.id = mi.session_id";
-			projectWhere = ` AND ${clause}`;
-			params.push(...projectParams);
-		}
-	}
-
-	params.push(limit);
-	const rows = db
-		.prepare(
-			`SELECT DISTINCT mfr.memory_id
-			 FROM memory_file_refs mfr
-			 JOIN memory_items mi ON mi.id = mfr.memory_id${projectJoin}
-			 WHERE mfr.file_path IN (${placeholders})
-			   AND mi.active = 1${projectWhere}
-			 ORDER BY mi.created_at DESC
-			 LIMIT ?`,
-		)
-		.all(...params) as Array<{ memory_id: number }>;
-	return rows.map((r) => r.memory_id);
-}
