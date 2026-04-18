@@ -94,6 +94,11 @@ type SettingsSectionIntroProps = {
 	detail: string;
 };
 
+type SettingsHintProps = {
+	children: ComponentChildren;
+	hidden?: boolean;
+};
+
 type SettingsTooltipState = {
 	anchor: HTMLElement | null;
 	content: string;
@@ -206,6 +211,14 @@ function SettingsSectionIntro({ detail, title }: SettingsSectionIntroProps) {
 		<div className="settings-section-intro">
 			<div className="settings-section-intro-title">{title}</div>
 			<div className="small settings-section-intro-detail">{detail}</div>
+		</div>
+	);
+}
+
+function SettingsHint({ children, hidden = false }: SettingsHintProps) {
+	return (
+		<div className="settings-note" hidden={hidden}>
+			{children}
 		</div>
 	);
 }
@@ -1540,6 +1553,10 @@ function SettingsDialogContent() {
 						?
 					</button>
 				</div>
+				<SettingsHint hidden={!settingsShowAdvanced}>
+					Advanced controls are visible. Leave JSON fields, tuning values, and network overrides
+					alone unless you are debugging or matching a known deployment setup.
+				</SettingsHint>
 
 				<RadixTabs
 					ariaLabel="Settings sections"
@@ -1731,6 +1748,10 @@ function SettingsDialogContent() {
 							<div className="small" hidden={!showAuthCommand} id="observerAuthCommandNote">
 								Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
 							</div>
+							<SettingsHint hidden={hiddenUnlessAdvanced()}>
+								These advanced credential overrides only matter when you need custom command timing,
+								cached tokens, or extra request headers.
+							</SettingsHint>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="observerAuthTimeoutMs">Token command timeout (ms)</label>
 								<TextInput
@@ -1821,6 +1842,10 @@ function SettingsDialogContent() {
 								onCheckedChange={onSwitchInput("observerTierRoutingEnabled")}
 							/>
 							<div className="small">{getTieredRoutingHelperText()}</div>
+							<SettingsHint hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
+								These advanced routing values are only useful when you are tuning model cost,
+								latency, or output quality for a known workload.
+							</SettingsHint>
 							<Field hidden={!showTieredRouting}>
 								<div className="field-label">
 									<label htmlFor="observerSimpleModel">Simple tier model</label>
@@ -1937,7 +1962,11 @@ function SettingsDialogContent() {
 							</Field>
 						</div>
 						<div className="settings-group settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<h3 className="settings-group-title">Context Pack Limits</h3>
+							<h3 className="settings-group-title">Pack limits</h3>
+							<SettingsHint hidden={hiddenUnlessAdvanced()}>
+								Most users can keep these defaults. Change them only when you need smaller or larger
+								default context packs.
+							</SettingsHint>
 							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="packObservationLimit">Observation limit</label>
 								<TextInput
@@ -2040,6 +2069,13 @@ function SettingsDialogContent() {
 								<div className="small">
 									Discovery namespace for peers using the same coordinator.
 								</div>
+							</div>
+							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+								<SettingsHint hidden={hiddenUnlessAdvanced()}>
+									These network overrides are for unusual local-network setups. Leave them alone
+									unless you know this device needs non-default sync discovery or coordinator
+									timing.
+								</SettingsHint>
 							</div>
 							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
