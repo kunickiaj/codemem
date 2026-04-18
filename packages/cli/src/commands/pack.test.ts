@@ -103,6 +103,8 @@ describe("pack command", () => {
 						reasons: ["matched query terms", "selected for summary"],
 						disposition: "selected",
 						section: "summary",
+						inferred_role: "durable",
+						role_reason: "durable_kind",
 					},
 					{
 						id: 102,
@@ -129,6 +131,8 @@ describe("pack command", () => {
 						reasons: ["not selected for final pack"],
 						disposition: "dropped",
 						section: null,
+						inferred_role: "general",
+						role_reason: "general",
 					},
 				],
 			},

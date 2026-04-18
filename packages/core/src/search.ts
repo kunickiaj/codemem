@@ -1192,6 +1192,16 @@ function explainItem(
 		totalScore = baseScore * 1.5 + recencyComponent + kindComponent;
 	}
 
+	// Match the roleAdjustmentForSearch() call shape so explain output reports
+	// the same inferred role that retrieval actually scored against. See
+	// roleAdjustmentForSearch above — it intentionally omits project.
+	const roleInference = inferMemoryRole({
+		kind: item.kind,
+		title: item.title,
+		body_text: item.body_text,
+		metadata: item.metadata ?? null,
+	});
+
 	return {
 		id: item.id,
 		kind: item.kind,
@@ -1211,6 +1221,10 @@ function explainItem(
 				personal_bias: 0.0,
 				semantic_boost: null,
 			},
+		},
+		role: {
+			inferred: roleInference.role,
+			reason: roleInference.reason,
 		},
 		matches: {
 			query_terms: matchedTerms,
