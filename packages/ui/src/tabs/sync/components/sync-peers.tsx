@@ -383,9 +383,11 @@ function SyncPeerCard({
 
 			<div className="peer-scope">
 				{scopeReviewRequested ? (
-					<div className="peer-meta">Review this device&apos;s sharing scope now.</div>
+					<div className="peer-meta">
+						Review this device&apos;s sharing rules now if the defaults are too broad.
+					</div>
 				) : pendingScopeReview ? (
-					<div className="peer-meta">Scope review still pending.</div>
+					<div className="peer-meta">Sharing rule review is still pending for this device.</div>
 				) : null}
 
 				<div className="peer-scope-summary">Device details</div>
