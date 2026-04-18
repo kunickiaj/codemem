@@ -162,4 +162,38 @@ describe("buildMemoryPack usefulness evals", () => {
 			pack.item_ids.indexOf(corpus.ids.workingSetDistractorId),
 		);
 	});
+
+	it("never ranks low-confidence noise at position 1 across varied query phrasings", () => {
+		const corpus = createPackEvalCorpus(store);
+		const queries = [
+			"what did we decide about oauth",
+			"continue the viewer health work",
+			"summary of oauth",
+			"memory retrieval issues",
+			"sessionization summary emission",
+			"what should we do next about auth",
+		];
+
+		for (const query of queries) {
+			const pack = buildMemoryPack(store, query, 10);
+			expect(pack.item_ids[0], `noise ranked top-1 for query "${query}"`).not.toBe(
+				corpus.ids.workingSetSharedFileNoiseId,
+			);
+		}
+	});
+
+	it("combines task-mode ranking with working-set overlap", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const pack = buildMemoryPack(store, "what should we do next about auth", 10, null, {
+			working_set_paths: ["packages/ui/src/tabs/health.ts"],
+		});
+
+		// Task mode: the auth decision must still be top-1.
+		expect(pack.metrics.mode).toBe("task");
+		expect(pack.item_ids[0]).toBe(corpus.ids.authTaskDecisionId);
+		// Working-set overlap is a tiered signal — the health-tab memory should
+		// appear somewhere in the top N rather than trailing pure distractors.
+		expect(pack.item_ids.slice(0, 5)).toContain(corpus.ids.workingSetPrimaryId);
+	});
 });
