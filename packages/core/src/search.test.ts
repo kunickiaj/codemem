@@ -880,6 +880,236 @@ describe("MemoryStore.search", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Integration tests: cross-project widening (widen_project_when_weak)
+// ---------------------------------------------------------------------------
+
+describe("MemoryStore.search cross-project widening", () => {
+	let tmpDir: string;
+	let dbPath: string;
+	let store: MemoryStore;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-search-test-widen-"));
+		dbPath = join(tmpDir, "test.sqlite");
+		const setupDb = connect(dbPath);
+		initTestSchema(setupDb);
+		setupDb.close();
+		store = new MemoryStore(dbPath);
+	});
+
+	afterEach(() => {
+		store?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function insertProjectSession(project: string): number {
+		const now = new Date().toISOString();
+		return Number(
+			store.db
+				.prepare(
+					`INSERT INTO sessions (started_at, cwd, user, tool_version, project)
+					 VALUES (?, ?, ?, ?, ?)`,
+				)
+				.run(now, `/tmp/${project}`, "testuser", "test-1.0", project).lastInsertRowid,
+		);
+	}
+
+	function seedTwoProjects() {
+		const currentSessionId = insertProjectSession("codemem");
+		const otherSessionId = insertProjectSession("other-project");
+		// Only one weak match in the current project.
+		store.remember(
+			currentSessionId,
+			"discovery",
+			"Mentions authentication offhand",
+			"brief passing mention",
+			0.1,
+		);
+		// Several strong matches in the other project.
+		store.remember(
+			otherSessionId,
+			"decision",
+			"Authentication strategy decision",
+			"Chose OAuth for all services",
+			0.9,
+		);
+		store.remember(
+			otherSessionId,
+			"feature",
+			"Authentication module",
+			"Authentication flow details",
+			0.9,
+		);
+		store.remember(
+			otherSessionId,
+			"bugfix",
+			"Authentication token refresh",
+			"Fixed authentication refresh edge case",
+			0.9,
+		);
+		return { currentSessionId, otherSessionId };
+	}
+
+	it("does not widen across projects when widen_project_when_weak is disabled", () => {
+		seedTwoProjects();
+		const results = store.search("authentication", 10, { project: "codemem" });
+		expect(results).toHaveLength(1);
+		expect(results[0]?.metadata?.widened_from_project).toBeUndefined();
+	});
+
+	it("widens across projects when enabled and primary results are weak", () => {
+		seedTwoProjects();
+		const results = store.search("authentication", 10, {
+			project: "codemem",
+			widen_project_when_weak: true,
+		});
+		expect(results.length).toBeGreaterThan(1);
+		const widened = results.filter((r) => r.metadata?.widened_from_project === true);
+		expect(widened.length).toBeGreaterThan(0);
+		for (const item of widened) {
+			expect(item.metadata?.source_project).toBe("other-project");
+		}
+	});
+
+	it("preserves current-project-first ordering when widening activates", () => {
+		const { currentSessionId } = seedTwoProjects();
+		const results = store.search("authentication", 10, {
+			project: "codemem",
+			widen_project_when_weak: true,
+		});
+		const firstNonWidened = results.findIndex((r) => r.metadata?.widened_from_project !== true);
+		const firstWidened = results.findIndex((r) => r.metadata?.widened_from_project === true);
+		expect(firstNonWidened).toBeGreaterThanOrEqual(0);
+		expect(firstWidened).toBeGreaterThan(firstNonWidened);
+		expect(results[0]?.session_id).toBe(currentSessionId);
+	});
+
+	it("does not widen when primary-project results are strong enough", () => {
+		const currentSessionId = insertProjectSession("codemem");
+		const otherSessionId = insertProjectSession("other-project");
+		// Multiple strong primary-project matches.
+		for (let i = 0; i < 4; i++) {
+			store.remember(
+				currentSessionId,
+				"decision",
+				`Authentication decision ${i}`,
+				"authentication authentication authentication authentication",
+				0.9,
+			);
+		}
+		store.remember(
+			otherSessionId,
+			"decision",
+			"Other-project authentication",
+			"other authentication details",
+			0.9,
+		);
+		const results = store.search("authentication", 10, {
+			project: "codemem",
+			widen_project_when_weak: true,
+		});
+		const widened = results.filter((r) => r.metadata?.widened_from_project === true);
+		expect(widened).toHaveLength(0);
+	});
+
+	it("does not widen when the query names a file path", () => {
+		seedTwoProjects();
+		const results = store.search("authentication packages/auth/token.ts", 10, {
+			project: "codemem",
+			widen_project_when_weak: true,
+		});
+		const widened = results.filter((r) => r.metadata?.widened_from_project === true);
+		expect(widened).toHaveLength(0);
+	});
+
+	it("still widens when the query contains punctuation-only dots (not real paths)", () => {
+		seedTwoProjects();
+		const results = store.search("authentication v2.1", 10, {
+			project: "codemem",
+			widen_project_when_weak: true,
+		});
+		const widened = results.filter((r) => r.metadata?.widened_from_project === true);
+		expect(widened.length).toBeGreaterThan(0);
+	});
+
+	it("respects visibility filters during cross-project widening", () => {
+		const currentSessionId = insertProjectSession("codemem");
+		const otherSessionId = insertProjectSession("other-project");
+		store.remember(
+			currentSessionId,
+			"discovery",
+			"Weak current mention",
+			"vague authentication reference",
+			0.1,
+		);
+		const ts = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'decision', 'Other private auth', 'private authentication decision', 0.9, '', 1, ?, ?, '{}', 1, 'private')`,
+			)
+			.run(otherSessionId, ts, ts);
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'decision', 'Other shared auth', 'shared authentication decision', 0.9, '', 1, ?, ?, '{}', 1, 'shared')`,
+			)
+			.run(otherSessionId, ts, ts);
+
+		const results = store.search("authentication", 10, {
+			project: "codemem",
+			widen_project_when_weak: true,
+			include_visibility: ["shared"],
+		});
+		const widened = results.filter((r) => r.metadata?.widened_from_project === true);
+		expect(widened.length).toBeGreaterThan(0);
+		for (const item of widened) {
+			expect(item.title).not.toContain("private");
+		}
+	});
+
+	it("caps widened results at widen_project_max_results", () => {
+		const currentSessionId = insertProjectSession("codemem");
+		const otherSessionId = insertProjectSession("other-project");
+		store.remember(
+			currentSessionId,
+			"discovery",
+			"Weak current mention",
+			"vague authentication reference",
+			0.1,
+		);
+		for (let i = 0; i < 6; i++) {
+			store.remember(
+				otherSessionId,
+				"decision",
+				`Other authentication decision ${i}`,
+				"authentication authentication",
+				0.9,
+			);
+		}
+		const results = store.search("authentication", 10, {
+			project: "codemem",
+			widen_project_when_weak: true,
+			widen_project_max_results: 2,
+		});
+		const widened = results.filter((r) => r.metadata?.widened_from_project === true);
+		expect(widened).toHaveLength(2);
+	});
+
+	it("skips widening when no project filter is set", () => {
+		seedTwoProjects();
+		const results = store.search("authentication", 10, {
+			widen_project_when_weak: true,
+		});
+		for (const item of results) {
+			expect(item.metadata?.widened_from_project).toBeUndefined();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Integration tests: MemoryStore.timeline
 // ---------------------------------------------------------------------------
 

@@ -645,6 +645,10 @@ export interface MemoryFilters {
 	widen_shared_when_weak?: boolean | string;
 	widen_shared_min_personal_results?: number;
 	widen_shared_min_personal_score?: number;
+	widen_project_when_weak?: boolean | string;
+	widen_project_min_results?: number;
+	widen_project_min_score?: number;
+	widen_project_max_results?: number;
 }
 
 // ---------------------------------------------------------------------------
