@@ -105,10 +105,10 @@ function SyncActorRow({
 		);
 		if (!target) return;
 		const confirmed = await openSyncConfirmDialog({
-			title: `Combine ${label} into ${actorLabel(target)}?`,
+			title: `Merge ${label} into ${actorLabel(target)}?`,
 			description:
 				"Assigned devices move now, but older memories keep their current stamped provenance for now.",
-			confirmLabel: "Combine people",
+			confirmLabel: "Merge people",
 			cancelLabel: "Keep separate",
 			tone: "danger",
 		});
@@ -223,7 +223,7 @@ function SyncActorRow({
 										if (confirmed) await onDeactivate(actorId);
 									}}
 								>
-									Remove person
+									Remove this person
 								</button>
 							</>
 						) : null}
