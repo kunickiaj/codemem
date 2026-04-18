@@ -243,9 +243,9 @@ function SyncActorsList({
 	if (!actors.length) {
 		return (
 			<div className="sync-empty-state">
-				<strong>No people yet.</strong>
+				<strong>No people set up yet.</strong>
 				<span>
-					Create a named person here, then assign each device below to keep sync ownership readable.
+					Create a named person here, then assign devices below so team ownership stays readable.
 				</span>
 			</div>
 		);
