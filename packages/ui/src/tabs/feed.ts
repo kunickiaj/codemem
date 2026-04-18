@@ -788,8 +788,19 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 	const visibilityNote =
 		currentVisibility === "shared"
 			? "This memory can sync to peers allowed by your project filters."
-			: "This memory stays local unless the peer is assigned to your local actor.";
+			: "This memory stays on this device unless a matching local assignment allows it to sync.";
 	const secondaryMeta = [project ? `Project ${project}` : "No project", relative]
+		.filter(Boolean)
+		.join(" · ");
+	const provenanceDetails = [
+		workspaceKind && workspaceKind !== visibility ? `Workspace ${workspaceKind}` : "",
+		originSource ? `From ${originSource}` : "",
+		originDeviceId && actor !== "You" ? `Device ${originDeviceId}` : "",
+		trustState && trustState !== "trusted" ? trustStateLabel(trustState) : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+	const metaText = [`${tagContent}${fileContent}`.trim(), provenanceDetails]
 		.filter(Boolean)
 		.join(" · ");
 
@@ -917,21 +928,11 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 			{ className: "feed-provenance" },
 			h(ProvenanceChip, { label: actor, variant: actor === "You" ? "mine" : "author" }),
 			h(ProvenanceChip, { label: visibility || "private", variant: visibility || "private" }),
-			workspaceKind && workspaceKind !== visibility
-				? h(ProvenanceChip, { label: workspaceKind, variant: "workspace" })
-				: null,
-			originSource ? h(ProvenanceChip, { label: originSource, variant: "source" }) : null,
-			originDeviceId && actor !== "You"
-				? h(ProvenanceChip, { label: originDeviceId, variant: "device" })
-				: null,
-			trustState && trustState !== "trusted"
-				? h(ProvenanceChip, { label: trustStateLabel(trustState), variant: "trust" })
-				: null,
 		),
 		h(
 			"div",
 			{ className: "feed-meta" },
-			`${tagContent}${fileContent}` || "No tags or files attached.",
+			metaText || "No tags, files, or provenance details attached.",
 		),
 		bodyContent,
 		h(
