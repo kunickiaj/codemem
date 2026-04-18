@@ -133,7 +133,7 @@ function SyncPeerCard({
 	const [renameLabel, setRenameLabel] = useState("Save name");
 	const [syncBusy, setSyncBusy] = useState(false);
 	const [removeBusy, setRemoveBusy] = useState(false);
-	const [removeLabel, setRemoveLabel] = useState("Remove peer");
+	const [removeLabel, setRemoveLabel] = useState("Remove device");
 	const [selectedActorId, setSelectedActorId] = useState(String(peer.actor_id || ""));
 	const [applyActorBusy, setApplyActorBusy] = useState(false);
 	const [applyActorLabel, setApplyActorLabel] = useState("Save assignment");
@@ -178,7 +178,7 @@ function SyncPeerCard({
 		setRenameLabel("Save name");
 		setSyncBusy(false);
 		setRemoveBusy(false);
-		setRemoveLabel("Remove peer");
+		setRemoveLabel("Remove device");
 		setSelectedActorId(String(peer.actor_id || ""));
 		setApplyActorBusy(false);
 		setApplyActorLabel("Save assignment");
@@ -253,10 +253,10 @@ function SyncPeerCard({
 	async function remove() {
 		if (!peerId) return;
 		const confirmed = await openSyncConfirmDialog({
-			title: `Remove peer ${destructiveLabel}?`,
-			description: "This deletes the local sync peer entry on this device.",
-			confirmLabel: "Remove peer",
-			cancelLabel: "Keep peer",
+			title: `Remove device ${destructiveLabel}?`,
+			description: "This removes the local record for this paired device on this machine.",
+			confirmLabel: "Remove device",
+			cancelLabel: "Keep device",
 			tone: "danger",
 		});
 		if (!confirmed) return;
@@ -270,7 +270,7 @@ function SyncPeerCard({
 			setRemoveLabel("Retry remove");
 		} finally {
 			setRemoveBusy(false);
-			if (ok) setRemoveLabel("Remove peer");
+			if (ok) setRemoveLabel("Remove device");
 		}
 	}
 
@@ -482,7 +482,7 @@ function SyncPeersList(props: SyncPeersListProps) {
 					detail={
 						syncDisabled
 							? "Turn on sync in Settings → Device Sync first, then use Show pairing in Advanced diagnostics to connect another device."
-							: "Use Show pairing in Advanced diagnostics, run the command on the other device, then come back here to name and assign it."
+							: "Use Show pairing in Advanced diagnostics, run the command on the other device, then come back here to name it and decide who it belongs to."
 					}
 					title="No devices connected here yet."
 				/>

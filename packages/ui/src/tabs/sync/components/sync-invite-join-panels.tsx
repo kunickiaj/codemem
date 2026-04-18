@@ -73,7 +73,7 @@ function PairingCopyRow() {
 			<div className="sync-action-text">
 				Pair another device.
 				<span className="sync-action-command">
-					Use a pairing command when you want to connect another one of your own devices.
+					Copy a pairing command when you want to connect another one of your own devices.
 				</span>
 			</div>
 			<button
@@ -86,7 +86,7 @@ function PairingCopyRow() {
 					)
 				}
 			>
-				Copy
+				Copy pairing command
 			</button>
 		</div>
 	);
