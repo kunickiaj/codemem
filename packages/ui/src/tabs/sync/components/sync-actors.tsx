@@ -54,6 +54,7 @@ function SyncActorRow({
 	const [mergeBusy, setMergeBusy] = useState(false);
 	const [mergeLabel, setMergeLabel] = useState("Combine into selected person");
 	const [mergeTargetId, setMergeTargetId] = useState("");
+	const [advancedOpen, setAdvancedOpen] = useState(false);
 
 	useEffect(() => {
 		setName(label);
@@ -62,6 +63,7 @@ function SyncActorRow({
 		setMergeBusy(false);
 		setMergeLabel("Combine into selected person");
 		setMergeTargetId("");
+		setAdvancedOpen(false);
 	}, [actorId, count, hiddenLocalDuplicateCount, label, mergeTargetKeys]);
 
 	const mergeNote = !mergeTargets.length
@@ -168,47 +170,62 @@ function SyncActorRow({
 						>
 							{renameLabel}
 						</button>
-						<div className="actor-merge-controls">
-							<RadixSelect
-								ariaLabel={`Combine ${label} into another person`}
-								contentClassName="sync-radix-select-content sync-actor-select-content"
-								disabled={mergeBusy || mergeTargets.length === 0}
-								itemClassName="sync-radix-select-item"
-								onValueChange={setMergeTargetId}
-								options={mergeOptions}
-								placeholder="Combine into person"
-								triggerClassName="sync-radix-select-trigger sync-actor-select actor-merge-select"
-								value={mergeTargetId}
-								viewportClassName="sync-radix-select-viewport"
-							/>
-							<button
-								type="button"
-								className="settings-button"
-								disabled={mergeBusy || mergeTargets.length === 0 || !mergeTargetId}
-								onClick={() => void merge()}
-							>
-								{mergeLabel}
-							</button>
-						</div>
-						<div className="peer-meta actor-merge-note">{mergeNote}</div>
 						<button
 							type="button"
 							className="settings-button"
 							disabled={renameBusy || mergeBusy}
-							onClick={async () => {
-								const confirmed = await openSyncConfirmDialog({
-									title: `Remove ${label}?`,
-									description:
-										"This deactivates the person and unassigns their devices. Existing memories keep their current attribution.",
-									confirmLabel: "Remove person",
-									cancelLabel: "Keep",
-									tone: "danger",
-								});
-								if (confirmed) await onDeactivate(actorId);
-							}}
+							onClick={() => setAdvancedOpen((open) => !open)}
 						>
-							Remove person
+							{advancedOpen ? "Hide cleanup actions" : "Show cleanup actions"}
 						</button>
+						{advancedOpen ? (
+							<>
+								<div className="peer-meta actor-merge-note">
+									Use these only when cleaning up duplicates or removing an unused person.
+								</div>
+								<div className="actor-merge-controls">
+									<RadixSelect
+										ariaLabel={`Combine ${label} into another person`}
+										contentClassName="sync-radix-select-content sync-actor-select-content"
+										disabled={mergeBusy || mergeTargets.length === 0}
+										itemClassName="sync-radix-select-item"
+										onValueChange={setMergeTargetId}
+										options={mergeOptions}
+										placeholder="Combine into person"
+										triggerClassName="sync-radix-select-trigger sync-actor-select actor-merge-select"
+										value={mergeTargetId}
+										viewportClassName="sync-radix-select-viewport"
+									/>
+									<button
+										type="button"
+										className="settings-button"
+										disabled={mergeBusy || mergeTargets.length === 0 || !mergeTargetId}
+										onClick={() => void merge()}
+									>
+										{mergeLabel}
+									</button>
+								</div>
+								<div className="peer-meta actor-merge-note">{mergeNote}</div>
+								<button
+									type="button"
+									className="settings-button"
+									disabled={renameBusy || mergeBusy}
+									onClick={async () => {
+										const confirmed = await openSyncConfirmDialog({
+											title: `Remove ${label}?`,
+											description:
+												"This deactivates the person and unassigns their devices. Existing memories keep their current attribution.",
+											confirmLabel: "Remove person",
+											cancelLabel: "Keep",
+											tone: "danger",
+										});
+										if (confirmed) await onDeactivate(actorId);
+									}}
+								>
+									Remove person
+								</button>
+							</>
+						) : null}
 					</>
 				)}
 			</div>
