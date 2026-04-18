@@ -284,12 +284,14 @@ function ActionContent(props: TeamSyncPanelProps) {
 				: null}
 			{!hasAttentionItems && !hasOtherActionableWork && props.presenceStatus === "posted" ? (
 				<div className="sync-action">
-					<div className="sync-action-text">Everything is healthy.</div>
+					<div className="sync-action-text">No urgent team work right now.</div>
 				</div>
 			) : null}
 			{!hasAttentionItems && hasOtherActionableWork && props.presenceStatus === "posted" ? (
 				<div className="sync-action">
-					<div className="sync-action-text">Review the team items below when you are ready.</div>
+					<div className="sync-action-text">
+						More team follow-up is listed below when you are ready.
+					</div>
 				</div>
 			) : null}
 			{!hasAttentionItems && props.presenceStatus === "not_enrolled" ? (

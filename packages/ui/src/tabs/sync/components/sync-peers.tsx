@@ -461,11 +461,11 @@ function SyncPeersList(props: SyncPeersListProps) {
 			<>
 				<SyncInlineFeedback feedback={sectionFeedback} />
 				<div className="sync-empty-state">
-					<strong>No paired devices yet.</strong>
+					<strong>No devices connected here yet.</strong>
 					<span>
 						{syncDisabled
 							? "Turn on sync in Settings → Device Sync first, then use Show pairing in Advanced diagnostics to connect another device."
-							: "Use the Show pairing control in Advanced diagnostics, run the command on the other device, then come back here to name and assign it."}
+							: "Use Show pairing in Advanced diagnostics, run the command on the other device, then come back here to name and assign it."}
 					</span>
 				</div>
 			</>
