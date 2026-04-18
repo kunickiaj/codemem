@@ -252,6 +252,32 @@ describe("ObserverClient", () => {
 			expect(client.maxOutputTokens).toBe(12000);
 		});
 
+		it("round-trips per-tier provider overrides through toConfig", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: null,
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerSimpleProvider: "anthropic",
+				observerRichProvider: "anthropic",
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.simpleProvider).toBe("anthropic");
+			expect(client.richProvider).toBe("anthropic");
+			const config = client.toConfig();
+			expect(config.observerSimpleProvider).toBe("anthropic");
+			expect(config.observerRichProvider).toBe("anthropic");
+		});
+
 		it("preserves auth source details in toConfig", () => {
 			const client = new ObserverClient({
 				observerProvider: "openai",

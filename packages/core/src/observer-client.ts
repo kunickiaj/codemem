@@ -82,8 +82,10 @@ export interface ObserverConfig {
 	observerBaseUrl: string | null;
 	observerTemperature?: number | null;
 	observerTierRoutingEnabled?: boolean;
+	observerSimpleProvider?: string | null;
 	observerSimpleModel?: string | null;
 	observerSimpleTemperature?: number | null;
+	observerRichProvider?: string | null;
 	observerRichModel?: string | null;
 	observerRichTemperature?: number | null;
 	observerRichOpenAIUseResponses?: boolean;
@@ -222,8 +224,10 @@ export function loadObserverConfig(): ObserverConfig {
 		observerBaseUrl: null,
 		observerTemperature: 0.2,
 		observerTierRoutingEnabled: false,
+		observerSimpleProvider: null,
 		observerSimpleModel: null,
 		observerSimpleTemperature: null,
+		observerRichProvider: null,
 		observerRichModel: null,
 		observerRichTemperature: null,
 		observerRichOpenAIUseResponses: false,
@@ -286,12 +290,16 @@ export function loadObserverConfig(): ObserverConfig {
 	if (data.observer_tier_routing_enabled != null) {
 		cfg.observerTierRoutingEnabled = data.observer_tier_routing_enabled === true;
 	}
+	if (typeof data.observer_simple_provider === "string")
+		cfg.observerSimpleProvider = data.observer_simple_provider;
 	if (typeof data.observer_simple_model === "string")
 		cfg.observerSimpleModel = data.observer_simple_model;
 	if (data.observer_simple_temperature != null) {
 		const n = Number(data.observer_simple_temperature);
 		cfg.observerSimpleTemperature = Number.isFinite(n) ? n : cfg.observerSimpleTemperature;
 	}
+	if (typeof data.observer_rich_provider === "string")
+		cfg.observerRichProvider = data.observer_rich_provider;
 	if (typeof data.observer_rich_model === "string")
 		cfg.observerRichModel = data.observer_rich_model;
 	if (data.observer_rich_temperature != null) {
@@ -350,11 +358,14 @@ export function loadObserverConfig(): ObserverConfig {
 			process.env.CODEMEM_OBSERVER_TIER_ROUTING_ENABLED === "1" ||
 			process.env.CODEMEM_OBSERVER_TIER_ROUTING_ENABLED === "true";
 	}
+	cfg.observerSimpleProvider =
+		process.env.CODEMEM_OBSERVER_SIMPLE_PROVIDER ?? cfg.observerSimpleProvider;
 	cfg.observerSimpleModel = process.env.CODEMEM_OBSERVER_SIMPLE_MODEL ?? cfg.observerSimpleModel;
 	if (process.env.CODEMEM_OBSERVER_SIMPLE_TEMPERATURE != null) {
 		const n = Number(process.env.CODEMEM_OBSERVER_SIMPLE_TEMPERATURE);
 		cfg.observerSimpleTemperature = Number.isFinite(n) ? n : cfg.observerSimpleTemperature;
 	}
+	cfg.observerRichProvider = process.env.CODEMEM_OBSERVER_RICH_PROVIDER ?? cfg.observerRichProvider;
 	cfg.observerRichModel = process.env.CODEMEM_OBSERVER_RICH_MODEL ?? cfg.observerRichModel;
 	if (process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE != null) {
 		const n = Number(process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE);
@@ -839,8 +850,10 @@ export class ObserverClient {
 	readonly runtime: string;
 	readonly temperature: number | null;
 	readonly tierRoutingEnabled: boolean;
+	readonly simpleProvider: string | null;
 	readonly simpleModel: string | null;
 	readonly simpleTemperature: number | null;
+	readonly richProvider: string | null;
 	readonly richModel: string | null;
 	readonly richTemperature: number | null;
 	readonly richOpenAIUseResponses: boolean;
@@ -948,6 +961,10 @@ export class ObserverClient {
 				? cfg.observerTemperature
 				: 0.2;
 		this.tierRoutingEnabled = cfg.observerTierRoutingEnabled === true;
+		this.simpleProvider =
+			typeof cfg.observerSimpleProvider === "string" && cfg.observerSimpleProvider.trim()
+				? cfg.observerSimpleProvider.trim()
+				: null;
 		this.simpleModel =
 			typeof cfg.observerSimpleModel === "string" && cfg.observerSimpleModel.trim()
 				? cfg.observerSimpleModel.trim()
@@ -956,6 +973,10 @@ export class ObserverClient {
 			typeof cfg.observerSimpleTemperature === "number" &&
 			Number.isFinite(cfg.observerSimpleTemperature)
 				? cfg.observerSimpleTemperature
+				: null;
+		this.richProvider =
+			typeof cfg.observerRichProvider === "string" && cfg.observerRichProvider.trim()
+				? cfg.observerRichProvider.trim()
 				: null;
 		this.richModel =
 			typeof cfg.observerRichModel === "string" && cfg.observerRichModel.trim()
@@ -1033,8 +1054,10 @@ export class ObserverClient {
 			observerBaseUrl: this._customBaseUrl,
 			observerTemperature: this.temperature,
 			observerTierRoutingEnabled: this.tierRoutingEnabled,
+			observerSimpleProvider: this.simpleProvider,
 			observerSimpleModel: this.simpleModel,
 			observerSimpleTemperature: this.simpleTemperature,
+			observerRichProvider: this.richProvider,
 			observerRichModel: this.richModel,
 			observerRichTemperature: this.richTemperature,
 			observerRichOpenAIUseResponses: this.richOpenAIUseResponses,
