@@ -228,6 +228,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	sync_retention_max_ops_per_pass: "CODEMEM_SYNC_RETENTION_MAX_OPS_PER_PASS",
 	sync_projects_include: "CODEMEM_SYNC_PROJECTS_INCLUDE",
 	sync_projects_exclude: "CODEMEM_SYNC_PROJECTS_EXCLUDE",
+	sync_ops_limit: "CODEMEM_SYNC_OPS_LIMIT",
 	raw_events_sweeper_interval_s: "CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S",
 };
 

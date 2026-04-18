@@ -126,6 +126,27 @@ describe("syncDaemonTick", () => {
 		expect(results[0].ok).toBe(true);
 		expect(runSyncPass).toHaveBeenCalledTimes(1);
 	});
+
+	it("threads syncOpsLimit from coordinator config into runSyncPass", async () => {
+		const { runSyncPass } = await import("./sync-pass.js");
+		const { readCoordinatorSyncConfig } = await import("./coordinator-runtime.js");
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncOpsLimit: 750,
+		} as unknown as ReturnType<typeof readCoordinatorSyncConfig>);
+
+		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "fp1", now);
+
+		await syncDaemonTick(db, "/tmp/keys");
+
+		expect(runSyncPass).toHaveBeenCalledWith(
+			db,
+			"peer-1",
+			expect.objectContaining({ limit: 750, keysDir: "/tmp/keys" }),
+		);
+	});
 });
 
 describe("refreshCoordinatorPresenceForDaemon", () => {
