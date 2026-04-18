@@ -32,9 +32,9 @@ type SyncActorsListProps = {
 
 function localActorNote(hiddenLocalDuplicateCount: number): string {
 	if (hiddenLocalDuplicateCount <= 0) {
-		return "Represents you across your devices.";
+		return "Represents you across your own devices.";
 	}
-	return `Represents you across your devices. ${hiddenLocalDuplicateCount} unresolved duplicate ${hiddenLocalDuplicateCount === 1 ? "entry is" : "entries are"} hidden until reviewed in Needs attention.`;
+	return `Represents you across your own devices. ${hiddenLocalDuplicateCount} unresolved duplicate ${hiddenLocalDuplicateCount === 1 ? "entry is" : "entries are"} hidden until reviewed in Needs attention.`;
 }
 
 function SyncActorRow({
@@ -53,7 +53,7 @@ function SyncActorRow({
 	const [renameBusy, setRenameBusy] = useState(false);
 	const [renameLabel, setRenameLabel] = useState("Rename");
 	const [mergeBusy, setMergeBusy] = useState(false);
-	const [mergeLabel, setMergeLabel] = useState("Combine into selected person");
+	const [mergeLabel, setMergeLabel] = useState("Merge into selected person");
 	const [mergeTargetId, setMergeTargetId] = useState("");
 	const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -62,16 +62,16 @@ function SyncActorRow({
 		setRenameBusy(false);
 		setRenameLabel("Rename");
 		setMergeBusy(false);
-		setMergeLabel("Combine into selected person");
+		setMergeLabel("Merge into selected person");
 		setMergeTargetId("");
 		setAdvancedOpen(false);
 	}, [actorId, count, hiddenLocalDuplicateCount, label, mergeTargetKeys]);
 
 	const mergeNote = !mergeTargets.length
-		? "No people available to combine yet. Create another person or use You."
+		? "No other people are available yet. Create another person first if you need to merge duplicates."
 		: actorMergeNote(mergeTargetId, actorId);
 	const mergeOptions = [
-		{ label: "Combine into person", value: "" },
+		{ label: "Merge into person", value: "" },
 		...mergeTargets.map((target) => {
 			const targetId = String(target.actor_id || "");
 			return {
@@ -125,7 +125,7 @@ function SyncActorRow({
 			setMergeLabel("Retry merge");
 		} finally {
 			setMergeBusy(false);
-			if (ok) setMergeLabel("Combine into selected person");
+			if (ok) setMergeLabel("Merge into selected person");
 		}
 	}
 
@@ -150,7 +150,7 @@ function SyncActorRow({
 
 			<div className="actor-actions">
 				{actor.is_local ? (
-					<div className="peer-meta">Rename in config</div>
+					<div className="peer-meta">Rename yourself in config</div>
 				) : (
 					<>
 						<TextInput
@@ -177,22 +177,22 @@ function SyncActorRow({
 							disabled={renameBusy || mergeBusy}
 							onClick={() => setAdvancedOpen((open) => !open)}
 						>
-							{advancedOpen ? "Hide cleanup actions" : "Show cleanup actions"}
+							{advancedOpen ? "Hide duplicate cleanup" : "Show duplicate cleanup"}
 						</button>
 						{advancedOpen ? (
 							<>
 								<div className="peer-meta actor-merge-note">
-									Use these only when cleaning up duplicates or removing an unused person.
+									Use these only when cleaning up duplicate people or removing an unused person.
 								</div>
 								<div className="actor-merge-controls">
 									<RadixSelect
-										ariaLabel={`Combine ${label} into another person`}
+										ariaLabel={`Merge ${label} into another person`}
 										contentClassName="sync-radix-select-content sync-actor-select-content"
 										disabled={mergeBusy || mergeTargets.length === 0}
 										itemClassName="sync-radix-select-item"
 										onValueChange={setMergeTargetId}
 										options={mergeOptions}
-										placeholder="Combine into person"
+										placeholder="Merge into person"
 										triggerClassName="sync-radix-select-trigger sync-actor-select actor-merge-select"
 										value={mergeTargetId}
 										viewportClassName="sync-radix-select-viewport"

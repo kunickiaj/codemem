@@ -185,14 +185,14 @@ export function renderSyncPeers() {
 				await api.assignPeerActor(peerId, actorId);
 				await _loadSyncData();
 				return {
-					message: actorId ? "Device person updated." : "Device person cleared.",
+					message: actorId ? "Device assignment updated." : "Device assignment cleared.",
 					tone: "success",
 				} satisfies SyncActionFeedback;
 			} catch (error) {
 				return {
 					message: friendlyError(
 						error,
-						"Failed to update device person. The current assignment is unchanged.",
+						"Failed to update device assignment. The current assignment is unchanged.",
 					),
 					tone: "warning",
 				} satisfies SyncActionFeedback;
