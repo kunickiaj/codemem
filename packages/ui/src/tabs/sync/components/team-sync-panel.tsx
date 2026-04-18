@@ -8,6 +8,7 @@ import { SyncInlineFeedback } from "./sync-inline-feedback";
 
 export interface TeamSyncStatusSummary {
 	badgeClassName: string;
+	detail: string | null;
 	headline: string | null;
 	presenceLabel: string;
 	metricsText: string;
@@ -268,7 +269,7 @@ function ActionContent(props: TeamSyncPanelProps) {
 
 	return (
 		<>
-			{showNextStepsLabel ? <SectionHeading label="Next steps" /> : null}
+			{showNextStepsLabel ? <SectionHeading label="Needs attention" /> : null}
 			{hasAttentionItems
 				? props.actionItems.map((item) => (
 						<AttentionRow key={item.id} item={item} onAction={props.onAttentionAction} />
@@ -302,7 +303,7 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	if (!children) return null;
 	return (
 		<>
-			<SectionHeading label="Keep the team moving" />
+			<SectionHeading label="Add devices & teammates" />
 			{children}
 		</>
 	);
@@ -317,13 +318,15 @@ function TeamStatusPortal({
 }) {
 	return createPortal(
 		<div className="sync-team-summary">
+			<SectionHeading label="Overview" />
 			<div className="sync-team-status-row">
-				<span className="sync-team-status-label">Team status</span>
+				<span className="sync-team-status-label">Current status</span>
 				<span className={statusSummary.badgeClassName}>{statusSummary.presenceLabel}</span>
 			</div>
 			{statusSummary.headline ? (
 				<div className="sync-team-headline">{statusSummary.headline}</div>
 			) : null}
+			{statusSummary.detail ? <div className="section-meta">{statusSummary.detail}</div> : null}
 			<div className="sync-team-metrics sync-team-metrics-secondary">
 				{statusSummary.metricsText}
 			</div>

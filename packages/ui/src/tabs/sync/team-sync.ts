@@ -564,6 +564,14 @@ export function renderTeamSync() {
 	const teamLabel = (coordinator.groups || []).join(", ") || "none";
 	const statusSummary: TeamSyncStatusSummary = {
 		badgeClassName: `pill ${presenceStatus === "posted" ? "pill-success" : presenceStatus === "not_enrolled" ? "pill-warning" : "pill-error"}`,
+		detail:
+			presenceStatus === "posted"
+				? actionableCount > 0
+					? `Team ${teamLabel}. Start with the highest-priority item below, then review people and devices.`
+					: `Team ${teamLabel}. Nothing urgent is blocking sync right now.`
+				: presenceStatus === "not_enrolled"
+					? `Team ${teamLabel}. Enroll this device first, then return here to review the rest of the team.`
+					: `Team ${teamLabel}. Fix the current sync issue first, then verify the rest of the team state.`,
 		headline:
 			presenceStatus === "posted"
 				? actionableCount > 0
