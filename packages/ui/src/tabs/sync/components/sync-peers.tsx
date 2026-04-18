@@ -342,7 +342,12 @@ function SyncPeerCard({
 				</div>
 
 				<div className="peer-actions">
-					<button type="button" disabled={!primaryAddress || syncBusy} onClick={() => void sync()}>
+					<button
+						type="button"
+						className="settings-button"
+						disabled={!primaryAddress || syncBusy}
+						onClick={() => void sync()}
+					>
 						{syncBusy ? "Syncing…" : "Sync now"}
 					</button>
 					<TextInput
@@ -357,10 +362,20 @@ function SyncPeerCard({
 							setRenameValue(event.currentTarget.value)
 						}
 					/>
-					<button type="button" disabled={renameBusy} onClick={() => void rename()}>
+					<button
+						type="button"
+						className="settings-button"
+						disabled={renameBusy}
+						onClick={() => void rename()}
+					>
 						{renameLabel}
 					</button>
-					<button type="button" disabled={removeBusy} onClick={() => void remove()}>
+					<button
+						type="button"
+						className="settings-button danger"
+						disabled={removeBusy}
+						onClick={() => void remove()}
+					>
 						{removeLabel}
 					</button>
 				</div>
