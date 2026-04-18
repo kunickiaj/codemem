@@ -81,3 +81,6 @@ packages/viewer-server/static/
 # Beads credential files
 .beads/.beads-credential-key
 .beads/push-state.json
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
