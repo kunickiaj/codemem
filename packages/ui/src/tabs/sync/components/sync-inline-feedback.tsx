@@ -10,6 +10,7 @@ export function SyncInlineFeedback({ feedback }: { feedback: SyncActionFeedback 
 			className={`sync-inline-feedback ${feedback.tone}`}
 			role={feedback.tone === "warning" ? "alert" : "status"}
 			aria-live={feedback.tone === "warning" ? "assertive" : "polite"}
+			aria-atomic="true"
 		>
 			{feedback.message}
 		</div>
