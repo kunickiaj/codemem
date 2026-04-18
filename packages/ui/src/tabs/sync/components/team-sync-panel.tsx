@@ -125,6 +125,7 @@ function PendingJoinRequestRow({
 				<button
 					type="button"
 					className="settings-button"
+					aria-label={`${approveLabel} join request from ${request.displayName}`}
 					disabled={busyAction !== null}
 					onClick={async () => {
 						setBusyAction("approve");
@@ -144,6 +145,7 @@ function PendingJoinRequestRow({
 				<button
 					type="button"
 					className="settings-button"
+					aria-label={`${denyLabel} join request from ${request.displayName}`}
 					disabled={busyAction !== null}
 					onClick={async () => {
 						setBusyAction("deny");
@@ -204,6 +206,7 @@ function DiscoveredDeviceRow({
 					<button
 						type="button"
 						className="settings-button"
+						aria-label={`${reviewLabel} for ${row.displayName}`}
 						disabled={busy !== null}
 						onClick={async () => {
 							setBusy("review");
@@ -233,6 +236,7 @@ function DiscoveredDeviceRow({
 						<button
 							type="button"
 							className="settings-button"
+							aria-label={`Open details for ${row.displayName}`}
 							disabled={busy !== null}
 							onClick={() => onInspectConflict(row)}
 						>
@@ -241,6 +245,7 @@ function DiscoveredDeviceRow({
 						<button
 							type="button"
 							className="settings-button"
+							aria-label={`${removeLabel} for ${row.displayName}`}
 							disabled={busy !== null}
 							onClick={async () => {
 								setBusy("remove");
