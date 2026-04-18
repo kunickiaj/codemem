@@ -81,6 +81,9 @@ const TRUST_BIAS_UNREVIEWED_PENALTY = 0.12;
 const WIDEN_SHARED_DEFAULT_MIN_PERSONAL_RESULTS = 3;
 const WIDEN_SHARED_DEFAULT_MIN_PERSONAL_SCORE = 0.0;
 const WIDEN_SHARED_MAX_SHARED_RESULTS = 2;
+const WIDEN_PROJECT_DEFAULT_MIN_RESULTS = 3;
+const WIDEN_PROJECT_DEFAULT_MIN_SCORE = 0.0;
+const WIDEN_PROJECT_DEFAULT_MAX_RESULTS = 3;
 const NON_SUMMARY_RECAP_PENALTY = 2.5;
 const NON_SUMMARY_OBSERVER_RECAP_PENALTY = 6.5;
 const NON_TASK_TASKLIKE_PENALTY = 0.35;
@@ -260,6 +263,78 @@ function sharedWideningFilters(filters: MemoryFilters | undefined): MemoryFilter
 		personal_first: false,
 		widen_shared_when_weak: false,
 	};
+}
+
+function widenProjectWhenWeakEnabled(filters: MemoryFilters | undefined): boolean {
+	if (!filters || filters.widen_project_when_weak === undefined) return false;
+	const value = filters.widen_project_when_weak;
+	if (typeof value === "string") {
+		const lowered = value.trim().toLowerCase();
+		if (["0", "false", "no", "off"].includes(lowered)) return false;
+		if (["1", "true", "yes", "on"].includes(lowered)) return true;
+	}
+	return Boolean(value);
+}
+
+function widenProjectMinResults(filters: MemoryFilters | undefined): number {
+	const value = filters?.widen_project_min_results;
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return WIDEN_PROJECT_DEFAULT_MIN_RESULTS;
+	}
+	return Math.max(1, Math.trunc(value));
+}
+
+function widenProjectMinScore(filters: MemoryFilters | undefined): number {
+	const value = filters?.widen_project_min_score;
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return WIDEN_PROJECT_DEFAULT_MIN_SCORE;
+	}
+	return Math.max(0, value);
+}
+
+function widenProjectMaxResults(filters: MemoryFilters | undefined): number {
+	const value = filters?.widen_project_max_results;
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return WIDEN_PROJECT_DEFAULT_MAX_RESULTS;
+	}
+	return Math.max(1, Math.trunc(value));
+}
+
+function queryBlocksProjectWidening(query: string): boolean {
+	// A query that names real paths (contains `/` in a token) is almost always
+	// scoped to the current project; cross-project broadening is noise, not help.
+	// `queryPathHints` is intentionally loose and also classifies plain-English
+	// tokens like "oauth v2.1" as hints via the `.` rule, so we filter down to
+	// tokens that actually look like directory paths before short-circuiting.
+	return queryPathHints(query).some((token) => token.includes("/"));
+}
+
+function projectWideningFilters(filters: MemoryFilters | undefined): MemoryFilters {
+	return {
+		...(filters ?? {}),
+		project: undefined,
+		widen_project_when_weak: false,
+		widen_shared_when_weak: false,
+	};
+}
+
+function markProjectWideningMetadata(store: StoreHandle, items: MemoryResult[]): MemoryResult[] {
+	if (items.length === 0) return items;
+	const sessionIds = new Set(
+		items.map((item) => item.session_id).filter((id): id is number => !!id),
+	);
+	const sessionProjects = loadSessionProjects(store, sessionIds);
+	return items.map((item) => {
+		const sourceProject = sessionProjects.get(item.session_id) ?? null;
+		return {
+			...item,
+			metadata: {
+				...(item.metadata ?? {}),
+				widened_from_project: true,
+				...(sourceProject ? { source_project: sourceProject } : {}),
+			},
+		};
+	});
 }
 
 function markWideningMetadata(items: MemoryResult[]): MemoryResult[] {
@@ -769,6 +844,16 @@ export function search(
 ): MemoryResult[] {
 	const effectiveQuery = sanitizeSearchQuery(query).clean_query;
 	const primary = searchOnce(store, effectiveQuery, limit, filters);
+	const withShared = applySharedWidening(store, primary, effectiveQuery, filters);
+	return applyProjectWidening(store, withShared, effectiveQuery, filters);
+}
+
+function applySharedWidening(
+	store: StoreHandle,
+	primary: MemoryResult[],
+	effectiveQuery: string,
+	filters: MemoryFilters | undefined,
+): MemoryResult[] {
 	if (
 		!widenSharedWhenWeakEnabled(filters) ||
 		!effectiveQuery ||
@@ -804,6 +889,58 @@ export function search(
 		if (addedShared >= WIDEN_SHARED_MAX_SHARED_RESULTS) break;
 	}
 	return combined;
+}
+
+function applyProjectWidening(
+	store: StoreHandle,
+	primary: MemoryResult[],
+	effectiveQuery: string,
+	filters: MemoryFilters | undefined,
+): MemoryResult[] {
+	const projectFilter = filters?.project?.trim();
+	if (!projectFilter) return primary;
+	if (
+		!widenProjectWhenWeakEnabled(filters) ||
+		!effectiveQuery ||
+		queryBlocksProjectWidening(effectiveQuery)
+	) {
+		return primary;
+	}
+
+	const primaryProjectResults = primary.filter(
+		(item) => item.metadata?.widened_from_project !== true,
+	);
+	const strongestPrimaryScore = primaryProjectResults[0]?.score ?? -Infinity;
+	const primaryStrongEnough =
+		primaryProjectResults.length >= widenProjectMinResults(filters) &&
+		strongestPrimaryScore >= widenProjectMinScore(filters);
+	if (primaryStrongEnough) return primary;
+
+	const maxToAdd = widenProjectMaxResults(filters);
+	const candidates = searchOnce(
+		store,
+		effectiveQuery,
+		maxToAdd * 4,
+		projectWideningFilters(filters),
+	);
+	const seen = new Set(primary.map((item) => item.id));
+	const candidateSessionIds = new Set(
+		candidates.map((item) => item.session_id).filter((id): id is number => !!id),
+	);
+	const candidateSessionProjects = loadSessionProjects(store, candidateSessionIds);
+
+	const foreign: MemoryResult[] = [];
+	for (const candidate of candidates) {
+		if (seen.has(candidate.id)) continue;
+		const sourceProject = candidateSessionProjects.get(candidate.session_id) ?? null;
+		if (sourceProject && projectMatchesFilter(projectFilter, sourceProject)) continue;
+		foreign.push(candidate);
+		seen.add(candidate.id);
+		if (foreign.length >= maxToAdd) break;
+	}
+	if (foreign.length === 0) return primary;
+
+	return [...primary, ...markProjectWideningMetadata(store, foreign)];
 }
 
 function searchOnce(
