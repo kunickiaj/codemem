@@ -95,6 +95,24 @@ describe("buildMemoryPack usefulness evals", () => {
 		expect(pack.pack_text.toLowerCase()).toContain("summary");
 	});
 
+	it("picks the stronger memory when multiple candidates share the same working-set file", () => {
+		const corpus = createPackEvalCorpus(store);
+
+		const pack = buildMemoryPack(store, "settings tab freshness decision", 10, null, {
+			working_set_paths: ["packages/ui/src/tabs/settings.ts"],
+		});
+
+		// Both fixture memories touch settings.ts; the strong durable decision
+		// should outrank the low-confidence drive-by exploration so file overlap
+		// alone cannot rescue noise.
+		const strongPos = pack.item_ids.indexOf(corpus.ids.workingSetSharedFileStrongId);
+		const noisePos = pack.item_ids.indexOf(corpus.ids.workingSetSharedFileNoiseId);
+		expect(strongPos).toBeGreaterThanOrEqual(0);
+		if (noisePos >= 0) {
+			expect(strongPos).toBeLessThan(noisePos);
+		}
+	});
+
 	it("boosts working-set overlaps ahead of distractors when semantic candidates tie", () => {
 		const corpus = createPackEvalCorpus(store);
 		const semanticResults: MemoryResult[] = [

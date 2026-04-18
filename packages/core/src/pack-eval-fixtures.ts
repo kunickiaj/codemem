@@ -15,6 +15,8 @@ export type PackEvalCorpus = {
 		viewerHealthFeatureId: number;
 		workingSetPrimaryId: number;
 		workingSetDistractorId: number;
+		workingSetSharedFileStrongId: number;
+		workingSetSharedFileNoiseId: number;
 	};
 };
 
@@ -125,6 +127,27 @@ export function createPackEvalCorpus(store: MemoryStore): PackEvalCorpus {
 		undefined,
 		{ files_modified: ["packages/ui/src/tabs/feed.ts"] },
 	);
+	// Two memories touching the SAME file so retrieval must pick between them on
+	// signal rather than file-overlap alone. Kept on a distinct file
+	// (settings.ts) so they don't perturb the health.ts-focused tests above.
+	const workingSetSharedFileStrongId = store.remember(
+		currentSessionId,
+		"decision",
+		"Settings tab freshness rule",
+		"Decision to cap settings tab freshness diagnostics at 24h and surface stale peer counts inline",
+		0.92,
+		undefined,
+		{ files_modified: ["packages/ui/src/tabs/settings.ts"] },
+	);
+	const workingSetSharedFileNoiseId = store.remember(
+		olderSessionId,
+		"exploration",
+		"Settings tab drive-by tidy",
+		"Minor comment fix in the settings tab file, unrelated to any current work",
+		0.3,
+		undefined,
+		{ files_modified: ["packages/ui/src/tabs/settings.ts"] },
+	);
 
 	return {
 		currentSessionId,
@@ -140,6 +163,8 @@ export function createPackEvalCorpus(store: MemoryStore): PackEvalCorpus {
 			viewerHealthFeatureId,
 			workingSetPrimaryId,
 			workingSetDistractorId,
+			workingSetSharedFileStrongId,
+			workingSetSharedFileNoiseId,
 		},
 	};
 }
