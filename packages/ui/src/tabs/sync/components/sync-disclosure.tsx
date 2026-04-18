@@ -1,7 +1,7 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
 import type { ComponentChildren } from "preact";
 import { createPortal } from "preact/compat";
-import { useLayoutEffect, useRef } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { TextArea } from "../../../components/primitives/text-area";
 import { TextInput } from "../../../components/primitives/text-input";
 import { renderIntoSyncMount } from "./render-root";
@@ -33,6 +33,7 @@ function SyncDisclosure({
 }: SyncDisclosureProps) {
 	const triggerRef = useRef<HTMLButtonElement | null>(null);
 	const contentRef = useRef<HTMLDivElement | null>(null);
+	const openedRef = useRef(false);
 
 	useLayoutEffect(() => {
 		if (triggerRef.current) {
@@ -43,6 +44,21 @@ function SyncDisclosure({
 			contentRef.current.id = contentId;
 		}
 	}, [contentId, triggerId, open]);
+
+	useEffect(() => {
+		if (!open) {
+			openedRef.current = false;
+			return;
+		}
+		if (openedRef.current) return;
+		openedRef.current = true;
+		queueMicrotask(() => {
+			const firstFocusable = contentRef.current?.querySelector<HTMLElement>(
+				'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+			);
+			firstFocusable?.focus();
+		});
+	}, [open]);
 
 	const content = (
 		<Collapsible.Content forceMount asChild>
