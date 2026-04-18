@@ -1311,3 +1311,167 @@ describe("cleanOrphanSessions", () => {
 		expect(cleaned).toBe(0);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// supersedePriorObserverSummaries
+// ---------------------------------------------------------------------------
+
+describe("supersedePriorObserverSummaries", () => {
+	let tmpDir: string;
+	let store: MemoryStore;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-supersede-test-"));
+		const dbPath = join(tmpDir, "test.sqlite");
+		const setupDb = connect(dbPath);
+		initTestSchema(setupDb);
+		setupDb.close();
+		store = new MemoryStore(dbPath);
+	});
+
+	afterEach(() => {
+		store?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	async function loadHelpers() {
+		const { supersedePriorObserverSummaries } = await import("./ingest-pipeline.js");
+		const { drizzle } = await import("drizzle-orm/better-sqlite3");
+		const schema = await import("./schema.js");
+		return {
+			supersede: supersedePriorObserverSummaries,
+			d: drizzle(store.db, { schema }),
+		};
+	}
+
+	function insertSession(): number {
+		const result = store.db
+			.prepare("INSERT INTO sessions (started_at, cwd) VALUES (?, ?)")
+			.run(new Date().toISOString(), "/tmp") as { lastInsertRowid: number };
+		return result.lastInsertRowid;
+	}
+
+	it("returns an empty list when no prior observer summaries exist", async () => {
+		const { supersede, d } = await loadHelpers();
+		const sessionId = insertSession();
+		const supersededIds = supersede(store, d, sessionId);
+		expect(supersededIds).toEqual([]);
+	});
+
+	it("soft-deletes prior active observer summaries for the session", async () => {
+		const { supersede, d } = await loadHelpers();
+		const sessionId = insertSession();
+
+		const oldA = store.remember(sessionId, "session_summary", "flush A", "body A", 0.3, undefined, {
+			source: "observer_summary",
+		});
+		const oldB = store.remember(sessionId, "session_summary", "flush B", "body B", 0.3, undefined, {
+			source: "observer_summary",
+		});
+
+		const supersededIds = supersede(store, d, sessionId);
+		expect(supersededIds.sort()).toEqual([oldA, oldB].sort());
+
+		const rows = store.db
+			.prepare(
+				"SELECT id, active, metadata_json FROM memory_items WHERE session_id = ? AND kind = 'session_summary' ORDER BY id ASC",
+			)
+			.all(sessionId) as Array<{ id: number; active: number; metadata_json: string }>;
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => r.active === 0)).toBe(true);
+		for (const row of rows) {
+			const meta = JSON.parse(row.metadata_json ?? "{}");
+			expect(typeof meta.superseded_at).toBe("string");
+		}
+	});
+
+	it("does not touch summaries from other sources or other sessions", async () => {
+		const { supersede, d } = await loadHelpers();
+		const sessionId = insertSession();
+		const otherSessionId = insertSession();
+
+		const legacyId = store.remember(
+			sessionId,
+			"session_summary",
+			"legacy summary",
+			"legacy body",
+			0.3,
+			undefined,
+			{ source: "legacy_import" },
+		);
+		const otherSessionSummaryId = store.remember(
+			otherSessionId,
+			"session_summary",
+			"other session",
+			"other body",
+			0.3,
+			undefined,
+			{ source: "observer_summary" },
+		);
+
+		const supersededIds = supersede(store, d, sessionId);
+		expect(supersededIds).toEqual([]);
+
+		const legacyActive = store.db
+			.prepare("SELECT active FROM memory_items WHERE id = ?")
+			.get(legacyId) as { active: number };
+		const otherActive = store.db
+			.prepare("SELECT active FROM memory_items WHERE id = ?")
+			.get(otherSessionSummaryId) as { active: number };
+		expect(legacyActive.active).toBe(1);
+		expect(otherActive.active).toBe(1);
+	});
+
+	it("keeps the freshest content when a later flush repeats an earlier title", async () => {
+		// Reproduces the bug path the reviewer flagged: flush A, flush B, flush A
+		// again. If supersede ran after store.remember, the A-title dedupe would
+		// return the oldest A row and we would wipe out B, regressing to stale
+		// content. Running supersede first ensures the dedupe query sees no
+		// active matches so store.remember always inserts fresh.
+		const { supersede, d } = await loadHelpers();
+		const sessionId = insertSession();
+
+		// Flush 1
+		supersede(store, d, sessionId);
+		const rowA1 = store.remember(
+			sessionId,
+			"session_summary",
+			"flush A",
+			"body A1",
+			0.3,
+			undefined,
+			{ source: "observer_summary" },
+		);
+
+		// Flush 2 (different title)
+		supersede(store, d, sessionId);
+		const rowB = store.remember(sessionId, "session_summary", "flush B", "body B", 0.3, undefined, {
+			source: "observer_summary",
+		});
+
+		// Flush 3 (repeats title A with fresher body)
+		supersede(store, d, sessionId);
+		const rowA2 = store.remember(
+			sessionId,
+			"session_summary",
+			"flush A",
+			"body A2-fresh",
+			0.3,
+			undefined,
+			{ source: "observer_summary" },
+		);
+
+		// All three rows must be distinct inserts; the dedupe should not have
+		// reused rowA1's id because it was soft-deleted before flush 3.
+		expect(new Set([rowA1, rowB, rowA2]).size).toBe(3);
+
+		const activeRows = store.db
+			.prepare(
+				"SELECT id, body_text FROM memory_items WHERE session_id = ? AND kind = 'session_summary' AND active = 1",
+			)
+			.all(sessionId) as Array<{ id: number; body_text: string }>;
+		expect(activeRows).toHaveLength(1);
+		expect(activeRows[0]?.id).toBe(rowA2);
+		expect(activeRows[0]?.body_text).toBe("body A2-fresh");
+	});
+});
