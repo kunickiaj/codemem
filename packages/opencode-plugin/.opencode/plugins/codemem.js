@@ -217,6 +217,30 @@ const buildPackArgs = ({ query, filesModified, injectLimit, injectTokenBudget })
   return appendWorkingSetFileArgs(args, workingSetFiles);
 };
 
+const parsePackText = (stdout) => {
+  if (!stdout || !stdout.trim()) {
+    return "";
+  }
+  try {
+    const payload = JSON.parse(stdout);
+    return (payload?.pack_text || "").trim();
+  } catch {
+    return "";
+  }
+};
+
+const parsePackMetrics = (stdout) => {
+  if (!stdout || !stdout.trim()) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(stdout);
+    return payload?.metrics || null;
+  } catch {
+    return null;
+  }
+};
+
 const applyInjectedContextToOutput = async ({
   injectEnabled,
   input,
@@ -1475,30 +1499,6 @@ export const OpencodeMemPlugin = async ({
     };
   };
 
-  const parsePackText = (stdout) => {
-    if (!stdout || !stdout.trim()) {
-      return "";
-    }
-    try {
-      const payload = JSON.parse(stdout);
-      return (payload?.pack_text || "").trim();
-    } catch (err) {
-      return "";
-    }
-  };
-
-  const parsePackMetrics = (stdout) => {
-    if (!stdout || !stdout.trim()) {
-      return null;
-    }
-    try {
-      const payload = JSON.parse(stdout);
-      return payload?.metrics || null;
-    } catch (err) {
-      return null;
-    }
-  };
-
   const redactLog = (value, limit = 400) => {
     if (!value) return "";
     const masked = String(value).replace(/(Bearer\s+)[^\s]+/gi, "$1[redacted]");
@@ -2105,6 +2105,8 @@ export const __testUtils = {
   resolveProjectName,
   buildInjectQuery,
   buildPackArgs,
+  parsePackText,
+  parsePackMetrics,
   applyInjectedContextToOutput,
   buildRunnerArgs,
   appendWorkingSetFileArgs,
