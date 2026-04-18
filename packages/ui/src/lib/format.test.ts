@@ -17,6 +17,7 @@ describe("formatTokenCount", () => {
 	});
 
 	it("promotes rounded counts into the next suffix tier", () => {
+		// Keep readable unit boundaries instead of surfacing awkward values like 1000K.
 		expect(formatTokenCount(999_950)).toBe("1M tokens");
 		expect(formatTokenCount(999_950_000)).toBe("1B tokens");
 	});
