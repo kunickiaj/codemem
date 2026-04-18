@@ -41,7 +41,7 @@ export function PeerScopeCollapsible({
 	return (
 		<Collapsible.Root open={open} onOpenChange={setOpen}>
 			<Collapsible.Trigger asChild>
-				<button type="button">{open ? "Hide scope editor" : "Edit scope"}</button>
+				<button type="button">{open ? "Hide sharing scope" : "Show sharing scope"}</button>
 			</Collapsible.Trigger>
 			{contentHost ? createPortal(content, contentHost) : null}
 		</Collapsible.Root>

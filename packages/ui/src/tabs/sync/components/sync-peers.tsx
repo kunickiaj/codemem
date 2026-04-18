@@ -114,6 +114,9 @@ function SyncPeerCard({
 				.map((address) => (isSyncRedactionEnabled() ? redactAddress(address) : address))
 				.join(" · ")
 		: "No addresses";
+	const assignmentSummary = peer.actor_display_name
+		? `Assigned to ${peer.claimed_local_actor ? "You" : String(peer.actor_display_name)}`
+		: "No person assigned yet";
 	const lastSyncAt = String(peerStatus.last_sync_at || peerStatus.last_sync_at_utc || "");
 	const lastPingAt = String(peerStatus.last_ping_at || peerStatus.last_ping_at_utc || "");
 	const scopeEditorOpen = openPeerScopeEditors.has(peerId);
@@ -325,17 +328,22 @@ function SyncPeerCard({
 	return (
 		<div ref={cardRef} className="peer-card" data-peer-device-id={peerId || undefined}>
 			<div className="peer-title">
-				<strong title={peerId || undefined}>
-					{displayName}{" "}
-					<span className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}>
-						{trustSummary.badgeLabel}
-					</span>
-					{pendingScopeReview ? (
-						<span className="badge actor-badge">Needs scope review</span>
-					) : null}
-				</strong>
+				<div>
+					<strong title={peerId || undefined}>{displayName}</strong>
+					<div className="peer-meta">
+						<span className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}>
+							{trustSummary.badgeLabel}
+						</span>
+						{pendingScopeReview ? (
+							<span className="badge actor-badge">Needs scope review</span>
+						) : null}
+					</div>
+				</div>
 
 				<div className="peer-actions">
+					<button type="button" disabled={!primaryAddress || syncBusy} onClick={() => void sync()}>
+						{syncBusy ? "Syncing…" : "Sync now"}
+					</button>
 					<TextInput
 						aria-label={`Friendly name for ${displayName}`}
 						className="peer-scope-input"
@@ -351,54 +359,10 @@ function SyncPeerCard({
 					<button type="button" disabled={renameBusy} onClick={() => void rename()}>
 						{renameLabel}
 					</button>
-					<button type="button" disabled={!primaryAddress || syncBusy} onClick={() => void sync()}>
-						{syncBusy ? "Syncing…" : "Sync now"}
-					</button>
 					<button type="button" disabled={removeBusy} onClick={() => void remove()}>
 						{removeLabel}
 					</button>
-					<PeerScopeCollapsible
-						contentHost={scopeHost}
-						initialOpen={scopeEditorOpen}
-						onOpenChange={(open) => {
-							if (open) openPeerScopeEditors.add(peerId);
-							else openPeerScopeEditors.delete(peerId);
-						}}
-					>
-						<div>
-							<div className="peer-scope-row">
-								<ExistingElementSlot element={includeEditor.element} />
-								<ExistingElementSlot element={excludeEditor.element} />
-							</div>
-							<div className="peer-scope-actions">
-								<button
-									type="button"
-									className="settings-button"
-									disabled={saveScopeBusy}
-									onClick={() => void saveScope()}
-								>
-									{saveScopeLabel}
-								</button>
-								<button
-									type="button"
-									className="settings-button"
-									disabled={resetScopeBusy}
-									onClick={() => void resetScope()}
-								>
-									{resetScopeLabel}
-								</button>
-							</div>
-						</div>
-					</PeerScopeCollapsible>
 				</div>
-			</div>
-
-			<div className="peer-addresses">{addressLine}</div>
-			<div className="peer-meta">
-				{[
-					lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
-					lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never",
-				].join(" · ")}
 			</div>
 
 			<div className="peer-scope">
@@ -408,12 +372,17 @@ function SyncPeerCard({
 					<div className="peer-meta">Scope review still pending.</div>
 				) : null}
 
-				<div className="peer-scope-summary">Assigned person</div>
+				<div className="peer-scope-summary">Device details</div>
+				<div className="peer-addresses">{addressLine}</div>
 				<div className="peer-meta">
-					{peer.actor_display_name
-						? `Assigned to ${peer.claimed_local_actor ? "You" : String(peer.actor_display_name)}`
-						: "Unassigned person"}
+					{[
+						lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
+						lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never",
+					].join(" · ")}
 				</div>
+
+				<div className="peer-scope-summary">Person assignment</div>
+				<div className="peer-meta">{assignmentSummary}</div>
 				<div className="peer-actor-row">
 					<div className="sync-radix-select-host sync-actor-select-host">
 						<RadixSelect
@@ -438,6 +407,44 @@ function SyncPeerCard({
 						{applyActorLabel}
 					</button>
 				</div>
+
+				<div className="peer-scope-summary">Advanced sharing scope</div>
+				<div className="peer-meta">
+					Review or tighten what this device can share when you need more than the global defaults.
+				</div>
+				<PeerScopeCollapsible
+					contentHost={scopeHost}
+					initialOpen={scopeEditorOpen}
+					onOpenChange={(open) => {
+						if (open) openPeerScopeEditors.add(peerId);
+						else openPeerScopeEditors.delete(peerId);
+					}}
+				>
+					<div>
+						<div className="peer-scope-row">
+							<ExistingElementSlot element={includeEditor.element} />
+							<ExistingElementSlot element={excludeEditor.element} />
+						</div>
+						<div className="peer-scope-actions">
+							<button
+								type="button"
+								className="settings-button"
+								disabled={saveScopeBusy}
+								onClick={() => void saveScope()}
+							>
+								{saveScopeLabel}
+							</button>
+							<button
+								type="button"
+								className="settings-button"
+								disabled={resetScopeBusy}
+								onClick={() => void resetScope()}
+							>
+								{resetScopeLabel}
+							</button>
+						</div>
+					</div>
+				</PeerScopeCollapsible>
 				<SyncInlineFeedback feedback={feedback} />
 				<div ref={setScopeHost} />
 			</div>
