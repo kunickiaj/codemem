@@ -1,7 +1,7 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
 import type { ComponentChildren } from "preact";
 import { createPortal } from "preact/compat";
-import { useEffect, useLayoutEffect, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { renderIntoSyncMount } from "./components/render-root";
 
 export type PeerScopeCollapsibleProps = {
@@ -18,6 +18,7 @@ export function PeerScopeCollapsible({
 	children,
 }: PeerScopeCollapsibleProps) {
 	const [open, setOpen] = useState(initialOpen);
+	const contentRef = useRef<HTMLDivElement | null>(null);
 
 	useEffect(() => {
 		setOpen(initialOpen);
@@ -27,9 +28,20 @@ export function PeerScopeCollapsible({
 		onOpenChange(open);
 	}, [onOpenChange, open]);
 
+	useEffect(() => {
+		if (!open) return;
+		queueMicrotask(() => {
+			const firstFocusable = contentRef.current?.querySelector<HTMLElement>(
+				'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+			);
+			firstFocusable?.focus();
+		});
+	}, [open]);
+
 	const content = (
 		<Collapsible.Content
 			forceMount
+			ref={contentRef}
 			className={`peer-scope-editor-wrap${open ? "" : " collapsed"}`}
 			hidden={!open}
 			inert={!open}
