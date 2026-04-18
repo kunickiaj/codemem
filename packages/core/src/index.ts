@@ -25,6 +25,7 @@ export {
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorDisableDeviceAction,
+	coordinatorEnableDeviceAction,
 	coordinatorEnrollDeviceAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,

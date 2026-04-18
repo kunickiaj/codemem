@@ -6,6 +6,7 @@ import {
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorDisableDeviceAction,
+	coordinatorEnableDeviceAction,
 	coordinatorEnrollDeviceAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
@@ -115,6 +116,32 @@ describe("coordinator local admin actions", () => {
 				enabled: 0,
 			}),
 		);
+	});
+
+	it("re-enables a disabled device", async () => {
+		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		await coordinatorEnrollDeviceAction({
+			groupId: "team-a",
+			deviceId: "device-1",
+			fingerprint: "fp-1",
+			publicKey: "pk-1",
+			dbPath,
+		});
+		await coordinatorDisableDeviceAction({ groupId: "team-a", deviceId: "device-1", dbPath });
+		expect(await coordinatorListDevicesAction({ groupId: "team-a", dbPath })).toEqual([]);
+		expect(
+			await coordinatorEnableDeviceAction({ groupId: "team-a", deviceId: "device-1", dbPath }),
+		).toBe(true);
+		expect(await coordinatorListDevicesAction({ groupId: "team-a", dbPath })).toEqual([
+			expect.objectContaining({ device_id: "device-1", enabled: 1 }),
+		]);
+	});
+
+	it("returns false when enabling a missing device", async () => {
+		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		expect(
+			await coordinatorEnableDeviceAction({ groupId: "team-a", deviceId: "missing", dbPath }),
+		).toBe(false);
 	});
 
 	it("rejects enrollment into a missing group", async () => {

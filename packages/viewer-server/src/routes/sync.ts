@@ -22,6 +22,7 @@ import {
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
 	coordinatorDisableDeviceAction,
+	coordinatorEnableDeviceAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
 	coordinatorListDevicesAction,
@@ -2401,6 +2402,33 @@ export function syncRoutes(
 		if (!groupId) return c.json({ error: "group_id required", status }, 400);
 		try {
 			const ok = await coordinatorDisableDeviceAction({
+				groupId,
+				deviceId,
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!ok) return c.json({ error: "device_not_found", status }, 404);
+			return c.json({ ok: true, device_id: deviceId, status });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
+	app.post("/api/coordinator/admin/devices/:device_id/enable", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		const deviceId = String(c.req.param("device_id") ?? "").trim();
+		if (!deviceId) return c.json({ error: "device_id required", status }, 400);
+		const groupId = resolveCoordinatorAdminGroup(c.req.query("group_id"), status);
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		try {
+			const ok = await coordinatorEnableDeviceAction({
 				groupId,
 				deviceId,
 				remoteUrl: config.syncCoordinatorUrl || null,
