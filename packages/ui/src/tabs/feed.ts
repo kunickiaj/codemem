@@ -789,6 +789,9 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 		currentVisibility === "shared"
 			? "This memory can sync to peers allowed by your project filters."
 			: "This memory stays local unless the peer is assigned to your local actor.";
+	const secondaryMeta = [project ? `Project ${project}` : "No project", relative]
+		.filter(Boolean)
+		.join(" · ");
 
 	const canClamp = Boolean(observationData) && shouldClampBody(activeMode, observationData);
 	const bodyClassName = [
@@ -887,6 +890,7 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 					className: "feed-title title",
 					dangerouslySetInnerHTML: { __html: highlightText(displayTitle, state.feedQuery) },
 				}),
+				h("div", { className: "feed-card-subtitle small" }, secondaryMeta),
 			),
 			h(
 				"div",
@@ -927,7 +931,7 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 		h(
 			"div",
 			{ className: "feed-meta" },
-			`${project ? `Project: ${project}` : "Project: n/a"}${tagContent}${fileContent}`,
+			`${tagContent}${fileContent}` || "No tags or files attached.",
 		),
 		bodyContent,
 		h(
@@ -1007,10 +1011,25 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 
 function FeedList({ items, loadingText }: { items: FeedItem[]; loadingText?: string }) {
 	if (loadingText) {
-		return h("div", { className: "small" }, loadingText);
+		return h("div", { className: "small feed-empty-state" }, loadingText);
 	}
 	if (!items.length) {
-		return h("div", { className: "small" }, "No memories yet.");
+		const hasFilters =
+			Boolean(state.feedQuery.trim()) ||
+			state.feedTypeFilter !== "all" ||
+			state.feedScopeFilter !== "all";
+		return h(
+			"div",
+			{ className: "small feed-empty-state" },
+			h("strong", null, hasFilters ? "No memories match the current filters." : "No memories yet."),
+			h(
+				"div",
+				null,
+				hasFilters
+					? "Try clearing filters, changing the scope, or using a broader search."
+					: "Memories and session summaries will appear here once codemem has something worth keeping.",
+			),
+		);
 	}
 	return h(
 		Fragment,

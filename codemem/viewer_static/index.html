@@ -1078,9 +1078,26 @@
         overflow-wrap: anywhere;
         word-break: break-word;
       }
+      .feed-card-subtitle {
+        width: 100%;
+        color: var(--text-tertiary);
+      }
       .feed-meta {
         color: var(--text-tertiary);
         font-size: 12px;
+      }
+      .feed-empty-state {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: var(--sp-3);
+        border: 1px dashed var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-0);
+        color: var(--text-secondary);
+      }
+      .feed-empty-state strong {
+        color: var(--text-primary);
       }
 
       .feed-provenance {
