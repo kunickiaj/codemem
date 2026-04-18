@@ -12,6 +12,7 @@ import {
 import { openSyncConfirmDialog } from "../sync-dialogs";
 import type { ActorLike } from "../view-model";
 import { renderIntoSyncMount } from "./render-root";
+import { SyncEmptyState } from "./sync-empty-state";
 
 type SyncActorRowProps = {
 	actor: ActorLike;
@@ -242,12 +243,10 @@ function SyncActorsList({
 }: SyncActorsListProps) {
 	if (!actors.length) {
 		return (
-			<div className="sync-empty-state">
-				<strong>No people set up yet.</strong>
-				<span>
-					Create a named person here, then assign devices below so team ownership stays readable.
-				</span>
-			</div>
+			<SyncEmptyState
+				detail="Create a named person here, then assign devices below so team ownership stays readable."
+				title="No people set up yet."
+			/>
 		);
 	}
 

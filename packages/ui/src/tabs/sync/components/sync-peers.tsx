@@ -17,6 +17,7 @@ import { PeerScopeCollapsible } from "../peer-scope-collapsible";
 import { openSyncConfirmDialog } from "../sync-dialogs";
 import { derivePeerTrustSummary, type PeerLike } from "../view-model";
 import { renderIntoSyncMount } from "./render-root";
+import { SyncEmptyState } from "./sync-empty-state";
 import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
 
 type PeerScopeLike = {
@@ -460,14 +461,14 @@ function SyncPeersList(props: SyncPeersListProps) {
 		return (
 			<>
 				<SyncInlineFeedback feedback={sectionFeedback} />
-				<div className="sync-empty-state">
-					<strong>No devices connected here yet.</strong>
-					<span>
-						{syncDisabled
+				<SyncEmptyState
+					detail={
+						syncDisabled
 							? "Turn on sync in Settings → Device Sync first, then use Show pairing in Advanced diagnostics to connect another device."
-							: "Use Show pairing in Advanced diagnostics, run the command on the other device, then come back here to name and assign it."}
-					</span>
-				</div>
+							: "Use Show pairing in Advanced diagnostics, run the command on the other device, then come back here to name and assign it."
+					}
+					title="No devices connected here yet."
+				/>
 			</>
 		);
 	}
