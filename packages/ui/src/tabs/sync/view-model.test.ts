@@ -61,10 +61,27 @@ describe("deviceNeedsFriendlyName", () => {
 });
 
 describe("derivePeerUiStatus", () => {
-	it("flags peers with explicit errors as needs-repair", () => {
+	it("flags unauthorized peers as needing re-pairing attention", () => {
+		expect(
+			derivePeerUiStatus({
+				has_error: true,
+				last_error: "peer status failed (401: unauthorized)",
+				status: { peer_state: "degraded" },
+			}),
+		).toBe("needs-repair");
+	});
+
+	it("treats timeout-heavy peers as offline instead of generic repair", () => {
 		expect(derivePeerUiStatus({ has_error: true, status: { peer_state: "online" } })).toBe(
 			"needs-repair",
 		);
+		expect(
+			derivePeerUiStatus({
+				has_error: true,
+				last_error: "all addresses failed | http://x: The operation was aborted due to timeout",
+				status: { peer_state: "degraded" },
+			}),
+		).toBe("offline");
 	});
 
 	it("maps stale peers to offline", () => {
@@ -83,7 +100,7 @@ describe("derivePeerTrustSummary", () => {
 		).toBe("offline");
 	});
 
-	it("surfaces one-way trust when the remote device rejects us with unauthorized", () => {
+	it("surfaces re-pairing guidance when the remote device rejects us with unauthorized", () => {
 		expect(
 			derivePeerTrustSummary({
 				last_error: "peer status failed (401: unauthorized)",
@@ -91,10 +108,26 @@ describe("derivePeerTrustSummary", () => {
 				has_error: true,
 			}),
 		).toEqual({
-			state: "trusted-by-you",
-			badgeLabel: "Waiting for other device",
+			state: "needs-repairing",
+			badgeLabel: "Needs re-pairing",
 			description:
-				"You accepted this device, but the other device still needs to trust this one before sync can work.",
+				"This device no longer trusts this one. Pair again from the other device, or remove this local record if it is no longer valid.",
+			isWarning: true,
+		});
+	});
+
+	it("treats timeout-heavy device errors as offline guidance", () => {
+		expect(
+			derivePeerTrustSummary({
+				last_error: "all addresses failed | http://x: The operation was aborted due to timeout",
+				status: { peer_state: "degraded" },
+				has_error: true,
+			}),
+		).toEqual({
+			state: "offline",
+			badgeLabel: "Offline",
+			description:
+				"This device is known locally, but it is not responding on its saved addresses right now.",
 			isWarning: true,
 		});
 	});
@@ -212,7 +245,7 @@ describe("summarizeSyncRunResult", () => {
 		});
 	});
 
-	it("turns unauthorized sync failures into a directional trust message", () => {
+	it("turns unauthorized sync failures into a re-pairing message", () => {
 		expect(
 			summarizeSyncRunResult({
 				items: [
@@ -229,7 +262,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"This device trusts the peer, but the other device still needs to trust this one before sync can work.",
+				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record.",
 			warning: true,
 		});
 	});
@@ -307,7 +340,7 @@ describe("deriveVisiblePeopleActors", () => {
 });
 
 describe("deriveSyncViewModel", () => {
-	it("creates attention items for duplicates, repairs, reviewable devices, and naming gaps", () => {
+	it("creates attention items for duplicates and device issues that need review", () => {
 		const view = deriveSyncViewModel({
 			actors: [
 				{ actor_id: "actor-local", display_name: "Adam", is_local: true },
@@ -350,6 +383,9 @@ describe("deriveSyncViewModel", () => {
 			"possible-duplicate-person",
 			"device-needs-repair",
 		]);
+		expect(view.attentionItems[1]).toMatchObject({
+			title: "peer-1 needs review",
+		});
 	});
 
 	it("hides duplicate-person attention when the user already marked them as different people", () => {

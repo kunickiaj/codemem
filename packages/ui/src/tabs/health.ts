@@ -476,12 +476,12 @@ export function renderHealthOverview() {
 	} else if (syncState === "stopped") {
 		recommendations.push({
 			label: "Sync daemon is stopped. Start the background service.",
-			command: "codemem sync start",
+			command: "codemem serve start",
 		});
 	} else if (!syncDisabled && !syncNoPeers && (syncState === "error" || syncState === "degraded")) {
 		recommendations.push({
 			label: "Sync is unhealthy. Restart and run one immediate pass.",
-			command: "codemem sync restart",
+			command: "codemem serve restart",
 			action: triggerSync,
 			actionLabel: "Sync now",
 		});

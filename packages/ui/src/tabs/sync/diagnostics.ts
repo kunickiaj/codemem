@@ -320,7 +320,7 @@ export function renderSyncStatus() {
 	} else if (daemonState === "offline-peers") {
 		/* informational */
 	} else if (daemonState === "stopped") {
-		actions.push({ label: "Sync daemon is stopped. Start it.", command: "codemem sync start" });
+		actions.push({ label: "Sync daemon is stopped. Start it.", command: "codemem serve start" });
 		actions.push({ label: "Run one sync pass now.", command: "codemem sync once" });
 	} else if (daemonState === "needs_attention") {
 		actions.push({
@@ -335,7 +335,7 @@ export function renderSyncStatus() {
 	} else if (syncError || pingError || daemonState === "error") {
 		actions.push({
 			label: "Sync reports errors. Restart now.",
-			command: "codemem sync restart && codemem sync once",
+			command: "codemem serve restart && codemem sync once",
 		});
 		actions.push({
 			label: "Run doctor for the root cause.",

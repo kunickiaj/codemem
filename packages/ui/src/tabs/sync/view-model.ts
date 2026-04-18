@@ -9,7 +9,7 @@ export const SYNC_TERMINOLOGY = {
 	peers: "devices",
 	pairedLocally: "Connected on this device",
 	discovered: "Seen on team",
-	conflicts: "Needs repair",
+	conflicts: "Needs review",
 } as const;
 
 export type UiSyncStatus = "connected" | "available" | "needs-repair" | "offline" | "waiting";
@@ -17,7 +17,8 @@ export type UiTrustState =
 	| "available"
 	| "trusted-by-you"
 	| "mutual-trust"
-	| "needs-repair"
+	| "needs-repairing"
+	| "needs-review"
 	| "offline";
 export type UiCoordinatorApprovalState =
 	| "none"
@@ -167,9 +168,12 @@ export function deviceNeedsFriendlyName(input: {
 
 export function derivePeerUiStatus(peer: PeerLike): UiSyncStatus {
 	const peerState = cleanText(peer?.status?.peer_state);
+	if (peerState === "offline" || peerState === "stale") return "offline";
+	const lastError = peerErrorText(peer);
+	if (isUnauthorizedPeerError(lastError)) return "needs-repair";
+	if (isConnectivityPeerError(lastError)) return "offline";
 	if (peer?.has_error || peerState === "degraded") return "needs-repair";
 	if (peerState === "online") return "connected";
-	if (peerState === "offline" || peerState === "stale") return "offline";
 	if (peer?.status?.fresh) return "connected";
 	return "waiting";
 }
@@ -181,6 +185,16 @@ function isOfflineTeamDevice(device: MergedDevice): boolean {
 
 function peerErrorText(peer: PeerLike): string {
 	return cleanText(peer?.last_error).toLowerCase();
+}
+
+function isUnauthorizedPeerError(errorText: string): boolean {
+	return errorText.includes("401") && errorText.includes("unauthorized");
+}
+
+function isConnectivityPeerError(errorText: string): boolean {
+	return ["timeout", "connection refused", "unreachable", "aborted", "all addresses failed"].some(
+		(fragment) => errorText.includes(fragment),
+	);
 }
 
 export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
@@ -197,12 +211,21 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
 			isWarning: true,
 		};
 	}
-	if (lastError.includes("401") && lastError.includes("unauthorized")) {
+	if (isUnauthorizedPeerError(lastError)) {
 		return {
-			state: "trusted-by-you",
-			badgeLabel: "Waiting for other device",
+			state: "needs-repairing",
+			badgeLabel: "Needs re-pairing",
 			description:
-				"You accepted this device, but the other device still needs to trust this one before sync can work.",
+				"This device no longer trusts this one. Pair again from the other device, or remove this local record if it is no longer valid.",
+			isWarning: true,
+		};
+	}
+	if (isConnectivityPeerError(lastError)) {
+		return {
+			state: "offline",
+			badgeLabel: "Offline",
+			description:
+				"This device is known locally, but it is not responding on its saved addresses right now.",
 			isWarning: true,
 		};
 	}
@@ -216,10 +239,9 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
 	}
 	if (peer?.has_error || peerState === "degraded") {
 		return {
-			state: "needs-repair",
-			badgeLabel: "Needs repair",
-			description:
-				"This device has a sync problem that needs review before trust can be relied on.",
+			state: "needs-review",
+			badgeLabel: "Needs review",
+			description: "This device has a sync problem that needs review before you rely on it again.",
 			isWarning: true,
 		};
 	}
@@ -302,7 +324,7 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 		return {
 			ok: false,
 			message:
-				"This device trusts the peer, but the other device still needs to trust this one before sync can work.",
+				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record.",
 			warning: true,
 		};
 	}
@@ -378,12 +400,13 @@ function createRepairItem(device: {
 	id: string;
 	name: string;
 	summary: string;
+	title?: string;
 }): UiSyncAttentionItem {
 	return {
 		id: `repair:${device.id}`,
 		kind: "device-needs-repair",
 		priority: 10,
-		title: `${device.name} needs repair`,
+		title: device.title || `${device.name} needs attention`,
 		summary: device.summary,
 		actionLabel: "Open device",
 		deviceId: device.id,
@@ -512,8 +535,9 @@ export function deriveSyncViewModel(input: {
 				createRepairItem({
 					id: device.deviceId,
 					name,
+					title: `${name} needs review`,
 					summary:
-						"This device identity changed. Repair or remove the older local record before reconnecting it.",
+						"This device identity changed. Remove the older local record before reconnecting it.",
 				}),
 			);
 			return;
@@ -521,16 +545,26 @@ export function deriveSyncViewModel(input: {
 
 		if (device.peer && peerStatus === "needs-repair") {
 			const detail =
-				trustSummary?.state === "trusted-by-you"
-					? trustSummary.description
-					: cleanText(device.peer?.last_error) || "Sync health is degraded or broken.";
-			attentionItems.push(createRepairItem({ id: device.deviceId, name, summary: detail }));
+				trustSummary?.description || cleanText(device.peer?.last_error) || "Sync needs review.";
+			attentionItems.push(
+				createRepairItem({
+					id: device.deviceId,
+					name,
+					title:
+						trustSummary?.state === "needs-repairing"
+							? `${name} needs re-pairing`
+							: `${name} needs review`,
+					summary: detail,
+				}),
+			);
 		} else if (device.peer && peerStatus === "offline") {
 			attentionItems.push(
 				createRepairItem({
 					id: device.deviceId,
 					name,
-					summary: "This device is offline or stale. Review it before re-pairing or retrying sync.",
+					title: `${name} is offline`,
+					summary:
+						"This device is offline or unreachable right now. Retry later, or review the local record if it should have been available.",
 				}),
 			);
 		}

@@ -275,7 +275,7 @@ function ActionContent(props: TeamSyncPanelProps) {
 		<>
 			{showNextStepsLabel ? <SectionHeading label="Needs attention" /> : null}
 			{showNextStepsLabel ? (
-				<SectionNote>Start here when something needs review, repair, or approval.</SectionNote>
+				<SectionNote>Start here when something needs review, re-pairing, or approval.</SectionNote>
 			) : null}
 			{hasAttentionItems
 				? props.actionItems.map((item) => (
@@ -365,7 +365,8 @@ function DiscoveredPortal({
 		<>
 			<SectionHeading count={rows.length || undefined} label="Devices waiting for review" />
 			<SectionNote>
-				Review team devices here when they still need trust, repair, or approval on this machine.
+				Review team devices here when they still need trust, re-pairing, or approval on this
+				machine.
 			</SectionNote>
 			<SyncInlineFeedback feedback={state.syncDiscoveredFeedback} />
 			{rows.map((row) => (

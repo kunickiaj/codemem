@@ -539,7 +539,7 @@ export function renderTeamSync() {
 		);
 		if (repairItems.length > 0)
 			attentionParts.push(
-				`${repairItems.length} device${repairItems.length === 1 ? "" : "s"} to repair`,
+				`${repairItems.length} device issue${repairItems.length === 1 ? "" : "s"} to review`,
 			);
 		if (nameItems.length > 0)
 			attentionParts.push(`${nameItems.length} device${nameItems.length === 1 ? "" : "s"} to name`);
@@ -597,7 +597,7 @@ export function renderTeamSync() {
 	}
 	if (discoveredMeta) {
 		discoveredMeta.textContent = visibleDiscoveredRows.length
-			? "Review anything here that still needs trust, repair, or approval."
+			? "Review anything here that still needs trust, follow-up, or approval."
 			: "";
 	}
 	if (joinRequests) {
