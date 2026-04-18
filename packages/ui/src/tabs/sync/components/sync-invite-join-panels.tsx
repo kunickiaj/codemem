@@ -47,9 +47,9 @@ function InviteToggleRow({
 		<>
 			<div className="sync-action">
 				<div className="sync-action-text">
-					Add another teammate.
+					Invite a teammate.
 					<span className="sync-action-command">
-						Generate an invite when you are ready to bring another device into this team.
+						Generate an invite when you want someone else to join this team from their device.
 					</span>
 				</div>
 				<button type="button" className="settings-button" onClick={onToggle}>
@@ -73,7 +73,7 @@ function PairingCopyRow() {
 			<div className="sync-action-text">
 				Pair another device.
 				<span className="sync-action-command">
-					Use the pairing command in Advanced diagnostics when you are ready to connect one.
+					Use a pairing command when you want to connect another one of your own devices.
 				</span>
 			</div>
 			<button
@@ -119,6 +119,14 @@ export function SyncInviteJoinPanels({
 		<>
 			{presenceStatus === "not_enrolled" ? (
 				<>
+					<div className="sync-action">
+						<div className="sync-action-text">
+							Join this device.
+							<span className="sync-action-command">
+								Paste an invite for this device below to join an existing team.
+							</span>
+						</div>
+					</div>
 					{joinPanel ? (
 						<ExistingElementSlot
 							element={joinPanel}
@@ -131,7 +139,7 @@ export function SyncInviteJoinPanels({
 						<div className="sync-action-text">
 							This device is not on the team yet.
 							<span className="sync-action-command">
-								Import an invite or ask an admin to enroll it first.
+								Use Join this device above, or ask an admin to enroll it first.
 							</span>
 						</div>
 					</div>
