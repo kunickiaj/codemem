@@ -19,10 +19,10 @@
  * 12. End session
  */
 
-import { and, isNull, lt } from "drizzle-orm";
+import { and, eq, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { normalizeProjectLabel } from "./claude-hooks.js";
-import { toJson } from "./db.js";
+import { fromJson, toJson } from "./db.js";
 import {
 	buildTieredObserverConfig,
 	decideExtractionReplayTier,
@@ -60,6 +60,7 @@ import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
 import type { MemoryStore } from "./store.js";
+import { recordReplicationOp } from "./sync-replication.js";
 import { deriveTags } from "./tags.js";
 import { storeVectors } from "./vectors.js";
 
@@ -93,6 +94,115 @@ function normalizePath(path: string, repoRoot: string | null): string {
 
 function normalizePaths(paths: string[], repoRoot: string | null): string[] {
 	return paths.map((p) => normalizePath(p, repoRoot)).filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Session-summary emission guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Soft-delete prior active `session_summary` memories written by the observer
+ * for a session so each session holds at most one live observer summary.
+ *
+ * The observer pipeline writes a summary per flush batch. Long-running
+ * "durable" sessions therefore accumulate hundreds of per-flush summaries that
+ * crowd out typed observations and poison retrieval. This helper enforces the
+ * "one active observer summary per session" invariant by superseding earlier
+ * active rows whose `metadata.source === "observer_summary"`, leaving them
+ * soft-deleted for audit (with `superseded_at` metadata) and recording
+ * replication ops so peers drop the stale rows.
+ *
+ * Must be called *before* the new summary is persisted. If it ran afterward,
+ * `store.remember`'s title dedupe could return an existing stale summary's id
+ * rather than inserting a new row, and this helper would then treat that
+ * stale id as the replacement and wipe out newer summaries in the session.
+ * Running first ensures the dedupe query sees no prior active matches.
+ *
+ * Only `observer_summary` rows are touched; manually-created or
+ * legacy-imported session summaries are left alone.
+ *
+ * Returns the ids of the superseded rows so callers can backfill
+ * `superseded_by` once the new replacement id is known.
+ */
+export function supersedePriorObserverSummaries(
+	store: MemoryStore,
+	d: ReturnType<typeof drizzle>,
+	sessionId: number,
+): number[] {
+	const rows = d
+		.select({
+			id: schema.memoryItems.id,
+			rev: schema.memoryItems.rev,
+			metadata_json: schema.memoryItems.metadata_json,
+		})
+		.from(schema.memoryItems)
+		.where(
+			and(
+				eq(schema.memoryItems.session_id, sessionId),
+				eq(schema.memoryItems.kind, "session_summary"),
+				eq(schema.memoryItems.active, 1),
+			),
+		)
+		.all();
+
+	if (rows.length === 0) return [];
+
+	const now = new Date().toISOString();
+	const superseded: number[] = [];
+	for (const row of rows) {
+		const meta = fromJson(row.metadata_json);
+		if (meta.source !== "observer_summary") continue;
+		meta.superseded_at = now;
+		meta.clock_device_id = store.deviceId;
+		d.update(schema.memoryItems)
+			.set({
+				active: 0,
+				deleted_at: now,
+				updated_at: now,
+				metadata_json: toJson(meta),
+				rev: (row.rev ?? 0) + 1,
+			})
+			.where(eq(schema.memoryItems.id, row.id))
+			.run();
+		try {
+			recordReplicationOp(store.db, {
+				memoryId: row.id,
+				opType: "delete",
+				deviceId: store.deviceId,
+			});
+		} catch {
+			// Replication-op recording is best-effort; continue with supersede.
+		}
+		superseded.push(row.id);
+	}
+	return superseded;
+}
+
+/**
+ * Annotate rows superseded by `supersedePriorObserverSummaries` with the id of
+ * the replacement summary. Local audit only — no rev bump or replication op,
+ * since peers already learned of the soft-delete from the primary supersede.
+ */
+function markSupersededBy(
+	d: ReturnType<typeof drizzle>,
+	supersededIds: number[],
+	replacementId: number,
+): void {
+	if (supersededIds.length === 0) return;
+	for (const id of supersededIds) {
+		const row = d
+			.select({ metadata_json: schema.memoryItems.metadata_json })
+			.from(schema.memoryItems)
+			.where(eq(schema.memoryItems.id, id))
+			.get();
+		if (!row) continue;
+		const meta = fromJson(row.metadata_json);
+		meta.superseded_by = replacementId;
+		d.update(schema.memoryItems)
+			.set({ metadata_json: toJson(meta) })
+			.where(eq(schema.memoryItems.id, id))
+			.run();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -591,6 +701,13 @@ export async function ingest(
 					filesRead: summary.filesRead,
 					filesModified: summary.filesModified,
 				});
+				// Enforce one live observer summary per session: supersede any
+				// prior active observer_summary rows for this session BEFORE the
+				// new row is persisted, otherwise `store.remember`'s title dedupe
+				// could return a stale prior summary's id instead of inserting.
+				// Long-running durable sessions would otherwise accumulate one
+				// summary per flush batch.
+				const supersededIds = supersedePriorObserverSummaries(store, d, sessionId);
 				const memoryId = store.remember(
 					sessionId,
 					"session_summary",
@@ -619,6 +736,7 @@ export async function ingest(
 						flush_batch: flushBatchMetadata,
 					},
 				);
+				markSupersededBy(d, supersededIds, memoryId);
 				vectorWriteInputs.push({ memoryId, title: summaryTitle, bodyText: body });
 			}
 
