@@ -14,6 +14,7 @@ import {
 	readCoordinatorSyncConfig,
 	registerCoordinatorPresence,
 } from "./coordinator-runtime.js";
+
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
 import * as schema from "./schema.js";
@@ -158,6 +159,8 @@ export async function syncDaemonTick(
 		return [];
 	}
 
+	const opsLimit = readCoordinatorSyncConfig().syncOpsLimit;
+
 	syncPassPreflight(db);
 
 	const results: SyncTickResult[] = [];
@@ -178,7 +181,7 @@ export async function syncDaemonTick(
 			continue;
 		}
 
-		const result = await runSyncPass(db, peerDeviceId, { keysDir });
+		const result = await runSyncPass(db, peerDeviceId, { keysDir, limit: opsLimit });
 		results.push({
 			ok: result.ok,
 			error: result.error,

@@ -62,6 +62,7 @@ export interface CoordinatorSyncConfig {
 	syncRetentionMaxOpsPerPass: number;
 	syncProjectsInclude: string[];
 	syncProjectsExclude: string[];
+	syncOpsLimit: number;
 	syncCoordinatorUrl: string;
 	syncCoordinatorGroup: string;
 	syncCoordinatorGroups: string[];
@@ -120,6 +121,7 @@ export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyn
 		syncRetentionMaxOpsPerPass: Math.max(1, parseIntOr(raw.sync_retention_max_ops_per_pass, 5000)),
 		syncProjectsInclude: parseStringList(raw.sync_projects_include),
 		syncProjectsExclude: parseStringList(raw.sync_projects_exclude),
+		syncOpsLimit: Math.max(1, Math.min(1000, parseIntOr(raw.sync_ops_limit, 500))),
 		syncCoordinatorUrl: clean(raw.sync_coordinator_url),
 		syncCoordinatorGroup,
 		syncCoordinatorGroups:

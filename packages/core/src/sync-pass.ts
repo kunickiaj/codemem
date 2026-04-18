@@ -38,8 +38,14 @@ import { bestEffortMaintainVectorsForSyncFallback } from "./vectors.js";
 /** Default max body size for sync POST requests (1 MiB). */
 const MAX_SYNC_BODY_BYTES = 1_048_576;
 
-/** Default op fetch/push limit per round. */
-const DEFAULT_LIMIT = 200;
+/**
+ * Default op fetch/push limit per round.
+ *
+ * The server caps this at 1000 per request (see viewer-server /v1/ops).
+ * Callers can override via SyncPassOptions.limit; the sync daemon resolves
+ * it from the sync_ops_limit config key / CODEMEM_SYNC_OPS_LIMIT env var.
+ */
+const DEFAULT_LIMIT = 500;
 
 /** Elevated page size for initial bootstrap of never-synced peers. */
 const BOOTSTRAP_PAGE_SIZE = 2000;
