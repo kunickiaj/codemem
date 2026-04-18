@@ -1342,6 +1342,40 @@ describe("MemoryStore.explain", () => {
 			expect(typeof item.score.components.base).toBe("number");
 			expect(typeof item.score.components.recency).toBe("number");
 			expect(typeof item.score.components.kind_bonus).toBe("number");
+
+			expect(item.role.inferred).toMatch(/^(recap|durable|ephemeral|general)$/);
+			expect(typeof item.role.reason).toBe("string");
+			expect(item.role.reason.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("labels durable and recap roles distinctly in explain output", () => {
+		const sessionId = insertTestSession(store.db);
+		const now = new Date().toISOString();
+		const durableId = store.remember(
+			sessionId,
+			"decision",
+			"Auth token strategy",
+			"Durable decision capturing the JWT refresh policy and its rationale",
+			0.9,
+		);
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+			)
+			.run(sessionId, "Session recap", "Wrap-up of recent auth work", now, now);
+
+		const result = store.explain("auth");
+		const durable = result.items.find((item) => item.id === durableId);
+		const recap = result.items.find((item) => item.kind === "session_summary");
+
+		expect(durable?.role.inferred).toBe("durable");
+		if (recap) {
+			expect(recap.role.inferred).toBe("recap");
+			expect(recap.role.reason).toBe("session_summary_kind");
 		}
 	});
 

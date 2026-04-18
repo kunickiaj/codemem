@@ -318,8 +318,50 @@ describe("buildMemoryPack", () => {
 					text_overlap: expect.any(Number),
 					tag_overlap: expect.any(Number),
 				}),
+				inferred_role: expect.stringMatching(/^(recap|durable|ephemeral|general)$/),
+				role_reason: expect.any(String),
 			}),
 		);
+	});
+
+	it("exposes derived memory roles in pack trace candidates", () => {
+		const now = new Date().toISOString();
+		// A durable decision and a recap-like session_summary should surface
+		// with distinct inferred roles in the retrieval candidates.
+		store.remember(
+			sessionId,
+			"decision",
+			"Use SQLite for local state",
+			"Durable decision with a concrete rationale and implementation guidance",
+			0.9,
+		);
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+			)
+			.run(sessionId, "Session recap", "Wrap-up of recent work", now, now);
+
+		const trace = buildMemoryPackTrace(store, "sqlite local state", 10);
+		const candidates = trace.retrieval.candidates;
+		expect(candidates.length).toBeGreaterThan(0);
+
+		const durable = candidates.find((c) => c.kind === "decision");
+		const recap = candidates.find((c) => c.kind === "session_summary");
+
+		expect(durable?.inferred_role).toBe("durable");
+		expect(typeof durable?.role_reason).toBe("string");
+		expect(durable?.role_reason.length).toBeGreaterThan(0);
+
+		// Recap-role inference applies to session_summary even when it is not
+		// selected as a retrieval candidate on every query. When present in the
+		// trace pool, it must be labeled recap.
+		if (recap) {
+			expect(recap.inferred_role).toBe("recap");
+			expect(recap.role_reason).toBe("session_summary_kind");
+		}
 	});
 
 	it("records sanitized_query in pack trace for contaminated inputs", () => {

@@ -106,6 +106,8 @@ export type PackTraceCandidate = {
 	reasons: string[];
 	disposition: PackTraceDisposition;
 	section: PackTraceSection | null;
+	inferred_role: "recap" | "durable" | "ephemeral" | "general";
+	role_reason: string;
 };
 
 export type PackTrace = {
@@ -505,6 +507,10 @@ export interface ExplainItem {
 	score: {
 		total: number | null;
 		components: ExplainScoreComponents;
+	};
+	role: {
+		inferred: "recap" | "durable" | "ephemeral" | "general";
+		reason: string;
 	};
 	matches: {
 		query_terms: string[];

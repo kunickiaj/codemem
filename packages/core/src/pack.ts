@@ -16,6 +16,7 @@
 
 import type { Database } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
+import { inferMemoryRole } from "./memory-quality.js";
 import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
@@ -1692,6 +1693,12 @@ function buildPackArtifacts(
 			text_overlap: textOverlapScore(item, retrievalQuery),
 			tag_overlap: countOverlap(item.tags_text, queryContentTokens(retrievalQuery)),
 		};
+		const roleInference = inferMemoryRole({
+			kind: item.kind,
+			title: item.title,
+			body_text: item.body_text,
+			metadata: item.metadata ?? null,
+		});
 		return {
 			id: item.id,
 			rank: index + 1,
@@ -1702,6 +1709,8 @@ function buildPackArtifacts(
 			reasons: candidateReasons(item, scoredCandidate, section, disposition),
 			disposition,
 			section,
+			inferred_role: roleInference.role,
+			role_reason: roleInference.reason,
 		};
 	});
 
