@@ -93,13 +93,13 @@ export function renderSyncActorsUnavailable() {
 	setPeopleCreateControlsDisabled(true);
 	if (actorMeta) {
 		actorMeta.textContent =
-			"People controls are temporarily unavailable. Refresh this page to retry, but device status and sync health are still available below.";
+			"People controls are temporarily unavailable. Refresh this page to retry. Device status and sync health are still available below while this recovers.";
 	}
 	if (actorList) {
 		renderSyncEmptyState(actorList, {
 			title: "People unavailable right now.",
 			detail:
-				"Refresh this page to reload named people once the people endpoint is responding again.",
+				"Refresh this page to retry. When the people endpoint responds again, named people will reload here.",
 		});
 	}
 }
@@ -252,14 +252,14 @@ export function renderSyncPeopleUnavailable() {
 		renderSyncEmptyState(actorList, {
 			title: "People unavailable right now.",
 			detail:
-				"Refresh this page to reload named people once the local sync status endpoint is responding again.",
+				"Refresh this page to retry. Named people will reload here once the local sync status endpoint responds again.",
 		});
 	}
 	if (syncPeers) {
 		renderSyncEmptyState(syncPeers, {
 			title: "Devices unavailable right now.",
 			detail:
-				"Refresh this page to reload paired devices. When sync is reachable again, you can rename, assign, or pair devices here.",
+				"Refresh this page to retry. When sync is reachable again, paired devices will reload here so you can rename, assign, or re-pair them.",
 		});
 	}
 }
