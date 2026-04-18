@@ -494,6 +494,47 @@ export async function coordinatorDisableDeviceAction(opts: {
 	}
 }
 
+export async function coordinatorEnableDeviceAction(opts: {
+	groupId: string;
+	deviceId: string;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<boolean> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	if (!groupId || !deviceId) throw new Error("group_id and device_id are required.");
+	const remote = opts.remoteUrl ?? coordinatorRemoteTarget().remoteUrl;
+	const adminSecret = opts.adminSecret ?? coordinatorRemoteTarget().adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		try {
+			await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/devices/enable`,
+				adminSecret,
+				{ group_id: groupId, device_id: deviceId },
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message.includes("(404)") &&
+				error.message.includes("device_not_found")
+			) {
+				return false;
+			}
+			throw error;
+		}
+		return true;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		return await store.setDeviceEnabled(groupId, deviceId, true);
+	} finally {
+		await store.close();
+	}
+}
+
 export async function coordinatorRemoveDeviceAction(opts: {
 	groupId: string;
 	deviceId: string;

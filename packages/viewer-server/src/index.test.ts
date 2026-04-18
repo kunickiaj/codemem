@@ -5081,6 +5081,9 @@ describe("viewer-server", () => {
 				if (url.includes("/v1/admin/devices/disable")) {
 					return new Response(JSON.stringify({ ok: true }), { status: 200 });
 				}
+				if (url.includes("/v1/admin/devices/enable")) {
+					return new Response(JSON.stringify({ ok: true }), { status: 200 });
+				}
 				if (url.includes("/v1/admin/devices/remove")) {
 					return new Response(JSON.stringify({ ok: true }), { status: 200 });
 				}
@@ -5116,6 +5119,12 @@ describe("viewer-server", () => {
 					});
 					expect(disabled.status).toBe(200);
 					expect(await disabled.json()).toMatchObject({ ok: true, device_id: "device-1" });
+
+					const enabled = await app.request("/api/coordinator/admin/devices/device-1/enable", {
+						method: "POST",
+					});
+					expect(enabled.status).toBe(200);
+					expect(await enabled.json()).toMatchObject({ ok: true, device_id: "device-1" });
 
 					const removed = await app.request("/api/coordinator/admin/devices/device-1/remove", {
 						method: "POST",

@@ -25,7 +25,7 @@ let groupActionPendingKind: "create" | "rename" | "archive" | "unarchive" | "" =
 let joinReviewPendingId = "";
 let joinReviewPendingAction: "approve" | "deny" | "" = "";
 let deviceActionPendingId = "";
-let deviceActionPendingKind: "rename" | "disable" | "remove" | "" = "";
+let deviceActionPendingKind: "rename" | "disable" | "enable" | "remove" | "" = "";
 const groupRenameDrafts = new Map<string, string>();
 const deviceRenameDrafts = new Map<string, string>();
 const ADMIN_TARGET_GROUP_KEY = "codemem-coordinator-admin-target-group";
@@ -698,7 +698,7 @@ async function runDeviceAction(
 	deviceId: string,
 	groupId: string,
 	displayName: string,
-	kind: "rename" | "disable" | "remove",
+	kind: "rename" | "disable" | "enable" | "remove",
 ) {
 	if (!deviceId || deviceActionPendingId) return;
 	if (
@@ -707,7 +707,7 @@ async function runDeviceAction(
 			title: `${kind === "disable" ? "Disable" : "Remove"} ${displayName || deviceId}?`,
 			description:
 				kind === "disable"
-					? "This device will stay enrolled but can no longer participate until you re-enable it from a future admin flow."
+					? "This device will stay enrolled but can no longer participate until you re-enable it."
 					: "This removes the enrolled device record from the coordinator. The teammate would need a fresh invite or re-enrollment path to come back.",
 			confirmLabel: kind === "disable" ? "Disable device" : "Remove device",
 			cancelLabel: kind === "disable" ? "Keep device enabled" : "Keep device enrolled",
@@ -732,6 +732,10 @@ async function runDeviceAction(
 		if (kind === "disable") {
 			await api.disableCoordinatorAdminDevice(deviceId, groupId);
 			showGlobalNotice("Device disabled.", "success");
+		}
+		if (kind === "enable") {
+			await api.enableCoordinatorAdminDevice(deviceId, groupId);
+			showGlobalNotice("Device enabled.", "success");
 		}
 		if (kind === "remove") {
 			await api.removeCoordinatorAdminDevice(deviceId, groupId);
@@ -760,7 +764,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 			"p",
 			{ class: "peer-submeta" },
 			summary.readiness === "ready"
-				? "Rename, disable, or remove enrolled devices from the operator surface without confusing this with direct sync state."
+				? "Rename, disable, re-enable, or remove enrolled devices from the operator surface without confusing this with direct sync state."
 				: "Finish setup first. Device administration stays disabled until coordinator admin is ready.",
 		),
 		!items.length
@@ -823,16 +827,28 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 									},
 									pending && deviceActionPendingKind === "rename" ? "Renaming…" : "Rename",
 								),
-								h(
-									"button",
-									{
-										class: "danger",
-										disabled: !deviceId || pending || summary.readiness !== "ready" || !enabled,
-										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "disable"),
-										type: "button",
-									},
-									pending && deviceActionPendingKind === "disable" ? "Disabling…" : "Disable",
-								),
+								enabled
+									? h(
+											"button",
+											{
+												class: "danger",
+												disabled: !deviceId || pending || summary.readiness !== "ready",
+												onClick: () =>
+													void runDeviceAction(deviceId, groupId, displayName, "disable"),
+												type: "button",
+											},
+											pending && deviceActionPendingKind === "disable" ? "Disabling…" : "Disable",
+										)
+									: h(
+											"button",
+											{
+												disabled: !deviceId || pending || summary.readiness !== "ready",
+												onClick: () =>
+													void runDeviceAction(deviceId, groupId, displayName, "enable"),
+												type: "button",
+											},
+											pending && deviceActionPendingKind === "enable" ? "Enabling…" : "Enable",
+										),
 								h(
 									"button",
 									{

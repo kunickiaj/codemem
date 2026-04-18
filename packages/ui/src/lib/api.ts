@@ -411,6 +411,19 @@ export async function disableCoordinatorAdminDevice(
 	return data;
 }
 
+export async function enableCoordinatorAdminDevice(
+	deviceId: string,
+	groupId: string,
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/devices/${encodeURIComponent(deviceId)}/enable?group_id=${encodeURIComponent(groupId)}`,
+		{ method: "POST" },
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
 export async function removeCoordinatorAdminDevice(
 	deviceId: string,
 	groupId: string,

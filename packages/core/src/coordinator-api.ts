@@ -738,6 +738,39 @@ export function createCoordinatorApp(
 		}
 	});
 
+	// POST /v1/admin/devices/enable
+	app.post("/v1/admin/devices/enable", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+
+		const data = parseJsonObject(raw);
+		if (!data) {
+			return c.json({ error: "invalid_json" }, 400);
+		}
+
+		const groupId = String(data.group_id ?? "").trim();
+		const deviceId = String(data.device_id ?? "").trim();
+
+		if (!groupId || !deviceId) {
+			return c.json({ error: "group_id_and_device_id_required" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const ok = await store.setDeviceEnabled(groupId, deviceId, true);
+			if (!ok) return c.json({ error: "device_not_found" }, 404);
+			return c.json({ ok: true });
+		} finally {
+			await store.close();
+		}
+	});
+
 	// POST /v1/admin/devices/remove
 	app.post("/v1/admin/devices/remove", async (c) => {
 		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
