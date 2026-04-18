@@ -31,53 +31,130 @@ export const RICH_TIER_DEFAULTS: Partial<ObserverConfig> = {
 	observerMaxOutputTokens: 12000,
 };
 
+export const SIMPLE_TIER_ANTHROPIC_DEFAULTS: Partial<ObserverConfig> = {
+	observerProvider: "anthropic",
+	observerModel: "claude-haiku-4-5",
+	observerTemperature: 0.2,
+};
+
+export const RICH_TIER_ANTHROPIC_DEFAULTS: Partial<ObserverConfig> = {
+	observerProvider: "anthropic",
+	observerModel: "claude-sonnet-4-6",
+	observerTemperature: 0.2,
+	observerMaxOutputTokens: 12000,
+};
+
+type KnownTierProvider = "openai" | "anthropic";
+
+function normalizeKnownProvider(value: string | null | undefined): KnownTierProvider | null {
+	if (!value) return null;
+	const lowered = value.toLowerCase();
+	if (lowered === "openai") return "openai";
+	if (lowered === "anthropic") return "anthropic";
+	return null;
+}
+
+function trimmedProvider(value: string | null | undefined): string | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed ? trimmed.toLowerCase() : null;
+}
+
+function resolveSimpleTierDefaults(provider: KnownTierProvider): Partial<ObserverConfig> {
+	return provider === "anthropic" ? SIMPLE_TIER_ANTHROPIC_DEFAULTS : SIMPLE_TIER_DEFAULTS;
+}
+
+function resolveRichTierDefaults(provider: KnownTierProvider): Partial<ObserverConfig> {
+	return provider === "anthropic" ? RICH_TIER_ANTHROPIC_DEFAULTS : RICH_TIER_DEFAULTS;
+}
+
 export function buildTieredObserverConfig(
 	baseConfig: ObserverConfig,
 	decision: ExtractionReplayTierRoutingDecision,
 ): ObserverConfig {
 	if (decision.tier === "simple") {
+		const knownProvider =
+			normalizeKnownProvider(baseConfig.observerSimpleProvider) ??
+			normalizeKnownProvider(baseConfig.observerProvider);
+		if (knownProvider) {
+			const tierDefaults = resolveSimpleTierDefaults(knownProvider);
+			return {
+				...baseConfig,
+				observerProvider: knownProvider,
+				observerModel:
+					baseConfig.observerSimpleModel ?? tierDefaults.observerModel ?? baseConfig.observerModel,
+				observerTemperature:
+					baseConfig.observerSimpleTemperature ??
+					tierDefaults.observerTemperature ??
+					baseConfig.observerTemperature,
+				observerOpenAIUseResponses: knownProvider === "openai" ? false : undefined,
+				observerReasoningEffort: null,
+				observerReasoningSummary: null,
+				observerMaxOutputTokens: baseConfig.observerMaxTokens,
+			};
+		}
+		// Unknown/custom provider (e.g. opencode, bespoke gateway): preserve the
+		// base provider and only honor user-provided tier overrides. Do not apply
+		// OpenAI or Anthropic defaults.
+		const preservedProvider =
+			trimmedProvider(baseConfig.observerSimpleProvider) ?? baseConfig.observerProvider ?? null;
 		return {
 			...baseConfig,
-			observerProvider:
-				baseConfig.observerProvider ?? SIMPLE_TIER_DEFAULTS.observerProvider ?? null,
-			observerModel:
-				baseConfig.observerSimpleModel ??
-				SIMPLE_TIER_DEFAULTS.observerModel ??
-				baseConfig.observerModel,
-			observerTemperature:
-				baseConfig.observerSimpleTemperature ??
-				SIMPLE_TIER_DEFAULTS.observerTemperature ??
-				baseConfig.observerTemperature,
-			observerOpenAIUseResponses: false,
+			observerProvider: preservedProvider,
+			observerModel: baseConfig.observerSimpleModel ?? baseConfig.observerModel,
+			observerTemperature: baseConfig.observerSimpleTemperature ?? baseConfig.observerTemperature,
+			observerOpenAIUseResponses: undefined,
 			observerReasoningEffort: null,
 			observerReasoningSummary: null,
 			observerMaxOutputTokens: baseConfig.observerMaxTokens,
 		};
 	}
 
+	const knownProvider =
+		normalizeKnownProvider(baseConfig.observerRichProvider) ??
+		normalizeKnownProvider(baseConfig.observerProvider);
+	if (knownProvider) {
+		const tierDefaults = resolveRichTierDefaults(knownProvider);
+		const isOpenAI = knownProvider === "openai";
+		return {
+			...baseConfig,
+			observerProvider: knownProvider,
+			observerModel:
+				baseConfig.observerRichModel ?? tierDefaults.observerModel ?? baseConfig.observerModel,
+			observerTemperature:
+				baseConfig.observerRichTemperature ??
+				tierDefaults.observerTemperature ??
+				baseConfig.observerTemperature,
+			observerOpenAIUseResponses: isOpenAI
+				? baseConfig.observerRichOpenAIUseResponses === true
+					? true
+					: (tierDefaults.observerOpenAIUseResponses ?? false)
+				: undefined,
+			observerReasoningEffort: isOpenAI
+				? (baseConfig.observerRichReasoningEffort ?? tierDefaults.observerReasoningEffort ?? null)
+				: null,
+			observerReasoningSummary: isOpenAI
+				? (baseConfig.observerRichReasoningSummary ?? tierDefaults.observerReasoningSummary ?? null)
+				: null,
+			observerMaxOutputTokens:
+				baseConfig.observerRichMaxOutputTokens ??
+				tierDefaults.observerMaxOutputTokens ??
+				baseConfig.observerMaxTokens,
+		};
+	}
+	// Unknown/custom provider: preserve base provider and only honor explicit
+	// rich-tier overrides.
+	const preservedProvider =
+		trimmedProvider(baseConfig.observerRichProvider) ?? baseConfig.observerProvider ?? null;
 	return {
 		...baseConfig,
-		observerProvider: RICH_TIER_DEFAULTS.observerProvider ?? baseConfig.observerProvider,
-		observerModel:
-			baseConfig.observerRichModel ?? RICH_TIER_DEFAULTS.observerModel ?? baseConfig.observerModel,
-		observerTemperature:
-			baseConfig.observerRichTemperature ??
-			RICH_TIER_DEFAULTS.observerTemperature ??
-			baseConfig.observerTemperature,
-		observerOpenAIUseResponses:
-			baseConfig.observerRichOpenAIUseResponses === true
-				? true
-				: (RICH_TIER_DEFAULTS.observerOpenAIUseResponses ?? false),
-		observerReasoningEffort:
-			baseConfig.observerRichReasoningEffort ?? RICH_TIER_DEFAULTS.observerReasoningEffort ?? null,
-		observerReasoningSummary:
-			baseConfig.observerRichReasoningSummary ??
-			RICH_TIER_DEFAULTS.observerReasoningSummary ??
-			null,
-		observerMaxOutputTokens:
-			baseConfig.observerRichMaxOutputTokens ??
-			RICH_TIER_DEFAULTS.observerMaxOutputTokens ??
-			baseConfig.observerMaxTokens,
+		observerProvider: preservedProvider,
+		observerModel: baseConfig.observerRichModel ?? baseConfig.observerModel,
+		observerTemperature: baseConfig.observerRichTemperature ?? baseConfig.observerTemperature,
+		observerOpenAIUseResponses: undefined,
+		observerReasoningEffort: null,
+		observerReasoningSummary: null,
+		observerMaxOutputTokens: baseConfig.observerRichMaxOutputTokens ?? baseConfig.observerMaxTokens,
 	};
 }
 
