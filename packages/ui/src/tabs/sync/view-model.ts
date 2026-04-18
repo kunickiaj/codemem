@@ -207,7 +207,7 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
 		return {
 			state: "offline",
 			badgeLabel: "Offline",
-			description: "This device is known locally, but it is not reachable right now.",
+			description: "This device was paired before, but it is offline right now.",
 			isWarning: true,
 		};
 	}
@@ -216,7 +216,7 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
 			state: "needs-repairing",
 			badgeLabel: "Needs re-pairing",
 			description:
-				"This device no longer trusts this one. Pair again from the other device, or remove this local record if it is no longer valid.",
+				"This device no longer accepts this one. Pair again from the other device, or remove this local record if it no longer belongs here.",
 			isWarning: true,
 		};
 	}
@@ -225,7 +225,7 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
 			state: "offline",
 			badgeLabel: "Offline",
 			description:
-				"This device is known locally, but it is not responding on its saved addresses right now.",
+				"This device is saved here, but none of its last known addresses are responding right now.",
 			isWarning: true,
 		};
 	}
@@ -241,15 +241,16 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
 		return {
 			state: "needs-review",
 			badgeLabel: "Needs review",
-			description: "This device has a sync problem that needs review before you rely on it again.",
+			description:
+				"This device has a sync problem that needs review before you trust the current state again.",
 			isWarning: true,
 		};
 	}
 	return {
 		state: "trusted-by-you",
-		badgeLabel: "Trusted on this device",
+		badgeLabel: "Waiting on other device",
 		description:
-			"This device is trusted locally. Finish onboarding on the other device if sync is still blocked.",
+			"This device is already trusted here. Finish setup on the other device before sync can run both ways.",
 		isWarning: false,
 	};
 }
@@ -263,7 +264,7 @@ export function deriveCoordinatorApprovalSummary(input: {
 			state: "needs-your-approval",
 			badgeLabel: "Needs your approval",
 			description:
-				"Another device already trusted this one. Approve it on this device to finish reciprocal onboarding.",
+				"Another device already approved this pairing. Approve it here to finish the connection on both sides.",
 			actionLabel: "Approve on this device",
 		};
 	}
@@ -272,7 +273,7 @@ export function deriveCoordinatorApprovalSummary(input: {
 			state: "waiting-for-other-device",
 			badgeLabel: "Waiting on other device",
 			description:
-				"You already trusted this device here. The other device still needs to approve this one before sync can work both ways.",
+				"You already approved this pairing here. The other device still needs to approve this one before sync can work both ways.",
 			actionLabel: null,
 		};
 	}
@@ -324,14 +325,14 @@ export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
 		return {
 			ok: false,
 			message:
-				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record.",
+				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record if it should be gone.",
 			warning: true,
 		};
 	}
 	if (failedItems.length < items.length) {
 		return {
 			ok: false,
-			message: `${failedItems.length} of ${items.length} device sync attempts failed. Review device details for the specific errors.`,
+			message: `${failedItems.length} of ${items.length} device sync attempts failed. Open the affected device cards for the specific errors.`,
 			warning: true,
 		};
 	}

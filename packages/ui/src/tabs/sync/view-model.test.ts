@@ -111,7 +111,7 @@ describe("derivePeerTrustSummary", () => {
 			state: "needs-repairing",
 			badgeLabel: "Needs re-pairing",
 			description:
-				"This device no longer trusts this one. Pair again from the other device, or remove this local record if it is no longer valid.",
+				"This device no longer accepts this one. Pair again from the other device, or remove this local record if it no longer belongs here.",
 			isWarning: true,
 		});
 	});
@@ -127,7 +127,7 @@ describe("derivePeerTrustSummary", () => {
 			state: "offline",
 			badgeLabel: "Offline",
 			description:
-				"This device is known locally, but it is not responding on its saved addresses right now.",
+				"This device is saved here, but none of its last known addresses are responding right now.",
 			isWarning: true,
 		});
 	});
@@ -150,7 +150,7 @@ describe("deriveCoordinatorApprovalSummary", () => {
 			state: "needs-your-approval",
 			badgeLabel: "Needs your approval",
 			description:
-				"Another device already trusted this one. Approve it on this device to finish reciprocal onboarding.",
+				"Another device already approved this pairing. Approve it here to finish the connection on both sides.",
 			actionLabel: "Approve on this device",
 		});
 	});
@@ -165,7 +165,7 @@ describe("deriveCoordinatorApprovalSummary", () => {
 			state: "waiting-for-other-device",
 			badgeLabel: "Waiting on other device",
 			description:
-				"You already trusted this device here. The other device still needs to approve this one before sync can work both ways.",
+				"You already approved this pairing here. The other device still needs to approve this one before sync can work both ways.",
 			actionLabel: null,
 		});
 	});
@@ -180,7 +180,7 @@ describe("deriveCoordinatorApprovalSummary", () => {
 			state: "needs-your-approval",
 			badgeLabel: "Needs your approval",
 			description:
-				"Another device already trusted this one. Approve it on this device to finish reciprocal onboarding.",
+				"Another device already approved this pairing. Approve it here to finish the connection on both sides.",
 			actionLabel: "Approve on this device",
 		});
 	});
@@ -240,7 +240,8 @@ describe("summarizeSyncRunResult", () => {
 			}),
 		).toEqual({
 			ok: false,
-			message: "2 of 3 device sync attempts failed. Review device details for the specific errors.",
+			message:
+				"2 of 3 device sync attempts failed. Open the affected device cards for the specific errors.",
 			warning: true,
 		});
 	});
@@ -262,7 +263,7 @@ describe("summarizeSyncRunResult", () => {
 		).toEqual({
 			ok: false,
 			message:
-				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record.",
+				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record if it should be gone.",
 			warning: true,
 		});
 	});
