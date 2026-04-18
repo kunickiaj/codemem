@@ -525,6 +525,56 @@ describe("buildMemoryPack", () => {
 		expect(pack.pack_text).toBeTruthy();
 	});
 
+	it("keeps Summary intact under a tight token budget while truncating lower sections", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'session_summary', ?, ?, 0.9, '', 1, ?, ?, '{}', 1)`,
+			)
+			.run(sessionId, "Budget summary", "Short summary body", now, now);
+		for (let i = 0; i < 10; i += 1) {
+			store.remember(
+				sessionId,
+				"discovery",
+				`Bulky observation ${i}`,
+				`Long body text for observation ${i} that should be too large for a tight budget to absorb everything downstream.`,
+				0.5,
+			);
+		}
+
+		const pack = buildMemoryPack(store, "summary budget fixture", 20, 40);
+
+		expect(pack.pack_text).toContain("Budget summary");
+		const observationsBlock = pack.pack_text.split("## Observations")[1] ?? "";
+		expect(observationsBlock).not.toContain("Bulky observation 9");
+	});
+
+	it("selects recall mode from queryLooksLikeRecall triggers and default otherwise", () => {
+		store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+			)
+			.run(
+				sessionId,
+				"Recap summary fixture",
+				"Recap body",
+				new Date().toISOString(),
+				new Date().toISOString(),
+			);
+
+		const recallPack = buildMemoryPack(store, "summarize the project", 10);
+		expect(recallPack.metrics.mode).toBe("recall");
+
+		const defaultPack = buildMemoryPack(store, "fixture body", 10);
+		expect(defaultPack.metrics.mode).toBe("default");
+	});
+
 	it("pack items have expected fields", () => {
 		store.remember(sessionId, "bugfix", "Fix crash", "Null pointer fix", 0.9, ["crash", "fix"]);
 
