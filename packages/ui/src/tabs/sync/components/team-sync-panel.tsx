@@ -63,7 +63,7 @@ function SectionHeading({ count, label }: { count?: number; label: string }) {
 }
 
 function SectionNote({ children }: { children: ComponentChildren }) {
-	return <div className="section-meta">{children}</div>;
+	return <div className="section-meta sync-section-note">{children}</div>;
 }
 
 function AttentionRow({
