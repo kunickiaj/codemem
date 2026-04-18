@@ -30,6 +30,25 @@ pnpm exec vitest run packages/viewer-server/src/index.test.ts
 pnpm exec vitest run packages/core/src/index.test.ts
 ```
 
+## Context injection validation
+
+When changing pack retrieval, context injection, or the adapter surfaces
+that inject memory into an agent's prompt, the following suites cover
+the relevant behavior. Run the targeted one first, then `pnpm run test`
+before opening a PR.
+
+| Concern | Command |
+|---|---|
+| Core pack invariants (section selection, dedupe, token budget, recall vs default mode) | `pnpm exec vitest run packages/core/src/pack.test.ts` |
+| Pack usefulness evals (recall / task / continuation / working-set ranking) | `pnpm exec vitest run packages/core/src/pack.eval.test.ts` |
+| OpenCode adapter prompt-time injection (transform, cache, toast, failure paths) | `pnpm --filter codemem run test:plugin` |
+| Claude hook context injection (PreToolUse / UserPromptSubmit) | `pnpm exec vitest run packages/core/src/claude-hooks.test.ts` |
+| CLI manual injection contract (`codemem pack`, `codemem memory inject`) | `pnpm exec vitest run packages/cli/src/commands/pack.test.ts packages/cli/src/commands/memory-inject.test.ts` |
+
+Shared fixture corpus for pack / usefulness evals lives at
+`packages/core/src/pack-eval-fixtures.ts` — extend it rather than
+inlining ad-hoc test data when adding new ranking scenarios.
+
 ## Viewer/plugin development
 
 - Viewer UI source is `packages/ui/` and is served by `packages/viewer-server/`.
