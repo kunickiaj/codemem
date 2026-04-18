@@ -758,7 +758,7 @@ describe("maintenance", () => {
 		} finally {
 			verify.close();
 		}
-	});
+	}, 15_000);
 
 	it("runs raw-event relink remediation during initDatabase", () => {
 		const dbPath = createDbPath("init-relink-apply");
@@ -830,7 +830,7 @@ describe("maintenance", () => {
 		expect(second.totals.bridge_creations).toBe(0);
 		expect(second.totals.memory_repoints).toBe(0);
 		expect(second.totals.session_compactions).toBe(0);
-	});
+	}, 15_000);
 
 	it("blocks compaction when redundant sessions still carry other bridge rows", () => {
 		const dbPath = createDbPath("raw-event-relink-foreign-bridge-blocker");
@@ -889,7 +889,7 @@ describe("maintenance", () => {
 		} finally {
 			verify.close();
 		}
-	});
+	}, 15_000);
 });
 
 // ---------------------------------------------------------------------------

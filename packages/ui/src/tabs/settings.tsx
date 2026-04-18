@@ -89,6 +89,11 @@ type SettingsRenderState = {
 	values: SettingsFormState;
 };
 
+type SettingsSectionIntroProps = {
+	title: string;
+	detail: string;
+};
+
 type SettingsTooltipState = {
 	anchor: HTMLElement | null;
 	content: string;
@@ -195,6 +200,15 @@ let settingsRenderState: SettingsRenderState = {
 	statusText: "Ready",
 	values: { ...EMPTY_FORM_STATE },
 };
+
+function SettingsSectionIntro({ detail, title }: SettingsSectionIntroProps) {
+	return (
+		<div className="settings-section-intro">
+			<div className="settings-section-intro-title">{title}</div>
+			<div className="small settings-section-intro-detail">{detail}</div>
+		</div>
+	);
+}
 
 function loadAdvancedPreference(): boolean {
 	try {
@@ -942,7 +956,7 @@ export function renderConfigModal(payload: unknown) {
 		overridesVisible: Object.keys(envOverrides).length > 0,
 		pathText: state.configPath ? `Config path: ${state.configPath}` : "Config path: n/a",
 		providers: toProviderList(data.providers),
-		statusText: "Ready",
+		statusText: "No unsaved changes",
 		values,
 	});
 
@@ -1177,7 +1191,7 @@ export function closeSettings(startPolling: () => void, refreshCallback: () => v
 
 export async function saveSettings(startPolling: () => void, refreshCallback: () => void) {
 	if (settingsRenderState.isSaving) return;
-	updateRenderState({ isSaving: true, statusText: "Saving..." });
+	updateRenderState({ isSaving: true, statusText: "Saving changes…" });
 
 	try {
 		const current = collectSettingsPayload({ allowUntouchedParseErrors: true });
@@ -1194,7 +1208,7 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
 			}
 		});
 		if (Object.keys(changed).length === 0) {
-			updateRenderState({ isSaving: false, statusText: "No changes" });
+			updateRenderState({ isSaving: false, statusText: "No unsaved changes" });
 			setDirty(false);
 			closeSettings(startPolling, refreshCallback);
 			return;
@@ -1202,7 +1216,7 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
 
 		const result = await api.saveConfig(changed);
 		const notice = buildSettingsNotice(result);
-		updateRenderState({ isSaving: false, statusText: "Saved" });
+		updateRenderState({ isSaving: false, statusText: "Saved changes" });
 		setDirty(false);
 		closeSettings(startPolling, refreshCallback);
 		showGlobalNotice(notice.message, notice.type);
@@ -1495,7 +1509,7 @@ function SettingsDialogContent() {
 	return (
 		<div className="modal-card">
 			<div className="modal-header">
-				<h2 id="settingsTitle">Memory & model settings</h2>
+				<h2 id="settingsTitle">Settings</h2>
 				<DialogCloseButton
 					ariaLabel="Close settings"
 					className="modal-close-button"
@@ -1508,7 +1522,7 @@ function SettingsDialogContent() {
 			</div>
 			<div className="modal-body">
 				<div className="small" id="settingsDescription">
-					Configure connection, authentication, processing, and sync behavior.
+					Tune how codemem connects, processes work, and syncs with other devices.
 				</div>
 				<div className="settings-advanced-toolbar">
 					<SettingsSwitchRow
@@ -1536,6 +1550,10 @@ function SettingsDialogContent() {
 					value={settingsActiveTab}
 				>
 					<RadixTabsContent className="settings-panel" forceMount value="observer">
+						<SettingsSectionIntro
+							detail="Set how codemem reaches your model provider and where it should look for credentials."
+							title="Connection and credentials"
+						/>
 						<ObserverStatusBanner />
 						<div className="settings-group">
 							<h3 className="settings-group-title">Connection</h3>
@@ -1563,9 +1581,7 @@ function SettingsDialogContent() {
 									value={values.observerProvider}
 									viewportClassName="settings-select-viewport"
 								/>
-								<div className="small">
-									`auto` uses recommended defaults for the selected connection mode.
-								</div>
+								<div className="small">Use `auto` unless you need to pin a specific provider.</div>
 							</Field>
 							<Field>
 								<div className="field-label">
@@ -1677,7 +1693,9 @@ function SettingsDialogContent() {
 									value={values.observerAuthSource}
 									viewportClassName="settings-select-viewport"
 								/>
-								<div className="small">Use `auto` unless you need a specific token source.</div>
+								<div className="small">
+									Use `auto` unless you need to force a file or command-based token source.
+								</div>
 							</Field>
 							<Field hidden={!showAuthFile} id="observerAuthFileField">
 								<label htmlFor="observerAuthFile">Token file path</label>
@@ -1761,6 +1779,10 @@ function SettingsDialogContent() {
 					</RadixTabsContent>
 
 					<RadixTabsContent className="settings-panel" forceMount value="queue">
+						<SettingsSectionIntro
+							detail="Control how often codemem processes queued work and, if needed, how it routes lighter vs richer model requests."
+							title="Processing and routing"
+						/>
 						<div className="settings-group">
 							<h3 className="settings-group-title">Processing</h3>
 							<Field>
@@ -1784,7 +1806,9 @@ function SettingsDialogContent() {
 									type="number"
 									value={values.rawEventsSweeperIntervalS}
 								/>
-								<div className="small">How often background flush checks pending raw events.</div>
+								<div className="small">
+									How often codemem checks for queued raw events in the background.
+								</div>
 							</Field>
 						</div>
 						<div className="settings-group">
@@ -1942,6 +1966,10 @@ function SettingsDialogContent() {
 					</RadixTabsContent>
 
 					<RadixTabsContent className="settings-panel" forceMount value="sync">
+						<SettingsSectionIntro
+							detail="Choose whether this device syncs at all, how often it checks peers, and which coordinator group it should join."
+							title="Device sync"
+						/>
 						<div className="settings-group">
 							<h3 className="settings-group-title">Device Sync</h3>
 							<SettingsSwitchRow
@@ -1960,6 +1988,9 @@ function SettingsDialogContent() {
 									type="number"
 									value={values.syncInterval}
 								/>
+								<div className="small">
+									How often this device checks for sync work when sync is enabled.
+								</div>
 							</div>
 							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 								<label htmlFor="syncHost">Sync host</label>
@@ -2047,6 +2078,9 @@ function SettingsDialogContent() {
 				>
 					Some values are controlled outside this screen and take priority.
 				</div>
+				<div className="settings-note" hidden={settingsShowAdvanced}>
+					Advanced controls are hidden right now to keep this screen focused on everyday settings.
+				</div>
 			</div>
 			<div className="modal-footer">
 				<div className="small" id="settingsStatus">
@@ -2063,7 +2097,7 @@ function SettingsDialogContent() {
 					}}
 					type="button"
 				>
-					Save
+					{settingsRenderState.isSaving ? "Saving…" : "Save changes"}
 				</button>
 			</div>
 		</div>

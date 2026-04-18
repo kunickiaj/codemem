@@ -1078,7 +1078,6 @@
         overflow-wrap: anywhere;
         word-break: break-word;
       }
-
       .feed-meta {
         color: var(--text-tertiary);
         font-size: 12px;
@@ -1839,6 +1838,24 @@
       .settings-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
       .settings-panel[data-state="inactive"] { display: none; }
       .settings-panel[hidden] { display: none; }
+      .settings-section-intro {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: color-mix(in srgb, var(--surface-0) 78%, var(--accent-subtle));
+      }
+      .settings-section-intro-title {
+        color: var(--text-primary);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .settings-section-intro-detail {
+        margin: 0;
+        color: var(--text-secondary);
+      }
       .observer-status-banner {
         display: flex;
         flex-direction: column;
