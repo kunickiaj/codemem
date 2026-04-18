@@ -416,7 +416,7 @@ export function renderSyncDiagnosticsUnavailable() {
 	if (syncAttempts) renderSyncEmptyState(syncAttempts, unavailableAttemptsState());
 	if (syncMeta) {
 		syncMeta.textContent =
-			"Advanced diagnostics are unavailable right now. Refresh the page, or verify the local sync service before retrying.";
+			"Advanced diagnostics are unavailable right now. Refresh the page first. If that still fails, verify the local sync service and retry once it responds again.";
 	}
 	renderActionList(syncActions, []);
 }
