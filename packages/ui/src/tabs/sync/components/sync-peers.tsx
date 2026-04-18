@@ -116,8 +116,8 @@ function SyncPeerCard({
 				.join(" · ")
 		: "No addresses";
 	const assignmentSummary = peer.actor_display_name
-		? `Assigned to ${peer.claimed_local_actor ? "You" : String(peer.actor_display_name)}`
-		: "No person assigned yet";
+		? `This device belongs to ${peer.claimed_local_actor ? "you" : String(peer.actor_display_name)}.`
+		: "This device is not assigned to anyone yet.";
 	const lastSyncAt = String(peerStatus.last_sync_at || peerStatus.last_sync_at_utc || "");
 	const lastPingAt = String(peerStatus.last_ping_at || peerStatus.last_ping_at_utc || "");
 	const scopeEditorOpen = openPeerScopeEditors.has(peerId);
@@ -136,7 +136,7 @@ function SyncPeerCard({
 	const [removeLabel, setRemoveLabel] = useState("Remove peer");
 	const [selectedActorId, setSelectedActorId] = useState(String(peer.actor_id || ""));
 	const [applyActorBusy, setApplyActorBusy] = useState(false);
-	const [applyActorLabel, setApplyActorLabel] = useState("Save person");
+	const [applyActorLabel, setApplyActorLabel] = useState("Save assignment");
 	const [saveScopeBusy, setSaveScopeBusy] = useState(false);
 	const [saveScopeLabel, setSaveScopeLabel] = useState("Save scope");
 	const [resetScopeBusy, setResetScopeBusy] = useState(false);
@@ -181,7 +181,7 @@ function SyncPeerCard({
 		setRemoveLabel("Remove peer");
 		setSelectedActorId(String(peer.actor_id || ""));
 		setApplyActorBusy(false);
-		setApplyActorLabel("Save person");
+		setApplyActorLabel("Save assignment");
 		setSaveScopeBusy(false);
 		setSaveScopeLabel("Save scope");
 		setResetScopeBusy(false);
@@ -282,7 +282,7 @@ function SyncPeerCard({
 			const nextFeedback = await onAssignActor(peerId, selectedActorId || null);
 			setFeedback(nextFeedback);
 			state.syncPeerFeedbackById.set(peerId, nextFeedback);
-			setApplyActorLabel("Save person");
+			setApplyActorLabel("Save assignment");
 		} catch {
 			setApplyActorLabel("Retry");
 		} finally {
@@ -399,7 +399,7 @@ function SyncPeerCard({
 					].join(" · ")}
 				</div>
 
-				<div className="peer-scope-summary">Person assignment</div>
+				<div className="peer-scope-summary">Who this device belongs to</div>
 				<div className="peer-meta">{assignmentSummary}</div>
 				<div className="peer-actor-row">
 					<div className="sync-radix-select-host sync-actor-select-host">
@@ -410,7 +410,7 @@ function SyncPeerCard({
 							itemClassName="sync-radix-select-item"
 							onValueChange={setSelectedActorId}
 							options={actorSelectOptions}
-							placeholder="No person assigned"
+							placeholder="No person assigned yet"
 							triggerClassName="sync-radix-select-trigger sync-actor-select"
 							value={selectedActorId}
 							viewportClassName="sync-radix-select-viewport"
