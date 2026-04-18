@@ -9,6 +9,7 @@ import {
 	formatPercent,
 	formatReductionPercent,
 	formatTimestamp,
+	formatTokenCount,
 	parsePercentValue,
 	secondsSince,
 	titleCase,
@@ -548,14 +549,14 @@ export function renderStats() {
 	const items: StatItem[] = [
 		{
 			label: isFiltered ? "Savings (project)" : "Savings",
-			value: Number(usage.tokens_saved || 0),
-			tooltip: `Tokens saved by reusing compressed memories${globalLineSaved}`,
+			value: formatTokenCount(usage.tokens_saved || 0),
+			tooltip: `Tokens saved by reusing compressed memories. Exact: ${Number(usage.tokens_saved || 0).toLocaleString()} saved${globalLineSaved}`,
 			icon: "trending-up",
 		},
 		{
 			label: isFiltered ? "Injected (project)" : "Injected",
-			value: Number(usage.tokens_read || 0),
-			tooltip: `Tokens injected into context (pack size)${globalLineRead}`,
+			value: formatTokenCount(usage.tokens_read || 0),
+			tooltip: `Tokens injected into context (pack size). Exact: ${Number(usage.tokens_read || 0).toLocaleString()} injected${globalLineRead}`,
 			icon: "book-open",
 		},
 		{
@@ -569,8 +570,8 @@ export function renderStats() {
 		},
 		{
 			label: isFiltered ? "Work investment (project)" : "Work investment",
-			value: Number(usage.work_investment_tokens || 0),
-			tooltip: `Token cost of unique discovery groups${globalLineWork}`,
+			value: formatTokenCount(usage.work_investment_tokens || 0),
+			tooltip: `Token cost of unique discovery groups. Exact: ${Number(usage.work_investment_tokens || 0).toLocaleString()} invested${globalLineWork}`,
 			icon: "pencil",
 		},
 		{ label: "Active memories", value: db.active_memory_items || 0, icon: "check-circle" },
@@ -646,12 +647,14 @@ export function renderSessionSummary() {
 	const items: StatItem[] = [
 		{
 			label: "Last pack savings",
-			value: latestPack ? `${savedTokens.toLocaleString()} (${reductionPercent})` : "n/a",
+			value: latestPack ? `${formatTokenCount(savedTokens)} (${reductionPercent})` : "n/a",
+			tooltip: latestPack ? `Exact: ${savedTokens.toLocaleString()} saved` : undefined,
 			icon: "trending-up",
 		},
 		{
 			label: "Last pack size",
-			value: latestPack ? packTokens.toLocaleString() : "n/a",
+			value: latestPack ? formatTokenCount(packTokens) : "n/a",
+			tooltip: latestPack ? `Exact: ${packTokens.toLocaleString()} injected` : undefined,
 			icon: "package",
 		},
 		{

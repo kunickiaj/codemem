@@ -73,6 +73,29 @@ export function formatReductionPercent(saved: unknown, read: unknown): string {
 	return `${Math.round(pct * 100)}%`;
 }
 
+export function formatTokenCount(value: unknown): string {
+	const num = Number(value || 0);
+	if (!Number.isFinite(num)) return "n/a";
+	const units = [
+		{ threshold: 1_000_000_000, suffix: "B" },
+		{ threshold: 1_000_000, suffix: "M" },
+		{ threshold: 1_000, suffix: "K" },
+	] as const;
+	let unitIndex = units.findIndex(({ threshold }) => Math.abs(num) >= threshold);
+	if (unitIndex === -1) return `${num.toLocaleString()} tokens`;
+	while (unitIndex >= 0) {
+		const { suffix, threshold } = units[unitIndex];
+		const scaled = num / threshold;
+		const roundedNumber = Number(scaled.toFixed(scaled >= 10 ? 0 : 1));
+		if (Math.abs(roundedNumber) < 1000 || unitIndex === 0) {
+			const roundedText = roundedNumber.toString().replace(/\.0$/, "");
+			return `${roundedText}${suffix} tokens`;
+		}
+		unitIndex -= 1;
+	}
+	return `${num.toLocaleString()} tokens`;
+}
+
 export function parsePercentValue(label: unknown): number | null {
 	const text = String(label || "").trim();
 	if (!text.endsWith("%")) return null;
