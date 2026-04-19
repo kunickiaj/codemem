@@ -3,6 +3,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { type ComponentChildren, Fragment, h, render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { Chip } from "../components/primitives/chip";
 import * as api from "../lib/api";
 import { highlightText } from "../lib/dom";
 import {
@@ -178,7 +179,7 @@ function feedScopeLabel(scope: string): string {
 }
 
 function ProvenanceChip({ label, variant = "" }: { label: string; variant?: string }) {
-	return h("span", { className: `provenance-chip ${variant}`.trim() }, label);
+	return h(Chip, { variant: "provenance", tone: variant || undefined }, label);
 }
 
 function trustStateLabel(trustState: string): string {
@@ -706,7 +707,7 @@ function FeedViewToggle({
 function TagChip({ tag }: { tag: unknown }) {
 	const display = formatTagLabel(tag);
 	if (!display) return null;
-	return h("span", { className: "tag-chip", title: String(tag) }, display);
+	return h(Chip, { variant: "tag", title: String(tag) }, display);
 }
 
 /* ── Feed item card renderer ─────────────────────────────── */
@@ -903,7 +904,7 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 		h(
 			"div",
 			{ className: "feed-kind-banner" },
-			h("span", { className: `kind-chip ${displayKindValue}`.trim() }, kindChipLabel),
+			h(Chip, { variant: "kind", tone: displayKindValue }, kindChipLabel),
 		),
 		h(
 			"div",
