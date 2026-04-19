@@ -256,7 +256,6 @@ export const state = {
 	configDefaults: {} as Record<string, unknown>,
 	configPath: "",
 	settingsDirty: false,
-	noticeTimer: null as ReturnType<typeof setTimeout> | null,
 
 	/* Sync UI toggles */
 	syncDiagnosticsOpen: false,

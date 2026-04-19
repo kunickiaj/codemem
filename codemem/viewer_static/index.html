@@ -2020,36 +2020,87 @@
       }
       .modal-body { display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
-      @keyframes noticeSlideIn {
-        from { transform: translateY(-12px); opacity: 0; }
-        to { transform: translateY(0); opacity: 1; }
+      /* ── Toast (Radix Toast-backed) ───────────────────────── */
+      /* Fixed viewport anchored bottom-right. Each toast is a surface-card
+         with a severity-tinted left accent keyed to .toast-{variant}. */
+      .toast-viewport {
+        position: fixed;
+        bottom: var(--sp-5);
+        right: var(--sp-5);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        width: min(380px, calc(100vw - var(--sp-5) * 2));
+        max-width: 100%;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        z-index: 80;
+        outline: none;
       }
-      @keyframes noticeSlideOut {
-        from { transform: translateY(0); opacity: 1; }
-        to { transform: translateY(-12px); opacity: 0; }
-      }
-      .app-notice {
-        margin: var(--sp-3) var(--sp-5) 0;
-        padding: var(--sp-3) var(--sp-4);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
+      .toast-root {
         background: var(--surface-1);
-        color: var(--text-secondary);
-        box-shadow: var(--shadow-sm);
-        animation: noticeSlideIn 0.25s ease both;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-md);
+        padding: var(--sp-3) var(--sp-4);
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: var(--sp-3);
+        align-items: start;
+        color: var(--text-primary);
+        font-size: 13px;
+        line-height: 1.5;
       }
-      .app-notice.hiding {
-        animation: noticeSlideOut 0.2s ease both;
+      .toast-root[data-state="open"] { animation: toastSlideIn 160ms ease; }
+      .toast-root[data-state="closed"] { animation: toastFadeOut 140ms ease forwards; }
+      .toast-root[data-swipe="move"] { transform: translateX(var(--radix-toast-swipe-move-x)); }
+      .toast-root[data-swipe="cancel"] { transform: translateX(0); transition: transform 140ms ease; }
+      .toast-root[data-swipe="end"] { animation: toastSwipeOut 140ms ease forwards; }
+
+      .toast-success { border-left-color: var(--accent); }
+      .toast-info    { border-left-color: var(--accent-cool); }
+      .toast-warning { border-left-color: var(--accent-warm); }
+      .toast-error   { border-left-color: var(--status-attention); }
+
+      .toast-message { color: var(--text-primary); }
+
+      .toast-close {
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text-tertiary);
+        width: 24px;
+        height: 24px;
+        border-radius: var(--radius-pill);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        transition: background-color 140ms ease, color 140ms ease;
+        padding: 0;
+        flex-shrink: 0;
       }
-      .app-notice.success {
-        border-color: rgba(26, 107, 86, 0.24);
-        background: rgba(26, 107, 86, 0.08);
-        color: var(--accent);
+      .toast-close:hover { background: var(--surface-2); color: var(--text-primary); }
+      .toast-close:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        box-shadow: 0 0 0 4px var(--focus-ring);
       }
-      .app-notice.warning {
-        border-color: rgba(212, 100, 46, 0.28);
-        background: rgba(212, 100, 46, 0.1);
-        color: var(--accent-warm);
+
+      @keyframes toastSlideIn {
+        from { transform: translateX(calc(100% + var(--sp-5))); opacity: 0; }
+        to   { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes toastFadeOut {
+        from { opacity: 1; }
+        to   { opacity: 0; }
+      }
+      @keyframes toastSwipeOut {
+        from { transform: translateX(var(--radix-toast-swipe-end-x)); }
+        to   { transform: translateX(calc(100% + var(--sp-5))); }
       }
       .viewer-reconnect-overlay {
         position: fixed;
@@ -2625,7 +2676,7 @@
       <button class="tab-btn" id="tabBtn-sync">Sync</button>
       <button class="tab-btn" id="tabBtn-coordinator-admin">Coordinator Admin</button>
     </nav>
-    <div class="app-notice" id="globalNotice" hidden aria-live="polite"></div>
+    <div id="toastRoot"></div>
     <div class="viewer-reconnect-overlay" id="viewerReconnectOverlay" hidden>
       <div class="viewer-reconnect-card" role="status" aria-live="assertive">
         <div class="viewer-reconnect-eyebrow">Viewer connection</div>
