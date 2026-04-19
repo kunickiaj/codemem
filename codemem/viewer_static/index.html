@@ -472,9 +472,22 @@
 
       /* ── Cards / sections ──────────────────────────────────── */
 
-      .card {
+      /* Every bordered-surface component (card, stat tile, peer card,
+         actor row, modal card) shares the same tinted-inset background
+         + 1px translucent border. Pull it into one selector group so
+         each variant only declares radius, padding, shadow, and layout.
+         Markup unchanged — each class works standalone. */
+      .surface,
+      .card,
+      .stat,
+      .peer-card,
+      .actor-row,
+      .modal-card {
         background: var(--surface-1);
         border: 1px solid var(--border);
+      }
+
+      .card {
         border-radius: var(--radius-xl);
         padding: var(--sp-5);
         box-shadow: var(--shadow-md);
@@ -749,10 +762,8 @@
       /* ── Stat cards ────────────────────────────────────────── */
 
       .stat {
-        border: 1px solid var(--border);
         border-radius: var(--radius-lg);
         padding: var(--sp-4);
-        background: var(--surface-1);
         display: flex;
         align-items: center;
         gap: var(--sp-3);
@@ -1563,11 +1574,11 @@
       @media (min-width: 900px) {
         .peer-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
-      .peer-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-4); background: var(--surface-1); display: grid; gap: var(--sp-2); }
+      .peer-card { border-radius: var(--radius-lg); padding: var(--sp-4); display: grid; gap: var(--sp-2); }
       .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-title strong { font-size: 14px; font-weight: 600; }
       .actor-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
-      .actor-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-3); background: var(--surface-1); }
+      .actor-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); border-radius: var(--radius-lg); padding: var(--sp-3); }
       .actor-details { min-width: 0; display: grid; gap: 6px; }
       .actor-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .actor-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; justify-content: flex-end; }
@@ -1935,8 +1946,6 @@
 
       .modal-card {
         width: min(520px, 100%);
-        background: var(--surface-1);
-        border: 1px solid var(--border);
         border-radius: var(--radius-xl);
         box-shadow: var(--shadow-lg);
         padding: var(--sp-5);
