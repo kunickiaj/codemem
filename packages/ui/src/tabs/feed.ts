@@ -22,55 +22,9 @@ import { openSyncConfirmDialog } from "./sync/sync-dialogs";
 
 /* ── Types ───────────────────────────────────────────────── */
 
-/**
- * A feed item — observations and session summaries are pulled from different
- * viewer endpoints but render through the same card component. This shape
- * covers every field we read; the server adds more fields that we ignore,
- * so shapes are open and all fields optional.
- */
-export interface FeedItemMetadata {
-	import_metadata?: FeedItemMetadata;
-	subtitle?: string;
-	narrative?: string;
-	facts?: unknown;
-	is_summary?: boolean;
-	source?: string;
-	request?: string;
-	visibility?: string;
-	workspace_kind?: string;
-	origin_source?: string;
-	origin_device_id?: string;
-	trust_state?: string;
-	summary?: unknown;
-}
+export type { FeedItem, FeedItemMetadata } from "./feed/types";
 
-export interface FeedItem {
-	id?: number;
-	memory_id?: number | string;
-	observation_id?: number | string;
-	session_id?: number | string;
-	created_at?: string;
-	created_at_utc?: string;
-	kind?: string;
-	title?: string;
-	subtitle?: string;
-	body_text?: string;
-	narrative?: string;
-	facts?: unknown;
-	tags?: unknown;
-	files?: unknown;
-	project?: string;
-	actor_id?: string;
-	actor_display_name?: string;
-	owned_by_self?: boolean;
-	visibility?: string;
-	workspace_kind?: string;
-	origin_source?: string;
-	origin_device_id?: string;
-	trust_state?: string;
-	metadata_json?: FeedItemMetadata;
-	summary?: unknown;
-}
+import type { FeedItem, FeedItemMetadata, FeedSummary, ItemViewMode } from "./feed/types";
 
 /* ── Helpers ─────────────────────────────────────────────── */
 
@@ -141,8 +95,6 @@ function itemSignature(item: FeedItem): string {
 function itemKey(item: FeedItem): string {
 	return `${String(item.kind || "").toLowerCase()}:${itemSignature(item)}`;
 }
-
-type ItemViewMode = "summary" | "facts" | "narrative";
 
 const OBSERVATION_PAGE_SIZE = 20;
 const SUMMARY_PAGE_SIZE = 50;
@@ -355,8 +307,6 @@ function FeedItemMenu({
  * are typed as `unknown` — callers are expected to coerce via
  * `String(v || "")` or a `typeof` narrowing before rendering.
  */
-type FeedSummary = Record<string, unknown>;
-
 function getSummaryObject(item: FeedItem): FeedSummary | null {
 	const preferredKeys = [
 		"request",
