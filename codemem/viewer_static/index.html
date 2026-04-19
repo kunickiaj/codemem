@@ -803,6 +803,25 @@
 
       /* ── Buttons ───────────────────────────────────────────── */
 
+      /* ── Button base ─────────────────────────────────────── */
+      /* Shared layout for pill-shaped button classes. Per-variant rules
+         below only override padding / sizing / colors / typography.
+         Markup stays unchanged; each variant class continues to work
+         standalone. */
+      .btn,
+      .settings-button,
+      .sync-legacy-button,
+      .feed-menu-trigger,
+      .feed-expand {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--font-sans);
+        border-radius: var(--radius-pill);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
       .settings-button {
         border: 1px solid var(--control-border);
         background: var(--control-bg);
@@ -810,15 +829,8 @@
         padding: 5px 12px;
         min-width: 28px;
         min-height: 28px;
-        border-radius: var(--radius-pill);
         font-size: 12px;
-        font-family: var(--font-sans);
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
         transition: background 140ms ease, border-color 140ms ease;
-        white-space: nowrap;
       }
       .settings-button:hover {
         background: var(--control-hover-bg);
@@ -1189,19 +1201,13 @@
         z-index: 24;
       }
       .feed-menu-trigger {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
         width: 30px;
         height: 30px;
         border: 1px solid var(--border);
-        border-radius: var(--radius-pill);
         background: transparent;
         color: var(--text-tertiary);
-        font-family: var(--font-sans);
         font-size: 18px;
         line-height: 1;
-        cursor: pointer;
         transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
       }
       .feed-menu-trigger:hover,
@@ -1403,11 +1409,8 @@
         border: 1px solid var(--border);
         background: transparent;
         color: var(--text-tertiary);
-        border-radius: var(--radius-pill);
         padding: 3px 10px;
-        font-family: var(--font-sans);
         font-size: 11px;
-        cursor: pointer;
         transition: background 140ms ease, color 140ms ease;
       }
       .feed-expand:hover { background: var(--accent-subtle); color: var(--accent); }
@@ -1867,12 +1870,9 @@
         border: 1px solid var(--control-border);
         background: var(--control-bg);
         color: var(--control-text);
-        border-radius: var(--radius-pill);
         padding: 8px 14px;
-        font-family: var(--font-sans);
         font-size: 13px;
         font-weight: 600;
-        cursor: pointer;
         transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
       }
       .sync-legacy-button:hover {
