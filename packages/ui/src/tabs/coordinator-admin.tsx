@@ -821,6 +821,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 								h(
 									"button",
 									{
+										class: "settings-button",
 										disabled: !deviceId || pending || summary.readiness !== "ready",
 										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "rename"),
 										type: "button",
@@ -831,7 +832,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 									? h(
 											"button",
 											{
-												class: "danger",
+												class: "settings-button danger",
 												disabled: !deviceId || pending || summary.readiness !== "ready",
 												onClick: () =>
 													void runDeviceAction(deviceId, groupId, displayName, "disable"),
@@ -842,6 +843,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 									: h(
 											"button",
 											{
+												class: "settings-button",
 												disabled: !deviceId || pending || summary.readiness !== "ready",
 												onClick: () =>
 													void runDeviceAction(deviceId, groupId, displayName, "enable"),
@@ -852,7 +854,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 								h(
 									"button",
 									{
-										class: "danger",
+										class: "settings-button danger",
 										disabled: !deviceId || pending || summary.readiness !== "ready",
 										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "remove"),
 										type: "button",

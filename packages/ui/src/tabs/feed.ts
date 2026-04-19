@@ -852,11 +852,13 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 	}
 
 	async function forgetMemory() {
+		const titleText = String(displayTitle || "this memory").trim();
+		const truncatedTitle =
+			titleText.length > 80 ? `${titleText.slice(0, 79).trimEnd()}…` : titleText;
 		const confirmed = await openSyncConfirmDialog({
 			autoFocusAction: "cancel",
-			title: `Forget ${displayTitle}?`,
-			description:
-				"This removes the memory from active results. The underlying record remains soft-deleted for audit and sync safety.",
+			title: "Forget this memory?",
+			description: `Forgetting "${truncatedTitle}". This removes the memory from active results. The underlying record remains soft-deleted for audit and sync safety.`,
 			confirmLabel: "Forget memory",
 			cancelLabel: "Keep memory",
 			tone: "danger",
