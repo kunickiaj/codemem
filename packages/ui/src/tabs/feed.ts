@@ -1,9 +1,9 @@
 /* Feed tab — memory feed rendering, filtering, search. */
 
-import { type ComponentChildren, Fragment, h, render } from "preact";
+import { Fragment, h } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../components/primitives/chip";
-import { Tooltip, TooltipProvider } from "../components/primitives/tooltip";
+import { Tooltip } from "../components/primitives/tooltip";
 import * as api from "../lib/api";
 import { highlightText } from "../lib/dom";
 import {
@@ -54,27 +54,7 @@ let feedScrollHandlerBound = false;
 let feedProjectGeneration = 0;
 let lastFeedScope = "all";
 
-function markFeedMount(mount: HTMLElement) {
-	mount.dataset.feedRenderRoot = "preact";
-}
-
-function ensureFeedRenderBoundary() {
-	const feedTab = document.getElementById("tab-feed");
-	if (!feedTab) return;
-	feedTab.dataset.feedRenderBoundary = "preact-hybrid";
-}
-
-function renderIntoFeedMount(mount: HTMLElement, content: ComponentChildren) {
-	markFeedMount(mount);
-	// Wrap every feed render in a TooltipProvider so adjacent feed-item
-	// tooltips share skipDelayDuration and don't each pay the full open
-	// delay when the user hovers from one card to the next.
-	render(h(TooltipProvider, null, content), mount);
-}
-
-function ProvenanceChip({ label, variant = "" }: { label: string; variant?: string }) {
-	return h(Chip, { variant: "provenance", tone: variant || undefined }, label);
-}
+import { ensureFeedRenderBoundary, ProvenanceChip, renderIntoFeedMount } from "./feed/mount";
 
 function resetPagination(project: string) {
 	lastFeedProject = project;
