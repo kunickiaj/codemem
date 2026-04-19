@@ -38,17 +38,35 @@ export function setTheme(theme: string) {
 	localStorage.setItem(THEME_STORAGE_KEY, selected.id);
 }
 
-export function initThemeSelect(select: HTMLSelectElement | null) {
-	if (!select) return;
-	select.textContent = "";
-	THEME_OPTIONS.forEach((theme) => {
-		const option = document.createElement("option");
-		option.value = theme.id;
-		option.textContent = theme.label;
-		select.appendChild(option);
-	});
-	select.value = getTheme();
-	select.addEventListener("change", () => {
-		setTheme(select.value || "dark");
+interface LucideLike {
+	createIcons: () => void;
+}
+
+/**
+ * Theme toggle as a Lucide icon button. The icon shows the *destination*
+ * mode — sun while dark, moon while light — so the button reads as
+ * "click me to become this." Aria-label and icon update each flip.
+ */
+export function initThemeToggle(button: HTMLButtonElement | null) {
+	if (!button) return;
+	const applyIcon = (mode: "light" | "dark") => {
+		const iconName = mode === "dark" ? "sun" : "moon";
+		const nextLabel = mode === "dark" ? "Switch to light theme" : "Switch to dark theme";
+		button.setAttribute("aria-label", nextLabel);
+		button.textContent = "";
+		const icon = document.createElement("i");
+		icon.setAttribute("data-lucide", iconName);
+		icon.setAttribute("aria-hidden", "true");
+		button.appendChild(icon);
+		const lucide = (globalThis as { lucide?: LucideLike }).lucide;
+		lucide?.createIcons?.();
+	};
+
+	applyIcon(getTheme() === "dark" ? "dark" : "light");
+
+	button.addEventListener("click", () => {
+		const next = getTheme() === "dark" ? "light" : "dark";
+		setTheme(next);
+		applyIcon(next);
 	});
 }

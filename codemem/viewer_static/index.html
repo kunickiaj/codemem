@@ -297,8 +297,8 @@
         padding: var(--sp-4) var(--sp-6);
         border-bottom: 1px solid var(--border);
         background: color-mix(in srgb, var(--surface-1) 86%, transparent);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
+        backdrop-filter: blur(14px) saturate(1.2);
+        -webkit-backdrop-filter: blur(14px) saturate(1.2);
       }
 
       .header-row {
@@ -342,15 +342,26 @@
         white-space: nowrap;
       }
 
+      .brand-dot {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        margin-left: 3px;
+        vertical-align: baseline;
+        box-shadow: 0 0 10px var(--accent-subtle);
+      }
+
       .health-dot {
         width: 8px;
         height: 8px;
         border-radius: 50%;
         flex-shrink: 0;
       }
-      .health-dot.status-healthy { background: var(--status-healthy); box-shadow: 0 0 0 3px rgba(26, 107, 86, 0.15); }
-      .health-dot.status-degraded { background: var(--status-degraded); box-shadow: 0 0 0 3px rgba(212, 100, 46, 0.15); }
-      .health-dot.status-attention { background: var(--status-attention); box-shadow: 0 0 0 3px rgba(182, 75, 47, 0.15); animation: pulse 2.4s ease infinite; }
+      .health-dot.status-healthy { background: var(--status-healthy); box-shadow: 0 0 0 3px var(--accent-subtle); }
+      .health-dot.status-degraded { background: var(--status-degraded); box-shadow: 0 0 0 3px var(--accent-warm-subtle); }
+      .health-dot.status-attention { background: var(--status-attention); box-shadow: 0 0 0 3px rgba(255, 122, 80, 0.18); animation: pulse 2.4s ease infinite; }
 
       .header-right {
         display: flex;
@@ -367,12 +378,14 @@
       }
 
       .meta-line {
+        font-family: var(--font-mono);
         font-size: 12px;
+        letter-spacing: 0.02em;
         color: var(--text-tertiary);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 300px;
+        max-width: 360px;
       }
 
       .runtime-label {
@@ -388,8 +401,9 @@
         display: flex;
         gap: 2px;
         padding: 0 var(--sp-6);
-        background: color-mix(in srgb, var(--surface-0) 60%, transparent);
-        backdrop-filter: blur(8px);
+        background: color-mix(in srgb, var(--surface-1) 55%, transparent);
+        backdrop-filter: blur(10px) saturate(1.2);
+        -webkit-backdrop-filter: blur(10px) saturate(1.2);
         border-bottom: 1px solid var(--border);
         position: sticky;
         top: 73px; /* header height */
@@ -406,7 +420,7 @@
         font-size: 13px;
         font-weight: 500;
         cursor: pointer;
-        transition: color 0.15s ease;
+        transition: color 140ms ease;
       }
 
       .tab-btn:hover {
@@ -427,6 +441,7 @@
         height: 2px;
         background: var(--accent);
         border-radius: 2px 2px 0 0;
+        box-shadow: 0 0 14px var(--accent-strong), 0 0 4px var(--accent-strong);
       }
 
       /* ── Tab panels ────────────────────────────────────────── */
@@ -848,8 +863,7 @@
 
       /* ── Selects / inputs ──────────────────────────────────── */
 
-      .project-filter,
-      .theme-select {
+      .project-filter {
         padding: 5px 10px;
         border-radius: var(--radius-sm);
         border: 1px solid var(--border);
@@ -858,15 +872,46 @@
         font-family: var(--font-sans);
         font-size: 12px;
         cursor: pointer;
-        transition: border-color 0.15s ease;
+        transition: border-color 140ms ease;
       }
-      .project-filter:hover, .theme-select:hover { border-color: var(--border-hover); }
-      .project-filter:focus, .theme-select:focus {
+      .project-filter:hover { border-color: var(--border-hover); }
+      .project-filter:focus {
         outline: none;
         border-color: var(--accent);
         box-shadow: 0 0 0 3px var(--focus-ring);
       }
-      .theme-select { min-width: 150px; }
+
+      /* 36×36 square icon buttons — theme toggle, settings gear. */
+      .icon-button {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--control-border);
+        background: var(--control-bg);
+        color: var(--control-text);
+        cursor: pointer;
+        flex-shrink: 0;
+        transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+      }
+      .icon-button:hover {
+        background: var(--control-hover-bg);
+        border-color: var(--control-hover-border);
+        transform: translateY(-1px);
+      }
+      .icon-button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        box-shadow: 0 0 0 4px var(--focus-ring);
+      }
+      .icon-button svg {
+        width: 18px;
+        height: 18px;
+        stroke-width: 2;
+      }
 
       /* ── Feed section ──────────────────────────────────────── */
 
@@ -2353,7 +2398,7 @@
                 <rect x="9" y="9" width="13" height="13" rx="2.25" fill="currentColor"/>
               </svg>
             </span>
-            <span class="header-title">codemem</span>
+            <span class="header-title">codemem<span class="brand-dot" aria-hidden="true"></span></span>
             <span class="health-dot status-healthy" id="healthDot" title="Healthy"></span>
           </div>
           <span class="refresh-status" id="refreshStatus">refreshing…</span>
@@ -2365,9 +2410,12 @@
           <select class="project-filter" id="projectFilter" aria-label="Project filter">
             <option value="">All Projects</option>
           </select>
-          <label class="sr-only" for="themeSelect">Viewer theme</label>
-          <select class="theme-select" id="themeSelect" aria-label="Viewer theme"></select>
-          <button class="settings-button" id="settingsButton">Settings</button>
+          <button class="icon-button" id="themeToggle" type="button" aria-label="Switch theme">
+            <i data-lucide="sun" aria-hidden="true"></i>
+          </button>
+          <button class="icon-button" id="settingsButton" type="button" aria-label="Settings">
+            <i data-lucide="settings" aria-hidden="true"></i>
+          </button>
         </div>
       </div>
     </header>
