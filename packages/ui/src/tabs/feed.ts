@@ -1,6 +1,5 @@
 /* Feed tab — memory feed rendering, filtering, search. */
 
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { type ComponentChildren, Fragment, h, render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../components/primitives/chip";
@@ -149,42 +148,7 @@ function removeFeedItem(memoryId: number) {
 	}
 }
 
-function FeedItemMenu({
-	disabled,
-	onForget,
-	title,
-}: {
-	disabled: boolean;
-	onForget: () => void;
-	title: string;
-}) {
-	return h(
-		DropdownMenu.Root,
-		null,
-		h(
-			DropdownMenu.Trigger,
-			{ asChild: true },
-			h(
-				"button",
-				{ "aria-label": `Actions for ${title}`, className: "feed-menu-trigger", type: "button" },
-				"⋯",
-			),
-		),
-		h(
-			DropdownMenu.Portal,
-			null,
-			h(
-				DropdownMenu.Content,
-				{ align: "end", className: "feed-menu-panel", side: "bottom", sideOffset: 4 },
-				h(
-					DropdownMenu.Item,
-					{ className: "feed-menu-item danger", disabled, onSelect: () => onForget() },
-					disabled ? "Forgetting…" : "Forget memory",
-				),
-			),
-		),
-	);
-}
+import { FeedItemMenu } from "./feed/menu";
 
 /* ── Summary object extraction ───────────────────────────── */
 
