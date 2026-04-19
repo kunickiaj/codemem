@@ -1605,7 +1605,19 @@
       .peer-scope-chip-remove:hover { opacity: 1; }
       .peer-scope-input { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); padding: 8px 10px; font: inherit; }
       .peer-scope-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
-      .peer-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+      .peer-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: flex-end; }
+
+      /* Labeled input wrapper — keeps a small uppercase caption visible even
+         when the input has a value. Replaces aria-label-only inputs that
+         were glaring once the deep-ink palette raised contrast. */
+      .sync-labeled-field { display: flex; flex-direction: column; gap: 4px; min-width: 180px; flex: 1 1 220px; }
+      .sync-labeled-field-caption {
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
       .peer-actions button.danger { color: var(--accent-warm); border-color: color-mix(in srgb, var(--accent-warm) 36%, var(--border)); }
       .peer-actions button.danger:hover { background: var(--accent-warm-subtle); border-color: var(--accent-warm); }
       .peer-card,
@@ -2893,8 +2905,10 @@
         <h3 class="settings-group-title">People</h3>
         <div class="section-meta" id="syncActorsMeta">Create and rename people here. Assign each device below.</div>
         <div class="actor-create-row">
-          <label for="syncActorCreateInput" class="sr-only">Person name</label>
-          <input class="peer-scope-input" id="syncActorCreateInput" placeholder="Create a named person" />
+          <div class="sync-labeled-field">
+            <label for="syncActorCreateInput" class="sync-labeled-field-caption">Person name</label>
+            <input class="peer-scope-input" id="syncActorCreateInput" placeholder="e.g. Alex, backend team" />
+          </div>
           <button class="settings-button" id="syncActorCreateButton">Create person</button>
         </div>
         <div class="actor-list" id="syncActorsList"></div>
