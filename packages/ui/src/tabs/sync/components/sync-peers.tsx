@@ -350,18 +350,27 @@ function SyncPeerCard({
 					>
 						{syncBusy ? "Syncing…" : "Sync now"}
 					</button>
-					<TextInput
-						aria-label={`Friendly name for ${displayName}`}
-						className="peer-scope-input"
-						data-device-name-input={peerId || undefined}
-						disabled={renameBusy}
-						placeholder="Friendly device name"
-						type="text"
-						value={renameValue}
-						onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
-							setRenameValue(event.currentTarget.value)
-						}
-					/>
+					<div className="sync-labeled-field">
+						<label
+							className="sync-labeled-field-caption"
+							htmlFor={`device-name-${peerId || "unknown"}`}
+						>
+							Device name
+						</label>
+						<TextInput
+							aria-label={`Friendly name for ${displayName}`}
+							className="peer-scope-input"
+							data-device-name-input={peerId || undefined}
+							disabled={renameBusy}
+							id={`device-name-${peerId || "unknown"}`}
+							placeholder="Friendly device name"
+							type="text"
+							value={renameValue}
+							onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
+								setRenameValue(event.currentTarget.value)
+							}
+						/>
+					</div>
 					<button
 						type="button"
 						className="settings-button"
