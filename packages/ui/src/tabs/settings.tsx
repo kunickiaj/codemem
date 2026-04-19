@@ -516,6 +516,9 @@ function renderSettingsShell() {
 	const mount = $("settingsDialogMount");
 	if (!mount) return;
 	render(<SettingsDialogShell />, mount);
+	// Replace any `data-lucide` stubs (e.g., help-circle) with inline SVG.
+	const lucide = (globalThis as { lucide?: { createIcons?: () => void } }).lucide;
+	lucide?.createIcons?.();
 }
 
 function ensureSettingsShell() {
@@ -1550,7 +1553,7 @@ function SettingsDialogContent() {
 						data-tooltip="Advanced controls include JSON fields, tuning values, and network overrides."
 						type="button"
 					>
-						?
+						<i aria-hidden="true" data-lucide="help-circle" />
 					</button>
 				</div>
 				<SettingsHint hidden={!settingsShowAdvanced}>

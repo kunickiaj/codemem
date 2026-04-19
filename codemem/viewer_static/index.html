@@ -2289,26 +2289,26 @@
       }
 
       .help-icon {
-        width: 16px;
-        height: 16px;
-        border: 1px solid var(--border);
+        width: 20px;
+        height: 20px;
+        border: none;
+        background: transparent;
         border-radius: 999px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        font-size: 11px;
-        color: var(--text-secondary);
+        color: var(--text-tertiary);
         cursor: pointer;
         user-select: none;
-        background: var(--surface-0);
         position: relative;
         padding: 0;
       }
-
+      .help-icon:hover { color: var(--accent); background: var(--accent-subtle); }
       .help-icon:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
       }
+      .help-icon svg { width: 14px; height: 14px; stroke-width: 2; }
 
       .help-tooltip {
         position: fixed;
@@ -2334,14 +2334,15 @@
         transform: translateY(0);
       }
 
+      /* Inline control row — not its own bordered surface. Lets the intro
+         copy → toggle → tabs read as three stages of hierarchy (context,
+         quick setting, primary nav) instead of three equal-weight cards. */
       .settings-advanced-toolbar {
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: var(--sp-2) var(--sp-3);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--surface-0);
+        padding: 4px 0;
+        color: var(--text-secondary);
       }
 
       .settings-advanced-toolbar input {
