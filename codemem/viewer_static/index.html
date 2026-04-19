@@ -1410,8 +1410,8 @@
         font-size: 12px;
         font-weight: 600;
       }
-      .badge-online { background: rgba(26, 107, 86, 0.12); color: var(--accent); }
-      .badge-offline { background: rgba(182, 75, 47, 0.15); color: var(--accent-warm); }
+      .badge-online { background: var(--accent-subtle); color: var(--accent); border-color: var(--accent-strong); }
+      .badge-offline { background: var(--accent-warm-subtle); color: var(--accent-warm); border-color: rgba(255, 180, 84, 0.3); }
 
       .pill {
         display: inline-block;
@@ -1495,7 +1495,10 @@
 
       /* ── Peers ─────────────────────────────────────────────── */
 
-      .peer-list { display: grid; gap: var(--sp-3); }
+      .peer-list { display: grid; grid-template-columns: 1fr; gap: var(--sp-3); }
+      @media (min-width: 900px) {
+        .peer-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
       .peer-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--sp-4); background: var(--surface-1); display: grid; gap: var(--sp-2); }
       .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-title strong { font-size: 14px; font-weight: 600; }
@@ -1829,8 +1832,8 @@
         border-color: var(--accent);
         box-shadow: 0 0 0 3px var(--focus-ring);
       }
-      .peer-meta { font-size: 13px; color: var(--text-tertiary); }
-      .peer-addresses { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); opacity: 0.7; }
+      .peer-meta { font-size: 13px; color: var(--text-tertiary); font-feature-settings: 'tnum' 1; }
+      .peer-addresses { font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); letter-spacing: 0.02em; }
       .attempts-list { margin-top: var(--sp-3); display: grid; gap: 6px; font-size: 13px; color: var(--text-tertiary); }
 
       /* ── Pairing ───────────────────────────────────────────── */
