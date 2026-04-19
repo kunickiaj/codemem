@@ -1305,18 +1305,34 @@
         gap: 6px;
       }
 
-      .provenance-chip {
+      /* ── Chip base ─────────────────────────────────────────── */
+      /* Shared layout for every pill-shaped label in the viewer. Per-variant
+         rules below only override background / color / border / typography.
+         Markup stays unchanged — each variant class continues to work
+         standalone for backward compatibility. */
+      .chip,
+      .kind-chip,
+      .provenance-chip,
+      .tag-chip,
+      .peer-scope-chip,
+      .badge {
         display: inline-flex;
         align-items: center;
-        gap: 4px;
-        padding: 3px 8px;
+        gap: 6px;
+        padding: 3px 10px;
         border-radius: var(--radius-pill);
-        border: 1px solid var(--border);
-        background: var(--surface-2);
-        color: var(--text-tertiary);
-        font-size: 11px;
+        border: 1px solid transparent;
         line-height: 1.2;
         white-space: nowrap;
+        font-size: 11px;
+      }
+
+      .provenance-chip {
+        gap: 4px;
+        padding: 3px 8px;
+        border-color: var(--border);
+        background: var(--surface-2);
+        color: var(--text-tertiary);
       }
       .provenance-chip.mine { background: var(--accent-subtle); color: var(--accent); border-color: rgba(43, 122, 176, 0.18); }
       .provenance-chip.author { color: var(--text-secondary); }
@@ -1422,20 +1438,15 @@
       /* Kind chip — lives inside .feed-kind-banner. Tint + colored border
          match the banner per kind so the chip reads as part of the strip. */
       .kind-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
         padding: 2px 10px;
-        border-radius: var(--radius-pill);
         font-family: var(--font-mono);
         font-size: 10px;
         font-weight: 600;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        white-space: nowrap;
         background: var(--accent-subtle);
         color: var(--accent);
-        border: 1px solid var(--accent-strong);
+        border-color: var(--accent-strong);
       }
       .kind-chip.change { background: var(--accent-cool-subtle); color: var(--accent-cool); border-color: color-mix(in srgb, var(--accent-cool) 32%, transparent); }
       .kind-chip.bugfix { background: var(--accent-warm-subtle); color: var(--accent-warm); border-color: color-mix(in srgb, var(--accent-warm) 32%, transparent); }
@@ -1448,27 +1459,17 @@
       .kind-chip.session_summary { background: color-mix(in srgb, var(--accent-cool) 10%, transparent); color: var(--accent-cool); border-color: color-mix(in srgb, var(--accent-cool) 24%, transparent); }
 
       .tag-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
         padding: 2px 10px;
-        border-radius: var(--radius-pill);
         background: var(--accent-cool-subtle);
         color: var(--accent-cool);
-        font-size: 11px;
         font-weight: 500;
       }
 
       .badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 3px 10px;
-        border-radius: var(--radius-pill);
-        background: var(--accent-cool-subtle);
-        color: var(--accent-cool);
         font-size: 12px;
         font-weight: 600;
+        background: var(--accent-cool-subtle);
+        color: var(--accent-cool);
       }
       .badge-online { background: var(--accent-subtle); color: var(--accent); border-color: var(--accent-strong); }
       .badge-offline { background: var(--accent-warm-subtle); color: var(--accent-warm); border-color: rgba(255, 180, 84, 0.3); }
@@ -1580,8 +1581,8 @@
       .peer-scope-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
       .peer-scope-editor { display: grid; gap: 8px; }
       .peer-scope-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
-      .peer-scope-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-pill); background: rgba(43, 122, 176, 0.12); color: var(--accent); font-size: 12px; }
-      .peer-scope-chip.empty { background: transparent; color: var(--text-tertiary); border: 1px dashed var(--border); }
+      .peer-scope-chip { padding: 4px 8px; background: rgba(43, 122, 176, 0.12); color: var(--accent); font-size: 12px; }
+      .peer-scope-chip.empty { background: transparent; color: var(--text-tertiary); border-style: dashed; border-color: var(--border); }
       .peer-scope-chip-remove { border: none; background: transparent; color: inherit; cursor: pointer; padding: 0; font: inherit; opacity: 0.75; }
       .peer-scope-chip-remove:hover { opacity: 1; }
       .peer-scope-input { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); padding: 8px 10px; font: inherit; }
