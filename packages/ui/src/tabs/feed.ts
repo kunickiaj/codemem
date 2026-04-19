@@ -880,132 +880,136 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 		}
 	}
 
+	const kindChipLabel = displayKindValue.replace(/_/g, " ");
+	const filesRow = files.length
+		? h(
+				"div",
+				{ className: "feed-files" },
+				files.map((file, index) =>
+					h("span", { className: "feed-file", key: `${String(file)}-${index}` }, String(file)),
+				),
+			)
+		: null;
+	void isNew;
+
 	return h(
-		"div",
+		"article",
 		{
-			className: `feed-item ${displayKindValue}${isNew ? " new-item" : ""}`.trim(),
+			className: `feed-item ${displayKindValue}`.trim(),
 			"data-key": rowKey,
 		},
 		h(
 			"div",
-			{ className: "feed-card-header" },
+			{ className: "feed-kind-banner" },
+			h("span", { className: `kind-chip ${displayKindValue}`.trim() }, kindChipLabel),
+		),
+		h(
+			"div",
+			{ className: "feed-card-body" },
 			h(
 				"div",
-				{ className: "feed-header" },
+				{ className: "feed-card-header" },
 				h(
-					"span",
-					{ className: `kind-pill ${displayKindValue}`.trim() },
-					displayKindValue.replace(/_/g, " "),
+					"div",
+					{ className: "feed-header" },
+					h("div", {
+						className: "feed-title title",
+						dangerouslySetInnerHTML: { __html: highlightText(displayTitle, state.feedQuery) },
+					}),
+					h("div", { className: "feed-card-subtitle small" }, secondaryMeta),
 				),
-				h("div", {
-					className: "feed-title title",
-					dangerouslySetInnerHTML: { __html: highlightText(displayTitle, state.feedQuery) },
-				}),
-				h("div", { className: "feed-card-subtitle small" }, secondaryMeta),
+				h(
+					"div",
+					{ className: "feed-actions" },
+					observationData
+						? h(FeedViewToggle, {
+								active: activeMode,
+								modes,
+								onSelect: (mode) => setActiveMode(mode),
+							})
+						: null,
+					h("div", { className: "small feed-age", title: formatDate(createdAtRaw) }, relative),
+					Boolean(item.owned_by_self) && memoryId > 0
+						? h(FeedItemMenu, {
+								disabled: deletingMemory,
+								onForget: () => void forgetMemory(),
+								title: String(displayTitle || "memory"),
+							})
+						: null,
+				),
 			),
 			h(
 				"div",
-				{ className: "feed-actions" },
-				observationData
-					? h(FeedViewToggle, {
-							active: activeMode,
-							modes,
-							onSelect: (mode) => setActiveMode(mode),
-						})
-					: null,
-				h("div", { className: "small feed-age", title: formatDate(createdAtRaw) }, relative),
-				Boolean(item.owned_by_self) && memoryId > 0
-					? h(FeedItemMenu, {
-							disabled: deletingMemory,
-							onForget: () => void forgetMemory(),
-							title: String(displayTitle || "memory"),
-						})
-					: null,
+				{ className: "feed-provenance" },
+				h(ProvenanceChip, { label: actor, variant: actor === "You" ? "mine" : "author" }),
+				h(ProvenanceChip, { label: visibility || "private", variant: visibility || "private" }),
 			),
-		),
-		h(
-			"div",
-			{ className: "feed-provenance" },
-			h(ProvenanceChip, { label: actor, variant: actor === "You" ? "mine" : "author" }),
-			h(ProvenanceChip, { label: visibility || "private", variant: visibility || "private" }),
-		),
-		h(
-			"div",
-			{ className: "feed-meta" },
-			metaText || "No tags, files, or provenance details attached.",
-		),
-		bodyContent,
-		h(
-			"div",
-			{ className: "feed-footer" },
 			h(
 				"div",
-				{ className: "feed-footer-left" },
-				files.length
-					? h(
-							"div",
-							{ className: "feed-files" },
-							files.map((file, index) =>
+				{ className: "feed-meta" },
+				metaText || "No tags, files, or provenance details attached.",
+			),
+			bodyContent,
+			h(
+				"div",
+				{ className: "feed-footer" },
+				h(
+					"div",
+					{ className: "feed-footer-left" },
+					tags.length
+						? h(
+								"div",
+								{ className: "feed-tags" },
+								tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
+							)
+						: null,
+					Boolean(item.owned_by_self) && memoryId > 0
+						? h(
+								"div",
+								{ className: "feed-visibility-controls" },
 								h(
-									"span",
-									{ className: "feed-file", key: `${String(file)}-${index}` },
-									String(file),
-								),
-							),
-						)
-					: null,
-				tags.length
-					? h(
-							"div",
-							{ className: "feed-tags" },
-							tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
-						)
-					: null,
-				Boolean(item.owned_by_self) && memoryId > 0
-					? h(
-							"div",
-							{ className: "feed-visibility-controls" },
-							h(
-								"select",
-								{
-									"aria-label": `Visibility for ${String(item.title || "memory")}`,
-									className: "feed-visibility-select",
-									disabled: savingVisibility,
-									onChange: (event) => {
-										const nextValue =
-											String((event.currentTarget as HTMLSelectElement).value) === "shared"
-												? "shared"
-												: "private";
-										void saveVisibility(nextValue);
+									"select",
+									{
+										"aria-label": `Visibility for ${String(item.title || "memory")}`,
+										className: "feed-visibility-select",
+										disabled: savingVisibility,
+										onChange: (event) => {
+											const nextValue =
+												String((event.currentTarget as HTMLSelectElement).value) === "shared"
+													? "shared"
+													: "private";
+											void saveVisibility(nextValue);
+										},
+										value: currentVisibility,
 									},
-									value: currentVisibility,
+									h("option", { value: "private" }, "Only me"),
+									h("option", { value: "shared" }, "Share with peers"),
+								),
+								h("div", { className: "feed-visibility-note" }, visibilityNote),
+							)
+						: null,
+				),
+				h(
+					"div",
+					{ className: "feed-footer-right" },
+					canClamp
+						? h(
+								"button",
+								{
+									className: "feed-expand",
+									onClick: () => {
+										const nextValue = !expanded;
+										state.itemExpandState.set(activeExpandKey, nextValue);
+										setExpanded(nextValue);
+									},
+									type: "button",
 								},
-								h("option", { value: "private" }, "Only me"),
-								h("option", { value: "shared" }, "Share with peers"),
-							),
-							h("div", { className: "feed-visibility-note" }, visibilityNote),
-						)
-					: null,
+								expanded ? "Collapse" : "Expand",
+							)
+						: null,
+				),
 			),
-			h(
-				"div",
-				{ className: "feed-footer-right" },
-				canClamp
-					? h(
-							"button",
-							{
-								className: "feed-expand",
-								onClick: () => {
-									const nextValue = !expanded;
-									state.itemExpandState.set(activeExpandKey, nextValue);
-									setExpanded(nextValue);
-								},
-								type: "button",
-							},
-							expanded ? "Collapse" : "Expand",
-						)
-					: null,
-			),
+			filesRow,
 		),
 	);
 }

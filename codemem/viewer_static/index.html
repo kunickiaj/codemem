@@ -977,7 +977,7 @@
       .feed-search {
         min-width: 200px;
         flex: 1;
-        max-width: 400px;
+        max-width: 420px;
         padding: 8px var(--sp-3);
         border-radius: var(--radius-md);
         border: 1px solid var(--border);
@@ -986,7 +986,7 @@
         font-family: var(--font-sans);
         font-size: 13px;
         outline: none;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        transition: border-color 140ms ease, box-shadow 140ms ease;
       }
       .feed-search::placeholder { color: var(--text-tertiary); }
       .feed-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
@@ -1019,7 +1019,7 @@
         padding: 3px;
         border-radius: var(--radius-pill);
         border: 1px solid var(--border);
-        background: var(--surface-2);
+        background: color-mix(in srgb, var(--surface-0) 70%, transparent);
       }
 
       .toggle-button {
@@ -1028,16 +1028,21 @@
         color: var(--text-tertiary);
         font-family: var(--font-sans);
         font-size: 12px;
-        padding: 4px 10px;
+        padding: 4px 12px;
         border-radius: var(--radius-pill);
         cursor: pointer;
         display: inline-flex;
         align-items: center;
         gap: 5px;
-        transition: background 0.15s ease, color 0.15s ease;
+        transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
       }
       .toggle-button:hover { background: var(--toggle-hover-bg); color: var(--text-primary); }
-      .toggle-button.active { background: var(--toggle-active-bg); color: var(--toggle-active-text); font-weight: 600; }
+      .toggle-button.active {
+        background: var(--accent-subtle);
+        color: var(--accent);
+        font-weight: 600;
+        box-shadow: inset 0 0 0 1px var(--accent-strong);
+      }
 
       .feed-list {
         display: flex;
@@ -1046,34 +1051,51 @@
       }
 
       /* ── Feed items ────────────────────────────────────────── */
+      /* Design-handoff clarification (2026-04-19): feed items render with
+         a full-width top banner in the kind's tint, not a 4px left rail.
+         Banner ~28px tall, --accent-subtle bg per kind, 1px accent-strong
+         bottom border; kind chip sits inset left inside the banner. */
 
       .feed-item {
         border: 1px solid var(--border);
-        border-left: 4px solid var(--accent);
-        border-radius: var(--radius-lg);
-        padding: var(--sp-4) var(--sp-5);
+        border-radius: var(--radius-md);
         background: var(--surface-1);
+        overflow: hidden;
         display: flex;
         flex-direction: column;
-        gap: var(--sp-2);
-        transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+        box-shadow: var(--shadow-sm);
+        transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
       }
       .feed-item:hover {
         transform: translateY(-1px);
-        box-shadow: var(--shadow-sm);
+        box-shadow: var(--shadow-md);
         border-color: var(--border-hover);
       }
-      .feed-item.new-item { animation: newPulse 420ms ease-out 1; }
 
-      /* Kind border colors */
-      .feed-item.feature { border-left-color: var(--accent); }
-      .feed-item.change { border-left-color: var(--accent-cool); }
-      .feed-item.bugfix { border-left-color: var(--accent-warm); }
-      .feed-item.refactor { border-left-color: #8b5cc6; }
-      .feed-item.discovery { border-left-color: #5e81ac; }
-      .feed-item.decision { border-left-color: #8fadbd; }
-      .feed-item.session_summary { border-left-color: #4696c8; }
-      .feed-item.exploration { border-left-color: var(--text-tertiary); }
+      /* Kind banner — defaults to mint (feature). Per-kind overrides below. */
+      .feed-kind-banner {
+        padding: 7px var(--sp-5);
+        background: var(--accent-subtle);
+        border-bottom: 1px solid var(--accent-strong);
+      }
+      .feed-item.change .feed-kind-banner { background: var(--accent-cool-subtle); border-bottom-color: rgba(134, 169, 255, 0.28); }
+      .feed-item.bugfix .feed-kind-banner { background: var(--accent-warm-subtle); border-bottom-color: rgba(255, 180, 84, 0.28); }
+      .feed-item.refactor .feed-kind-banner { background: var(--accent-violet-subtle); border-bottom-color: rgba(199, 155, 255, 0.28); }
+      .feed-item.discovery .feed-kind-banner { background: rgba(77, 212, 180, 0.12); border-bottom-color: rgba(77, 212, 180, 0.28); }
+      .feed-item.docs .feed-kind-banner { background: rgba(226, 192, 126, 0.12); border-bottom-color: rgba(226, 192, 126, 0.28); }
+      .feed-item.test .feed-kind-banner { background: rgba(158, 167, 183, 0.12); border-bottom-color: rgba(158, 167, 183, 0.28); }
+      /* Core emits 'decision' / 'exploration' / 'session_summary' too — preserve
+         neutral treatments so those items aren't unstyled. */
+      .feed-item.decision .feed-kind-banner { background: rgba(158, 167, 183, 0.12); border-bottom-color: rgba(158, 167, 183, 0.28); }
+      .feed-item.exploration .feed-kind-banner { background: rgba(140, 140, 140, 0.10); border-bottom-color: rgba(140, 140, 140, 0.24); }
+      .feed-item.session_summary .feed-kind-banner { background: rgba(134, 169, 255, 0.10); border-bottom-color: rgba(134, 169, 255, 0.24); }
+
+      .feed-card-body {
+        padding: var(--sp-4) var(--sp-5);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+      }
 
       .feed-card-header {
         display: flex;
@@ -1180,18 +1202,41 @@
         color: var(--text-tertiary);
         font-size: 12px;
       }
+      /* Empty state renders as a terminal-output block — mono surface,
+         blinking mint cursor — to match the codemem "warm local journal"
+         voice and signal "this is a CLI-native tool." */
       .feed-empty-state {
         display: flex;
         flex-direction: column;
         gap: 6px;
-        padding: var(--sp-3);
-        border: 1px dashed var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--surface-0);
+        padding: var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-2);
         color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: 13px;
       }
       .feed-empty-state strong {
         color: var(--text-primary);
+        font-weight: 600;
+      }
+      .feed-empty-state::before {
+        content: "$ codemem feed";
+        display: block;
+        color: var(--accent);
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+      .feed-empty-state::after {
+        content: "_";
+        display: inline-block;
+        color: var(--accent);
+        animation: cursorBlink 1.1s steps(2, end) infinite;
+      }
+      @keyframes cursorBlink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
       }
 
       .feed-provenance {
@@ -1292,32 +1337,50 @@
       .feed-expand:hover { background: var(--accent-subtle); color: var(--accent); }
 
       .feed-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-      .feed-files { display: flex; flex-wrap: wrap; gap: var(--sp-2); font-size: 10px; color: var(--text-tertiary); opacity: 0.85; }
-      .feed-file { white-space: nowrap; }
-      .feed-age { white-space: nowrap; }
+      /* File paths render as compact pill-tags in their own row — the actual
+         filename is informative and earns its horizontal space. */
+      .feed-files { display: flex; flex-wrap: wrap; gap: 6px; }
+      .feed-file {
+        padding: 2px 8px;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text-tertiary);
+        white-space: nowrap;
+      }
+      .feed-age { white-space: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); letter-spacing: 0.02em; }
 
       /* ── Pills & badges ────────────────────────────────────── */
 
-      .kind-pill {
+      /* Kind chip — lives inside .feed-kind-banner. Tint + colored border
+         match the banner per kind so the chip reads as part of the strip. */
+      .kind-chip {
         display: inline-flex;
         align-items: center;
-        padding: 2px 8px;
+        gap: 6px;
+        padding: 2px 10px;
         border-radius: var(--radius-pill);
-        font-size: 11px;
-        font-weight: 500;
-        letter-spacing: 0.2px;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
         white-space: nowrap;
         background: var(--accent-subtle);
         color: var(--accent);
+        border: 1px solid var(--accent-strong);
       }
-      .kind-pill.feature { background: var(--accent-subtle); color: var(--accent); }
-      .kind-pill.change { background: var(--accent-cool-subtle); color: var(--accent-cool); }
-      .kind-pill.bugfix { background: var(--accent-warm-subtle); color: var(--accent-warm); }
-      .kind-pill.refactor { background: rgba(139, 92, 198, 0.12); color: #8b5cc6; }
-      .kind-pill.discovery { background: rgba(94, 129, 172, 0.12); color: #5e81ac; }
-      .kind-pill.decision { background: rgba(143, 173, 189, 0.12); color: #6b8fa3; }
-      .kind-pill.session_summary { background: rgba(70, 150, 200, 0.12); color: #4696c8; }
-      .kind-pill.exploration { background: rgba(140, 140, 140, 0.12); color: var(--text-tertiary); }
+      .kind-chip.change { background: var(--accent-cool-subtle); color: var(--accent-cool); border-color: rgba(134, 169, 255, 0.3); }
+      .kind-chip.bugfix { background: var(--accent-warm-subtle); color: var(--accent-warm); border-color: rgba(255, 180, 84, 0.3); }
+      .kind-chip.refactor { background: var(--accent-violet-subtle); color: var(--accent-violet); border-color: rgba(199, 155, 255, 0.3); }
+      .kind-chip.discovery { background: rgba(77, 212, 180, 0.12); color: #4dd4b4; border-color: rgba(77, 212, 180, 0.3); }
+      .kind-chip.docs { background: rgba(226, 192, 126, 0.12); color: #e2c07e; border-color: rgba(226, 192, 126, 0.3); }
+      .kind-chip.test { background: rgba(158, 167, 183, 0.14); color: #9ea7b7; border-color: rgba(158, 167, 183, 0.3); }
+      .kind-chip.decision { background: rgba(158, 167, 183, 0.14); color: #9ea7b7; border-color: rgba(158, 167, 183, 0.3); }
+      .kind-chip.exploration { background: rgba(140, 140, 140, 0.12); color: var(--text-tertiary); border-color: rgba(140, 140, 140, 0.28); }
+      .kind-chip.session_summary { background: rgba(134, 169, 255, 0.10); color: var(--accent-cool); border-color: rgba(134, 169, 255, 0.24); }
 
       .tag-chip {
         display: inline-flex;
@@ -2369,11 +2432,7 @@
         50% { transform: scale(1.3); opacity: 0.5; }
       }
 
-      @keyframes newPulse {
-        0% { box-shadow: 0 0 0 rgba(26, 107, 86, 0); }
-        40% { box-shadow: 0 0 0 3px var(--accent-subtle); }
-        100% { box-shadow: 0 0 0 rgba(26, 107, 86, 0); }
-      }
+      /* newPulse deferred to codemem-gi99 (feed-item mount animation, v2). */
 
       /* ── Responsive ────────────────────────────────────────── */
 
