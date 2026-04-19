@@ -10,7 +10,7 @@
 declare const __CODEMEM_GIT_COMMIT__: string;
 
 import * as api from "./lib/api";
-import { $, $select } from "./lib/dom";
+import { $, $button, $select } from "./lib/dom";
 import {
 	ALL_TAB_IDS,
 	getVisibleTabs,
@@ -20,7 +20,7 @@ import {
 	state,
 	type TabId,
 } from "./lib/state";
-import { getTheme, initThemeSelect, setTheme } from "./lib/theme";
+import { getTheme, initThemeToggle, setTheme } from "./lib/theme";
 
 import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordinator-admin";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
@@ -356,7 +356,7 @@ async function doRefresh() {
 initState();
 
 // Theme
-initThemeSelect($select("themeSelect"));
+initThemeToggle($button("themeToggle"));
 setTheme(getTheme());
 
 // Tabs
