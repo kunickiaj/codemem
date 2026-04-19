@@ -23,7 +23,6 @@ export type { FeedItem, FeedItemMetadata } from "./feed/types";
 
 import {
 	authorLabel,
-	feedScopeLabel,
 	isLowSignalObservation,
 	itemKey,
 	mergeFeedItems,
@@ -574,23 +573,7 @@ function maybeLoadMoreFeedPage() {
 	void loadMoreFeedPage();
 }
 
-function feedMetaText(visibleCount: number): string {
-	const filterLabel =
-		state.feedTypeFilter === "observations"
-			? " · observations"
-			: state.feedTypeFilter === "summaries"
-				? " · session summaries"
-				: "";
-	const scopeLabel = feedScopeLabel(state.feedScopeFilter);
-	const filteredLabel =
-		!state.feedQuery.trim() && state.lastFeedFilteredCount
-			? ` · ${state.lastFeedFilteredCount} observations filtered`
-			: "";
-	const queryLabel = state.feedQuery.trim() ? ` · matching "${state.feedQuery.trim()}"` : "";
-	const moreLabel = hasMorePages() ? " · scroll for more" : "";
-	return `${visibleCount} items${filterLabel}${scopeLabel}${queryLabel}${filteredLabel}${moreLabel}`;
-}
-
+import { feedMetaText } from "./feed/meta";
 import { TraceCandidateGroup } from "./feed/trace";
 
 function ContextInspectorPanel({ open }: { open: boolean }) {
@@ -842,7 +825,7 @@ function FeedTabView({ items, loadingText }: { items: FeedItem[]; loadingText?: 
 			h(
 				"div",
 				{ className: "section-meta", id: "feedMeta" },
-				loadingText || feedMetaText(items.length),
+				loadingText || feedMetaText(items.length, hasMorePages()),
 			),
 			h(
 				"div",
