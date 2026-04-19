@@ -341,7 +341,6 @@
       }
 
       .logo {
-        position: relative;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -361,33 +360,15 @@
         white-space: nowrap;
       }
 
-      .brand-dot {
-        display: inline-block;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--accent);
-        margin-left: 3px;
-        vertical-align: baseline;
-        box-shadow: 0 0 10px var(--accent-subtle);
-      }
-
-      /* Health pip — lives top-right of the logo square. Separate from the
-         brand dot in the wordmark so the two mint circles don't read as
-         twins. 2px surface-colored border cuts the pip from the logo bg. */
       .health-dot {
-        position: absolute;
-        top: -2px;
-        right: -2px;
-        width: 10px;
-        height: 10px;
+        width: 8px;
+        height: 8px;
         border-radius: 50%;
-        border: 2px solid var(--surface-0);
         flex-shrink: 0;
       }
-      .health-dot.status-healthy { background: var(--status-healthy); }
-      .health-dot.status-degraded { background: var(--status-degraded); }
-      .health-dot.status-attention { background: var(--status-attention); animation: pulse 2.4s ease infinite; }
+      .health-dot.status-healthy { background: var(--status-healthy); box-shadow: 0 0 0 3px var(--accent-subtle); }
+      .health-dot.status-degraded { background: var(--status-degraded); box-shadow: 0 0 0 3px var(--accent-warm-subtle); }
+      .health-dot.status-attention { background: var(--status-attention); box-shadow: 0 0 0 3px rgba(255, 122, 80, 0.18); animation: pulse 2.4s ease infinite; }
 
       .header-right {
         display: flex;
@@ -796,9 +777,9 @@
       .stat .value {
         font-family: var(--font-sans);
         font-weight: 600;
-        font-size: 24px;
+        font-size: 20px;
         color: var(--text-primary);
-        line-height: 1.1;
+        line-height: 1.15;
         letter-spacing: -0.01em;
         font-feature-settings: 'tnum' 1;
       }
@@ -2577,9 +2558,9 @@
                 <path d="M6 5h13v13H6z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.56"/>
                 <path d="M7.5 3.5h13v13h-13z" fill="none" stroke="currentColor" stroke-width="2.8" opacity="0.82"/>
               </svg>
-              <span class="health-dot status-healthy" id="healthDot" title="Healthy"></span>
             </span>
-            <span class="header-title">codemem<span class="brand-dot" aria-hidden="true"></span></span>
+            <span class="header-title">codemem</span>
+            <span class="health-dot status-healthy" id="healthDot" title="Healthy"></span>
           </div>
           <span class="refresh-status" id="refreshStatus">refreshing…</span>
           <span class="sr-only" id="refreshAnnouncer" aria-live="polite"></span>

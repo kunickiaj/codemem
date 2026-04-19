@@ -4,7 +4,9 @@ import { Fragment, h, render } from "preact";
 import * as api from "../lib/api";
 import { copyToClipboard } from "../lib/dom";
 import {
+	collapseHome,
 	formatAgeShort,
+	formatBytes,
 	formatMultiplier,
 	formatPercent,
 	formatReductionPercent,
@@ -607,10 +609,8 @@ export function renderStats() {
 
 	if (metaLine) {
 		const projectSuffix = project ? ` · project: ${project}` : "";
-		renderText(
-			metaLine,
-			`DB: ${db.path || "unknown"} · ${Math.round((db.size_bytes || 0) / 1024)} KB${projectSuffix}`,
-		);
+		const dbPath = collapseHome(db.path || "unknown");
+		renderText(metaLine, `DB: ${dbPath} · ${formatBytes(db.size_bytes || 0)}${projectSuffix}`);
 	}
 	renderIcons();
 }

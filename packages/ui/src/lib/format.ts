@@ -155,3 +155,38 @@ export function formatTagLabel(tag: unknown): string {
 	if (colonIndex === -1) return trimmed;
 	return trimmed.slice(0, colonIndex).trim();
 }
+
+/**
+ * Replace the user's home-directory prefix with `~` in a path string —
+ * `/Users/adam/workspace/foo` → `~/workspace/foo`, same for `/home/adam/…`
+ * and Windows `C:\Users\adam\…`. Leaves anything else untouched.
+ */
+export function collapseHome(path: unknown): string {
+	const text = String(path || "");
+	if (!text) return "";
+	return text
+		.replace(/^\/Users\/[^/]+(?=\/|$)/, "~")
+		.replace(/^\/home\/[^/]+(?=\/|$)/, "~")
+		.replace(/^[A-Z]:\\Users\\[^\\]+(?=\\|$)/, "~");
+}
+
+/**
+ * Format a byte count with the smallest suffix that keeps the number under
+ * 1024 units (binary convention to match filesystem reporting). 0-byte and
+ * non-finite inputs return a friendly fallback.
+ */
+export function formatBytes(value: unknown): string {
+	const num = Number(value || 0);
+	if (!Number.isFinite(num) || num < 0) return "n/a";
+	if (num < 1024) return `${num} B`;
+	const units = ["KB", "MB", "GB", "TB", "PB"];
+	let scaled = num / 1024;
+	let unitIndex = 0;
+	while (scaled >= 1024 && unitIndex < units.length - 1) {
+		scaled /= 1024;
+		unitIndex += 1;
+	}
+	const rounded = scaled >= 10 ? Math.round(scaled) : Number(scaled.toFixed(1));
+	const text = String(rounded).replace(/\.0$/, "");
+	return `${text} ${units[unitIndex]}`;
+}
