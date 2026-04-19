@@ -1561,9 +1561,26 @@
       /* ── Diagnostics ───────────────────────────────────────── */
 
       .diag-list { margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
-      .diag-line { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--sp-3); background: var(--surface-2); display: flex; justify-content: space-between; gap: var(--sp-3); }
+      /* Sync diagnostics row. Body wraps within its own column; timestamp
+         stays flush-right on the first line and doesn't shove the wrapped
+         body sideways. On narrow viewports the timestamp stacks under the
+         body so neither column has to compete with the other. */
+      .diag-line {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: var(--sp-3);
+        background: var(--surface-2);
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: baseline;
+        gap: var(--sp-3);
+      }
       .diag-line .left { min-width: 0; }
-      .diag-line .right { flex-shrink: 0; color: var(--text-tertiary); }
+      .diag-line .right { color: var(--text-tertiary); white-space: nowrap; }
+      @media (max-width: 600px) {
+        .diag-line { grid-template-columns: 1fr; }
+        .diag-line .right { font-size: 11px; }
+      }
 
       .diag-group { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); margin-top: var(--sp-3); background: var(--surface-2); }
       .diag-group summary { cursor: pointer; color: var(--text-tertiary); font-size: 13px; }
