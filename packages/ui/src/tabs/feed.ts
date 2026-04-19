@@ -4,6 +4,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { type ComponentChildren, Fragment, h, render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../components/primitives/chip";
+import { Tooltip } from "../components/primitives/tooltip";
 import * as api from "../lib/api";
 import { highlightText } from "../lib/dom";
 import {
@@ -931,7 +932,11 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 								onSelect: (mode) => setActiveMode(mode),
 							})
 						: null,
-					h("div", { className: "small feed-age", title: formatDate(createdAtRaw) }, relative),
+					h(
+						Tooltip,
+						{ label: formatDate(createdAtRaw), side: "left" },
+						h("div", { className: "small feed-age" }, relative),
+					),
 					Boolean(item.owned_by_self) && memoryId > 0
 						? h(FeedItemMenu, {
 								disabled: deletingMemory,

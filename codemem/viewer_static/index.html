@@ -1955,6 +1955,34 @@
         max-height: min(84vh, 720px);
         overflow: hidden;
       }
+
+      /* ── Tooltip ─────────────────────────────────────────── */
+      /* Radix Tooltip content + arrow. Replaces native title="..." on
+         hover hints where the cue is load-bearing (stat tiles, absolute
+         timestamps, full file paths). Mono by default since most hints
+         are paths / timestamps; callers can override per instance. */
+      .tooltip-content {
+        background: var(--surface-1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-md);
+        color: var(--text-primary);
+        padding: 6px 10px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.4;
+        letter-spacing: 0.01em;
+        max-width: 320px;
+        z-index: 60;
+        user-select: none;
+        animation: tooltipFade 140ms ease;
+      }
+      .tooltip-content[data-state="closed"] { animation: none; }
+      .tooltip-arrow { fill: var(--surface-1); filter: drop-shadow(0 1px 0 var(--border)); }
+      @keyframes tooltipFade {
+        from { opacity: 0; transform: translateY(2px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
       .modal-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
       .modal-header h2 { margin: 0; font-size: 18px; }
       .modal-close-button {
