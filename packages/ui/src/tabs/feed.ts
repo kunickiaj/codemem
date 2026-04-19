@@ -12,7 +12,6 @@ import {
 	formatFileList,
 	formatRelativeTime,
 	formatTagLabel,
-	normalize,
 	parseJsonArray,
 } from "../lib/format";
 import { showGlobalNotice } from "../lib/notice";
@@ -28,7 +27,6 @@ import {
 	feedScopeLabel,
 	isLowSignalObservation,
 	itemKey,
-	itemSignature,
 	mergeFeedItems,
 	mergeMetadata,
 	mergeRefreshFeedItems,
@@ -593,39 +591,7 @@ function FeedList({ items, loadingText }: { items: FeedItem[]; loadingText?: str
 
 /* ── Filtering ───────────────────────────────────────────── */
 
-function filterByType(items: FeedItem[]): FeedItem[] {
-	if (state.feedTypeFilter === "observations")
-		return items.filter((i) => !isSummaryLikeItem(i, mergeMetadata(i?.metadata_json)));
-	if (state.feedTypeFilter === "summaries")
-		return items.filter((i) => isSummaryLikeItem(i, mergeMetadata(i?.metadata_json)));
-	return items;
-}
-
-function filterByQuery(items: FeedItem[]): FeedItem[] {
-	const query = normalize(state.feedQuery);
-	if (!query) return items;
-	return items.filter((item) => {
-		const hay = [
-			normalize(item?.title),
-			normalize(item?.body_text),
-			normalize(item?.kind),
-			parseJsonArray(item?.tags || [])
-				.map((t) => normalize(t))
-				.join(" "),
-			normalize(item?.project),
-		]
-			.join(" ")
-			.trim();
-		return hay.includes(query);
-	});
-}
-
-function computeSignature(items: FeedItem[]): string {
-	const parts = items.map(
-		(i) => `${itemSignature(i)}:${i.kind || ""}:${i.created_at_utc || i.created_at || ""}`,
-	);
-	return `${state.feedTypeFilter}|${state.feedScopeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join("|")}`;
-}
+import { computeSignature, filterByQuery, filterByType } from "./feed/filter";
 
 async function loadMoreFeedPage() {
 	if (loadMoreInFlight || !hasMorePages()) return;
