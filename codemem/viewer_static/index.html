@@ -1066,6 +1066,60 @@
         gap: var(--sp-3);
       }
 
+      /* Feed loading skeleton — mirrors the banner / body / footer shape so
+         the transition into real content doesn't shift layout. Reuses the
+         sync-shimmer keyframe below. */
+      .feed-skeleton {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+      }
+      .feed-skeleton-item {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+        overflow: hidden;
+        box-shadow: var(--shadow-sm);
+      }
+      .feed-skeleton-banner {
+        height: 28px;
+        background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer 1.5s ease-in-out infinite;
+        border-bottom: 1px solid var(--border);
+      }
+      .feed-skeleton-body {
+        padding: var(--sp-4) var(--sp-5);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .feed-skeleton-line {
+        height: 12px;
+        border-radius: 6px;
+        background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer 1.5s ease-in-out infinite;
+      }
+      .feed-skeleton-line.w-85 { width: 85%; }
+      .feed-skeleton-line.w-65 { width: 65%; }
+      .feed-skeleton-line.w-40 { width: 40%; }
+      .feed-skeleton-footer {
+        display: flex;
+        gap: 8px;
+        padding-top: 4px;
+      }
+      .feed-skeleton-chip {
+        height: 18px;
+        width: 72px;
+        border-radius: var(--radius-pill);
+        background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+        background-size: 400px 100%;
+        animation: sync-shimmer 1.5s ease-in-out infinite;
+      }
+      .feed-skeleton-chip.w-36 { width: 36px; }
+      .feed-skeleton-chip.w-56 { width: 56px; }
+
       /* ── Feed items ────────────────────────────────────────── */
       /* Design-handoff clarification (2026-04-19): feed items render with
          a full-width top banner in the kind's tint, not a 4px left rail.
