@@ -11,9 +11,10 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
 - **Peer-to-peer sync** — replicate memories across machines without a central service
 
-| Light | Dark |
-|-------|------|
-| ![codemem viewer – light theme](docs/images/codemem-light.png) | ![codemem viewer – dark theme](docs/images/codemem-dark.png) |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/codemem-dark.png">
+  <img alt="codemem viewer — feed tab" src="docs/images/codemem-light.png">
+</picture>
 
 ## Quick start
 
