@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatTokenCount } from "./format";
+import { collapseHome, formatBytes, formatTokenCount } from "./format";
 
 describe("formatTokenCount", () => {
 	it("keeps small values fully written out", () => {
@@ -20,5 +20,53 @@ describe("formatTokenCount", () => {
 		// Keep readable unit boundaries instead of surfacing awkward values like 1000K.
 		expect(formatTokenCount(999_950)).toBe("1M tokens");
 		expect(formatTokenCount(999_950_000)).toBe("1B tokens");
+	});
+});
+
+describe("collapseHome", () => {
+	it("replaces macOS user home with ~", () => {
+		expect(collapseHome("/Users/adam/workspace/codemem")).toBe("~/workspace/codemem");
+	});
+	it("replaces Linux user home with ~", () => {
+		expect(collapseHome("/home/adam/projects/db.sqlite")).toBe("~/projects/db.sqlite");
+	});
+	it("replaces Windows user home with ~", () => {
+		expect(collapseHome("C:\\Users\\adam\\codemem\\mem.sqlite")).toBe("~\\codemem\\mem.sqlite");
+	});
+	it("leaves non-home paths alone", () => {
+		expect(collapseHome("/var/run/codemem.sock")).toBe("/var/run/codemem.sock");
+	});
+	it("treats bare home dir as ~", () => {
+		expect(collapseHome("/Users/adam")).toBe("~");
+	});
+	it("returns empty string for nullish input", () => {
+		expect(collapseHome(null)).toBe("");
+		expect(collapseHome(undefined)).toBe("");
+	});
+});
+
+describe("formatBytes", () => {
+	it("shows raw bytes under 1024", () => {
+		expect(formatBytes(512)).toBe("512 B");
+		expect(formatBytes(0)).toBe("0 B");
+	});
+	it("scales through KB / MB / GB / TB", () => {
+		expect(formatBytes(2048)).toBe("2 KB");
+		expect(formatBytes(1.5 * 1024 * 1024)).toBe("1.5 MB");
+		expect(formatBytes(5 * 1024 * 1024 * 1024)).toBe("5 GB");
+		expect(formatBytes(3 * 1024 ** 4)).toBe("3 TB");
+	});
+	it("rounds to integer once the scaled value crosses 10", () => {
+		expect(formatBytes(15 * 1024 * 1024)).toBe("15 MB");
+	});
+	it("promotes to the next unit when rounding would hit 1024", () => {
+		// 1023.6 KB rounds to 1024 on its face; re-normalize to 1 MB so the
+		// magnitude always stays under the next unit boundary.
+		expect(formatBytes(Math.round(1023.6 * 1024))).toBe("1 MB");
+		expect(formatBytes(Math.round(1023.7 * 1024 * 1024))).toBe("1 GB");
+	});
+	it("returns n/a for invalid input", () => {
+		expect(formatBytes("not a number")).toBe("n/a");
+		expect(formatBytes(-5)).toBe("n/a");
 	});
 });
