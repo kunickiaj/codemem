@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script>
@@ -23,70 +23,71 @@
     </script>
     <style>
       /* ── Design Tokens ─────────────────────────────────────── */
+      /* Dark-first: :root carries the dark palette. [data-theme="light"]
+         overrides for the light variant. Values come from the codemem
+         design handoff (tokens/colors_and_type.css). */
 
       :root {
-        /* Surface */
-        --surface-0: #faf8f5;
-        --surface-1: #fff9f2;
-        --surface-2: #f5efe6;
-        --surface-3: #ede5d9;
+        /* Surface — deep ink */
+        --surface-0: #0b1016;
+        --surface-1: #0f1720;
+        --surface-2: #111c27;
+        --surface-3: #172332;
 
-        /* Text — tinted warm greys */
-        --text-primary: #1a1917;
-        --text-secondary: #5c5549;
-        --text-tertiary: #9b9285;
-        --text-inverse: #faf8f5;
+        /* Text — cool blue-white, never pure */
+        --text-primary:   #e7f0f7;
+        --text-secondary: #b7c5d3;
+        --text-tertiary:  #8493a3;
+        --text-inverse:   #0b1016;
 
-        /* Accent */
-        --accent: #1a6b56;
-        --accent-hover: #15574a;
-        --accent-subtle: rgba(26, 107, 86, 0.10);
-        --accent-warm: #d4642e;
-        --accent-warm-subtle: rgba(212, 100, 46, 0.12);
-        --accent-cool: #2d4a7a;
-        --accent-cool-subtle: rgba(45, 74, 122, 0.10);
+        /* Accents */
+        --accent:               #7ef0c2;
+        --accent-hover:         #9eff87;
+        --accent-subtle:        rgba(126, 240, 194, 0.10);
+        --accent-strong:        rgba(126, 240, 194, 0.28);
+        --accent-warm:          #ffb454;
+        --accent-warm-subtle:   rgba(255, 180, 84, 0.14);
+        --accent-cool:          #86a9ff;
+        --accent-cool-subtle:   rgba(134, 169, 255, 0.14);
+        --accent-violet:        #c79bff;
+        --accent-violet-subtle: rgba(199, 155, 255, 0.14);
 
         /* Status */
-        --status-healthy: #1a6b56;
-        --status-degraded: #d4642e;
-        --status-attention: #b64b2f;
+        --status-healthy:   #7ef0c2;
+        --status-degraded:  #ffb454;
+        --status-attention: #ff7a50;
 
-        /* Border & chrome */
-        --border: #e8dfd3;
-        --border-hover: #d4c8b8;
-        --focus-ring: rgba(26, 107, 86, 0.14);
-        --shadow-sm: 0 1px 3px rgba(24, 23, 18, 0.06);
-        --shadow-md: 0 8px 24px rgba(24, 23, 18, 0.08);
-        --shadow-lg: 0 18px 40px rgba(24, 23, 18, 0.12);
+        /* Chrome */
+        --border:        rgba(126, 240, 194, 0.12);
+        --border-strong: rgba(126, 240, 194, 0.28);
+        --border-hover:  rgba(126, 240, 194, 0.22);
+        --focus-ring:    rgba(126, 240, 194, 0.35);
+        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+        --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.35);
+        --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.45);
 
-        /* Controls */
-        --control-bg: rgba(26, 107, 86, 0.08);
-        --control-border: rgba(26, 107, 86, 0.22);
-        --control-hover-bg: rgba(26, 107, 86, 0.14);
-        --control-hover-border: rgba(26, 107, 86, 0.4);
-        --control-text: var(--accent);
+        /* Body background */
+        --grad-1: rgba(126, 240, 194, 0.08);
+        --grad-2: rgba(86, 145, 255, 0.08);
+        --grad-3: rgba(126, 240, 194, 0.04);
+        --body-start: #0b1016;
+        --body-mid:   #0d131c;
+        --body-end:   #091018;
+        --dot-color:  rgba(126, 240, 194, 0.045);
+        --grid-color: rgba(126, 240, 194, 0.045);
+
+        /* Inputs & controls */
+        --input-bg:             rgba(9, 15, 22, 0.55);
+        --control-bg:           rgba(126, 240, 194, 0.06);
+        --control-border:       rgba(126, 240, 194, 0.22);
+        --control-hover-bg:     rgba(126, 240, 194, 0.12);
+        --control-hover-border: rgba(126, 240, 194, 0.4);
+        --control-text:         var(--accent);
 
         /* Toggles */
-        --toggle-active-bg: rgba(26, 107, 86, 0.14);
+        --toggle-active-bg:   var(--accent-subtle);
         --toggle-active-text: var(--accent);
-        --toggle-hover-bg: rgba(0, 0, 0, 0.04);
-
-        /* Input */
-        --input-bg: rgba(255, 255, 255, 0.7);
-
-        /* Feed */
-        --item-bg: rgba(255, 255, 255, 0.6);
-        --item-hover-bg: rgba(255, 255, 255, 0.85);
-        --feed-hover-border: var(--accent);
-
-        /* Background gradients */
-        --grad-1: rgba(26, 107, 86, 0.12);
-        --grad-2: rgba(212, 100, 46, 0.14);
-        --grad-3: rgba(45, 74, 122, 0.10);
-        --body-start: #faf6ee;
-        --body-mid: #f3eadc;
-        --body-end: #efe3d2;
-        --dot-color: rgba(0, 0, 0, 0.025);
+        --toggle-hover-bg:    rgba(255, 255, 255, 0.04);
 
         /* Spacing scale (4px base) */
         --sp-1: 4px;
@@ -100,125 +101,166 @@
         --sp-12: 48px;
 
         /* Radii */
-        --radius-sm: 8px;
-        --radius-md: 12px;
-        --radius-lg: 16px;
-        --radius-xl: 20px;
+        --radius-sm:   10px;
+        --radius-md:   12px;
+        --radius-lg:   16px;
+        --radius-xl:   20px;
+        --radius-2xl:  24px;
         --radius-pill: 999px;
 
         /* Typography */
-        --font-sans: "DM Sans", "Avenir Next", "Avenir", system-ui, sans-serif;
+        --font-sans: "Geist", system-ui, -apple-system, sans-serif;
         --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+        /* Semantic type ramp — 14px body */
+        --t-display: 600 24px/1.2  var(--font-sans);
+        --t-h1:      600 18px/1.3  var(--font-sans);
+        --t-h2:      600 16px/1.3  var(--font-sans);
+        --t-h3:      600 15px/1.35 var(--font-sans);
+        --t-body:    400 14px/1.55 var(--font-sans);
+        --t-body-sm: 400 13px/1.55 var(--font-sans);
+        --t-meta:    400 12px/1.4  var(--font-sans);
+        --t-micro:   500 11px/1.3  var(--font-mono);
+        --t-code:    400 13px/1.55 var(--font-mono);
+        --t-eyebrow: 500 11px/1.2  var(--font-mono);
+        --t-eyebrow-letter-spacing: 0.08em;
       }
 
-      /* ── Dark mode ─────────────────────────────────────────── */
+      /* ── Light variant ─────────────────────────────────────── */
+      /* Applied two ways:
+           1. Explicit [data-theme="light"] (set by the theme switcher or
+              the inline boot script when localStorage says "light").
+           2. @media (prefers-color-scheme: light) whenever the user has not
+              explicitly chosen dark — this gives us live OS-theme-switch
+              behavior and is resilient to JS failures.
+         Keep the two rule bodies identical. */
 
-      @media (prefers-color-scheme: dark) {
-        :root:not([data-theme="light"]) {
-          --surface-0: #161514;
-          --surface-1: #201f1d;
-          --surface-2: #2a2826;
-          --surface-3: #343230;
+      /* The light palette applies two ways — they stay in lockstep:
+           1. Explicitly: [data-theme="light"], set by the theme switcher or
+              the inline boot script from localStorage.
+           2. Automatically: @media (prefers-color-scheme: light) whenever
+              the user has not opted into dark. This keeps live OS-theme
+              switching working and gives us a CSS-only fallback if the
+              inline script is blocked. */
 
-          --text-primary: #ede8e2;
-          --text-secondary: #b5aea5;
-          --text-tertiary: #7d756b;
-          --text-inverse: #161514;
+      [data-theme="light"] {
+        /* Surface */
+        --surface-0: #f7faf8;
+        --surface-1: #ffffff;
+        --surface-2: #eef5f1;
+        --surface-3: #e3ede7;
 
-          --accent: #4dd4b4;
-          --accent-hover: #3cc4a4;
-          --accent-subtle: rgba(77, 212, 180, 0.14);
-          --accent-warm: #ff9e6a;
-          --accent-warm-subtle: rgba(255, 158, 106, 0.16);
-          --accent-cool: #7eaaeb;
-          --accent-cool-subtle: rgba(126, 170, 235, 0.14);
+        /* Text — warm-tinted near-black, never pure */
+        --text-primary:   #0b1016;
+        --text-secondary: #3f4d5c;
+        --text-tertiary:  #6b7985;
+        --text-inverse:   #ffffff;
 
-          --status-healthy: #4dd4b4;
-          --status-degraded: #ff9e6a;
-          --status-attention: #ff7a50;
+        /* Accents — AA-safe evergreen on white */
+        --accent:               #0f8a68;
+        --accent-hover:         #0a6f53;
+        --accent-subtle:        rgba(15, 138, 104, 0.10);
+        --accent-strong:        rgba(15, 138, 104, 0.28);
+        --accent-warm:          #c97a1f;
+        --accent-warm-subtle:   rgba(201, 122, 31, 0.12);
+        --accent-cool:          #3e5fa8;
+        --accent-cool-subtle:   rgba(62, 95, 168, 0.10);
+        --accent-violet:        #7f52c2;
+        --accent-violet-subtle: rgba(127, 82, 194, 0.12);
 
-          --border: #3a3735;
-          --border-hover: #4a4745;
-          --focus-ring: rgba(77, 212, 180, 0.18);
-          --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
-          --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.3);
-          --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.5);
+        /* Status */
+        --status-healthy:   #0f8a68;
+        --status-degraded:  #c97a1f;
+        --status-attention: #b4411e;
 
-          --control-bg: rgba(255, 255, 255, 0.06);
-          --control-border: rgba(255, 255, 255, 0.14);
-          --control-hover-bg: rgba(255, 255, 255, 0.10);
-          --control-hover-border: rgba(255, 255, 255, 0.24);
-          --control-text: var(--accent);
+        /* Chrome */
+        --border:        rgba(15, 138, 104, 0.16);
+        --border-strong: rgba(15, 138, 104, 0.30);
+        --border-hover:  rgba(15, 138, 104, 0.24);
+        --focus-ring:    rgba(15, 138, 104, 0.20);
+        --shadow-sm: 0 1px 3px rgba(11, 16, 22, 0.05);
+        --shadow-md: 0 8px 24px rgba(11, 16, 22, 0.08);
+        --shadow-lg: 0 18px 40px rgba(11, 16, 22, 0.12);
 
-          --toggle-active-bg: rgba(77, 212, 180, 0.20);
-          --toggle-active-text: var(--accent);
-          --toggle-hover-bg: rgba(255, 255, 255, 0.08);
+        /* Body background */
+        --grad-1: rgba(15, 138, 104, 0.08);
+        --grad-2: rgba(62, 95, 168, 0.06);
+        --grad-3: rgba(15, 138, 104, 0.04);
+        --body-start: #f7faf8;
+        --body-mid:   #eef5f1;
+        --body-end:   #e6efe9;
+        --dot-color:  rgba(11, 16, 22, 0.035);
+        --grid-color: rgba(11, 16, 22, 0.035);
 
-          --input-bg: rgba(60, 58, 56, 1);
-          --item-bg: rgba(50, 48, 46, 1);
-          --item-hover-bg: rgba(60, 58, 56, 1);
+        /* Inputs & controls */
+        --input-bg:             rgba(255, 255, 255, 0.9);
+        --control-bg:           rgba(15, 138, 104, 0.08);
+        --control-border:       rgba(15, 138, 104, 0.22);
+        --control-hover-bg:     rgba(15, 138, 104, 0.14);
+        --control-hover-border: rgba(15, 138, 104, 0.4);
+        --control-text:         var(--accent);
 
-          --grad-1: rgba(77, 212, 180, 0.08);
-          --grad-2: rgba(255, 158, 106, 0.08);
-          --grad-3: rgba(126, 170, 235, 0.06);
-          --body-start: #161514;
-          --body-mid: #1b1a19;
-          --body-end: #201f1d;
-          --dot-color: rgba(255, 255, 255, 0.03);
-        }
-      }
-
-      [data-theme="dark"] {
-        --surface-0: #161514;
-        --surface-1: #201f1d;
-        --surface-2: #2a2826;
-        --surface-3: #343230;
-
-        --text-primary: #ede8e2;
-        --text-secondary: #b5aea5;
-        --text-tertiary: #7d756b;
-        --text-inverse: #161514;
-
-        --accent: #4dd4b4;
-        --accent-hover: #3cc4a4;
-        --accent-subtle: rgba(77, 212, 180, 0.14);
-        --accent-warm: #ff9e6a;
-        --accent-warm-subtle: rgba(255, 158, 106, 0.16);
-        --accent-cool: #7eaaeb;
-        --accent-cool-subtle: rgba(126, 170, 235, 0.14);
-
-        --status-healthy: #4dd4b4;
-        --status-degraded: #ff9e6a;
-        --status-attention: #ff7a50;
-
-        --border: #3a3735;
-        --border-hover: #4a4745;
-        --focus-ring: rgba(77, 212, 180, 0.18);
-        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
-        --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.3);
-        --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.5);
-
-        --control-bg: rgba(255, 255, 255, 0.06);
-        --control-border: rgba(255, 255, 255, 0.14);
-        --control-hover-bg: rgba(255, 255, 255, 0.10);
-        --control-hover-border: rgba(255, 255, 255, 0.24);
-        --control-text: var(--accent);
-
-        --toggle-active-bg: rgba(77, 212, 180, 0.20);
+        /* Toggles */
+        --toggle-active-bg:   var(--accent-subtle);
         --toggle-active-text: var(--accent);
-        --toggle-hover-bg: rgba(255, 255, 255, 0.08);
+        --toggle-hover-bg:    rgba(11, 16, 22, 0.04);
+      }
 
-        --input-bg: rgba(60, 58, 56, 1);
-        --item-bg: rgba(50, 48, 46, 1);
-        --item-hover-bg: rgba(60, 58, 56, 1);
+      @media (prefers-color-scheme: light) {
+        :root:not([data-theme="dark"]) {
+          --surface-0: #f7faf8;
+          --surface-1: #ffffff;
+          --surface-2: #eef5f1;
+          --surface-3: #e3ede7;
 
-        --grad-1: rgba(77, 212, 180, 0.08);
-        --grad-2: rgba(255, 158, 106, 0.08);
-        --grad-3: rgba(126, 170, 235, 0.06);
-        --body-start: #161514;
-        --body-mid: #1b1a19;
-        --body-end: #201f1d;
-        --dot-color: rgba(255, 255, 255, 0.03);
+          --text-primary:   #0b1016;
+          --text-secondary: #3f4d5c;
+          --text-tertiary:  #6b7985;
+          --text-inverse:   #ffffff;
+
+          --accent:               #0f8a68;
+          --accent-hover:         #0a6f53;
+          --accent-subtle:        rgba(15, 138, 104, 0.10);
+          --accent-strong:        rgba(15, 138, 104, 0.28);
+          --accent-warm:          #c97a1f;
+          --accent-warm-subtle:   rgba(201, 122, 31, 0.12);
+          --accent-cool:          #3e5fa8;
+          --accent-cool-subtle:   rgba(62, 95, 168, 0.10);
+          --accent-violet:        #7f52c2;
+          --accent-violet-subtle: rgba(127, 82, 194, 0.12);
+
+          --status-healthy:   #0f8a68;
+          --status-degraded:  #c97a1f;
+          --status-attention: #b4411e;
+
+          --border:        rgba(15, 138, 104, 0.16);
+          --border-strong: rgba(15, 138, 104, 0.30);
+          --border-hover:  rgba(15, 138, 104, 0.24);
+          --focus-ring:    rgba(15, 138, 104, 0.20);
+          --shadow-sm: 0 1px 3px rgba(11, 16, 22, 0.05);
+          --shadow-md: 0 8px 24px rgba(11, 16, 22, 0.08);
+          --shadow-lg: 0 18px 40px rgba(11, 16, 22, 0.12);
+
+          --grad-1: rgba(15, 138, 104, 0.08);
+          --grad-2: rgba(62, 95, 168, 0.06);
+          --grad-3: rgba(15, 138, 104, 0.04);
+          --body-start: #f7faf8;
+          --body-mid:   #eef5f1;
+          --body-end:   #e6efe9;
+          --dot-color:  rgba(11, 16, 22, 0.035);
+          --grid-color: rgba(11, 16, 22, 0.035);
+
+          --input-bg:             rgba(255, 255, 255, 0.9);
+          --control-bg:           rgba(15, 138, 104, 0.08);
+          --control-border:       rgba(15, 138, 104, 0.22);
+          --control-hover-bg:     rgba(15, 138, 104, 0.14);
+          --control-hover-border: rgba(15, 138, 104, 0.4);
+          --control-text:         var(--accent);
+
+          --toggle-active-bg:   var(--accent-subtle);
+          --toggle-active-text: var(--accent);
+          --toggle-hover-bg:    rgba(11, 16, 22, 0.04);
+        }
       }
 
       /* ── Reset & base ──────────────────────────────────────── */
