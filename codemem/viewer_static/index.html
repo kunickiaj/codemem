@@ -51,6 +51,12 @@
         --accent-cool-subtle:   rgba(134, 169, 255, 0.14);
         --accent-violet:        #c79bff;
         --accent-violet-subtle: rgba(199, 155, 255, 0.14);
+        --accent-steel:         #4dd4b4;
+        --accent-steel-subtle:  rgba(77, 212, 180, 0.14);
+        --accent-ochre:         #e2c07e;
+        --accent-ochre-subtle:  rgba(226, 192, 126, 0.14);
+        --accent-neutral:       #9ea7b7;
+        --accent-neutral-subtle: rgba(158, 167, 183, 0.14);
 
         /* Status */
         --status-healthy:   #7ef0c2;
@@ -167,6 +173,12 @@
         --accent-cool-subtle:   rgba(62, 95, 168, 0.10);
         --accent-violet:        #7f52c2;
         --accent-violet-subtle: rgba(127, 82, 194, 0.12);
+        --accent-steel:         #1a8a70;
+        --accent-steel-subtle:  rgba(26, 138, 112, 0.12);
+        --accent-ochre:         #b5832a;
+        --accent-ochre-subtle:  rgba(181, 131, 42, 0.12);
+        --accent-neutral:       #5d6a7c;
+        --accent-neutral-subtle: rgba(93, 106, 124, 0.10);
 
         /* Status */
         --status-healthy:   #0f8a68;
@@ -228,6 +240,12 @@
           --accent-cool-subtle:   rgba(62, 95, 168, 0.10);
           --accent-violet:        #7f52c2;
           --accent-violet-subtle: rgba(127, 82, 194, 0.12);
+          --accent-steel:         #1a8a70;
+          --accent-steel-subtle:  rgba(26, 138, 112, 0.12);
+          --accent-ochre:         #b5832a;
+          --accent-ochre-subtle:  rgba(181, 131, 42, 0.12);
+          --accent-neutral:       #5d6a7c;
+          --accent-neutral-subtle: rgba(93, 106, 124, 0.10);
 
           --status-healthy:   #0f8a68;
           --status-degraded:  #c97a1f;
@@ -1089,17 +1107,17 @@
         background: var(--accent-subtle);
         border-bottom: 1px solid var(--accent-strong);
       }
-      .feed-item.change .feed-kind-banner { background: var(--accent-cool-subtle); border-bottom-color: rgba(134, 169, 255, 0.28); }
-      .feed-item.bugfix .feed-kind-banner { background: var(--accent-warm-subtle); border-bottom-color: rgba(255, 180, 84, 0.28); }
-      .feed-item.refactor .feed-kind-banner { background: var(--accent-violet-subtle); border-bottom-color: rgba(199, 155, 255, 0.28); }
-      .feed-item.discovery .feed-kind-banner { background: rgba(77, 212, 180, 0.12); border-bottom-color: rgba(77, 212, 180, 0.28); }
-      .feed-item.docs .feed-kind-banner { background: rgba(226, 192, 126, 0.12); border-bottom-color: rgba(226, 192, 126, 0.28); }
-      .feed-item.test .feed-kind-banner { background: rgba(158, 167, 183, 0.12); border-bottom-color: rgba(158, 167, 183, 0.28); }
+      .feed-item.change .feed-kind-banner { background: var(--accent-cool-subtle); border-bottom-color: color-mix(in srgb, var(--accent-cool) 30%, transparent); }
+      .feed-item.bugfix .feed-kind-banner { background: var(--accent-warm-subtle); border-bottom-color: color-mix(in srgb, var(--accent-warm) 30%, transparent); }
+      .feed-item.refactor .feed-kind-banner { background: var(--accent-violet-subtle); border-bottom-color: color-mix(in srgb, var(--accent-violet) 30%, transparent); }
+      .feed-item.discovery .feed-kind-banner { background: var(--accent-steel-subtle); border-bottom-color: color-mix(in srgb, var(--accent-steel) 30%, transparent); }
+      .feed-item.docs .feed-kind-banner { background: var(--accent-ochre-subtle); border-bottom-color: color-mix(in srgb, var(--accent-ochre) 30%, transparent); }
+      .feed-item.test .feed-kind-banner { background: var(--accent-neutral-subtle); border-bottom-color: color-mix(in srgb, var(--accent-neutral) 30%, transparent); }
       /* Core emits 'decision' / 'exploration' / 'session_summary' too — preserve
          neutral treatments so those items aren't unstyled. */
-      .feed-item.decision .feed-kind-banner { background: rgba(158, 167, 183, 0.12); border-bottom-color: rgba(158, 167, 183, 0.28); }
-      .feed-item.exploration .feed-kind-banner { background: rgba(140, 140, 140, 0.10); border-bottom-color: rgba(140, 140, 140, 0.24); }
-      .feed-item.session_summary .feed-kind-banner { background: rgba(134, 169, 255, 0.10); border-bottom-color: rgba(134, 169, 255, 0.24); }
+      .feed-item.decision .feed-kind-banner { background: var(--accent-neutral-subtle); border-bottom-color: color-mix(in srgb, var(--accent-neutral) 30%, transparent); }
+      .feed-item.exploration .feed-kind-banner { background: color-mix(in srgb, var(--text-tertiary) 12%, transparent); border-bottom-color: color-mix(in srgb, var(--text-tertiary) 24%, transparent); }
+      .feed-item.session_summary .feed-kind-banner { background: color-mix(in srgb, var(--accent-cool) 10%, transparent); border-bottom-color: color-mix(in srgb, var(--accent-cool) 22%, transparent); }
 
       .feed-card-body {
         padding: var(--sp-4) var(--sp-5);
@@ -1383,15 +1401,15 @@
         color: var(--accent);
         border: 1px solid var(--accent-strong);
       }
-      .kind-chip.change { background: var(--accent-cool-subtle); color: var(--accent-cool); border-color: rgba(134, 169, 255, 0.3); }
-      .kind-chip.bugfix { background: var(--accent-warm-subtle); color: var(--accent-warm); border-color: rgba(255, 180, 84, 0.3); }
-      .kind-chip.refactor { background: var(--accent-violet-subtle); color: var(--accent-violet); border-color: rgba(199, 155, 255, 0.3); }
-      .kind-chip.discovery { background: rgba(77, 212, 180, 0.12); color: #4dd4b4; border-color: rgba(77, 212, 180, 0.3); }
-      .kind-chip.docs { background: rgba(226, 192, 126, 0.12); color: #e2c07e; border-color: rgba(226, 192, 126, 0.3); }
-      .kind-chip.test { background: rgba(158, 167, 183, 0.14); color: #9ea7b7; border-color: rgba(158, 167, 183, 0.3); }
-      .kind-chip.decision { background: rgba(158, 167, 183, 0.14); color: #9ea7b7; border-color: rgba(158, 167, 183, 0.3); }
-      .kind-chip.exploration { background: rgba(140, 140, 140, 0.12); color: var(--text-tertiary); border-color: rgba(140, 140, 140, 0.28); }
-      .kind-chip.session_summary { background: rgba(134, 169, 255, 0.10); color: var(--accent-cool); border-color: rgba(134, 169, 255, 0.24); }
+      .kind-chip.change { background: var(--accent-cool-subtle); color: var(--accent-cool); border-color: color-mix(in srgb, var(--accent-cool) 32%, transparent); }
+      .kind-chip.bugfix { background: var(--accent-warm-subtle); color: var(--accent-warm); border-color: color-mix(in srgb, var(--accent-warm) 32%, transparent); }
+      .kind-chip.refactor { background: var(--accent-violet-subtle); color: var(--accent-violet); border-color: color-mix(in srgb, var(--accent-violet) 32%, transparent); }
+      .kind-chip.discovery { background: var(--accent-steel-subtle); color: var(--accent-steel); border-color: color-mix(in srgb, var(--accent-steel) 32%, transparent); }
+      .kind-chip.docs { background: var(--accent-ochre-subtle); color: var(--accent-ochre); border-color: color-mix(in srgb, var(--accent-ochre) 32%, transparent); }
+      .kind-chip.test { background: var(--accent-neutral-subtle); color: var(--accent-neutral); border-color: color-mix(in srgb, var(--accent-neutral) 32%, transparent); }
+      .kind-chip.decision { background: var(--accent-neutral-subtle); color: var(--accent-neutral); border-color: color-mix(in srgb, var(--accent-neutral) 32%, transparent); }
+      .kind-chip.exploration { background: color-mix(in srgb, var(--text-tertiary) 12%, transparent); color: var(--text-tertiary); border-color: color-mix(in srgb, var(--text-tertiary) 28%, transparent); }
+      .kind-chip.session_summary { background: color-mix(in srgb, var(--accent-cool) 10%, transparent); color: var(--accent-cool); border-color: color-mix(in srgb, var(--accent-cool) 24%, transparent); }
 
       .tag-chip {
         display: inline-flex;
