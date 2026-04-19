@@ -1170,6 +1170,7 @@
       .feed-menu-trigger:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
+        box-shadow: 0 0 0 4px var(--focus-ring);
       }
       .feed-menu-item {
         display: flex;
@@ -1351,6 +1352,11 @@
         transition: background 140ms ease, color 140ms ease;
       }
       .feed-expand:hover { background: var(--accent-subtle); color: var(--accent); }
+      .feed-expand:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        box-shadow: 0 0 0 4px var(--focus-ring);
+      }
 
       .feed-tags { display: flex; flex-wrap: wrap; gap: 6px; }
       /* File paths render as compact pill-tags in their own row — the actual
@@ -1909,6 +1915,7 @@
       .modal-close-button:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
+        box-shadow: 0 0 0 4px var(--focus-ring);
       }
       .modal-close-button-icon {
         font-size: 11px;
