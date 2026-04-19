@@ -172,40 +172,7 @@ import {
 	renderSummarySections,
 } from "./feed/body-renderers";
 
-function FeedViewToggle({
-	modes,
-	active,
-	onSelect,
-}: {
-	modes: Array<{ id: ItemViewMode; label: string }>;
-	active: ItemViewMode;
-	onSelect: (mode: ItemViewMode) => void;
-}) {
-	if (modes.length <= 1) return null;
-	return h(
-		"div",
-		{ className: "feed-toggle" },
-		modes.map((mode) =>
-			h(
-				"button",
-				{
-					key: mode.id,
-					className: `toggle-button${mode.id === active ? " active" : ""}`,
-					"data-filter": mode.id,
-					onClick: () => onSelect(mode.id),
-					type: "button",
-				},
-				mode.label,
-			),
-		),
-	);
-}
-
-function TagChip({ tag }: { tag: unknown }) {
-	const display = formatTagLabel(tag);
-	if (!display) return null;
-	return h(Chip, { variant: "tag", title: String(tag) }, display);
-}
+import { FeedToggle, FeedViewToggle, TagChip } from "./feed/toggles";
 
 /* ── Feed item card renderer ─────────────────────────────── */
 
@@ -642,38 +609,6 @@ function feedMetaText(visibleCount: number): string {
 	const queryLabel = state.feedQuery.trim() ? ` · matching "${state.feedQuery.trim()}"` : "";
 	const moreLabel = hasMorePages() ? " · scroll for more" : "";
 	return `${visibleCount} items${filterLabel}${scopeLabel}${queryLabel}${filteredLabel}${moreLabel}`;
-}
-
-function FeedToggle({
-	id,
-	active,
-	options,
-	onSelect,
-}: {
-	id: string;
-	active: string;
-	options: Array<{ value: string; label: string }>;
-	onSelect: (value: string) => void;
-}) {
-	return h(
-		"div",
-		{ className: "feed-toggle", id },
-		options.map(({ value, label }) => {
-			const selected = value === active;
-			return h(
-				"button",
-				{
-					"aria-pressed": selected ? "true" : "false",
-					className: `toggle-button${selected ? " active" : ""}`,
-					"data-filter": value,
-					key: value,
-					onClick: () => onSelect(value),
-					type: "button",
-				},
-				label,
-			);
-		}),
-	);
 }
 
 function TraceCandidateGroup({
