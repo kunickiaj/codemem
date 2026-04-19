@@ -1,6 +1,7 @@
 /* Health tab — system health, stats, session overview. */
 
 import { Fragment, h, render } from "preact";
+import { Tooltip, TooltipProvider } from "../components/primitives/tooltip";
 import * as api from "../lib/api";
 import { copyToClipboard } from "../lib/dom";
 import {
@@ -64,11 +65,10 @@ function buildHealthCard(input: HealthCardInput): HealthCardInput {
 }
 
 function HealthCard({ label, value, detail, icon, className, title }: HealthCardInput) {
-	return h(
+	const card = h(
 		"div",
 		{
 			class: `stat${className ? ` ${className}` : ""}`,
-			title,
 			style: title ? "cursor: help;" : undefined,
 		},
 		icon
@@ -85,6 +85,7 @@ function HealthCard({ label, value, detail, icon, className, title }: HealthCard
 			detail ? h("div", { class: "small" }, detail) : null,
 		),
 	);
+	return title ? h(Tooltip, { label: title }, card) : card;
 }
 
 function HealthActionRow({ item }: HealthActionRowProps) {
@@ -157,11 +158,10 @@ function formatStatValue(value: StatItem["value"]): string {
 }
 
 function StatBlock({ label, value, icon, tooltip }: StatItem) {
-	return h(
+	const card = h(
 		"div",
 		{
 			class: "stat",
-			title: tooltip,
 			style: tooltip ? "cursor: help;" : undefined,
 		},
 		h("i", {
@@ -175,13 +175,14 @@ function StatBlock({ label, value, icon, tooltip }: StatItem) {
 			h("div", { class: "label" }, label),
 		),
 	);
+	return tooltip ? h(Tooltip, { label: tooltip }, card) : card;
 }
 
 function renderStatBlocks(container: HTMLElement | null, items: StatItem[]) {
 	if (!container) return;
 	render(
 		h(
-			Fragment,
+			TooltipProvider,
 			null,
 			items.map((item) => h(StatBlock, { ...item, key: `${item.label}-${item.icon}` })),
 		),
@@ -203,7 +204,7 @@ function renderHealthCards(container: HTMLElement | null, cards: HealthCardInput
 	if (!container) return;
 	render(
 		h(
-			Fragment,
+			TooltipProvider,
 			null,
 			cards.map((card) => h(HealthCard, { ...card, key: card.key ?? card.label })),
 		),
