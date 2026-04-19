@@ -63,7 +63,10 @@ function seedMaintenanceDb(dbPath: string): void {
 	}
 }
 
-describe("maintenance", () => {
+// CI occasionally times out these filesystem-heavy sqlite tests on shared
+// runners (mkdtempSync + better-sqlite3 writes + WAL sync). Bump the suite
+// timeout so ordinary slow-disk conditions don't read as failures.
+describe("maintenance", { timeout: 15_000 }, () => {
 	it("returns raw event backlog status", () => {
 		const dbPath = createDbPath("status");
 		seedMaintenanceDb(dbPath);
