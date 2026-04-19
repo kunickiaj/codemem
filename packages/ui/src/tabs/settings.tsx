@@ -516,6 +516,9 @@ function renderSettingsShell() {
 	const mount = $("settingsDialogMount");
 	if (!mount) return;
 	render(<SettingsDialogShell />, mount);
+	// Lucide icon replacement happens in the shell's open-state effect — the
+	// Dialog renders children only while open, so createIcons() here would
+	// no-op against the unmounted tree.
 }
 
 function ensureSettingsShell() {
@@ -588,6 +591,16 @@ function SettingsDialogShell() {
 			}
 		};
 	}, []);
+
+	// Radix Dialog mounts its children only while `open` is true, so any
+	// <i data-lucide="..."> stubs inside the dialog need a createIcons pass
+	// every time the modal opens. Running it on the shell mount (before the
+	// children exist) is a no-op for those nodes.
+	useEffect(() => {
+		if (!open) return;
+		const lucide = (globalThis as { lucide?: { createIcons?: () => void } }).lucide;
+		lucide?.createIcons?.();
+	}, [open]);
 
 	useEffect(() => {
 		const showTooltip = (anchor: HTMLElement) => {
@@ -1550,7 +1563,7 @@ function SettingsDialogContent() {
 						data-tooltip="Advanced controls include JSON fields, tuning values, and network overrides."
 						type="button"
 					>
-						?
+						<i aria-hidden="true" data-lucide="help-circle" />
 					</button>
 				</div>
 				<SettingsHint hidden={!settingsShowAdvanced}>
