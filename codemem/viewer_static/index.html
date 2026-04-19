@@ -2619,7 +2619,20 @@
         50% { transform: scale(1.3); opacity: 0.5; }
       }
 
-      /* newPulse deferred to codemem-gi99 (feed-item mount animation, v2). */
+      /* newPulse: fresh feed items pulse their kind-banner bottom border
+         from accent-strong to transparent once on mount. The class is
+         applied by feed.ts only while state.newItemKeys holds the item's
+         key (700ms useEffect then clears it). Skipped entirely under
+         prefers-reduced-motion so the ambient accessibility pass still
+         applies. */
+      @media (prefers-reduced-motion: no-preference) {
+        @keyframes newPulse {
+          0%   { box-shadow: 0 0 0 0 var(--accent-strong); }
+          30%  { box-shadow: 0 0 0 6px var(--accent-subtle); }
+          100% { box-shadow: 0 0 0 0 transparent; }
+        }
+        .feed-item.new-item { animation: newPulse 420ms ease-out 1; }
+      }
 
       /* ── Responsive ────────────────────────────────────────── */
 

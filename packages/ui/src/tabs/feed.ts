@@ -897,12 +897,10 @@ function FeedItemCard({ item }: { item: FeedItem }) {
 				),
 			)
 		: null;
-	void isNew;
-
 	return h(
 		"article",
 		{
-			className: `feed-item ${displayKindValue}`.trim(),
+			className: `feed-item ${displayKindValue}${isNew ? " new-item" : ""}`.trim(),
 			"data-key": rowKey,
 		},
 		h(
