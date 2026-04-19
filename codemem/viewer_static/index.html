@@ -736,7 +736,7 @@
 
       .grid-2 {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: var(--sp-3);
       }
 
@@ -750,12 +750,13 @@
 
       .stat {
         border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        padding: var(--sp-3);
-        background: var(--surface-2);
+        border-radius: var(--radius-lg);
+        padding: var(--sp-4);
+        background: var(--surface-1);
         display: flex;
         align-items: center;
         gap: var(--sp-3);
+        box-shadow: var(--shadow-sm);
       }
 
       .stat-icon {
@@ -770,20 +771,26 @@
         display: flex;
         flex-direction: column;
         min-width: 0;
+        gap: 4px;
       }
 
       .stat .value {
+        font-family: var(--font-sans);
         font-weight: 600;
-        font-size: 16px;
-        color: var(--accent-cool);
-        line-height: 1.2;
+        font-size: 24px;
+        color: var(--text-primary);
+        line-height: 1.1;
+        letter-spacing: -0.01em;
         font-feature-settings: 'tnum' 1;
       }
 
       .stat .label {
         color: var(--text-tertiary);
-        font-size: 11px;
+        font-size: 12px;
+        font-weight: 500;
         line-height: 1.3;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
 
       .health-primary {
