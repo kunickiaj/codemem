@@ -4,7 +4,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { type ComponentChildren, Fragment, h, render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../components/primitives/chip";
-import { Tooltip } from "../components/primitives/tooltip";
+import { Tooltip, TooltipProvider } from "../components/primitives/tooltip";
 import * as api from "../lib/api";
 import { highlightText } from "../lib/dom";
 import {
@@ -170,7 +170,10 @@ function ensureFeedRenderBoundary() {
 
 function renderIntoFeedMount(mount: HTMLElement, content: ComponentChildren) {
 	markFeedMount(mount);
-	render(content, mount);
+	// Wrap every feed render in a TooltipProvider so adjacent feed-item
+	// tooltips share skipDelayDuration and don't each pay the full open
+	// delay when the user hovers from one card to the next.
+	render(h(TooltipProvider, null, content), mount);
 }
 
 function feedScopeLabel(scope: string): string {

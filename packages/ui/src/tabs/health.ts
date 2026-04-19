@@ -1,7 +1,7 @@
 /* Health tab — system health, stats, session overview. */
 
 import { Fragment, h, render } from "preact";
-import { Tooltip } from "../components/primitives/tooltip";
+import { Tooltip, TooltipProvider } from "../components/primitives/tooltip";
 import * as api from "../lib/api";
 import { copyToClipboard } from "../lib/dom";
 import {
@@ -182,7 +182,7 @@ function renderStatBlocks(container: HTMLElement | null, items: StatItem[]) {
 	if (!container) return;
 	render(
 		h(
-			Fragment,
+			TooltipProvider,
 			null,
 			items.map((item) => h(StatBlock, { ...item, key: `${item.label}-${item.icon}` })),
 		),
@@ -204,7 +204,7 @@ function renderHealthCards(container: HTMLElement | null, cards: HealthCardInput
 	if (!container) return;
 	render(
 		h(
-			Fragment,
+			TooltipProvider,
 			null,
 			cards.map((card) => h(HealthCard, { ...card, key: card.key ?? card.label })),
 		),

@@ -11,8 +11,6 @@ interface TooltipProps {
 	label: ComponentChildren;
 	side?: TooltipSide;
 	align?: TooltipAlign;
-	/** ms before the tooltip opens (Radix default is 700). 400 is friendlier. */
-	delayDuration?: number;
 	/** Offset from the trigger edge in px. */
 	sideOffset?: number;
 	/** Render the trigger inline (span) rather than wrapping in a button. */
@@ -21,41 +19,68 @@ interface TooltipProps {
 	disabled?: boolean;
 }
 
+interface TooltipProviderProps {
+	children?: ComponentChildren;
+	/** ms before the first tooltip in the subtree opens. */
+	delayDuration?: number;
+	/** ms within which an already-opened tooltip's neighbor opens without delay. */
+	skipDelayDuration?: number;
+}
+
+/**
+ * Wrap a render subtree so every <Tooltip> inside shares a single delay
+ * context. Without this wrapper, moving from one trigger to an adjacent
+ * trigger pays the full open delay both times; with it, the second trigger
+ * opens immediately within `skipDelayDuration`.
+ *
+ * Mount one Provider per imperative render root (feed list, stat grid,
+ * sync peers, etc.) since the viewer renders into multiple separate trees.
+ */
+export function TooltipProvider({
+	children,
+	delayDuration = 400,
+	skipDelayDuration = 300,
+}: TooltipProviderProps) {
+	return (
+		<TooltipPrimitive.Provider delayDuration={delayDuration} skipDelayDuration={skipDelayDuration}>
+			{children}
+		</TooltipPrimitive.Provider>
+	);
+}
+
 /**
  * Accessible hover / focus tooltip. Replaces native `title="..."` attributes
  * where the hint is load-bearing (stat tooltips, absolute timestamps, full
  * file paths). Keyboard users can trigger it by focusing the child; screen
  * readers announce it via aria-describedby.
  *
- * A single <TooltipProvider> should wrap the app root for delay coordination.
+ * Requires an enclosing <TooltipProvider> in the same render tree so
+ * adjacent tooltips can share `skipDelayDuration` for quick handoff.
  */
 export function Tooltip({
 	children,
 	label,
 	side = "top",
 	align = "center",
-	delayDuration = 400,
 	sideOffset = 6,
 	asChild = true,
 	disabled = false,
 }: TooltipProps) {
 	if (disabled) return <>{children}</>;
 	return (
-		<TooltipPrimitive.Provider delayDuration={delayDuration} skipDelayDuration={300}>
-			<TooltipPrimitive.Root>
-				<TooltipPrimitive.Trigger asChild={asChild}>{children}</TooltipPrimitive.Trigger>
-				<TooltipPrimitive.Portal>
-					<TooltipPrimitive.Content
-						align={align}
-						className="tooltip-content"
-						side={side}
-						sideOffset={sideOffset}
-					>
-						{label}
-						<TooltipPrimitive.Arrow className="tooltip-arrow" />
-					</TooltipPrimitive.Content>
-				</TooltipPrimitive.Portal>
-			</TooltipPrimitive.Root>
-		</TooltipPrimitive.Provider>
+		<TooltipPrimitive.Root>
+			<TooltipPrimitive.Trigger asChild={asChild}>{children}</TooltipPrimitive.Trigger>
+			<TooltipPrimitive.Portal>
+				<TooltipPrimitive.Content
+					align={align}
+					className="tooltip-content"
+					side={side}
+					sideOffset={sideOffset}
+				>
+					{label}
+					<TooltipPrimitive.Arrow className="tooltip-arrow" />
+				</TooltipPrimitive.Content>
+			</TooltipPrimitive.Portal>
+		</TooltipPrimitive.Root>
 	);
 }
