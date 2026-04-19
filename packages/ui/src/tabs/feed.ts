@@ -37,13 +37,17 @@ import {
 	sentenceFacts,
 	trustStateLabel,
 } from "./feed/helpers";
+import {
+	countNewItems,
+	isNearFeedBottom,
+	OBSERVATION_PAGE_SIZE,
+	pageHasMore,
+	pageNextOffset,
+	SUMMARY_PAGE_SIZE,
+} from "./feed/pagination";
 import type { FeedItem, FeedItemMetadata, FeedSummary, ItemViewMode } from "./feed/types";
 
-/* ── Constants + module state ─────────────────────────────── */
-
-const OBSERVATION_PAGE_SIZE = 20;
-const SUMMARY_PAGE_SIZE = 50;
-const FEED_SCROLL_THRESHOLD_PX = 560;
+/* ── Module state ─────────────────────────────────────────── */
 
 let lastFeedProject = "";
 let observationOffset = 0;
@@ -92,24 +96,6 @@ function resetPagination(project: string) {
 	state.newItemKeys.clear();
 	state.itemViewState.clear();
 	state.itemExpandState.clear();
-}
-
-function isNearFeedBottom(): boolean {
-	const root = document.documentElement;
-	const height = Math.max(root.scrollHeight, document.body.scrollHeight);
-	return window.innerHeight + window.scrollY >= height - FEED_SCROLL_THRESHOLD_PX;
-}
-
-function pageHasMore(payload: api.PaginatedResponse, count: number, limit: number): boolean {
-	const value = payload.pagination?.has_more;
-	if (typeof value === "boolean") return value;
-	return count >= limit;
-}
-
-function pageNextOffset(payload: api.PaginatedResponse, count: number): number {
-	const value = payload.pagination?.next_offset;
-	if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
-	return count;
 }
 
 function hasMorePages(): boolean {
@@ -979,11 +965,6 @@ function computeSignature(items: FeedItem[]): string {
 		(i) => `${itemSignature(i)}:${i.kind || ""}:${i.created_at_utc || i.created_at || ""}`,
 	);
 	return `${state.feedTypeFilter}|${state.feedScopeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join("|")}`;
-}
-
-function countNewItems(nextItems: FeedItem[], currentItems: FeedItem[]): number {
-	const seen = new Set(currentItems.map(itemKey));
-	return nextItems.filter((i) => !seen.has(itemKey(i))).length;
 }
 
 async function loadMoreFeedPage() {
