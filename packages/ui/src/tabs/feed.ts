@@ -1183,13 +1183,8 @@ async function loadMoreFeedPage() {
 
 		const incoming = [...summaryItems, ...filtered];
 		const feedItems = mergeFeedItems(state.lastFeedItems as FeedItem[], incoming);
-		const newCount = countNewItems(feedItems, state.lastFeedItems as FeedItem[]);
-		if (newCount) {
-			const seen = new Set((state.lastFeedItems as FeedItem[]).map(itemKey));
-			feedItems.forEach((item) => {
-				if (!seen.has(itemKey(item))) state.newItemKeys.add(itemKey(item));
-			});
-		}
+		// Pagination loads OLDER items, not fresh arrivals — skip the newPulse
+		// bookkeeping so scrolling doesn't flash historical cards.
 
 		state.lastFeedItems = feedItems;
 		updateFeedView();
@@ -1707,9 +1702,13 @@ export async function loadFeedData() {
 	});
 	const feedItems = mergeRefreshFeedItems(state.lastFeedItems as FeedItem[], firstPageFeedItems);
 
-	const newCount = countNewItems(feedItems, state.lastFeedItems as FeedItem[]);
-	if (newCount) {
-		const seen = new Set((state.lastFeedItems as FeedItem[]).map(itemKey));
+	// Only flag newPulse on genuine incremental arrivals. First-time load has
+	// an empty lastFeedItems and every row "looks new" — skip that case so we
+	// don't bulk-pulse the whole feed on open/tab-switch/project-switch.
+	const previousItems = state.lastFeedItems as FeedItem[];
+	const newCount = countNewItems(feedItems, previousItems);
+	if (newCount && previousItems.length > 0) {
+		const seen = new Set(previousItems.map(itemKey));
 		feedItems.forEach((item) => {
 			if (!seen.has(itemKey(item))) state.newItemKeys.add(itemKey(item));
 		});
