@@ -1,46 +1,15 @@
-import { $ } from "./dom";
-import { state } from "./state";
+import { dismissAllToasts, pushToast } from "../components/primitives/toast";
 
-let hideAbort: AbortController | null = null;
-
-export function hideGlobalNotice() {
-	const notice = $("globalNotice");
-	if (!notice) return;
-	if (state.noticeTimer) {
-		clearTimeout(state.noticeTimer);
-		state.noticeTimer = null;
-	}
-	// Cancel any previous hide listener before registering a new one
-	if (hideAbort) hideAbort.abort();
-	hideAbort = new AbortController();
-	notice.classList.add("hiding");
-	notice.addEventListener(
-		"animationend",
-		() => {
-			hideAbort = null;
-			notice.hidden = true;
-			notice.textContent = "";
-			notice.classList.remove("success", "warning", "hiding");
-		},
-		{ once: true, signal: hideAbort.signal },
-	);
+/**
+ * Legacy signature kept for callsite stability. Now delegates to the Radix
+ * Toast host (mounted once at app boot). Historically rendered via a static
+ * #globalNotice div; that markup is gone — ToastHost owns the UI.
+ */
+export function showGlobalNotice(message: string, type: "success" | "warning" = "success"): void {
+	pushToast(message, type);
 }
 
-export function showGlobalNotice(message: string, type: "success" | "warning" = "success") {
-	const notice = $("globalNotice");
-	if (!notice || !message) return;
-	// Cancel any in-progress hide animation so it can't kill this notice
-	if (hideAbort) {
-		hideAbort.abort();
-		hideAbort = null;
-	}
-	notice.classList.remove("hiding");
-	notice.textContent = message;
-	notice.classList.remove("success", "warning");
-	notice.classList.add(type === "warning" ? "warning" : "success");
-	notice.hidden = false;
-	if (state.noticeTimer) clearTimeout(state.noticeTimer);
-	state.noticeTimer = setTimeout(() => {
-		hideGlobalNotice();
-	}, 12_000);
+/** Back-compat: clears the entire toast queue. */
+export function hideGlobalNotice(): void {
+	dismissAllToasts();
 }

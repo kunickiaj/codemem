@@ -9,6 +9,7 @@
 
 declare const __CODEMEM_GIT_COMMIT__: string;
 
+import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
 import { $, $button, $select } from "./lib/dom";
 import {
@@ -354,6 +355,10 @@ async function doRefresh() {
 /* ── Boot ────────────────────────────────────────────────── */
 
 initState();
+
+// Toast host — mount first so early notices (from tab init etc.) land.
+const toastRoot = document.getElementById("toastRoot");
+if (toastRoot) mountToastHost(toastRoot);
 
 // Theme
 initThemeToggle($button("themeToggle"));
