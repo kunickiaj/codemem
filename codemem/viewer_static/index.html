@@ -1636,6 +1636,18 @@
       .peer-card { border-radius: var(--radius-lg); padding: var(--sp-4); display: grid; gap: var(--sp-2); }
       .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-title strong { font-size: 14px; font-weight: 600; }
+      /* Direction glyph rendered when a peer is in mutual-trust state.
+         Handoff §E asked for ↕/↓/↑ but the full 3-way split requires a
+         peer-role field that doesn't exist in core yet — ship the
+         bidirectional marker against the existing trust signal and
+         defer the subscribed/publishing variants to a follow-up. */
+      .peer-direction {
+        margin-left: 6px;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        color: var(--text-tertiary);
+        vertical-align: baseline;
+      }
       .actor-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-3); }
       .actor-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); border-radius: var(--radius-lg); padding: var(--sp-3); }
       .actor-details { min-width: 0; display: grid; gap: 6px; }
