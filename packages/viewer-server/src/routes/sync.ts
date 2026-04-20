@@ -794,7 +794,10 @@ function mapPeerRow(
 	store: MemoryStore,
 	row: Record<string, unknown>,
 	showDiag: boolean,
+	recentOpsByPeer?: Map<string, { in: number; out: number }>,
 ): Record<string, unknown> {
+	const peerId = String(row.peer_device_id ?? "");
+	const recentOps = recentOpsByPeer?.get(peerId) ?? { in: 0, out: 0 };
 	return {
 		peer_device_id: row.peer_device_id,
 		name: row.name,
@@ -811,7 +814,39 @@ function mapPeerRow(
 		project_scope: {
 			...currentProjectScope(row, readPeerProjectFilters(store, String(row.peer_device_id ?? ""))),
 		},
+		recent_ops: { in: recentOps.in, out: recentOps.out },
 	};
+}
+
+// Aggregate ops_in / ops_out across recent successful sync_attempts per peer.
+// Window: last 24 hours. Feeds the per-peer direction glyph on the Sync tab
+// (↕ bidirectional, ↑ publishing, ↓ subscribed) off real traffic instead of
+// an invented peer-role field.
+const SYNC_DIRECTION_WINDOW_SECONDS = 24 * 60 * 60;
+
+function recentPeerOps(store: MemoryStore): Map<string, { in: number; out: number }> {
+	const cutoff = new Date(Date.now() - SYNC_DIRECTION_WINDOW_SECONDS * 1000).toISOString();
+	const rows = store.db
+		.prepare(
+			`SELECT peer_device_id,
+			        COALESCE(SUM(ops_in), 0) AS ops_in,
+			        COALESCE(SUM(ops_out), 0) AS ops_out
+			   FROM sync_attempts
+			  WHERE ok = 1 AND finished_at IS NOT NULL AND finished_at >= ?
+			  GROUP BY peer_device_id`,
+		)
+		.all(cutoff) as Array<{
+		peer_device_id: string | null;
+		ops_in: number | null;
+		ops_out: number | null;
+	}>;
+	const map = new Map<string, { in: number; out: number }>();
+	for (const row of rows) {
+		const id = String(row.peer_device_id ?? "").trim();
+		if (!id) continue;
+		map.set(id, { in: Number(row.ops_in ?? 0), out: Number(row.ops_out ?? 0) });
+	}
+	return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,8 +1413,9 @@ export function syncRoutes(
 				"peerRows",
 				() => store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[],
 			);
+			const recentOpsByPeer = traceSync("recentPeerOps", () => recentPeerOps(store));
 			const peersItems = peerRows.map((row) => {
-				const peer = mapPeerRow(store, row, showDiag);
+				const peer = mapPeerRow(store, row, showDiag, recentOpsByPeer);
 				peer.status = peerStatus(peer);
 				return peer;
 			});
@@ -1515,8 +1551,9 @@ export function syncRoutes(
 		{
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
 			const rows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
+			const recentOpsByPeer = recentPeerOps(store);
 			// Use deduplicated mapPeerRow helper (fix #4)
-			const peers = rows.map((row) => mapPeerRow(store, row, showDiag));
+			const peers = rows.map((row) => mapPeerRow(store, row, showDiag, recentOpsByPeer));
 			return c.json({ items: peers, redacted: !showDiag });
 		}
 	});
