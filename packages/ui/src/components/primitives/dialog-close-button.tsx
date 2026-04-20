@@ -13,9 +13,7 @@ export function DialogCloseButton({
 }: DialogCloseButtonProps) {
 	return (
 		<button aria-label={ariaLabel} className={className} onClick={onClick} type="button">
-			<span aria-hidden="true" className="modal-close-button-icon">
-				✕
-			</span>
+			<i aria-hidden="true" className="modal-close-button-icon" data-lucide="x" />
 			<span className="modal-close-button-label">{label}</span>
 		</button>
 	);

@@ -2028,8 +2028,16 @@
         box-shadow: 0 0 0 4px var(--focus-ring);
       }
       .modal-close-button-icon {
-        font-size: 11px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
         color: var(--text-tertiary);
+      }
+      .modal-close-button-icon svg {
+        width: 100%;
+        height: 100%;
       }
       .modal-close-button-label {
         font-weight: 600;
@@ -2732,7 +2740,7 @@
         <div class="modal-header">
           <h2 id="settingsTitle">Memory & model settings</h2>
           <button class="modal-close-button" id="settingsClose" aria-label="Close settings">
-            <span class="modal-close-button-icon" aria-hidden="true">✕</span>
+            <i class="modal-close-button-icon" aria-hidden="true" data-lucide="x"></i>
             <span class="modal-close-button-label">Close</span>
           </button>
         </div>
