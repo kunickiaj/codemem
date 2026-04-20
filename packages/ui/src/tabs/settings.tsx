@@ -1,8 +1,7 @@
 /* Settings modal — observer config, sync settings. */
 
 import { type JSX, render } from "preact";
-import { createPortal } from "preact/compat";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
@@ -37,7 +36,6 @@ import type {
 	SettingsPanelProps,
 	SettingsRenderState,
 	SettingsTabId,
-	SettingsTooltipState,
 } from "./settings/data/types";
 
 let settingsShowAdvanced = loadAdvancedPreference();
@@ -82,11 +80,8 @@ const getObserverModelTooltip = (): string =>
 const getObserverModelDescription = (): string =>
 	getObserverModelDescriptionRaw(settingsRenderState.values);
 
-import {
-	focusSettingsDialog,
-	helpButtonFromTarget,
-	positionHelpTooltipElement,
-} from "./settings/data/dom";
+import { focusSettingsDialog } from "./settings/data/dom";
+import { useHelpTooltip } from "./settings/hooks/use-help-tooltip";
 
 function hideHelpTooltip() {
 	settingsController?.hideTooltip();
@@ -145,12 +140,7 @@ function SettingsDialogShell() {
 	const [dirty, setDirtyState] = useState(state.settingsDirty);
 	const [renderState, setRenderStateState] = useState(settingsRenderState);
 	const [showAdvanced, setShowAdvancedState] = useState(settingsShowAdvanced);
-	const [tooltip, setTooltip] = useState<SettingsTooltipState>({
-		anchor: null,
-		content: "",
-		visible: false,
-	});
-	const tooltipRef = useRef<HTMLDivElement | null>(null);
+	const { tooltipPortal, setTooltip } = useHelpTooltip();
 
 	settingsOpen = open;
 	settingsActiveTab = activeTab;
@@ -207,116 +197,6 @@ function SettingsDialogShell() {
 		const lucide = (globalThis as { lucide?: { createIcons?: () => void } }).lucide;
 		lucide?.createIcons?.();
 	}, [open]);
-
-	useEffect(() => {
-		const showTooltip = (anchor: HTMLElement) => {
-			const content = anchor.dataset.tooltip?.trim();
-			if (!content) return;
-			setTooltip({ anchor, content, visible: true });
-		};
-
-		const hideTooltip = () => {
-			setTooltip((current) => {
-				if (!current.visible && !current.anchor && !current.content) return current;
-				return { anchor: null, content: "", visible: false };
-			});
-		};
-
-		const onPointerOver = (event: Event) => {
-			const button = helpButtonFromTarget(event.target);
-			if (!button) return;
-			showTooltip(button);
-		};
-
-		const onPointerOut = (event: Event) => {
-			const button = helpButtonFromTarget(event.target);
-			if (!button) return;
-			const related = (event as PointerEvent).relatedTarget;
-			if (related instanceof Element && button.contains(related)) return;
-			hideTooltip();
-		};
-
-		const onFocusIn = (event: Event) => {
-			const button = helpButtonFromTarget(event.target);
-			if (!button) return;
-			showTooltip(button);
-		};
-
-		const onFocusOut = (event: Event) => {
-			const button = helpButtonFromTarget(event.target);
-			if (!button) return;
-			hideTooltip();
-		};
-
-		const onClick = (event: Event) => {
-			const button = helpButtonFromTarget(event.target);
-			if (!button) return;
-			event.preventDefault();
-			setTooltip((current) => {
-				if (current.anchor === button && current.visible) {
-					return { anchor: null, content: "", visible: false };
-				}
-				const content = button.dataset.tooltip?.trim() || "";
-				if (!content) return current;
-				return { anchor: button, content, visible: true };
-			});
-		};
-
-		document.addEventListener("pointerover", onPointerOver);
-		document.addEventListener("pointerout", onPointerOut);
-		document.addEventListener("focusin", onFocusIn);
-		document.addEventListener("focusout", onFocusOut);
-		document.addEventListener("click", onClick);
-
-		return () => {
-			document.removeEventListener("pointerover", onPointerOver);
-			document.removeEventListener("pointerout", onPointerOut);
-			document.removeEventListener("focusin", onFocusIn);
-			document.removeEventListener("focusout", onFocusOut);
-			document.removeEventListener("click", onClick);
-		};
-	}, []);
-
-	useLayoutEffect(() => {
-		if (!tooltip.visible || !tooltip.anchor || !tooltipRef.current) return;
-		const frame = requestAnimationFrame(() => {
-			if (tooltipRef.current && tooltip.anchor) {
-				positionHelpTooltipElement(tooltipRef.current, tooltip.anchor);
-			}
-		});
-		return () => {
-			cancelAnimationFrame(frame);
-		};
-	}, [tooltip.anchor, tooltip.content, tooltip.visible]);
-
-	useEffect(() => {
-		if (!tooltip.visible || !tooltip.anchor) return;
-		const reposition = () => {
-			if (tooltipRef.current && tooltip.anchor) {
-				positionHelpTooltipElement(tooltipRef.current, tooltip.anchor);
-			}
-		};
-		globalThis.addEventListener("resize", reposition);
-		document.addEventListener("scroll", reposition, true);
-		return () => {
-			globalThis.removeEventListener("resize", reposition);
-			document.removeEventListener("scroll", reposition, true);
-		};
-	}, [tooltip.anchor, tooltip.visible]);
-
-	const tooltipPortal = useMemo(() => {
-		if (typeof document === "undefined") return null;
-		return createPortal(
-			<div
-				className={`help-tooltip${tooltip.visible ? " visible" : ""}`}
-				hidden={!tooltip.visible}
-				ref={tooltipRef}
-			>
-				{tooltip.content}
-			</div>,
-			document.body,
-		);
-	}, [tooltip.content, tooltip.visible]);
 
 	const close = useCallback(() => {
 		if (settingsStartPolling && settingsRefresh) {
