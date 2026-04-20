@@ -21,58 +21,14 @@ import {
 	type SyncStatItem,
 } from "./components/sync-diagnostics";
 import { renderPairingDisclosure } from "./components/sync-disclosure";
+import {
+	type PairingPayloadState,
+	SYNC_REDACT_LABEL_ID,
+	SYNC_REDACT_MOUNT_ID,
+	type SyncAttemptState,
+	type SyncStatusState,
+} from "./diagnostics/types";
 import { hideSkeleton, renderActionList } from "./helpers";
-
-type SyncRetention = {
-	enabled?: boolean;
-	last_deleted_ops?: number | string;
-	last_error?: string;
-	last_run_at?: string | null;
-};
-
-type SyncPayloadState = {
-	seconds_since_last?: number;
-};
-
-type PingPayloadState = SyncPayloadState & {
-	last_ping_at?: string | null;
-};
-
-type SyncStatusState = {
-	daemon_detail?: string;
-	daemon_state?: string;
-	enabled?: boolean;
-	last_ping_at?: string | null;
-	last_ping_error?: string;
-	last_sync_at?: string | null;
-	last_sync_at_utc?: string | null;
-	last_sync_error?: string;
-	pending?: number | string;
-	peers?: Record<string, unknown>;
-	ping?: PingPayloadState;
-	retention?: SyncRetention;
-	sync?: SyncPayloadState;
-};
-
-type SyncAttemptState = {
-	address?: string;
-	error?: string;
-	finished_at?: string;
-	ops_in?: number;
-	ops_out?: number;
-	peer_device_id?: string;
-	started_at?: string;
-	started_at_utc?: string;
-	status?: string;
-};
-
-type PairingPayloadState = Record<string, unknown> & {
-	addresses?: unknown[];
-	redacted?: boolean;
-};
-
-const SYNC_REDACT_MOUNT_ID = "syncRedactMount";
-const SYNC_REDACT_LABEL_ID = "syncRedactLabel";
 
 function newestPeerPing(peers: Record<string, unknown> | null | undefined): string | null {
 	const timestamps = Object.values(peers || {})
