@@ -41,8 +41,15 @@ export function ObserverStatusBanner({ status }: { status: ObserverStatusShape |
 					<div className="status-active">
 						{String(active.provider || "unknown")} → {String(active.model || "")} via{" "}
 						{formatAuthMethod(active.auth?.method || "none")}{" "}
-						<span className={active.auth?.token_present === true ? "cred-ok" : "cred-none"}>
-							{active.auth?.token_present === true ? "✓" : "✗"}
+						<span
+							aria-label={active.auth?.token_present === true ? "token present" : "token missing"}
+							className={active.auth?.token_present === true ? "cred-ok" : "cred-none"}
+							role="img"
+						>
+							<i
+								aria-hidden="true"
+								data-lucide={active.auth?.token_present === true ? "check" : "x"}
+							/>
 						</span>
 					</div>
 				</>
@@ -63,7 +70,13 @@ export function ObserverStatusBanner({ status }: { status: ObserverStatusShape |
 							return (
 								<span key={provider} className="status-cred">
 									{index > 0 ? " · " : null}
-									<span className={hasAny ? "cred-ok" : "cred-none"}>{hasAny ? "✓" : "–"}</span>{" "}
+									<span
+										aria-label={hasAny ? "credential available" : "no credential"}
+										className={hasAny ? "cred-ok" : "cred-none"}
+										role="img"
+									>
+										{hasAny ? <i aria-hidden="true" data-lucide="check" /> : "–"}
+									</span>{" "}
 									{String(provider)}: {formatCredentialSources(normalizedCreds)}
 								</span>
 							);
