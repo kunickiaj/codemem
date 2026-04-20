@@ -55,57 +55,34 @@ let settingsRenderState: SettingsRenderState = {
 };
 
 import { SettingsHint } from "./settings/components/SettingsHint";
-
+import {
+	getObserverModelDescription as getObserverModelDescriptionRaw,
+	getObserverModelHint as getObserverModelHintRaw,
+	getObserverModelLabel as getObserverModelLabelRaw,
+	getObserverModelTooltip as getObserverModelTooltipRaw,
+	getTieredRoutingHelperText as getTieredRoutingHelperTextRaw,
+	hiddenUnlessAdvanced as hiddenUnlessAdvancedRaw,
+	isProtectedConfigKey as isProtectedConfigKeyRaw,
+	protectedConfigHelp,
+} from "./settings/data/model-accessors";
 import {
 	hasOwn,
-	inferObserverModel,
 	isEqualValue,
 	loadAdvancedPreference,
 	mergeOverrideBaseline,
-	normalizeTextValue,
 	persistAdvancedPreference,
 	toProviderList,
 } from "./settings/data/value-helpers";
 
-function getObserverModelHint(): string {
-	const values = settingsRenderState.values;
-	if (values.observerTierRoutingEnabled) {
-		return "Tiered routing is enabled: simple/rich model selection now lives in Processing.";
-	}
-	const inferred = inferObserverModel(
-		values.observerRuntime.trim() || "api_http",
-		values.observerProvider.trim(),
-		normalizeTextValue(values.observerModel),
-	);
-	const overrideActive = ["observer_model", "observer_provider", "observer_runtime"].some((key) =>
-		hasOwn(settingsEnvOverrides, key),
-	);
-	const source = overrideActive ? "Env override" : inferred.source;
-	return `${source}: ${inferred.model}`;
-}
-
-function getTieredRoutingHelperText(): string {
-	if (!settingsRenderState.values.observerTierRoutingEnabled) {
-		return "Off: codemem uses the base observer settings from the Connection tab for all batches.";
-	}
-	return "On: codemem can route simpler batches to a lighter model and richer batches to a higher-quality configuration.";
-}
-
-function getObserverModelLabel(): string {
-	return settingsRenderState.values.observerTierRoutingEnabled ? "Base model fallback" : "Model";
-}
-
-function getObserverModelTooltip(): string {
-	return settingsRenderState.values.observerTierRoutingEnabled
-		? "Tiered routing is enabled, so Processing controls the simple/rich models. This base model is only a fallback."
-		: "Leave blank to use a recommended model for your selected mode/provider.";
-}
-
-function getObserverModelDescription(): string {
-	return settingsRenderState.values.observerTierRoutingEnabled
-		? "Tiered routing is active. Use this only as a fallback while the Processing tab owns simple/rich model selection."
-		: "Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.";
-}
+const getObserverModelHint = (): string =>
+	getObserverModelHintRaw(settingsRenderState.values, settingsEnvOverrides);
+const getTieredRoutingHelperText = (): string =>
+	getTieredRoutingHelperTextRaw(settingsRenderState.values);
+const getObserverModelLabel = (): string => getObserverModelLabelRaw(settingsRenderState.values);
+const getObserverModelTooltip = (): string =>
+	getObserverModelTooltipRaw(settingsRenderState.values);
+const getObserverModelDescription = (): string =>
+	getObserverModelDescriptionRaw(settingsRenderState.values);
 
 import {
 	focusSettingsDialog,
@@ -387,13 +364,8 @@ export function isSettingsOpen(): boolean {
 
 import { buildSettingsNotice } from "./settings/data/notice";
 
-function isProtectedConfigKey(key: string): boolean {
-	return settingsProtectedKeys.has(key) || PROTECTED_VIEWER_CONFIG_KEYS.has(key);
-}
-
-function protectedConfigHelp(key: string): string {
-	return `${key} is read-only in the viewer for security. Edit the config file or environment instead.`;
-}
+const isProtectedConfigKey = (key: string): boolean =>
+	isProtectedConfigKeyRaw(key, settingsProtectedKeys, PROTECTED_VIEWER_CONFIG_KEYS);
 
 import { type ConfigPayload, formStateFromPayload } from "./settings/data/form-state";
 
@@ -581,9 +553,7 @@ function onAdvancedToggle(checked: boolean) {
 
 import { SettingsSwitchRow } from "./settings/components/SettingsSwitchRow";
 
-function hiddenUnlessAdvanced(): boolean {
-	return !settingsShowAdvanced;
-}
+const hiddenUnlessAdvanced = (): boolean => hiddenUnlessAdvancedRaw(settingsShowAdvanced);
 
 import {
 	ObserverStatusBanner as ObserverStatusBannerComponent,
