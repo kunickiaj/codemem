@@ -1,5 +1,13 @@
 /* Derived sync view-model helpers. Keep these pure so UX logic is testable. */
 
+import { deviceNeedsFriendlyName, resolveFriendlyDeviceName } from "./view-model/device-names";
+import {
+	cleanText,
+	isConnectivityPeerError,
+	isUnauthorizedPeerError,
+	normalizeDisplayName,
+	peerErrorText,
+} from "./view-model/internal";
 import type {
 	ActorLike,
 	DiscoveredDeviceLike,
@@ -31,6 +39,7 @@ export {
 	type UiTrustState,
 	type VisiblePeopleResult,
 } from "./view-model/types";
+export { deviceNeedsFriendlyName, resolveFriendlyDeviceName };
 
 interface MergedDevice {
 	deviceId: string;
@@ -38,46 +47,6 @@ interface MergedDevice {
 	coordinatorName: string;
 	peer: PeerLike | null;
 	discovered: DiscoveredDeviceLike | null;
-}
-
-function cleanText(value: unknown): string {
-	return String(value ?? "").trim();
-}
-
-function normalizeDisplayName(value: unknown): string {
-	return cleanText(value).replace(/\s+/g, " ").toLowerCase();
-}
-
-function _looksLikeDeviceId(value: string): boolean {
-	return /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(value);
-}
-
-function friendlyDeviceFallback(deviceId: string): string {
-	const cleanId = cleanText(deviceId);
-	return cleanId ? cleanId.slice(0, 8) : "Unnamed device";
-}
-
-export function resolveFriendlyDeviceName(input: {
-	localName?: unknown;
-	coordinatorName?: unknown;
-	deviceId?: unknown;
-}): string {
-	const localName = cleanText(input.localName);
-	if (localName) return localName;
-	const coordinatorName = cleanText(input.coordinatorName);
-	if (coordinatorName) return coordinatorName;
-	return friendlyDeviceFallback(cleanText(input.deviceId));
-}
-
-export function deviceNeedsFriendlyName(input: {
-	localName?: unknown;
-	coordinatorName?: unknown;
-	deviceId?: unknown;
-}): boolean {
-	const localName = cleanText(input.localName);
-	const coordinatorName = cleanText(input.coordinatorName);
-	if (localName || coordinatorName) return false;
-	return Boolean(cleanText(input.deviceId));
 }
 
 export function derivePeerUiStatus(peer: PeerLike): UiSyncStatus {
@@ -95,20 +64,6 @@ export function derivePeerUiStatus(peer: PeerLike): UiSyncStatus {
 function isOfflineTeamDevice(device: MergedDevice): boolean {
 	if (!device.discovered?.stale) return false;
 	return device.peer ? derivePeerUiStatus(device.peer) !== "connected" : true;
-}
-
-function peerErrorText(peer: PeerLike): string {
-	return cleanText(peer?.last_error).toLowerCase();
-}
-
-function isUnauthorizedPeerError(errorText: string): boolean {
-	return errorText.includes("401") && errorText.includes("unauthorized");
-}
-
-function isConnectivityPeerError(errorText: string): boolean {
-	return ["timeout", "connection refused", "unreachable", "aborted", "all addresses failed"].some(
-		(fragment) => errorText.includes(fragment),
-	);
 }
 
 export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
