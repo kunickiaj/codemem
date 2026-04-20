@@ -19,46 +19,16 @@ import {
 } from "../lib/format";
 import { state } from "../lib/state";
 import { updateFeedView } from "./feed";
-
-type HealthAction = {
-	label: string;
-	command: string;
-	/** If set, show an actionable button that triggers this async function. */
-	action?: () => Promise<void>;
-	actionLabel?: string;
-};
+import type {
+	HealthAction,
+	HealthActionRowProps,
+	HealthCardInput,
+	LucideRuntime,
+	StatItem,
+	UsageEvent,
+} from "./health/types";
 
 /* ── Health card builder ─────────────────────────────────── */
-
-type HealthCardInput = {
-	key?: string;
-	label: string;
-	value: string;
-	detail?: string;
-	icon?: string;
-	className?: string;
-	title?: string;
-};
-
-type HealthActionRowProps = {
-	item: HealthAction;
-};
-
-type StatItem = {
-	label: string;
-	value: string | number | null | undefined;
-	icon: string;
-	tooltip?: string;
-};
-
-type UsageEvent = {
-	event?: string;
-	count?: number;
-};
-
-type LucideRuntime = {
-	createIcons: () => void;
-};
 
 function buildHealthCard(input: HealthCardInput): HealthCardInput {
 	return input;
