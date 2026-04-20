@@ -1,6 +1,6 @@
 /* Settings modal — observer config, sync settings. */
 
-import { type JSX, render } from "preact";
+import { render } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
@@ -20,11 +20,8 @@ let settingsStartPolling: (() => void) | null = null;
 let settingsRefresh: (() => void) | null = null;
 
 import { SettingsModalContent } from "./settings/components/SettingsModalContent";
-import {
-	EMPTY_FORM_STATE,
-	INPUT_TO_CONFIG_KEY,
-	PROTECTED_VIEWER_CONFIG_KEYS,
-} from "./settings/data/constants";
+import { EMPTY_FORM_STATE, PROTECTED_VIEWER_CONFIG_KEYS } from "./settings/data/constants";
+import { createSettingsEventHandlers } from "./settings/data/event-handlers";
 import type {
 	SettingsController,
 	SettingsFormState,
@@ -79,12 +76,6 @@ import { useHelpTooltip } from "./settings/hooks/use-help-tooltip";
 
 function hideHelpTooltip() {
 	settingsController?.hideTooltip();
-}
-
-function markFieldTouched(inputId: keyof SettingsFormState) {
-	const key = INPUT_TO_CONFIG_KEY[inputId];
-	if (!key) return;
-	settingsTouchedKeys.add(key);
 }
 
 function updateRenderState(patch: Partial<SettingsRenderState>) {
@@ -390,29 +381,12 @@ export async function loadConfigData() {
 	} catch {}
 }
 
-function updateField<K extends keyof SettingsFormState>(field: K, value: SettingsFormState[K]) {
-	markFieldTouched(field);
-	updateFormState({ [field]: value } as Partial<SettingsFormState>);
-	setDirty(true);
-}
-
-function onTextInput<K extends keyof SettingsFormState>(field: K) {
-	return (event: JSX.TargetedEvent<HTMLInputElement | HTMLTextAreaElement, Event>) => {
-		updateField(field, event.currentTarget.value as SettingsFormState[K]);
-	};
-}
-
-function onSelectValueChange<K extends keyof SettingsFormState>(field: K) {
-	return (value: string) => {
-		updateField(field, value as SettingsFormState[K]);
-	};
-}
-
-function onSwitchInput<K extends keyof SettingsFormState>(field: K) {
-	return (checked: boolean) => {
-		updateField(field, checked as SettingsFormState[K]);
-	};
-}
+const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventHandlers({
+	getTouchedKeys: () => settingsTouchedKeys,
+	getValues: () => settingsRenderState.values,
+	updateFormState,
+	setDirty: (dirty) => setDirty(dirty),
+});
 
 function onAdvancedToggle(checked: boolean) {
 	settingsShowAdvanced = checked;
