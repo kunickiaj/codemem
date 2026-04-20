@@ -2,9 +2,7 @@
 
 import { type JSX, render } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
-import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
 import * as api from "../lib/api";
 import { $, $button } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
@@ -21,14 +19,11 @@ let settingsProtectedKeys = new Set<string>();
 let settingsStartPolling: (() => void) | null = null;
 let settingsRefresh: (() => void) | null = null;
 
-import { ObserverPanel } from "./settings/components/ObserverPanel";
-import { ProcessingPanel } from "./settings/components/ProcessingPanel";
-import { SyncPanel } from "./settings/components/SyncPanel";
+import { SettingsModalContent } from "./settings/components/SettingsModalContent";
 import {
 	EMPTY_FORM_STATE,
 	INPUT_TO_CONFIG_KEY,
 	PROTECTED_VIEWER_CONFIG_KEYS,
-	SETTINGS_TABS,
 } from "./settings/data/constants";
 import type {
 	SettingsController,
@@ -52,7 +47,6 @@ let settingsRenderState: SettingsRenderState = {
 	values: { ...EMPTY_FORM_STATE },
 };
 
-import { SettingsHint } from "./settings/components/SettingsHint";
 import {
 	getObserverModelDescription as getObserverModelDescriptionRaw,
 	getObserverModelHint as getObserverModelHintRaw,
@@ -425,8 +419,6 @@ function onAdvancedToggle(checked: boolean) {
 	settingsController?.setShowAdvanced(checked);
 }
 
-import { SettingsSwitchRow } from "./settings/components/SettingsSwitchRow";
-
 const hiddenUnlessAdvanced = (): boolean => hiddenUnlessAdvancedRaw(settingsShowAdvanced);
 
 import {
@@ -475,101 +467,26 @@ function SettingsDialogContent() {
 	};
 
 	return (
-		<div className="modal-card">
-			<div className="modal-header">
-				<h2 id="settingsTitle">Settings</h2>
-				<DialogCloseButton
-					ariaLabel="Close settings"
-					className="modal-close-button"
-					onClick={() => {
-						if (settingsStartPolling && settingsRefresh) {
-							closeSettings(settingsStartPolling, settingsRefresh);
-						}
-					}}
-				/>
-			</div>
-			<div className="modal-body">
-				<div className="small" id="settingsDescription">
-					Tune how codemem connects, processes work, and syncs with other devices.
-				</div>
-				<div className="settings-advanced-toolbar">
-					<SettingsSwitchRow
-						checked={settingsShowAdvanced}
-						id="settingsAdvancedToggle"
-						label="Show advanced controls"
-						onCheckedChange={onAdvancedToggle}
-					/>
-					<button
-						aria-label="About advanced controls"
-						className="help-icon"
-						data-tooltip="Advanced controls include JSON fields, tuning values, and network overrides."
-						type="button"
-					>
-						<i aria-hidden="true" data-lucide="help-circle" />
-					</button>
-				</div>
-				<SettingsHint hidden={!settingsShowAdvanced}>
-					Advanced controls are visible. Leave JSON fields, tuning values, and network overrides
-					alone unless you are debugging or matching a known deployment setup.
-				</SettingsHint>
-
-				<RadixTabs
-					ariaLabel="Settings sections"
-					listClassName="settings-tabs"
-					onValueChange={setSettingsTab}
-					tabs={SETTINGS_TABS}
-					triggerClassName="settings-tab"
-					value={settingsActiveTab}
-				>
-					<RadixTabsContent className="settings-panel" forceMount value="observer">
-						<ObserverPanel {...panelProps} observerStatusBannerSlot={<ObserverStatusBanner />} />
-					</RadixTabsContent>
-
-					<RadixTabsContent className="settings-panel" forceMount value="queue">
-						<ProcessingPanel {...panelProps} />
-					</RadixTabsContent>
-
-					<RadixTabsContent className="settings-panel" forceMount value="sync">
-						<SyncPanel {...panelProps} />
-					</RadixTabsContent>
-				</RadixTabs>
-
-				<div className="small mono" id="settingsPath">
-					{settingsRenderState.pathText}
-				</div>
-				<div className="small" id="settingsEffective">
-					{settingsRenderState.effectiveText}
-				</div>
-				<div
-					className="settings-note"
-					hidden={!settingsRenderState.overridesVisible}
-					id="settingsOverrides"
-				>
-					Some values are controlled outside this screen and take priority.
-				</div>
-				<div className="settings-note" hidden={settingsShowAdvanced}>
-					Advanced controls are hidden right now to keep this screen focused on everyday settings.
-				</div>
-			</div>
-			<div className="modal-footer">
-				<div className="small" id="settingsStatus">
-					{settingsRenderState.statusText}
-				</div>
-				<button
-					className="settings-save"
-					disabled={!state.settingsDirty || settingsRenderState.isSaving}
-					id="settingsSave"
-					onClick={() => {
-						if (settingsStartPolling && settingsRefresh) {
-							void saveSettings(settingsStartPolling, settingsRefresh);
-						}
-					}}
-					type="button"
-				>
-					{settingsRenderState.isSaving ? "Saving…" : "Save changes"}
-				</button>
-			</div>
-		</div>
+		<SettingsModalContent
+			panelProps={panelProps}
+			activeTab={settingsActiveTab}
+			showAdvanced={settingsShowAdvanced}
+			renderState={settingsRenderState}
+			settingsDirty={state.settingsDirty}
+			onClose={() => {
+				if (settingsStartPolling && settingsRefresh) {
+					closeSettings(settingsStartPolling, settingsRefresh);
+				}
+			}}
+			onSave={() => {
+				if (settingsStartPolling && settingsRefresh) {
+					void saveSettings(settingsStartPolling, settingsRefresh);
+				}
+			}}
+			onActiveTabChange={setSettingsTab}
+			onAdvancedToggle={onAdvancedToggle}
+			observerStatusBannerSlot={<ObserverStatusBanner />}
+		/>
 	);
 }
 
