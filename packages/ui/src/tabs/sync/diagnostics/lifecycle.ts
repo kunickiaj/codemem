@@ -86,6 +86,13 @@ function renderRedactControl() {
 			onCheckedChange: (checked: boolean) => {
 				setSyncRedactionEnabled(checked);
 				renderRedactControl();
+				// Redaction is honored server-side (the viewer proxy strips
+				// addresses, pairing payloads, and last_error unless
+				// includeDiagnostics=true). Flip the local switch and
+				// immediately re-fetch so the re-rendered cards actually
+				// reflect the new state instead of echoing the prior
+				// server payload.
+				_refreshPairing();
 				renderSyncStatus();
 				_renderSyncPeers();
 				renderSyncAttempts();
