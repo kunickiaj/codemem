@@ -447,91 +447,7 @@ export function isSettingsOpen(): boolean {
 	return settingsOpen;
 }
 
-function formatSettingsKey(key: string): string {
-	return String(key || "").replace(/_/g, " ");
-}
-
-function joinPhrases(values: string[]): string {
-	const items = values.filter((value) => typeof value === "string" && value.trim());
-	if (items.length === 0) return "";
-	if (items.length === 1) return items[0];
-	if (items.length === 2) return `${items[0]} and ${items[1]}`;
-	return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
-}
-
-interface SettingsSaveEffects {
-	hot_reloaded_keys?: unknown;
-	live_applied_keys?: unknown;
-	restart_required_keys?: unknown;
-	warnings?: unknown;
-	manual_actions?: unknown;
-	sync?: {
-		attempted?: boolean;
-		message?: string;
-		reason?: string;
-		affected_keys?: unknown;
-		ok?: boolean;
-	};
-}
-
-function buildSettingsNotice(payload: unknown): { message: string; type: "success" | "warning" } {
-	const raw = (payload as { effects?: SettingsSaveEffects } | null | undefined)?.effects;
-	const effects: SettingsSaveEffects =
-		raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-	const hotReloaded = Array.isArray(effects.hot_reloaded_keys)
-		? effects.hot_reloaded_keys.map((key) => formatSettingsKey(String(key)))
-		: [];
-	const liveApplied = Array.isArray(effects.live_applied_keys)
-		? effects.live_applied_keys.map((key) => formatSettingsKey(String(key)))
-		: [];
-	const restartRequired = Array.isArray(effects.restart_required_keys)
-		? effects.restart_required_keys.map((key) => formatSettingsKey(String(key)))
-		: [];
-	const warnings = Array.isArray(effects.warnings)
-		? effects.warnings.filter(
-				(value): value is string => typeof value === "string" && value.trim().length > 0,
-			)
-		: [];
-	const manualActions: Array<{ command?: string }> = Array.isArray(effects.manual_actions)
-		? (effects.manual_actions as Array<{ command?: string }>)
-		: [];
-	const sync = effects.sync && typeof effects.sync === "object" ? effects.sync : {};
-	const lines: string[] = [];
-
-	if (hotReloaded.length) {
-		lines.push(`Applied now: ${joinPhrases(hotReloaded)}.`);
-	}
-	if (liveApplied.length) {
-		lines.push(`Live settings updated: ${joinPhrases(liveApplied)}.`);
-	}
-	if (sync.attempted && typeof sync.message === "string" && sync.message) {
-		lines.push(`Sync: ${sync.message}.`);
-	} else if (
-		Array.isArray(sync.affected_keys) &&
-		sync.affected_keys.length &&
-		typeof sync.reason === "string" &&
-		sync.reason
-	) {
-		lines.push(`Sync: ${sync.reason}.`);
-	}
-	if (restartRequired.length) {
-		lines.push(`Restart required for ${joinPhrases(restartRequired)}. Run: codemem serve restart`);
-	}
-	warnings.forEach((warning) => {
-		lines.push(warning);
-	});
-	manualActions.forEach((action) => {
-		if (action && typeof action.command === "string" && action.command.trim()) {
-			lines.push(`If needed: ${action.command}.`);
-		}
-	});
-	if (!lines.length) {
-		lines.push("Saved.");
-	}
-
-	const hasWarning = restartRequired.length > 0 || warnings.length > 0 || sync.ok === false;
-	return { message: lines.join(" "), type: hasWarning ? "warning" : "success" };
-}
+import { buildSettingsNotice } from "./settings/data/notice";
 
 function isProtectedConfigKey(key: string): boolean {
 	return settingsProtectedKeys.has(key) || PROTECTED_VIEWER_CONFIG_KEYS.has(key);
@@ -690,42 +606,7 @@ export function renderConfigModal(payload: unknown) {
 	setDirty(false);
 }
 
-function parseCommandArgv(
-	raw: string,
-	options: { label: string; normalize?: boolean; requireNonEmpty?: boolean },
-): string[] {
-	const text = raw.trim();
-	if (!text) return [];
-	const parsed = JSON.parse(text);
-	if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
-		throw new Error(`${options.label} must be a JSON string array`);
-	}
-	if (!options.normalize && !options.requireNonEmpty) {
-		return parsed;
-	}
-	const values = options.normalize ? parsed.map((item) => item.trim()) : parsed;
-	if (options.requireNonEmpty && values.some((item) => item.trim() === "")) {
-		throw new Error(`${options.label} cannot contain empty command tokens`);
-	}
-	return values;
-}
-
-function parseObserverHeaders(raw: string): Record<string, string> {
-	const text = raw.trim();
-	if (!text) return {};
-	const parsed = JSON.parse(text);
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error("observer headers must be a JSON object");
-	}
-	const headers: Record<string, string> = {};
-	for (const [key, value] of Object.entries(parsed)) {
-		if (typeof key !== "string" || !key.trim() || typeof value !== "string") {
-			throw new Error("observer headers must map string keys to string values");
-		}
-		headers[key.trim()] = value;
-	}
-	return headers;
-}
+import { parseCommandArgv, parseObserverHeaders } from "./settings/data/parse";
 
 function collectSettingsPayload(
 	options: { allowUntouchedParseErrors?: boolean } = {},
@@ -945,37 +826,11 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
 	}
 }
 
-function formatAuthMethod(method: string): string {
-	switch (method) {
-		case "anthropic_consumer":
-			return "OAuth (Claude Max/Pro)";
-		case "codex_consumer":
-			return "OAuth (ChatGPT subscription)";
-		case "sdk_client":
-			return "API key";
-		case "claude_sidecar":
-			return "Local Claude session";
-		case "opencode_run":
-			return "OpenCode sidecar";
-		default:
-			return method || "none";
-	}
-}
-
-function formatCredentialSources(creds: Record<string, boolean>): string {
-	const parts: string[] = [];
-	if (creds.oauth) parts.push("OAuth");
-	if (creds.api_key) parts.push("API key");
-	if (creds.env_var) parts.push("env var");
-	return parts.length ? parts.join(", ") : "none";
-}
-
-function formatFailureTimestamp(value: unknown): string {
-	if (typeof value !== "string" || !value.trim()) return "Unknown time";
-	const ts = new Date(value);
-	if (Number.isNaN(ts.getTime())) return value;
-	return ts.toLocaleString();
-}
+import {
+	formatAuthMethod,
+	formatCredentialSources,
+	formatFailureTimestamp,
+} from "./settings/data/format";
 
 function renderObserverStatusBanner(status: unknown) {
 	updateRenderState({
