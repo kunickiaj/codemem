@@ -35,6 +35,7 @@ import {
 	openSyncInputDialog,
 } from "./sync-dialogs";
 import { setLoadSyncData as setLoadSyncDataImpl, teamSyncState } from "./team-sync/data/state";
+import { clearContent, pulseAttentionTarget, syncScrollBehavior } from "./team-sync/helpers/dom";
 import {
 	deriveCoordinatorApprovalSummary,
 	resolveFriendlyDeviceName,
@@ -128,28 +129,6 @@ function setJoinFeedbackVisibility() {
 	syncJoinFeedback.setAttribute("role", feedback?.tone === "warning" ? "alert" : "status");
 	syncJoinFeedback.setAttribute("aria-live", feedback?.tone === "warning" ? "assertive" : "polite");
 	syncJoinFeedback.className = `peer-meta${feedback ? ` ${feedback.tone === "warning" ? "sync-inline-feedback warning" : "sync-inline-feedback success"}` : ""}`;
-}
-
-function clearContent(node: HTMLElement | null) {
-	if (node) node.textContent = "";
-}
-
-function pulseAttentionTarget(target: HTMLElement | null) {
-	if (!(target instanceof HTMLElement)) return;
-	target.classList.remove("sync-attention-target");
-	void target.offsetWidth;
-	target.classList.add("sync-attention-target");
-	window.setTimeout(() => target.classList.remove("sync-attention-target"), 900);
-}
-
-function prefersReducedMotion(): boolean {
-	return (
-		typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
-	);
-}
-
-function syncScrollBehavior(): ScrollBehavior {
-	return prefersReducedMotion() ? "auto" : "smooth";
 }
 
 function renderInvitePolicySelect() {
