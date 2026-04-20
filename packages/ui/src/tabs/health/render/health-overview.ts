@@ -72,11 +72,14 @@ export function renderHealthOverview() {
 	const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
 	const syncOfflinePeers = syncState === "offline-peers";
 	const syncNoPeers = !syncDisabled && peerCount === 0;
-	const syncCardValue = syncDisabled ? "Disabled" : syncNoPeers ? "No peers" : syncStateLabel;
+	let syncCardValue = syncDisabled ? "Disabled" : syncNoPeers ? "No peers" : syncStateLabel;
 	const lastSyncAt = syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null;
 	const syncAgeSeconds = secondsSince(lastSyncAt);
 	const packAgeSeconds = secondsSince(lastPackAt);
 	const syncLooksStale = syncAgeSeconds !== null && syncAgeSeconds > 7200;
+	// Recent successful sync (≤5 min) means the daemon is functionally working
+	// even if a single peer is flagged "degraded", so soften the risk signal.
+	const syncRecentlyOk = syncAgeSeconds !== null && syncAgeSeconds <= 300;
 	const hasBacklog = rawPending >= 200;
 
 	// Risk scoring
@@ -114,7 +117,7 @@ export function renderHealthOverview() {
 		} else if (syncState === "stopped") {
 			riskScore += 22;
 			drivers.push("sync daemon stopped");
-		} else if (syncState === "degraded") {
+		} else if (syncState === "degraded" && !syncRecentlyOk) {
 			riskScore += 20;
 			drivers.push("sync daemon degraded");
 		}
@@ -153,6 +156,7 @@ export function renderHealthOverview() {
 		statusLabel = "Degraded";
 		statusClass = "status-degraded";
 	}
+	const overallIsHealthy = statusClass === "status-healthy";
 
 	// Update header health dot
 	if (healthDot) {
@@ -169,6 +173,12 @@ export function renderHealthOverview() {
 			: syncOfflinePeers
 				? `${peerCount} peers offline · last sync ${formatAgeShort(syncAgeSeconds)} ago`
 				: `${peerCount} peers · last sync ${formatAgeShort(syncAgeSeconds)} ago`;
+	// When overall health is Healthy, soften the card value so a recent-sync
+	// daemon_state of "degraded" or "offline-peers" doesn't read as alarming.
+	if (overallIsHealthy && !syncDisabled && !syncNoPeers) {
+		if (syncOfflinePeers) syncCardValue = "Peers offline";
+		else if (syncState === "degraded" && syncRecentlyOk) syncCardValue = "Syncing";
+	}
 	const freshnessDetail = `last pack ${formatAgeShort(packAgeSeconds)} ago`;
 
 	// Build maintenance card(s) for active background jobs
@@ -263,7 +273,12 @@ export function renderHealthOverview() {
 			label: "Sync daemon is stopped. Start the background service.",
 			command: "codemem serve start",
 		});
-	} else if (!syncDisabled && !syncNoPeers && (syncState === "error" || syncState === "degraded")) {
+	} else if (
+		!syncDisabled &&
+		!syncNoPeers &&
+		!overallIsHealthy &&
+		(syncState === "error" || syncState === "degraded")
+	) {
 		recommendations.push({
 			label: "Sync is unhealthy. Restart and run one immediate pass.",
 			command: "codemem serve restart",
