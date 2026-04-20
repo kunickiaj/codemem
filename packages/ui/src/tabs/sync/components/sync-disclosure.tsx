@@ -174,7 +174,7 @@ function PairingDisclosure({ contentHost, open, onOpenChange }: PairingDisclosur
 			<div className="peer-title">
 				<strong>Pairing command</strong>
 				<div className="peer-actions">
-					<button id="pairingCopy" type="button">
+					<button className="settings-button" id="pairingCopy" type="button">
 						Copy command
 					</button>
 				</div>
