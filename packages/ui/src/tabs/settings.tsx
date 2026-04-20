@@ -8,42 +8,9 @@ import { $, $button } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 
-let settingsOpen = false;
-let previouslyFocused: HTMLElement | null = null;
-let settingsActiveTab = "observer";
-let settingsBaseline: Record<string, unknown> = {};
-let settingsEnvOverrides: Record<string, unknown> = {};
-let settingsTouchedKeys = new Set<string>();
-let settingsShellMounted = false;
-let settingsProtectedKeys = new Set<string>();
-let settingsStartPolling: (() => void) | null = null;
-let settingsRefresh: (() => void) | null = null;
-
 import { SettingsModalContent } from "./settings/components/SettingsModalContent";
-import { EMPTY_FORM_STATE, PROTECTED_VIEWER_CONFIG_KEYS } from "./settings/data/constants";
+import { PROTECTED_VIEWER_CONFIG_KEYS } from "./settings/data/constants";
 import { createSettingsEventHandlers } from "./settings/data/event-handlers";
-import type {
-	SettingsController,
-	SettingsFormState,
-	SettingsPanelProps,
-	SettingsRenderState,
-	SettingsTabId,
-} from "./settings/data/types";
-
-let settingsShowAdvanced = loadAdvancedPreference();
-let settingsController: SettingsController | null = null;
-
-let settingsRenderState: SettingsRenderState = {
-	effectiveText: "",
-	isSaving: false,
-	observerStatus: null,
-	overridesVisible: false,
-	pathText: "Config path: n/a",
-	providers: [],
-	statusText: "Ready",
-	values: { ...EMPTY_FORM_STATE },
-};
-
 import {
 	getObserverModelDescription as getObserverModelDescriptionRaw,
 	getObserverModelHint as getObserverModelHintRaw,
@@ -54,37 +21,44 @@ import {
 	isProtectedConfigKey as isProtectedConfigKeyRaw,
 	protectedConfigHelp,
 } from "./settings/data/model-accessors";
+import { settingsState } from "./settings/data/state";
+import type {
+	SettingsFormState,
+	SettingsPanelProps,
+	SettingsRenderState,
+	SettingsTabId,
+} from "./settings/data/types";
 import {
-	loadAdvancedPreference,
 	mergeOverrideBaseline,
 	persistAdvancedPreference,
 	toProviderList,
 } from "./settings/data/value-helpers";
 
 const getObserverModelHint = (): string =>
-	getObserverModelHintRaw(settingsRenderState.values, settingsEnvOverrides);
+	getObserverModelHintRaw(settingsState.renderState.values, settingsState.envOverrides);
 const getTieredRoutingHelperText = (): string =>
-	getTieredRoutingHelperTextRaw(settingsRenderState.values);
-const getObserverModelLabel = (): string => getObserverModelLabelRaw(settingsRenderState.values);
+	getTieredRoutingHelperTextRaw(settingsState.renderState.values);
+const getObserverModelLabel = (): string =>
+	getObserverModelLabelRaw(settingsState.renderState.values);
 const getObserverModelTooltip = (): string =>
-	getObserverModelTooltipRaw(settingsRenderState.values);
+	getObserverModelTooltipRaw(settingsState.renderState.values);
 const getObserverModelDescription = (): string =>
-	getObserverModelDescriptionRaw(settingsRenderState.values);
+	getObserverModelDescriptionRaw(settingsState.renderState.values);
 
 import { focusSettingsDialog } from "./settings/data/dom";
 import { useHelpTooltip } from "./settings/hooks/use-help-tooltip";
 
 function hideHelpTooltip() {
-	settingsController?.hideTooltip();
+	settingsState.controller?.hideTooltip();
 }
 
 function updateRenderState(patch: Partial<SettingsRenderState>) {
-	if (settingsController) {
-		settingsController.setRenderState(patch);
+	if (settingsState.controller) {
+		settingsState.controller.setRenderState(patch);
 		return;
 	}
-	settingsRenderState = {
-		...settingsRenderState,
+	settingsState.renderState = {
+		...settingsState.renderState,
 		...patch,
 	};
 }
@@ -92,7 +66,7 @@ function updateRenderState(patch: Partial<SettingsRenderState>) {
 function updateFormState(patch: Partial<SettingsFormState>) {
 	updateRenderState({
 		values: {
-			...settingsRenderState.values,
+			...settingsState.renderState.values,
 			...patch,
 		},
 	});
@@ -110,37 +84,37 @@ function renderSettingsShell() {
 function ensureSettingsShell() {
 	const mount = $("settingsDialogMount");
 	if (!mount) return;
-	if (settingsShellMounted) return;
+	if (settingsState.shellMounted) return;
 	renderSettingsShell();
-	settingsShellMounted = true;
+	settingsState.shellMounted = true;
 }
 
 function SettingsDialogShell() {
-	const [open, setOpen] = useState(settingsOpen);
+	const [open, setOpen] = useState(settingsState.open);
 	const [activeTab, setActiveTabState] = useState<SettingsTabId>(
-		["observer", "queue", "sync"].includes(settingsActiveTab)
-			? (settingsActiveTab as SettingsTabId)
+		["observer", "queue", "sync"].includes(settingsState.activeTab)
+			? (settingsState.activeTab as SettingsTabId)
 			: "observer",
 	);
 	const [dirty, setDirtyState] = useState(state.settingsDirty);
-	const [renderState, setRenderStateState] = useState(settingsRenderState);
-	const [showAdvanced, setShowAdvancedState] = useState(settingsShowAdvanced);
+	const [renderState, setRenderStateState] = useState(settingsState.renderState);
+	const [showAdvanced, setShowAdvancedState] = useState(settingsState.showAdvanced);
 	const { tooltipPortal, setTooltip } = useHelpTooltip();
 
-	settingsOpen = open;
-	settingsActiveTab = activeTab;
+	settingsState.open = open;
+	settingsState.activeTab = activeTab;
 	state.settingsDirty = dirty;
-	settingsRenderState = renderState;
-	settingsShowAdvanced = showAdvanced;
+	settingsState.renderState = renderState;
+	settingsState.showAdvanced = showAdvanced;
 
 	useEffect(() => {
-		settingsController = {
+		settingsState.controller = {
 			hideTooltip: () => {
 				setTooltip({ anchor: null, content: "", visible: false });
 			},
 			setActiveTab: (tab) => {
 				const nextTab = ["observer", "queue", "sync"].includes(tab) ? tab : "observer";
-				settingsActiveTab = nextTab;
+				settingsState.activeTab = nextTab;
 				setActiveTabState(nextTab);
 			},
 			setDirty: (nextDirty) => {
@@ -148,27 +122,27 @@ function SettingsDialogShell() {
 				setDirtyState(nextDirty);
 			},
 			setOpen: (nextOpen) => {
-				settingsOpen = nextOpen;
+				settingsState.open = nextOpen;
 				setOpen(nextOpen);
 			},
 			setRenderState: (patch) => {
 				const nextState = {
-					...settingsRenderState,
+					...settingsState.renderState,
 					...patch,
 				};
-				settingsRenderState = nextState;
+				settingsState.renderState = nextState;
 				setRenderStateState(nextState);
 			},
 			setShowAdvanced: (nextShowAdvanced) => {
-				settingsShowAdvanced = nextShowAdvanced;
+				settingsState.showAdvanced = nextShowAdvanced;
 				persistAdvancedPreference(nextShowAdvanced);
 				setShowAdvancedState(nextShowAdvanced);
 			},
 		};
 
 		return () => {
-			if (settingsController) {
-				settingsController = null;
+			if (settingsState.controller) {
+				settingsState.controller = null;
 			}
 		};
 	}, []);
@@ -184,8 +158,8 @@ function SettingsDialogShell() {
 	}, [open]);
 
 	const close = useCallback(() => {
-		if (settingsStartPolling && settingsRefresh) {
-			closeSettings(settingsStartPolling, settingsRefresh);
+		if (settingsState.startPolling && settingsState.refresh) {
+			closeSettings(settingsState.startPolling, settingsState.refresh);
 		}
 	}, []);
 
@@ -222,13 +196,13 @@ function SettingsDialogShell() {
 }
 
 export function isSettingsOpen(): boolean {
-	return settingsOpen;
+	return settingsState.open;
 }
 
 import { buildSettingsNotice } from "./settings/data/notice";
 
 const isProtectedConfigKey = (key: string): boolean =>
-	isProtectedConfigKeyRaw(key, settingsProtectedKeys, PROTECTED_VIEWER_CONFIG_KEYS);
+	isProtectedConfigKeyRaw(key, settingsState.protectedKeys, PROTECTED_VIEWER_CONFIG_KEYS);
 
 import { type ConfigPayload, formStateFromPayload } from "./settings/data/form-state";
 
@@ -246,8 +220,8 @@ export function renderConfigModal(payload: unknown) {
 		: [];
 	const values = formStateFromPayload(data);
 
-	settingsEnvOverrides = envOverrides;
-	settingsProtectedKeys = new Set(protectedKeys);
+	settingsState.envOverrides = envOverrides;
+	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";
 
@@ -263,12 +237,12 @@ export function renderConfigModal(payload: unknown) {
 		values,
 	});
 
-	settingsTouchedKeys = new Set<string>();
+	settingsState.touchedKeys = new Set<string>();
 	try {
 		const baseline = collectSettingsPayload({ allowUntouchedParseErrors: true });
-		settingsBaseline = mergeOverrideBaseline(baseline, config, envOverrides);
+		settingsState.baseline = mergeOverrideBaseline(baseline, config, envOverrides);
 	} catch {
-		settingsBaseline = {};
+		settingsState.baseline = {};
 	}
 
 	setDirty(false);
@@ -281,66 +255,66 @@ function collectSettingsPayload(
 	options: { allowUntouchedParseErrors?: boolean } = {},
 ): Record<string, unknown> {
 	return collectSettingsPayloadRaw({
-		values: settingsRenderState.values,
-		touchedKeys: settingsTouchedKeys,
-		baseline: settingsBaseline,
+		values: settingsState.renderState.values,
+		touchedKeys: settingsState.touchedKeys,
+		baseline: settingsState.baseline,
 		allowUntouchedParseErrors: options.allowUntouchedParseErrors,
 	});
 }
 
 function setSettingsTab(tab: string) {
 	const nextTab = ["observer", "queue", "sync"].includes(tab) ? (tab as SettingsTabId) : "observer";
-	settingsActiveTab = nextTab;
-	settingsController?.setActiveTab(nextTab);
+	settingsState.activeTab = nextTab;
+	settingsState.controller?.setActiveTab(nextTab);
 }
 
 function setDirty(dirty: boolean, rerender = true) {
 	state.settingsDirty = dirty;
-	if (rerender) settingsController?.setDirty(dirty);
+	if (rerender) settingsState.controller?.setDirty(dirty);
 }
 
 export function openSettings(stopPolling: () => void) {
-	if (!settingsShellMounted) {
+	if (!settingsState.shellMounted) {
 		ensureSettingsShell();
 	}
-	settingsOpen = true;
-	previouslyFocused = document.activeElement as HTMLElement | null;
+	settingsState.open = true;
+	settingsState.previouslyFocused = document.activeElement as HTMLElement | null;
 	stopPolling();
-	settingsController?.setOpen(true);
+	settingsState.controller?.setOpen(true);
 }
 
 export function closeSettings(startPolling: () => void, refreshCallback: () => void) {
 	if (state.settingsDirty) {
 		if (!globalThis.confirm("Discard unsaved changes?")) {
-			settingsController?.setOpen(true);
+			settingsState.controller?.setOpen(true);
 			return;
 		}
 	}
-	settingsOpen = false;
-	settingsController?.setOpen(false);
+	settingsState.open = false;
+	settingsState.controller?.setOpen(false);
 	hideHelpTooltip();
 	const restoreTarget =
-		previouslyFocused && typeof previouslyFocused.focus === "function"
-			? previouslyFocused
+		settingsState.previouslyFocused && typeof settingsState.previouslyFocused.focus === "function"
+			? settingsState.previouslyFocused
 			: $button("settingsButton");
 	restoreTarget?.focus();
-	previouslyFocused = null;
-	settingsTouchedKeys = new Set<string>();
+	settingsState.previouslyFocused = null;
+	settingsState.touchedKeys = new Set<string>();
 	startPolling();
 	refreshCallback();
 }
 
 export async function saveSettings(startPolling: () => void, refreshCallback: () => void) {
-	if (settingsRenderState.isSaving) return;
+	if (settingsState.renderState.isSaving) return;
 	updateRenderState({ isSaving: true, statusText: "Saving changes…" });
 
 	try {
 		const current = collectSettingsPayload({ allowUntouchedParseErrors: true });
 		const changed = diffSettingsPayload({
 			current,
-			baseline: settingsBaseline,
-			envOverrides: settingsEnvOverrides,
-			touchedKeys: settingsTouchedKeys,
+			baseline: settingsState.baseline,
+			envOverrides: settingsState.envOverrides,
+			touchedKeys: settingsState.touchedKeys,
 			isProtected: isProtectedConfigKey,
 		});
 		if (Object.keys(changed).length === 0) {
@@ -370,7 +344,7 @@ function renderObserverStatusBanner(status: unknown) {
 }
 
 export async function loadConfigData() {
-	if (settingsOpen) return;
+	if (settingsState.open) return;
 	try {
 		const [payload, status] = await Promise.all([
 			api.loadConfig(),
@@ -382,18 +356,18 @@ export async function loadConfigData() {
 }
 
 const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventHandlers({
-	getTouchedKeys: () => settingsTouchedKeys,
-	getValues: () => settingsRenderState.values,
+	getTouchedKeys: () => settingsState.touchedKeys,
+	getValues: () => settingsState.renderState.values,
 	updateFormState,
 	setDirty: (dirty) => setDirty(dirty),
 });
 
 function onAdvancedToggle(checked: boolean) {
-	settingsShowAdvanced = checked;
-	settingsController?.setShowAdvanced(checked);
+	settingsState.showAdvanced = checked;
+	settingsState.controller?.setShowAdvanced(checked);
 }
 
-const hiddenUnlessAdvanced = (): boolean => hiddenUnlessAdvancedRaw(settingsShowAdvanced);
+const hiddenUnlessAdvanced = (): boolean => hiddenUnlessAdvancedRaw(settingsState.showAdvanced);
 
 import {
 	ObserverStatusBanner as ObserverStatusBannerComponent,
@@ -401,19 +375,19 @@ import {
 } from "./settings/components/ObserverStatusBanner";
 
 function ObserverStatusBanner() {
-	const status = settingsRenderState.observerStatus as ObserverStatusShape | null;
+	const status = settingsState.renderState.observerStatus as ObserverStatusShape | null;
 	return <ObserverStatusBannerComponent status={status} />;
 }
 
 function SettingsDialogContent() {
-	const values = settingsRenderState.values;
+	const values = settingsState.renderState.values;
 	const observerMaxCharsDefault = String(state.configDefaults?.observer_max_chars || "");
 	const showAuthFile = values.observerAuthSource === "file";
 	const showAuthCommand = values.observerAuthSource === "command";
 	const showTieredRouting = values.observerTierRoutingEnabled;
 	const providerOptions = Array.from(
 		new Set(
-			settingsRenderState.providers.concat(
+			settingsState.renderState.providers.concat(
 				values.observerProvider ? [values.observerProvider] : [],
 			),
 		),
@@ -443,18 +417,18 @@ function SettingsDialogContent() {
 	return (
 		<SettingsModalContent
 			panelProps={panelProps}
-			activeTab={settingsActiveTab}
-			showAdvanced={settingsShowAdvanced}
-			renderState={settingsRenderState}
+			activeTab={settingsState.activeTab}
+			showAdvanced={settingsState.showAdvanced}
+			renderState={settingsState.renderState}
 			settingsDirty={state.settingsDirty}
 			onClose={() => {
-				if (settingsStartPolling && settingsRefresh) {
-					closeSettings(settingsStartPolling, settingsRefresh);
+				if (settingsState.startPolling && settingsState.refresh) {
+					closeSettings(settingsState.startPolling, settingsState.refresh);
 				}
 			}}
 			onSave={() => {
-				if (settingsStartPolling && settingsRefresh) {
-					void saveSettings(settingsStartPolling, settingsRefresh);
+				if (settingsState.startPolling && settingsState.refresh) {
+					void saveSettings(settingsState.startPolling, settingsState.refresh);
 				}
 			}}
 			onActiveTabChange={setSettingsTab}
@@ -469,8 +443,8 @@ export function initSettings(
 	startPolling: () => void,
 	refreshCallback: () => void,
 ) {
-	settingsStartPolling = startPolling;
-	settingsRefresh = refreshCallback;
+	settingsState.startPolling = startPolling;
+	settingsState.refresh = refreshCallback;
 	ensureSettingsShell();
 
 	const settingsButton = $button("settingsButton");
