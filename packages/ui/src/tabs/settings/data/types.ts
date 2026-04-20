@@ -1,6 +1,6 @@
 /* Settings modal shared types. */
 
-import type { ComponentChildren } from "preact";
+import type { ComponentChildren, JSX } from "preact";
 
 export type SettingsTabId = "observer" | "queue" | "sync";
 
@@ -73,4 +73,28 @@ export type SettingsController = {
 	setOpen: (open: boolean) => void;
 	setRenderState: (patch: Partial<SettingsRenderState>) => void;
 	setShowAdvanced: (show: boolean) => void;
+};
+
+/** The bundle of callbacks + accessors each tab panel needs from the
+ * settings shell. Passed through as a single prop so the extracted panel
+ * components don't need direct access to settings.tsx module state. */
+export type SettingsPanelProps = {
+	values: SettingsFormState;
+	observerMaxCharsDefault: string;
+	providerOptions: Array<{ label: string; value: string }>;
+	showAuthFile: boolean;
+	showAuthCommand: boolean;
+	showTieredRouting: boolean;
+	hiddenUnlessAdvanced: () => boolean;
+	onTextInput: <K extends keyof SettingsFormState>(
+		field: K,
+	) => (event: JSX.TargetedEvent<HTMLInputElement | HTMLTextAreaElement, Event>) => void;
+	onSelectValueChange: <K extends keyof SettingsFormState>(field: K) => (value: string) => void;
+	onSwitchInput: <K extends keyof SettingsFormState>(field: K) => (checked: boolean) => void;
+	getObserverModelLabel: () => string;
+	getObserverModelTooltip: () => string;
+	getObserverModelDescription: () => string;
+	getObserverModelHint: () => string;
+	getTieredRoutingHelperText: () => string;
+	protectedConfigHelp: (key: string) => string;
 };
