@@ -220,6 +220,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								h(
 									"button",
 									{
+										class: "settings-button",
 										disabled: summary.readiness !== "ready" || pending,
 										onClick: () => runGroup(group.group_id, draftName, "rename"),
 										type: "button",
@@ -231,7 +232,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								h(
 									"button",
 									{
-										class: archived ? undefined : "danger",
+										class: archived ? "settings-button" : "settings-button danger",
 										disabled: summary.readiness !== "ready" || pending,
 										onClick: () =>
 											runGroup(
