@@ -12,7 +12,6 @@ import {
 } from "../../lib/state";
 import { renderIntoSyncMount } from "./components/render-root";
 import {
-	type PairingView,
 	renderAttemptsList,
 	renderDiagnosticsGrid,
 	renderPairingView,
@@ -22,7 +21,15 @@ import {
 } from "./components/sync-diagnostics";
 import { renderPairingDisclosure } from "./components/sync-disclosure";
 import {
-	type PairingPayloadState,
+	diagnosticsLoadingState,
+	diagnosticsUnavailableState,
+	newestPeerPing,
+	noAttemptsState,
+	pairingView,
+	syncAttemptsHistoryNote,
+	unavailableAttemptsState,
+} from "./diagnostics/helpers";
+import {
 	SYNC_REDACT_LABEL_ID,
 	SYNC_REDACT_MOUNT_ID,
 	type SyncAttemptState,
@@ -30,16 +37,7 @@ import {
 } from "./diagnostics/types";
 import { hideSkeleton, renderActionList } from "./helpers";
 
-function newestPeerPing(peers: Record<string, unknown> | null | undefined): string | null {
-	const timestamps = Object.values(peers || {})
-		.map((peer) => {
-			if (!peer || typeof peer !== "object") return "";
-			return String((peer as { last_ping_at?: string | null }).last_ping_at || "").trim();
-		})
-		.filter(Boolean)
-		.sort();
-	return timestamps[timestamps.length - 1] ?? null;
-}
+export { syncAttemptsHistoryNote };
 
 /* ── Import render functions needed for redact toggle ────── */
 // These are set by the index module to avoid circular imports.
@@ -49,78 +47,6 @@ export function setRenderSyncPeers(fn: () => void) {
 }
 
 let _refreshPairing: () => void = () => {};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function pairingView(payload: unknown): PairingView {
-	if (!isRecord(payload)) {
-		state.pairingCommandRaw = "";
-		return {
-			payloadText: "Pairing not available",
-			hintText: "Enable sync and retry.",
-		};
-	}
-
-	const pairingPayload = payload as PairingPayloadState;
-	if (pairingPayload.redacted) {
-		state.pairingCommandRaw = "";
-		return {
-			payloadText: "Pairing payload hidden",
-			hintText: "Diagnostics are required to view the pairing payload.",
-		};
-	}
-
-	const safePayload = {
-		...pairingPayload,
-		addresses: Array.isArray(pairingPayload.addresses) ? pairingPayload.addresses : [],
-	};
-	const compact = JSON.stringify(safePayload);
-	const b64 = btoa(compact);
-	const command = `echo '${b64}' | base64 -d | codemem sync pair --accept-file -`;
-	state.pairingCommandRaw = command;
-	return {
-		payloadText: command,
-		hintText:
-			"Copy this command and run it on the other device. Use --include/--exclude to control which projects sync.",
-	};
-}
-
-function diagnosticsLoadingState() {
-	return {
-		title: "Diagnostics still loading.",
-		detail:
-			"Wait a moment for local sync status. If it stays blank, refresh the page or check whether sync is enabled on this device.",
-	};
-}
-
-function diagnosticsUnavailableState() {
-	return {
-		title: "Diagnostics unavailable right now.",
-		detail:
-			"The viewer could not load sync status. Refresh this page, or check that the local codemem sync service is reachable before retrying.",
-	};
-}
-
-function noAttemptsState() {
-	const syncStatus = state.lastSyncStatus as { daemon_state?: string; enabled?: boolean } | null;
-	const syncDisabled = syncStatus?.daemon_state === "disabled" || syncStatus?.enabled === false;
-	return {
-		title: "No recent sync attempts yet.",
-		detail: syncDisabled
-			? "Turn on sync in Settings → Device Sync first. Recent attempts will appear here after this device can actually run sync work."
-			: "Trigger a sync pass or pair another device to generate activity here when you need low-level troubleshooting.",
-	};
-}
-
-function unavailableAttemptsState() {
-	return {
-		title: "Recent attempts unavailable right now.",
-		detail:
-			"Attempt history could not be loaded because sync diagnostics failed. Refresh the page after local sync status is reachable again.",
-	};
-}
 
 /* ── Sync status renderer ────────────────────────────────── */
 
@@ -355,12 +281,6 @@ export function renderSyncAttempts() {
 	});
 
 	renderAttemptsList(syncAttempts, items, historyOnlyNote);
-}
-
-export function syncAttemptsHistoryNote(daemonState: string, hasVisibleErrors: boolean): string {
-	return daemonState === "offline-peers" && hasVisibleErrors
-		? "Some recent failures may have happened before all peers went offline. Sync will resume automatically when a peer becomes reachable."
-		: "";
 }
 
 export function renderSyncDiagnosticsUnavailable() {
