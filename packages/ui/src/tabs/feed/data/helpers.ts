@@ -1,9 +1,9 @@
 /* Pure helper functions for the Feed tab — no rendering, no state mutation.
  */
 
-import { normalize } from "../../lib/format";
-import { state } from "../../lib/state";
-import type { FeedItem, FeedItemMetadata } from "./types";
+import { normalize } from "../../../lib/format";
+import { state } from "../../../lib/state";
+import type { FeedItem, FeedItemMetadata } from "../types";
 
 export function mergeMetadata(metadata: unknown): FeedItemMetadata {
 	if (!metadata || typeof metadata !== "object") return {};

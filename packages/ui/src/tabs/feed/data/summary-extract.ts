@@ -1,9 +1,9 @@
 /* Feed summary extraction — parse a FeedItem's metadata/body/adapter-output
  * into a normalized FeedSummary object and classify it as summary-like. */
 
-import { toTitleLabel } from "../../lib/format";
+import { toTitleLabel } from "../../../lib/format";
+import type { FeedItem, FeedItemMetadata, FeedSummary } from "../types";
 import { extractFactsFromBody } from "./helpers";
-import type { FeedItem, FeedItemMetadata, FeedSummary } from "./types";
 
 /**
  * A feed summary object parsed from a memory item's metadata, body text,

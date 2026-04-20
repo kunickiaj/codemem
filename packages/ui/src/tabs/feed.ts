@@ -13,7 +13,7 @@ import {
 	itemKey,
 	mergeFeedItems,
 	mergeRefreshFeedItems,
-} from "./feed/helpers";
+} from "./feed/data/helpers";
 import {
 	countNewItems,
 	isNearFeedBottom,
@@ -21,7 +21,7 @@ import {
 	pageHasMore,
 	pageNextOffset,
 	SUMMARY_PAGE_SIZE,
-} from "./feed/pagination";
+} from "./feed/data/pagination";
 import type { FeedItem } from "./feed/types";
 
 /* ── Module state ─────────────────────────────────────────── */
@@ -36,7 +36,7 @@ let feedScrollHandlerBound = false;
 let feedProjectGeneration = 0;
 let lastFeedScope = "all";
 
-import { ensureFeedRenderBoundary, renderIntoFeedMount } from "./feed/mount";
+import { ensureFeedRenderBoundary, renderIntoFeedMount } from "./feed/data/mount";
 
 function resetPagination(project: string) {
 	lastFeedProject = project;
@@ -63,7 +63,7 @@ export {
 	packTraceContextKey,
 	parseInspectorWorkingSet,
 	syncInspectorQueryDraft,
-} from "./feed/inspector";
+} from "./feed/data/inspector-query";
 
 function replaceFeedItem(updatedItem: FeedItem) {
 	const key = itemKey(updatedItem);
@@ -93,13 +93,14 @@ function removeFeedItem(memoryId: number) {
 	}
 }
 
-export { observationViewData } from "./feed/observation-view";
+export { observationViewData } from "./feed/data/observation-view";
 
-import { FeedTabView, type FeedViewOps } from "./feed/view";
+import { FeedTabView } from "./feed/components/FeedTabView";
+import type { FeedViewOps } from "./feed/types";
 
 /* ── Filtering ───────────────────────────────────────────── */
 
-import { computeSignature, filterByQuery, filterByType } from "./feed/filter";
+import { computeSignature, filterByQuery, filterByType } from "./feed/data/filter";
 
 async function loadMoreFeedPage() {
 	if (loadMoreInFlight || !hasMorePages()) return;

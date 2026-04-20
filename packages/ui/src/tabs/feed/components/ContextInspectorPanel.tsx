@@ -1,34 +1,13 @@
-/* Context inspector panel — trace a pack query against the memory store
- * and display candidate groupings + the final assembled pack. */
-
 import { Fragment, h } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import * as api from "../../lib/api";
-import { state } from "../../lib/state";
-import { TraceCandidateGroup } from "./trace";
-
-export function syncInspectorQueryDraft(options: {
-	feedQuery: string;
-	inspectorQuery: string;
-	hasInspectorOverride: boolean;
-}): string {
-	return options.hasInspectorOverride ? options.inspectorQuery : options.feedQuery;
-}
-
-export function parseInspectorWorkingSet(value: string): string[] {
-	return value
-		.split(/\n|,/)
-		.map((item) => item.trim())
-		.filter(Boolean);
-}
-
-export function packTraceContextKey(options: {
-	project: string | null;
-	query: string;
-	workingSetFiles: string[];
-}): string {
-	return JSON.stringify([options.project, options.query.trim(), options.workingSetFiles]);
-}
+import * as api from "../../../lib/api";
+import { state } from "../../../lib/state";
+import {
+	packTraceContextKey,
+	parseInspectorWorkingSet,
+	syncInspectorQueryDraft,
+} from "../data/inspector-query";
+import { TraceCandidateGroup } from "./TraceCandidateGroup";
 
 export function ContextInspectorPanel({ open }: { open: boolean }) {
 	const [inspectorQuery, setInspectorQuery] = useState(() => String(state.feedQuery || ""));

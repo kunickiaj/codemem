@@ -1,9 +1,9 @@
 /* Observation view-mode helpers — pure selection logic for toggling
  * between "summary", "facts", and "narrative" presentations of a feed item. */
 
-import { normalize, parseJsonArray } from "../../lib/format";
+import { normalize, parseJsonArray } from "../../../lib/format";
+import type { FeedItem, ItemViewMode } from "../types";
 import { extractFactsFromBody, mergeMetadata, sentenceFacts } from "./helpers";
-import type { FeedItem, ItemViewMode } from "./types";
 
 export function observationViewData(item: FeedItem) {
 	const metadata = mergeMetadata(item?.metadata_json);

@@ -1,5 +1,3 @@
-/* Feed item action menu — "Forget memory" dropdown. */
-
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { h } from "preact";
 

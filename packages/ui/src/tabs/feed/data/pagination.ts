@@ -1,8 +1,8 @@
 /* Feed pagination — pure helpers + page-size constants. */
 
-import type * as api from "../../lib/api";
+import type * as api from "../../../lib/api";
+import type { FeedItem } from "../types";
 import { itemKey } from "./helpers";
-import type { FeedItem } from "./types";
 
 export const OBSERVATION_PAGE_SIZE = 20;
 export const SUMMARY_PAGE_SIZE = 50;

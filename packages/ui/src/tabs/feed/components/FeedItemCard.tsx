@@ -1,40 +1,38 @@
-/* Feed item card — renders a single memory item with its header, body,
- * provenance chips, visibility controls, and expand/collapse toggle. */
-
 import { h } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { Chip } from "../../components/primitives/chip";
-import { Tooltip } from "../../components/primitives/tooltip";
-import * as api from "../../lib/api";
-import { highlightText } from "../../lib/dom";
+import { Chip } from "../../../components/primitives/chip";
+import { Tooltip } from "../../../components/primitives/tooltip";
+import * as api from "../../../lib/api";
+import { highlightText } from "../../../lib/dom";
 import {
 	formatDate,
 	formatFileList,
 	formatRelativeTime,
 	formatTagLabel,
 	parseJsonArray,
-} from "../../lib/format";
-import { showGlobalNotice } from "../../lib/notice";
-import { state } from "../../lib/state";
-import { openSyncConfirmDialog } from "../sync/sync-dialogs";
+} from "../../../lib/format";
+import { showGlobalNotice } from "../../../lib/notice";
+import { state } from "../../../lib/state";
+import { openSyncConfirmDialog } from "../../sync/sync-dialogs";
 import {
 	renderFactsContent,
 	renderNarrativeContent,
 	renderSummarySections,
-} from "./body-renderers";
-import { authorLabel, itemKey, mergeMetadata, trustStateLabel } from "./helpers";
-import { FeedItemMenu } from "./menu";
-import { ProvenanceChip } from "./mount";
+} from "../data/body-renderers";
+import { authorLabel, itemKey, mergeMetadata, trustStateLabel } from "../data/helpers";
 import {
 	clampClass,
 	defaultObservationView,
 	observationViewData,
 	observationViewModes,
 	shouldClampBody,
-} from "./observation-view";
-import { canonicalKind, getSummaryObject, isSummaryLikeItem } from "./summary-extract";
-import { FeedViewToggle, TagChip } from "./toggles";
-import type { FeedItem, ItemViewMode } from "./types";
+} from "../data/observation-view";
+import { canonicalKind, getSummaryObject, isSummaryLikeItem } from "../data/summary-extract";
+import type { FeedItem, ItemViewMode } from "../types";
+import { FeedItemMenu } from "./FeedItemMenu";
+import { FeedViewToggle } from "./FeedViewToggle";
+import { ProvenanceChip } from "./ProvenanceChip";
+import { TagChip } from "./TagChip";
 
 export interface FeedItemCardProps {
 	item: FeedItem;
