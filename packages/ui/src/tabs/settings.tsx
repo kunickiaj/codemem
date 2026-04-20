@@ -8,7 +8,6 @@ import { state } from "../lib/state";
 
 import { SettingsDialogShell } from "./settings/components/SettingsDialogShell";
 import { SettingsModalContent } from "./settings/components/SettingsModalContent";
-import { PROTECTED_VIEWER_CONFIG_KEYS } from "./settings/data/constants";
 import { createSettingsEventHandlers } from "./settings/data/event-handlers";
 import {
 	getObserverModelDescription as getObserverModelDescriptionRaw,
@@ -17,12 +16,10 @@ import {
 	getObserverModelTooltip as getObserverModelTooltipRaw,
 	getTieredRoutingHelperText as getTieredRoutingHelperTextRaw,
 	hiddenUnlessAdvanced as hiddenUnlessAdvancedRaw,
-	isProtectedConfigKey as isProtectedConfigKeyRaw,
 	protectedConfigHelp,
 } from "./settings/data/model-accessors";
 import { settingsState } from "./settings/data/state";
 import type { SettingsPanelProps } from "./settings/data/types";
-import { mergeOverrideBaseline, toProviderList } from "./settings/data/value-helpers";
 
 const getObserverModelHint = (): string =>
 	getObserverModelHintRaw(settingsState.renderState.values, settingsState.envOverrides);
@@ -65,72 +62,17 @@ function SettingsDialogShellBound() {
 	return <SettingsDialogShell DialogContent={SettingsDialogContent} onClose={closeSettings} />;
 }
 
-export function isSettingsOpen(): boolean {
-	return settingsState.open;
-}
+export {
+	collectSettingsPayload,
+	isProtectedConfigKey,
+	isSettingsOpen,
+	loadConfigData,
+	renderConfigModal,
+} from "./settings/data/config-loader";
 
-import { buildSettingsNotice } from "./settings/data/notice";
-
-const isProtectedConfigKey = (key: string): boolean =>
-	isProtectedConfigKeyRaw(key, settingsState.protectedKeys, PROTECTED_VIEWER_CONFIG_KEYS);
-
-import { type ConfigPayload, formStateFromPayload } from "./settings/data/form-state";
-
-export function renderConfigModal(payload: unknown) {
-	if (!payload || typeof payload !== "object") return;
-	const data = payload as ConfigPayload;
-	const defaults = data.defaults || {};
-	const config = data.config || {};
-	const envOverrides =
-		data.env_overrides && typeof data.env_overrides === "object" ? data.env_overrides : {};
-	const protectedKeys = Array.isArray(data.protected_keys)
-		? data.protected_keys.filter(
-				(value): value is string => typeof value === "string" && value.trim().length > 0,
-			)
-		: [];
-	const values = formStateFromPayload(data);
-
-	settingsState.envOverrides = envOverrides;
-	settingsState.protectedKeys = new Set(protectedKeys);
-	state.configDefaults = defaults;
-	state.configPath = data.path || "";
-
-	updateRenderState({
-		effectiveText:
-			Object.keys(envOverrides).length > 0
-				? "Some fields are managed by environment settings."
-				: "",
-		overridesVisible: Object.keys(envOverrides).length > 0,
-		pathText: state.configPath ? `Config path: ${state.configPath}` : "Config path: n/a",
-		providers: toProviderList(data.providers),
-		statusText: "No unsaved changes",
-		values,
-	});
-
-	settingsState.touchedKeys = new Set<string>();
-	try {
-		const baseline = collectSettingsPayload({ allowUntouchedParseErrors: true });
-		settingsState.baseline = mergeOverrideBaseline(baseline, config, envOverrides);
-	} catch {
-		settingsState.baseline = {};
-	}
-
-	setDirty(false);
-}
-
-import { collectSettingsPayload as collectSettingsPayloadRaw } from "./settings/data/collect-payload";
+import { collectSettingsPayload, isProtectedConfigKey } from "./settings/data/config-loader";
 import { diffSettingsPayload } from "./settings/data/diff-payload";
-
-function collectSettingsPayload(
-	options: { allowUntouchedParseErrors?: boolean } = {},
-): Record<string, unknown> {
-	return collectSettingsPayloadRaw({
-		values: settingsState.renderState.values,
-		touchedKeys: settingsState.touchedKeys,
-		baseline: settingsState.baseline,
-		allowUntouchedParseErrors: options.allowUntouchedParseErrors,
-	});
-}
+import { buildSettingsNotice } from "./settings/data/notice";
 
 export function openSettings(stopPolling: () => void) {
 	if (!settingsState.shellMounted) {
@@ -193,25 +135,6 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
 		const message = error instanceof Error ? error.message : "unknown error";
 		updateRenderState({ isSaving: false, statusText: `Save failed: ${message}` });
 	}
-}
-
-function renderObserverStatusBanner(status: unknown) {
-	updateRenderState({
-		observerStatus:
-			status && typeof status === "object" ? (status as Record<string, unknown>) : null,
-	});
-}
-
-export async function loadConfigData() {
-	if (settingsState.open) return;
-	try {
-		const [payload, status] = await Promise.all([
-			api.loadConfig(),
-			api.loadObserverStatus().catch(() => null),
-		]);
-		renderConfigModal(payload);
-		renderObserverStatusBanner(status);
-	} catch {}
 }
 
 const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventHandlers({
