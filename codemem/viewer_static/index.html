@@ -1071,9 +1071,12 @@
       .toggle-button.active {
         background: var(--accent-subtle);
         color: var(--accent);
-        font-weight: 600;
         box-shadow: inset 0 0 0 1px var(--accent-strong);
       }
+      /* Intentionally no font-weight change on .active — weight-driven text
+         width shifts would retime the toggle's outer width and could wrap
+         the downstream controls (search + type toggle + Context Inspector)
+         to a second line. Bg + color + inset ring is sufficient signal. */
       .toggle-button:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
