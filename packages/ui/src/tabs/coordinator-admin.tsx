@@ -5,6 +5,7 @@ import * as api from "../lib/api";
 import { state } from "../lib/state";
 import { renderGroupsPanel } from "./coordinator-admin/components/groups-panel";
 import { renderInvitesPanel } from "./coordinator-admin/components/invites-panel";
+import { renderJoinRequestsPanel } from "./coordinator-admin/components/join-requests-panel";
 import { createCoordinatorAdminActions } from "./coordinator-admin/data/actions";
 import { type AdminSection, coordinatorAdminState } from "./coordinator-admin/data/state";
 import { coordinatorAdminSummary } from "./coordinator-admin/data/summary";
@@ -27,75 +28,6 @@ const {
 	renderShell: () => renderShell(),
 	reloadData: () => loadCoordinatorAdminData(),
 });
-
-function renderJoinRequestsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) {
-	const items = Array.isArray(state.lastCoordinatorAdminJoinRequests)
-		? state.lastCoordinatorAdminJoinRequests
-		: [];
-	return h(
-		RadixTabsContent,
-		{ className: "coordinator-admin-panel", value: "join-requests" },
-		h("h3", null, "Pending join requests"),
-		h(
-			"p",
-			{ class: "peer-submeta" },
-			summary.readiness === "ready"
-				? "Approve or deny teammate join requests from the dedicated operator surface instead of burying them in Sync."
-				: "Finish setup first. Join request review stays disabled until coordinator admin is ready.",
-		),
-		!items.length
-			? h(
-					"div",
-					{ class: "peer-meta" },
-					summary.readiness === "ready"
-						? "No pending join requests right now."
-						: "Join request review will appear here once setup is complete.",
-				)
-			: h(
-					"div",
-					{ class: "coordinator-admin-request-list" },
-					items.map((item) => {
-						const requestId = String(item.request_id || "").trim();
-						const deviceId = String(item.device_id || "unknown-device");
-						const displayName = String(item.display_name || deviceId);
-						const pending = coordinatorAdminState.joinReviewPendingId === requestId;
-						return h(
-							"div",
-							{ class: "peer-card", key: requestId || deviceId },
-							h("div", { class: "peer-title" }, h("strong", null, displayName)),
-							h("div", { class: "peer-meta" }, `Device: ${deviceId}`),
-							h(
-								"div",
-								{ class: "peer-actions" },
-								h(
-									"button",
-									{
-										disabled: !requestId || pending,
-										onClick: () => void reviewJoinRequestFromAdminPanel(requestId, "approve"),
-										type: "button",
-									},
-									pending && coordinatorAdminState.joinReviewPendingAction === "approve"
-										? "Approving…"
-										: "Approve",
-								),
-								h(
-									"button",
-									{
-										class: "danger",
-										disabled: !requestId || pending,
-										onClick: () => void reviewJoinRequestFromAdminPanel(requestId, "deny"),
-										type: "button",
-									},
-									pending && coordinatorAdminState.joinReviewPendingAction === "deny"
-										? "Denying…"
-										: "Deny",
-								),
-							),
-						);
-					}),
-				),
-	);
-}
 
 function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>) {
 	const items = Array.isArray(state.lastCoordinatorAdminDevices)
@@ -349,7 +281,11 @@ function renderShell() {
 						createInvite: () => void createInviteFromAdminPanel(),
 						renderShell,
 					}),
-					renderJoinRequestsPanel(summary),
+					renderJoinRequestsPanel({
+						summary,
+						reviewJoinRequest: (requestId, action) =>
+							void reviewJoinRequestFromAdminPanel(requestId, action),
+					}),
 					renderDevicesPanel(summary),
 				),
 				h(
