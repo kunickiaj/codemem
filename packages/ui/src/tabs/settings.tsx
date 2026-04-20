@@ -5,10 +5,7 @@ import { createPortal } from "preact/compat";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
-import { RadixSelect } from "../components/primitives/radix-select";
 import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
-import { TextArea } from "../components/primitives/text-area";
-import { TextInput } from "../components/primitives/text-input";
 import * as api from "../lib/api";
 import { $, $button } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
@@ -25,6 +22,9 @@ let settingsProtectedKeys = new Set<string>();
 let settingsStartPolling: (() => void) | null = null;
 let settingsRefresh: (() => void) | null = null;
 
+import { ObserverPanel } from "./settings/components/ObserverPanel";
+import { ProcessingPanel } from "./settings/components/ProcessingPanel";
+import { SyncPanel } from "./settings/components/SyncPanel";
 import {
 	EMPTY_FORM_STATE,
 	INPUT_TO_CONFIG_KEY,
@@ -34,6 +34,7 @@ import {
 import type {
 	SettingsController,
 	SettingsFormState,
+	SettingsPanelProps,
 	SettingsRenderState,
 	SettingsTabId,
 	SettingsTooltipState,
@@ -54,7 +55,6 @@ let settingsRenderState: SettingsRenderState = {
 };
 
 import { SettingsHint } from "./settings/components/SettingsHint";
-import { SettingsSectionIntro } from "./settings/components/SettingsSectionIntro";
 
 import {
 	asBooleanValue,
@@ -831,11 +831,9 @@ function ObserverStatusBanner() {
 	return <ObserverStatusBannerComponent status={status} />;
 }
 
-import { Field } from "./settings/components/Field";
-
 function SettingsDialogContent() {
 	const values = settingsRenderState.values;
-	const observerMaxCharsDefault = state.configDefaults?.observer_max_chars || "";
+	const observerMaxCharsDefault = String(state.configDefaults?.observer_max_chars || "");
 	const showAuthFile = values.observerAuthSource === "file";
 	const showAuthCommand = values.observerAuthSource === "command";
 	const showTieredRouting = values.observerTierRoutingEnabled;
@@ -848,6 +846,25 @@ function SettingsDialogContent() {
 	)
 		.sort((left, right) => left.localeCompare(right))
 		.map((provider) => ({ label: provider, value: provider }));
+
+	const panelProps: SettingsPanelProps = {
+		values,
+		observerMaxCharsDefault,
+		providerOptions,
+		showAuthFile,
+		showAuthCommand,
+		showTieredRouting,
+		hiddenUnlessAdvanced,
+		onTextInput,
+		onSelectValueChange,
+		onSwitchInput,
+		getObserverModelLabel,
+		getObserverModelTooltip,
+		getObserverModelDescription,
+		getObserverModelHint,
+		getTieredRoutingHelperText,
+		protectedConfigHelp,
+	};
 
 	return (
 		<div className="modal-card">
@@ -897,537 +914,15 @@ function SettingsDialogContent() {
 					value={settingsActiveTab}
 				>
 					<RadixTabsContent className="settings-panel" forceMount value="observer">
-						<SettingsSectionIntro
-							detail="Set how codemem reaches your model provider and where it should look for credentials."
-							title="Connection and credentials"
-						/>
-						<ObserverStatusBanner />
-						<div className="settings-group">
-							<h3 className="settings-group-title">Connection</h3>
-							<Field>
-								<div className="field-label">
-									<label htmlFor="observerProvider">Model provider</label>
-									<button
-										aria-label="About model provider"
-										className="help-icon"
-										data-tooltip="Choose where model requests are sent. Use auto for recommended defaults."
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<RadixSelect
-									ariaLabel="Model provider"
-									contentClassName="settings-select-content"
-									id="observerProvider"
-									itemClassName="settings-select-item"
-									onValueChange={onSelectValueChange("observerProvider")}
-									options={[{ label: "auto (default)", value: "" }, ...providerOptions]}
-									placeholder="auto (default)"
-									triggerClassName="settings-select-trigger"
-									value={values.observerProvider}
-									viewportClassName="settings-select-viewport"
-								/>
-								<div className="small">Use `auto` unless you need to pin a specific provider.</div>
-							</Field>
-							<Field>
-								<div className="field-label">
-									<label htmlFor="observerModel">{getObserverModelLabel()}</label>
-									<button
-										aria-label="About model defaults"
-										className="help-icon"
-										data-tooltip={getObserverModelTooltip()}
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<TextInput
-									id="observerModel"
-									onInput={onTextInput("observerModel")}
-									placeholder="leave empty for default"
-									value={values.observerModel}
-								/>
-								<div className="small">{getObserverModelDescription()}</div>
-								<div className="small" id="observerModelHint">
-									{getObserverModelHint()}
-								</div>
-							</Field>
-							<Field>
-								<div className="field-label">
-									<label htmlFor="observerRuntime">Connection mode</label>
-									<button
-										aria-label="About connection mode"
-										className="help-icon"
-										data-tooltip="Direct API uses provider credentials. Local Claude session uses local Claude runtime auth."
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<RadixSelect
-									ariaLabel="Connection mode"
-									contentClassName="settings-select-content"
-									id="observerRuntime"
-									itemClassName="settings-select-item"
-									onValueChange={onSelectValueChange("observerRuntime")}
-									options={[
-										{ label: "Direct API (default)", value: "api_http" },
-										{ label: "Local Claude session", value: "claude_sidecar" },
-									]}
-									triggerClassName="settings-select-trigger"
-									value={values.observerRuntime}
-									viewportClassName="settings-select-viewport"
-								/>
-								<div className="small">
-									Switch between provider API credentials and local Claude session auth.
-								</div>
-							</Field>
-							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="claudeCommand">Claude command (JSON argv)</label>
-								<TextArea
-									disabled
-									id="claudeCommand"
-									placeholder='["claude"]'
-									rows={2}
-									value={values.claudeCommand}
-								/>
-								<div className="small">{protectedConfigHelp("claude_command")}</div>
-							</Field>
-							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="observerMaxChars">Request size limit (chars)</label>
-								<TextInput
-									id="observerMaxChars"
-									min="1"
-									onInput={onTextInput("observerMaxChars")}
-									type="number"
-									value={values.observerMaxChars}
-								/>
-								<div className="small" id="observerMaxCharsHint">
-									{observerMaxCharsDefault ? `Default: ${observerMaxCharsDefault}` : ""}
-								</div>
-							</Field>
-						</div>
-
-						<div className="settings-group">
-							<h3 className="settings-group-title">Authentication</h3>
-							<Field>
-								<div className="field-label">
-									<label htmlFor="observerAuthSource">Authentication method</label>
-									<button
-										aria-label="About authentication method"
-										className="help-icon"
-										data-tooltip="Choose how credentials are resolved: environment, file, command, or none."
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<RadixSelect
-									ariaLabel="Authentication method"
-									contentClassName="settings-select-content"
-									id="observerAuthSource"
-									itemClassName="settings-select-item"
-									onValueChange={onSelectValueChange("observerAuthSource")}
-									options={[
-										{ label: "auto (default)", value: "auto" },
-										{ label: "env", value: "env" },
-										{ label: "file", value: "file" },
-										{ label: "command", value: "command" },
-										{ label: "none", value: "none" },
-									]}
-									triggerClassName="settings-select-trigger"
-									value={values.observerAuthSource}
-									viewportClassName="settings-select-viewport"
-								/>
-								<div className="small">
-									Use `auto` unless you need to force a file or command-based token source.
-								</div>
-							</Field>
-							<Field hidden={!showAuthFile} id="observerAuthFileField">
-								<label htmlFor="observerAuthFile">Token file path</label>
-								<TextInput
-									disabled
-									id="observerAuthFile"
-									placeholder="~/.codemem/work-token.txt"
-									value={values.observerAuthFile}
-								/>
-								<div className="small">{protectedConfigHelp("observer_auth_file")}</div>
-							</Field>
-							<Field hidden={!showAuthCommand} id="observerAuthCommandField">
-								<div className="field-label">
-									<label htmlFor="observerAuthCommand">Token command</label>
-									<button
-										aria-label="About token command"
-										className="help-icon"
-										data-tooltip="Runs this command and uses stdout as the token. JSON argv only, no shell parsing."
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<TextArea
-									disabled
-									id="observerAuthCommand"
-									placeholder='["iap-auth", "--audience", "gateway"]'
-									rows={3}
-									value={values.observerAuthCommand}
-								/>
-								<div className="small">{protectedConfigHelp("observer_auth_command")}</div>
-							</Field>
-							<div className="small" hidden={!showAuthCommand} id="observerAuthCommandNote">
-								Command format: JSON string array, e.g. `["iap-auth", "--audience", "gateway"]`.
-							</div>
-							<SettingsHint hidden={hiddenUnlessAdvanced()}>
-								These advanced credential overrides only matter when you need custom command timing,
-								cached tokens, or extra request headers.
-							</SettingsHint>
-							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="observerAuthTimeoutMs">Token command timeout (ms)</label>
-								<TextInput
-									id="observerAuthTimeoutMs"
-									min="1"
-									onInput={onTextInput("observerAuthTimeoutMs")}
-									type="number"
-									value={values.observerAuthTimeoutMs}
-								/>
-							</Field>
-							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="observerAuthCacheTtlS">Token cache time (s)</label>
-								<TextInput
-									id="observerAuthCacheTtlS"
-									min="0"
-									onInput={onTextInput("observerAuthCacheTtlS")}
-									type="number"
-									value={values.observerAuthCacheTtlS}
-								/>
-							</Field>
-							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<div className="field-label">
-									<label htmlFor="observerHeaders">Request headers (JSON)</label>
-									<button
-										aria-label="About request headers"
-										className="help-icon"
-										data-tooltip={
-											// biome-ignore lint/suspicious/noTemplateCurlyInString: literal documentation text describing the template placeholder syntax users can use in header values
-											"Optional extra headers. Supports templates like ${auth.token}, ${auth.type}, ${auth.source}."
-										}
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<TextArea
-									disabled
-									id="observerHeaders"
-									placeholder='{"Authorization":"Bearer ${auth.token}"}'
-									rows={4}
-									value={values.observerHeaders}
-								/>
-								<div className="small">{protectedConfigHelp("observer_headers")}</div>
-							</Field>
-						</div>
+						<ObserverPanel {...panelProps} observerStatusBannerSlot={<ObserverStatusBanner />} />
 					</RadixTabsContent>
 
 					<RadixTabsContent className="settings-panel" forceMount value="queue">
-						<SettingsSectionIntro
-							detail="Control how often codemem processes queued work and, if needed, how it routes lighter vs richer model requests."
-							title="Processing and routing"
-						/>
-						<div className="settings-group">
-							<h3 className="settings-group-title">Processing</h3>
-							<Field>
-								<div className="field-label">
-									<label htmlFor="rawEventsSweeperIntervalS">
-										Background processing interval (seconds)
-									</label>
-									<button
-										aria-label="About background processing interval"
-										className="help-icon"
-										data-tooltip="How often codemem checks for queued events to process in the background."
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<TextInput
-									id="rawEventsSweeperIntervalS"
-									min="1"
-									onInput={onTextInput("rawEventsSweeperIntervalS")}
-									type="number"
-									value={values.rawEventsSweeperIntervalS}
-								/>
-								<div className="small">
-									How often codemem checks for queued raw events in the background.
-								</div>
-							</Field>
-						</div>
-						<div className="settings-group">
-							<h3 className="settings-group-title">Tiered observer routing</h3>
-							<SettingsSwitchRow
-								checked={values.observerTierRoutingEnabled}
-								className="field"
-								id="observerTierRoutingEnabled"
-								label="Enable tiered routing"
-								onCheckedChange={onSwitchInput("observerTierRoutingEnabled")}
-							/>
-							<div className="small">{getTieredRoutingHelperText()}</div>
-							<SettingsHint hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
-								These advanced routing values are only useful when you are tuning model cost,
-								latency, or output quality for a known workload.
-							</SettingsHint>
-							<Field hidden={!showTieredRouting}>
-								<div className="field-label">
-									<label htmlFor="observerSimpleModel">Simple tier model</label>
-									<button
-										aria-label="About simple tier model"
-										className="help-icon"
-										data-tooltip="Used for lighter replay batches. Leave blank to keep codemem's routing defaults or base observer fallback."
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<TextInput
-									id="observerSimpleModel"
-									onInput={onTextInput("observerSimpleModel")}
-									placeholder="leave empty for default"
-									value={values.observerSimpleModel}
-								/>
-								<div className="small">Used when a batch falls below rich-routing thresholds.</div>
-							</Field>
-							<Field hidden={!showTieredRouting}>
-								<div className="field-label">
-									<label htmlFor="observerRichModel">Rich tier model</label>
-									<button
-										aria-label="About rich tier model"
-										className="help-icon"
-										data-tooltip="Used for larger or more complex replay batches. Leave blank to keep codemem's rich-tier defaults."
-										type="button"
-									>
-										?
-									</button>
-								</div>
-								<TextInput
-									id="observerRichModel"
-									onInput={onTextInput("observerRichModel")}
-									placeholder="leave empty for default"
-									value={values.observerRichModel}
-								/>
-								<div className="small">Used when routing detects a richer replay batch.</div>
-							</Field>
-							<SettingsSwitchRow
-								checked={values.observerRichOpenAIUseResponses}
-								className="field"
-								hidden={!showTieredRouting}
-								id="observerRichOpenAIUseResponses"
-								label="Use OpenAI Responses API for rich tier"
-								onCheckedChange={onSwitchInput("observerRichOpenAIUseResponses")}
-							/>
-							<Field
-								className="field settings-advanced"
-								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-							>
-								<label htmlFor="observerSimpleTemperature">Simple tier temperature</label>
-								<TextInput
-									id="observerSimpleTemperature"
-									min="0"
-									onInput={onTextInput("observerSimpleTemperature")}
-									step="0.1"
-									type="number"
-									value={values.observerSimpleTemperature}
-								/>
-							</Field>
-							<Field
-								className="field settings-advanced"
-								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-							>
-								<label htmlFor="observerRichTemperature">Rich tier temperature</label>
-								<TextInput
-									id="observerRichTemperature"
-									min="0"
-									onInput={onTextInput("observerRichTemperature")}
-									step="0.1"
-									type="number"
-									value={values.observerRichTemperature}
-								/>
-							</Field>
-							<Field
-								className="field settings-advanced"
-								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-							>
-								<label htmlFor="observerRichReasoningEffort">Rich tier reasoning effort</label>
-								<TextInput
-									id="observerRichReasoningEffort"
-									onInput={onTextInput("observerRichReasoningEffort")}
-									placeholder="leave empty for default"
-									value={values.observerRichReasoningEffort}
-								/>
-							</Field>
-							<Field
-								className="field settings-advanced"
-								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-							>
-								<label htmlFor="observerRichReasoningSummary">Rich tier reasoning summary</label>
-								<TextInput
-									id="observerRichReasoningSummary"
-									onInput={onTextInput("observerRichReasoningSummary")}
-									placeholder="leave empty for default"
-									value={values.observerRichReasoningSummary}
-								/>
-							</Field>
-							<Field
-								className="field settings-advanced"
-								hidden={!showTieredRouting || hiddenUnlessAdvanced()}
-							>
-								<label htmlFor="observerRichMaxOutputTokens">Rich tier max output tokens</label>
-								<TextInput
-									id="observerRichMaxOutputTokens"
-									min="1"
-									onInput={onTextInput("observerRichMaxOutputTokens")}
-									step="1"
-									type="number"
-									value={values.observerRichMaxOutputTokens}
-								/>
-							</Field>
-						</div>
-						<div className="settings-group settings-advanced" hidden={hiddenUnlessAdvanced()}>
-							<h3 className="settings-group-title">Pack limits</h3>
-							<SettingsHint hidden={hiddenUnlessAdvanced()}>
-								Most users can keep these defaults. Change them only when you need smaller or larger
-								default context packs.
-							</SettingsHint>
-							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="packObservationLimit">Observation limit</label>
-								<TextInput
-									id="packObservationLimit"
-									min="1"
-									onInput={onTextInput("packObservationLimit")}
-									type="number"
-									value={values.packObservationLimit}
-								/>
-								<div className="small">Default number of observations to include in a pack.</div>
-							</Field>
-							<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="packSessionLimit">Session summary limit</label>
-								<TextInput
-									id="packSessionLimit"
-									min="1"
-									onInput={onTextInput("packSessionLimit")}
-									type="number"
-									value={values.packSessionLimit}
-								/>
-								<div className="small">
-									Default number of session summaries to include in a pack.
-								</div>
-							</Field>
-						</div>
+						<ProcessingPanel {...panelProps} />
 					</RadixTabsContent>
 
 					<RadixTabsContent className="settings-panel" forceMount value="sync">
-						<SettingsSectionIntro
-							detail="Choose whether this device syncs at all, how often it checks peers, and which coordinator group it should join."
-							title="Device sync"
-						/>
-						<div className="settings-group">
-							<h3 className="settings-group-title">Device Sync</h3>
-							<SettingsSwitchRow
-								checked={values.syncEnabled}
-								className="field"
-								id="syncEnabled"
-								label="Enable sync"
-								onCheckedChange={onSwitchInput("syncEnabled")}
-							/>
-							<div className="field">
-								<label htmlFor="syncInterval">Sync interval (seconds)</label>
-								<TextInput
-									id="syncInterval"
-									min="10"
-									onInput={onTextInput("syncInterval")}
-									type="number"
-									value={values.syncInterval}
-								/>
-								<div className="small">
-									How often this device checks for sync work when sync is enabled.
-								</div>
-							</div>
-							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="syncHost">Sync host</label>
-								<TextInput
-									id="syncHost"
-									onInput={onTextInput("syncHost")}
-									placeholder="127.0.0.1"
-									value={values.syncHost}
-								/>
-							</div>
-							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="syncPort">Sync port</label>
-								<TextInput
-									id="syncPort"
-									min="1"
-									onInput={onTextInput("syncPort")}
-									type="number"
-									value={values.syncPort}
-								/>
-							</div>
-							<SettingsSwitchRow
-								checked={values.syncMdns}
-								className="field settings-advanced"
-								hidden={hiddenUnlessAdvanced()}
-								id="syncMdns"
-								label="Enable mDNS discovery"
-								onCheckedChange={onSwitchInput("syncMdns")}
-							/>
-							<div className="field">
-								<label htmlFor="syncCoordinatorUrl">Coordinator URL</label>
-								<TextInput
-									disabled
-									id="syncCoordinatorUrl"
-									placeholder="https://coord.example.com"
-									value={values.syncCoordinatorUrl}
-								/>
-								<div className="small">{protectedConfigHelp("sync_coordinator_url")}</div>
-							</div>
-							<div className="field">
-								<label htmlFor="syncCoordinatorGroup">Coordinator group</label>
-								<TextInput
-									id="syncCoordinatorGroup"
-									onInput={onTextInput("syncCoordinatorGroup")}
-									placeholder="team-alpha"
-									value={values.syncCoordinatorGroup}
-								/>
-								<div className="small">
-									Discovery namespace for peers using the same coordinator.
-								</div>
-							</div>
-							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<SettingsHint hidden={hiddenUnlessAdvanced()}>
-									These network overrides are for unusual local-network setups. Leave them alone
-									unless you know this device needs non-default sync discovery or coordinator
-									timing.
-								</SettingsHint>
-							</div>
-							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
-								<TextInput
-									id="syncCoordinatorTimeout"
-									min="1"
-									onInput={onTextInput("syncCoordinatorTimeout")}
-									type="number"
-									value={values.syncCoordinatorTimeout}
-								/>
-							</div>
-							<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
-								<label htmlFor="syncCoordinatorPresenceTtl">Presence TTL (seconds)</label>
-								<TextInput
-									id="syncCoordinatorPresenceTtl"
-									min="1"
-									onInput={onTextInput("syncCoordinatorPresenceTtl")}
-									type="number"
-									value={values.syncCoordinatorPresenceTtl}
-								/>
-							</div>
-						</div>
+						<SyncPanel {...panelProps} />
 					</RadixTabsContent>
 				</RadixTabs>
 
