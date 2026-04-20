@@ -1,9 +1,8 @@
 /* Feed tab — memory feed rendering, filtering, search. */
 
-import { Fragment, h } from "preact";
-import { useState } from "preact/hooks";
+import { h } from "preact";
 import * as api from "../lib/api";
-import { setFeedScopeFilter, setFeedTypeFilter, state } from "../lib/state";
+import { state } from "../lib/state";
 
 /* ── Types ───────────────────────────────────────────────── */
 
@@ -23,7 +22,6 @@ import {
 	pageNextOffset,
 	SUMMARY_PAGE_SIZE,
 } from "./feed/pagination";
-import { FeedSkeletonItem } from "./feed/skeleton";
 import type { FeedItem } from "./feed/types";
 
 /* ── Module state ─────────────────────────────────────────── */
@@ -97,54 +95,7 @@ function removeFeedItem(memoryId: number) {
 
 export { observationViewData } from "./feed/observation-view";
 
-import { FeedItemCard } from "./feed/card";
-import { FeedToggle } from "./feed/toggles";
-
-function FeedList({ items, loadingText }: { items: FeedItem[]; loadingText?: string }) {
-	if (loadingText) {
-		return h(
-			"div",
-			{
-				className: "feed-skeleton",
-				role: "status",
-				"aria-label": loadingText,
-			},
-			[0, 1, 2, 3].map((i) => h(FeedSkeletonItem, { index: i, key: `skeleton-${i}` })),
-		);
-	}
-	if (!items.length) {
-		const hasFilters =
-			Boolean(state.feedQuery.trim()) ||
-			state.feedTypeFilter !== "all" ||
-			state.feedScopeFilter !== "all";
-		return h(
-			"div",
-			{ className: "small feed-empty-state" },
-			h("strong", null, hasFilters ? "No memories match the current filters." : "No memories yet."),
-			h(
-				"div",
-				null,
-				hasFilters
-					? "Try clearing filters, changing the scope, or using a broader search."
-					: "Memories and session summaries will appear here once codemem has something worth keeping.",
-			),
-		);
-	}
-	return h(
-		Fragment,
-		null,
-		items.map((item) =>
-			h(FeedItemCard, {
-				item,
-				key: itemKey(item),
-				onReplace: replaceFeedItem,
-				onRemove: removeFeedItem,
-				onViewRefresh: () => updateFeedView(true),
-				onReload: loadFeedData,
-			}),
-		),
-	);
-}
+import { FeedTabView, type FeedViewOps } from "./feed/view";
 
 /* ── Filtering ───────────────────────────────────────────── */
 
@@ -220,85 +171,21 @@ function maybeLoadMoreFeedPage() {
 	void loadMoreFeedPage();
 }
 
-import { ContextInspectorPanel } from "./feed/inspector";
-import { feedMetaText } from "./feed/meta";
-
-function FeedTabView({ items, loadingText }: { items: FeedItem[]; loadingText?: string }) {
-	const [inspectorOpen, setInspectorOpen] = useState(false);
-	return h(
-		Fragment,
-		null,
-		h(
-			"div",
-			{ className: "feed-controls" },
-			h(
-				"div",
-				{ className: "section-meta", id: "feedMeta" },
-				loadingText || feedMetaText(items.length, hasMorePages()),
-			),
-			h(
-				"div",
-				{ className: "feed-controls-right" },
-				h("input", {
-					className: "feed-search",
-					id: "feedSearch",
-					onInput: (event) => {
-						state.feedQuery = String((event.currentTarget as HTMLInputElement).value || "");
-						updateFeedView();
-					},
-					placeholder: "Search title, body, tags…",
-					value: state.feedQuery,
-				}),
-				h(FeedToggle, {
-					active: state.feedScopeFilter,
-					id: "feedScopeToggle",
-					onSelect: (value) => {
-						if (value === state.feedScopeFilter) return;
-						setFeedScopeFilter(value);
-						void loadFeedData();
-					},
-					options: [
-						{ value: "all", label: "All" },
-						{ value: "mine", label: "My memories" },
-						{ value: "theirs", label: "Other people" },
-					],
-				}),
-				h(FeedToggle, {
-					active: state.feedTypeFilter,
-					id: "feedTypeToggle",
-					onSelect: (value) => {
-						if (value === state.feedTypeFilter) return;
-						setFeedTypeFilter(value);
-						updateFeedView();
-					},
-					options: [
-						{ value: "all", label: "All" },
-						{ value: "observations", label: "Observations" },
-						{ value: "summaries", label: "Summaries" },
-					],
-				}),
-				h(
-					"button",
-					{
-						"aria-controls": "contextInspectorPanel",
-						"aria-expanded": inspectorOpen,
-						className: "settings-button feed-inspector-button",
-						onClick: () => setInspectorOpen((current) => !current),
-						type: "button",
-					},
-					inspectorOpen ? "Hide Context Inspector" : "Context Inspector",
-				),
-			),
-		),
-		h(ContextInspectorPanel, { open: inspectorOpen }),
-		h("div", { className: "feed-list", id: "feedList" }, h(FeedList, { items, loadingText })),
-	);
-}
+const feedOps: FeedViewOps = {
+	replaceFeedItem,
+	removeFeedItem,
+	updateFeedView: (force?: boolean) => updateFeedView(force),
+	loadFeedData: () => loadFeedData(),
+	hasMorePages,
+};
 
 function renderFeedTab(items: FeedItem[], options?: { loadingText?: string }) {
 	const feedTab = document.getElementById("tab-feed");
 	if (!feedTab) return false;
-	renderIntoFeedMount(feedTab, h(FeedTabView, { items, loadingText: options?.loadingText }));
+	renderIntoFeedMount(
+		feedTab,
+		h(FeedTabView, { items, loadingText: options?.loadingText, ops: feedOps }),
+	);
 	const globalLucide = (globalThis as { lucide?: { createIcons: () => void } }).lucide;
 	if (globalLucide && !options?.loadingText) {
 		globalLucide.createIcons();
