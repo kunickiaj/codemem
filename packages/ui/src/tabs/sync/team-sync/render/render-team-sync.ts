@@ -52,6 +52,29 @@ import {
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
 
+// Top-of-card online badge. Hidden when the coordinator isn't configured yet,
+// otherwise mirrors the coordinator presence_status so operators can see at a
+// glance whether this device is reaching the coordinator.
+function updateSyncOnlineBadge(badge: HTMLElement, configured: boolean, presenceStatus: string) {
+	if (!configured) {
+		badge.hidden = true;
+		badge.textContent = "";
+		badge.className = "sync-online-badge";
+		return;
+	}
+	badge.hidden = false;
+	if (presenceStatus === "posted") {
+		badge.className = "sync-online-badge";
+		badge.textContent = "Online";
+	} else if (presenceStatus === "not_enrolled") {
+		badge.className = "sync-online-badge sync-online-offline";
+		badge.textContent = "Not enrolled";
+	} else {
+		badge.className = "sync-online-badge sync-online-error";
+		badge.textContent = "Offline";
+	}
+}
+
 function teardownTeamSyncRender(actions: HTMLElement | null, targets: Array<HTMLElement | null>) {
 	const mount = document.getElementById(TEAM_SYNC_ACTIONS_MOUNT_ID) as HTMLElement | null;
 	if (mount) {
@@ -209,6 +232,11 @@ export function renderTeamSync() {
 		? `Team: ${(coordinator.groups || []).join(", ") || "none"}`
 		: "Start by joining an existing team or creating one, then connect people and devices.";
 	meta.title = configured ? String(coordinator.coordinator_url || "").trim() : "";
+
+	const onlineBadge = document.getElementById("syncOnlineBadge");
+	if (onlineBadge) {
+		updateSyncOnlineBadge(onlineBadge, configured, String(coordinator?.presence_status || ""));
+	}
 
 	if (!configured) {
 		teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
