@@ -2,7 +2,7 @@
 
 import { h } from "preact";
 import * as api from "../../lib/api";
-import { clearFieldError, friendlyError, markFieldError } from "../../lib/form";
+import { friendlyError } from "../../lib/form";
 import { showGlobalNotice } from "../../lib/notice";
 import { isSyncRedactionEnabled, state } from "../../lib/state";
 import { clearSyncMount, renderIntoSyncMount } from "./components/render-root";
@@ -30,6 +30,7 @@ import {
 	openSyncInputDialog,
 } from "./sync-dialogs";
 import { setLoadSyncData as setLoadSyncDataImpl, teamSyncState } from "./team-sync/data/state";
+import { initTeamSyncEvents } from "./team-sync/events/init-team-sync-events";
 import { clearContent, pulseAttentionTarget, syncScrollBehavior } from "./team-sync/helpers/dom";
 import {
 	applySyncInviteReadinessState,
@@ -45,7 +46,6 @@ import {
 	resolveFriendlyDeviceName,
 	SYNC_TERMINOLOGY,
 	shouldShowCoordinatorReviewAction,
-	summarizeSyncRunResult,
 } from "./view-model";
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
@@ -602,156 +602,4 @@ export function renderTeamSync() {
 	);
 }
 
-/* ── Event wiring ────────────────────────────────────────── */
-
-export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: () => Promise<void>) {
-	renderAdminSetupDisclosure();
-	renderInvitePolicySelect();
-
-	const syncNowButton = document.getElementById("syncNowButton") as HTMLButtonElement | null;
-	const syncCreateInviteButton = document.getElementById(
-		"syncCreateInviteButton",
-	) as HTMLButtonElement | null;
-	const syncInviteGroup = document.getElementById("syncInviteGroup") as HTMLInputElement | null;
-	const syncInviteTtl = document.getElementById("syncInviteTtl") as HTMLInputElement | null;
-	const syncInviteOutput = document.getElementById(
-		"syncInviteOutput",
-	) as HTMLTextAreaElement | null;
-	const syncJoinButton = document.getElementById("syncJoinButton") as HTMLButtonElement | null;
-	const syncJoinInvite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement | null;
-
-	syncCreateInviteButton?.addEventListener("click", async () => {
-		if (!syncCreateInviteButton || !syncInviteGroup || !syncInviteTtl || !syncInviteOutput) return;
-		if (syncCreateInviteButton.disabled) return;
-		const groupName = syncInviteGroup.value.trim();
-		const ttlValue = Number(syncInviteTtl.value);
-		let valid = true;
-		if (!groupName) {
-			valid = markFieldError(syncInviteGroup, "Team name is required.");
-		} else {
-			clearFieldError(syncInviteGroup);
-		}
-		if (!ttlValue || ttlValue < 1) {
-			valid = markFieldError(syncInviteTtl, "Must be at least 1 hour.");
-		} else {
-			clearFieldError(syncInviteTtl);
-		}
-		if (!valid) return;
-		syncCreateInviteButton.disabled = true;
-		syncCreateInviteButton.textContent = "Creating\u2026";
-		try {
-			const result = await api.createCoordinatorInvite({
-				group_id: groupName,
-				policy: teamSyncState.invitePolicy,
-				ttl_hours: ttlValue || 24,
-			});
-			state.lastTeamInvite = result;
-			setInviteOutputVisibility();
-			syncInviteOutput.value = String(result.encoded || "");
-			syncInviteOutput.hidden = false;
-			syncInviteOutput.focus();
-			syncInviteOutput.select();
-			const warnings = Array.isArray(result.warnings) ? result.warnings : [];
-			showGlobalNotice(
-				warnings.length
-					? `Invite created. Copy it above and review ${warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`}.`
-					: "Invite created. Copy the text above and share it with your teammate.",
-				warnings.length ? "warning" : "success",
-			);
-		} catch (error) {
-			showGlobalNotice(
-				friendlyError(
-					error,
-					"Failed to create invite. Check the team name, invite lifetime, and coordinator reachability, then try again.",
-				),
-				"warning",
-			);
-			syncCreateInviteButton.textContent = "Retry";
-			syncCreateInviteButton.disabled = false;
-			return;
-		} finally {
-			if (syncCreateInviteButton.disabled) {
-				syncCreateInviteButton.disabled = false;
-				syncCreateInviteButton.textContent = "Create invite";
-			}
-		}
-	});
-
-	syncJoinButton?.addEventListener("click", async () => {
-		if (!syncJoinButton || !syncJoinInvite) return;
-		const inviteValue = syncJoinInvite.value.trim();
-		if (!inviteValue) {
-			markFieldError(syncJoinInvite, "Paste a team invite to join.");
-			return;
-		}
-		clearFieldError(syncJoinInvite);
-		syncJoinButton.disabled = true;
-		syncJoinButton.textContent = "Joining\u2026";
-		try {
-			const result = await api.importCoordinatorInvite(inviteValue);
-			state.lastTeamJoin = result;
-			let feedback: SyncActionFeedback = {
-				message:
-					result.status === "pending"
-						? "Join request sent. Waiting for admin approval."
-						: "Joined the team.",
-				tone: "success",
-			};
-			state.syncJoinFlowFeedback = feedback;
-			setJoinFeedbackVisibility();
-			syncJoinInvite.value = "";
-			try {
-				await loadSyncData();
-			} catch (error) {
-				feedback = {
-					message: friendlyError(error, "Joined the team, but this view has not refreshed yet."),
-					tone: "warning",
-				};
-				state.syncJoinFlowFeedback = feedback;
-				setJoinFeedbackVisibility();
-			}
-		} catch (error) {
-			state.syncJoinFlowFeedback = {
-				message: friendlyError(
-					error,
-					"Failed to import invite. Check that the invite is complete, current, and meant for this team, then try again.",
-				),
-				tone: "warning",
-			};
-			setJoinFeedbackVisibility();
-			syncJoinButton.textContent = "Retry";
-			syncJoinButton.disabled = false;
-			return;
-		} finally {
-			if (syncJoinButton.disabled) {
-				syncJoinButton.disabled = false;
-				syncJoinButton.textContent = "Join team";
-			}
-		}
-	});
-
-	syncNowButton?.addEventListener("click", async () => {
-		if (!syncNowButton) return;
-		syncNowButton.disabled = true;
-		syncNowButton.textContent = "Syncing\u2026";
-		try {
-			const result = await api.triggerSync();
-			const summary = summarizeSyncRunResult(result);
-			showGlobalNotice(summary.message, summary.warning ? "warning" : undefined);
-		} catch (error) {
-			showGlobalNotice(
-				friendlyError(
-					error,
-					"Failed to start sync. Retry once, then run codemem sync doctor if the problem keeps coming back.",
-				),
-				"warning",
-			);
-			syncNowButton.textContent = "Retry";
-			syncNowButton.disabled = false;
-			return;
-		}
-		syncNowButton.disabled = false;
-		syncNowButton.textContent = "Sync now";
-		refreshCallback();
-	});
-}
+export { initTeamSyncEvents };
