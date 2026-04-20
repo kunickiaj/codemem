@@ -7,11 +7,7 @@ import { DialogCloseButton } from "../components/primitives/dialog-close-button"
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import { RadixSelect } from "../components/primitives/radix-select";
 import { RadixSwitch } from "../components/primitives/radix-switch";
-import {
-	type RadixTabOption,
-	RadixTabs,
-	RadixTabsContent,
-} from "../components/primitives/radix-tabs";
+import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
 import { TextArea } from "../components/primitives/text-area";
 import { TextInput } from "../components/primitives/text-input";
 import * as api from "../lib/api";
@@ -29,171 +25,28 @@ let settingsShellMounted = false;
 let settingsProtectedKeys = new Set<string>();
 let settingsStartPolling: (() => void) | null = null;
 let settingsRefresh: (() => void) | null = null;
-const SETTINGS_ADVANCED_KEY = "codemem-settings-advanced";
+
+import {
+	DEFAULT_ANTHROPIC_MODEL,
+	DEFAULT_OPENAI_MODEL,
+	EMPTY_FORM_STATE,
+	INPUT_TO_CONFIG_KEY,
+	PROTECTED_VIEWER_CONFIG_KEYS,
+	SETTINGS_ADVANCED_KEY,
+	SETTINGS_TABS,
+} from "./settings/data/constants";
+import type {
+	SettingsController,
+	SettingsFormState,
+	SettingsHintProps,
+	SettingsRenderState,
+	SettingsSectionIntroProps,
+	SettingsTabId,
+	SettingsTooltipState,
+} from "./settings/data/types";
+
 let settingsShowAdvanced = loadAdvancedPreference();
-
-const DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini";
-const DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku";
-
-const SETTINGS_TABS: RadixTabOption[] = [
-	{ value: "observer", label: "Connection" },
-	{ value: "queue", label: "Processing" },
-	{ value: "sync", label: "Device Sync" },
-];
-
-type SettingsTabId = "observer" | "queue" | "sync";
-
-type SettingsFormState = {
-	claudeCommand: string;
-	observerProvider: string;
-	observerModel: string;
-	observerTierRoutingEnabled: boolean;
-	observerSimpleModel: string;
-	observerSimpleTemperature: string;
-	observerRichModel: string;
-	observerRichTemperature: string;
-	observerRichOpenAIUseResponses: boolean;
-	observerRichReasoningEffort: string;
-	observerRichReasoningSummary: string;
-	observerRichMaxOutputTokens: string;
-	observerRuntime: string;
-	observerAuthSource: string;
-	observerAuthFile: string;
-	observerAuthCommand: string;
-	observerAuthTimeoutMs: string;
-	observerAuthCacheTtlS: string;
-	observerHeaders: string;
-	observerMaxChars: string;
-	packObservationLimit: string;
-	packSessionLimit: string;
-	rawEventsSweeperIntervalS: string;
-	syncEnabled: boolean;
-	syncHost: string;
-	syncPort: string;
-	syncInterval: string;
-	syncMdns: boolean;
-	syncCoordinatorUrl: string;
-	syncCoordinatorGroup: string;
-	syncCoordinatorTimeout: string;
-	syncCoordinatorPresenceTtl: string;
-};
-
-type SettingsRenderState = {
-	effectiveText: string;
-	isSaving: boolean;
-	observerStatus: unknown;
-	overridesVisible: boolean;
-	pathText: string;
-	providers: string[];
-	statusText: string;
-	values: SettingsFormState;
-};
-
-type SettingsSectionIntroProps = {
-	title: string;
-	detail: string;
-};
-
-type SettingsHintProps = {
-	children: ComponentChildren;
-	hidden?: boolean;
-};
-
-type SettingsTooltipState = {
-	anchor: HTMLElement | null;
-	content: string;
-	visible: boolean;
-};
-
-type SettingsController = {
-	hideTooltip: () => void;
-	setActiveTab: (tab: SettingsTabId) => void;
-	setDirty: (dirty: boolean) => void;
-	setOpen: (open: boolean) => void;
-	setRenderState: (patch: Partial<SettingsRenderState>) => void;
-	setShowAdvanced: (show: boolean) => void;
-};
-
 let settingsController: SettingsController | null = null;
-
-const INPUT_TO_CONFIG_KEY: Record<keyof SettingsFormState, string> = {
-	claudeCommand: "claude_command",
-	observerProvider: "observer_provider",
-	observerModel: "observer_model",
-	observerTierRoutingEnabled: "observer_tier_routing_enabled",
-	observerSimpleModel: "observer_simple_model",
-	observerSimpleTemperature: "observer_simple_temperature",
-	observerRichModel: "observer_rich_model",
-	observerRichTemperature: "observer_rich_temperature",
-	observerRichOpenAIUseResponses: "observer_rich_openai_use_responses",
-	observerRichReasoningEffort: "observer_rich_reasoning_effort",
-	observerRichReasoningSummary: "observer_rich_reasoning_summary",
-	observerRichMaxOutputTokens: "observer_rich_max_output_tokens",
-	observerRuntime: "observer_runtime",
-	observerAuthSource: "observer_auth_source",
-	observerAuthFile: "observer_auth_file",
-	observerAuthCommand: "observer_auth_command",
-	observerAuthTimeoutMs: "observer_auth_timeout_ms",
-	observerAuthCacheTtlS: "observer_auth_cache_ttl_s",
-	observerHeaders: "observer_headers",
-	observerMaxChars: "observer_max_chars",
-	packObservationLimit: "pack_observation_limit",
-	packSessionLimit: "pack_session_limit",
-	rawEventsSweeperIntervalS: "raw_events_sweeper_interval_s",
-	syncEnabled: "sync_enabled",
-	syncHost: "sync_host",
-	syncPort: "sync_port",
-	syncInterval: "sync_interval_s",
-	syncMdns: "sync_mdns",
-	syncCoordinatorUrl: "sync_coordinator_url",
-	syncCoordinatorGroup: "sync_coordinator_group",
-	syncCoordinatorTimeout: "sync_coordinator_timeout_s",
-	syncCoordinatorPresenceTtl: "sync_coordinator_presence_ttl_s",
-};
-
-const PROTECTED_VIEWER_CONFIG_KEYS = new Set([
-	"claude_command",
-	"observer_base_url",
-	"observer_auth_file",
-	"observer_auth_command",
-	"observer_headers",
-	"sync_coordinator_url",
-]);
-
-const EMPTY_FORM_STATE: SettingsFormState = {
-	claudeCommand: "",
-	observerProvider: "",
-	observerModel: "",
-	observerTierRoutingEnabled: false,
-	observerSimpleModel: "",
-	observerSimpleTemperature: "",
-	observerRichModel: "",
-	observerRichTemperature: "",
-	observerRichOpenAIUseResponses: false,
-	observerRichReasoningEffort: "",
-	observerRichReasoningSummary: "",
-	observerRichMaxOutputTokens: "",
-	observerRuntime: "api_http",
-	observerAuthSource: "auto",
-	observerAuthFile: "",
-	observerAuthCommand: "",
-	observerAuthTimeoutMs: "",
-	observerAuthCacheTtlS: "",
-	observerHeaders: "",
-	observerMaxChars: "",
-	packObservationLimit: "",
-	packSessionLimit: "",
-	rawEventsSweeperIntervalS: "",
-	syncEnabled: false,
-	syncHost: "",
-	syncPort: "",
-	syncInterval: "",
-	syncMdns: false,
-	syncCoordinatorUrl: "",
-	syncCoordinatorGroup: "",
-	syncCoordinatorTimeout: "",
-	syncCoordinatorPresenceTtl: "",
-};
 
 let settingsRenderState: SettingsRenderState = {
 	effectiveText: "",
