@@ -5,50 +5,17 @@ import { RadixDialog } from "../../components/primitives/radix-dialog";
 import { RadixRadioGroup } from "../../components/primitives/radix-radio-group";
 import { RadixSelect } from "../../components/primitives/radix-select";
 import { TextInput } from "../../components/primitives/text-input";
+import type {
+	ConfirmDialogRequest,
+	DialogTone,
+	DuplicatePersonDialogRequest,
+	DuplicatePersonDialogResult,
+	InputDialogRequest,
+	SyncDialogRequest,
+	SyncDialogResult,
+} from "./sync-dialogs/types";
 
-type DialogTone = "default" | "danger";
-
-type ConfirmDialogRequest = {
-	kind: "confirm";
-	autoFocusAction?: "cancel" | "confirm";
-	cancelLabel?: string;
-	confirmLabel?: string;
-	description: string;
-	tone?: DialogTone;
-	title: string;
-};
-
-type InputDialogRequest = {
-	kind: "input";
-	cancelLabel?: string;
-	confirmLabel?: string;
-	description: string;
-	initialValue?: string;
-	placeholder?: string;
-	title: string;
-	validate?: (value: string) => string | null;
-};
-
-export type DuplicatePersonActorOption = {
-	actorId: string;
-	isLocal?: boolean;
-	label: string;
-};
-
-type DuplicatePersonDialogResult =
-	| { action: "cancel" }
-	| { action: "different-people" }
-	| { action: "merge"; primaryActorId: string; secondaryActorId: string };
-
-type DuplicatePersonDialogRequest = {
-	actors: DuplicatePersonActorOption[];
-	kind: "duplicate-person";
-	summary: string;
-	title: string;
-};
-
-type SyncDialogRequest = ConfirmDialogRequest | InputDialogRequest | DuplicatePersonDialogRequest;
-type SyncDialogResult = boolean | string | null | DuplicatePersonDialogResult;
+export type { DuplicatePersonActorOption } from "./sync-dialogs/types";
 
 let dialogMount: HTMLElement | null = null;
 let currentRequest: SyncDialogRequest | null = null;
