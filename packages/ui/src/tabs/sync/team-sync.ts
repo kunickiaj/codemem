@@ -34,6 +34,7 @@ import {
 	openSyncConfirmDialog,
 	openSyncInputDialog,
 } from "./sync-dialogs";
+import { setLoadSyncData as setLoadSyncDataImpl, teamSyncState } from "./team-sync/data/state";
 import {
 	deriveCoordinatorApprovalSummary,
 	resolveFriendlyDeviceName,
@@ -47,8 +48,6 @@ const INVITE_POLICY_OPTIONS: RadixSelectOption[] = [
 	{ value: "auto_admit", label: "Auto-admit" },
 	{ value: "approval_required", label: "Approval required" },
 ];
-
-let invitePolicyValue: "auto_admit" | "approval_required" = "auto_admit";
 
 function applySyncInviteReadinessState() {
 	const syncCreateInviteButton = document.getElementById(
@@ -165,13 +164,13 @@ function renderInvitePolicySelect() {
 			itemClassName: "sync-radix-select-item",
 			onValueChange: (value) => {
 				const nextValue = value === "approval_required" ? "approval_required" : "auto_admit";
-				if (nextValue === invitePolicyValue) return;
-				invitePolicyValue = nextValue;
+				if (nextValue === teamSyncState.invitePolicy) return;
+				teamSyncState.invitePolicy = nextValue;
 				renderInvitePolicySelect();
 			},
 			options: INVITE_POLICY_OPTIONS,
 			triggerClassName: "sync-radix-select-trigger sync-actor-select",
-			value: invitePolicyValue,
+			value: teamSyncState.invitePolicy,
 			viewportClassName: "sync-radix-select-viewport",
 		}),
 	);
@@ -230,10 +229,7 @@ export function renderSyncSharingReview() {
 /* ── Team sync renderer ──────────────────────────────────── */
 
 // loadSyncData is set by the index module after both are loaded.
-let _loadSyncData: () => Promise<void> = async () => {};
-export function setLoadSyncData(fn: () => Promise<void>) {
-	_loadSyncData = fn;
-}
+export const setLoadSyncData = setLoadSyncDataImpl;
 
 export function renderTeamSync() {
 	const meta = document.getElementById("syncTeamMeta");
@@ -333,7 +329,7 @@ export function renderTeamSync() {
 		if (result.action === "different-people") {
 			saveDuplicatePersonDecision(actorIds, "different-people");
 			showGlobalNotice("Okay. I will keep these people separate on this device.");
-			await _loadSyncData();
+			await teamSyncState.loadSyncData();
 			return;
 		}
 		if (result.action !== "merge") return;
@@ -354,10 +350,10 @@ export function renderTeamSync() {
 			showGlobalNotice(
 				`Combined duplicate people into ${String(primary.display_name || primary.actor_id)}.`,
 			);
-			await _loadSyncData();
+			await teamSyncState.loadSyncData();
 		} catch (error) {
 			try {
-				await _loadSyncData();
+				await teamSyncState.loadSyncData();
 			} catch {}
 			showGlobalNotice(friendlyError(error, "Failed to combine these people."), "warning");
 		}
@@ -675,7 +671,7 @@ export function renderTeamSync() {
 						tone: "success",
 					} satisfies SyncActionFeedback;
 					state.syncDiscoveredFeedback = feedback;
-					await _loadSyncData();
+					await teamSyncState.loadSyncData();
 					return feedback;
 				} catch (error) {
 					return {
@@ -740,7 +736,7 @@ export function renderTeamSync() {
 					}
 					state.syncDiscoveredFeedback = feedback;
 					try {
-						await _loadSyncData();
+						await teamSyncState.loadSyncData();
 					} catch (error) {
 						feedback = {
 							message: friendlyError(
@@ -809,7 +805,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		try {
 			const result = await api.createCoordinatorInvite({
 				group_id: groupName,
-				policy: invitePolicyValue,
+				policy: teamSyncState.invitePolicy,
 				ttl_hours: ttlValue || 24,
 			});
 			state.lastTeamInvite = result;
