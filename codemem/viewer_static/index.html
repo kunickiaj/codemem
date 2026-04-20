@@ -730,6 +730,13 @@
         gap: var(--sp-3);
         margin-bottom: var(--sp-3);
       }
+      .section-header-title {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        flex-wrap: wrap;
+        min-width: 0;
+      }
 
       .section-header h2 { margin-bottom: 0; }
 
@@ -1502,6 +1509,41 @@
       .pill-success { background: var(--green-bg, #16a34a22); color: var(--green-text, #16a34a); }
       .pill-warning { background: var(--yellow-bg, #ca8a0422); color: var(--yellow-text, #ca8a04); }
       .pill-error { background: var(--red-bg, #dc262622); color: var(--red-text, #dc2626); }
+
+      /* Sync tab top-of-card online badge.
+         Subtle-wash treatment matches trust badges + kind chips + segmented
+         toggle active state. Handoff README §E mentioned "filled-mint pill"
+         but the reference ui_kit ships the subtle-wash variant — keeping it
+         in-family here for visual consistency. */
+      .sync-online-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 10px;
+        border-radius: var(--radius-pill);
+        background: var(--accent-subtle);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        transition: background 140ms ease, color 140ms ease;
+      }
+      .sync-online-badge::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 24%, transparent);
+      }
+      .sync-online-badge.sync-online-offline {
+        background: var(--accent-warm-subtle);
+        color: var(--accent-warm);
+      }
+      .sync-online-badge.sync-online-error {
+        background: rgba(255, 122, 80, 0.16);
+        color: var(--status-attention);
+      }
 
       .match {
         padding: 0 2px;
@@ -2970,7 +3012,10 @@
       <!-- 1. Needs attention + team setup/status -->
       <div class="card" id="syncTeamCard">
         <div class="section-header">
-          <h2>Team sync</h2>
+          <div class="section-header-title">
+            <h2>Team sync</h2>
+            <span class="sync-online-badge" id="syncOnlineBadge" hidden role="status" aria-live="polite"></span>
+          </div>
           <div class="section-actions">
             <button class="settings-button" id="syncNowButton">Sync now</button>
           </div>
