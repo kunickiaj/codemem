@@ -12,7 +12,11 @@ export {
 	summarizeSyncRunResult,
 } from "./view-model/coordinator-approval";
 export { deviceNeedsFriendlyName, resolveFriendlyDeviceName } from "./view-model/device-names";
-export { derivePeerTrustSummary, derivePeerUiStatus } from "./view-model/peer-status";
+export {
+	derivePeerDirection,
+	derivePeerTrustSummary,
+	derivePeerUiStatus,
+} from "./view-model/peer-status";
 export {
 	deriveDuplicatePeople,
 	deriveVisiblePeopleActors,
@@ -21,7 +25,9 @@ export { deriveSyncViewModel } from "./view-model/sync-view-model";
 export {
 	type ActorLike,
 	type DiscoveredDeviceLike,
+	type PeerDirection,
 	type PeerLike,
+	type PeerRecentOps,
 	SYNC_TERMINOLOGY,
 	type UiCoordinatorApprovalState,
 	type UiCoordinatorApprovalSummary,
