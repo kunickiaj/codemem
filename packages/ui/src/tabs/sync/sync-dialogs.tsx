@@ -5,61 +5,36 @@ import { RadixDialog } from "../../components/primitives/radix-dialog";
 import { RadixRadioGroup } from "../../components/primitives/radix-radio-group";
 import { RadixSelect } from "../../components/primitives/radix-select";
 import { TextInput } from "../../components/primitives/text-input";
+import {
+	dialogToneClassName,
+	ensureDialogAvailable,
+	fallbackResult,
+	getCurrentRequest,
+	isHostRequestSetter,
+	resolveCurrentDialog,
+	setHostRequestSetter,
+	setRequest,
+	setResolveDialog,
+} from "./sync-dialogs/internal";
 import type {
 	ConfirmDialogRequest,
-	DialogTone,
 	DuplicatePersonDialogRequest,
 	DuplicatePersonDialogResult,
 	InputDialogRequest,
 	SyncDialogRequest,
-	SyncDialogResult,
 } from "./sync-dialogs/types";
 
 export type { DuplicatePersonActorOption } from "./sync-dialogs/types";
 
 let dialogMount: HTMLElement | null = null;
-let currentRequest: SyncDialogRequest | null = null;
-let resolveDialog: ((value: SyncDialogResult) => void) | null = null;
-let setHostRequest: ((request: SyncDialogRequest | null) => void) | null = null;
-
-function fallbackResult(request: SyncDialogRequest | null): SyncDialogResult {
-	if (!request) return null;
-	if (request.kind === "confirm") return false;
-	if (request.kind === "input") return null;
-	return { action: "cancel" };
-}
-
-function ensureDialogAvailable(requestKind: SyncDialogRequest["kind"]): boolean {
-	if (!currentRequest || !resolveDialog) return true;
-	console.warn(
-		`Ignored sync ${requestKind} dialog request because another sync dialog is already open.`,
-	);
-	return false;
-}
-
-function setRequest(nextRequest: SyncDialogRequest | null) {
-	currentRequest = nextRequest;
-	setHostRequest?.(nextRequest);
-}
-
-function resolveCurrentDialog(value: SyncDialogResult) {
-	const resolver = resolveDialog;
-	resolveDialog = null;
-	setRequest(null);
-	resolver?.(value);
-}
-
-function dialogToneClassName(tone: DialogTone | undefined) {
-	return tone === "danger" ? "sync-dialog-confirm danger" : "sync-dialog-confirm";
-}
 
 function SyncDialogHost() {
-	const [request, setDialogState] = useState<SyncDialogRequest | null>(currentRequest);
+	const [request, setDialogState] = useState<SyncDialogRequest | null>(getCurrentRequest());
 
 	useEffect(() => {
-		setHostRequest = setDialogState;
+		setHostRequestSetter(setDialogState);
 		return () => {
-			if (setHostRequest === setDialogState) setHostRequest = null;
+			if (isHostRequestSetter(setDialogState)) setHostRequestSetter(null);
 		};
 	}, []);
 
@@ -394,7 +369,7 @@ export function openSyncConfirmDialog(
 	ensureSyncDialogHost();
 	if (!ensureDialogAvailable("confirm")) return Promise.resolve(false);
 	return new Promise<boolean>((resolve) => {
-		resolveDialog = (value) => resolve(Boolean(value));
+		setResolveDialog((value) => resolve(Boolean(value)));
 		setRequest({ kind: "confirm", ...request });
 	});
 }
@@ -405,7 +380,7 @@ export function openSyncInputDialog(
 	ensureSyncDialogHost();
 	if (!ensureDialogAvailable("input")) return Promise.resolve(null);
 	return new Promise<string | null>((resolve) => {
-		resolveDialog = (value) => resolve(typeof value === "string" ? value : null);
+		setResolveDialog((value) => resolve(typeof value === "string" ? value : null));
 		setRequest({ kind: "input", ...request });
 	});
 }
@@ -420,8 +395,9 @@ export function openDuplicatePersonDialog(
 		);
 	}
 	return new Promise<DuplicatePersonDialogResult>((resolve) => {
-		resolveDialog = (value) =>
-			resolve((value as DuplicatePersonDialogResult) || { action: "cancel" });
+		setResolveDialog((value) =>
+			resolve((value as DuplicatePersonDialogResult) || { action: "cancel" }),
+		);
 		setRequest({ kind: "duplicate-person", ...request });
 	});
 }
