@@ -8,27 +8,12 @@ import * as api from "../lib/api";
 import { copyToClipboard } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
+import {
+	ADMIN_TARGET_GROUP_KEY,
+	type AdminSection,
+	coordinatorAdminState,
+} from "./coordinator-admin/data/state";
 import { openSyncConfirmDialog } from "./sync/sync-dialogs";
-
-type AdminSection = "groups" | "invites" | "join-requests" | "devices";
-
-let activeSection: AdminSection = "groups";
-let inviteGroup = "";
-let inviteTtlHours = "24";
-let invitePolicy: "auto_admit" | "approval_required" = "auto_admit";
-let invitePending = false;
-let showArchivedGroups = false;
-let createGroupId = "";
-let createGroupDisplayName = "";
-let groupActionPendingId = "";
-let groupActionPendingKind: "create" | "rename" | "archive" | "unarchive" | "" = "";
-let joinReviewPendingId = "";
-let joinReviewPendingAction: "approve" | "deny" | "" = "";
-let deviceActionPendingId = "";
-let deviceActionPendingKind: "rename" | "disable" | "enable" | "remove" | "" = "";
-const groupRenameDrafts = new Map<string, string>();
-const deviceRenameDrafts = new Map<string, string>();
-const ADMIN_TARGET_GROUP_KEY = "codemem-coordinator-admin-target-group";
 
 function adminTargetStorageKey(coordinatorUrl: string | null | undefined): string {
 	return `${ADMIN_TARGET_GROUP_KEY}:${String(coordinatorUrl || "").trim()}`;
@@ -81,9 +66,9 @@ function reconcileGroupRenameDrafts() {
 	for (const group of availableCoordinatorGroups()) {
 		next.set(group.group_id, group.display_name || group.group_id);
 	}
-	groupRenameDrafts.clear();
+	coordinatorAdminState.groupRenameDrafts.clear();
 	for (const [groupId, name] of next.entries()) {
-		groupRenameDrafts.set(groupId, name);
+		coordinatorAdminState.groupRenameDrafts.set(groupId, name);
 	}
 }
 
@@ -118,9 +103,9 @@ function reconcileDeviceRenameDrafts() {
 		if (!deviceId) continue;
 		next.set(deviceId, String(item.display_name || ""));
 	}
-	deviceRenameDrafts.clear();
+	coordinatorAdminState.deviceRenameDrafts.clear();
 	for (const [deviceId, name] of next.entries()) {
-		deviceRenameDrafts.set(deviceId, name);
+		coordinatorAdminState.deviceRenameDrafts.set(deviceId, name);
 	}
 }
 
@@ -160,27 +145,27 @@ function coordinatorAdminSummary() {
 }
 
 async function createGroupFromAdminPanel() {
-	if (groupActionPendingKind) return;
-	const groupId = createGroupId.trim();
+	if (coordinatorAdminState.groupActionPendingKind) return;
+	const groupId = coordinatorAdminState.createGroupId.trim();
 	if (!groupId) {
 		showGlobalNotice("Enter a group id before creating a group.", "warning");
 		return;
 	}
-	groupActionPendingKind = "create";
+	coordinatorAdminState.groupActionPendingKind = "create";
 	renderShell();
 	try {
 		await api.createCoordinatorAdminGroup({
 			group_id: groupId,
-			display_name: createGroupDisplayName.trim() || null,
+			display_name: coordinatorAdminState.createGroupDisplayName.trim() || null,
 		});
-		createGroupId = "";
-		createGroupDisplayName = "";
+		coordinatorAdminState.createGroupId = "";
+		coordinatorAdminState.createGroupDisplayName = "";
 		showGlobalNotice("Group created.", "success");
 		await loadCoordinatorAdminData();
 	} catch (error) {
 		showGlobalNotice(error instanceof Error ? error.message : "Failed to create group.", "warning");
 	} finally {
-		groupActionPendingKind = "";
+		coordinatorAdminState.groupActionPendingKind = "";
 		renderShell();
 	}
 }
@@ -190,7 +175,7 @@ async function runGroupAction(
 	displayName: string,
 	kind: "rename" | "archive" | "unarchive",
 ) {
-	if (!groupId || groupActionPendingId) return;
+	if (!groupId || coordinatorAdminState.groupActionPendingId) return;
 	if (
 		(kind === "archive" || kind === "unarchive") &&
 		!(await openSyncConfirmDialog({
@@ -206,8 +191,8 @@ async function runGroupAction(
 	) {
 		return;
 	}
-	groupActionPendingId = groupId;
-	groupActionPendingKind = kind;
+	coordinatorAdminState.groupActionPendingId = groupId;
+	coordinatorAdminState.groupActionPendingKind = kind;
 	renderShell();
 	try {
 		if (kind === "rename") {
@@ -229,18 +214,18 @@ async function runGroupAction(
 			"warning",
 		);
 	} finally {
-		groupActionPendingId = "";
-		groupActionPendingKind = "";
+		coordinatorAdminState.groupActionPendingId = "";
+		coordinatorAdminState.groupActionPendingKind = "";
 		renderShell();
 	}
 }
 
 async function createInviteFromAdminPanel() {
-	if (invitePending) return;
+	if (coordinatorAdminState.invitePending) return;
 	const status = state.lastCoordinatorAdminStatus;
 	const defaultGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
-	const groupId = inviteGroup.trim() || defaultGroup;
-	const ttlHours = Number(inviteTtlHours);
+	const groupId = coordinatorAdminState.inviteGroup.trim() || defaultGroup;
+	const ttlHours = Number(coordinatorAdminState.inviteTtlHours);
 	if (!groupId) {
 		showGlobalNotice("Choose a coordinator group before creating an invite.", "warning");
 		return;
@@ -249,16 +234,16 @@ async function createInviteFromAdminPanel() {
 		showGlobalNotice("Invite lifetime must be at least 1 hour.", "warning");
 		return;
 	}
-	invitePending = true;
+	coordinatorAdminState.invitePending = true;
 	renderShell();
 	try {
 		const result = await api.createCoordinatorInvite({
 			group_id: groupId,
-			policy: invitePolicy,
+			policy: coordinatorAdminState.invitePolicy,
 			ttl_hours: ttlHours,
 		});
 		state.lastTeamInvite = result;
-		inviteGroup = groupId;
+		coordinatorAdminState.inviteGroup = groupId;
 		const warnings = Array.isArray(result.warnings) ? result.warnings : [];
 		showGlobalNotice(
 			warnings.length
@@ -270,7 +255,7 @@ async function createInviteFromAdminPanel() {
 		const message = error instanceof Error ? error.message : "Failed to create invite.";
 		showGlobalNotice(message, "warning");
 	} finally {
-		invitePending = false;
+		coordinatorAdminState.invitePending = false;
 		renderShell();
 	}
 }
@@ -278,7 +263,7 @@ async function createInviteFromAdminPanel() {
 function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>) {
 	const status = state.lastCoordinatorAdminStatus;
 	const activeGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
-	const effectiveGroup = inviteGroup.trim() || activeGroup;
+	const effectiveGroup = coordinatorAdminState.inviteGroup.trim() || activeGroup;
 	const output = String(state.lastTeamInvite?.encoded || "").trim();
 	const warnings = Array.isArray(state.lastTeamInvite?.warnings)
 		? state.lastTeamInvite?.warnings
@@ -305,11 +290,13 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 					class: "peer-scope-input",
 					disabled: summary.readiness !== "ready",
 					onInput: (event) => {
-						inviteGroup = String((event.currentTarget as HTMLInputElement).value || "");
+						coordinatorAdminState.inviteGroup = String(
+							(event.currentTarget as HTMLInputElement).value || "",
+						);
 					},
 					placeholder: activeGroup || "team-alpha",
 					type: "text",
-					value: inviteGroup,
+					value: coordinatorAdminState.inviteGroup,
 				}),
 			),
 			h(
@@ -323,7 +310,8 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 					id: "coordinatorAdminInvitePolicy",
 					itemClassName: "sync-radix-select-item",
 					onValueChange: (value) => {
-						invitePolicy = value === "approval_required" ? "approval_required" : "auto_admit";
+						coordinatorAdminState.invitePolicy =
+							value === "approval_required" ? "approval_required" : "auto_admit";
 						renderShell();
 					},
 					options: [
@@ -331,7 +319,7 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 						{ value: "approval_required", label: "Approval required" },
 					],
 					triggerClassName: "sync-radix-select-trigger sync-actor-select",
-					value: invitePolicy,
+					value: coordinatorAdminState.invitePolicy,
 					viewportClassName: "sync-radix-select-viewport",
 				}),
 			),
@@ -344,10 +332,12 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 					disabled: summary.readiness !== "ready",
 					min: "1",
 					onInput: (event) => {
-						inviteTtlHours = String((event.currentTarget as HTMLInputElement).value || "");
+						coordinatorAdminState.inviteTtlHours = String(
+							(event.currentTarget as HTMLInputElement).value || "",
+						);
 					},
 					type: "number",
-					value: inviteTtlHours,
+					value: coordinatorAdminState.inviteTtlHours,
 				}),
 			),
 		),
@@ -358,13 +348,13 @@ function renderInvitesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 				"button",
 				{
 					class: "settings-button",
-					disabled: summary.readiness !== "ready" || invitePending,
+					disabled: summary.readiness !== "ready" || coordinatorAdminState.invitePending,
 					onClick: () => {
 						void createInviteFromAdminPanel();
 					},
 					type: "button",
 				},
-				invitePending ? "Creating…" : "Create invite",
+				coordinatorAdminState.invitePending ? "Creating…" : "Create invite",
 			),
 			effectiveGroup ? h("span", { class: "peer-submeta" }, `Using group ${effectiveGroup}`) : null,
 		),
@@ -402,7 +392,7 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 	const groups = availableCoordinatorGroups();
 	const activeGroups = groups.filter((group) => !group.archived_at);
 	const archivedGroups = groups.filter((group) => group.archived_at);
-	const visibleGroups = showArchivedGroups ? groups : activeGroups;
+	const visibleGroups = coordinatorAdminState.showArchivedGroups ? groups : activeGroups;
 	const targetExists = selectedGroup
 		? groups.some((group) => group.group_id === selectedGroup)
 		: false;
@@ -438,13 +428,17 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 				h("span", null, "New group id"),
 				h(TextInput, {
 					class: "peer-scope-input",
-					disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
+					disabled:
+						summary.readiness !== "ready" ||
+						coordinatorAdminState.groupActionPendingKind === "create",
 					onInput: (event) => {
-						createGroupId = String((event.currentTarget as HTMLInputElement).value || "");
+						coordinatorAdminState.createGroupId = String(
+							(event.currentTarget as HTMLInputElement).value || "",
+						);
 					},
 					placeholder: "team-alpha",
 					type: "text",
-					value: createGroupId,
+					value: coordinatorAdminState.createGroupId,
 				}),
 			),
 			h(
@@ -453,13 +447,17 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 				h("span", null, "Display name"),
 				h(TextInput, {
 					class: "peer-scope-input",
-					disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
+					disabled:
+						summary.readiness !== "ready" ||
+						coordinatorAdminState.groupActionPendingKind === "create",
 					onInput: (event) => {
-						createGroupDisplayName = String((event.currentTarget as HTMLInputElement).value || "");
+						coordinatorAdminState.createGroupDisplayName = String(
+							(event.currentTarget as HTMLInputElement).value || "",
+						);
 					},
 					placeholder: "Team Alpha",
 					type: "text",
-					value: createGroupDisplayName,
+					value: coordinatorAdminState.createGroupDisplayName,
 				}),
 			),
 		),
@@ -473,11 +471,13 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 					"button",
 					{
 						class: "settings-button",
-						disabled: summary.readiness !== "ready" || groupActionPendingKind === "create",
+						disabled:
+							summary.readiness !== "ready" ||
+							coordinatorAdminState.groupActionPendingKind === "create",
 						onClick: () => void createGroupFromAdminPanel(),
 						type: "button",
 					},
-					groupActionPendingKind === "create" ? "Creating…" : "Create group",
+					coordinatorAdminState.groupActionPendingKind === "create" ? "Creating…" : "Create group",
 				),
 			),
 			h(
@@ -493,11 +493,11 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 					),
 					h(RadixSwitch, {
 						"aria-labelledby": "coordinatorAdminShowArchivedLabel",
-						checked: showArchivedGroups,
+						checked: coordinatorAdminState.showArchivedGroups,
 						className: "coordinator-admin-switch",
 						disabled: summary.readiness !== "ready",
 						onCheckedChange: (checked) => {
-							showArchivedGroups = checked;
+							coordinatorAdminState.showArchivedGroups = checked;
 							renderShell();
 						},
 						thumbClassName: "coordinator-admin-switch-thumb",
@@ -510,7 +510,7 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 					"div",
 					{ class: "peer-meta coordinator-admin-empty-state" },
 					summary.readiness === "ready"
-						? showArchivedGroups
+						? coordinatorAdminState.showArchivedGroups
 							? "No coordinator groups are available yet."
 							: "No active groups yet. Create one to get started."
 						: "Group browsing will appear here once setup is complete.",
@@ -520,10 +520,12 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 					{ class: "coordinator-admin-request-list" },
 					visibleGroups.map((group) => {
 						const selected = group.group_id === selectedGroup;
-						const pending = groupActionPendingId === group.group_id;
+						const pending = coordinatorAdminState.groupActionPendingId === group.group_id;
 						const archived = Boolean(group.archived_at);
 						const draftName =
-							groupRenameDrafts.get(group.group_id) ?? group.display_name ?? group.group_id;
+							coordinatorAdminState.groupRenameDrafts.get(group.group_id) ??
+							group.display_name ??
+							group.group_id;
 						return h(
 							"div",
 							{ class: "peer-card", key: group.group_id },
@@ -545,7 +547,7 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 									class: "peer-scope-input",
 									disabled: summary.readiness !== "ready" || pending,
 									onInput: (event) => {
-										groupRenameDrafts.set(
+										coordinatorAdminState.groupRenameDrafts.set(
 											group.group_id,
 											String((event.currentTarget as HTMLInputElement).value || ""),
 										);
@@ -577,7 +579,9 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 										onClick: () => void runGroupAction(group.group_id, draftName, "rename"),
 										type: "button",
 									},
-									pending && groupActionPendingKind === "rename" ? "Renaming…" : "Rename",
+									pending && coordinatorAdminState.groupActionPendingKind === "rename"
+										? "Renaming…"
+										: "Rename",
 								),
 								h(
 									"button",
@@ -592,7 +596,9 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 											),
 										type: "button",
 									},
-									pending && groupActionPendingKind === (archived ? "unarchive" : "archive")
+									pending &&
+										coordinatorAdminState.groupActionPendingKind ===
+											(archived ? "unarchive" : "archive")
 										? archived
 											? "Restoring…"
 											: "Archiving…"
@@ -608,9 +614,9 @@ function renderGroupsPanel(summary: ReturnType<typeof coordinatorAdminSummary>) 
 }
 
 async function reviewJoinRequestFromAdminPanel(requestId: string, action: "approve" | "deny") {
-	if (joinReviewPendingId) return;
-	joinReviewPendingId = requestId;
-	joinReviewPendingAction = action;
+	if (coordinatorAdminState.joinReviewPendingId) return;
+	coordinatorAdminState.joinReviewPendingId = requestId;
+	coordinatorAdminState.joinReviewPendingAction = action;
 	renderShell();
 	try {
 		await api.reviewCoordinatorAdminJoinRequest(requestId, action);
@@ -623,8 +629,8 @@ async function reviewJoinRequestFromAdminPanel(requestId: string, action: "appro
 		const message = error instanceof Error ? error.message : "Failed to review join request.";
 		showGlobalNotice(message, "warning");
 	} finally {
-		joinReviewPendingId = "";
-		joinReviewPendingAction = "";
+		coordinatorAdminState.joinReviewPendingId = "";
+		coordinatorAdminState.joinReviewPendingAction = "";
 		renderShell();
 	}
 }
@@ -659,7 +665,7 @@ function renderJoinRequestsPanel(summary: ReturnType<typeof coordinatorAdminSumm
 						const requestId = String(item.request_id || "").trim();
 						const deviceId = String(item.device_id || "unknown-device");
 						const displayName = String(item.display_name || deviceId);
-						const pending = joinReviewPendingId === requestId;
+						const pending = coordinatorAdminState.joinReviewPendingId === requestId;
 						return h(
 							"div",
 							{ class: "peer-card", key: requestId || deviceId },
@@ -675,7 +681,9 @@ function renderJoinRequestsPanel(summary: ReturnType<typeof coordinatorAdminSumm
 										onClick: () => void reviewJoinRequestFromAdminPanel(requestId, "approve"),
 										type: "button",
 									},
-									pending && joinReviewPendingAction === "approve" ? "Approving…" : "Approve",
+									pending && coordinatorAdminState.joinReviewPendingAction === "approve"
+										? "Approving…"
+										: "Approve",
 								),
 								h(
 									"button",
@@ -685,7 +693,9 @@ function renderJoinRequestsPanel(summary: ReturnType<typeof coordinatorAdminSumm
 										onClick: () => void reviewJoinRequestFromAdminPanel(requestId, "deny"),
 										type: "button",
 									},
-									pending && joinReviewPendingAction === "deny" ? "Denying…" : "Deny",
+									pending && coordinatorAdminState.joinReviewPendingAction === "deny"
+										? "Denying…"
+										: "Deny",
 								),
 							),
 						);
@@ -700,7 +710,7 @@ async function runDeviceAction(
 	displayName: string,
 	kind: "rename" | "disable" | "enable" | "remove",
 ) {
-	if (!deviceId || deviceActionPendingId) return;
+	if (!deviceId || coordinatorAdminState.deviceActionPendingId) return;
 	if (
 		(kind === "disable" || kind === "remove") &&
 		!(await openSyncConfirmDialog({
@@ -716,12 +726,12 @@ async function runDeviceAction(
 	) {
 		return;
 	}
-	deviceActionPendingId = deviceId;
-	deviceActionPendingKind = kind;
+	coordinatorAdminState.deviceActionPendingId = deviceId;
+	coordinatorAdminState.deviceActionPendingKind = kind;
 	renderShell();
 	try {
 		if (kind === "rename") {
-			const nextName = String(deviceRenameDrafts.get(deviceId) || "").trim();
+			const nextName = String(coordinatorAdminState.deviceRenameDrafts.get(deviceId) || "").trim();
 			if (!nextName) {
 				showGlobalNotice("Enter a device name before renaming it.", "warning");
 				return;
@@ -746,8 +756,8 @@ async function runDeviceAction(
 		const message = error instanceof Error ? error.message : `Failed to ${kind} device.`;
 		showGlobalNotice(message, "warning");
 	} finally {
-		deviceActionPendingId = "";
-		deviceActionPendingKind = "";
+		coordinatorAdminState.deviceActionPendingId = "";
+		coordinatorAdminState.deviceActionPendingKind = "";
 		renderShell();
 	}
 }
@@ -784,8 +794,10 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 							item.group_id || state.lastCoordinatorAdminStatus?.active_group || "",
 						).trim();
 						const displayName = String(item.display_name || deviceId || "Unnamed device");
-						const pending = deviceActionPendingId === deviceId;
-						const draft = deviceRenameDrafts.get(deviceId) ?? String(item.display_name || "");
+						const pending = coordinatorAdminState.deviceActionPendingId === deviceId;
+						const draft =
+							coordinatorAdminState.deviceRenameDrafts.get(deviceId) ??
+							String(item.display_name || "");
 						const enabled = item.enabled !== false && item.enabled !== 0;
 						return h(
 							"div",
@@ -805,7 +817,7 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 										class: "peer-scope-input",
 										disabled: summary.readiness !== "ready" || pending,
 										onInput: (event) => {
-											deviceRenameDrafts.set(
+											coordinatorAdminState.deviceRenameDrafts.set(
 												deviceId,
 												String((event.currentTarget as HTMLInputElement).value || ""),
 											);
@@ -826,7 +838,9 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "rename"),
 										type: "button",
 									},
-									pending && deviceActionPendingKind === "rename" ? "Renaming…" : "Rename",
+									pending && coordinatorAdminState.deviceActionPendingKind === "rename"
+										? "Renaming…"
+										: "Rename",
 								),
 								enabled
 									? h(
@@ -838,7 +852,9 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 													void runDeviceAction(deviceId, groupId, displayName, "disable"),
 												type: "button",
 											},
-											pending && deviceActionPendingKind === "disable" ? "Disabling…" : "Disable",
+											pending && coordinatorAdminState.deviceActionPendingKind === "disable"
+												? "Disabling…"
+												: "Disable",
 										)
 									: h(
 											"button",
@@ -849,7 +865,9 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 													void runDeviceAction(deviceId, groupId, displayName, "enable"),
 												type: "button",
 											},
-											pending && deviceActionPendingKind === "enable" ? "Enabling…" : "Enable",
+											pending && coordinatorAdminState.deviceActionPendingKind === "enable"
+												? "Enabling…"
+												: "Enable",
 										),
 								h(
 									"button",
@@ -859,7 +877,9 @@ function renderDevicesPanel(summary: ReturnType<typeof coordinatorAdminSummary>)
 										onClick: () => void runDeviceAction(deviceId, groupId, displayName, "remove"),
 										type: "button",
 									},
-									pending && deviceActionPendingKind === "remove" ? "Removing…" : "Remove",
+									pending && coordinatorAdminState.deviceActionPendingKind === "remove"
+										? "Removing…"
+										: "Remove",
 								),
 							),
 						);
@@ -901,12 +921,12 @@ function renderShell() {
 				? "The selected admin target group is archived. Restore it or switch groups before creating invites."
 				: "";
 	if (
-		(activeSection === "invites" && !invitesEnabled) ||
-		(activeSection === "groups" && !groupsEnabled) ||
-		(activeSection === "join-requests" && !joinRequestsEnabled) ||
-		(activeSection === "devices" && !devicesEnabled)
+		(coordinatorAdminState.activeSection === "invites" && !invitesEnabled) ||
+		(coordinatorAdminState.activeSection === "groups" && !groupsEnabled) ||
+		(coordinatorAdminState.activeSection === "join-requests" && !joinRequestsEnabled) ||
+		(coordinatorAdminState.activeSection === "devices" && !devicesEnabled)
 	) {
-		activeSection = summary.readiness === "ready" ? "groups" : "invites";
+		coordinatorAdminState.activeSection = summary.readiness === "ready" ? "groups" : "invites";
 	}
 
 	render(
@@ -969,7 +989,7 @@ function renderShell() {
 						ariaLabel: "Coordinator admin sections",
 						listClassName: "coordinator-admin-tabs-list",
 						onValueChange: (value) => {
-							activeSection = (value as AdminSection) || "groups";
+							coordinatorAdminState.activeSection = (value as AdminSection) || "groups";
 							renderShell();
 						},
 						tabs: [
@@ -979,7 +999,7 @@ function renderShell() {
 							{ value: "devices", label: "Devices", disabled: !devicesEnabled },
 						],
 						triggerClassName: "coordinator-admin-tab-trigger",
-						value: activeSection,
+						value: coordinatorAdminState.activeSection,
 					},
 					renderGroupsPanel(summary),
 					renderInvitesPanel(summary),
@@ -1013,7 +1033,7 @@ export async function loadCoordinatorAdminData() {
 		state.lastCoordinatorAdminStatus = null;
 		state.lastCoordinatorAdminJoinRequests = [];
 		state.lastCoordinatorAdminDevices = [];
-		deviceRenameDrafts.clear();
+		coordinatorAdminState.deviceRenameDrafts.clear();
 		renderShell();
 		return;
 	}
@@ -1021,7 +1041,9 @@ export async function loadCoordinatorAdminData() {
 	resolveAdminTargetGroup();
 	if (state.lastCoordinatorAdminStatus?.readiness === "ready") {
 		try {
-			const groupsPayload = (await api.loadCoordinatorAdminGroupsFiltered(showArchivedGroups)) as {
+			const groupsPayload = (await api.loadCoordinatorAdminGroupsFiltered(
+				coordinatorAdminState.showArchivedGroups,
+			)) as {
 				items?: typeof state.lastCoordinatorAdminGroups;
 			};
 			state.lastCoordinatorAdminGroups = Array.isArray(groupsPayload?.items)
@@ -1031,7 +1053,7 @@ export async function loadCoordinatorAdminData() {
 			resolveAdminTargetGroup();
 		} catch {
 			state.lastCoordinatorAdminGroups = [];
-			groupRenameDrafts.clear();
+			coordinatorAdminState.groupRenameDrafts.clear();
 		}
 		const targetGroup = currentAdminTargetGroup();
 		try {
@@ -1055,14 +1077,14 @@ export async function loadCoordinatorAdminData() {
 			reconcileDeviceRenameDrafts();
 		} catch {
 			state.lastCoordinatorAdminDevices = [];
-			deviceRenameDrafts.clear();
+			coordinatorAdminState.deviceRenameDrafts.clear();
 		}
 	} else {
 		state.lastCoordinatorAdminGroups = [];
-		groupRenameDrafts.clear();
+		coordinatorAdminState.groupRenameDrafts.clear();
 		state.lastCoordinatorAdminJoinRequests = [];
 		state.lastCoordinatorAdminDevices = [];
-		deviceRenameDrafts.clear();
+		coordinatorAdminState.deviceRenameDrafts.clear();
 	}
 	renderShell();
 }
