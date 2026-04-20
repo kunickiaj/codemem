@@ -15,7 +15,20 @@ import {
 } from "../helpers";
 import { PeerScopeCollapsible } from "../peer-scope-collapsible";
 import { openSyncConfirmDialog } from "../sync-dialogs";
-import { derivePeerTrustSummary, type PeerLike } from "../view-model";
+import {
+	derivePeerDirection,
+	derivePeerTrustSummary,
+	type PeerDirection,
+	type PeerLike,
+} from "../view-model";
+
+const DIRECTION_GLYPH: Record<PeerDirection, { glyph: string; label: string } | null> = {
+	bidirectional: { glyph: "↕", label: "Bidirectional sync in the last 24 hours" },
+	publishing: { glyph: "↑", label: "Publishing only in the last 24 hours" },
+	subscribed: { glyph: "↓", label: "Subscribed only in the last 24 hours" },
+	none: null,
+};
+
 import { renderIntoSyncMount } from "./render-root";
 import { SyncEmptyState } from "./sync-empty-state";
 import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
@@ -99,6 +112,7 @@ function SyncPeerCard({
 	const destructiveLabel = peer.name || peerId || displayName;
 	const pendingScopeReview = isPeerScopeReviewPending(peerId);
 	const trustSummary = derivePeerTrustSummary(peer);
+	const directionHint = DIRECTION_GLYPH[derivePeerDirection(peer)];
 	const peerStatus: SyncPeerStatus = peer.status || {};
 	const scope = peer.project_scope || {};
 	const includeList = listText(scope.include);
@@ -331,14 +345,14 @@ function SyncPeerCard({
 			<div className="peer-title">
 				<div>
 					<strong title={peerId || undefined}>{displayName}</strong>
-					{trustSummary.state === "mutual-trust" ? (
+					{directionHint ? (
 						<span
-							aria-label="Bidirectional sync"
+							aria-label={directionHint.label}
 							className="peer-direction"
 							role="img"
-							title="Bidirectional sync"
+							title={directionHint.label}
 						>
-							↕
+							{directionHint.glyph}
 						</span>
 					) : null}
 					<div className="peer-meta">
