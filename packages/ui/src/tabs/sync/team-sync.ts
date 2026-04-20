@@ -1,13 +1,11 @@
 /* Team sync card — coordinator onboarding, invites, join requests. */
 
 import { h } from "preact";
-import { RadixSelect, type RadixSelectOption } from "../../components/primitives/radix-select";
 import * as api from "../../lib/api";
 import { clearFieldError, friendlyError, markFieldError } from "../../lib/form";
 import { showGlobalNotice } from "../../lib/notice";
 import { isSyncRedactionEnabled, setFeedScopeFilter, state } from "../../lib/state";
 import { clearSyncMount, renderIntoSyncMount } from "./components/render-root";
-import { renderTeamSetupDisclosure } from "./components/sync-disclosure";
 import type { SyncActionFeedback } from "./components/sync-inline-feedback";
 import { SyncInviteJoinPanels } from "./components/sync-invite-join-panels";
 import { SyncSharingReview, type SyncSharingReviewItem } from "./components/sync-sharing-review";
@@ -18,14 +16,12 @@ import {
 	type TeamSyncStatusSummary,
 } from "./components/team-sync-panel";
 import {
-	adminSetupExpanded,
 	clearDuplicatePersonDecision,
 	hideSkeleton,
 	isPeerScopeReviewPending,
 	redactAddress,
 	requestPeerScopeReview,
 	saveDuplicatePersonDecision,
-	setAdminSetupExpanded,
 	setTeamInvitePanelOpen,
 	teamInvitePanelOpen,
 } from "./helpers";
@@ -37,6 +33,14 @@ import {
 import { setLoadSyncData as setLoadSyncDataImpl, teamSyncState } from "./team-sync/data/state";
 import { clearContent, pulseAttentionTarget, syncScrollBehavior } from "./team-sync/helpers/dom";
 import {
+	applySyncInviteReadinessState,
+	ensureJoinPanelInSetupSection,
+	renderAdminSetupDisclosure,
+	renderInvitePolicySelect,
+	setInviteOutputVisibility,
+	setJoinFeedbackVisibility,
+} from "./team-sync/helpers/invite-panel-dom";
+import {
 	deriveCoordinatorApprovalSummary,
 	resolveFriendlyDeviceName,
 	SYNC_TERMINOLOGY,
@@ -45,115 +49,6 @@ import {
 } from "./view-model";
 
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
-const INVITE_POLICY_OPTIONS: RadixSelectOption[] = [
-	{ value: "auto_admit", label: "Auto-admit" },
-	{ value: "approval_required", label: "Approval required" },
-];
-
-function applySyncInviteReadinessState() {
-	const syncCreateInviteButton = document.getElementById(
-		"syncCreateInviteButton",
-	) as HTMLButtonElement | null;
-	const hint = document.getElementById("syncInviteAdminHint") as HTMLParagraphElement | null;
-	if (!syncCreateInviteButton || !hint) return;
-	const readiness = state.lastCoordinatorAdminStatus?.readiness;
-	const activeGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
-	if (readiness === "ready") {
-		syncCreateInviteButton.disabled = false;
-		hint.hidden = false;
-		hint.textContent = activeGroup
-			? `Remote coordinator admin is ready for ${activeGroup}. Advanced admin tools now live in Coordinator Admin.`
-			: "Remote coordinator admin is ready. Advanced admin tools now live in Coordinator Admin.";
-		return;
-	}
-	const message =
-		readiness === "partial"
-			? "Finish coordinator admin setup before creating remote invites. Use Coordinator Admin to check what is missing."
-			: "Configure a coordinator URL, group, and admin secret before creating remote invites. Use Coordinator Admin to finish setup.";
-	syncCreateInviteButton.disabled = true;
-	hint.hidden = false;
-	hint.textContent = message;
-}
-
-function renderAdminSetupDisclosure() {
-	const mount = document.getElementById("syncAdminDisclosureMount") as HTMLElement | null;
-	if (!mount) return;
-	renderTeamSetupDisclosure(mount, {
-		open: adminSetupExpanded,
-		onOpenChange: (open) => {
-			setAdminSetupExpanded(open);
-			renderAdminSetupDisclosure();
-			renderInvitePolicySelect();
-			setInviteOutputVisibility();
-		},
-	});
-}
-
-/* ── DOM placement helpers ───────────────────────────────── */
-
-function ensureInvitePanelInAdminSection() {
-	// Team setup disclosure now renders in-place through Radix collapsible.
-}
-
-function ensureJoinPanelInSetupSection() {
-	const joinPanel = document.getElementById("syncJoinPanel");
-	const joinSection = document.getElementById("syncJoinSection");
-	if (!joinPanel || !joinSection) return;
-	if (joinPanel.parentElement !== joinSection) joinSection.appendChild(joinPanel);
-}
-
-function setInviteOutputVisibility() {
-	const syncInviteOutput = document.getElementById(
-		"syncInviteOutput",
-	) as HTMLTextAreaElement | null;
-	const syncInviteWarnings = document.getElementById("syncInviteWarnings") as HTMLDivElement | null;
-	if (!syncInviteOutput) return;
-	const encoded = String(state.lastTeamInvite?.encoded || "").trim();
-	syncInviteOutput.value = encoded;
-	syncInviteOutput.hidden = !encoded;
-	if (syncInviteWarnings) {
-		const warnings = Array.isArray(state.lastTeamInvite?.warnings)
-			? state.lastTeamInvite.warnings
-			: [];
-		syncInviteWarnings.textContent = warnings.join(" · ");
-		syncInviteWarnings.hidden = warnings.length === 0;
-	}
-}
-
-function setJoinFeedbackVisibility() {
-	const syncJoinFeedback = document.getElementById("syncJoinFeedback") as HTMLDivElement | null;
-	if (!syncJoinFeedback) return;
-	const feedback = state.syncJoinFlowFeedback;
-	syncJoinFeedback.textContent = feedback?.message || "";
-	syncJoinFeedback.hidden = !feedback?.message;
-	syncJoinFeedback.setAttribute("role", feedback?.tone === "warning" ? "alert" : "status");
-	syncJoinFeedback.setAttribute("aria-live", feedback?.tone === "warning" ? "assertive" : "polite");
-	syncJoinFeedback.className = `peer-meta${feedback ? ` ${feedback.tone === "warning" ? "sync-inline-feedback warning" : "sync-inline-feedback success"}` : ""}`;
-}
-
-function renderInvitePolicySelect() {
-	const mount = document.getElementById("syncInvitePolicyMount") as HTMLElement | null;
-	if (!mount) return;
-	renderIntoSyncMount(
-		mount,
-		h(RadixSelect, {
-			ariaLabel: "Join policy",
-			contentClassName: "sync-radix-select-content sync-actor-select-content",
-			id: "syncInvitePolicy",
-			itemClassName: "sync-radix-select-item",
-			onValueChange: (value) => {
-				const nextValue = value === "approval_required" ? "approval_required" : "auto_admit";
-				if (nextValue === teamSyncState.invitePolicy) return;
-				teamSyncState.invitePolicy = nextValue;
-				renderInvitePolicySelect();
-			},
-			options: INVITE_POLICY_OPTIONS,
-			triggerClassName: "sync-radix-select-trigger sync-actor-select",
-			value: teamSyncState.invitePolicy,
-			viewportClassName: "sync-radix-select-viewport",
-		}),
-	);
-}
 
 function teardownTeamSyncRender(actions: HTMLElement | null, targets: Array<HTMLElement | null>) {
 	const mount = document.getElementById(TEAM_SYNC_ACTIONS_MOUNT_ID) as HTMLElement | null;
@@ -234,7 +129,6 @@ export function renderTeamSync() {
 	const discoveredList = document.getElementById("syncCoordinatorDiscoveredList");
 
 	hideSkeleton("syncTeamSkeleton");
-	ensureInvitePanelInAdminSection();
 	ensureJoinPanelInSetupSection();
 
 	const coordinator = state.lastSyncCoordinator;
