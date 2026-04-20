@@ -1,5 +1,10 @@
 /* Derived sync view-model helpers. Keep these pure so UX logic is testable. */
 
+import {
+	deriveCoordinatorApprovalSummary,
+	shouldShowCoordinatorReviewAction,
+	summarizeSyncRunResult,
+} from "./view-model/coordinator-approval";
 import { deviceNeedsFriendlyName, resolveFriendlyDeviceName } from "./view-model/device-names";
 import { cleanText, normalizeDisplayName } from "./view-model/internal";
 import { derivePeerTrustSummary, derivePeerUiStatus } from "./view-model/peer-status";
@@ -7,10 +12,8 @@ import type {
 	ActorLike,
 	DiscoveredDeviceLike,
 	PeerLike,
-	UiCoordinatorApprovalSummary,
 	UiDuplicatePersonCandidate,
 	UiSyncAttentionItem,
-	UiSyncRunResponse,
 	UiSyncViewModel,
 	VisiblePeopleResult,
 } from "./view-model/types";
@@ -33,10 +36,13 @@ export {
 	type VisiblePeopleResult,
 } from "./view-model/types";
 export {
+	deriveCoordinatorApprovalSummary,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	deviceNeedsFriendlyName,
 	resolveFriendlyDeviceName,
+	shouldShowCoordinatorReviewAction,
+	summarizeSyncRunResult,
 };
 
 interface MergedDevice {
@@ -50,95 +56,6 @@ interface MergedDevice {
 function isOfflineTeamDevice(device: MergedDevice): boolean {
 	if (!device.discovered?.stale) return false;
 	return device.peer ? derivePeerUiStatus(device.peer) !== "connected" : true;
-}
-
-export function deriveCoordinatorApprovalSummary(input: {
-	device: DiscoveredDeviceLike;
-	pairedLocally?: boolean;
-}): UiCoordinatorApprovalSummary {
-	if (input.device?.needs_local_approval) {
-		return {
-			state: "needs-your-approval",
-			badgeLabel: "Needs your approval",
-			description:
-				"Another device already approved this pairing. Approve it here to finish the connection on both sides.",
-			actionLabel: "Approve on this device",
-		};
-	}
-	if (input.device?.waiting_for_peer_approval) {
-		return {
-			state: "waiting-for-other-device",
-			badgeLabel: "Waiting on other device",
-			description:
-				"You already approved this pairing here. The other device still needs to approve this one before sync can work both ways.",
-			actionLabel: null,
-		};
-	}
-	return {
-		state: "none",
-		badgeLabel: null,
-		description: null,
-		actionLabel: null,
-	};
-}
-
-export function shouldShowCoordinatorReviewAction(input: {
-	device: DiscoveredDeviceLike;
-	pairedLocally?: boolean;
-	hasAmbiguousCoordinatorGroup?: boolean;
-}): boolean {
-	const approvalSummary = deriveCoordinatorApprovalSummary(input);
-	const deviceId = cleanText(input.device?.device_id);
-	const fingerprint = cleanText(input.device?.fingerprint);
-	if (!deviceId || !fingerprint) return false;
-	if (Boolean(input.device?.stale) || Boolean(input.hasAmbiguousCoordinatorGroup)) return false;
-	if (!input.pairedLocally) return true;
-	return approvalSummary.state === "needs-your-approval";
-}
-
-export function summarizeSyncRunResult(payload: UiSyncRunResponse): {
-	ok: boolean;
-	message: string;
-	warning: boolean;
-} {
-	const items = Array.isArray(payload?.items) ? payload.items : [];
-	if (!items.length) {
-		return { ok: true, message: "Sync pass completed with no eligible devices.", warning: false };
-	}
-	const failedItems = items.filter((item) => item && item.ok === false);
-	if (!failedItems.length) {
-		return {
-			ok: true,
-			message: `Sync pass finished for ${items.length} device${items.length === 1 ? "" : "s"}.`,
-			warning: false,
-		};
-	}
-	const unauthorizedFailures = failedItems.filter(
-		(item) =>
-			cleanText(item.error).toLowerCase().includes("401") &&
-			cleanText(item.error).toLowerCase().includes("unauthorized"),
-	);
-	if (unauthorizedFailures.length === failedItems.length) {
-		return {
-			ok: false,
-			message:
-				"This device no longer has two-way trust with the peer. Pair it again from the other device, or remove the stale local record if it should be gone.",
-			warning: true,
-		};
-	}
-	if (failedItems.length < items.length) {
-		return {
-			ok: false,
-			message: `${failedItems.length} of ${items.length} device sync attempts failed. Open the affected device cards for the specific errors.`,
-			warning: true,
-		};
-	}
-	const error = cleanText(failedItems[0]?.error);
-	return {
-		ok: false,
-		message: error || "Sync failed for at least one device.",
-		warning: true,
-	};
 }
 
 export function deriveDuplicatePeople(actors: ActorLike[]): UiDuplicatePersonCandidate[] {
