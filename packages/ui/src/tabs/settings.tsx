@@ -21,12 +21,7 @@ import {
 	protectedConfigHelp,
 } from "./settings/data/model-accessors";
 import { settingsState } from "./settings/data/state";
-import type {
-	SettingsFormState,
-	SettingsPanelProps,
-	SettingsRenderState,
-	SettingsTabId,
-} from "./settings/data/types";
+import type { SettingsPanelProps } from "./settings/data/types";
 import { mergeOverrideBaseline, toProviderList } from "./settings/data/value-helpers";
 
 const getObserverModelHint = (): string =>
@@ -40,29 +35,14 @@ const getObserverModelTooltip = (): string =>
 const getObserverModelDescription = (): string =>
 	getObserverModelDescriptionRaw(settingsState.renderState.values);
 
-function hideHelpTooltip() {
-	settingsState.controller?.hideTooltip();
-}
-
-function updateRenderState(patch: Partial<SettingsRenderState>) {
-	if (settingsState.controller) {
-		settingsState.controller.setRenderState(patch);
-		return;
-	}
-	settingsState.renderState = {
-		...settingsState.renderState,
-		...patch,
-	};
-}
-
-function updateFormState(patch: Partial<SettingsFormState>) {
-	updateRenderState({
-		values: {
-			...settingsState.renderState.values,
-			...patch,
-		},
-	});
-}
+import {
+	hideHelpTooltip,
+	onAdvancedToggle,
+	setDirty,
+	setSettingsTab,
+	updateFormState,
+	updateRenderState,
+} from "./settings/data/state-ops";
 
 function renderSettingsShell() {
 	const mount = $("settingsDialogMount");
@@ -150,17 +130,6 @@ function collectSettingsPayload(
 		baseline: settingsState.baseline,
 		allowUntouchedParseErrors: options.allowUntouchedParseErrors,
 	});
-}
-
-function setSettingsTab(tab: string) {
-	const nextTab = ["observer", "queue", "sync"].includes(tab) ? (tab as SettingsTabId) : "observer";
-	settingsState.activeTab = nextTab;
-	settingsState.controller?.setActiveTab(nextTab);
-}
-
-function setDirty(dirty: boolean, rerender = true) {
-	state.settingsDirty = dirty;
-	if (rerender) settingsState.controller?.setDirty(dirty);
 }
 
 export function openSettings(stopPolling: () => void) {
@@ -251,11 +220,6 @@ const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventH
 	updateFormState,
 	setDirty: (dirty) => setDirty(dirty),
 });
-
-function onAdvancedToggle(checked: boolean) {
-	settingsState.showAdvanced = checked;
-	settingsState.controller?.setShowAdvanced(checked);
-}
 
 const hiddenUnlessAdvanced = (): boolean => hiddenUnlessAdvancedRaw(settingsState.showAdvanced);
 
