@@ -1,7 +1,4 @@
 /* Narrative backfill for session_summary memories.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38).
  */
 
 import type { Database } from "../db.js";

@@ -1,8 +1,5 @@
 /* Raw-event relink — group/plan/apply helpers for canonicalizing
  * opencode session linkage.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38).
  */
 
 import { inArray, sql } from "drizzle-orm";

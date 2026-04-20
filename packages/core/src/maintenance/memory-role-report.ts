@@ -1,8 +1,5 @@
 /* Memory-role reporting — builds the role/mapping/probe report used by
  * the CLI's `bd memory role-report` and related tooling.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38).
  */
 
 import { getInjectionEvalScenarioByPrompt } from "../eval-scenarios.js";

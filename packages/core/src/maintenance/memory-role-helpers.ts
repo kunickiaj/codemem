@@ -1,9 +1,4 @@
-/* Memory-role probe scoring + helper utilities.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38). Consumed by
- * getMemoryRoleReport and compareMemoryRoleReports.
- */
+/* Memory-role probe scoring + helper utilities. */
 
 import { getInjectionEvalScenarioByPrompt } from "../eval-scenarios.js";
 import { getSummaryMetadata } from "../summary-memory.js";

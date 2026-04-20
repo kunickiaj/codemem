@@ -1,8 +1,4 @@
 /* Pure helper functions for the Feed tab — no rendering, no state mutation.
- *
- * Extracted verbatim from packages/ui/src/tabs/feed.ts as part of the
- * feed/ split (tracked under codemem-ug38). Each function below is
- * exported so feed.ts can import it; nothing else changed.
  */
 
 import { normalize } from "../../lib/format";

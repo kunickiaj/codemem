@@ -1,7 +1,4 @@
 /* Database init + vacuum — bootstrap schema, run relink, vacuum on demand.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38).
  */
 
 import { statSync } from "node:fs";

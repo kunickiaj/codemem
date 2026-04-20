@@ -1,7 +1,4 @@
 /* Reliability metrics + raw-events gate for the maintenance surface.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38).
  */
 
 import { and, eq, gte, inArray, sql } from "drizzle-orm";

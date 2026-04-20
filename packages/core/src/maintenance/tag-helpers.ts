@@ -1,9 +1,4 @@
-/* Tag-derivation helpers for the memory_items.tags_text backfill.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38). Pure — no db,
- * no side effects.
- */
+/* Tag-derivation helpers for the memory_items.tags_text backfill. */
 
 export function normalizeTag(value: string): string {
 	let normalized = value.trim().toLowerCase();
