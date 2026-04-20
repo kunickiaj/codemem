@@ -9,6 +9,7 @@ import { copyToClipboard } from "../lib/dom";
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { type AdminSection, coordinatorAdminState } from "./coordinator-admin/data/state";
+import { coordinatorAdminSummary } from "./coordinator-admin/data/summary";
 import {
 	availableCoordinatorGroups,
 	currentAdminTargetGroup,
@@ -19,41 +20,6 @@ import {
 	setAdminTargetGroup,
 } from "./coordinator-admin/data/target-group";
 import { openSyncConfirmDialog } from "./sync/sync-dialogs";
-
-function coordinatorAdminSummary() {
-	const status = state.lastCoordinatorAdminStatus;
-	if (!status) {
-		return {
-			readiness: "partial",
-			title: "Checking coordinator admin readiness…",
-			detail: "Loading local coordinator admin configuration from the viewer server.",
-		};
-	}
-	if (status.readiness === "ready") {
-		return {
-			readiness: "ready",
-			title: "Coordinator admin is ready",
-			detail:
-				"This viewer can use the local admin configuration to manage invites, join requests, and enrolled devices without exposing the admin secret to the browser.",
-		};
-	}
-	if (status.readiness === "partial") {
-		return {
-			readiness: "partial",
-			title: "Coordinator admin setup is incomplete",
-			detail:
-				status.has_admin_secret === false
-					? "Set a coordinator admin secret for the viewer server before using invite and device admin actions."
-					: "Finish configuring the coordinator target and group before using admin actions.",
-		};
-	}
-	return {
-		readiness: "not_configured",
-		title: "Coordinator admin is not configured",
-		detail:
-			"Set a coordinator URL, group, and admin secret locally to enable remote coordinator administration from this viewer.",
-	};
-}
 
 async function createGroupFromAdminPanel() {
 	if (coordinatorAdminState.groupActionPendingKind) return;
