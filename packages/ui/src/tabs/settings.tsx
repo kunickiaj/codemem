@@ -1,12 +1,11 @@
 /* Settings modal — observer config, sync settings. */
 
-import { type ComponentChildren, type JSX, render } from "preact";
+import { type JSX, render } from "preact";
 import { createPortal } from "preact/compat";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import { RadixSelect } from "../components/primitives/radix-select";
-import { RadixSwitch } from "../components/primitives/radix-switch";
 import { RadixTabs, RadixTabsContent } from "../components/primitives/radix-tabs";
 import { TextArea } from "../components/primitives/text-area";
 import { TextInput } from "../components/primitives/text-input";
@@ -35,9 +34,7 @@ import {
 import type {
 	SettingsController,
 	SettingsFormState,
-	SettingsHintProps,
 	SettingsRenderState,
-	SettingsSectionIntroProps,
 	SettingsTabId,
 	SettingsTooltipState,
 } from "./settings/data/types";
@@ -56,22 +53,8 @@ let settingsRenderState: SettingsRenderState = {
 	values: { ...EMPTY_FORM_STATE },
 };
 
-function SettingsSectionIntro({ detail, title }: SettingsSectionIntroProps) {
-	return (
-		<div className="settings-section-intro">
-			<div className="settings-section-intro-title">{title}</div>
-			<div className="small settings-section-intro-detail">{detail}</div>
-		</div>
-	);
-}
-
-function SettingsHint({ children, hidden = false }: SettingsHintProps) {
-	return (
-		<div className="settings-note" hidden={hidden}>
-			{children}
-		</div>
-	);
-}
+import { SettingsHint } from "./settings/components/SettingsHint";
+import { SettingsSectionIntro } from "./settings/components/SettingsSectionIntro";
 
 import {
 	asBooleanValue,
@@ -826,12 +809,6 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
 	}
 }
 
-import {
-	formatAuthMethod,
-	formatCredentialSources,
-	formatFailureTimestamp,
-} from "./settings/data/format";
-
 function renderObserverStatusBanner(status: unknown) {
 	updateRenderState({
 		observerStatus:
@@ -880,189 +857,23 @@ function onAdvancedToggle(checked: boolean) {
 	settingsController?.setShowAdvanced(checked);
 }
 
-type SettingsSwitchRowProps = {
-	checked: boolean;
-	disabled?: boolean;
-	hidden?: boolean;
-	id: string;
-	label: string;
-	onCheckedChange: (checked: boolean) => void;
-	className?: string;
-};
-
-function SettingsSwitchRow({
-	checked,
-	className,
-	disabled = false,
-	hidden = false,
-	id,
-	label,
-	onCheckedChange,
-}: SettingsSwitchRowProps) {
-	const labelId = `${id}Label`;
-	return (
-		<div
-			className={
-				className
-					? `field-checkbox settings-switch-row ${className}`
-					: "field-checkbox settings-switch-row"
-			}
-			hidden={hidden}
-		>
-			<label className="settings-switch-copy" htmlFor={id} id={labelId}>
-				{label}
-			</label>
-			<RadixSwitch
-				aria-labelledby={labelId}
-				checked={checked}
-				className="settings-switch"
-				disabled={disabled}
-				id={id}
-				onCheckedChange={onCheckedChange}
-				thumbClassName="settings-switch-thumb"
-			/>
-		</div>
-	);
-}
+import { SettingsSwitchRow } from "./settings/components/SettingsSwitchRow";
 
 function hiddenUnlessAdvanced(): boolean {
 	return !settingsShowAdvanced;
 }
 
-type ObserverStatusShape = {
-	active?: {
-		provider?: string;
-		model?: string;
-		auth?: {
-			method?: string;
-			token_present?: boolean;
-		};
-	} | null;
-	available_credentials?: Record<string, Record<string, boolean>>;
-	latest_failure?: {
-		error_message?: string;
-		observer_provider?: string;
-		observer_model?: string;
-		observer_runtime?: string;
-		updated_at?: string;
-		attempt_count?: number;
-		impact?: string;
-	} | null;
-};
+import {
+	ObserverStatusBanner as ObserverStatusBannerComponent,
+	type ObserverStatusShape,
+} from "./settings/components/ObserverStatusBanner";
 
 function ObserverStatusBanner() {
 	const status = settingsRenderState.observerStatus as ObserverStatusShape | null;
-	if (!status) {
-		return <div id="observerStatusBanner" className="observer-status-banner" hidden />;
-	}
-
-	const active = status.active;
-	const available = status.available_credentials || {};
-	const failure = status.latest_failure;
-	const credentialEntries = Object.entries(available).filter(
-		([, creds]) => creds && typeof creds === "object",
-	);
-
-	return (
-		<div id="observerStatusBanner" className="observer-status-banner">
-			{active ? (
-				<>
-					<div className="status-label">Active observer</div>
-					<div className="status-active">
-						{String(active.provider || "unknown")} → {String(active.model || "")} via{" "}
-						{formatAuthMethod(active.auth?.method || "none")}{" "}
-						<span className={active.auth?.token_present === true ? "cred-ok" : "cred-none"}>
-							{active.auth?.token_present === true ? "✓" : "✗"}
-						</span>
-					</div>
-				</>
-			) : (
-				<>
-					<div className="status-label">Observer status</div>
-					<div className="status-active">Not yet initialized (waiting for first session)</div>
-				</>
-			)}
-
-			{credentialEntries.length ? (
-				<>
-					<div className="status-label">Available credentials</div>
-					<div>
-						{credentialEntries.map(([provider, creds], index) => {
-							const normalizedCreds = creds as Record<string, boolean>;
-							const hasAny = Object.values(normalizedCreds).some(Boolean);
-							return (
-								<span key={provider} className="status-cred">
-									{index > 0 ? " · " : null}
-									<span className={hasAny ? "cred-ok" : "cred-none"}>{hasAny ? "✓" : "–"}</span>{" "}
-									{String(provider)}: {formatCredentialSources(normalizedCreds)}
-								</span>
-							);
-						})}
-					</div>
-				</>
-			) : null}
-
-			{failure && typeof failure === "object" ? (
-				<>
-					<div className="status-label">Latest processing issue</div>
-					<div className="status-issue">
-						<div className="status-issue-message">
-							{typeof failure.error_message === "string" && failure.error_message.trim()
-								? failure.error_message.trim()
-								: "Raw-event processing failed."}
-						</div>
-						<div className="status-issue-meta">
-							{[
-								[
-									typeof failure.observer_provider === "string"
-										? failure.observer_provider.trim()
-										: "",
-									typeof failure.observer_model === "string" && failure.observer_model.trim()
-										? `→ ${failure.observer_model.trim()}`
-										: "",
-									typeof failure.observer_runtime === "string" && failure.observer_runtime.trim()
-										? `(${failure.observer_runtime.trim()})`
-										: "",
-								]
-									.filter(Boolean)
-									.join(" ")
-									.replace(/\s+/g, " ")
-									.trim(),
-								`Last failure ${formatFailureTimestamp(failure.updated_at)}`,
-								typeof failure.attempt_count === "number" && Number.isFinite(failure.attempt_count)
-									? `Attempts ${failure.attempt_count}`
-									: "",
-							]
-								.filter(Boolean)
-								.join(" · ")}
-						</div>
-						{typeof failure.impact === "string" && failure.impact.trim() ? (
-							<div className="status-issue-impact">{failure.impact.trim()}</div>
-						) : null}
-					</div>
-				</>
-			) : null}
-		</div>
-	);
+	return <ObserverStatusBannerComponent status={status} />;
 }
 
-function Field({
-	children,
-	className = "field",
-	hidden = false,
-	id,
-}: {
-	children: ComponentChildren;
-	className?: string;
-	hidden?: boolean;
-	id?: string;
-}) {
-	return (
-		<div className={className} hidden={hidden} id={id}>
-			{children}
-		</div>
-	);
-}
+import { Field } from "./settings/components/Field";
 
 function SettingsDialogContent() {
 	const values = settingsRenderState.values;
