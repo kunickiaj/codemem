@@ -205,8 +205,8 @@ importers:
   packages/opencode-plugin:
     dependencies:
       '@opencode-ai/plugin':
-        specifier: 1.4.7
-        version: 1.4.7
+        specifier: 1.14.19
+        version: 1.14.19
 
   packages/ui:
     dependencies:
@@ -1438,19 +1438,19 @@ packages:
   '@napi-rs/wasm-runtime@1.1.1':
     resolution: {integrity: sha512-p64ah1M1ld8xjWv3qbvFwHiFVWrq1yFvV4f7w+mzaqiR4IlSgkqhcRdHwsGgomwzBH51sRY4NEowLxnaBjcW/A==}
 
-  '@opencode-ai/plugin@1.4.7':
-    resolution: {integrity: sha512-RbzMl7ILvQDHpZNvqzi6RCYaGcB3eBwNIMRZww467drLvMd1eOwr4/qAurrvYDsIIEctE6cKsrLuSGIKCW/Fxg==}
+  '@opencode-ai/plugin@1.14.19':
+    resolution: {integrity: sha512-g0C8Viocybmet7nBqJK/1xrQnacRS1f30VmqRTPScPmWz+4knIZzc2TEQp8+920sN8rB6BuoGwfBUVRXJmavhQ==}
     peerDependencies:
-      '@opentui/core': '>=0.1.99'
-      '@opentui/solid': '>=0.1.99'
+      '@opentui/core': '>=0.1.101'
+      '@opentui/solid': '>=0.1.101'
     peerDependenciesMeta:
       '@opentui/core':
         optional: true
       '@opentui/solid':
         optional: true
 
-  '@opencode-ai/sdk@1.4.7':
-    resolution: {integrity: sha512-onEtaooQyoDP5gTShQeQSf0Sd8V7949G9pPNyIyRXnVtFqyDIhUDLGtL/a/+EIW9x5s+Y6lDy/3oVoGMvQ0rQQ==}
+  '@opencode-ai/sdk@1.14.19':
+    resolution: {integrity: sha512-9sTGsi8/HlBBeaWfsUjdJ2yi/SqpRvqSld0IFXc3ldaPb1w1uIPvgCGzhlHYQtqatXxSaX5lTN7zpudMaE21aw==}
 
   '@oxc-project/types@0.122.0':
     resolution: {integrity: sha512-oLAl5kBpV4w69UtFZ9xqcmTi+GENWOcPF7FCrczTiBbmC0ibXxCwyvZGbO39rCVEuLGAZM84DH0pUIyyv/YJzA==}
@@ -2739,8 +2739,8 @@ packages:
     resolution: {integrity: sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==}
     engines: {node: '>= 18'}
 
-  fast-check@4.6.0:
-    resolution: {integrity: sha512-h7H6Dm0Fy+H4ciQYFxFjXnXkzR2kr9Fb22c0UBpHnm59K2zpr2t13aPTHlltFiNT6zuxp6HMPAVVvgur4BLdpA==}
+  fast-check@4.7.0:
+    resolution: {integrity: sha512-NsZRtqvSSoCP0HbNjUD+r1JH8zqZalyp6gLY9e7OYs7NK9b6AHOs2baBFeBG7bVNsuoukh89x2Yg3rPsul8ziQ==}
     engines: {node: '>=12.17.0'}
 
   fast-deep-equal@3.1.3:
@@ -3101,8 +3101,8 @@ packages:
     resolution: {integrity: sha512-P0efT1C9jIdVRefqjzOQ9Xml57zpOXnIuS+csaB4MdZbTdmGDLo8XhzBG1N7aO11gKDDkJvBLULeFTo46wwreA==}
     hasBin: true
 
-  msgpackr@1.11.9:
-    resolution: {integrity: sha512-FkoAAyyA6HM8wL882EcEyFZ9s7hVADSwG9xrVx3dxxNQAtgADTrJoEWivID82Iv1zWDsv/OtbrrcZAzGzOMdNw==}
+  msgpackr@1.11.10:
+    resolution: {integrity: sha512-iCZNq+HszvF+fC3anCm4nBmWEnbeIAfpDs6IStAEKhQ2YSgkjzVG2FF9XJqwwQh5bH3N9OUTUt4QwVN6MLMLtA==}
 
   multipasta@0.2.7:
     resolution: {integrity: sha512-KPA58d68KgGil15oDqXjkUBEBYc00XvbPj5/X+dyzeo/lWm9Nc25pQRlf1D+gv4OpK7NM0J1odrbu9JNNGvynA==}
@@ -4638,13 +4638,13 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
-  '@opencode-ai/plugin@1.4.7':
+  '@opencode-ai/plugin@1.14.19':
     dependencies:
-      '@opencode-ai/sdk': 1.4.7
+      '@opencode-ai/sdk': 1.14.19
       effect: 4.0.0-beta.48
       zod: 4.1.8
 
-  '@opencode-ai/sdk@1.4.7':
+  '@opencode-ai/sdk@1.14.19':
     dependencies:
       cross-spawn: 7.0.6
 
@@ -5575,11 +5575,11 @@ snapshots:
   effect@4.0.0-beta.48:
     dependencies:
       '@standard-schema/spec': 1.1.0
-      fast-check: 4.6.0
+      fast-check: 4.7.0
       find-my-way-ts: 0.1.6
       ini: 6.0.0
       kubernetes-types: 1.30.0
-      msgpackr: 1.11.9
+      msgpackr: 1.11.10
       multipasta: 0.2.7
       toml: 4.1.1
       uuid: 13.0.0
@@ -5793,7 +5793,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  fast-check@4.6.0:
+  fast-check@4.7.0:
     dependencies:
       pure-rand: 8.4.0
 
@@ -6122,7 +6122,7 @@ snapshots:
       '@msgpackr-extract/msgpackr-extract-win32-x64': 3.0.3
     optional: true
 
-  msgpackr@1.11.9:
+  msgpackr@1.11.10:
     optionalDependencies:
       msgpackr-extract: 3.0.3
 
