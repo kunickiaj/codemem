@@ -66,8 +66,6 @@ import {
 	protectedConfigHelp,
 } from "./settings/data/model-accessors";
 import {
-	hasOwn,
-	isEqualValue,
 	loadAdvancedPreference,
 	mergeOverrideBaseline,
 	persistAdvancedPreference,
@@ -412,6 +410,7 @@ export function renderConfigModal(payload: unknown) {
 }
 
 import { collectSettingsPayload as collectSettingsPayloadRaw } from "./settings/data/collect-payload";
+import { diffSettingsPayload } from "./settings/data/diff-payload";
 
 function collectSettingsPayload(
 	options: { allowUntouchedParseErrors?: boolean } = {},
@@ -472,17 +471,12 @@ export async function saveSettings(startPolling: () => void, refreshCallback: ()
 
 	try {
 		const current = collectSettingsPayload({ allowUntouchedParseErrors: true });
-		const changed: Record<string, unknown> = {};
-		Object.entries(current).forEach(([key, value]) => {
-			if (isProtectedConfigKey(key)) {
-				return;
-			}
-			if (hasOwn(settingsEnvOverrides, key) && !settingsTouchedKeys.has(key)) {
-				return;
-			}
-			if (!isEqualValue(value, settingsBaseline[key])) {
-				changed[key] = value;
-			}
+		const changed = diffSettingsPayload({
+			current,
+			baseline: settingsBaseline,
+			envOverrides: settingsEnvOverrides,
+			touchedKeys: settingsTouchedKeys,
+			isProtected: isProtectedConfigKey,
 		});
 		if (Object.keys(changed).length === 0) {
 			updateRenderState({ isSaving: false, statusText: "No unsaved changes" });
