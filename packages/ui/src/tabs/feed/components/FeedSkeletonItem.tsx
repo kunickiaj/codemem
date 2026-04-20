@@ -1,5 +1,3 @@
-/* Feed loading-state skeleton — placeholder cards shown while items load. */
-
 import { h } from "preact";
 
 export function FeedSkeletonItem({ index }: { index: number }) {

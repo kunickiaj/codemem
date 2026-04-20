@@ -1,79 +1,11 @@
-/* Feed tab view — top-level layout for controls row, inspector panel,
- * and the list of feed items. Receives state mutators + view-refresh
- * callbacks as props to avoid circular imports with feed.ts. */
-
 import { Fragment, h } from "preact";
 import { useState } from "preact/hooks";
-import { setFeedScopeFilter, setFeedTypeFilter, state } from "../../lib/state";
-import { FeedItemCard } from "./card";
-import { itemKey } from "./helpers";
-import { ContextInspectorPanel } from "./inspector";
-import { feedMetaText } from "./meta";
-import { FeedSkeletonItem } from "./skeleton";
-import { FeedToggle } from "./toggles";
-import type { FeedItem } from "./types";
-
-export interface FeedViewOps {
-	replaceFeedItem: (item: FeedItem) => void;
-	removeFeedItem: (memoryId: number) => void;
-	updateFeedView: (force?: boolean) => void;
-	loadFeedData: () => Promise<void>;
-	hasMorePages: () => boolean;
-}
-
-export function FeedList({
-	items,
-	loadingText,
-	ops,
-}: {
-	items: FeedItem[];
-	loadingText?: string;
-	ops: FeedViewOps;
-}) {
-	if (loadingText) {
-		return h(
-			"div",
-			{
-				className: "feed-skeleton",
-				role: "status",
-				"aria-label": loadingText,
-			},
-			[0, 1, 2, 3].map((i) => h(FeedSkeletonItem, { index: i, key: `skeleton-${i}` })),
-		);
-	}
-	if (!items.length) {
-		const hasFilters =
-			Boolean(state.feedQuery.trim()) ||
-			state.feedTypeFilter !== "all" ||
-			state.feedScopeFilter !== "all";
-		return h(
-			"div",
-			{ className: "small feed-empty-state" },
-			h("strong", null, hasFilters ? "No memories match the current filters." : "No memories yet."),
-			h(
-				"div",
-				null,
-				hasFilters
-					? "Try clearing filters, changing the scope, or using a broader search."
-					: "Memories and session summaries will appear here once codemem has something worth keeping.",
-			),
-		);
-	}
-	return h(
-		Fragment,
-		null,
-		items.map((item) =>
-			h(FeedItemCard, {
-				item,
-				key: itemKey(item),
-				onReplace: ops.replaceFeedItem,
-				onRemove: ops.removeFeedItem,
-				onViewRefresh: () => ops.updateFeedView(true),
-				onReload: ops.loadFeedData,
-			}),
-		),
-	);
-}
+import { setFeedScopeFilter, setFeedTypeFilter, state } from "../../../lib/state";
+import { feedMetaText } from "../data/meta";
+import type { FeedItem, FeedViewOps } from "../types";
+import { ContextInspectorPanel } from "./ContextInspectorPanel";
+import { FeedList } from "./FeedList";
+import { FeedToggle } from "./FeedToggle";
 
 export function FeedTabView({
 	items,

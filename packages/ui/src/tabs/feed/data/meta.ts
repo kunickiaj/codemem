@@ -1,6 +1,6 @@
 /* Feed summary-line text — shows counts, scope, filters, "scroll for more". */
 
-import { state } from "../../lib/state";
+import { state } from "../../../lib/state";
 import { feedScopeLabel } from "./helpers";
 
 export function feedMetaText(visibleCount: number, hasMorePages: boolean): string {

@@ -2,11 +2,11 @@
  * Reads the feed-tab globals from lib/state directly so callers can stay
  * declarative. */
 
-import { normalize, parseJsonArray } from "../../lib/format";
-import { state } from "../../lib/state";
+import { normalize, parseJsonArray } from "../../../lib/format";
+import { state } from "../../../lib/state";
+import type { FeedItem } from "../types";
 import { itemSignature, mergeMetadata } from "./helpers";
 import { isSummaryLikeItem } from "./summary-extract";
-import type { FeedItem } from "./types";
 
 export function filterByType(items: FeedItem[]): FeedItem[] {
 	if (state.feedTypeFilter === "observations")

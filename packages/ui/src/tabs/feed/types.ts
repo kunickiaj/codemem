@@ -55,3 +55,14 @@ export type ItemViewMode = "summary" | "facts" | "narrative";
 
 /** Summary payload attached to observations / session summaries. Open shape. */
 export type FeedSummary = Record<string, unknown>;
+
+/** State mutators + view-refresh callbacks passed down from feed.ts to
+ * the view components so they can drive updates without importing
+ * feed.ts's module state (which would be circular). */
+export interface FeedViewOps {
+	replaceFeedItem: (item: FeedItem) => void;
+	removeFeedItem: (memoryId: number) => void;
+	updateFeedView: (force?: boolean) => void;
+	loadFeedData: () => Promise<void>;
+	hasMorePages: () => boolean;
+}

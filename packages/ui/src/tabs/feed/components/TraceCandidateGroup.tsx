@@ -1,8 +1,5 @@
-/* Feed context-inspector trace candidate group — renders a labeled batch
- * of PackTraceCandidates for the inspector panel. */
-
 import { h } from "preact";
-import type * as api from "../../lib/api";
+import type * as api from "../../../lib/api";
 
 export function TraceCandidateGroup({
 	label,

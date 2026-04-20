@@ -1,9 +1,9 @@
 /* Feed body renderers — summary sections, facts lists, narrative blocks. */
 
 import { h } from "preact";
-import { toTitleLabel } from "../../lib/format";
+import { toTitleLabel } from "../../../lib/format";
+import type { FeedSummary } from "../types";
 import { renderMarkdownSafe } from "./sanitize";
-import type { FeedSummary } from "./types";
 
 export function renderSummarySections(summary: FeedSummary) {
 	const preferred = [
