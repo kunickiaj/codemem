@@ -1,5 +1,6 @@
 /* API fetch wrappers — thin layer over the viewer HTTP endpoints. */
 
+import { buildProjectParams, fetchJson, payloadError, readJsonPayload } from "./api/internal";
 import type {
 	AcceptDiscoveredPeerResult,
 	CoordinatorInviteResult,
@@ -22,18 +23,6 @@ export type {
 	SyncRunResponse,
 } from "./api/types";
 
-function payloadError(payload: unknown): string | undefined {
-	if (!payload || typeof payload !== "object") return undefined;
-	const maybeError = (payload as { error?: unknown }).error;
-	return typeof maybeError === "string" ? maybeError : undefined;
-}
-
-async function fetchJson<T = Record<string, unknown>>(url: string): Promise<T> {
-	const resp = await fetch(url);
-	if (!resp.ok) throw new Error(`${url}: ${resp.status} ${resp.statusText}`);
-	return resp.json() as Promise<T>;
-}
-
 export async function pingViewerReady(timeoutMs = 1200): Promise<void> {
 	const controller = new AbortController();
 	const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -45,17 +34,6 @@ export async function pingViewerReady(timeoutMs = 1200): Promise<void> {
 		if (!resp.ok) throw new Error(`/api/stats: ${resp.status} ${resp.statusText}`);
 	} finally {
 		window.clearTimeout(timeoutId);
-	}
-}
-
-async function readJsonPayload<T = Record<string, unknown>>(
-	resp: Response,
-): Promise<{ text: string; payload: T }> {
-	const text = await resp.text();
-	try {
-		return { text, payload: (text ? JSON.parse(text) : {}) as T };
-	} catch {
-		return { text, payload: {} as T };
 	}
 }
 
@@ -81,20 +59,6 @@ export async function loadRawEvents(project: string): Promise<unknown> {
 
 export async function loadMemories(project: string): Promise<PaginatedResponse> {
 	return loadMemoriesPage(project);
-}
-
-function buildProjectParams(
-	project: string,
-	limit?: number,
-	offset?: number,
-	scope?: string,
-): string {
-	const params = new URLSearchParams();
-	params.set("project", project || "");
-	if (typeof limit === "number") params.set("limit", String(limit));
-	if (typeof offset === "number") params.set("offset", String(offset));
-	if (scope) params.set("scope", scope);
-	return params.toString();
 }
 
 export async function loadMemoriesPage(
