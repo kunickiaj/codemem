@@ -1,7 +1,4 @@
 /* Tag-text backfill for memory_items.tags_text.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38).
  */
 
 import type { Database } from "../db.js";

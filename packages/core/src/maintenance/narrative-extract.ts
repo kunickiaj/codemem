@@ -1,9 +1,4 @@
-/* Narrative extraction from session-summary body text.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as part of
- * the maintenance/ split (tracked under codemem-ug38). Pure — no db,
- * no imports, no side effects.
- */
+/* Narrative extraction from session-summary body text. */
 
 export function extractNarrativeFromBody(bodyText: string): string | null {
 	// Match sections like "## Completed\n...\n\n## Learned\n..."

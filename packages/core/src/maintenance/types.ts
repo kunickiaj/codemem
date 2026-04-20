@@ -1,12 +1,4 @@
 /* Maintenance module shared types.
- *
- * Extracted verbatim from packages/core/src/maintenance.ts as the first
- * step of the maintenance/ split (tracked under codemem-ug38). Pure
- * interfaces + the MemoryRole string union — no runtime code, no
- * behavior change. Further exports (reliability metrics, tags-backfill,
- * low-signal, dedup, narrative, ai-structured) stay with their job
- * modules for now and will migrate alongside those functions in
- * follow-up sub-commits.
  */
 
 export interface RawEventStatusItem {

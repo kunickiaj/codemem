@@ -1,7 +1,5 @@
-/* Shared withDb helper for maintenance job modules — resolves the dbPath,
- * opens a connection, asserts the schema is ready, then runs the callback
- * with guaranteed cleanup. Extracted from maintenance.ts as part of the
- * maintenance/ split (tracked under codemem-ug38). */
+/* Shared withDb helper — resolves the dbPath, opens a connection, asserts
+ * the schema is ready, then runs the callback with guaranteed cleanup. */
 
 import { assertSchemaReady, connect, type Database, resolveDbPath } from "../db.js";
 
