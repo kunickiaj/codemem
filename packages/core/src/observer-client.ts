@@ -105,6 +105,7 @@ export interface ObserverConfig {
 	observerAuthTimeoutMs: number;
 	observerAuthCacheTtlS: number;
 	claudeCommand?: string[];
+	observerExplicitConfigKeys?: string[];
 }
 
 export interface ObserverResponse {
@@ -128,6 +129,141 @@ export interface ObserverStatus {
 	runtime: string;
 	auth: { source: string; type: string; hasToken: boolean };
 	lastError?: { code: string; message: string } | null;
+}
+
+interface ObserverConfigKeyMapping {
+	fileKey: string;
+	envKey: string;
+	normalizedKey: keyof ObserverConfig;
+}
+
+const OBSERVER_CONFIG_KEY_MAPPINGS: ObserverConfigKeyMapping[] = [
+	{
+		fileKey: "observer_tier_routing_enabled",
+		envKey: "CODEMEM_OBSERVER_TIER_ROUTING_ENABLED",
+		normalizedKey: "observerTierRoutingEnabled",
+	},
+	{
+		fileKey: "observer_provider",
+		envKey: "CODEMEM_OBSERVER_PROVIDER",
+		normalizedKey: "observerProvider",
+	},
+	{ fileKey: "observer_model", envKey: "CODEMEM_OBSERVER_MODEL", normalizedKey: "observerModel" },
+	{
+		fileKey: "observer_runtime",
+		envKey: "CODEMEM_OBSERVER_RUNTIME",
+		normalizedKey: "observerRuntime",
+	},
+	{
+		fileKey: "observer_simple_provider",
+		envKey: "CODEMEM_OBSERVER_SIMPLE_PROVIDER",
+		normalizedKey: "observerSimpleProvider",
+	},
+	{
+		fileKey: "observer_simple_model",
+		envKey: "CODEMEM_OBSERVER_SIMPLE_MODEL",
+		normalizedKey: "observerSimpleModel",
+	},
+	{
+		fileKey: "observer_simple_temperature",
+		envKey: "CODEMEM_OBSERVER_SIMPLE_TEMPERATURE",
+		normalizedKey: "observerSimpleTemperature",
+	},
+	{
+		fileKey: "observer_rich_provider",
+		envKey: "CODEMEM_OBSERVER_RICH_PROVIDER",
+		normalizedKey: "observerRichProvider",
+	},
+	{
+		fileKey: "observer_rich_model",
+		envKey: "CODEMEM_OBSERVER_RICH_MODEL",
+		normalizedKey: "observerRichModel",
+	},
+	{
+		fileKey: "observer_rich_temperature",
+		envKey: "CODEMEM_OBSERVER_RICH_TEMPERATURE",
+		normalizedKey: "observerRichTemperature",
+	},
+	{
+		fileKey: "observer_rich_openai_use_responses",
+		envKey: "CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES",
+		normalizedKey: "observerRichOpenAIUseResponses",
+	},
+	{
+		fileKey: "observer_rich_reasoning_effort",
+		envKey: "CODEMEM_OBSERVER_RICH_REASONING_EFFORT",
+		normalizedKey: "observerRichReasoningEffort",
+	},
+	{
+		fileKey: "observer_rich_reasoning_summary",
+		envKey: "CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
+		normalizedKey: "observerRichReasoningSummary",
+	},
+	{
+		fileKey: "observer_rich_max_output_tokens",
+		envKey: "CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
+		normalizedKey: "observerRichMaxOutputTokens",
+	},
+	{
+		fileKey: "observer_openai_use_responses",
+		envKey: "CODEMEM_OBSERVER_OPENAI_USE_RESPONSES",
+		normalizedKey: "observerOpenAIUseResponses",
+	},
+	{
+		fileKey: "observer_reasoning_effort",
+		envKey: "CODEMEM_OBSERVER_REASONING_EFFORT",
+		normalizedKey: "observerReasoningEffort",
+	},
+	{
+		fileKey: "observer_reasoning_summary",
+		envKey: "CODEMEM_OBSERVER_REASONING_SUMMARY",
+		normalizedKey: "observerReasoningSummary",
+	},
+	{
+		fileKey: "observer_max_output_tokens",
+		envKey: "CODEMEM_OBSERVER_MAX_OUTPUT_TOKENS",
+		normalizedKey: "observerMaxOutputTokens",
+	},
+];
+
+function collectExplicitObserverConfigKeys(
+	data: Record<string, unknown>,
+	env: NodeJS.ProcessEnv,
+): string[] {
+	const keys = new Set<string>();
+	for (const { fileKey, envKey, normalizedKey } of OBSERVER_CONFIG_KEY_MAPPINGS) {
+		if (fileKey in data || env[envKey] != null) keys.add(normalizedKey);
+	}
+	return [...keys];
+}
+
+function resolveExplicitObserverConfigKeys(
+	cfg: ObserverConfig,
+	configWasProvided: boolean,
+): Set<string> {
+	if (Array.isArray(cfg.observerExplicitConfigKeys)) {
+		return new Set(cfg.observerExplicitConfigKeys);
+	}
+	if (!configWasProvided) return new Set();
+	return new Set(
+		Object.entries(cfg)
+			.filter(([, value]) => value !== undefined)
+			.map(([key]) => key),
+	);
+}
+
+function supportsDefaultTierRouting(
+	provider: string,
+	runtime: string,
+	hasCustomBaseUrl: boolean,
+): boolean {
+	if (runtime !== "api_http") return false;
+	if (provider !== "openai" && provider !== "anthropic") return false;
+	// A custom base URL may point at an OpenAI-compatible gateway that only
+	// implements chat/completions. Rich-tier defaults turn Responses on, so we
+	// cannot assume capability-safety without an explicit user opt-in.
+	if (hasCustomBaseUrl) return false;
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +562,8 @@ export function loadObserverConfig(): ObserverConfig {
 	) {
 		cfg.observerRuntime = "claude_sidecar";
 	}
+
+	cfg.observerExplicitConfigKeys = collectExplicitObserverConfigKeys(data, process.env);
 
 	return cfg;
 }
@@ -892,9 +1030,13 @@ export class ObserverClient {
 	// Error tracking
 	private _lastErrorCode: string | null = null;
 	private _lastErrorMessage: string | null = null;
+	private readonly _observerExplicitConfigKeys: string[];
 
 	constructor(config?: ObserverConfig) {
+		const configWasProvided = config !== undefined;
 		const cfg = config ?? loadObserverConfig();
+		const explicitConfigKeys = resolveExplicitObserverConfigKeys(cfg, configWasProvided);
+		this._observerExplicitConfigKeys = [...explicitConfigKeys];
 
 		const provider = (cfg.observerProvider ?? "").toLowerCase();
 		const model = (cfg.observerModel ?? "").trim();
@@ -960,7 +1102,11 @@ export class ObserverClient {
 			typeof cfg.observerTemperature === "number" && Number.isFinite(cfg.observerTemperature)
 				? cfg.observerTemperature
 				: 0.2;
-		this.tierRoutingEnabled = cfg.observerTierRoutingEnabled === true;
+		const hasCustomBaseUrl =
+			typeof cfg.observerBaseUrl === "string" && cfg.observerBaseUrl.trim().length > 0;
+		this.tierRoutingEnabled = explicitConfigKeys.has("observerTierRoutingEnabled")
+			? cfg.observerTierRoutingEnabled === true
+			: supportsDefaultTierRouting(this.provider, this.runtime, hasCustomBaseUrl);
 		this.simpleProvider =
 			typeof cfg.observerSimpleProvider === "string" && cfg.observerSimpleProvider.trim()
 				? cfg.observerSimpleProvider.trim()
@@ -1077,6 +1223,7 @@ export class ObserverClient {
 			observerAuthTimeoutMs: this.authTimeoutMs,
 			observerAuthCacheTtlS: this.authCacheTtlS,
 			claudeCommand: [...this._claudeCommand],
+			observerExplicitConfigKeys: [...this._observerExplicitConfigKeys],
 		};
 	}
 
