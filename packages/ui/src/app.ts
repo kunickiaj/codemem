@@ -1,6 +1,6 @@
 /* Viewer UI entry point.
  *
- * Built to: codemem/viewer_static/app.js (served at /assets/app.js)
+ * Built to: packages/viewer-server/static/app.js (served at /assets/app.js)
  *
  * Orchestrates tab routing, polling, and delegates rendering to tab modules.
  */
