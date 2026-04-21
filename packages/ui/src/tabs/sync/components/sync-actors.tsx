@@ -173,6 +173,24 @@ function SyncActorRow({
 						</button>
 						<button
 							type="button"
+							className="settings-button danger"
+							disabled={renameBusy || mergeBusy}
+							onClick={async () => {
+								const confirmed = await openSyncConfirmDialog({
+									title: `Remove ${label}?`,
+									description:
+										"This deactivates the person and unassigns their devices. Existing memories keep their current attribution.",
+									confirmLabel: "Remove person",
+									cancelLabel: "Keep",
+									tone: "danger",
+								});
+								if (confirmed) await onDeactivate(actorId);
+							}}
+						>
+							Remove
+						</button>
+						<button
+							type="button"
 							className="settings-button"
 							disabled={renameBusy || mergeBusy}
 							onClick={() => setAdvancedOpen((open) => !open)}
@@ -182,7 +200,7 @@ function SyncActorRow({
 						{advancedOpen ? (
 							<>
 								<div className="peer-meta actor-merge-note">
-									Use these only when cleaning up duplicate people or removing an unused person.
+									Use this only when combining duplicate people into one.
 								</div>
 								<div className="actor-merge-controls">
 									<RadixSelect
@@ -207,24 +225,6 @@ function SyncActorRow({
 									</button>
 								</div>
 								<div className="peer-meta actor-merge-note">{mergeNote}</div>
-								<button
-									type="button"
-									className="settings-button"
-									disabled={renameBusy || mergeBusy}
-									onClick={async () => {
-										const confirmed = await openSyncConfirmDialog({
-											title: `Remove ${label}?`,
-											description:
-												"This deactivates the person and unassigns their devices. Existing memories keep their current attribution.",
-											confirmLabel: "Remove person",
-											cancelLabel: "Keep",
-											tone: "danger",
-										});
-										if (confirmed) await onDeactivate(actorId);
-									}}
-								>
-									Remove this person
-								</button>
 							</>
 						) : null}
 					</>
