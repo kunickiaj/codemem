@@ -1,7 +1,7 @@
 /* Sync tab orchestrator — re-exports public API and coordinates sub-modules. */
 
 import * as api from "../../lib/api";
-import { state } from "../../lib/state";
+import { isSyncRedactionEnabled, state } from "../../lib/state";
 import { renderHealthOverview } from "../health";
 import { ensureSyncRenderBoundary } from "./components/render-root";
 
@@ -113,15 +113,21 @@ export async function loadSyncData() {
 		const useCache = state.activeTab === "health";
 		let fetchedFreshSyncStatus = false;
 
+		// When the Advanced diagnostics "Redact" toggle is OFF the user is
+		// opting into raw diagnostics — pass includeDiagnostics=true so the
+		// server returns real addresses, pairing payload, and peer errors.
+		const includeDiagnostics = !isSyncRedactionEnabled();
 		let payload: SyncStatusResponseLike;
 		if (useCache) {
 			payload = readCachedSyncStatus(project);
 			if (!payload) {
-				payload = await api.loadSyncStatus(false, project, { includeJoinRequests: false });
+				payload = await api.loadSyncStatus(includeDiagnostics, project, {
+					includeJoinRequests: false,
+				});
 				fetchedFreshSyncStatus = true;
 			}
 		} else {
-			payload = await api.loadSyncStatus(false, project, { includeJoinRequests });
+			payload = await api.loadSyncStatus(includeDiagnostics, project, { includeJoinRequests });
 			fetchedFreshSyncStatus = true;
 		}
 
@@ -233,7 +239,7 @@ export function resetSyncLoadStateForTests() {
 
 export async function loadPairingData() {
 	try {
-		const payload = await api.loadPairing();
+		const payload = await api.loadPairing(!isSyncRedactionEnabled());
 		state.pairingPayloadRaw = payload || null;
 		renderPairing();
 	} catch {
