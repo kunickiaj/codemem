@@ -331,6 +331,16 @@ function SyncPeerCard({
 			<div className="peer-title">
 				<div>
 					<strong title={peerId || undefined}>{displayName}</strong>
+					{trustSummary.state === "mutual-trust" ? (
+						<span
+							aria-label="Bidirectional sync"
+							className="peer-direction"
+							role="img"
+							title="Bidirectional sync"
+						>
+							↕
+						</span>
+					) : null}
 					<div className="peer-meta">
 						<span className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}>
 							{trustSummary.badgeLabel}
