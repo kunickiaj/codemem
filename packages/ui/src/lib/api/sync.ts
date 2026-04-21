@@ -34,8 +34,9 @@ export async function loadSyncActors(): Promise<unknown> {
 	return fetchJson("/api/sync/actors");
 }
 
-export async function loadPairing(): Promise<unknown> {
-	return fetchJson("/api/sync/pairing?includeDiagnostics=1");
+export async function loadPairing(includeDiagnostics = false): Promise<unknown> {
+	const suffix = includeDiagnostics ? "?includeDiagnostics=1" : "";
+	return fetchJson(`/api/sync/pairing${suffix}`);
 }
 
 export async function updatePeerScope(

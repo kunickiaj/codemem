@@ -423,7 +423,7 @@ export function renderTeamSync() {
 		detail:
 			presenceStatus === "posted"
 				? actionableCount > 0
-					? `Team ${teamLabel}. Start with the highest-priority item below, then review people and devices.`
+					? `Team ${teamLabel}. Work through Needs attention above, then review people and devices.`
 					: `Team ${teamLabel}. Nothing urgent is blocking sync right now.`
 				: presenceStatus === "not_enrolled"
 					? `Team ${teamLabel}. Enroll this device first, then return here to review the rest of the team.`

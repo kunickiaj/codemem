@@ -93,6 +93,13 @@ export interface ActorLike {
 	is_local?: boolean;
 }
 
+export type PeerRecentOps = {
+	in?: number;
+	out?: number;
+};
+
+export type PeerDirection = "bidirectional" | "publishing" | "subscribed" | "none";
+
 export interface PeerLike {
 	peer_device_id?: string;
 	name?: string;
@@ -101,6 +108,7 @@ export interface PeerLike {
 	fingerprint?: string;
 	actor_id?: string;
 	status?: SyncPeerStatusLike;
+	recent_ops?: PeerRecentOps;
 }
 
 export interface DiscoveredDeviceLike {
