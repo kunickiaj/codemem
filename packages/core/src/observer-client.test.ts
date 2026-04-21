@@ -26,6 +26,10 @@ describe("loadObserverConfig", () => {
 		"CODEMEM_OBSERVER_RICH_REASONING_EFFORT",
 		"CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
 		"CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
+		"CODEMEM_OBSERVER_OPENAI_USE_RESPONSES",
+		"CODEMEM_OBSERVER_REASONING_EFFORT",
+		"CODEMEM_OBSERVER_REASONING_SUMMARY",
+		"CODEMEM_OBSERVER_MAX_OUTPUT_TOKENS",
 		"CODEMEM_OBSERVER_AUTH_SOURCE",
 		"CODEMEM_OBSERVER_AUTH_FILE",
 		"CODEMEM_OBSERVER_AUTH_COMMAND",
@@ -173,6 +177,38 @@ describe("loadObserverConfig", () => {
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
+	});
+
+	it("populates observerOpenAIUseResponses when set via config file", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-config-test-"));
+		const configPath = join(tmpDir, "config.json");
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				observer_provider: "openai",
+				observer_openai_use_responses: true,
+			}),
+		);
+		try {
+			process.env.CODEMEM_CONFIG = configPath;
+			const cfg = loadObserverConfig();
+			expect(cfg.observerOpenAIUseResponses).toBe(true);
+			expect(cfg.observerExplicitConfigKeys).toEqual(
+				expect.arrayContaining(["observerOpenAIUseResponses"]),
+			);
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("populates observerOpenAIUseResponses when set via env var", () => {
+		process.env.CODEMEM_OBSERVER_OPENAI_USE_RESPONSES = "true";
+		process.env.CODEMEM_CONFIG = "/tmp/codemem-test-nonexistent/config.json";
+		const cfg = loadObserverConfig();
+		expect(cfg.observerOpenAIUseResponses).toBe(true);
+		expect(cfg.observerExplicitConfigKeys).toEqual(
+			expect.arrayContaining(["observerOpenAIUseResponses"]),
+		);
 	});
 });
 
@@ -372,6 +408,48 @@ describe("ObserverClient", () => {
 			expect(client.reasoningEffort).toBe("low");
 			expect(client.reasoningSummary).toBe("auto");
 			expect(client.maxOutputTokens).toBe(12000);
+		});
+
+		it("defaults OpenAI api_http clients to Responses when transport is not explicitly set", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: "api_http",
+				observerApiKey: "sk-test-key",
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.openaiUseResponses).toBe(true);
+		});
+
+		it("honors explicit false for OpenAI api_http Responses usage", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: "api_http",
+				observerApiKey: "sk-test-key",
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerOpenAIUseResponses: false,
+				observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.openaiUseResponses).toBe(false);
 		});
 
 		it("round-trips per-tier provider overrides through toConfig", () => {
@@ -791,18 +869,62 @@ describe("ObserverClient.observe()", () => {
 		expect(result.provider).toBe("anthropic");
 	});
 
-	it("calls OpenAI endpoint with correct format", async () => {
+	it("routes OpenAI to chat/completions when user explicitly disables Responses", async () => {
+		let capturedUrl: string | undefined;
+
+		globalThis.fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
+			capturedUrl = String(input);
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "chat completions response" } }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+
+		const client = new ObserverClient({
+			observerProvider: "openai",
+			observerModel: "gpt-5.4-mini",
+			observerRuntime: "api_http",
+			observerApiKey: "sk-openai-test-key",
+			observerBaseUrl: null,
+			observerOpenAIUseResponses: false,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+			observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+		});
+		const result = await client.observe("system", "user");
+
+		expect(capturedUrl).toContain("/chat/completions");
+		expect(capturedUrl).not.toContain("/responses");
+		expect(result.raw).toBe("chat completions response");
+	});
+
+	it("calls OpenAI Responses endpoint by default", async () => {
 		let capturedUrl: string | undefined;
 		let capturedHeaders: Record<string, string> | undefined;
+		let capturedBody: Record<string, unknown> | undefined;
 
 		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 			capturedUrl = String(input);
 			capturedHeaders = Object.fromEntries(
 				Object.entries((init?.headers as Record<string, string>) ?? {}),
 			);
+			capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 			return new Response(
 				JSON.stringify({
-					choices: [{ message: { content: "openai response text" } }],
+					output: [
+						{
+							type: "message",
+							content: [{ type: "output_text", text: "openai response text" }],
+						},
+					],
 				}),
 				{ status: 200, headers: { "content-type": "application/json" } },
 			);
@@ -812,7 +934,9 @@ describe("ObserverClient.observe()", () => {
 		const result = await client.observe("system", "user");
 
 		expect(capturedUrl).toContain("openai.com");
+		expect(capturedUrl).toContain("/responses");
 		expect(capturedHeaders?.authorization).toBe("Bearer sk-openai-test-key");
+		expect(capturedBody?.input).toBeDefined();
 		expect(result.raw).toBe("openai response text");
 		expect(result.provider).toBe("openai");
 	});
@@ -894,7 +1018,12 @@ describe("ObserverClient.observe()", () => {
 			capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
 			return new Response(
 				JSON.stringify({
-					choices: [{ message: { content: "ok" } }],
+					output: [
+						{
+							type: "message",
+							content: [{ type: "output_text", text: "ok" }],
+						},
+					],
 				}),
 				{ status: 200, headers: { "content-type": "application/json" } },
 			);
@@ -920,11 +1049,12 @@ describe("ObserverClient.observe()", () => {
 		const longUser = "u".repeat(500);
 		await client.observe(longSystem, longUser);
 
-		// The messages should be truncated — system to 100 chars, user to remaining budget
-		const messages = capturedBody?.messages as Array<{ content: string }>;
-		expect(messages).toBeDefined();
-		const systemMsg = messages.find((m: Record<string, unknown>) => m.role === "system");
-		expect(systemMsg?.content.length).toBeLessThanOrEqual(100);
+		const input = capturedBody?.input as Array<Record<string, unknown>>;
+		expect(input).toBeDefined();
+		const systemMsg = input.find((m: Record<string, unknown>) => m.role === "developer");
+		const systemText = ((systemMsg?.content as Array<Record<string, unknown>> | undefined)?.[0]
+			?.text ?? "") as string;
+		expect(systemText.length).toBeLessThanOrEqual(100);
 	});
 
 	it("retries once on auth error", async () => {

@@ -73,6 +73,19 @@ describe("extraction tier routing", () => {
 		expect(decision.observer.observerTemperature).toBe(0.2);
 	});
 
+	it("uses Responses defaults for the simple OpenAI tier when transport is not explicitly set", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 19001,
+			sessionId: 200001,
+			eventSpan: 12,
+			promptCount: 1,
+			toolCount: 1,
+			transcriptLength: 320,
+		});
+		const config = buildTieredObserverConfig(baseConfig(), decision);
+		expect(config.observerOpenAIUseResponses).toBe(true);
+	});
+
 	it("uses rich Responses defaults when rich-specific flag is unset", () => {
 		const decision = decideExtractionReplayTier({
 			batchId: 18503,
@@ -308,5 +321,24 @@ describe("extraction tier routing", () => {
 		);
 		expect(selection.observer.observerOpenAIUseResponses).toBe(false);
 		expect(selection.metadata.fallbackApplied).toBe(false);
+	});
+
+	it("honors explicit false for simple OpenAI Responses usage", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 19001,
+			sessionId: 200001,
+			eventSpan: 12,
+			promptCount: 1,
+			toolCount: 1,
+			transcriptLength: 320,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerOpenAIUseResponses: false,
+				observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+			}),
+			decision,
+		);
+		expect(selection.observer.observerOpenAIUseResponses).toBe(false);
 	});
 });
