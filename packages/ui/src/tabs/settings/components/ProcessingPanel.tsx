@@ -59,7 +59,8 @@ export function ProcessingPanel({
 				<div className="small">{getTieredRoutingHelperText()}</div>
 				<SettingsHint hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
 					These advanced routing values are only useful when you are tuning model cost, latency, or
-					output quality for a known workload.
+					output quality for a known workload. If a selected path cannot honor the requested tier
+					settings, codemem falls back visibly instead of silently pretending it worked.
 				</SettingsHint>
 				<Field hidden={!showTieredRouting}>
 					<div className="field-label">
@@ -67,7 +68,7 @@ export function ProcessingPanel({
 						<button
 							aria-label="About simple tier model"
 							className="help-icon"
-							data-tooltip="Used for lighter replay batches. Leave blank to keep codemem's routing defaults or base observer fallback."
+							data-tooltip="Used for lighter replay batches. Leave blank to keep codemem's routing defaults. Explicit simple-tier values override the built-in defaults."
 							type="button"
 						>
 							?
@@ -87,7 +88,7 @@ export function ProcessingPanel({
 						<button
 							aria-label="About rich tier model"
 							className="help-icon"
-							data-tooltip="Used for larger or more complex replay batches. Leave blank to keep codemem's rich-tier defaults."
+							data-tooltip="Used for larger or more complex replay batches. Leave blank to keep codemem's rich-tier defaults. Explicit rich-tier values override the built-in defaults."
 							type="button"
 						>
 							?
@@ -109,6 +110,10 @@ export function ProcessingPanel({
 					label="Use OpenAI Responses API for rich tier"
 					onCheckedChange={onSwitchInput("observerRichOpenAIUseResponses")}
 				/>
+				<div className="small" hidden={!showTieredRouting}>
+					On: rich-tier OpenAI requests use the Responses API (reasoning + longer output). Turn off
+					if your OpenAI account or proxy only supports chat/completions.
+				</div>
 				<Field
 					className="field settings-advanced"
 					hidden={!showTieredRouting || hiddenUnlessAdvanced()}

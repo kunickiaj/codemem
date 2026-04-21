@@ -234,7 +234,10 @@ The observer turns raw session transcripts into typed, structured memories. It's
 - `claude_sidecar` executes observer prompts through local Claude runtime auth and bypasses provider API-key client initialization.
 - `claude_sidecar` command launch is configurable with `claude_command` / `CODEMEM_CLAUDE_COMMAND` (JSON argv; default `["claude"]`).
 - Runtime defaults: `api_http` uses `gpt-5.1-codex-mini`; `claude_sidecar` uses `claude-4.5-haiku` unless explicitly overridden.
+- For capability-safe paths, tier routing can default on without an explicit user toggle. Current safe classes are OpenAI/Anthropic over `api_http` and Claude subscription usage over `claude_sidecar`.
+- OpenAI `api_http` observer calls are Responses-first by default unless the user explicitly overrides transport behavior.
 - If a configured `observer_model` is not available in Claude CLI, codemem retries once with Claude's default model.
+- When a tier-selected path cannot honor the requested runtime/provider/model combination, codemem records the requested-versus-actual details plus a visible fallback reason rather than silently masking the downgrade.
 - Supported auth sources are `auto`, `env`, `file`, `command`, `none`.
 - `observer_auth_command` is argv data and must be a JSON string array when passed via env (`CODEMEM_OBSERVER_AUTH_COMMAND`).
 - Header templating supports `${auth.token}`, `${auth.type}`, `${auth.source}`.

@@ -28,6 +28,10 @@
 - Connection/auth settings map to `claude_command`, `observer_runtime`, `observer_provider`, `observer_model`, `observer_base_url`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
 - Processing settings include `raw_events_sweeper_interval_s` plus tiered observer routing controls for `observer_tier_routing_enabled`, `observer_simple_model`, `observer_simple_temperature`, `observer_rich_model`, `observer_rich_temperature`, `observer_rich_openai_use_responses`, `observer_rich_reasoning_effort`, `observer_rich_reasoning_summary`, and `observer_rich_max_output_tokens`.
 - When tiered routing is enabled, the Processing tab becomes the primary place for model selection; the Connection tab's base `observer_model` acts as a fallback rather than a competing primary control.
+- When you have not made an explicit routing choice, codemem may enable tiered routing automatically for capability-safe paths such as OpenAI/Anthropic over `api_http` and Claude subscription usage over `claude_sidecar`.
+- Explicit config still wins. If you set routing or transport values yourself, codemem honors them instead of replacing them with built-in defaults.
+- For OpenAI `api_http` paths, codemem now treats Responses as the default transport instead of chat-completions-style behavior.
+- If a selected tier path cannot honor the requested settings, codemem records the requested versus actual provider/model/runtime details and surfaces a visible fallback reason.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
 - Config resolution supports JSON and JSONC with this precedence:
@@ -42,8 +46,9 @@
 - `claude_command` controls how `claude_sidecar` invokes Claude CLI (default `["claude"]`).
   - Wrapper example: `"claude_command": ["wrapper", "claude", "--"]`
 - Default model selection:
-  - `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
-  - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
+- `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
+- Tier routing may pick different simple/rich models automatically when the current runtime/provider path is marked capability-safe.
 - Anthropic direct API calls use Anthropic's direct model IDs. codemem translates the common shorthand `claude-4.5-haiku` to `claude-haiku-4-5`; if you want a fixed snapshot, set a versioned model like `claude-haiku-4-5-20251001` directly.
 - If a configured `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's default model.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
@@ -55,6 +60,7 @@
 - Queue settings include `raw_events_sweeper_interval_s` (seconds), which controls background pending-event drain cadence.
 - Tiered routing settings live in the Processing tab. The basic view exposes the tier-routing toggle plus simple/rich model choices, while advanced controls reveal the extra rich-tier tuning knobs.
 - To avoid overlapping primary controls, the Connection tab reframes `observer_model` as a fallback whenever tiered routing is enabled.
+- Rich-tier OpenAI transport tuning remains visible in Processing, but OpenAI API paths are Responses-first by default.
 
 Example command-token gateway config:
 
