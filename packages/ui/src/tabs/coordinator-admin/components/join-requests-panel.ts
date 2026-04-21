@@ -57,6 +57,7 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 								h(
 									"button",
 									{
+										class: "settings-button",
 										disabled: !requestId || pending,
 										onClick: () => reviewJoinRequest(requestId, "approve"),
 										type: "button",
@@ -68,7 +69,7 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 								h(
 									"button",
 									{
-										class: "danger",
+										class: "settings-button danger",
 										disabled: !requestId || pending,
 										onClick: () => reviewJoinRequest(requestId, "deny"),
 										type: "button",
