@@ -128,6 +128,9 @@ export interface ObserverStatus {
 	model: string;
 	runtime: string;
 	auth: { source: string; type: string; hasToken: boolean };
+	actualModel?: string | null;
+	modelFallbackApplied?: boolean;
+	modelFallbackReason?: string | null;
 	lastError?: { code: string; message: string } | null;
 }
 
@@ -257,6 +260,7 @@ function supportsDefaultTierRouting(
 	runtime: string,
 	hasCustomBaseUrl: boolean,
 ): boolean {
+	if (runtime === "claude_sidecar") return true;
 	if (runtime !== "api_http") return false;
 	if (provider !== "openai" && provider !== "anthropic") return false;
 	// A custom base URL may point at an OpenAI-compatible gateway that only
@@ -264,6 +268,11 @@ function supportsDefaultTierRouting(
 	// cannot assume capability-safety without an explicit user opt-in.
 	if (hasCustomBaseUrl) return false;
 	return true;
+}
+
+function extractClaudeReportedModel(payload: Record<string, unknown>): string | null {
+	const model = payload.model;
+	return typeof model === "string" && model.trim() ? model.trim() : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -640,7 +649,7 @@ function extractClaudeResultPayload(output: string): Record<string, unknown> | n
  * Detect model-related errors from Claude CLI output.
  * Preserves the Python implementation's generous matching strategy.
  */
-function isSidecarModelError(message: string): boolean {
+export function isSidecarModelError(message: string): boolean {
 	const lowered = message.toLowerCase();
 	return (
 		lowered.includes("issue with the selected model") ||
@@ -653,7 +662,7 @@ function isSidecarModelError(message: string): boolean {
  * Detect auth-related errors from Claude CLI output.
  * Preserves the Python implementation's broad phrase matching.
  */
-function isSidecarAuthError(message: string): boolean {
+export function isSidecarAuthError(message: string): boolean {
 	const lowered = message.toLowerCase();
 	const checks = [
 		"not logged in",
@@ -1061,6 +1070,9 @@ export class ObserverClient {
 	private _lastErrorCode: string | null = null;
 	private _lastErrorMessage: string | null = null;
 	private readonly _observerExplicitConfigKeys: string[];
+	private _lastResolvedModel: string | null = null;
+	private _sidecarModelFallbackApplied = false;
+	private _sidecarModelFallbackReason: string | null = null;
 
 	constructor(config?: ObserverConfig) {
 		const configWasProvided = config !== undefined;
@@ -1126,6 +1138,7 @@ export class ObserverClient {
 		this._sidecarModel = model || DEFAULT_ANTHROPIC_MODEL;
 		if (this.runtime === "claude_sidecar") {
 			this.model = this._sidecarModel;
+			this._lastResolvedModel = this._sidecarModel;
 		}
 
 		this.temperature =
@@ -1220,6 +1233,18 @@ export class ObserverClient {
 		// Initialize provider client state — skip for claude_sidecar (no API key needed)
 		if (this.runtime !== "claude_sidecar") {
 			this._initProvider(false);
+		} else if (
+			cfg.observerAuthSource === "file" ||
+			cfg.observerAuthSource === "command" ||
+			cfg.observerAuthSource === "env"
+		) {
+			// The sidecar runtime authenticates through the local Claude CLI and
+			// does not consult observer_auth_source, so flag the mismatch to avoid
+			// silently ignoring user config.
+			console.warn(
+				`[codemem] observer_auth_source="${cfg.observerAuthSource}" is ignored when ` +
+					`observer_runtime="claude_sidecar"; the sidecar authenticates via the local Claude CLI.`,
+			);
 		}
 	}
 
@@ -1281,7 +1306,8 @@ export class ObserverClient {
 
 		const status: ObserverStatus = {
 			provider: this.provider,
-			model: this.model,
+			model:
+				this.runtime === "claude_sidecar" ? (this._lastResolvedModel ?? this.model) : this.model,
 			runtime,
 			auth: {
 				source: this.auth.source,
@@ -1289,6 +1315,11 @@ export class ObserverClient {
 				hasToken: !!this.auth.token,
 			},
 		};
+		if (this.runtime === "claude_sidecar") {
+			status.actualModel = this._lastResolvedModel;
+			status.modelFallbackApplied = this._sidecarModelFallbackApplied;
+			status.modelFallbackReason = this._sidecarModelFallbackReason;
+		}
 		if (this._lastErrorMessage) {
 			status.lastError = {
 				code: this._lastErrorCode ?? "observer_error",
@@ -1321,13 +1352,19 @@ export class ObserverClient {
 			userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt;
 
 		try {
+			if (this.runtime === "claude_sidecar") {
+				this._lastResolvedModel = this._sidecarModel;
+				this._sidecarModelFallbackApplied = false;
+				this._sidecarModelFallbackReason = null;
+			}
 			const raw = await this._callOnce(clippedSystem, clippedUser);
 			if (raw) this._clearLastError();
 			return {
 				raw,
 				parsed: raw ? tryParseJSON(raw) : null,
 				provider: this.provider,
-				model: this.model,
+				model:
+					this.runtime === "claude_sidecar" ? (this._lastResolvedModel ?? this.model) : this.model,
 			};
 		} catch (err) {
 			if (err instanceof ObserverAuthError) {
@@ -1341,7 +1378,10 @@ export class ObserverClient {
 						raw,
 						parsed: raw ? tryParseJSON(raw) : null,
 						provider: this.provider,
-						model: this.model,
+						model:
+							this.runtime === "claude_sidecar"
+								? (this._lastResolvedModel ?? this.model)
+								: this.model,
 					};
 				} catch {
 					throw err; // re-throw original
@@ -1736,17 +1776,22 @@ export class ObserverClient {
 	private async _invokeSidecar(
 		prompt: string,
 		useModel: boolean,
-	): Promise<[string | null, string | null]> {
+	): Promise<{ output: string | null; error: string | null; reportedModel: string | null }> {
 		const cmd = this._buildSidecarCommand(prompt, useModel);
 		const executable = cmd[0] ?? "claude";
 		const args = cmd.slice(1);
-		const env = {
+		// Clear Claude-Code session markers so the spawned `claude` process starts
+		// fresh rather than inheriting the parent harness's session identity.
+		const env: NodeJS.ProcessEnv = {
 			...process.env,
 			CODEMEM_PLUGIN_IGNORE: "1",
 			CODEMEM_VIEWER: "0",
 			CODEMEM_VIEWER_AUTO: "0",
 			CODEMEM_VIEWER_AUTO_STOP: "0",
 		};
+		delete env.CLAUDE_CODE_ENTRYPOINT;
+		delete env.CLAUDE_CODE_SESSION;
+		delete env.CLAUDECODE;
 
 		const execFileAsync = promisify(execFile);
 		try {
@@ -1760,15 +1805,20 @@ export class ObserverClient {
 			if (payload !== null) {
 				const message = String(payload.result ?? "").trim();
 				const isError = Boolean(payload.is_error);
+				const reportedModel = extractClaudeReportedModel(payload);
 				if (isError) {
-					return [null, message || "claude sidecar returned an error"];
+					return {
+						output: null,
+						error: message || "claude sidecar returned an error",
+						reportedModel,
+					};
 				}
-				return [message || null, null];
+				return { output: message || null, error: null, reportedModel };
 			}
 
 			// No result payload found — treat non-empty stdout as raw output
 			const text = (stdout || "").trim();
-			return [text || null, null];
+			return { output: text || null, error: null, reportedModel: null };
 		} catch (err: unknown) {
 			const error = err as NodeJS.ErrnoException & {
 				killed?: boolean;
@@ -1782,13 +1832,31 @@ export class ObserverClient {
 				console.warn(
 					"[codemem] observer claude_sidecar unavailable: configured claude command not found",
 				);
-				return [null, "configured claude command not found"];
+				return {
+					output: null,
+					error: "configured claude command not found",
+					reportedModel: null,
+				};
 			}
 
-			// Timeout (killed by signal or timeout error)
-			if (error.killed || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+			// stdout exceeded the configured buffer — distinct from a timeout.
+			if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+				console.warn("[codemem] observer claude_sidecar stdout exceeded buffer limit");
+				return {
+					output: null,
+					error: "claude sidecar output exceeded buffer limit",
+					reportedModel: null,
+				};
+			}
+
+			// Timeout (killed by signal after CLAUDE_SIDECAR_TIMEOUT_MS)
+			if (error.killed) {
 				console.warn("[codemem] observer claude_sidecar timed out");
-				return [null, "claude sidecar call timed out"];
+				return {
+					output: null,
+					error: "claude sidecar call timed out",
+					reportedModel: null,
+				};
 			}
 
 			// Non-zero exit — check for result payload in stdout first
@@ -1797,27 +1865,42 @@ export class ObserverClient {
 				if (payload !== null) {
 					const message = String(payload.result ?? "").trim();
 					const isError = Boolean(payload.is_error);
+					const reportedModel = extractClaudeReportedModel(payload);
 					if (isError) {
-						return [null, message || "claude sidecar returned an error"];
+						return {
+							output: null,
+							error: message || "claude sidecar returned an error",
+							reportedModel,
+						};
 					}
-					return [message || null, null];
+					return { output: message || null, error: null, reportedModel };
 				}
 			}
 
 			const message = (error.stderr || "").trim() || (error.stdout || "").trim() || String(err);
-			return [null, message];
+			return { output: null, error: message, reportedModel: null };
 		}
 	}
 
 	private async _callSidecar(systemPrompt: string, userPrompt: string): Promise<string | null> {
 		const prompt = `${systemPrompt}\n\n${userPrompt}`;
 
-		let [output, error] = await this._invokeSidecar(prompt, true);
+		let { output, error, reportedModel } = await this._invokeSidecar(prompt, true);
+		if (reportedModel) this._lastResolvedModel = reportedModel;
 		if (error && this._sidecarModel && isSidecarModelError(error)) {
 			console.warn(
 				`[codemem] observer claude_sidecar model unsupported; retrying with default model (model=${this._sidecarModel})`,
 			);
-			[output, error] = await this._invokeSidecar(prompt, false);
+			this._sidecarModelFallbackApplied = true;
+			this._sidecarModelFallbackReason =
+				"configured sidecar tier model unavailable; retried with default Claude model";
+			({ output, error, reportedModel } = await this._invokeSidecar(prompt, false));
+			// Only update the resolved-model marker when the sidecar actually
+			// reports one. If the retry payload omits the model, leave
+			// _lastResolvedModel unchanged (or null) rather than asserting a
+			// default — the sidecar's own default may differ per environment.
+			if (reportedModel) this._lastResolvedModel = reportedModel;
+			else this._lastResolvedModel = null;
 		}
 		if (error) {
 			if (isSidecarAuthError(error)) {

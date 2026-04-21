@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadObserverConfig, ObserverClient } from "./observer-client.js";
+import {
+	isSidecarAuthError,
+	isSidecarModelError,
+	loadObserverConfig,
+	ObserverClient,
+} from "./observer-client.js";
 
 // ---------------------------------------------------------------------------
 // loadObserverConfig
@@ -299,7 +304,7 @@ describe("ObserverClient", () => {
 			expect(client.tierRoutingEnabled).toBe(false);
 		});
 
-		it("keeps default tier routing off for claude_sidecar until sidecar tier routing lands", () => {
+		it("defaults tier routing on for claude_sidecar", () => {
 			const client = new ObserverClient({
 				observerProvider: "anthropic",
 				observerModel: "claude-haiku-4-5",
@@ -316,7 +321,7 @@ describe("ObserverClient", () => {
 				observerAuthTimeoutMs: 1500,
 				observerAuthCacheTtlS: 300,
 			});
-			expect(client.tierRoutingEnabled).toBe(false);
+			expect(client.tierRoutingEnabled).toBe(true);
 		});
 
 		it("defaults to openai provider and default model", () => {
@@ -1154,5 +1159,203 @@ describe("ObserverClient.observe()", () => {
 
 		const result = await client.observe("system", "user");
 		expect(result.raw).toBeNull();
+	});
+
+	it("passes the selected sidecar model via --model", () => {
+		const client = new ObserverClient({
+			observerProvider: "anthropic",
+			observerModel: "claude-sonnet-4-6",
+			observerRuntime: "claude_sidecar",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+		const command = (
+			client as unknown as { _buildSidecarCommand: (prompt: string, useModel: boolean) => string[] }
+		)._buildSidecarCommand("prompt", true);
+		expect(command).toContain("--model");
+		expect(command).toContain("claude-sonnet-4-6");
+	});
+
+	it("leaves resolved model null when retry payload omits model", async () => {
+		const client = new ObserverClient({
+			observerProvider: "anthropic",
+			observerModel: "claude-sonnet-4-6",
+			observerRuntime: "claude_sidecar",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+		(
+			client as unknown as {
+				_invokeSidecar: (
+					prompt: string,
+					useModel: boolean,
+				) => Promise<{ output: string | null; error: string | null; reportedModel: string | null }>;
+			}
+		)._invokeSidecar = async (_prompt, useModel) => {
+			if (useModel) {
+				return { output: null, error: "Issue with the selected model", reportedModel: null };
+			}
+			return { output: "sidecar ok", error: null, reportedModel: null };
+		};
+
+		await client.observe("system", "user");
+		const status = client.getStatus();
+
+		expect(status.actualModel).toBeNull();
+		expect(status.modelFallbackApplied).toBe(true);
+	});
+
+	it("raises ObserverAuthError when the sidecar reports an auth failure", async () => {
+		const client = new ObserverClient({
+			observerProvider: "anthropic",
+			observerModel: "claude-sonnet-4-6",
+			observerRuntime: "claude_sidecar",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+		(
+			client as unknown as {
+				_invokeSidecar: (
+					prompt: string,
+					useModel: boolean,
+				) => Promise<{ output: string | null; error: string | null; reportedModel: string | null }>;
+			}
+		)._invokeSidecar = async () => ({
+			output: null,
+			error: "Not logged in. Please run `claude login`.",
+			reportedModel: null,
+		});
+
+		await expect(client.observe("system", "user")).rejects.toThrow(/not logged in/i);
+		expect(client.getStatus().lastError?.code).toBe("auth_failed");
+	});
+
+	it("returns null and records ENOENT when the claude binary is missing", async () => {
+		const client = new ObserverClient({
+			observerProvider: "anthropic",
+			observerModel: "claude-sonnet-4-6",
+			observerRuntime: "claude_sidecar",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+			claudeCommand: ["/nonexistent/claude-binary-that-does-not-exist"],
+		});
+		const result = await client.observe("system", "user");
+		expect(result.raw).toBeNull();
+	});
+
+	describe("sidecar error classifiers", () => {
+		it("matches model errors from known Claude CLI phrasings", () => {
+			expect(isSidecarModelError("Issue with the selected model")).toBe(true);
+			expect(isSidecarModelError("Run --model to pick a different model")).toBe(true);
+			expect(isSidecarModelError("model foo may not exist")).toBe(true);
+			expect(isSidecarModelError("the model may not exist; try another")).toBe(true);
+		});
+
+		it("does not misclassify unrelated errors as model errors", () => {
+			expect(isSidecarModelError("Not logged in")).toBe(false);
+			expect(isSidecarModelError("Connection timed out")).toBe(false);
+			expect(isSidecarModelError("")).toBe(false);
+		});
+
+		it("matches auth errors from known Claude CLI phrasings", () => {
+			expect(isSidecarAuthError("Not logged in. Please run `claude login`.")).toBe(true);
+			expect(isSidecarAuthError("Authentication failed")).toBe(true);
+			expect(isSidecarAuthError("Unauthorized")).toBe(true);
+			expect(isSidecarAuthError("Permission denied")).toBe(true);
+			expect(isSidecarAuthError("Please set ANTHROPIC_API_KEY")).toBe(true);
+			expect(isSidecarAuthError("Run /setup-token to authenticate")).toBe(true);
+		});
+
+		it("does not misclassify unrelated errors as auth errors", () => {
+			expect(isSidecarAuthError("Issue with the selected model")).toBe(false);
+			expect(isSidecarAuthError("Request failed with status 500")).toBe(false);
+			expect(isSidecarAuthError("")).toBe(false);
+		});
+	});
+
+	it("reports the actual sidecar model after retrying without --model", async () => {
+		const client = new ObserverClient({
+			observerProvider: "anthropic",
+			observerModel: "claude-sonnet-4-6",
+			observerRuntime: "claude_sidecar",
+			observerApiKey: null,
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+		let calls = 0;
+		(
+			client as unknown as {
+				_invokeSidecar: (
+					prompt: string,
+					useModel: boolean,
+				) => Promise<{ output: string | null; error: string | null; reportedModel: string | null }>;
+			}
+		)._invokeSidecar = async (_prompt, useModel) => {
+			calls++;
+			if (useModel) {
+				return {
+					output: null,
+					error: "Issue with the selected model",
+					reportedModel: null,
+				};
+			}
+			return {
+				output: "sidecar ok",
+				error: null,
+				reportedModel: "claude-haiku-4-5",
+			};
+		};
+
+		const result = await client.observe("system", "user");
+		const status = client.getStatus();
+
+		expect(calls).toBe(2);
+		expect(result.raw).toBe("sidecar ok");
+		expect(result.model).toBe("claude-haiku-4-5");
+		expect(status.model).toBe("claude-haiku-4-5");
+		expect(status.actualModel).toBe("claude-haiku-4-5");
+		expect(status.modelFallbackApplied).toBe(true);
+		expect(status.modelFallbackReason).toBe(
+			"configured sidecar tier model unavailable; retried with default Claude model",
+		);
 	});
 });
