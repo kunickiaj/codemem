@@ -6,7 +6,6 @@
 		"jsxImportSource": "preact",
 		"module": "ESNext",
 		"moduleResolution": "Bundler",
-		"baseUrl": ".",
 		"paths": {
 			"react": ["./node_modules/preact/compat/"],
 			"react-dom": ["./node_modules/preact/compat/"],

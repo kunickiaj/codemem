@@ -4,11 +4,10 @@
 		"target": "ES2024",
 		"module": "Node16",
 		"moduleResolution": "Node16",
-		"baseUrl": ".",
 		"paths": {
-			"@codemem/core": ["packages/core/src/index.ts"],
+			"@codemem/core": ["./packages/core/src/index.ts"],
 			"@codemem/core/internal/cloudflare-coordinator": [
-				"packages/core/src/internal/cloudflare-coordinator.ts"
+				"./packages/core/src/internal/cloudflare-coordinator.ts"
 			]
 		},
 		"lib": ["ES2024"],

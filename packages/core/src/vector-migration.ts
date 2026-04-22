@@ -162,7 +162,7 @@ async function runQueuedSyncVectorWork(
 		pending_upsert_memory_ids: pendingUpsertMemoryIds.slice(batchUpsertMemoryIds.length),
 	};
 	const latestJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
-	const latestMetadata = ((latestJob?.metadata ?? {}) as MigrationMetadata) ?? {};
+	const latestMetadata = (latestJob?.metadata ?? {}) as MigrationMetadata;
 	const nextMetadata = sameQueuedSyncMemoryIds(latestMetadata, metadata)
 		? drainedMetadata
 		: {

@@ -71,7 +71,7 @@ export function hasPendingRefBackfill(db: SqliteDatabase): boolean {
 }
 
 function getExistingMetadata(db: SqliteDatabase): RefBackfillMetadata {
-	return ((getMaintenanceJob(db, REF_BACKFILL_JOB)?.metadata ?? {}) as RefBackfillMetadata) ?? {};
+	return (getMaintenanceJob(db, REF_BACKFILL_JOB)?.metadata ?? {}) as RefBackfillMetadata;
 }
 
 interface BackfillRow {
