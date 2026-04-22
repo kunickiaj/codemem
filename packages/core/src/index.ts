@@ -376,6 +376,12 @@ export {
 	SessionContextBackfillRunner,
 } from "./session-context-backfill.js";
 export { MemoryStore } from "./store.js";
+export {
+	hasPendingSummaryDedupBackfill,
+	runSummaryDedupBackfillPass,
+	SUMMARY_DEDUP_BACKFILL_JOB,
+	SummaryDedupBackfillRunner,
+} from "./summary-dedup-backfill.js";
 export { canonicalMemoryKind, getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
 export type {
 	BuildAuthHeadersOptions,
