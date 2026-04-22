@@ -165,8 +165,8 @@ function PairingDisclosure({ contentHost, open, onOpenChange }: PairingDisclosur
 			onOpenChange={onOpenChange}
 			triggerId="syncPairingToggle"
 			triggerClassName="settings-button"
-			closedLabel="Show pairing"
-			openLabel="Hide pairing"
+			closedLabel="Show pairing command"
+			openLabel="Hide pairing command"
 			contentId="syncPairing"
 			contentClassName="pairing-card"
 			contentHost={contentHost}

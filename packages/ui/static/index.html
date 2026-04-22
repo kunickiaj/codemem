@@ -3096,6 +3096,13 @@
           <div class="sync-skeleton-block"></div>
         </div>
 
+        <h3 class="settings-group-title" style="margin-top: 20px">Connect another device</h3>
+        <div class="section-meta">Share this command on the new device to join it to the team.</div>
+        <div class="actor-create-row">
+          <div id="syncPairingDisclosureMount" style="display: contents"></div>
+        </div>
+        <div id="syncPairingPanelMount" style="display: contents"></div>
+
         <div id="syncSharingReview" hidden>
           <h3 class="settings-group-title" style="margin-top: 20px">What teammates will receive</h3>
           <div class="section-meta" id="syncSharingReviewMeta"></div>
@@ -3113,19 +3120,18 @@
         </div>
       </div>
 
-      <!-- 3. Advanced diagnostics — status, pairing, attempts -->
+      <!-- 3. Advanced diagnostics — status, attempts -->
       <div class="card" style="animation-delay: 0.06s">
         <div class="section-header">
           <h2>Advanced diagnostics</h2>
           <div class="section-actions">
-            <div id="syncPairingDisclosureMount" style="display: contents"></div>
             <label class="small sync-redact-control">
               <span id="syncRedactMount"></span>
               <span id="syncRedactLabel">Redact</span>
             </label>
           </div>
         </div>
-        <div class="section-meta" id="syncMeta">Use this section for sync debugging, pairing, and recent attempt details.</div>
+        <div class="section-meta" id="syncMeta">Use this section for sync debugging and recent attempt details.</div>
         <div class="sync-skeleton" id="syncDiagSkeleton" role="status" aria-label="Loading diagnostics">
           <div class="sync-skeleton-line long"></div>
           <div class="sync-skeleton-line medium"></div>
@@ -3133,8 +3139,6 @@
         </div>
         <div class="sync-actions" id="syncActions"></div>
         <div class="grid-2" id="syncStatusGrid"></div>
-
-        <div id="syncPairingPanelMount" style="display: contents"></div>
 
         <h3 class="settings-group-title" style="margin-top: 20px">Recent sync attempts (advanced)</h3>
         <div class="attempts-list" id="syncAttempts"></div>

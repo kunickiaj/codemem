@@ -514,8 +514,8 @@ function SyncPeersList(props: SyncPeersListProps) {
 				<SyncEmptyState
 					detail={
 						syncDisabled
-							? "Turn on sync in Settings → Device Sync first, then use Show pairing in Advanced diagnostics to connect another device."
-							: "Use Show pairing in Advanced diagnostics, run the command on the other device, then come back here to name it and decide who it belongs to."
+							? "Turn on sync in Settings → Device Sync first, then use Show pairing command under Connect another device to connect another device."
+							: "Use Show pairing command under Connect another device, run the command on the other device, then come back here to name it and decide who it belongs to."
 					}
 					title="No devices connected here yet."
 				/>
