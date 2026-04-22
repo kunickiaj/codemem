@@ -9,7 +9,7 @@ pnpm install
 pnpm run codemem --help
 ```
 
-This repo is TypeScript-first. Treat `codemem/` and `tests/` Python code as legacy/reference unless you are explicitly working on those surfaces.
+This repo is TypeScript-first. The legacy Python runtime has been removed from `main`; use git history or the archive ref if you need to inspect the old implementation.
 
 ## Quality checks
 

@@ -1,8 +1,8 @@
 # Migration: Python to TypeScript backend
 
 > **Status: Complete.** The TypeScript backend is the primary and only shipped runtime
-> as of `0.20.x`. The Python backend code remains in the repo for reference but is not
-> part of the release artifacts.
+> as of `0.20.x`. The legacy Python backend has been removed from `main`; use git
+> history or the archive ref if you need the old implementation for reference.
 
 ## Background
 

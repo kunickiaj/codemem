@@ -1,7 +1,7 @@
 # codemem
 
 - Public repo: never add secrets, internal hostnames, private identifiers, or local artifact paths. Keep `.tmp/`, `.venv/`, `*.sqlite`, `packages/*/dist/`, `packages/viewer-server/static/`, and `.opencode/package-lock.json` out of git.
-- Default to the TypeScript toolchain: this repo is a pnpm workspace on Node 24 / pnpm 10.33.0. Use `uv ...` only when explicitly touching the legacy Python code in `codemem/` or `tests/`.
+- Default to the TypeScript toolchain: this repo is a pnpm workspace on Node 24 / pnpm 10.33.0.
 
 ## What runs where
 
@@ -28,11 +28,11 @@
 - `pnpm run lint` only checks files included by `biome.json` (mostly `packages/**` TS/TSX/JS/JSON and root TS config). Docs like `AGENTS.md` are outside Biome.
 - `pnpm run test` is workspace vitest; root `vitest.config.ts` points at `packages/*/vite.config.ts`.
 - The viewer server throws if `packages/viewer-server/static/index.html` is missing. If you change UI or viewer assets, run `pnpm build` or at least `pnpm --filter @codemem/ui build`.
-- `packages/viewer-server/static/` is generated and ignored. Do not hand-edit it. UI build stages assets there, but most non-`app.js` assets still come from `codemem/viewer_static/`.
+- `packages/viewer-server/static/` is generated and ignored. Do not hand-edit it. UI build stages `packages/ui/static/` there alongside the built `app.js` bundle.
 - Plugin smoke tests rely on nested `.opencode` runtime deps. CI installs `@opencode-ai/plugin` inside `packages/cli/.opencode` and `packages/opencode-plugin/.opencode` before running smoke tests.
 - CLI work should follow `docs/cli-design-conventions.md`: max 2 nesting levels, noun-based groups, shared `--db-path` / `--config` / `--json` helpers, and no uncaught throws from command handlers.
-- The repo still contains legacy Python and old static assets. For TS work, trust `package.json`, package scripts, and CI over old Python-era docs/checklists.
-- `.github/PULL_REQUEST_TEMPLATE.md` is TS-first now; use `pnpm run tsc`, `pnpm run lint`, and `pnpm run test` unless you are actually changing legacy Python.
+- The repo is TS-first; trust `package.json`, package scripts, and CI over older migration-era docs/checklists.
+- `.github/PULL_REQUEST_TEMPLATE.md` is TS-first now; use `pnpm run tsc`, `pnpm run lint`, and `pnpm run test` for normal changes.
 
 ## Workflow rules specific to this repo
 
