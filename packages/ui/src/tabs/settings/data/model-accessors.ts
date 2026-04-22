@@ -26,9 +26,9 @@ export function getObserverModelHint(
 
 export function getTieredRoutingHelperText(values: SettingsFormState): string {
 	if (!values.observerTierRoutingEnabled) {
-		return "Off: codemem uses the base observer settings from the Connection tab for all batches.";
+		return "Off: codemem uses the base observer settings from the Connection tab for all batches. Explicit user settings always win over built-in routing defaults.";
 	}
-	return "On: codemem can route simpler batches to a lighter model and richer batches to a higher-quality configuration.";
+	return "On: codemem routes simpler batches to a lighter model and richer batches to a higher-quality configuration. Rich-tier OpenAI requests default to the Responses transport, and Claude sidecar runtimes route both tiers through the local Claude CLI.";
 }
 
 export function getObserverModelLabel(values: SettingsFormState): string {
@@ -37,13 +37,13 @@ export function getObserverModelLabel(values: SettingsFormState): string {
 
 export function getObserverModelTooltip(values: SettingsFormState): string {
 	return values.observerTierRoutingEnabled
-		? "Tiered routing is enabled, so Processing controls the simple/rich models. This base model is only a fallback."
+		? "Tiered routing is enabled, so Processing controls the simple/rich models. This base model is only a fallback, and explicit settings override built-in defaults."
 		: "Leave blank to use a recommended model for your selected mode/provider.";
 }
 
 export function getObserverModelDescription(values: SettingsFormState): string {
 	return values.observerTierRoutingEnabled
-		? "Tiered routing is active. Use this only as a fallback while the Processing tab owns simple/rich model selection."
+		? "Tiered routing is active. Use this only as a fallback while the Processing tab owns simple/rich model selection and explicit tier settings override built-in defaults."
 		: "Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.";
 }
 
