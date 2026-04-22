@@ -72,6 +72,11 @@ function countPendingSessions(db: SqliteDatabase): number {
 }
 
 export function hasPendingSummaryDedupBackfill(db: SqliteDatabase): boolean {
+	// Intentionally work-driven, not status-gated: this backfill is a
+	// continuous cleanup — sync can bring in new observer summaries that
+	// raise a session's active-summary count above 1 long after the initial
+	// job row was marked completed. Announcing and re-running on the next
+	// viewer start is the intended behavior in that case.
 	return countPendingSessions(db) > 0;
 }
 

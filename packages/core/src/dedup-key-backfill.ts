@@ -29,6 +29,12 @@ export interface DedupKeyBackfillRunnerOptions {
 }
 
 export function hasPendingDedupKeyBackfill(db: SqliteDatabase): boolean {
+	// Work-driven predicate: kept this way so replicated / bootstrapped rows
+	// inserted after a prior completion (applyReplicationOps and
+	// applyBootstrapSnapshot don't set dedup_key) do get picked up on the
+	// next `serve start`. The "announces pending every startup" symptom is
+	// fixed by resetting the cursor in runDedupKeyBackfillPass when the
+	// prior job is in a terminal state — see that function.
 	return planMemoryDedupKeys(db, { updateLimit: 1 }).backfillable > 0;
 }
 
@@ -44,7 +50,14 @@ export async function runDedupKeyBackfillPass(
 	const existingJob = getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB);
 	const existingMetadata = getExistingMetadata(db);
 	const batchSize = Math.max(1, options.batchSize ?? 250);
-	const lastCursorId = Number(existingMetadata.last_cursor_id ?? 0);
+	// Reset the cursor when the prior job is in a terminal state so rows
+	// inserted after that completion (e.g. from replication or bootstrap
+	// snapshots, which don't populate dedup_key) are picked up on the next
+	// pass. Without this reset the pass resumes past them forever and the
+	// `backfillable > 0` predicate keeps re-triggering the coordinator.
+	const startingFresh =
+		!existingJob || existingJob.status === "completed" || existingJob.status === "failed";
+	const lastCursorId = startingFresh ? 0 : Number(existingMetadata.last_cursor_id ?? 0);
 	const plan = planMemoryDedupKeys(db, {
 		rowLimit: batchSize,
 		updateLimit: batchSize,
@@ -73,10 +86,12 @@ export async function runDedupKeyBackfillPass(
 		return false;
 	}
 
-	const processedBefore = Number(existingMetadata.processed_updates ?? 0);
-	let progressTotal = Number(existingMetadata.total_backfillable ?? 0);
+	const processedBefore = startingFresh ? 0 : Number(existingMetadata.processed_updates ?? 0);
+	let progressTotal = startingFresh ? 0 : Number(existingMetadata.total_backfillable ?? 0);
 	const processedAfter = processedBefore + plan.updates.length;
-	const cumulativeSkipped = Number(existingMetadata.skipped_rows ?? 0) + plan.skipped;
+	const cumulativeSkipped = startingFresh
+		? plan.skipped
+		: Number(existingMetadata.skipped_rows ?? 0) + plan.skipped;
 	const reachedEnd = plan.exhausted;
 	const remainingWork = !reachedEnd;
 
