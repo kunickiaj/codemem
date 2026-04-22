@@ -33,10 +33,8 @@ export function hasPendingDedupKeyBackfill(db: SqliteDatabase): boolean {
 }
 
 function getExistingMetadata(db: SqliteDatabase): DedupKeyBackfillMetadata {
-	return (
-		((getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB)?.metadata ?? {}) as DedupKeyBackfillMetadata) ??
-		{}
-	);
+	return (getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB)?.metadata ??
+		{}) as DedupKeyBackfillMetadata;
 }
 
 export async function runDedupKeyBackfillPass(
