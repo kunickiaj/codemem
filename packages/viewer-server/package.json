@@ -21,9 +21,9 @@
 	},
 	"dependencies": {
 		"@codemem/core": "workspace:^",
-		"@hono/node-server": "catalog:",
+		"@hono/node-server": "1.19.13",
 		"drizzle-orm": "catalog:",
-		"hono": "catalog:",
+		"hono": "4.12.12",
 		"limiter": "catalog:"
 	},
 	"devDependencies": {
