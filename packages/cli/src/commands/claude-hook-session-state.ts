@@ -7,7 +7,6 @@
  * file-locality boosts can target files the user just edited.
  */
 
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +23,16 @@ const MAX_FILES_MODIFIED = 64;
 const MAX_WORKING_SET_PATHS = 8;
 const MAX_QUERY_CHARS = 500;
 const MAX_QUERY_FILE_BASENAMES = 5;
+const SESSION_FILE_LABEL_CHARS = 24;
+
+function stableSessionSuffix(sessionId: string): string {
+	let hash = 0xcbf29ce484222325n;
+	for (const byte of Buffer.from(sessionId, "utf8")) {
+		hash ^= BigInt(byte);
+		hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+	}
+	return hash.toString(16).padStart(16, "0");
+}
 
 export function defaultSessionState(): SessionState {
 	return {
@@ -45,9 +54,19 @@ export function contextDir(): string {
 	return expandHome(override?.trim() ? override : "~/.codemem/claude-hook-context");
 }
 
+function sessionFileStem(sessionId: string): string {
+	const trimmed = sessionId.trim();
+	if (!trimmed) return "session-state";
+	const label = trimmed
+		.toLowerCase()
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, SESSION_FILE_LABEL_CHARS);
+	return `${label || "session"}-${stableSessionSuffix(trimmed)}`;
+}
+
 export function statePathForSession(sessionId: string): string {
-	const digest = createHash("sha1").update(sessionId).digest("hex").slice(0, 16);
-	return join(contextDir(), `${digest}.json`);
+	return join(contextDir(), `${sessionFileStem(sessionId)}.json`);
 }
 
 /**

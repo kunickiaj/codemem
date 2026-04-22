@@ -1,17 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { initDatabase, resolveDbPath } from "../../packages/core/src/index.ts";
+import { initDatabase } from "../../packages/core/src/index.ts";
 import { connect } from "../../packages/core/src/db.ts";
 
-function parseArgs(argv: string[]): { dbPath: string; title: string; body: string } {
-	let dbPath = "/data/mem.sqlite";
+const E2E_DB_PATH = "/data/mem.sqlite";
+
+function parseArgs(argv: string[]): { title: string; body: string } {
 	let title = "bootstrap refusal marker";
 	let body = "local unsynced shared memory";
 	for (let index = 2; index < argv.length; index += 1) {
 		const arg = argv[index];
-		if (arg === "--db-path") {
-			dbPath = String(argv[index + 1] ?? dbPath);
-			index += 1;
-		} else if (arg === "--title") {
+		if (arg === "--title") {
 			title = String(argv[index + 1] ?? title);
 			index += 1;
 		} else if (arg === "--body") {
@@ -19,15 +17,14 @@ function parseArgs(argv: string[]): { dbPath: string; title: string; body: strin
 			index += 1;
 		}
 	}
-	return { dbPath, title, body };
+	return { title, body };
 }
 
 async function main(): Promise<void> {
 	process.env.CODEMEM_EMBEDDING_DISABLED = process.env.CODEMEM_EMBEDDING_DISABLED || "1";
-	const { dbPath, title, body } = parseArgs(process.argv);
-	const resolvedDbPath = resolveDbPath(dbPath);
-	initDatabase(resolvedDbPath);
-	const db = connect(resolvedDbPath);
+	const { title, body } = parseArgs(process.argv);
+	initDatabase(E2E_DB_PATH);
+	const db = connect(E2E_DB_PATH);
 	try {
 		const now = new Date().toISOString();
 		const sessionInsert = db

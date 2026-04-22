@@ -9,6 +9,10 @@ import {
 	ObserverClient,
 } from "./observer-client.js";
 
+function fixtureToken(label: string): string {
+	return ["fixture", label, "token"].join("-");
+}
+
 // ---------------------------------------------------------------------------
 // loadObserverConfig
 // ---------------------------------------------------------------------------
@@ -262,11 +266,12 @@ describe("ObserverClient", () => {
 		});
 
 		it("keeps default tier routing off when a custom base URL is configured", () => {
+			const observerApiKey = fixtureToken("custom-base-url");
 			const client = new ObserverClient({
 				observerProvider: "openai",
 				observerModel: "gpt-5.4-mini",
 				observerRuntime: "api_http",
-				observerApiKey: "test-key",
+				observerApiKey,
 				observerBaseUrl: "https://openai-proxy.example/v1",
 				observerTemperature: 0.2,
 				observerMaxChars: 12_000,
@@ -282,11 +287,12 @@ describe("ObserverClient", () => {
 		});
 
 		it("keeps default tier routing off for unmapped api_http providers", () => {
+			const observerApiKey = fixtureToken("unmapped-provider");
 			const client = new ObserverClient({
 				observerProvider: "opencode",
 				observerModel: "opencode/gpt-5.4-mini",
 				observerRuntime: "api_http",
-				observerApiKey: "test-key",
+				observerApiKey,
 				observerBaseUrl: "https://gateway.example/v1",
 				observerTemperature: 0.2,
 				observerMaxChars: 12_000,
@@ -413,11 +419,12 @@ describe("ObserverClient", () => {
 		});
 
 		it("defaults OpenAI api_http clients to Responses when transport is not explicitly set", () => {
+			const observerApiKey = fixtureToken("openai-responses-default");
 			const client = new ObserverClient({
 				observerProvider: "openai",
 				observerModel: "gpt-5.4-mini",
 				observerRuntime: "api_http",
-				observerApiKey: "sk-test-key",
+				observerApiKey,
 				observerBaseUrl: null,
 				observerTemperature: 0.2,
 				observerMaxChars: 12_000,
@@ -433,11 +440,12 @@ describe("ObserverClient", () => {
 		});
 
 		it("honors explicit false for OpenAI api_http Responses usage", () => {
+			const observerApiKey = fixtureToken("openai-responses-disabled");
 			const client = new ObserverClient({
 				observerProvider: "openai",
 				observerModel: "gpt-5.4-mini",
 				observerRuntime: "api_http",
-				observerApiKey: "sk-test-key",
+				observerApiKey,
 				observerBaseUrl: null,
 				observerTemperature: 0.2,
 				observerOpenAIUseResponses: false,
@@ -532,9 +540,10 @@ describe("ObserverClient", () => {
 			const configDir = join(tmpDir, ".config", "opencode");
 			mkdirSync(configDir, { recursive: true });
 			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			const cachedToken = fixtureToken("opencode-inferred-provider");
 			writeFileSync(
 				join(tmpDir, ".local", "share", "opencode", "auth.json"),
-				JSON.stringify({ opencode: { type: "api", key: "zen-test-key" } }),
+				JSON.stringify({ opencode: { type: "api", key: cachedToken } }),
 			);
 			try {
 				writeFileSync(
@@ -568,11 +577,12 @@ describe("ObserverClient", () => {
 		});
 
 		it("preserves explicit observer_base_url for opencode built-in provider", () => {
+			const observerApiKey = fixtureToken("opencode-base-url");
 			const client = new ObserverClient({
 				observerProvider: "opencode",
 				observerModel: "opencode/gpt-5.4-mini",
 				observerRuntime: null,
-				observerApiKey: "override-key",
+				observerApiKey,
 				observerBaseUrl: "https://proxy.example.test/v1",
 				observerMaxChars: 12_000,
 				observerMaxTokens: 4_000,
@@ -593,9 +603,11 @@ describe("ObserverClient", () => {
 			const prevHome = process.env.HOME;
 			const tmpDir = mkdtempSync(join(tmpdir(), "codemem-opencode-override-test-"));
 			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			const cachedToken = fixtureToken("opencode-cached");
+			const explicitToken = fixtureToken("opencode-explicit");
 			writeFileSync(
 				join(tmpDir, ".local", "share", "opencode", "auth.json"),
-				JSON.stringify({ opencode: { type: "api", key: "cached-key" } }),
+				JSON.stringify({ opencode: { type: "api", key: cachedToken } }),
 			);
 			try {
 				process.env.HOME = tmpDir;
@@ -603,7 +615,7 @@ describe("ObserverClient", () => {
 					observerProvider: "opencode",
 					observerModel: "opencode/gpt-5.4-mini",
 					observerRuntime: null,
-					observerApiKey: "explicit-key",
+					observerApiKey: explicitToken,
 					observerBaseUrl: null,
 					observerMaxChars: 12_000,
 					observerMaxTokens: 4_000,
@@ -615,7 +627,7 @@ describe("ObserverClient", () => {
 					observerAuthCacheTtlS: 300,
 				});
 				expect((client as unknown as { auth: { token: string | null } }).auth.token).toBe(
-					"explicit-key",
+					explicitToken,
 				);
 			} finally {
 				if (prevHome == null) delete process.env.HOME;
@@ -630,10 +642,11 @@ describe("ObserverClient", () => {
 			const configDir = join(tmpDir, ".config", "opencode");
 			mkdirSync(configDir, { recursive: true });
 			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			const ignoredCachedToken = fixtureToken("ignored-custom-provider-cache");
 			writeFileSync(join(configDir, "opencode.jsonc"), JSON.stringify({ provider: { acme: {} } }));
 			writeFileSync(
 				join(tmpDir, ".local", "share", "opencode", "auth.json"),
-				JSON.stringify({ acme: { type: "api", key: "should-not-be-used" } }),
+				JSON.stringify({ acme: { type: "api", key: ignoredCachedToken } }),
 			);
 			try {
 				process.env.HOME = tmpDir;
@@ -711,11 +724,12 @@ describe("ObserverClient", () => {
 		});
 
 		it("reports auth type based on resolved credentials", () => {
+			const observerApiKey = fixtureToken("auth-status");
 			const client = new ObserverClient({
 				observerProvider: "openai",
 				observerModel: null,
 				observerRuntime: null,
-				observerApiKey: "sk-test-key",
+				observerApiKey,
 				observerBaseUrl: null,
 				observerMaxChars: 12_000,
 				observerMaxTokens: 4_000,
@@ -762,9 +776,10 @@ describe("ObserverClient", () => {
 			const prevHome = process.env.HOME;
 			const tmpDir = mkdtempSync(join(tmpdir(), "codemem-opencode-auth-test-"));
 			mkdirSync(join(tmpDir, ".local", "share", "opencode"), { recursive: true });
+			const cachedToken = fixtureToken("opencode-sdk-client");
 			writeFileSync(
 				join(tmpDir, ".local", "share", "opencode", "auth.json"),
-				JSON.stringify({ opencode: { type: "api", key: "zen-test-key" } }),
+				JSON.stringify({ opencode: { type: "api", key: cachedToken } }),
 			);
 			try {
 				process.env.HOME = tmpDir;
@@ -846,6 +861,7 @@ describe("ObserverClient.observe()", () => {
 	}
 
 	it("calls Anthropic endpoint with correct headers", async () => {
+		const apiKey = fixtureToken("anthropic-header");
 		let capturedUrl: string | undefined;
 		let capturedHeaders: Record<string, string> | undefined;
 
@@ -862,16 +878,17 @@ describe("ObserverClient.observe()", () => {
 			);
 		}) as typeof globalThis.fetch;
 
-		const client = makeClient("anthropic", "sk-ant-test-key-12345");
+		const client = makeClient("anthropic", apiKey);
 		const result = await client.observe("system prompt", "user prompt");
 
 		expect(capturedUrl).toContain("anthropic.com");
-		expect(capturedHeaders?.["x-api-key"]).toBe("sk-ant-test-key-12345");
+		expect(capturedHeaders?.["x-api-key"]).toBe(apiKey);
 		expect(result.raw).toBe("test response");
 		expect(result.provider).toBe("anthropic");
 	});
 
 	it("routes OpenAI to chat/completions when user explicitly disables Responses", async () => {
+		const observerApiKey = fixtureToken("openai-chat-completions");
 		let capturedUrl: string | undefined;
 
 		globalThis.fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
@@ -888,7 +905,7 @@ describe("ObserverClient.observe()", () => {
 			observerProvider: "openai",
 			observerModel: "gpt-5.4-mini",
 			observerRuntime: "api_http",
-			observerApiKey: "sk-openai-test-key",
+			observerApiKey,
 			observerBaseUrl: null,
 			observerOpenAIUseResponses: false,
 			observerMaxChars: 12_000,
@@ -909,6 +926,7 @@ describe("ObserverClient.observe()", () => {
 	});
 
 	it("calls OpenAI Responses endpoint by default", async () => {
+		const apiKey = fixtureToken("openai-responses");
 		let capturedUrl: string | undefined;
 		let capturedHeaders: Record<string, string> | undefined;
 		let capturedBody: Record<string, unknown> | undefined;
@@ -932,12 +950,12 @@ describe("ObserverClient.observe()", () => {
 			);
 		}) as typeof globalThis.fetch;
 
-		const client = makeClient("openai", "sk-openai-test-key");
+		const client = makeClient("openai", apiKey);
 		const result = await client.observe("system", "user");
 
 		expect(capturedUrl).toContain("openai.com");
 		expect(capturedUrl).toContain("/responses");
-		expect(capturedHeaders?.authorization).toBe("Bearer sk-openai-test-key");
+		expect(capturedHeaders?.authorization).toBe(`Bearer ${apiKey}`);
 		expect(capturedBody?.input).toBeDefined();
 		expect(result.raw).toBe("openai response text");
 		expect(result.provider).toBe("openai");
@@ -948,6 +966,7 @@ describe("ObserverClient.observe()", () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-custom-auth-header-test-"));
 		const configDir = join(tmpDir, ".config", "opencode");
 		mkdirSync(configDir, { recursive: true });
+		const providerApiKey = fixtureToken("provider-config");
 		let capturedHeaders: Record<string, string> | undefined;
 
 		writeFileSync(
@@ -957,7 +976,7 @@ describe("ObserverClient.observe()", () => {
 					acme: {
 						options: {
 							baseURL: "https://proxy.example.test/v1",
-							apiKey: "sk-provider-token",
+							apiKey: providerApiKey,
 							headers: {
 								// biome-ignore lint/suspicious/noTemplateCurlyInString: intentional placeholder syntax
 								Authorization: "Bearer ${auth.token}",
@@ -1004,7 +1023,7 @@ describe("ObserverClient.observe()", () => {
 			const result = await client.observe("system", "user");
 
 			expect(result.raw).toBe("custom provider response");
-			expect(capturedHeaders?.Authorization).toBe("Bearer sk-provider-token");
+			expect(capturedHeaders?.Authorization).toBe(`Bearer ${providerApiKey}`);
 			expect(capturedHeaders?.authorization).toBeUndefined();
 		} finally {
 			if (prevHome == null) delete process.env.HOME;
@@ -1014,6 +1033,7 @@ describe("ObserverClient.observe()", () => {
 	});
 
 	it("truncates prompts to maxChars", async () => {
+		const observerApiKey = fixtureToken("truncate-prompts");
 		let capturedBody: Record<string, unknown> | undefined;
 
 		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -1035,7 +1055,7 @@ describe("ObserverClient.observe()", () => {
 			observerProvider: "openai",
 			observerModel: null,
 			observerRuntime: null,
-			observerApiKey: "sk-test",
+			observerApiKey,
 			observerBaseUrl: null,
 			observerMaxChars: 100,
 			observerMaxTokens: 4_000,
@@ -1060,6 +1080,7 @@ describe("ObserverClient.observe()", () => {
 	});
 
 	it("retries once on auth error", async () => {
+		const apiKey = fixtureToken("anthropic-retry");
 		let callCount = 0;
 
 		globalThis.fetch = (async () => {
@@ -1075,7 +1096,7 @@ describe("ObserverClient.observe()", () => {
 			);
 		}) as typeof globalThis.fetch;
 
-		const client = makeClient("anthropic", "sk-ant-test");
+		const client = makeClient("anthropic", apiKey);
 		// The retry should succeed since we set the key
 		const result = await client.observe("system", "user");
 

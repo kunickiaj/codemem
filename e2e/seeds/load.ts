@@ -1,24 +1,22 @@
-import { initDatabase, MemoryStore, resolveDbPath } from "../../packages/core/src/index.ts";
+import { initDatabase, MemoryStore } from "../../packages/core/src/index.ts";
+
+const E2E_DB_PATH = "/data/mem.sqlite";
 
 type SeedMode = "empty" | "fixture-small" | "fixture-large";
 
-function parseArgs(argv: string[]): { mode: SeedMode; dbPath: string } {
+function parseArgs(argv: string[]): { mode: SeedMode } {
 	let mode: SeedMode = "empty";
-	let dbPath = "/data/mem.sqlite";
 	for (let index = 2; index < argv.length; index += 1) {
 		const arg = argv[index];
 		if (arg === "--mode") {
 			mode = String(argv[index + 1] ?? "empty") as SeedMode;
-			index += 1;
-		} else if (arg === "--db-path") {
-			dbPath = String(argv[index + 1] ?? dbPath);
 			index += 1;
 		}
 	}
 	if (!["empty", "fixture-small", "fixture-large"].includes(mode)) {
 		throw new Error(`Unsupported seed mode: ${mode}`);
 	}
-	return { mode, dbPath };
+	return { mode };
 }
 
 function isoAt(offsetMinutes: number): string {
@@ -61,10 +59,9 @@ function createFixture(store: MemoryStore, mode: Exclude<SeedMode, "empty">): nu
 
 async function main(): Promise<void> {
 	process.env.CODEMEM_EMBEDDING_DISABLED = process.env.CODEMEM_EMBEDDING_DISABLED || "1";
-	const { mode, dbPath } = parseArgs(process.argv);
-	const resolvedDbPath = resolveDbPath(dbPath);
-	initDatabase(resolvedDbPath);
-	const store = new MemoryStore(resolvedDbPath);
+	const { mode } = parseArgs(process.argv);
+	initDatabase(E2E_DB_PATH);
+	const store = new MemoryStore(E2E_DB_PATH);
 	try {
 		let created = 0;
 		if (mode !== "empty") {
@@ -76,7 +73,7 @@ async function main(): Promise<void> {
 				{
 					ok: true,
 					mode,
-					db_path: resolvedDbPath,
+					db_path: E2E_DB_PATH,
 					created_memories: created,
 					device_id: store.deviceId,
 				},
