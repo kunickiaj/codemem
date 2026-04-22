@@ -22,6 +22,7 @@
     "typecheck": "pnpm run tsc",
     "check": "pnpm run tsc && pnpm run lint && pnpm run test",
     "codemem": "tsx --conditions source packages/cli/src/index.ts",
+    "dev": "pnpm --filter @codemem/ui run build:watch",
     "prepare": "husky",
     "release:version": "node scripts/release-version.mjs",
     "release:preflight-tag": "bash scripts/release-tag-preflight.sh"

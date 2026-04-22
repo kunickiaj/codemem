@@ -1023,6 +1023,87 @@ describe("MemoryStore", () => {
 
 	// -- close ---------------------------------------------------------------
 
+	// -- moveMemoryProject ---------------------------------------------------
+
+	describe("moveMemoryProject", () => {
+		function sessionProject(db: MemoryStore["db"], sessionId: number): string | null {
+			const row = db.prepare("SELECT project FROM sessions WHERE id = ?").get(sessionId) as
+				| { project: string | null }
+				| undefined;
+			return row?.project ?? null;
+		}
+
+		it("updates the parent session's project to the trimmed value", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Title", "Body");
+
+			const result = store.moveMemoryProject(memId, "  new-project  ");
+			expect(result.project).toBe("new-project");
+			expect(result.session_id).toBe(sessionId);
+			expect(sessionProject(store.db, sessionId)).toBe("new-project");
+		});
+
+		it("reports the number of sibling memories that moved with the session", () => {
+			const sessionId = insertTestSession(store.db);
+			const memA = store.remember(sessionId, "discovery", "Title A", "Body");
+			store.remember(sessionId, "discovery", "Title B", "Body");
+			store.remember(sessionId, "discovery", "Title C", "Body");
+
+			const result = store.moveMemoryProject(memA, "other");
+			expect(result.moved_memory_count).toBe(3);
+		});
+
+		it("excludes inactive siblings from the moved_memory_count", () => {
+			const sessionId = insertTestSession(store.db);
+			const memA = store.remember(sessionId, "discovery", "Title A", "Body");
+			const memB = store.remember(sessionId, "discovery", "Title B", "Body");
+			store.forget(memB);
+
+			const result = store.moveMemoryProject(memA, "other");
+			expect(result.moved_memory_count).toBe(1);
+		});
+
+		it("throws when project is empty or whitespace", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Title", "Body");
+
+			expect(() => store.moveMemoryProject(memId, "")).toThrow(/non-empty/);
+			expect(() => store.moveMemoryProject(memId, "   ")).toThrow(/non-empty/);
+		});
+
+		it("throws when the memory is not found", () => {
+			expect(() => store.moveMemoryProject(99999, "anything")).toThrow(/memory not found/);
+		});
+
+		it("throws when the memory is inactive", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Title", "Body");
+			store.forget(memId);
+
+			expect(() => store.moveMemoryProject(memId, "new")).toThrow(/memory not found/);
+		});
+
+		it("recognizes self-ownership from metadata_json on legacy rows with null top-level columns", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "discovery", "Title", "Body");
+			// Simulate a legacy/imported row: clear top-level actor_id /
+			// origin_device_id, but stash the same values inside metadata_json.
+			store.db
+				.prepare(
+					`UPDATE memory_items
+					 SET actor_id = NULL,
+					     origin_device_id = NULL,
+					     metadata_json = ?
+					 WHERE id = ?`,
+				)
+				.run(JSON.stringify({ actor_id: store.actorId, origin_device_id: store.deviceId }), memId);
+
+			// Ownership check should succeed now that metadata_json is parsed.
+			const result = store.moveMemoryProject(memId, "legacy-move");
+			expect(result.project).toBe("legacy-move");
+		});
+	});
+
 	describe("close", () => {
 		it("closes the database connection", () => {
 			const sessionId = insertTestSession(store.db);

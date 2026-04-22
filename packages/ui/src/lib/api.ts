@@ -29,6 +29,7 @@ export {
 	loadMemoriesPage,
 	loadSummaries,
 	loadSummariesPage,
+	moveMemoryProject,
 	tracePack,
 	updateMemoryVisibility,
 } from "./api/memories";

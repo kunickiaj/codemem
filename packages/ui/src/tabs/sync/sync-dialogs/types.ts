@@ -23,6 +23,7 @@ export type InputDialogRequest = {
 	description: string;
 	initialValue?: string;
 	placeholder?: string;
+	suggestions?: string[];
 	title: string;
 	validate?: (value: string) => string | null;
 };

@@ -32,6 +32,24 @@ export async function updateMemoryVisibility(
 	return payload;
 }
 
+export async function moveMemoryProject(
+	memoryId: number,
+	project: string,
+): Promise<{ session_id: number; project: string; moved_memory_count: number }> {
+	const resp = await fetch("/api/memories/project", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ memory_id: memoryId, project }),
+	});
+	const { text, payload } = await readJsonPayload<{
+		session_id: number;
+		project: string;
+		moved_memory_count: number;
+	}>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	return payload;
+}
+
 export async function forgetMemory(memoryId: number): Promise<{ status?: string }> {
 	const resp = await fetch("/api/memories/forget", {
 		method: "POST",

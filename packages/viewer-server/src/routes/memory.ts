@@ -529,6 +529,36 @@ export function memoryRoutes(getStore: StoreFactory) {
 		}
 	});
 
+	// POST /api/memories/project
+	app.post("/api/memories/project", async (c) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid JSON" }, 400);
+		}
+		const memoryId = parseStrictInteger(
+			typeof body.memory_id === "string" ? body.memory_id : String(body.memory_id ?? ""),
+		);
+		if (memoryId == null || memoryId <= 0) {
+			return c.json({ error: "memory_id must be int" }, 400);
+		}
+		const project = String(body.project ?? "").trim();
+		if (!project) {
+			return c.json({ error: "project must be a non-empty string" }, 400);
+		}
+		try {
+			const result = store.moveMemoryProject(memoryId, project);
+			return c.json(result);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes("not found")) return c.json({ error: msg }, 404);
+			if (msg.includes("not owned")) return c.json({ error: msg }, 403);
+			return c.json({ error: msg }, 400);
+		}
+	});
+
 	// POST /api/memories/forget
 	app.post("/api/memories/forget", async (c) => {
 		const store = getStore();
