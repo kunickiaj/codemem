@@ -1138,7 +1138,6 @@ describe("ingest() integration", () => {
 				observerSimpleTemperature: 0.2,
 				observerRichModel: "gpt-5.4",
 				observerRichTemperature: 0.2,
-				observerRichOpenAIUseResponses: true,
 				observerRichReasoningEffort: null,
 				observerRichReasoningSummary: null,
 				observerRichMaxOutputTokens: 12000,

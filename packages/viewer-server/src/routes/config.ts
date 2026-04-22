@@ -42,6 +42,7 @@ const SECRET_CONFIG_KEYS = new Set<string>([
 	"observer_headers",
 	"sync_coordinator_admin_secret",
 ] as const);
+const REMOVED_CONFIG_KEYS = new Set<string>(["observer_rich_openai_use_responses"]);
 const ALLOWED_KEYS = [
 	"claude_command",
 	"observer_base_url",
@@ -52,7 +53,6 @@ const ALLOWED_KEYS = [
 	"observer_simple_temperature",
 	"observer_rich_model",
 	"observer_rich_temperature",
-	"observer_rich_openai_use_responses",
 	"observer_rich_reasoning_effort",
 	"observer_rich_reasoning_summary",
 	"observer_rich_max_output_tokens",
@@ -86,7 +86,6 @@ const DEFAULTS: ConfigData = {
 	observer_runtime: "api_http",
 	observer_auth_source: "auto",
 	observer_tier_routing_enabled: false,
-	observer_rich_openai_use_responses: false,
 	observer_auth_command: [],
 	observer_auth_timeout_ms: 1500,
 	observer_auth_cache_ttl_s: 300,
@@ -137,6 +136,14 @@ function readConfigFile(configPath: string): ConfigData {
 	} catch {
 		return {};
 	}
+}
+
+function withoutRemovedConfigKeys(configData: ConfigData): ConfigData {
+	const next = { ...configData };
+	for (const key of REMOVED_CONFIG_KEYS) {
+		delete next[key];
+	}
+	return next;
 }
 
 function getEffectiveConfig(configData: ConfigData): ConfigData {
@@ -309,7 +316,7 @@ function validateAndApplyUpdate(
 		configData[key] = value;
 		return null;
 	}
-	if (key === "observer_tier_routing_enabled" || key === "observer_rich_openai_use_responses") {
+	if (key === "observer_tier_routing_enabled") {
 		if (typeof value !== "boolean") return `${key} must be boolean`;
 		configData[key] = value;
 		return null;
@@ -369,7 +376,7 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 
 	app.get("/api/config", (c) => {
 		const configPath = getConfigPath();
-		const configData = readConfigFile(configPath);
+		const configData = withoutRemovedConfigKeys(readConfigFile(configPath));
 		const effective = getEffectiveConfig(configData);
 		return c.json({
 			path: configPath,
@@ -409,7 +416,7 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 				: (payload as ConfigData);
 
 		const configPath = getCodememConfigPath();
-		const beforeConfig = readCodememConfigFile();
+		const beforeConfig = withoutRemovedConfigKeys(readCodememConfigFile());
 		const { allowedUpdates, error: protectedKeyError } = partitionViewerUpdates(
 			updates,
 			beforeConfig,

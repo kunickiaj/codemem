@@ -88,7 +88,6 @@ export interface ObserverConfig {
 	observerRichProvider?: string | null;
 	observerRichModel?: string | null;
 	observerRichTemperature?: number | null;
-	observerRichOpenAIUseResponses?: boolean;
 	observerRichReasoningEffort?: string | null;
 	observerRichReasoningSummary?: string | null;
 	observerRichMaxOutputTokens?: number | null;
@@ -186,11 +185,6 @@ const OBSERVER_CONFIG_KEY_MAPPINGS: ObserverConfigKeyMapping[] = [
 		fileKey: "observer_rich_temperature",
 		envKey: "CODEMEM_OBSERVER_RICH_TEMPERATURE",
 		normalizedKey: "observerRichTemperature",
-	},
-	{
-		fileKey: "observer_rich_openai_use_responses",
-		envKey: "CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES",
-		normalizedKey: "observerRichOpenAIUseResponses",
 	},
 	{
 		fileKey: "observer_rich_reasoning_effort",
@@ -375,7 +369,6 @@ export function loadObserverConfig(): ObserverConfig {
 		observerRichProvider: null,
 		observerRichModel: null,
 		observerRichTemperature: null,
-		observerRichOpenAIUseResponses: false,
 		observerRichReasoningEffort: null,
 		observerRichReasoningSummary: null,
 		observerRichMaxOutputTokens: null,
@@ -455,9 +448,6 @@ export function loadObserverConfig(): ObserverConfig {
 		const n = Number(data.observer_rich_temperature);
 		cfg.observerRichTemperature = Number.isFinite(n) ? n : cfg.observerRichTemperature;
 	}
-	if (data.observer_rich_openai_use_responses != null) {
-		cfg.observerRichOpenAIUseResponses = data.observer_rich_openai_use_responses === true;
-	}
 	if (typeof data.observer_rich_reasoning_effort === "string") {
 		cfg.observerRichReasoningEffort = data.observer_rich_reasoning_effort;
 	}
@@ -532,11 +522,6 @@ export function loadObserverConfig(): ObserverConfig {
 	if (process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE != null) {
 		const n = Number(process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE);
 		cfg.observerRichTemperature = Number.isFinite(n) ? n : cfg.observerRichTemperature;
-	}
-	if (process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES != null) {
-		cfg.observerRichOpenAIUseResponses =
-			process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES === "1" ||
-			process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES === "true";
 	}
 	cfg.observerRichReasoningEffort =
 		process.env.CODEMEM_OBSERVER_RICH_REASONING_EFFORT ?? cfg.observerRichReasoningEffort;
@@ -1033,7 +1018,6 @@ export class ObserverClient {
 	readonly richProvider: string | null;
 	readonly richModel: string | null;
 	readonly richTemperature: number | null;
-	readonly richOpenAIUseResponses: boolean;
 	readonly richReasoningEffort: string | null;
 	readonly richReasoningSummary: string | null;
 	readonly richMaxOutputTokens: number | null;
@@ -1176,7 +1160,6 @@ export class ObserverClient {
 			Number.isFinite(cfg.observerRichTemperature)
 				? cfg.observerRichTemperature
 				: null;
-		this.richOpenAIUseResponses = cfg.observerRichOpenAIUseResponses === true;
 		this.richReasoningEffort =
 			typeof cfg.observerRichReasoningEffort === "string" && cfg.observerRichReasoningEffort.trim()
 				? cfg.observerRichReasoningEffort.trim()
@@ -1263,7 +1246,6 @@ export class ObserverClient {
 			observerRichProvider: this.richProvider,
 			observerRichModel: this.richModel,
 			observerRichTemperature: this.richTemperature,
-			observerRichOpenAIUseResponses: this.richOpenAIUseResponses,
 			observerRichReasoningEffort: this.richReasoningEffort,
 			observerRichReasoningSummary: this.richReasoningSummary,
 			observerRichMaxOutputTokens: this.richMaxOutputTokens,

@@ -27,7 +27,6 @@ describe("loadObserverConfig", () => {
 		"CODEMEM_OBSERVER_SIMPLE_TEMPERATURE",
 		"CODEMEM_OBSERVER_RICH_MODEL",
 		"CODEMEM_OBSERVER_RICH_TEMPERATURE",
-		"CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES",
 		"CODEMEM_OBSERVER_RICH_REASONING_EFFORT",
 		"CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
 		"CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
@@ -124,7 +123,6 @@ describe("loadObserverConfig", () => {
 			process.env.CODEMEM_OBSERVER_SIMPLE_TEMPERATURE = "0.2";
 			process.env.CODEMEM_OBSERVER_RICH_MODEL = "gpt-5.4";
 			process.env.CODEMEM_OBSERVER_RICH_TEMPERATURE = "0.25";
-			process.env.CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES = "true";
 			process.env.CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS = "12000";
 			const cfg = loadObserverConfig();
 			expect(cfg.observerProvider).toBe("openai");
@@ -135,7 +133,6 @@ describe("loadObserverConfig", () => {
 			expect(cfg.observerSimpleTemperature).toBe(0.2);
 			expect(cfg.observerRichModel).toBe("gpt-5.4");
 			expect(cfg.observerRichTemperature).toBe(0.25);
-			expect(cfg.observerRichOpenAIUseResponses).toBe(true);
 			expect(cfg.observerRichMaxOutputTokens).toBe(12000);
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true });

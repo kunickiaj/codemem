@@ -125,7 +125,6 @@ export function collectSettingsPayload(
 		observer_simple_temperature: simpleTemperature,
 		observer_rich_model: normalizeTextValue(values.observerRichModel),
 		observer_rich_temperature: richTemperature,
-		observer_rich_openai_use_responses: values.observerRichOpenAIUseResponses,
 		observer_rich_reasoning_effort: normalizeTextValue(values.observerRichReasoningEffort),
 		observer_rich_reasoning_summary: normalizeTextValue(values.observerRichReasoningSummary),
 		observer_rich_max_output_tokens: richMaxOutputTokens,

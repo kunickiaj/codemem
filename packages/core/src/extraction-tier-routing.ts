@@ -238,14 +238,6 @@ export function buildTieredObserverSelection(
 	if (knownProvider) {
 		const tierDefaults = resolveRichTierDefaults(knownProvider);
 		const isOpenAI = knownProvider === "openai";
-		const hasExplicitBaseResponsesSetting = explicitConfigKeys.has("observerOpenAIUseResponses");
-		const hasExplicitRichResponsesSetting = explicitConfigKeys.has(
-			"observerRichOpenAIUseResponses",
-		);
-		const explicitResponsesRequested =
-			hasExplicitRichResponsesSetting &&
-			baseConfig.observerRichOpenAIUseResponses === true &&
-			!isOpenAI;
 		const observer = {
 			...baseConfig,
 			observerProvider: knownProvider,
@@ -255,13 +247,7 @@ export function buildTieredObserverSelection(
 				baseConfig.observerRichTemperature ??
 				tierDefaults.observerTemperature ??
 				baseConfig.observerTemperature,
-			observerOpenAIUseResponses: isOpenAI
-				? hasExplicitRichResponsesSetting
-					? baseConfig.observerRichOpenAIUseResponses === true
-					: hasExplicitBaseResponsesSetting
-						? baseConfig.observerOpenAIUseResponses === true
-						: (tierDefaults.observerOpenAIUseResponses ?? false)
-				: undefined,
+			observerOpenAIUseResponses: isOpenAI ? true : undefined,
 			observerReasoningEffort: isOpenAI
 				? (baseConfig.observerRichReasoningEffort ?? tierDefaults.observerReasoningEffort ?? null)
 				: null,
@@ -273,22 +259,12 @@ export function buildTieredObserverSelection(
 				tierDefaults.observerMaxOutputTokens ??
 				baseConfig.observerMaxTokens,
 		};
-		const requestedConfig: ObserverConfig = {
-			...observer,
-			observerRuntime: normalizedRuntime,
-			observerOpenAIUseResponses: explicitResponsesRequested
-				? true
-				: observer.observerOpenAIUseResponses,
-		};
 		return {
 			observer,
-			metadata: requestedMetadata(
-				decision,
-				requestedConfig,
-				explicitResponsesRequested
-					? "provider-specific transport setting requested on an incompatible path"
-					: null,
-			),
+			metadata: requestedMetadata(decision, {
+				...observer,
+				observerRuntime: normalizedRuntime,
+			}),
 		};
 	}
 	// Unknown/custom provider: preserve base provider and only honor explicit

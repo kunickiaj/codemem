@@ -21,7 +21,6 @@ function baseConfig(overrides: Partial<ObserverConfig> = {}): ObserverConfig {
 		observerRichProvider: null,
 		observerRichModel: "gpt-5.4",
 		observerRichTemperature: 0.2,
-		observerRichOpenAIUseResponses: undefined,
 		observerRichReasoningEffort: null,
 		observerRichReasoningSummary: null,
 		observerRichMaxOutputTokens: 12000,
@@ -319,7 +318,7 @@ describe("extraction tier routing", () => {
 		);
 	});
 
-	it("marks incompatible provider-specific transport requests as a visible fallback", () => {
+	it("keeps rich OpenAI routing on Responses even when base transport is explicitly false", () => {
 		const decision = decideExtractionReplayTier({
 			batchId: 18503,
 			sessionId: 166405,
@@ -330,40 +329,12 @@ describe("extraction tier routing", () => {
 		});
 		const selection = buildTieredObserverSelection(
 			baseConfig({
-				observerProvider: "anthropic",
-				observerRichOpenAIUseResponses: true,
-				observerExplicitConfigKeys: ["observerRichOpenAIUseResponses"],
+				observerOpenAIUseResponses: false,
+				observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
 			}),
 			decision,
 		);
-		expect(selection.metadata).toEqual(
-			expect.objectContaining({
-				requestedProvider: "anthropic",
-				requestedOpenAIResponses: true,
-				fallbackApplied: true,
-				fallbackReason: "provider-specific transport setting requested on an incompatible path",
-			}),
-		);
-		expect(selection.observer.observerOpenAIUseResponses).toBeUndefined();
-	});
-
-	it("honors explicit false for rich OpenAI Responses usage", () => {
-		const decision = decideExtractionReplayTier({
-			batchId: 18503,
-			sessionId: 166405,
-			eventSpan: 153,
-			promptCount: 4,
-			toolCount: 12,
-			transcriptLength: 2800,
-		});
-		const selection = buildTieredObserverSelection(
-			baseConfig({
-				observerRichOpenAIUseResponses: false,
-				observerExplicitConfigKeys: ["observerRichOpenAIUseResponses"],
-			}),
-			decision,
-		);
-		expect(selection.observer.observerOpenAIUseResponses).toBe(false);
+		expect(selection.observer.observerOpenAIUseResponses).toBe(true);
 		expect(selection.metadata.fallbackApplied).toBe(false);
 	});
 

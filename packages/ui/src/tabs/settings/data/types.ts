@@ -13,7 +13,6 @@ export type SettingsFormState = {
 	observerSimpleTemperature: string;
 	observerRichModel: string;
 	observerRichTemperature: string;
-	observerRichOpenAIUseResponses: boolean;
 	observerRichReasoningEffort: string;
 	observerRichReasoningSummary: string;
 	observerRichMaxOutputTokens: string;

@@ -193,7 +193,6 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	observer_simple_temperature: "CODEMEM_OBSERVER_SIMPLE_TEMPERATURE",
 	observer_rich_model: "CODEMEM_OBSERVER_RICH_MODEL",
 	observer_rich_temperature: "CODEMEM_OBSERVER_RICH_TEMPERATURE",
-	observer_rich_openai_use_responses: "CODEMEM_OBSERVER_RICH_OPENAI_USE_RESPONSES",
 	observer_rich_reasoning_effort: "CODEMEM_OBSERVER_RICH_REASONING_EFFORT",
 	observer_rich_reasoning_summary: "CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
 	observer_rich_max_output_tokens: "CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
