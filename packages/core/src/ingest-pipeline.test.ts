@@ -1241,17 +1241,29 @@ describe("ingest() integration", () => {
 		expect(memoryMeta).toEqual(
 			expect.objectContaining({
 				observer_tier: "rich",
+				observer_requested_provider: "openai",
+				observer_requested_model: "gpt-5.4",
+				observer_requested_runtime: "api_http",
 				observer_provider: "openai",
 				observer_model: "gpt-5.4",
+				observer_runtime: "api_http",
 				observer_openai_responses: true,
+				observer_fallback_applied: false,
+				observer_fallback_reason: null,
 			}),
 		);
 		expect(sessionMeta.post).toEqual(
 			expect.objectContaining({
 				observer_tier: "rich",
+				observer_requested_provider: "openai",
+				observer_requested_model: "gpt-5.4",
+				observer_requested_runtime: "api_http",
 				observer_provider: "openai",
 				observer_model: "gpt-5.4",
+				observer_runtime: "api_http",
 				observer_openai_responses: true,
+				observer_fallback_applied: false,
+				observer_fallback_reason: null,
 			}),
 		);
 	});

@@ -15,6 +15,21 @@ export interface ExtractionReplayTierRoutingDecision {
 	observer: Partial<ObserverConfig>;
 }
 
+export interface TierRoutingApplicationMetadata {
+	requestedTier: "simple" | "rich";
+	requestedProvider: string | null;
+	requestedModel: string | null;
+	requestedRuntime: string | null;
+	requestedOpenAIResponses: boolean | null;
+	fallbackApplied: boolean;
+	fallbackReason: string | null;
+}
+
+export interface TieredObserverConfigSelection {
+	observer: ObserverConfig;
+	metadata: TierRoutingApplicationMetadata;
+}
+
 export const SIMPLE_TIER_DEFAULTS: Partial<ObserverConfig> = {
 	observerProvider: "openai",
 	observerModel: "gpt-5.4-mini",
@@ -68,17 +83,46 @@ function resolveRichTierDefaults(provider: KnownTierProvider): Partial<ObserverC
 	return provider === "anthropic" ? RICH_TIER_ANTHROPIC_DEFAULTS : RICH_TIER_DEFAULTS;
 }
 
-export function buildTieredObserverConfig(
+function normalizeRuntime(value: string | null | undefined): string {
+	return typeof value === "string" && value.trim().toLowerCase() === "claude_sidecar"
+		? "claude_sidecar"
+		: "api_http";
+}
+
+function nullIfUndefined<T>(value: T | undefined): T | null {
+	return value === undefined ? null : value;
+}
+
+function requestedMetadata(
+	decision: ExtractionReplayTierRoutingDecision,
+	config: ObserverConfig,
+	fallbackReason: string | null = null,
+): TierRoutingApplicationMetadata {
+	return {
+		requestedTier: decision.tier,
+		requestedProvider: config.observerProvider ?? null,
+		requestedModel: config.observerModel ?? null,
+		requestedRuntime: config.observerRuntime ?? null,
+		requestedOpenAIResponses: nullIfUndefined(config.observerOpenAIUseResponses),
+		fallbackApplied: fallbackReason != null,
+		fallbackReason,
+	};
+}
+
+export function buildTieredObserverSelection(
 	baseConfig: ObserverConfig,
 	decision: ExtractionReplayTierRoutingDecision,
-): ObserverConfig {
+): TieredObserverConfigSelection {
+	const normalizedRuntime = normalizeRuntime(baseConfig.observerRuntime);
+	const explicitConfigKeys = new Set(baseConfig.observerExplicitConfigKeys ?? []);
+
 	if (decision.tier === "simple") {
 		const knownProvider =
 			normalizeKnownProvider(baseConfig.observerSimpleProvider) ??
 			normalizeKnownProvider(baseConfig.observerProvider);
 		if (knownProvider) {
 			const tierDefaults = resolveSimpleTierDefaults(knownProvider);
-			return {
+			const observer = {
 				...baseConfig,
 				observerProvider: knownProvider,
 				observerModel:
@@ -92,13 +136,20 @@ export function buildTieredObserverConfig(
 				observerReasoningSummary: null,
 				observerMaxOutputTokens: baseConfig.observerMaxTokens,
 			};
+			return {
+				observer,
+				metadata: requestedMetadata(decision, {
+					...observer,
+					observerRuntime: normalizedRuntime,
+				}),
+			};
 		}
 		// Unknown/custom provider (e.g. opencode, bespoke gateway): preserve the
 		// base provider and only honor user-provided tier overrides. Do not apply
 		// OpenAI or Anthropic defaults.
 		const preservedProvider =
 			trimmedProvider(baseConfig.observerSimpleProvider) ?? baseConfig.observerProvider ?? null;
-		return {
+		const observer = {
 			...baseConfig,
 			observerProvider: preservedProvider,
 			observerModel: baseConfig.observerSimpleModel ?? baseConfig.observerModel,
@@ -108,6 +159,13 @@ export function buildTieredObserverConfig(
 			observerReasoningSummary: null,
 			observerMaxOutputTokens: baseConfig.observerMaxTokens,
 		};
+		return {
+			observer,
+			metadata: requestedMetadata(decision, {
+				...observer,
+				observerRuntime: normalizedRuntime,
+			}),
+		};
 	}
 
 	const knownProvider =
@@ -116,7 +174,14 @@ export function buildTieredObserverConfig(
 	if (knownProvider) {
 		const tierDefaults = resolveRichTierDefaults(knownProvider);
 		const isOpenAI = knownProvider === "openai";
-		return {
+		const hasExplicitRichResponsesSetting = explicitConfigKeys.has(
+			"observerRichOpenAIUseResponses",
+		);
+		const explicitResponsesRequested =
+			hasExplicitRichResponsesSetting &&
+			baseConfig.observerRichOpenAIUseResponses === true &&
+			!isOpenAI;
+		const observer = {
 			...baseConfig,
 			observerProvider: knownProvider,
 			observerModel:
@@ -126,8 +191,8 @@ export function buildTieredObserverConfig(
 				tierDefaults.observerTemperature ??
 				baseConfig.observerTemperature,
 			observerOpenAIUseResponses: isOpenAI
-				? baseConfig.observerRichOpenAIUseResponses === true
-					? true
+				? hasExplicitRichResponsesSetting
+					? baseConfig.observerRichOpenAIUseResponses === true
 					: (tierDefaults.observerOpenAIUseResponses ?? false)
 				: undefined,
 			observerReasoningEffort: isOpenAI
@@ -141,12 +206,29 @@ export function buildTieredObserverConfig(
 				tierDefaults.observerMaxOutputTokens ??
 				baseConfig.observerMaxTokens,
 		};
+		const requestedConfig: ObserverConfig = {
+			...observer,
+			observerRuntime: normalizedRuntime,
+			observerOpenAIUseResponses: explicitResponsesRequested
+				? true
+				: observer.observerOpenAIUseResponses,
+		};
+		return {
+			observer,
+			metadata: requestedMetadata(
+				decision,
+				requestedConfig,
+				explicitResponsesRequested
+					? "provider-specific transport setting requested on an incompatible path"
+					: null,
+			),
+		};
 	}
 	// Unknown/custom provider: preserve base provider and only honor explicit
 	// rich-tier overrides.
 	const preservedProvider =
 		trimmedProvider(baseConfig.observerRichProvider) ?? baseConfig.observerProvider ?? null;
-	return {
+	const observer = {
 		...baseConfig,
 		observerProvider: preservedProvider,
 		observerModel: baseConfig.observerRichModel ?? baseConfig.observerModel,
@@ -156,6 +238,20 @@ export function buildTieredObserverConfig(
 		observerReasoningSummary: null,
 		observerMaxOutputTokens: baseConfig.observerRichMaxOutputTokens ?? baseConfig.observerMaxTokens,
 	};
+	return {
+		observer,
+		metadata: requestedMetadata(decision, {
+			...observer,
+			observerRuntime: normalizedRuntime,
+		}),
+	};
+}
+
+export function buildTieredObserverConfig(
+	baseConfig: ObserverConfig,
+	decision: ExtractionReplayTierRoutingDecision,
+): ObserverConfig {
+	return buildTieredObserverSelection(baseConfig, decision).observer;
 }
 
 export function decideExtractionReplayTier(

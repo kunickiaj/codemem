@@ -24,7 +24,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { normalizeProjectLabel } from "./claude-hooks.js";
 import { fromJson, toJson } from "./db.js";
 import {
-	buildTieredObserverConfig,
+	buildTieredObserverSelection,
 	decideExtractionReplayTier,
 } from "./extraction-tier-routing.js";
 import {
@@ -479,6 +479,12 @@ export async function ingest(
 		let selectedObserver = options.observer;
 		let selectedTier: "simple" | "rich" | null = null;
 		let selectedTierReasons: string[] = [];
+		let requestedObserverProvider: string | null = null;
+		let requestedObserverModel: string | null = null;
+		let requestedObserverRuntime: string | null = null;
+		let requestedObserverOpenAIResponses: boolean | null = null;
+		let observerFallbackApplied = false;
+		let observerFallbackReason: string | null = null;
 		if (options.observer.tierRoutingEnabled) {
 			const flushBatchId =
 				sessionContext.flushBatch &&
@@ -496,7 +502,14 @@ export async function ingest(
 			});
 			selectedTier = decision.tier;
 			selectedTierReasons = decision.reasons;
-			const tierConfig = buildTieredObserverConfig(options.observer.toConfig(), decision);
+			const tierSelection = buildTieredObserverSelection(options.observer.toConfig(), decision);
+			const tierConfig = tierSelection.observer;
+			requestedObserverProvider = tierSelection.metadata.requestedProvider;
+			requestedObserverModel = tierSelection.metadata.requestedModel;
+			requestedObserverRuntime = tierSelection.metadata.requestedRuntime;
+			requestedObserverOpenAIResponses = tierSelection.metadata.requestedOpenAIResponses;
+			observerFallbackApplied = tierSelection.metadata.fallbackApplied;
+			observerFallbackReason = tierSelection.metadata.fallbackReason;
 			selectedObserver = options.createTierObserver
 				? options.createTierObserver(tierConfig)
 				: new ObserverClientImpl(tierConfig);
@@ -531,6 +544,7 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		const rawText = response.raw;
 		const parsed = response.parsed;
+		const observerStatus = selectedObserver.getStatus();
 
 		const observationsToStore: typeof parsed.observations = [];
 		if (storeTyped && hasMeaningfulObservation(parsed.observations)) {
@@ -681,9 +695,16 @@ export async function ingest(
 					source: "observer",
 					observer_tier: selectedTier,
 					observer_tier_reasons: selectedTierReasons,
+					observer_requested_provider: requestedObserverProvider,
+					observer_requested_model: requestedObserverModel,
+					observer_requested_runtime: requestedObserverRuntime,
+					observer_requested_openai_responses: requestedObserverOpenAIResponses,
 					observer_provider: response.provider,
 					observer_model: response.model,
+					observer_runtime: observerStatus.runtime,
 					observer_openai_responses: selectedObserver.openaiUseResponses,
+					observer_fallback_applied: observerFallbackApplied,
+					observer_fallback_reason: observerFallbackReason,
 					flush_batch: flushBatchMetadata,
 				});
 				vectorWriteInputs.push({ memoryId, title: memoryTitle, bodyText });
@@ -727,9 +748,16 @@ export async function ingest(
 						session_class: sessionClass,
 						observer_tier: selectedTier,
 						observer_tier_reasons: selectedTierReasons,
+						observer_requested_provider: requestedObserverProvider,
+						observer_requested_model: requestedObserverModel,
+						observer_requested_runtime: requestedObserverRuntime,
+						observer_requested_openai_responses: requestedObserverOpenAIResponses,
 						observer_provider: response.provider,
 						observer_model: response.model,
+						observer_runtime: observerStatus.runtime,
 						observer_openai_responses: selectedObserver.openaiUseResponses,
+						observer_fallback_applied: observerFallbackApplied,
+						observer_fallback_reason: observerFallbackReason,
 						files_read: summary.filesRead,
 						files_modified: summary.filesModified,
 						source: "observer_summary",
@@ -762,9 +790,16 @@ export async function ingest(
 						summary_disposition: summaryDisposition,
 						observer_tier: selectedTier,
 						observer_tier_reasons: selectedTierReasons,
+						requested_provider: requestedObserverProvider,
+						requested_model: requestedObserverModel,
+						requested_runtime: requestedObserverRuntime,
+						requested_openai_responses: requestedObserverOpenAIResponses,
 						provider: response.provider,
 						model: response.model,
+						runtime: observerStatus.runtime,
 						openai_responses: selectedObserver.openaiUseResponses,
+						fallback_applied: observerFallbackApplied,
+						fallback_reason: observerFallbackReason,
 						session_usage_tokens: usageTokenTotal,
 					}),
 				})
@@ -787,9 +822,16 @@ export async function ingest(
 			summary_disposition: summaryDisposition,
 			observer_tier: selectedTier,
 			observer_tier_reasons: selectedTierReasons,
+			observer_requested_provider: requestedObserverProvider,
+			observer_requested_model: requestedObserverModel,
+			observer_requested_runtime: requestedObserverRuntime,
+			observer_requested_openai_responses: requestedObserverOpenAIResponses,
 			observer_provider: response.provider,
 			observer_model: response.model,
+			observer_runtime: observerStatus.runtime,
 			observer_openai_responses: selectedObserver.openaiUseResponses,
+			observer_fallback_applied: observerFallbackApplied,
+			observer_fallback_reason: observerFallbackReason,
 		});
 	} catch (err) {
 		// End session even on error

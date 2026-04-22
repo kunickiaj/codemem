@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildTieredObserverConfig,
+	buildTieredObserverSelection,
 	decideExtractionReplayTier,
 } from "./extraction-tier-routing.js";
 import type { ObserverConfig } from "./observer-client.js";
@@ -236,5 +237,76 @@ describe("extraction tier routing", () => {
 		);
 		expect(config.observerProvider).toBe("anthropic");
 		expect(config.observerModel).toBe("claude-opus-4-6");
+	});
+
+	it("records requested routing metadata for a rich tier selection", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(baseConfig(), decision);
+		expect(selection.metadata).toEqual(
+			expect.objectContaining({
+				requestedTier: "rich",
+				requestedProvider: "openai",
+				requestedModel: "gpt-5.4",
+				requestedRuntime: "api_http",
+				requestedOpenAIResponses: true,
+				fallbackApplied: false,
+				fallbackReason: null,
+			}),
+		);
+	});
+
+	it("marks incompatible provider-specific transport requests as a visible fallback", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "anthropic",
+				observerRichOpenAIUseResponses: true,
+				observerExplicitConfigKeys: ["observerRichOpenAIUseResponses"],
+			}),
+			decision,
+		);
+		expect(selection.metadata).toEqual(
+			expect.objectContaining({
+				requestedProvider: "anthropic",
+				requestedOpenAIResponses: true,
+				fallbackApplied: true,
+				fallbackReason: "provider-specific transport setting requested on an incompatible path",
+			}),
+		);
+		expect(selection.observer.observerOpenAIUseResponses).toBeUndefined();
+	});
+
+	it("honors explicit false for rich OpenAI Responses usage", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerRichOpenAIUseResponses: false,
+				observerExplicitConfigKeys: ["observerRichOpenAIUseResponses"],
+			}),
+			decision,
+		);
+		expect(selection.observer.observerOpenAIUseResponses).toBe(false);
+		expect(selection.metadata.fallbackApplied).toBe(false);
 	});
 });

@@ -153,6 +153,27 @@ describe("loadObserverConfig", () => {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
 	});
+
+	it("records explicit config keys for user-set tier routing fields", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-config-test-"));
+		const configPath = join(tmpDir, "config.json");
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				observer_provider: "openai",
+				observer_tier_routing_enabled: false,
+			}),
+		);
+		try {
+			process.env.CODEMEM_CONFIG = configPath;
+			const cfg = loadObserverConfig();
+			expect(cfg.observerExplicitConfigKeys).toEqual(
+				expect.arrayContaining(["observerProvider", "observerTierRoutingEnabled"]),
+			);
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -161,6 +182,107 @@ describe("loadObserverConfig", () => {
 
 describe("ObserverClient", () => {
 	describe("constructor", () => {
+		it("defaults tier routing on for capability-safe api_http providers when not explicitly set", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: "api_http",
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.tierRoutingEnabled).toBe(true);
+		});
+
+		it("keeps tier routing off when the user explicitly disables it", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: "api_http",
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerTierRoutingEnabled: false,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.tierRoutingEnabled).toBe(false);
+		});
+
+		it("keeps default tier routing off when a custom base URL is configured", () => {
+			const client = new ObserverClient({
+				observerProvider: "openai",
+				observerModel: "gpt-5.4-mini",
+				observerRuntime: "api_http",
+				observerApiKey: "test-key",
+				observerBaseUrl: "https://openai-proxy.example/v1",
+				observerTemperature: 0.2,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "none",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.tierRoutingEnabled).toBe(false);
+		});
+
+		it("keeps default tier routing off for unmapped api_http providers", () => {
+			const client = new ObserverClient({
+				observerProvider: "opencode",
+				observerModel: "opencode/gpt-5.4-mini",
+				observerRuntime: "api_http",
+				observerApiKey: "test-key",
+				observerBaseUrl: "https://gateway.example/v1",
+				observerTemperature: 0.2,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "none",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.tierRoutingEnabled).toBe(false);
+		});
+
+		it("keeps default tier routing off for claude_sidecar until sidecar tier routing lands", () => {
+			const client = new ObserverClient({
+				observerProvider: "anthropic",
+				observerModel: "claude-haiku-4-5",
+				observerRuntime: "claude_sidecar",
+				observerApiKey: null,
+				observerBaseUrl: null,
+				observerTemperature: 0.2,
+				observerMaxChars: 12_000,
+				observerMaxTokens: 4_000,
+				observerHeaders: {},
+				observerAuthSource: "auto",
+				observerAuthFile: null,
+				observerAuthCommand: [],
+				observerAuthTimeoutMs: 1500,
+				observerAuthCacheTtlS: 300,
+			});
+			expect(client.tierRoutingEnabled).toBe(false);
+		});
+
 		it("defaults to openai provider and default model", () => {
 			const client = new ObserverClient({
 				observerProvider: null,
