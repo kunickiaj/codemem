@@ -10,6 +10,7 @@ import {
 	hasPendingDedupKeyBackfill,
 	hasPendingRefBackfill,
 	hasPendingSessionContextBackfill,
+	hasPendingSummaryDedupBackfill,
 	initDatabase,
 	isEmbeddingDisabled,
 	type MemoryStore,
@@ -24,6 +25,8 @@ import {
 	runSyncDaemon,
 	SESSION_CONTEXT_BACKFILL_JOB,
 	SessionContextBackfillRunner,
+	SUMMARY_DEDUP_BACKFILL_JOB,
+	SummaryDedupBackfillRunner,
 	SyncRetentionRunner,
 	VectorModelMigrationRunner,
 } from "@codemem/core";
@@ -584,6 +587,17 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 				createRunner: () =>
 					new RefBackfillRunner({
 						dbPath,
+						signal: backfillAbort.signal,
+					}),
+			},
+			{
+				name: "Session-summary dedup",
+				kind: SUMMARY_DEDUP_BACKFILL_JOB,
+				isPending: hasPendingSummaryDedupBackfill,
+				createRunner: () =>
+					new SummaryDedupBackfillRunner({
+						dbPath,
+						deviceId: store.deviceId,
 						signal: backfillAbort.signal,
 					}),
 			},
