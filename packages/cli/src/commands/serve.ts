@@ -858,12 +858,18 @@ serveCmd.addOption(new Option("--restart", "restart background viewer").hideHelp
 export const serveCommand = serveCmd.action(
 	async (action: string | undefined, opts: LegacyServeOptions) => {
 		try {
-			// Emit deprecation warnings for legacy flags
-			if (opts.stop) emitDeprecationWarning("--stop", "codemem serve stop");
-			if (opts.restart) emitDeprecationWarning("--restart", "codemem serve restart");
-			if (opts.background) emitDeprecationWarning("--background", "codemem serve start");
-			if (opts.foreground)
-				emitDeprecationWarning("--foreground", "codemem serve start --foreground");
+			// Emit deprecation warnings only when the legacy bare-flag form is
+			// used (no lifecycle action). When an action is present (start,
+			// stop, restart) the flags are being consumed by the modern
+			// subcommand form — e.g. `codemem serve start --foreground` — and
+			// should not be flagged as deprecated.
+			if (action === undefined) {
+				if (opts.stop) emitDeprecationWarning("--stop", "codemem serve stop");
+				if (opts.restart) emitDeprecationWarning("--restart", "codemem serve restart");
+				if (opts.background) emitDeprecationWarning("--background", "codemem serve start");
+				if (opts.foreground)
+					emitDeprecationWarning("--foreground", "codemem serve start --foreground");
+			}
 
 			const normalizedAction =
 				action === undefined
