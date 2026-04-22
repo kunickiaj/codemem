@@ -969,10 +969,14 @@
       .feed-controls {
         display: flex;
         align-items: center;
-        justify-content: space-between;
         gap: var(--sp-3);
         flex-wrap: wrap;
         margin-bottom: var(--sp-4);
+      }
+      .feed-controls > .section-meta {
+        flex: 1 1 auto;
+        min-width: 0;
+        margin-bottom: 0;
       }
 
       .feed-controls-right {
