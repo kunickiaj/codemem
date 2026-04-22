@@ -102,18 +102,6 @@ export function ProcessingPanel({
 					/>
 					<div className="small">Used when routing detects a richer replay batch.</div>
 				</Field>
-				<SettingsSwitchRow
-					checked={values.observerRichOpenAIUseResponses}
-					className="field"
-					hidden={!showTieredRouting}
-					id="observerRichOpenAIUseResponses"
-					label="Use OpenAI Responses API for rich tier"
-					onCheckedChange={onSwitchInput("observerRichOpenAIUseResponses")}
-				/>
-				<div className="small" hidden={!showTieredRouting}>
-					On: rich-tier OpenAI requests use the Responses API (reasoning + longer output). Turn off
-					if your OpenAI account or proxy only supports chat/completions.
-				</div>
 				<Field
 					className="field settings-advanced"
 					hidden={!showTieredRouting || hiddenUnlessAdvanced()}

@@ -152,7 +152,6 @@ export function configuredValueForKey(config: unknown, key: string): unknown {
 		case "sync_enabled":
 		case "sync_mdns":
 		case "observer_tier_routing_enabled":
-		case "observer_rich_openai_use_responses":
 			return asBooleanValue(cfg[key]);
 		default:
 			return hasOwn(cfg, key) ? cfg[key] : "";

@@ -1122,7 +1122,6 @@ describe("viewer-server", () => {
 					observer_tier_routing_enabled: true,
 					observer_simple_model: "gpt-5.4-mini",
 					observer_rich_model: "gpt-5.4",
-					observer_rich_openai_use_responses: true,
 				}),
 			);
 			const { app, cleanup } = createTestApp();
@@ -1135,7 +1134,7 @@ describe("viewer-server", () => {
 				expect(config.observer_tier_routing_enabled).toBe(true);
 				expect(config.observer_simple_model).toBe("gpt-5.4-mini");
 				expect(config.observer_rich_model).toBe("gpt-5.4");
-				expect(config.observer_rich_openai_use_responses).toBe(true);
+				expect(config).not.toHaveProperty("observer_rich_openai_use_responses");
 				expect(effective.observer_tier_routing_enabled).toBe(true);
 			} finally {
 				cleanup();
@@ -1148,6 +1147,7 @@ describe("viewer-server", () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const previous = process.env.CODEMEM_CONFIG;
 			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(configPath, JSON.stringify({ observer_rich_openai_use_responses: true }));
 			const { app, cleanup } = createTestApp();
 			try {
 				const res = await app.request("/api/config", {
@@ -1163,7 +1163,6 @@ describe("viewer-server", () => {
 							observer_simple_temperature: 0.2,
 							observer_rich_model: "gpt-5.4",
 							observer_rich_temperature: 0.1,
-							observer_rich_openai_use_responses: true,
 							observer_rich_reasoning_effort: "medium",
 							observer_rich_reasoning_summary: "auto",
 							observer_rich_max_output_tokens: 12000,
@@ -1175,8 +1174,9 @@ describe("viewer-server", () => {
 				const body = (await res.json()) as Record<string, unknown>;
 				const config = body.config as Record<string, unknown>;
 				expect(config.observer_tier_routing_enabled).toBe(true);
-				expect(config.observer_rich_openai_use_responses).toBe(true);
+				expect(config).not.toHaveProperty("observer_rich_openai_use_responses");
 				const saved = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+				expect(saved).not.toHaveProperty("observer_rich_openai_use_responses");
 				expect(saved.observer_simple_temperature).toBe(0.2);
 				expect(saved.observer_rich_temperature).toBe(0.1);
 				expect(saved.observer_rich_max_output_tokens).toBe(12000);
