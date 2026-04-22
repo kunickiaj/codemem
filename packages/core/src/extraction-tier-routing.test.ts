@@ -147,6 +147,50 @@ describe("extraction tier routing", () => {
 		expect(config.observerOpenAIUseResponses).toBeUndefined();
 	});
 
+	it("maps claude_sidecar simple tier routing onto Claude defaults", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 19001,
+			sessionId: 200001,
+			eventSpan: 12,
+			promptCount: 1,
+			toolCount: 1,
+			transcriptLength: 320,
+		});
+		const config = buildTieredObserverConfig(
+			baseConfig({
+				observerProvider: "openai",
+				observerRuntime: "claude_sidecar",
+				observerSimpleModel: null,
+			}),
+			decision,
+		);
+		expect(config.observerProvider).toBe("anthropic");
+		expect(config.observerModel).toBe("claude-haiku-4-5");
+		expect(config.observerRuntime).toBe("claude_sidecar");
+	});
+
+	it("maps claude_sidecar rich tier routing onto Claude defaults", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const config = buildTieredObserverConfig(
+			baseConfig({
+				observerProvider: "openai",
+				observerRuntime: "claude_sidecar",
+				observerRichModel: null,
+			}),
+			decision,
+		);
+		expect(config.observerProvider).toBe("anthropic");
+		expect(config.observerModel).toBe("claude-sonnet-4-6");
+		expect(config.observerRuntime).toBe("claude_sidecar");
+	});
+
 	it("respects observerRichProvider override even when base provider is openai", () => {
 		const decision = decideExtractionReplayTier({
 			batchId: 18503,
@@ -340,5 +384,49 @@ describe("extraction tier routing", () => {
 			decision,
 		);
 		expect(selection.observer.observerOpenAIUseResponses).toBe(false);
+	});
+
+	it("does not record fallback on claude_sidecar when provider was not explicitly requested", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "openai",
+				observerRuntime: "claude_sidecar",
+			}),
+			decision,
+		);
+		expect(selection.metadata.fallbackApplied).toBe(false);
+		expect(selection.metadata.fallbackReason).toBeNull();
+		expect(selection.observer.observerProvider).toBe("anthropic");
+	});
+
+	it("records a visible fallback when an incompatible provider is requested on claude_sidecar", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "openai",
+				observerRuntime: "claude_sidecar",
+				observerExplicitConfigKeys: ["observerProvider"],
+			}),
+			decision,
+		);
+		expect(selection.metadata.requestedProvider).toBe("openai");
+		expect(selection.metadata.fallbackApplied).toBe(true);
+		expect(selection.metadata.fallbackReason).toBe("unsupported tier override for runtime");
+		expect(selection.observer.observerProvider).toBe("anthropic");
 	});
 });

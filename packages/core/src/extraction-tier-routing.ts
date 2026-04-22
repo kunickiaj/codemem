@@ -115,6 +115,64 @@ export function buildTieredObserverSelection(
 ): TieredObserverConfigSelection {
 	const normalizedRuntime = normalizeRuntime(baseConfig.observerRuntime);
 	const explicitConfigKeys = new Set(baseConfig.observerExplicitConfigKeys ?? []);
+	if (normalizedRuntime === "claude_sidecar") {
+		const sidecarProviderKey =
+			decision.tier === "simple" ? "observerSimpleProvider" : "observerRichProvider";
+		const hasExplicitProviderOverride =
+			explicitConfigKeys.has(sidecarProviderKey) || explicitConfigKeys.has("observerProvider");
+		const requestedProvider =
+			(sidecarProviderKey === "observerSimpleProvider"
+				? trimmedProvider(baseConfig.observerSimpleProvider)
+				: trimmedProvider(baseConfig.observerRichProvider)) ??
+			trimmedProvider(baseConfig.observerProvider);
+		const tierDefaults =
+			decision.tier === "simple" ? SIMPLE_TIER_ANTHROPIC_DEFAULTS : RICH_TIER_ANTHROPIC_DEFAULTS;
+		const observer = {
+			...baseConfig,
+			observerProvider: "anthropic",
+			observerModel:
+				decision.tier === "simple"
+					? (baseConfig.observerSimpleModel ??
+						tierDefaults.observerModel ??
+						baseConfig.observerModel)
+					: (baseConfig.observerRichModel ??
+						tierDefaults.observerModel ??
+						baseConfig.observerModel),
+			observerTemperature:
+				decision.tier === "simple"
+					? (baseConfig.observerSimpleTemperature ??
+						tierDefaults.observerTemperature ??
+						baseConfig.observerTemperature)
+					: (baseConfig.observerRichTemperature ??
+						tierDefaults.observerTemperature ??
+						baseConfig.observerTemperature),
+			observerOpenAIUseResponses: undefined,
+			observerReasoningEffort: null,
+			observerReasoningSummary: null,
+			observerMaxOutputTokens:
+				decision.tier === "simple"
+					? baseConfig.observerMaxTokens
+					: (baseConfig.observerRichMaxOutputTokens ??
+						tierDefaults.observerMaxOutputTokens ??
+						baseConfig.observerMaxTokens),
+		};
+		const fallbackReason =
+			hasExplicitProviderOverride && requestedProvider && requestedProvider !== "anthropic"
+				? "unsupported tier override for runtime"
+				: null;
+		return {
+			observer,
+			metadata: requestedMetadata(
+				decision,
+				{
+					...observer,
+					observerProvider: requestedProvider ?? observer.observerProvider,
+					observerRuntime: normalizedRuntime,
+				},
+				fallbackReason,
+			),
+		};
+	}
 
 	if (decision.tier === "simple") {
 		const knownProvider =
