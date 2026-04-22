@@ -42,25 +42,41 @@ export function statsRoutes(getStore: () => MemoryStore) {
 		}
 	};
 
+	// Keep completed jobs visible in /api/stats for a short window after
+	// finished_at so the health UI has a chance to render success confirmation
+	// for fast-completing backfills (often <1s). Failed jobs stay indefinitely.
+	const RECENTLY_COMPLETED_WINDOW_MS = 120_000;
+
 	app.get("/api/stats", (c) => {
 		const store = getStore();
 		const jobs = listMaintenanceJobs(store.db);
-		const activeJobs = sortActiveMaintenanceJobs(
-			jobs.filter(
-				(job) => job.status === "pending" || job.status === "running" || job.status === "failed",
-			),
+		const now = Date.now();
+		const surfacedJobs = sortActiveMaintenanceJobs(
+			jobs.filter((job) => {
+				if (job.status === "pending" || job.status === "running" || job.status === "failed") {
+					return true;
+				}
+				if (job.status === "completed" && job.finished_at) {
+					const finished = Date.parse(job.finished_at);
+					if (Number.isFinite(finished) && now - finished <= RECENTLY_COMPLETED_WINDOW_MS) {
+						return true;
+					}
+				}
+				return false;
+			}),
 		).map((job) => ({
 			kind: job.kind,
 			title: job.title,
 			status: job.status,
 			message: job.message,
 			progress: job.progress,
+			finished_at: job.finished_at,
 			error: job.error,
 		}));
 		return c.json({
 			...store.stats(),
 			viewer_pid: process.pid,
-			maintenance_jobs: activeJobs,
+			maintenance_jobs: surfacedJobs,
 		});
 	});
 
