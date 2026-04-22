@@ -67,7 +67,7 @@ export function renderSyncStatus() {
 			: syncNoPeers
 				? [
 						"Advanced sync is ready but idle",
-						"Use Show pairing to connect another device, then this panel will start showing live peer status and recent attempts",
+						"Use Show pairing command under People & devices to connect another device, then this panel will start showing live peer status and recent attempts",
 					]
 				: [
 						`Advanced state: ${daemonStateLabel}`,
