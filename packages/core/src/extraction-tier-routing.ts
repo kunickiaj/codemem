@@ -122,6 +122,7 @@ export function buildTieredObserverSelection(
 			normalizeKnownProvider(baseConfig.observerProvider);
 		if (knownProvider) {
 			const tierDefaults = resolveSimpleTierDefaults(knownProvider);
+			const hasExplicitBaseResponsesSetting = explicitConfigKeys.has("observerOpenAIUseResponses");
 			const observer = {
 				...baseConfig,
 				observerProvider: knownProvider,
@@ -131,7 +132,12 @@ export function buildTieredObserverSelection(
 					baseConfig.observerSimpleTemperature ??
 					tierDefaults.observerTemperature ??
 					baseConfig.observerTemperature,
-				observerOpenAIUseResponses: knownProvider === "openai" ? false : undefined,
+				observerOpenAIUseResponses:
+					knownProvider === "openai"
+						? hasExplicitBaseResponsesSetting
+							? baseConfig.observerOpenAIUseResponses === true
+							: true
+						: undefined,
 				observerReasoningEffort: null,
 				observerReasoningSummary: null,
 				observerMaxOutputTokens: baseConfig.observerMaxTokens,
@@ -174,6 +180,7 @@ export function buildTieredObserverSelection(
 	if (knownProvider) {
 		const tierDefaults = resolveRichTierDefaults(knownProvider);
 		const isOpenAI = knownProvider === "openai";
+		const hasExplicitBaseResponsesSetting = explicitConfigKeys.has("observerOpenAIUseResponses");
 		const hasExplicitRichResponsesSetting = explicitConfigKeys.has(
 			"observerRichOpenAIUseResponses",
 		);
@@ -193,7 +200,9 @@ export function buildTieredObserverSelection(
 			observerOpenAIUseResponses: isOpenAI
 				? hasExplicitRichResponsesSetting
 					? baseConfig.observerRichOpenAIUseResponses === true
-					: (tierDefaults.observerOpenAIUseResponses ?? false)
+					: hasExplicitBaseResponsesSetting
+						? baseConfig.observerOpenAIUseResponses === true
+						: (tierDefaults.observerOpenAIUseResponses ?? false)
 				: undefined,
 			observerReasoningEffort: isOpenAI
 				? (baseConfig.observerRichReasoningEffort ?? tierDefaults.observerReasoningEffort ?? null)

@@ -370,6 +370,10 @@ export function loadObserverConfig(): ObserverConfig {
 		observerRichReasoningEffort: null,
 		observerRichReasoningSummary: null,
 		observerRichMaxOutputTokens: null,
+		observerOpenAIUseResponses: undefined,
+		observerReasoningEffort: null,
+		observerReasoningSummary: null,
+		observerMaxOutputTokens: null,
 		observerMaxChars: 12_000,
 		observerMaxTokens: 4_000,
 		observerHeaders: {},
@@ -455,6 +459,19 @@ export function loadObserverConfig(): ObserverConfig {
 		const n = Number(data.observer_rich_max_output_tokens);
 		cfg.observerRichMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerRichMaxOutputTokens;
 	}
+	if (data.observer_openai_use_responses != null) {
+		cfg.observerOpenAIUseResponses = data.observer_openai_use_responses === true;
+	}
+	if (typeof data.observer_reasoning_effort === "string") {
+		cfg.observerReasoningEffort = data.observer_reasoning_effort;
+	}
+	if (typeof data.observer_reasoning_summary === "string") {
+		cfg.observerReasoningSummary = data.observer_reasoning_summary;
+	}
+	if (data.observer_max_output_tokens != null) {
+		const n = Number(data.observer_max_output_tokens);
+		cfg.observerMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerMaxOutputTokens;
+	}
 	cfg.observerMaxChars = parseIntSafe(data.observer_max_chars, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(data.observer_max_tokens, cfg.observerMaxTokens);
 	if (typeof data.observer_auth_source === "string")
@@ -519,6 +536,19 @@ export function loadObserverConfig(): ObserverConfig {
 	if (process.env.CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS != null) {
 		const n = Number(process.env.CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS);
 		cfg.observerRichMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerRichMaxOutputTokens;
+	}
+	if (process.env.CODEMEM_OBSERVER_OPENAI_USE_RESPONSES != null) {
+		cfg.observerOpenAIUseResponses =
+			process.env.CODEMEM_OBSERVER_OPENAI_USE_RESPONSES === "1" ||
+			process.env.CODEMEM_OBSERVER_OPENAI_USE_RESPONSES === "true";
+	}
+	cfg.observerReasoningEffort =
+		process.env.CODEMEM_OBSERVER_REASONING_EFFORT ?? cfg.observerReasoningEffort;
+	cfg.observerReasoningSummary =
+		process.env.CODEMEM_OBSERVER_REASONING_SUMMARY ?? cfg.observerReasoningSummary;
+	if (process.env.CODEMEM_OBSERVER_MAX_OUTPUT_TOKENS != null) {
+		const n = Number(process.env.CODEMEM_OBSERVER_MAX_OUTPUT_TOKENS);
+		cfg.observerMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerMaxOutputTokens;
 	}
 	cfg.observerAuthSource = process.env.CODEMEM_OBSERVER_AUTH_SOURCE ?? cfg.observerAuthSource;
 	cfg.observerAuthFile = process.env.CODEMEM_OBSERVER_AUTH_FILE ?? cfg.observerAuthFile;
@@ -1148,7 +1178,9 @@ export class ObserverClient {
 			Number.isFinite(cfg.observerRichMaxOutputTokens)
 				? cfg.observerRichMaxOutputTokens
 				: null;
-		this.openaiUseResponses = cfg.observerOpenAIUseResponses === true;
+		this.openaiUseResponses = explicitConfigKeys.has("observerOpenAIUseResponses")
+			? cfg.observerOpenAIUseResponses === true
+			: this.provider === "openai" && this.runtime === "api_http";
 		this.reasoningEffort =
 			typeof cfg.observerReasoningEffort === "string" && cfg.observerReasoningEffort.trim()
 				? cfg.observerReasoningEffort.trim()
