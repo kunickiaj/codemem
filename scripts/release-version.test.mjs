@@ -82,6 +82,16 @@ afterEach(() => {
 	}
 });
 
+function withCwd(nextCwd, fn) {
+	const previous = process.cwd();
+	process.chdir(nextCwd);
+	try {
+		return fn();
+	} finally {
+		process.chdir(previous);
+	}
+}
+
 describe("release-version script", () => {
 	it("treats matching managed files as aligned", () => {
 		const root = makeRepo("1.2.3");
@@ -156,10 +166,18 @@ describe("release-version script", () => {
 		writeFileSync(join(root, ".claude-plugin/marketplace.json"), '{"metadata": {"version": "1.0.0"}, "plugins": []}\n');
 		let stdout = "";
 		let stderr = "";
-		const code = main(["--root", root, "set", "1.0.1"], { write: (chunk) => (stdout += chunk) }, { write: (chunk) => (stderr += chunk) });
+		const code = withCwd(root, () =>
+			main(["set", "1.0.1"], { write: (chunk) => (stdout += chunk) }, { write: (chunk) => (stderr += chunk) }),
+		);
 		assert.equal(code, 2);
 		assert.equal(stdout, "");
 		assert.match(stderr, /Error:/);
 		assert.equal(stderr.includes("Traceback"), false);
+	});
+
+	it("rejects roots that do not look like a managed codemem repo", () => {
+		const root = mkdtempSync(join(tmpdir(), "codemem-release-version-invalid-"));
+		tempRoots.push(root);
+		assert.throws(() => readVersions(root), /Expected a codemem repo root/);
 	});
 });

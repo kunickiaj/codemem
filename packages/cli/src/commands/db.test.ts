@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as p from "@clack/prompts";
 import { initDatabase } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import { dbCommand } from "./db.js";
@@ -84,7 +85,7 @@ describe("db command", () => {
 
 		const dbPath = join(mkdtempSync(join(tmpdir(), "codemem-db-cmd-")), "test.sqlite");
 		initDatabase(dbPath);
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logErrorSpy = vi.spyOn(p.log, "error").mockImplementation(() => {});
 		const originalExitCode = process.exitCode;
 		process.exitCode = undefined;
 		try {
@@ -94,7 +95,7 @@ describe("db command", () => {
 			expect(process.exitCode).toBe(1);
 		} finally {
 			process.exitCode = originalExitCode;
-			errorSpy.mockRestore();
+			logErrorSpy.mockRestore();
 		}
 	});
 });

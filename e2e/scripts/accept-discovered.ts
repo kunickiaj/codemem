@@ -6,10 +6,19 @@ import {
 	readCoordinatorSyncConfig,
 } from "../../packages/core/src/index.ts";
 
-function parseArgs(argv: string[]): { peerDeviceId: string; fingerprint: string; dbPath: string } {
+const E2E_DB_PATH = "/data/mem.sqlite";
+const SAFE_DEVICE_ID_RE = /^[A-Za-z0-9._:-]+$/;
+
+function validatePeerDeviceId(value: string): string {
+	if (!SAFE_DEVICE_ID_RE.test(value)) {
+		throw new Error("--peer-device-id must use a safe device id format");
+	}
+	return value;
+}
+
+function parseArgs(argv: string[]): { peerDeviceId: string; fingerprint: string } {
 	let peerDeviceId = "";
 	let fingerprint = "";
-	let dbPath = "/data/mem.sqlite";
 	for (let index = 2; index < argv.length; index += 1) {
 		const arg = argv[index];
 		if (arg === "--peer-device-id") {
@@ -18,20 +27,17 @@ function parseArgs(argv: string[]): { peerDeviceId: string; fingerprint: string;
 		} else if (arg === "--fingerprint") {
 			fingerprint = String(argv[index + 1] ?? "").trim();
 			index += 1;
-		} else if (arg === "--db-path") {
-			dbPath = String(argv[index + 1] ?? dbPath);
-			index += 1;
 		}
 	}
 	if (!peerDeviceId || !fingerprint) {
 		throw new Error("--peer-device-id and --fingerprint are required");
 	}
-	return { peerDeviceId, fingerprint, dbPath };
+	return { peerDeviceId: validatePeerDeviceId(peerDeviceId), fingerprint };
 }
 
 async function main(): Promise<void> {
-	const { peerDeviceId, fingerprint, dbPath } = parseArgs(process.argv);
-	const store = new MemoryStore(dbPath);
+	const { peerDeviceId, fingerprint } = parseArgs(process.argv);
+	const store = new MemoryStore(E2E_DB_PATH);
 	try {
 		const config = readCoordinatorSyncConfig();
 		const discovered = await lookupCoordinatorPeers(store, config);
@@ -41,9 +47,11 @@ async function main(): Promise<void> {
 				String(peer.fingerprint ?? "").trim() === fingerprint,
 		);
 		if (!match) throw new Error("discovered_peer_not_found");
+		const matchedDeviceId = String(match.device_id ?? "").trim();
 		const nextFingerprint = String(match.fingerprint ?? "").trim();
 		const nextPublicKey = String(match.public_key ?? "").trim();
 		const nextName = String(match.display_name ?? "").trim() || null;
+		if (!matchedDeviceId) throw new Error("discovered_peer_missing_device_id");
 		const nextAddresses = Array.isArray(match.addresses)
 			? match.addresses.filter((value): value is string => typeof value === "string")
 			: [];
@@ -60,7 +68,7 @@ async function main(): Promise<void> {
 				  WHERE peer_device_id = ?
 				  LIMIT 1`,
 			)
-			.get(peerDeviceId) as
+			.get(matchedDeviceId) as
 			| {
 					peer_device_id: string;
 					pinned_fingerprint: string | null;
@@ -83,7 +91,10 @@ async function main(): Promise<void> {
 			}
 		})();
 		const addressesJson = JSON.stringify(mergeAddresses(existingAddresses, nextAddresses));
-		await createCoordinatorReciprocalApproval(store, config, { groupId, requestedDeviceId: peerDeviceId });
+		await createCoordinatorReciprocalApproval(store, config, {
+			groupId,
+			requestedDeviceId: matchedDeviceId,
+		});
 		const now = new Date().toISOString();
 		let result:
 			| { ok: true; peer_device_id: string; created: boolean; updated: boolean; name: string | null }
@@ -95,8 +106,14 @@ async function main(): Promise<void> {
 						peer_device_id, name, pinned_fingerprint, public_key, addresses_json, created_at, last_seen_at
 					 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				)
-				.run(peerDeviceId, nextName, nextFingerprint || null, nextPublicKey, addressesJson, now, now);
-			result = { ok: true, peer_device_id: peerDeviceId, created: true, updated: false, name: nextName };
+				.run(matchedDeviceId, nextName, nextFingerprint || null, nextPublicKey, addressesJson, now, now);
+			result = {
+				ok: true,
+				peer_device_id: matchedDeviceId,
+				created: true,
+				updated: false,
+				name: nextName,
+			};
 		} else {
 			store.db
 				.prepare(
@@ -114,9 +131,15 @@ async function main(): Promise<void> {
 					nextPublicKey || existing.public_key || null,
 					addressesJson,
 					now,
-					peerDeviceId,
+					matchedDeviceId,
 				);
-			result = { ok: true, peer_device_id: peerDeviceId, created: false, updated: true, name: nextName };
+			result = {
+				ok: true,
+				peer_device_id: matchedDeviceId,
+				created: false,
+				updated: true,
+				name: nextName,
+			};
 		}
 		console.log(JSON.stringify(result, null, 2));
 	} finally {

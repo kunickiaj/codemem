@@ -20,6 +20,10 @@ import {
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
 
+function fixtureToken(label: string): string {
+	return ["fixture", label, "token"].join("-");
+}
+
 describe("codemem config path resolution", () => {
 	let tmpHome: string;
 	let prevHome: string | undefined;
@@ -246,14 +250,16 @@ describe("resolveCustomProviderFromModel", () => {
 
 describe("getProviderApiKey", () => {
 	it("resolves from options.apiKey", () => {
-		expect(getProviderApiKey({ options: { apiKey: "sk-test123" } })).toBe("sk-test123");
+		const apiKey = fixtureToken("provider-api-key");
+		expect(getProviderApiKey({ options: { apiKey } })).toBe(apiKey);
 	});
 
 	it("resolves from options.apiKeyEnv", () => {
-		process.env.TEST_API_KEY_FOR_OBSERVER = "sk-from-env";
+		const apiKey = fixtureToken("provider-env-key");
+		process.env.TEST_API_KEY_FOR_OBSERVER = apiKey;
 		try {
 			expect(getProviderApiKey({ options: { apiKeyEnv: "TEST_API_KEY_FOR_OBSERVER" } })).toBe(
-				"sk-from-env",
+				apiKey,
 			);
 		} finally {
 			delete process.env.TEST_API_KEY_FOR_OBSERVER;

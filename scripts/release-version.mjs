@@ -1,17 +1,54 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
 
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 const CORE_VERSION_RE = /^(export\s+const\s+VERSION\s*=\s*")([^"]+)(";\s*)$/m;
 const CORE_TEST_VERSION_RE = /^(\s*expect\(VERSION\)\.toBe\(")([^"]+)("\);\s*)$/m;
 const PLUGIN_PIN_RE = /^(const\s+PINNED_BACKEND_VERSION\s*=\s*")([^"]+)(";\s*)$/m;
+const REQUIRED_REPO_MARKERS = [
+	"packages/core/package.json",
+	"packages/cli/package.json",
+	"packages/opencode-plugin/package.json",
+	"packages/mcp-server/package.json",
+	"packages/viewer-server/package.json",
+	"packages/core/src/index.ts",
+	"packages/core/src/index.test.ts",
+	"packages/cli/.opencode/plugins/codemem.js",
+	"packages/opencode-plugin/.opencode/plugins/codemem.js",
+	"plugins/claude/.claude-plugin/plugin.json",
+	".claude-plugin/marketplace.json",
+];
 
 function validateSemver(version) {
 	if (!SEMVER_RE.test(version)) {
 		throw new Error(`Invalid version '${version}'. Expected format: X.Y.Z`);
 	}
+}
+
+function isWithinRoot(root, candidate) {
+	const rel = relative(root, candidate);
+	return rel === "" || (!rel.startsWith("..") && rel !== "..");
+}
+
+function resolveManagedPath(root, relativePath) {
+	const resolvedRoot = resolve(root);
+	const resolvedPath = resolve(resolvedRoot, relativePath);
+	if (!isWithinRoot(resolvedRoot, resolvedPath)) {
+		throw new Error(`Managed path escapes repo root: ${relativePath}`);
+	}
+	return resolvedPath;
+}
+
+function ensureManagedRepoRoot(root) {
+	const resolvedRoot = resolve(root);
+	for (const marker of REQUIRED_REPO_MARKERS) {
+		if (!existsSync(resolveManagedPath(resolvedRoot, marker))) {
+			throw new Error(`Expected a codemem repo root with managed file: ${marker}`);
+		}
+	}
+	return resolvedRoot;
 }
 
 function readText(path) {
@@ -75,7 +112,7 @@ function extractSingle(text, regex, context) {
 }
 
 function extractPackageVersion(root, relativePath) {
-	const value = loadJson(resolve(root, relativePath), relativePath).version;
+	const value = loadJson(resolveManagedPath(root, relativePath), relativePath).version;
 	if (typeof value !== "string") {
 		throw new Error(`${relativePath} version must be text`);
 	}
@@ -83,7 +120,7 @@ function extractPackageVersion(root, relativePath) {
 }
 
 function setPackageVersion(root, relativePath, version, writes, changed) {
-	const path = resolve(root, relativePath);
+	const path = resolveManagedPath(root, relativePath);
 	const currentText = readText(path);
 	const payload = loadJson(path, relativePath);
 	if (payload.version === version) {
@@ -95,12 +132,13 @@ function setPackageVersion(root, relativePath, version, writes, changed) {
 }
 
 export function readVersions(root) {
+	const repoRoot = ensureManagedRepoRoot(root);
 	const claudePlugin = loadJson(
-		resolve(root, "plugins/claude/.claude-plugin/plugin.json"),
+		resolveManagedPath(repoRoot, "plugins/claude/.claude-plugin/plugin.json"),
 		"plugins/claude/.claude-plugin/plugin.json",
 	);
 	const marketplace = loadJson(
-		resolve(root, ".claude-plugin/marketplace.json"),
+		resolveManagedPath(repoRoot, ".claude-plugin/marketplace.json"),
 		".claude-plugin/marketplace.json",
 	);
 	const metadata = expectObject(
@@ -119,28 +157,28 @@ export function readVersions(root) {
 	}
 
 	return {
-		core_package: extractPackageVersion(root, "packages/core/package.json"),
-		cli_package: extractPackageVersion(root, "packages/cli/package.json"),
-		opencode_plugin_package: extractPackageVersion(root, "packages/opencode-plugin/package.json"),
-		mcp_server_package: extractPackageVersion(root, "packages/mcp-server/package.json"),
-		viewer_server_package: extractPackageVersion(root, "packages/viewer-server/package.json"),
+		core_package: extractPackageVersion(repoRoot, "packages/core/package.json"),
+		cli_package: extractPackageVersion(repoRoot, "packages/cli/package.json"),
+		opencode_plugin_package: extractPackageVersion(repoRoot, "packages/opencode-plugin/package.json"),
+		mcp_server_package: extractPackageVersion(repoRoot, "packages/mcp-server/package.json"),
+		viewer_server_package: extractPackageVersion(repoRoot, "packages/viewer-server/package.json"),
 		core_runtime: extractSingle(
-			readText(resolve(root, "packages/core/src/index.ts")),
+			readText(resolveManagedPath(repoRoot, "packages/core/src/index.ts")),
 			CORE_VERSION_RE,
 			"Could not find VERSION export in packages/core/src/index.ts",
 		),
 		core_runtime_test: extractSingle(
-			readText(resolve(root, "packages/core/src/index.test.ts")),
+			readText(resolveManagedPath(repoRoot, "packages/core/src/index.test.ts")),
 			CORE_TEST_VERSION_RE,
 			"Could not find VERSION assertion in packages/core/src/index.test.ts",
 		),
 		cli_plugin_pin: extractSingle(
-			readText(resolve(root, "packages/cli/.opencode/plugins/codemem.js")),
+			readText(resolveManagedPath(repoRoot, "packages/cli/.opencode/plugins/codemem.js")),
 			PLUGIN_PIN_RE,
 			"Could not find PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
 		),
 		opencode_plugin_pin: extractSingle(
-			readText(resolve(root, "packages/opencode-plugin/.opencode/plugins/codemem.js")),
+			readText(resolveManagedPath(repoRoot, "packages/opencode-plugin/.opencode/plugins/codemem.js")),
 			PLUGIN_PIN_RE,
 			"Could not find PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
 		),
@@ -176,15 +214,16 @@ export function versionsAreAligned(snapshot) {
 
 export function setVersion(root, version, { dryRun = false } = {}) {
 	validateSemver(version);
+	const repoRoot = ensureManagedRepoRoot(root);
 
 	const changed = [];
 	const writes = new Map();
 
-	setPackageVersion(root, "packages/core/package.json", version, writes, changed);
-	setPackageVersion(root, "packages/cli/package.json", version, writes, changed);
-	setPackageVersion(root, "packages/opencode-plugin/package.json", version, writes, changed);
-	setPackageVersion(root, "packages/mcp-server/package.json", version, writes, changed);
-	setPackageVersion(root, "packages/viewer-server/package.json", version, writes, changed);
+	setPackageVersion(repoRoot, "packages/core/package.json", version, writes, changed);
+	setPackageVersion(repoRoot, "packages/cli/package.json", version, writes, changed);
+	setPackageVersion(repoRoot, "packages/opencode-plugin/package.json", version, writes, changed);
+	setPackageVersion(repoRoot, "packages/mcp-server/package.json", version, writes, changed);
+	setPackageVersion(repoRoot, "packages/viewer-server/package.json", version, writes, changed);
 
 	const textUpdates = [
 		{
@@ -210,7 +249,7 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 	];
 
 	for (const update of textUpdates) {
-		const path = resolve(root, update.relativePath);
+		const path = resolveManagedPath(repoRoot, update.relativePath);
 		const current = readText(path);
 		const next = replaceSingle(current, update.regex, version, update.missing);
 		if (next !== current) {
@@ -219,7 +258,7 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		}
 	}
 
-	const claudePluginPath = resolve(root, "plugins/claude/.claude-plugin/plugin.json");
+	const claudePluginPath = resolveManagedPath(repoRoot, "plugins/claude/.claude-plugin/plugin.json");
 	const claudePluginText = readText(claudePluginPath);
 	const claudePlugin = loadJson(claudePluginPath, "plugins/claude/.claude-plugin/plugin.json");
 	if (claudePlugin.version !== version) {
@@ -228,7 +267,7 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		changed.push("plugins/claude/.claude-plugin/plugin.json");
 	}
 
-	const marketplacePath = resolve(root, ".claude-plugin/marketplace.json");
+	const marketplacePath = resolveManagedPath(repoRoot, ".claude-plugin/marketplace.json");
 	const marketplaceText = readText(marketplacePath);
 	const marketplace = loadJson(marketplacePath, ".claude-plugin/marketplace.json");
 	const metadata = expectObject(marketplace.metadata, ".claude-plugin/marketplace.json metadata");
@@ -267,22 +306,14 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 }
 
 export function buildParserArgs(argv) {
-	let root = process.cwd();
 	const args = [...argv];
 	if (args[0] === "--") {
 		args.shift();
 	}
-	if (args[0] === "--root") {
-		const value = args[1];
-		if (!value) {
-			throw new Error("Missing value for --root");
-		}
-		root = resolve(value);
-		args.splice(0, 2);
-	}
+	const root = ensureManagedRepoRoot(process.cwd());
 	const command = args[0];
 	if (!command) {
-		throw new Error("Usage: release-version.mjs [--root <path>] <check|set> [version] [--dry-run]");
+		throw new Error("Usage: release-version.mjs <check|set> [version] [--dry-run]");
 	}
 	if (command === "check") {
 		return { root, command };
@@ -290,7 +321,7 @@ export function buildParserArgs(argv) {
 	if (command === "set") {
 		const version = args[1];
 		if (!version) {
-			throw new Error("Usage: release-version.mjs [--root <path>] set <version> [--dry-run]");
+			throw new Error("Usage: release-version.mjs set <version> [--dry-run]");
 		}
 		const dryRun = args.includes("--dry-run");
 		return { root, command, version, dryRun };

@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildInjectQuery,
@@ -31,7 +31,7 @@ describe("claude-hook-session-state", () => {
 	});
 
 	describe("statePathForSession", () => {
-		it("derives a deterministic 16-char sha1 prefix per session id", () => {
+		it("derives a deterministic filesystem-safe path per session id", () => {
 			const a = statePathForSession("session-A");
 			const b = statePathForSession("session-A");
 			const c = statePathForSession("session-B");
@@ -39,6 +39,11 @@ describe("claude-hook-session-state", () => {
 			expect(a).not.toBe(c);
 			expect(a.startsWith(stateDir)).toBe(true);
 			expect(a.endsWith(".json")).toBe(true);
+		});
+
+		it("keeps long session ids within filename limits", () => {
+			const path = statePathForSession("session-".repeat(200));
+			expect(basename(path).length).toBeLessThanOrEqual(64);
 		});
 	});
 

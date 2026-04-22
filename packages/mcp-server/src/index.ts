@@ -17,7 +17,7 @@ import {
 	type MemoryItemResponse,
 	type MemoryResult,
 	MemoryStore,
-	projectClause,
+	projectMatchesFilter,
 	resolveDbPath,
 	storeVectors,
 	toJson,
@@ -338,9 +338,6 @@ async function main() {
 				const resolvedProject =
 					args.project !== undefined ? args.project.trim() || null : defaultProject || null;
 				const filters = resolvedProject ? { project: resolvedProject } : undefined;
-				const { clause: projectFilterClause, params: projectFilterParams } = resolvedProject
-					? projectClause(resolvedProject)
-					: { clause: "", params: [] as string[] };
 				const { ordered: orderedIds, invalid: invalidIds } = dedupeOrderedIds(args.ids);
 				const errors: Array<Record<string, unknown>> = [];
 
@@ -358,7 +355,7 @@ async function main() {
 				const anchors: MemoryItemResponse[] = [];
 				const timelineItems: MemoryItemResponse[] = [];
 				const timelineSeen = new Set<number>();
-				const sessionScopeMatches = new Map<number, boolean>();
+				const sessionProjects = new Map<number, string | null>();
 
 				for (const memoryId of orderedIds) {
 					const item = store.get(memoryId);
@@ -368,18 +365,18 @@ async function main() {
 					}
 
 					const sessionId = item.session_id;
-					if (resolvedProject && projectFilterClause && sessionId > 0) {
-						if (!sessionScopeMatches.has(sessionId)) {
+					if (resolvedProject && sessionId > 0) {
+						if (!sessionProjects.has(sessionId)) {
 							const row = store.db
-								.prepare(`SELECT 1 FROM sessions WHERE id = ? AND ${projectFilterClause}`)
-								.get(sessionId, ...projectFilterParams);
-							sessionScopeMatches.set(sessionId, row != null);
+								.prepare("SELECT project FROM sessions WHERE id = ? LIMIT 1")
+								.get(sessionId) as { project: string | null } | undefined;
+							sessionProjects.set(sessionId, typeof row?.project === "string" ? row.project : null);
 						}
-						if (!sessionScopeMatches.get(sessionId)) {
+						if (!projectMatchesFilter(resolvedProject, sessionProjects.get(sessionId) ?? null)) {
 							missingProjectMismatch.push(memoryId);
 							continue;
 						}
-					} else if (resolvedProject && projectFilterClause && sessionId <= 0) {
+					} else if (resolvedProject && sessionId <= 0) {
 						missingProjectMismatch.push(memoryId);
 						continue;
 					}
