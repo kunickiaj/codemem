@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"clean": "rm -rf ../viewer-server/static",
-		"dev": "vite",
+		"dev": "node ./scripts/make-dev-html.mjs && vite",
 		"build": "vite build --mode production && node ./scripts/stage-viewer-static.mjs",
 		"build:watch": "node ./scripts/stage-viewer-static.mjs && vite build --watch --mode development",
 		"test": "pnpm exec vitest run",
