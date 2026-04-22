@@ -753,7 +753,13 @@ export class MemoryStore {
 		const rec = item as Record<string, unknown>;
 		// Check top-level columns first (MemoryItem / DB row),
 		// then metadata dict (MemoryResult from search populates provenance there).
-		const meta = (rec.metadata ?? {}) as Record<string, unknown>;
+		// For raw DB rows, metadata_json is a string — parse it so legacy rows
+		// whose actor_id/origin_device_id live inside metadata_json still pass
+		// ownership checks.
+		let meta = (rec.metadata ?? {}) as Record<string, unknown>;
+		if (!rec.metadata && typeof rec.metadata_json === "string") {
+			meta = fromJson(rec.metadata_json);
+		}
 
 		const actorId = cleanStr(rec.actor_id) ?? cleanStr(meta.actor_id);
 		if (actorId === this.actorId) return true;
@@ -1066,6 +1072,68 @@ export class MemoryStore {
 					throw new Error("memory not found after update");
 				}
 				return updated;
+			})
+			.immediate();
+	}
+
+	// moveMemoryProject
+
+	/**
+	 * Reassign a memory to a different project by mutating its parent
+	 * session's project column. Because project attribution is derived
+	 * from sessions.project via JOIN, every memory that shares the
+	 * session moves with it — the caller is responsible for warning the
+	 * user when the session holds more than one memory.
+	 *
+	 * Local-only mutation: the sessions table is not currently part of
+	 * the replication stream, so the move is not propagated to peers.
+	 *
+	 * Throws if the memory is not found, inactive, or not owned by this
+	 * device. Trims the project argument and rejects empty values.
+	 */
+	moveMemoryProject(
+		memoryId: number,
+		project: string,
+	): { session_id: number; project: string; moved_memory_count: number } {
+		const cleanedProject = project.trim();
+		if (!cleanedProject) {
+			throw new Error("project must be a non-empty string");
+		}
+
+		return this.db
+			.transaction(() => {
+				const row = this.d
+					.select()
+					.from(schema.memoryItems)
+					.where(and(eq(schema.memoryItems.id, memoryId), eq(schema.memoryItems.active, 1)))
+					.get() as MemoryItem | undefined;
+				if (!row) {
+					throw new Error("memory not found");
+				}
+				if (!this.memoryOwnedBySelf(row)) {
+					throw new Error("memory not owned by this device");
+				}
+
+				const sessionId = row.session_id;
+				this.d
+					.update(schema.sessions)
+					.set({ project: cleanedProject })
+					.where(eq(schema.sessions.id, sessionId))
+					.run();
+
+				const countRow = this.d
+					.select({ n: sql<number>`count(*)` })
+					.from(schema.memoryItems)
+					.where(
+						and(eq(schema.memoryItems.session_id, sessionId), eq(schema.memoryItems.active, 1)),
+					)
+					.get() as { n: number } | undefined;
+
+				return {
+					session_id: sessionId,
+					project: cleanedProject,
+					moved_memory_count: Number(countRow?.n ?? 1),
+				};
 			})
 			.immediate();
 	}

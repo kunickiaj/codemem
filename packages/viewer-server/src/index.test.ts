@@ -388,6 +388,75 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("moves an owned memory to a new project via /api/memories/project", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Memory on wrong project",
+				});
+
+				const res = await app.request("/api/memories/project", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId, project: "new-project" }),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					session_id: number;
+					project: string;
+					moved_memory_count: number;
+				};
+				expect(body.project).toBe("new-project");
+				expect(body.session_id).toBe(sessionId);
+				expect(body.moved_memory_count).toBe(1);
+
+				const row = store.db
+					.prepare("SELECT project FROM sessions WHERE id = ?")
+					.get(sessionId) as { project: string };
+				expect(row.project).toBe("new-project");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects /api/memories/project with empty project", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const sessionId = insertTestSession(store.db);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Memory",
+				});
+
+				const res = await app.request("/api/memories/project", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "http://127.0.0.1:38888",
+					},
+					body: JSON.stringify({ memory_id: memoryId, project: "   " }),
+				});
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error?: string };
+				expect(body.error).toContain("project");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("forgets an owned memory via the viewer API", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

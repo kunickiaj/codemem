@@ -13,7 +13,7 @@ import {
 } from "../../../lib/format";
 import { showGlobalNotice } from "../../../lib/notice";
 import { state } from "../../../lib/state";
-import { openSyncConfirmDialog } from "../../sync/sync-dialogs";
+import { openSyncConfirmDialog, openSyncInputDialog } from "../../sync/sync-dialogs";
 import {
 	renderFactsContent,
 	renderNarrativeContent,
@@ -91,6 +91,7 @@ export function FeedItemCard({
 	);
 	const [savingVisibility, setSavingVisibility] = useState(false);
 	const [deletingMemory, setDeletingMemory] = useState(false);
+	const [movingProject, setMovingProject] = useState(false);
 	const summarySections = summaryObj ? renderSummarySections(summaryObj) : [];
 
 	useEffect(() => {
@@ -188,6 +189,62 @@ export function FeedItemCard({
 		}
 	}
 
+	async function moveProject() {
+		const currentProject = String(item.project || "").trim();
+		const initialValue = currentProject;
+		const titleText = String(displayTitle || "this memory").trim();
+		const truncatedTitle =
+			titleText.length > 80 ? `${titleText.slice(0, 79).trimEnd()}…` : titleText;
+		const description = currentProject
+			? `Move "${truncatedTitle}" from "${currentProject}" to another project. Pick an existing project or type a new name. Every memory in the same session will be reassigned together.`
+			: `Assign a project to "${truncatedTitle}". Pick an existing project or type a new name. Every memory in the same session will be reassigned together.`;
+		let suggestions: string[] = [];
+		try {
+			const all = await api.loadProjects();
+			suggestions = all.filter((p) => p && p !== currentProject);
+		} catch {
+			// Non-fatal — fall back to free-text entry without suggestions.
+		}
+		const nextProject = await openSyncInputDialog({
+			title: "Assign to project",
+			description,
+			initialValue,
+			placeholder: "Pick one or type a new project name",
+			suggestions,
+			confirmLabel: "Move",
+			cancelLabel: "Cancel",
+			validate: (value) => {
+				const trimmed = value.trim();
+				if (!trimmed) return "Enter a project name.";
+				if (trimmed === currentProject) return "Already assigned to this project.";
+				return null;
+			},
+		});
+		if (nextProject == null) return;
+		const target = nextProject.trim();
+		if (!target || target === currentProject) return;
+
+		setMovingProject(true);
+		try {
+			const result = await api.moveMemoryProject(memoryId, target);
+			const count = Number(result.moved_memory_count || 1);
+			const label =
+				count > 1
+					? `Moved ${count} memories from this session to "${result.project}".`
+					: `Moved to "${result.project}".`;
+			showGlobalNotice(label);
+			await onReload();
+			onViewRefresh();
+		} catch (error) {
+			showGlobalNotice(
+				error instanceof Error ? error.message : "Failed to move memory.",
+				"warning",
+			);
+		} finally {
+			setMovingProject(false);
+		}
+	}
+
 	async function forgetMemory() {
 		const titleText = String(displayTitle || "this memory").trim();
 		const truncatedTitle =
@@ -272,7 +329,9 @@ export function FeedItemCard({
 					),
 					Boolean(item.owned_by_self) && memoryId > 0
 						? h(FeedItemMenu, {
+								assignProjectDisabled: movingProject,
 								disabled: deletingMemory,
+								onAssignProject: () => void moveProject(),
 								onForget: () => void forgetMemory(),
 								title: String(displayTitle || "memory"),
 							})

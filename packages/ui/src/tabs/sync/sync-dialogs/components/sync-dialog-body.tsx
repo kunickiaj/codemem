@@ -5,6 +5,7 @@
  * value does not resolve the outer dialog. */
 
 import { useEffect, useState } from "preact/hooks";
+import { AutocompleteInput } from "../../../../components/primitives/autocomplete-input";
 import { DialogCloseButton } from "../../../../components/primitives/dialog-close-button";
 import { TextInput } from "../../../../components/primitives/text-input";
 import { dialogToneClassName, resolveCurrentDialog } from "../internal";
@@ -76,24 +77,41 @@ export function SyncDialogBody({
 				) : null}
 				{request.kind === "input" ? (
 					<div className="field">
-						<TextInput
-							aria-describedby={errorText ? `${descriptionId} ${inputErrorId}` : descriptionId}
-							autoFocus
-							className={errorText ? "sync-dialog-input sync-field-error" : "sync-dialog-input"}
-							data-sync-primary-action="true"
-							onInput={(event) => {
-								setInputValue(event.currentTarget.value);
-								if (errorText) setErrorText(null);
-							}}
-							onKeyDown={(event) => {
-								if (event.key !== "Enter") return;
-								event.preventDefault();
-								submit();
-							}}
-							placeholder={request.placeholder}
-							type="text"
-							value={inputValue}
-						/>
+						{request.suggestions?.length ? (
+							<AutocompleteInput
+								aria-describedby={errorText ? `${descriptionId} ${inputErrorId}` : descriptionId}
+								autoFocus
+								className={errorText ? "sync-dialog-input sync-field-error" : "sync-dialog-input"}
+								data-sync-primary-action="true"
+								onSubmit={submit}
+								onValueChange={(value) => {
+									setInputValue(value);
+									if (errorText) setErrorText(null);
+								}}
+								placeholder={request.placeholder}
+								suggestions={request.suggestions}
+								value={inputValue}
+							/>
+						) : (
+							<TextInput
+								aria-describedby={errorText ? `${descriptionId} ${inputErrorId}` : descriptionId}
+								autoFocus
+								className={errorText ? "sync-dialog-input sync-field-error" : "sync-dialog-input"}
+								data-sync-primary-action="true"
+								onInput={(event) => {
+									setInputValue(event.currentTarget.value);
+									if (errorText) setErrorText(null);
+								}}
+								onKeyDown={(event) => {
+									if (event.key !== "Enter") return;
+									event.preventDefault();
+									submit();
+								}}
+								placeholder={request.placeholder}
+								type="text"
+								value={inputValue}
+							/>
+						)}
 						{errorText ? (
 							<div className="sync-field-hint" id={inputErrorId}>
 								{errorText}

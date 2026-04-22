@@ -2583,7 +2583,8 @@
         align-items: center;
       }
       .sync-dialog-input {
-        width: 100%;
+        width: calc(100% - 6px);
+        margin: 3px;
         padding: var(--sp-2) var(--sp-3);
         border-radius: var(--radius-sm);
         border: 1px solid var(--border);
@@ -2591,11 +2592,44 @@
         color: var(--text-primary);
         font-family: var(--font-sans);
         font-size: 13px;
+        box-sizing: border-box;
       }
       .sync-dialog-input:focus {
-        outline: none;
         border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--focus-ring);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
+      }
+      .autocomplete-popover {
+        background: var(--surface-1, var(--bg-elevated));
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+        max-height: 260px;
+        overflow-y: auto;
+        padding: 4px;
+        z-index: 120;
+      }
+      .autocomplete-listbox {
+        display: flex;
+        flex-direction: column;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .autocomplete-option {
+        padding: 6px 10px;
+        border-radius: var(--radius-sm);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .autocomplete-option:hover,
+      .autocomplete-option.active,
+      .autocomplete-option[aria-selected="true"] {
+        background: var(--surface-2, rgba(255, 255, 255, 0.06));
+        color: var(--accent);
       }
       .sync-dialog-confirm.danger {
         background: rgba(182, 75, 47, 0.12);
