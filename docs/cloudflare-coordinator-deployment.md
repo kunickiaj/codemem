@@ -14,8 +14,6 @@ Current source-of-truth files:
 - Worker request verifier: `packages/cloudflare-coordinator-worker/src/request-verifier.ts`
 - D1 schema: `packages/cloudflare-coordinator-worker/schema.sql`
 - Example Wrangler config wrapper: `examples/cloudflare-coordinator/wrangler.toml.example`
-- Bootstrap helper: `examples/cloudflare-coordinator/bootstrap.py`
-- Smoke check: `examples/cloudflare-coordinator/smoke_check.py`
 
 The Worker currently provides:
 
@@ -114,35 +112,8 @@ Expected result:
 
 ## 6. Enroll the first device
 
-The Worker path still assumes explicit operator-managed enrollment in D1.
-
-### Fastest path: bootstrap helper
-
-```fish
-uv run python examples/cloudflare-coordinator/bootstrap.py
-```
-
-The helper can:
-
-- detect the local codemem device identity
-- create or reuse the named D1 database
-- write `wrangler.toml`
-- apply the package schema remotely
-- generate and optionally apply enrollment SQL
-- print the codemem config snippet
-- optionally run the smoke check
-
-Non-interactive form:
-
-```fish
-uv run python examples/cloudflare-coordinator/bootstrap.py \
-  --group team-alpha \
-  --worker-url "https://your-worker.example.workers.dev" \
-  --non-interactive \
-  --format json
-```
-
-### Manual path
+The Worker path assumes explicit operator-managed enrollment in D1. The old Python bootstrap helper has been archived with
+the legacy runtime, so the current path is manual.
 
 Generate or write SQL that creates the group and inserts the enrolled device row:
 
@@ -195,25 +166,16 @@ Teammate device example:
 }
 ```
 
-## 8. Smoke-check the deployment
+## 8. Validate the deployment
 
-Run the included smoke check against the deployed Worker:
+There is no longer a repo-shipped Python smoke-check script. Validate the Worker with real codemem clients instead:
 
-```fish
-uv run python examples/cloudflare-coordinator/smoke_check.py \
-  --db ~/.codemem/mem.sqlite \
-  --url "https://your-worker.example.workers.dev" \
-  --group team-alpha
-```
+- configure an admin device against the deployed Worker
+- confirm the device can complete presence + peer discovery through normal codemem flows
+- then run the invite and join checks below
 
-The script:
-
-- loads the local device identity and public key
-- signs `POST /v1/presence`
-- signs `GET /v1/peers`
-- prints both JSON responses
-
-Treat the deployment as minimally valid only when both requests succeed.
+Treat the deployment as minimally valid only when a real client can register, discover peers, and complete the onboarding
+flow below.
 
 ## 9. Validate invite and join behavior
 
@@ -261,7 +223,7 @@ Check:
 
 The request did not include the required signed auth headers.
 
-Use codemem-built clients or the provided smoke-check script. Plain curl requests against signed endpoints will fail.
+Use codemem-built clients. Plain curl requests against signed endpoints will fail.
 
 ### `unknown_device`
 
@@ -289,8 +251,8 @@ Recreate the invite with the real public/shared-network Worker URL.
 
 Cloudflare is blocking the request before it reaches the Worker.
 
-Check Cloudflare security/bot settings for the zone and test again with the same signed request path used by the smoke
-check.
+Check Cloudflare security/bot settings for the zone and test again with the same signed request path used by a real
+codemem client.
 
 ### Wrong schema or partial schema
 

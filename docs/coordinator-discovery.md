@@ -171,8 +171,8 @@ introducing Cloudflare-specific runtime/storage constraints.
 ## Cloudflare Worker reference deployment
 
 A Cloudflare Worker deployment path exists for the coordinator contract. The current Worker implementation source lives in
-`packages/cloudflare-coordinator-worker/`, while `examples/cloudflare-coordinator/` provides helper tooling around that
-package worker.
+`packages/cloudflare-coordinator-worker/`, while `examples/cloudflare-coordinator/` now only provides a Wrangler config
+wrapper around that package worker.
 
 If you are deploying on Cloudflare Workers + D1, use `docs/cloudflare-coordinator-deployment.md` as the canonical
 runbook.
