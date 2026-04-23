@@ -675,6 +675,21 @@ export async function coordinatorImportInviteAction(opts: {
 	if (!coordinatorUrl) throw new Error("Invite is missing a coordinator URL.");
 	const config = readCodememConfigFile();
 	const displayName = String(config.actor_display_name ?? deviceId).trim() || deviceId;
+	// V1 of multi-team assumes one coordinator hosting multiple groups.
+	// If this device is already enrolled in a different coordinator, surface
+	// that as a hard error instead of silently overwriting the existing
+	// coordinator URL and orphaning the prior group memberships. Normalize
+	// trailing slashes before comparing so harmless formatting differences
+	// (e.g. `https://coord.example.com` vs. `…/`) don't reject valid same-
+	// coordinator invites.
+	const normalizeCoordinatorUrl = (value: string): string => value.trim().replace(/\/+$/, "");
+	const existingCoordinator = normalizeCoordinatorUrl(String(config.sync_coordinator_url ?? ""));
+	const incomingCoordinator = normalizeCoordinatorUrl(coordinatorUrl);
+	if (existingCoordinator && existingCoordinator !== incomingCoordinator) {
+		throw new Error(
+			`This device is already enrolled with coordinator ${existingCoordinator}. Multi-team joining is only supported across groups on the same coordinator.`,
+		);
+	}
 	let status = 0;
 	let response: Record<string, unknown> | null = null;
 	try {
@@ -701,13 +716,33 @@ export async function coordinatorImportInviteAction(opts: {
 	}
 	const nextConfig = readCodememConfigFile();
 	nextConfig.sync_coordinator_url = coordinatorUrl;
-	nextConfig.sync_coordinator_group = String(payload.group_id);
+	// Append the new group to sync_coordinator_groups (dedup) instead of
+	// overwriting sync_coordinator_group. The runtime reads both the plural
+	// and singular forms; we keep singular pointing at the first group for
+	// legacy compatibility.
+	const newGroupId = String(payload.group_id);
+	const existingGroups = (() => {
+		const plural = nextConfig.sync_coordinator_groups;
+		if (Array.isArray(plural)) return plural.map((g) => String(g).trim()).filter(Boolean);
+		if (typeof plural === "string") {
+			return plural
+				.split(",")
+				.map((g) => g.trim())
+				.filter(Boolean);
+		}
+		const singular = nextConfig.sync_coordinator_group;
+		return typeof singular === "string" && singular.trim() ? [singular.trim()] : [];
+	})();
+	const mergedGroups = Array.from(new Set([...existingGroups, newGroupId]));
+	nextConfig.sync_coordinator_groups = mergedGroups;
+	nextConfig.sync_coordinator_group = mergedGroups[0] ?? newGroupId;
 	const configPath = writeCodememConfigFile(nextConfig, opts.configPath ?? undefined);
 	return {
 		group_id: payload.group_id,
 		coordinator_url: payload.coordinator_url,
 		status: response?.status ?? null,
 		config_path: configPath,
+		groups: mergedGroups,
 	};
 }
 

@@ -92,13 +92,50 @@ function PairingCopyRow() {
 	);
 }
 
+function JoinToggleRow({
+	joinPanel,
+	joinPanelOpen,
+	joinRestoreParent,
+	onToggle,
+}: {
+	joinPanel: HTMLElement | null;
+	joinPanelOpen: boolean;
+	joinRestoreParent: HTMLElement | null;
+	onToggle: () => void;
+}) {
+	return (
+		<>
+			<div className="sync-action">
+				<div className="sync-action-text">
+					Join another team.
+					<span className="sync-action-command">
+						Paste an invite to join an additional team from this device.
+					</span>
+				</div>
+				<button type="button" className="settings-button" onClick={onToggle}>
+					{joinPanelOpen ? "Hide join form" : "Join another team"}
+				</button>
+			</div>
+			{joinPanel ? (
+				<ExistingElementSlot
+					element={joinPanel}
+					hidden={!joinPanelOpen}
+					restoreParent={joinRestoreParent}
+				/>
+			) : null}
+		</>
+	);
+}
+
 export type SyncInviteJoinPanelsProps = {
 	invitePanel: HTMLElement | null;
 	invitePanelOpen: boolean;
 	inviteRestoreParent: HTMLElement | null;
 	joinPanel: HTMLElement | null;
+	joinPanelOpen: boolean;
 	joinRestoreParent: HTMLElement | null;
 	onToggleInvitePanel: () => void;
+	onToggleJoinPanel: () => void;
 	pairedPeerCount: number;
 	presenceStatus: string;
 };
@@ -108,16 +145,19 @@ export function SyncInviteJoinPanels({
 	invitePanelOpen,
 	inviteRestoreParent,
 	joinPanel,
+	joinPanelOpen,
 	joinRestoreParent,
 	onToggleInvitePanel,
+	onToggleJoinPanel,
 	pairedPeerCount,
 	presenceStatus,
 }: SyncInviteJoinPanelsProps) {
-	const showInviteActions = presenceStatus !== "not_enrolled";
+	const notEnrolled = presenceStatus === "not_enrolled";
+	const showInviteActions = !notEnrolled;
 
 	return (
 		<>
-			{presenceStatus === "not_enrolled" ? (
+			{notEnrolled ? (
 				<>
 					<div className="sync-action">
 						<div className="sync-action-text">
@@ -144,7 +184,23 @@ export function SyncInviteJoinPanels({
 						</div>
 					</div>
 				</>
-			) : null}
+			) : (
+				<>
+					<JoinToggleRow
+						joinPanel={joinPanel}
+						joinPanelOpen={joinPanelOpen}
+						joinRestoreParent={joinRestoreParent}
+						onToggle={onToggleJoinPanel}
+					/>
+					{/* The join handler writes into state.syncJoinFlowFeedback and
+					    calls setJoinFeedbackVisibility(); that helper exits early
+					    if #syncJoinFeedback is missing from the DOM, so we must
+					    keep the container mounted in this branch too. Otherwise
+					    enrolled users joining another team get no success / error
+					    / pending message after import. */}
+					<div className="peer-meta" id="syncJoinFeedback" hidden />
+				</>
+			)}
 
 			{showInviteActions ? (
 				<InviteToggleRow

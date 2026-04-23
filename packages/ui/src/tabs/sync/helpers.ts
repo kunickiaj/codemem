@@ -24,6 +24,11 @@ export function setTeamInvitePanelOpen(v: boolean) {
 	teamInvitePanelOpen = v;
 }
 
+export let teamJoinPanelOpen = false;
+export function setTeamJoinPanelOpen(v: boolean) {
+	teamJoinPanelOpen = v;
+}
+
 export const openPeerScopeEditors = new Set<string>();
 const pendingPeerScopeReviewIds = new Set<string>();
 const freshPeerScopeReviewIds = new Set<string>();

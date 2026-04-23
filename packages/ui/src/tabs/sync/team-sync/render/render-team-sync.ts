@@ -26,7 +26,9 @@ import {
 	requestPeerScopeReview,
 	saveDuplicatePersonDecision,
 	setTeamInvitePanelOpen,
+	setTeamJoinPanelOpen,
 	teamInvitePanelOpen,
+	teamJoinPanelOpen,
 } from "../../helpers";
 import {
 	openDuplicatePersonDialog,
@@ -475,10 +477,16 @@ export function renderTeamSync() {
 				invitePanelOpen: teamInvitePanelOpen,
 				inviteRestoreParent,
 				joinPanel,
+				joinPanelOpen: teamJoinPanelOpen,
 				joinRestoreParent,
 				onToggleInvitePanel: () => {
 					if (!invitePanel) return;
 					setTeamInvitePanelOpen(!teamInvitePanelOpen);
+					renderTeamSync();
+				},
+				onToggleJoinPanel: () => {
+					if (!joinPanel) return;
+					setTeamJoinPanelOpen(!teamJoinPanelOpen);
 					renderTeamSync();
 				},
 				pairedPeerCount: Number(coordinator.paired_peer_count || 0),
