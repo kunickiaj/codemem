@@ -64,16 +64,16 @@ function useExpandedPeer(): string | null {
 	return expandedPeerId;
 }
 
+import { renderIntoSyncMount } from "./render-root";
+import { SyncEmptyState } from "./sync-empty-state";
+import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
+
 const DIRECTION_GLYPH: Record<PeerDirection, { glyph: string; label: string } | null> = {
 	bidirectional: { glyph: "↕", label: "Bidirectional sync in the last 24 hours" },
 	publishing: { glyph: "↑", label: "Publishing only in the last 24 hours" },
 	subscribed: { glyph: "↓", label: "Subscribed only in the last 24 hours" },
 	none: null,
 };
-
-import { renderIntoSyncMount } from "./render-root";
-import { SyncEmptyState } from "./sync-empty-state";
-import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
 
 type PeerScopeLike = {
 	include?: string[];
@@ -121,10 +121,6 @@ function listText(value: unknown): string[] {
 	return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
 }
 
-function _summaryText(prefix: string, values: string[], emptyLabel: string): string {
-	return `${prefix}: ${values.join(", ") || emptyLabel}`;
-}
-
 function ExistingElementSlot({ element }: { element: HTMLElement }) {
 	const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -161,9 +157,6 @@ function SyncPeerCard({
 	const scope = peer.project_scope || {};
 	const includeList = listText(scope.include);
 	const excludeList = listText(scope.exclude);
-	const _effectiveInclude = listText(scope.effective_include);
-	const _effectiveExclude = listText(scope.effective_exclude);
-	const _inheritsGlobal = Boolean(scope.inherits_global);
 	const primaryAddress = pickPrimaryAddress(peer.addresses);
 	const peerAddresses = Array.isArray(peer.addresses)
 		? Array.from(new Set(peer.addresses.filter(Boolean).map((value) => String(value))))
@@ -387,21 +380,28 @@ function SyncPeerCard({
 	const currentExpandedId = useExpandedPeer();
 	const isExpanded = currentExpandedId === peerId && peerId !== "";
 	const drawerId = `device-drawer-${peerId || "unknown"}`;
-	// Override the derived presence with "syncing" while this device is
-	// actively being contacted via Sync now — per the loading-states
-	// vocabulary in docs/plans/2026-04-23-sync-tab-redesign.md.
-	const presenceState: PresenceState = syncBusy ? "syncing" : presenceForPeer(peer);
+	// Presence is derived strictly from the server-side peer state. The
+	// Sync-now button carries its own in-flight affordance (label + spinner);
+	// we do not flip the pip to "syncing" locally because no backend signal
+	// keeps the state honest for global sync fan-out or background sync.
+	// Reintroduce a "syncing" state only when peer-level in-flight shows up
+	// in SyncPeerStatusLike.
+	const presenceState: PresenceState = presenceForPeer(peer);
 	const syncMetaText = lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never";
+
+	const toggleExpand = () => setExpandedPeer(isExpanded ? null : peerId);
+	const toggleLabel = `${isExpanded ? "Collapse" : "Expand"} device ${displayName}`;
 
 	return (
 		<div ref={cardRef} className="peer-card" data-peer-device-id={peerId || undefined}>
-			<button
-				aria-controls={drawerId}
-				aria-expanded={isExpanded}
-				className="device-row-head"
-				onClick={() => setExpandedPeer(isExpanded ? null : peerId)}
-				type="button"
-			>
+			{/* Row head: non-interactive content + a dedicated disclosure
+			    button on the right. This avoids burying badges, glyphs, and
+			    title attributes inside a button's accessible-name
+			    computation (which would produce a 40+ word announcement).
+			    Clicking anywhere in the row still toggles the drawer via a
+			    background click handler — the button is what assistive tech
+			    sees and keyboard users activate. */}
+			<div className="device-row-head">
 				<PresencePip state={presenceState} />
 				<span className="device-row-name" title={peerId || undefined}>
 					{displayName}
@@ -433,10 +433,19 @@ function SyncPeerCard({
 					) : null}
 				</span>
 				<span className="device-row-meta">{syncMetaText}</span>
-				<span aria-hidden="true" className="device-row-chevron">
-					{isExpanded ? "▾" : "▸"}
-				</span>
-			</button>
+				<button
+					aria-controls={drawerId}
+					aria-expanded={isExpanded}
+					aria-label={toggleLabel}
+					className="device-row-toggle"
+					onClick={toggleExpand}
+					type="button"
+				>
+					<span aria-hidden="true" className="device-row-chevron">
+						{isExpanded ? "▾" : "▸"}
+					</span>
+				</button>
+			</div>
 
 			{isExpanded ? (
 				<section

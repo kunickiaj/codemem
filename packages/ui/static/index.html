@@ -957,31 +957,12 @@
         box-shadow: 0 0 0 4px var(--focus-ring);
       }
 
-      /* Primary-filled variant: the only filled-accent button on its
-         line of sight. See docs/plans/2026-04-23-sync-tab-redesign.md. */
-      .settings-button.sync-btn-primary {
-        background: color-mix(in srgb, var(--accent) 88%, transparent);
-        border-color: color-mix(in srgb, var(--accent) 60%, var(--control-border));
-        color: var(--surface-0);
-        font-weight: 600;
-      }
-      .settings-button.sync-btn-primary:hover {
-        background: var(--accent);
-        border-color: var(--accent);
-      }
-
-      /* ActionShelf toolbar: trailing buttons right-aligned by default;
-         wraps to a new line when the row can't fit. */
-      .action-shelf {
-        display: flex;
-        gap: var(--sp-2);
-        align-items: center;
-        flex-wrap: wrap;
-      }
-      .action-shelf-align-end   { justify-content: flex-end; }
-      .action-shelf-align-start { justify-content: flex-start; }
-
-      /* Device-row compact header (the clickable band above the drawer).
+      /* Device-row compact header. A non-interactive container holding
+         the status pip + name + chips + meta, with a dedicated disclosure
+         button (.device-row-toggle) for assistive tech and keyboard users.
+         The whole row still responds to click via a background click
+         handler on .peer-card, but the accessible name of the toggle stays
+         clean ("Expand device work").
          See docs/plans/2026-04-23-sync-tab-redesign.md (PR 2). */
       .device-row-head {
         display: grid;
@@ -991,18 +972,25 @@
         width: 100%;
         min-height: 56px;
         padding: 10px var(--sp-3);
+      }
+      .device-row-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
         background: transparent;
         border: none;
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-sm);
+        color: var(--text-tertiary);
         cursor: pointer;
-        color: inherit;
-        text-align: left;
-        font: inherit;
       }
-      .device-row-head:hover {
-        background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+      .device-row-toggle:hover {
+        background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+        color: var(--text-primary);
       }
-      .device-row-head:focus-visible {
+      .device-row-toggle:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
       }
@@ -1923,21 +1911,6 @@
       .peer-scope-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: flex-start; padding: 8px 10px; margin: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
       .peer-scope-chip { padding: 4px 8px; background: rgba(43, 122, 176, 0.12); color: var(--accent); font-size: 12px; }
       .peer-scope-chip.empty { background: transparent; color: var(--text-tertiary); border-style: dashed; border-color: var(--border); }
-      /* Trust-state tones — see design_handoff_codemem_viewer/
-         reference/DESIGN_SYSTEM.md and docs/plans/2026-04-23-sync-tab-redesign.md */
-      .peer-scope-chip.ok {
-        background: color-mix(in srgb, var(--accent) 14%, transparent);
-        color: var(--accent);
-      }
-      .peer-scope-chip.pending {
-        background: color-mix(in srgb, var(--accent-cool, var(--accent)) 12%, transparent);
-        color: var(--accent-cool, var(--accent));
-      }
-      .peer-scope-chip.warn {
-        background: color-mix(in srgb, var(--accent-warm, var(--accent)) 16%, transparent);
-        color: var(--accent-warm, var(--accent));
-      }
-
       /* PresencePip — atomic health indicator.
          See docs/plans/2026-04-23-sync-tab-redesign.md (loading-states). */
       .presence-pip {

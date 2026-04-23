@@ -58,7 +58,10 @@ Rule of thumb: **don't fight the browser.**
 - On expand: default focus stays on the row button. Sub-controls take
   focus when activated.
 - On collapse via button: focus stays on the row button.
-- On collapse via another row expanding: focus moves to the new row.
+- On collapse via another row expanding: because the new row's button
+  receives the click, focus naturally moves there — this is emergent,
+  not imperative. If you add programmatic focus restoration, write a
+  test.
 - For keyboard users, `Tab` enters the drawer in DOM order. `Escape`
   is NOT wired by default (inline expand is not modal; Escape should
   not close it unless the user specifically requests it).
@@ -75,12 +78,15 @@ fine; animating the drawer itself often isn't worth the complexity.
 
 - **Don't put a drawer inside a popover.** Popovers have positioning
   and focus semantics that conflict with form controls.
-- **Don't nest drawers.** If you need a drawer-inside-a-drawer, you
-  probably want a modal for the inner one, or a separate route.
+- **Don't nest two row-level drawers.** A row-drawer-inside-a-row-drawer
+  is a routing mistake wearing a toggle — promote the inner one to a
+  modal or a dedicated route. An **inline sub-disclosure** inside a
+  drawer is fine (e.g. "Advanced sharing scope" inside the device
+  detail drawer) — those are small toggles for deeply secondary options,
+  not full row detail surfaces.
 - **Don't make the entire row a link.** A link leaves the page; an
   expand toggle doesn't. Use the right semantics.
 
 ## Related
 
 - `device-row-anatomy.md` — the canonical inline-expand example.
-- `action-shelf-anatomy.md` — for toolbars that open disclosures.

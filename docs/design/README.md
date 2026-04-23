@@ -9,9 +9,6 @@ by documenting patterns this repo's UI introduces or refines.
 - [`device-row-anatomy.md`](./device-row-anatomy.md) — list-item
   density pattern: compact row + click-to-expand drawer. Used by the
   Sync tab's People & devices list.
-- [`action-shelf-anatomy.md`](./action-shelf-anatomy.md) — toolbar
-  layout and button-prominence rules ("at most one filled-primary per
-  line of sight").
 - [`attention-vocabulary-anatomy.md`](./attention-vocabulary-anatomy.md) —
   offline / degraded / attention / syncing visual language. Pip sizes,
   pulse timing, Gestalt pairing rules.
@@ -19,9 +16,13 @@ by documenting patterns this repo's UI introduces or refines.
   inline-expand vs. popover vs. modal decision table; focus
   management; anti-patterns.
 
-All four landed with the 2026-04-23 Sync tab redesign; see
+These landed with the 2026-04-23 Sync tab redesign; see
 [`docs/plans/2026-04-23-sync-tab-redesign.md`](../plans/2026-04-23-sync-tab-redesign.md)
 for the design history and PR sequence.
+
+A toolbar / action-shelf anatomy page was drafted but removed during
+Ramsay review because no concrete primitive consumes it yet — will
+return when we have a real component to describe.
 
 ## Scope
 
