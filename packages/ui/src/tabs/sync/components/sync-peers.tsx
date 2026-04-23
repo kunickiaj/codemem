@@ -387,7 +387,10 @@ function SyncPeerCard({
 	const currentExpandedId = useExpandedPeer();
 	const isExpanded = currentExpandedId === peerId && peerId !== "";
 	const drawerId = `device-drawer-${peerId || "unknown"}`;
-	const presenceState = presenceForPeer(peer);
+	// Override the derived presence with "syncing" while this device is
+	// actively being contacted via Sync now — per the loading-states
+	// vocabulary in docs/plans/2026-04-23-sync-tab-redesign.md.
+	const presenceState: PresenceState = syncBusy ? "syncing" : presenceForPeer(peer);
 	const syncMetaText = lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never";
 
 	return (
@@ -592,10 +595,10 @@ function SyncPeersList(props: SyncPeersListProps) {
 				<SyncEmptyState
 					detail={
 						syncDisabled
-							? "Turn on sync in Settings → Device Sync first, then use Show pairing command under Connect another device to connect another device."
-							: "Use Show pairing command under Connect another device, run the command on the other device, then come back here to name it and decide who it belongs to."
+							? "Turn on sync in Settings → Device Sync first. Then use Invite a teammate or Paste an invite above to connect another device."
+							: "Use Invite a teammate above to share a join code, or Paste an invite to enroll this device on an existing team."
 					}
-					title="No devices connected here yet."
+					title="No teammates yet"
 				/>
 			</>
 		);
