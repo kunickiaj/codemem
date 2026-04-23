@@ -2,15 +2,18 @@
  * Peer discovery and address management for the codemem sync system.
  *
  * Handles address normalization, deduplication, peer address storage,
- * and mDNS stubs. Ported from codemem/sync/discovery.py.
+ * and cross-platform mDNS advertise/discover via `bonjour-service`.
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mergeAddresses, normalizeAddress } from "./address-utils.js";
+import { readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
+
+const requireFromHere = createRequire(import.meta.url);
 
 // Re-export for consumers that import from sync-discovery
 export { addressDedupeKey, mergeAddresses, normalizeAddress } from "./address-utils.js";
@@ -219,7 +222,7 @@ export function setPeerLocalActorClaim(db: Database, peerDeviceId: string, claim
 }
 
 // ---------------------------------------------------------------------------
-// mDNS stubs (Phase 1)
+// mDNS peer discovery (cross-platform via bonjour-service)
 // ---------------------------------------------------------------------------
 
 export interface MdnsEntry {
@@ -230,144 +233,214 @@ export interface MdnsEntry {
 	properties?: Record<string, string | Uint8Array>;
 }
 
-function commandAvailable(command: string): boolean {
+const MDNS_SERVICE_TYPE = "codemem"; // advertises as _codemem._tcp.local.
+
+/**
+ * Returns true when mDNS discovery should be active on this device.
+ *
+ * Reads the merged codemem config (so the Settings UI toggle is
+ * authoritative) with an env-var override (`CODEMEM_SYNC_MDNS`) for
+ * one-off runs. Previously env-only, which silently ignored the UI
+ * toggle.
+ */
+export function mdnsEnabled(): boolean {
+	const envValue = process.env.CODEMEM_SYNC_MDNS;
+	if (envValue) return envValue === "1" || envValue.toLowerCase() === "true";
 	try {
-		execFileSync("which", [command], { stdio: "pipe" });
-		return true;
+		return readCoordinatorSyncConfig().syncMdns;
 	} catch {
 		return false;
 	}
 }
 
-function runDnsSd(args: string[], timeoutMs = 1200): string {
-	try {
-		return execFileSync("dns-sd", args, {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-			timeout: timeoutMs,
-		});
-	} catch (err) {
-		if (err && typeof err === "object") {
-			const e = err as { stdout?: string | Buffer; stderr?: string | Buffer };
-			const out = [e.stdout, e.stderr]
-				.map((part) => {
-					if (typeof part === "string") return part;
-					if (part instanceof Buffer) return part.toString("utf8");
-					return "";
-				})
-				.filter(Boolean)
-				.join("\n");
-			return out;
-		}
-		return "";
-	}
-}
-
-function discoverServiceNamesDnsSd(): string[] {
-	const output = runDnsSd(["-B", "_codemem._tcp", "local."], 1200);
-	if (!output) return [];
-	const names = new Set<string>();
-	for (const line of output.split(/\r?\n/)) {
-		if (!line.includes("Add")) continue;
-		let name = "";
-		const columnMatch = line.match(/\bAdd\b.*\slocal\.\s+_codemem\._tcp\.\s+(.+)$/);
-		if (columnMatch) {
-			name = String(columnMatch[1] ?? "").trim();
-		} else {
-			const legacyMatch = line.match(/\sAdd\s+\S+\s+\S+\s+\S+\s+(.+)\._codemem\._tcp\./);
-			if (legacyMatch) name = String(legacyMatch[1] ?? "").trim();
-		}
-		if (name) names.add(name);
-	}
-	return [...names];
-}
-
-function resolveServiceDnsSd(name: string): MdnsEntry | null {
-	const output = runDnsSd(["-L", name, "_codemem._tcp", "local."], 1200);
-	if (!output) return null;
-
-	const hostPortMatch = output.match(/can be reached at\s+([^:\s]+)\.?:(\d+)/i);
-	const host = hostPortMatch?.[1] ? String(hostPortMatch[1]).trim() : "";
-	const port = hostPortMatch?.[2] ? Number.parseInt(String(hostPortMatch[2]), 10) : 0;
-
-	const txtDeviceIdMatch = output.match(/device_id=([^\s"',]+)/i);
-	const deviceId = txtDeviceIdMatch?.[1] ? String(txtDeviceIdMatch[1]).trim() : "";
-
-	if (!host || !port || Number.isNaN(port)) return null;
-	const properties: Record<string, string> = {};
-	if (deviceId) properties.device_id = deviceId;
-
-	return {
-		name,
-		host,
-		port,
-		properties,
+// Lazy-import `bonjour-service` so users who disable embeddings or run
+// in environments where the multicast socket can't bind don't pay the
+// startup cost. Returns null when the module isn't available.
+interface BonjourLike {
+	publish: (opts: { name: string; type: string; port: number; txt?: Record<string, string> }) => {
+		stop: (cb?: () => void) => void;
 	};
+	find: (
+		opts: { type: string },
+		onUp?: (svc: {
+			name: string;
+			host?: string;
+			fqdn?: string;
+			port: number;
+			addresses?: string[];
+			txt?: Record<string, string>;
+		}) => void,
+	) => { stop: () => void };
+	destroy: () => void;
+}
+
+type BonjourCtor = new (
+	opts?: Record<string, unknown>,
+	errorCallback?: (err: Error) => void,
+) => BonjourLike;
+
+function loadBonjour(): BonjourLike | null {
+	try {
+		const mod = requireFromHere("bonjour-service") as {
+			Bonjour?: BonjourCtor;
+			default?: BonjourCtor;
+		};
+		const Ctor = mod.Bonjour ?? mod.default;
+		if (!Ctor) return null;
+		// Pass an error callback so mDNS runtime errors (bind failures on
+		// restricted containers, interface churn, multicast blocked) stay
+		// contained instead of propagating as uncaught exceptions and
+		// taking down the sync/viewer process. Degrades to no-op on error.
+		return new Ctor(undefined, (err: Error) => {
+			console.warn("[codemem] mDNS runtime error (non-fatal):", err?.message ?? err);
+		});
+	} catch {
+		return null;
+	}
+}
+
+// Shared Bonjour instance: advertise + discover reuse a single multicast
+// socket, refcounted across callers. This avoids churn where each call would
+// otherwise spin up a fresh bind-release cycle and race its own publish/find
+// against destroy(). The instance is lazily created on first acquire and torn
+// down when the last caller releases.
+let sharedInstance: BonjourLike | null = null;
+let sharedRefcount = 0;
+
+function acquireBonjour(): BonjourLike | null {
+	if (sharedInstance) {
+		sharedRefcount += 1;
+		return sharedInstance;
+	}
+	const instance = loadBonjour();
+	if (!instance) return null;
+	sharedInstance = instance;
+	sharedRefcount = 1;
+	return sharedInstance;
+}
+
+function releaseBonjour(): void {
+	if (!sharedInstance) return;
+	sharedRefcount = Math.max(0, sharedRefcount - 1);
+	if (sharedRefcount > 0) return;
+	const instance = sharedInstance;
+	sharedInstance = null;
+	try {
+		instance.destroy();
+	} catch {
+		// best effort
+	}
 }
 
 /**
- * Check if mDNS discovery is enabled via the CODEMEM_SYNC_MDNS env var.
+ * Internal: reset shared instance state. Exposed for tests only.
  */
-export function mdnsEnabled(): boolean {
-	const value = process.env.CODEMEM_SYNC_MDNS;
-	if (!value) return false;
-	return value === "1" || value.toLowerCase() === "true";
+export function __resetMdnsForTests(): void {
+	if (sharedInstance) {
+		try {
+			sharedInstance.destroy();
+		} catch {
+			// best effort
+		}
+	}
+	sharedInstance = null;
+	sharedRefcount = 0;
 }
 
 /**
- * Advertise this device via mDNS.
+ * Advertise this device as a codemem sync peer via mDNS.
  *
- * Phase 1 stub: logs the intent and returns a no-op closer.
- * Real implementation will use dns-sd (macOS) or bonjour-service (Linux).
+ * Returns a closer that tears down the advertisement. No-op when mDNS
+ * is disabled, when `bonjour-service` failed to load, or when the
+ * multicast socket cannot bind.
  */
-export function advertiseMdns(_deviceId: string, _port: number): { close(): void } {
+export function advertiseMdns(deviceId: string, port: number): { close(): void } {
 	if (!mdnsEnabled()) return { close() {} };
-	if (process.platform !== "darwin") return { close() {} };
-	if (!commandAvailable("dns-sd")) return { close() {} };
+	if (!deviceId || !port || !Number.isFinite(port)) return { close() {} };
 
-	const serviceName = `codemem-${_deviceId.slice(0, 12)}`;
-	const child = spawn(
-		"dns-sd",
-		["-R", serviceName, "_codemem._tcp", "local.", String(_port), `device_id=${_deviceId}`],
-		{
-			stdio: "ignore",
-			detached: false,
-		},
-	);
+	const bonjour = acquireBonjour();
+	if (!bonjour) return { close() {} };
 
+	let advertisement: { stop: (cb?: () => void) => void } | null = null;
+	try {
+		advertisement = bonjour.publish({
+			name: `codemem-${deviceId.slice(0, 12)}`,
+			type: MDNS_SERVICE_TYPE,
+			port,
+			txt: { device_id: deviceId },
+		});
+	} catch {
+		releaseBonjour();
+		return { close() {} };
+	}
+
+	let closed = false;
 	return {
 		close() {
-			if (!child.killed) {
-				try {
-					child.kill("SIGTERM");
-				} catch {
-					// best effort
-				}
+			if (closed) return;
+			closed = true;
+			const release = () => releaseBonjour();
+			try {
+				// Wait for publish to acknowledge the stop before releasing the
+				// shared instance so the unpublish actually reaches the wire.
+				advertisement?.stop(() => release());
+			} catch {
+				release();
 			}
 		},
 	};
 }
 
 /**
- * Discover peers via mDNS.
- *
- * Phase 1 stub: returns an empty array.
- * Real implementation will use dns-sd (macOS) or bonjour-service (Linux).
+ * Discover codemem sync peers via mDNS. Blocks up to `timeoutMs` (default
+ * 1500) collecting `_codemem._tcp.local.` responders, then returns the
+ * entries it saw. No-op / empty array when mDNS is disabled or the
+ * module couldn't load.
  */
-export function discoverPeersViaMdns(): MdnsEntry[] {
+export async function discoverPeersViaMdns(timeoutMs = 1500): Promise<MdnsEntry[]> {
 	if (!mdnsEnabled()) return [];
-	if (process.platform !== "darwin") return [];
-	if (!commandAvailable("dns-sd")) return [];
 
-	const names = discoverServiceNamesDnsSd();
-	if (names.length === 0) return [];
+	const bonjour = acquireBonjour();
+	if (!bonjour) return [];
 
-	const entries: MdnsEntry[] = [];
-	for (const name of names) {
-		const resolved = resolveServiceDnsSd(name);
-		if (resolved) entries.push(resolved);
+	const found: MdnsEntry[] = [];
+	const seen = new Set<string>();
+	// Ignore late `onUp` callbacks that fire after the timeout elapses — the
+	// browser's `stop()` is best-effort and can race in-flight dispatches.
+	let acceptingResults = true;
+	let browser: { stop: () => void } | null = null;
+	try {
+		browser = bonjour.find({ type: MDNS_SERVICE_TYPE }, (svc) => {
+			if (!acceptingResults) return;
+			const key = `${svc.name}|${svc.host ?? svc.fqdn ?? ""}|${svc.port}`;
+			if (seen.has(key)) return;
+			seen.add(key);
+			const addresses = Array.isArray(svc.addresses) ? svc.addresses : [];
+			const ipv4 = addresses.find((addr) => addr && /^[\d.]+$/.test(addr));
+			const properties: Record<string, string> = {};
+			const rawTxt = svc.txt ?? {};
+			for (const [key, value] of Object.entries(rawTxt)) {
+				properties[key] = String(value);
+			}
+			found.push({
+				name: svc.name,
+				host: (svc.host || svc.fqdn || "").replace(/\.$/, ""),
+				port: svc.port,
+				address: ipv4,
+				properties,
+			});
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, Math.max(100, timeoutMs)));
+	} finally {
+		acceptingResults = false;
+		try {
+			browser?.stop();
+		} catch {
+			// best effort
+		}
+		releaseBonjour();
 	}
-	return entries;
+	return found;
 }
 
 /**

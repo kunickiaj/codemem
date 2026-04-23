@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -259,27 +262,50 @@ describe("recordPeerSuccess", () => {
 // ---------------------------------------------------------------------------
 
 describe("mdnsEnabled", () => {
-	afterEach(() => {
-		vi.unstubAllEnvs();
+	let tmpDir: string;
+	let configPath: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-mdns-test-"));
+		configPath = join(tmpDir, "config.json");
+		vi.stubEnv("CODEMEM_CONFIG", configPath);
 	});
 
-	it("returns false when env var is not set", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("returns false with no env and no config", () => {
 		vi.stubEnv("CODEMEM_SYNC_MDNS", "");
 		expect(mdnsEnabled()).toBe(false);
 	});
 
-	it("returns true when env var is '1'", () => {
+	it("env '1' wins over missing config", () => {
 		vi.stubEnv("CODEMEM_SYNC_MDNS", "1");
 		expect(mdnsEnabled()).toBe(true);
 	});
 
-	it("returns true when env var is 'true'", () => {
+	it("env 'true' wins over missing config", () => {
 		vi.stubEnv("CODEMEM_SYNC_MDNS", "true");
 		expect(mdnsEnabled()).toBe(true);
 	});
 
-	it("returns false for other values", () => {
+	it("env '0' explicitly disables even if config says enabled", () => {
+		writeFileSync(configPath, JSON.stringify({ sync_mdns: true }));
 		vi.stubEnv("CODEMEM_SYNC_MDNS", "0");
+		expect(mdnsEnabled()).toBe(false);
+	});
+
+	it("config sync_mdns=true enables when env is unset", () => {
+		writeFileSync(configPath, JSON.stringify({ sync_mdns: true }));
+		vi.stubEnv("CODEMEM_SYNC_MDNS", "");
+		expect(mdnsEnabled()).toBe(true);
+	});
+
+	it("config sync_mdns=false keeps it disabled when env is unset", () => {
+		writeFileSync(configPath, JSON.stringify({ sync_mdns: false }));
+		vi.stubEnv("CODEMEM_SYNC_MDNS", "");
 		expect(mdnsEnabled()).toBe(false);
 	});
 });
@@ -335,13 +361,21 @@ describe("mdnsAddressesForPeer", () => {
 });
 
 describe("mDNS runtime hooks", () => {
-	afterEach(() => {
-		vi.unstubAllEnvs();
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-mdns-runtime-"));
+		vi.stubEnv("CODEMEM_CONFIG", join(tmpDir, "config.json"));
 	});
 
-	it("returns no entries and no-op close when mDNS is disabled", () => {
-		vi.stubEnv("CODEMEM_SYNC_MDNS", "");
-		expect(discoverPeersViaMdns()).toEqual([]);
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("returns no entries and no-op close when mDNS is disabled", async () => {
+		vi.stubEnv("CODEMEM_SYNC_MDNS", "0");
+		await expect(discoverPeersViaMdns()).resolves.toEqual([]);
 		expect(() => advertiseMdns("dev-local", 7337).close()).not.toThrow();
 	});
 });

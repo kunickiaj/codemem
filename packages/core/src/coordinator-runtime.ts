@@ -54,6 +54,7 @@ export interface CoordinatorSyncConfig {
 	syncPort: number;
 	syncIntervalS: number;
 	syncAdvertise: string;
+	syncMdns: boolean;
 	syncRetentionEnabled: boolean;
 	syncRetentionMaxAgeDays: number;
 	syncRetentionMaxSizeMb: number;
@@ -113,6 +114,7 @@ export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyn
 		syncPort: parseIntOr(raw.sync_port, 7337),
 		syncIntervalS: parseIntOr(raw.sync_interval_s, 120),
 		syncAdvertise: clean(raw.sync_advertise) || "auto",
+		syncMdns: parseBoolOr(raw.sync_mdns, false),
 		syncRetentionEnabled: parseBoolOr(raw.sync_retention_enabled, false),
 		syncRetentionMaxAgeDays: Math.max(1, parseIntOr(raw.sync_retention_max_age_days, 30)),
 		syncRetentionMaxSizeMb: Math.max(1, parseIntOr(raw.sync_retention_max_size_mb, 512)),
