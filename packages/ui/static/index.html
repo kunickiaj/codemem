@@ -1054,6 +1054,60 @@
         gap: var(--sp-3);
       }
 
+      /* Device-row skeleton (shown during the initial sync load). Shape
+         matches the real row so layout doesn't shift when data arrives.
+         See docs/plans/2026-04-23-sync-tab-redesign.md (loading-states). */
+      .device-row-skeleton-list {
+        display: grid;
+        gap: var(--sp-2);
+      }
+      .device-row-skeleton {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3);
+        min-height: 56px;
+        padding: 10px var(--sp-3);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border);
+        background: var(--surface-1);
+      }
+      .device-row-skeleton .skel-pip,
+      .device-row-skeleton .skel-name,
+      .device-row-skeleton .skel-chip {
+        display: inline-block;
+        border-radius: var(--radius-sm);
+        background: linear-gradient(90deg,
+          color-mix(in srgb, var(--surface-2) 82%, var(--surface-1)) 25%,
+          color-mix(in srgb, var(--surface-2) 60%, var(--surface-1)) 50%,
+          color-mix(in srgb, var(--surface-2) 82%, var(--surface-1)) 75%);
+        background-size: 200% 100%;
+        animation: device-skel-shimmer 1.5s ease-in-out infinite;
+      }
+      .device-row-skeleton .skel-pip {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .device-row-skeleton .skel-name {
+        flex: 1;
+        max-width: 180px;
+        height: 14px;
+      }
+      .device-row-skeleton .skel-chip {
+        width: 80px;
+        height: 18px;
+        border-radius: var(--radius-pill);
+      }
+      @keyframes device-skel-shimmer {
+        0%   { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .device-row-skeleton .skel-pip,
+        .device-row-skeleton .skel-name,
+        .device-row-skeleton .skel-chip { animation: none; }
+      }
+
       .sync-redact-control {
         display: inline-flex;
         align-items: center;
@@ -3366,9 +3420,10 @@
 
         <h3 class="settings-group-title" style="margin-top: 20px">Devices</h3>
         <div class="peer-list" id="syncPeers"></div>
-        <div class="sync-skeleton" id="syncPeersSkeleton" role="status" aria-label="Loading devices">
-          <div class="sync-skeleton-block"></div>
-          <div class="sync-skeleton-block"></div>
+        <div class="device-row-skeleton-list" id="syncPeersSkeleton" role="status" aria-label="Loading devices" aria-busy="true">
+          <div class="device-row-skeleton"><span class="skel-pip"></span><span class="skel-name"></span><span class="skel-chip"></span></div>
+          <div class="device-row-skeleton"><span class="skel-pip"></span><span class="skel-name"></span><span class="skel-chip"></span></div>
+          <div class="device-row-skeleton"><span class="skel-pip"></span><span class="skel-name"></span><span class="skel-chip"></span></div>
         </div>
 
         <h3 class="settings-group-title" style="margin-top: 20px">Connect another device</h3>
