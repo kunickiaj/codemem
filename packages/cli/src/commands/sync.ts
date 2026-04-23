@@ -20,6 +20,7 @@ import {
 	hasUnsyncedSharedMemoryChanges,
 	loadPublicKey,
 	MemoryStore,
+	mdnsEnabled,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
@@ -687,12 +688,21 @@ doctorCmd.action(
 				if (!pinned || !hasKey) issues.push(`peer ${peer.peer_device_id} not pinned`);
 			}
 
+			const mdnsActive = mdnsEnabled();
+			const mdnsSource = process.env.CODEMEM_SYNC_MDNS ? "env" : config.sync_mdns ? "config" : null;
+			const mdnsLabel = mdnsActive
+				? mdnsSource === "env"
+					? "enabled (env)"
+					: "enabled (config)"
+				: "disabled";
+
 			if (opts.json) {
 				console.log(
 					JSON.stringify({
 						enabled: config.sync_enabled === true,
 						listen: `${syncHost}:${syncPort}`,
-						mdns: process.env.CODEMEM_SYNC_MDNS ? "env-configured" : "default/off",
+						mdns: mdnsLabel,
+						mdns_source: mdnsSource,
 						daemon: reachable ? "running" : "not running",
 						identity: device?.device_id ?? null,
 						daemon_error: daemonState?.last_error ?? null,
@@ -707,7 +717,7 @@ doctorCmd.action(
 			console.log("Sync doctor");
 			console.log(`- Enabled: ${config.sync_enabled === true}`);
 			console.log(`- Listen: ${syncHost}:${syncPort}`);
-			console.log(`- mDNS: ${process.env.CODEMEM_SYNC_MDNS ? "env-configured" : "default/off"}`);
+			console.log(`- mDNS: ${mdnsLabel}`);
 			console.log(`- Daemon: ${reachable ? "running" : "not running"}`);
 
 			if (!device) {
