@@ -437,6 +437,47 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
 	});
 
+	it("adds sync_peers discovery-provenance columns and creates coordinator_group_preferences", () => {
+		db.exec(`
+			CREATE TABLE sync_peers (
+				peer_device_id TEXT PRIMARY KEY NOT NULL,
+				name TEXT,
+				pinned_fingerprint TEXT,
+				public_key TEXT,
+				addresses_json TEXT,
+				claimed_local_actor INTEGER NOT NULL DEFAULT 0,
+				actor_id TEXT,
+				projects_include_json TEXT,
+				projects_exclude_json TEXT,
+				created_at TEXT NOT NULL,
+				last_seen_at TEXT,
+				last_sync_at TEXT,
+				last_error TEXT
+			)
+		`);
+
+		expect(columnExists(db, "sync_peers", "discovered_via_coordinator_id")).toBe(false);
+		expect(columnExists(db, "sync_peers", "discovered_via_group_id")).toBe(false);
+		expect(tableExists(db, "coordinator_group_preferences")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnExists(db, "sync_peers", "discovered_via_coordinator_id")).toBe(true);
+		expect(columnExists(db, "sync_peers", "discovered_via_group_id")).toBe(true);
+		expect(tableExists(db, "coordinator_group_preferences")).toBe(true);
+
+		db.exec(
+			"INSERT INTO coordinator_group_preferences " +
+				"(coordinator_id, group_id, auto_seed_scope, updated_at) " +
+				"VALUES ('https://coord.example', 'team-alpha', 1, '2026-04-23T00:00:00Z')",
+		);
+		const row = db
+			.prepare("SELECT coordinator_id, group_id FROM coordinator_group_preferences")
+			.get() as { coordinator_id: string; group_id: string };
+		expect(row.coordinator_id).toBe("https://coord.example");
+		expect(row.group_id).toBe("team-alpha");
+	});
+
 	it("creates memory_file_refs and memory_concept_refs on v6 databases missing them", () => {
 		// Simulate a v6 database that has memory_items but lacks the junction tables.
 		db.exec(`

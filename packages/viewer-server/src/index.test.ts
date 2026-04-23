@@ -5210,6 +5210,60 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("reads and writes local coordinator group preferences without admin secret", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				// No admin secret: preferences are a local-only setting and must
+				// remain reachable without coordinator-admin privileges.
+				delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+					}),
+				);
+				const { app, cleanup } = createTestApp();
+				try {
+					const initial = await app.request("/api/coordinator/admin/groups/team-a/preferences");
+					expect(initial.status).toBe(200);
+					expect(await initial.json()).toMatchObject({
+						preferences: {
+							coordinator_id: "https://coord.example.test",
+							group_id: "team-a",
+							auto_seed_scope: true,
+							updated_at: null,
+						},
+					});
+					const saved = await app.request("/api/coordinator/admin/groups/team-a/preferences", {
+						method: "PUT",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							projects_include: ["work/*"],
+							auto_seed_scope: false,
+						}),
+					});
+					expect(saved.status).toBe(200);
+					expect(await saved.json()).toMatchObject({
+						preferences: {
+							projects_include: ["work/*"],
+							auto_seed_scope: false,
+						},
+					});
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevSecret;
+			}
+		});
+
 		it("deletes sync peers through the viewer route", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

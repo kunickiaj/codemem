@@ -402,6 +402,8 @@ export const syncPeers = sqliteTable("sync_peers", {
 	last_seen_at: text("last_seen_at"),
 	last_sync_at: text("last_sync_at"),
 	last_error: text("last_error"),
+	discovered_via_coordinator_id: text("discovered_via_coordinator_id"),
+	discovered_via_group_id: text("discovered_via_group_id"),
 });
 
 export type SyncPeer = typeof syncPeers.$inferSelect;
@@ -508,6 +510,24 @@ export const rawEventIngestStats = sqliteTable("raw_event_ingest_stats", {
 export type RawEventIngestStat = typeof rawEventIngestStats.$inferSelect;
 export type NewRawEventIngestStat = typeof rawEventIngestStats.$inferInsert;
 
+export const coordinatorGroupPreferences = sqliteTable(
+	"coordinator_group_preferences",
+	{
+		coordinator_id: text("coordinator_id").notNull(),
+		group_id: text("group_id").notNull(),
+		projects_include_json: text("projects_include_json"),
+		projects_exclude_json: text("projects_exclude_json"),
+		auto_seed_scope: integer("auto_seed_scope").notNull().default(1),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => ({
+		pk: primaryKey({ columns: [table.coordinator_id, table.group_id] }),
+	}),
+);
+
+export type CoordinatorGroupPreferences = typeof coordinatorGroupPreferences.$inferSelect;
+export type NewCoordinatorGroupPreferences = typeof coordinatorGroupPreferences.$inferInsert;
+
 export const actors = sqliteTable(
 	"actors",
 	{
@@ -551,5 +571,6 @@ export const schema = {
 	syncResetState,
 	rawEventIngestSamples,
 	rawEventIngestStats,
+	coordinatorGroupPreferences,
 	actors,
 };

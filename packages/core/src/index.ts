@@ -46,6 +46,16 @@ export type {
 	CreateCoordinatorAppOptions,
 } from "./coordinator-api.js";
 export { createCoordinatorApp } from "./coordinator-api.js";
+export type {
+	CoordinatorGroupPreference,
+	UpsertCoordinatorGroupPreferenceInput,
+} from "./coordinator-group-preferences.js";
+export {
+	deleteCoordinatorGroupPreference,
+	getCoordinatorGroupPreference,
+	listCoordinatorGroupPreferences,
+	upsertCoordinatorGroupPreference,
+} from "./coordinator-group-preferences.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
 	decodeInvitePayload,

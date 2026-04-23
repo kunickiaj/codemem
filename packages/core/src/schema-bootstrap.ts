@@ -80,6 +80,16 @@ CREATE TABLE IF NOT EXISTS memory_concept_refs (
 
 CREATE INDEX IF NOT EXISTS idx_memory_concept_refs_concept
 	ON memory_concept_refs(concept);
+
+CREATE TABLE IF NOT EXISTS coordinator_group_preferences (
+	coordinator_id TEXT NOT NULL,
+	group_id TEXT NOT NULL,
+	projects_include_json TEXT,
+	projects_exclude_json TEXT,
+	auto_seed_scope INTEGER NOT NULL DEFAULT 1,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (coordinator_id, group_id)
+);
 `;
 
 /**
