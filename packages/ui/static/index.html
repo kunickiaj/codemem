@@ -713,6 +713,68 @@
         margin-left: 2px;
       }
 
+      /* Scope-defaults drawer inside a group card. Reads top-down:
+         header · helper · auto-seed toggle (master) · include chips
+         · exclude chips · actions. Delimits itself as its own subsection
+         with a top border + breathing room so it doesn't run into the
+         peer-actions row above. */
+      .coordinator-admin-group-preferences {
+        display: grid;
+        gap: var(--sp-4);
+        margin-top: var(--sp-3);
+        padding-top: var(--sp-3);
+        border-top: 1px solid var(--border);
+        min-width: 0;
+      }
+
+      .coordinator-admin-group-preferences > .coordinator-admin-field,
+      .coordinator-admin-group-preferences > .coordinator-admin-inline-filter {
+        min-width: 0;
+      }
+
+      .coordinator-admin-drawer-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
+        letter-spacing: 0.01em;
+      }
+
+      /* Tighten the helper text directly under the drawer title so they
+         read as one intro block, then let the sp-4 gap separate that
+         block from the toggle. */
+      .coordinator-admin-group-preferences > .coordinator-admin-drawer-title + .peer-submeta {
+        margin-top: calc(-1 * var(--sp-3));
+      }
+
+      /* Help text that lives INSIDE a chip field (e.g. "Exact names,
+         leave empty to allow all") — looser than the row gap, tighter
+         than the inter-section gap. */
+      .coordinator-admin-group-preferences .coordinator-admin-field > .peer-submeta {
+        margin-top: calc(-1 * var(--sp-1));
+      }
+
+      /* Dim the chip editor when auto-seed is off so it visually reads
+         as "configuration that isn't currently applied" rather than
+         "broken input". */
+      .coordinator-admin-group-preferences .peer-scope-input:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      /* Separate the action row (Save / Cancel) from the last field with
+         an explicit gap + top border so the terminating region reads as
+         distinct from the form controls above. */
+      .coordinator-admin-group-preferences > .peer-actions {
+        margin-top: var(--sp-1);
+        padding-top: var(--sp-3);
+        border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+      }
+
+      .coordinator-admin-group-preferences > .coordinator-admin-inline-filter {
+        gap: var(--sp-3);
+      }
+
       .coordinator-admin-empty-state {
         padding: var(--sp-3) 0 var(--sp-1);
       }
@@ -1670,7 +1732,7 @@
       .peer-actor-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-scope-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
       .peer-scope-editor { display: grid; gap: 8px; }
-      .peer-scope-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+      .peer-scope-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: flex-start; padding: 8px 10px; margin: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
       .peer-scope-chip { padding: 4px 8px; background: rgba(43, 122, 176, 0.12); color: var(--accent); font-size: 12px; }
       .peer-scope-chip.empty { background: transparent; color: var(--text-tertiary); border-style: dashed; border-color: var(--border); }
       .peer-scope-chip-remove { border: none; background: transparent; color: inherit; cursor: pointer; padding: 0; font: inherit; opacity: 0.75; }

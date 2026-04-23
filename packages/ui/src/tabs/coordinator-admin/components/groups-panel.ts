@@ -6,6 +6,7 @@
  * archive switch and manage button can trigger the surrounding shell. */
 
 import { h } from "preact";
+import { ChipInput } from "../../../components/primitives/chip-input";
 import { RadixSwitch } from "../../../components/primitives/radix-switch";
 import { RadixTabsContent } from "../../../components/primitives/radix-tabs";
 import { TextInput } from "../../../components/primitives/text-input";
@@ -22,25 +23,13 @@ import {
 
 function emptyDraft(): GroupPreferencesDraft {
 	return {
-		projects_include: "",
-		projects_exclude: "",
+		projects_include: [],
+		projects_exclude: [],
 		auto_seed_scope: true,
 		loaded: false,
 		saving: false,
 		error: "",
 	};
-}
-
-function listToText(list: string[] | null): string {
-	return Array.isArray(list) ? list.join(", ") : "";
-}
-
-function textToList(text: string): string[] | null {
-	const items = text
-		.split(",")
-		.map((item) => item.trim())
-		.filter((item) => item.length > 0);
-	return items.length === 0 ? null : items;
 }
 
 async function openGroupPreferences(groupId: string, renderShell: () => void): Promise<void> {
@@ -51,8 +40,8 @@ async function openGroupPreferences(groupId: string, renderShell: () => void): P
 	try {
 		const prefs = await api.loadCoordinatorGroupPreferences(groupId);
 		coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
-			projects_include: listToText(prefs.projects_include),
-			projects_exclude: listToText(prefs.projects_exclude),
+			projects_include: Array.isArray(prefs.projects_include) ? [...prefs.projects_include] : [],
+			projects_exclude: Array.isArray(prefs.projects_exclude) ? [...prefs.projects_exclude] : [],
 			auto_seed_scope: prefs.auto_seed_scope,
 			loaded: true,
 			saving: false,
@@ -81,11 +70,12 @@ async function saveGroupPreferences(groupId: string, renderShell: () => void): P
 	// kick off a parallel save. The Save button is disabled on `draft.saving`,
 	// but a pre-render double-click can otherwise slip through.
 	if (initial.saving) return;
-	// Snapshot the payload to send BEFORE awaiting, so typing during the save
-	// doesn't alter what gets persisted this round.
+	// Snapshot the payload to send BEFORE awaiting, so chip edits during the
+	// save don't alter what gets persisted this round. Empty arrays serialize
+	// as `null` at the API layer; the store treats that as "no filter".
 	const payload = {
-		projects_include: textToList(initial.projects_include),
-		projects_exclude: textToList(initial.projects_exclude),
+		projects_include: initial.projects_include.length > 0 ? [...initial.projects_include] : null,
+		projects_exclude: initial.projects_exclude.length > 0 ? [...initial.projects_exclude] : null,
 		auto_seed_scope: initial.auto_seed_scope,
 	};
 	coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
@@ -128,64 +118,30 @@ function renderGroupPreferencesEditor(
 			h("div", { class: "peer-submeta" }, "Loading scope defaults…"),
 		);
 	}
+	const autoSeedLabelId = `coord-admin-scope-autoseed-${groupId}`;
+	const includeLabelId = `coord-admin-scope-include-${groupId}`;
+	const excludeLabelId = `coord-admin-scope-exclude-${groupId}`;
+	const fieldsDisabled = !ready || draft.saving || !draft.auto_seed_scope;
 	return h(
 		"div",
 		{ class: "coordinator-admin-group-preferences" },
+		h("h4", { class: "coordinator-admin-drawer-title" }, "Scope defaults"),
 		h(
 			"div",
 			{ class: "peer-submeta" },
-			"New peers discovered through this team will default to this scope. Existing peers are not changed.",
+			"When enabled, new peers enrolled through this team start with the project filters below. Existing peers are unchanged.",
 		),
+		// Master toggle first — the include/exclude chips are only meaningful
+		// when auto-seed is on, so the form reads top-down from decision
+		// (toggle) to config (chips).
 		h(
 			"label",
-			{ class: "coordinator-admin-field" },
-			h("span", null, "Include projects (comma-separated)"),
-			h(TextInput, {
-				class: "peer-scope-input",
-				disabled: !ready || draft.saving,
-				onInput: (event) => {
-					// Read the LATEST draft from the shared map rather than the
-					// one captured at render time — text inputs don't re-render
-					// between keystrokes, so `draft` here would otherwise stomp
-					// other fields' edits with stale values.
-					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
-					const next = String((event.currentTarget as HTMLInputElement).value || "");
-					coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
-						...current,
-						projects_include: next,
-					});
-				},
-				placeholder: "e.g. work/*, shared-work-coworker/*",
-				type: "text",
-				value: draft.projects_include,
-			}),
-		),
-		h(
-			"label",
-			{ class: "coordinator-admin-field" },
-			h("span", null, "Exclude projects (comma-separated)"),
-			h(TextInput, {
-				class: "peer-scope-input",
-				disabled: !ready || draft.saving,
-				onInput: (event) => {
-					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
-					const next = String((event.currentTarget as HTMLInputElement).value || "");
-					coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
-						...current,
-						projects_exclude: next,
-					});
-				},
-				placeholder: "",
-				type: "text",
-				value: draft.projects_exclude,
-			}),
-		),
-		h(
-			"label",
-			{ class: "coordinator-admin-field coordinator-admin-switch" },
-			h("span", null, "Auto-seed scope on new peers"),
+			{ class: "coordinator-admin-inline-filter" },
+			h("span", { class: "section-meta", id: autoSeedLabelId }, "Auto-seed scope on new peers"),
 			h(RadixSwitch, {
+				"aria-labelledby": autoSeedLabelId,
 				checked: draft.auto_seed_scope,
+				className: "coordinator-admin-switch",
 				disabled: !ready || draft.saving,
 				onCheckedChange: (checked: boolean) => {
 					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
@@ -195,6 +151,52 @@ function renderGroupPreferencesEditor(
 					});
 					renderShell();
 				},
+				thumbClassName: "coordinator-admin-switch-thumb",
+			}),
+		),
+		h(
+			"div",
+			{ class: "coordinator-admin-field" },
+			h("span", { id: includeLabelId }, "Include projects"),
+			h(ChipInput, {
+				"aria-labelledby": includeLabelId,
+				disabled: fieldsDisabled,
+				emptyLabel: "All projects allowed",
+				onValuesChange: (next: string[]) => {
+					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
+					coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
+						...current,
+						projects_include: next,
+					});
+					renderShell();
+				},
+				placeholder: "Type a project name and press Enter",
+				values: draft.projects_include,
+			}),
+			h(
+				"span",
+				{ class: "peer-submeta" },
+				"Exact project names. Leave empty to allow every project.",
+			),
+		),
+		h(
+			"div",
+			{ class: "coordinator-admin-field" },
+			h("span", { id: excludeLabelId }, "Exclude projects"),
+			h(ChipInput, {
+				"aria-labelledby": excludeLabelId,
+				disabled: fieldsDisabled,
+				emptyLabel: "Nothing excluded",
+				onValuesChange: (next: string[]) => {
+					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
+					coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
+						...current,
+						projects_exclude: next,
+					});
+					renderShell();
+				},
+				placeholder: "Type a project name and press Enter",
+				values: draft.projects_exclude,
 			}),
 		),
 		draft.error ? h("div", { class: "peer-submeta coordinator-admin-error" }, draft.error) : null,
