@@ -10,6 +10,15 @@ export type JoinReviewAction = "approve" | "deny" | "";
 export type DeviceActionKind = "rename" | "disable" | "enable" | "remove" | "";
 export type InvitePolicy = "auto_admit" | "approval_required";
 
+export interface GroupPreferencesDraft {
+	projects_include: string;
+	projects_exclude: string;
+	auto_seed_scope: boolean;
+	loaded: boolean;
+	saving: boolean;
+	error: string;
+}
+
 export interface CoordinatorAdminState {
 	activeSection: AdminSection;
 	inviteGroup: string;
@@ -27,6 +36,8 @@ export interface CoordinatorAdminState {
 	deviceActionPendingKind: DeviceActionKind;
 	groupRenameDrafts: Map<string, string>;
 	deviceRenameDrafts: Map<string, string>;
+	groupPreferencesOpen: Set<string>;
+	groupPreferencesDrafts: Map<string, GroupPreferencesDraft>;
 }
 
 export const ADMIN_TARGET_GROUP_KEY = "codemem-coordinator-admin-target-group";
@@ -48,4 +59,6 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	deviceActionPendingKind: "",
 	groupRenameDrafts: new Map<string, string>(),
 	deviceRenameDrafts: new Map<string, string>(),
+	groupPreferencesOpen: new Set<string>(),
+	groupPreferencesDrafts: new Map<string, GroupPreferencesDraft>(),
 };

@@ -146,6 +146,55 @@ export async function acceptDiscoveredPeer(
 	return payload;
 }
 
+export interface CoordinatorGroupPreferences {
+	coordinator_id?: string;
+	group_id?: string;
+	projects_include: string[] | null;
+	projects_exclude: string[] | null;
+	auto_seed_scope: boolean;
+	updated_at?: string | null;
+}
+
+export async function loadCoordinatorGroupPreferences(
+	groupId: string,
+): Promise<CoordinatorGroupPreferences> {
+	const resp = await fetch(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/preferences`,
+	);
+	const { text, payload } = await readJsonPayload<{
+		preferences?: CoordinatorGroupPreferences;
+	}>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	const prefs = payload?.preferences;
+	if (!prefs) throw new Error("response missing preferences");
+	return prefs;
+}
+
+export async function saveCoordinatorGroupPreferences(
+	groupId: string,
+	input: {
+		projects_include?: string[] | null;
+		projects_exclude?: string[] | null;
+		auto_seed_scope?: boolean;
+	},
+): Promise<CoordinatorGroupPreferences> {
+	const resp = await fetch(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/preferences`,
+		{
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(input),
+		},
+	);
+	const { text, payload } = await readJsonPayload<{
+		preferences?: CoordinatorGroupPreferences;
+	}>(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	const prefs = payload?.preferences;
+	if (!prefs) throw new Error("response missing preferences");
+	return prefs;
+}
+
 export interface EnrollPeerResult {
 	ok?: boolean;
 	peer_device_id?: string;
