@@ -5264,6 +5264,107 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("allows manual enroll-peer without admin secret and gates discovered-mode", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						// No sync_coordinator_admin_secret: manual mode must still work.
+					}),
+				);
+				const { app, cleanup } = createTestApp();
+				try {
+					// Manual mode is local-only and should succeed without the secret.
+					const manualRes = await app.request("/api/coordinator/admin/groups/team-a/enroll-peer", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							mode: "manual",
+							peer_device_id: "peer-local-manual",
+							peer_public_key: "pk",
+						}),
+					});
+					expect(manualRes.status).toBe(200);
+					expect(await manualRes.json()).toMatchObject({ ok: true, created: true });
+
+					// Discovered mode calls the coordinator and must be gated.
+					const discoveredRes = await app.request(
+						"/api/coordinator/admin/groups/team-a/enroll-peer",
+						{
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({
+								mode: "discovered",
+								peer_device_id: "peer-remote",
+								fingerprint: "fp",
+							}),
+						},
+					);
+					expect(discoveredRes.status).toBe(400);
+					expect(await discoveredRes.json()).toMatchObject({
+						error: "coordinator_admin_secret_missing",
+					});
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevSecret;
+			}
+		});
+
+		it("returns 409 when manual enroll-peer collides with an existing peer", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				const { app, getStore, cleanup } = createTestApp();
+				try {
+					await app.request("/api/stats");
+					const store = getStore();
+					if (!store) throw new Error("store not initialized");
+					store.db
+						.prepare(
+							"INSERT INTO sync_peers(peer_device_id, name, public_key, created_at) VALUES (?, ?, ?, ?)",
+						)
+						.run("peer-dup", "Existing", "pk", new Date().toISOString());
+					const res = await app.request("/api/coordinator/admin/groups/team-a/enroll-peer", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							mode: "manual",
+							peer_device_id: "peer-dup",
+							peer_public_key: "pk",
+						}),
+					});
+					expect(res.status).toBe(409);
+					expect(await res.json()).toMatchObject({ error: "peer_exists" });
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
 		it("deletes sync peers through the viewer route", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
