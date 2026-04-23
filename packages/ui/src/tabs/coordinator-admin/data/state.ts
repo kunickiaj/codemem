@@ -11,8 +11,8 @@ export type DeviceActionKind = "rename" | "disable" | "enable" | "remove" | "";
 export type InvitePolicy = "auto_admit" | "approval_required";
 
 export interface GroupPreferencesDraft {
-	projects_include: string;
-	projects_exclude: string;
+	projects_include: string[];
+	projects_exclude: string[];
 	auto_seed_scope: boolean;
 	loaded: boolean;
 	saving: boolean;
