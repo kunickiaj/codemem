@@ -40,6 +40,18 @@ export function SyncDialogHost() {
 		resolveCurrentDialog(request?.kind === "confirm" ? false : null);
 	};
 
+	const handleInteractOutside = (event: Event & { detail?: { originalEvent?: Event } }) => {
+		// The autocomplete suggestion list renders inside its own Radix Popover
+		// portal, so Radix treats clicks on options as "outside the dialog" and
+		// closes the modal. Block that when the click target is inside an
+		// autocomplete popover so picking a suggestion actually fills the input.
+		const originalTarget = (event.detail?.originalEvent as { target?: unknown } | undefined)
+			?.target;
+		if (originalTarget instanceof Element && originalTarget.closest(".autocomplete-popover")) {
+			event.preventDefault();
+		}
+	};
+
 	const handleOpenAutoFocus = (event: Event) => {
 		const legacyPrimary = document.querySelector<HTMLElement>(
 			'#syncDialog [data-sync-primary-action="true"]',
@@ -71,6 +83,7 @@ export function SyncDialogHost() {
 			ariaLabelledby={titleId}
 			contentClassName="modal"
 			contentId="syncDialog"
+			onInteractOutside={handleInteractOutside}
 			onOpenAutoFocus={handleOpenAutoFocus}
 			onOpenChange={handleOpenChange}
 			open={open}
