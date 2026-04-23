@@ -284,13 +284,19 @@ export function resolveAccessibleTab(
 
 /* ── Persistence helpers ───────────────────────────────────── */
 
+/**
+ * Parse `window.location.hash` into its top-level tab segment. Hashes with
+ * sub-view segments (e.g. `#sync/diagnostics`) return their leading tab
+ * (`sync`); sub-view state is owned per-tab.
+ */
+export function parseTabFromHash(hash = window.location.hash): TabId | null {
+	const first = hash.replace(/^#/, "").split("/")[0] as TabId;
+	return ALL_TAB_IDS.includes(first) ? first : null;
+}
+
 export function getActiveTab(): TabId {
-	// Strip an optional sub-view segment after `/` so hashes like
-	// `#sync/diagnostics` still resolve to the parent tab (`sync`). Sub-view
-	// state is owned per-tab (e.g. sync/sync-view-controller.ts).
-	const hash = window.location.hash.replace(/^#/, "").split("/")[0] as TabId;
-	if (ALL_TAB_IDS.includes(hash))
-		return resolveAccessibleTab(hash, state.lastCoordinatorAdminStatus);
+	const fromHash = parseTabFromHash();
+	if (fromHash) return resolveAccessibleTab(fromHash, state.lastCoordinatorAdminStatus);
 	const saved = localStorage.getItem(TAB_KEY);
 	if (saved && ALL_TAB_IDS.includes(saved as TabId)) {
 		return resolveAccessibleTab(saved as TabId, state.lastCoordinatorAdminStatus);
@@ -301,8 +307,16 @@ export function getActiveTab(): TabId {
 export function setActiveTab(tab: TabId) {
 	const nextTab = resolveAccessibleTab(tab, state.lastCoordinatorAdminStatus);
 	state.activeTab = nextTab;
-	window.location.hash = nextTab;
 	localStorage.setItem(TAB_KEY, nextTab);
+	// Only rewrite the hash when the top-level tab actually changed. This
+	// preserves sub-view segments like `#sync/diagnostics` during boot when
+	// `initTabs()` calls `setActiveTab(state.activeTab)` with the already-
+	// active tab — otherwise the sub-view fragment is clobbered before the
+	// sync view controller can read it.
+	const currentTop = parseTabFromHash();
+	if (currentTop !== nextTab) {
+		window.location.hash = nextTab;
+	}
 }
 
 export function getFeedTypeFilter(): FeedFilter {

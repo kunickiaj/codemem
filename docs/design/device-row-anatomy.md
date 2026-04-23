@@ -44,7 +44,8 @@ Left to right in the compact row:
 2. **Name** — T3 row name (14px / 600 / text-primary). Truncates with
    ellipsis on overflow.
 3. **Direction glyph** (optional) — ↑ / ↓ / ↕ for the last 24h direction.
-4. **Trust chip** — `.badge` today, will migrate to `TrustChip` primitive.
+4. **Trust chip** — rendered as `.badge` today (`.badge-online` /
+   `.badge-offline` based on `derivePeerTrustSummary`).
 5. **Provenance chips** (optional) — "via {group-id}", "Needs scope
    review", etc. Each uses `.badge` styling.
 6. **Meta** — T5 (12px / 400 / text-tertiary). Sync timestamp.
@@ -80,13 +81,21 @@ collapses the previous one. State lives at the render module level
   by padding to meet 44px recommended minimum on touch devices).
 - `prefers-reduced-motion` disables pip pulse + hover transitions.
 
-## Props (reference implementation)
+## Implementation today
+
+No standalone `DeviceRow` component exists yet — `SyncPeerCard` in
+`packages/ui/src/tabs/sync/components/sync-peers.tsx` renders the
+compact row + drawer together and owns all action handlers. Extracting
+`DeviceRow` + `DeviceDetailDrawer` as named components is a follow-up
+refactor, not a v1 requirement.
+
+## Proposed interface (if extracted)
 
 ```ts
 interface DeviceRowProps {
   deviceId: string;
   name: string;
-  trust: TrustState;                // see trust-chip tone mapping
+  trust: TrustState;                // 4-state model: two-way / you-trust-them / they-trust-you / not-trusted
   presence: PresenceState;          // see attention-vocabulary
   lastSyncAt?: string;              // ISO timestamp, shown as T5 meta
   lastError?: string;               // degraded / offline detail
@@ -96,10 +105,11 @@ interface DeviceRowProps {
 }
 ```
 
+Nothing currently consumes this shape — it's here to anchor the
+refactor conversation.
+
 ## Related
 
-- `action-shelf-anatomy.md` — for the toolbar pattern used to place
-  list-level actions above the device row list.
 - `disclosure-region-anatomy.md` — for the expand mechanics generalized
   beyond the device row.
 - `attention-vocabulary-anatomy.md` — for the pip state matrix.

@@ -33,11 +33,6 @@ type TeamSyncPanelProps = {
 	discoveredListMount: HTMLElement | null;
 	discoveredRows: TeamSyncDiscoveredRow[];
 	joinRequestsMount: HTMLElement | null;
-	// Unused since the Team-status Overview card was removed (Q3 in
-	// docs/plans/2026-04-23-sync-tab-redesign.md). Still accepted because
-	// render-team-sync.ts looks up the legacy DOM node for backward
-	// compatibility with the teardown path.
-	listMount: HTMLElement | null;
 	onApproveJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
 	onAttentionAction: (item: UiSyncAttentionItem) => Promise<void>;
 	onDenyJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;

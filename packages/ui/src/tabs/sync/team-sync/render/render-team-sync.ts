@@ -91,11 +91,6 @@ function teardownTeamSyncRender(actions: HTMLElement | null, targets: Array<HTML
 export function renderTeamSync() {
 	const meta = document.getElementById("syncTeamMeta");
 	const setupPanel = document.getElementById("syncSetupPanel");
-	// The #syncTeamStatus list + its "Team status" heading are removed with
-	// the overview-card kill (Q3 in the redesign plan). Keep lookups tolerant
-	// for any lingering embedded markup.
-	const list = document.getElementById("syncTeamStatus");
-	const listHeading = list?.previousElementSibling as HTMLElement | null;
 	const actions = document.getElementById("syncTeamActions");
 	if (!meta || !setupPanel || !actions) return;
 
@@ -243,10 +238,8 @@ export function renderTeamSync() {
 	}
 
 	if (!configured) {
-		teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
+		teardownTeamSyncRender(actions, [joinRequests, discoveredList]);
 		setupPanel.hidden = false;
-		if (list) list.hidden = true;
-		if (listHeading) listHeading.hidden = true;
 		actions.hidden = true;
 		if (joinRequests) joinRequests.hidden = true;
 		if (discoveredPanel) discoveredPanel.hidden = true;
@@ -254,8 +247,6 @@ export function renderTeamSync() {
 	}
 
 	setupPanel.hidden = true;
-	if (list) list.hidden = false;
-	if (listHeading) listHeading.hidden = false;
 	actions.hidden = false;
 
 	const presenceStatus = String(coordinator.presence_status || "");
@@ -398,7 +389,7 @@ export function renderTeamSync() {
 		joinRequests.hidden = pendingJoinRequests.length === 0 && !state.syncJoinRequestsFeedback;
 	}
 
-	teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
+	teardownTeamSyncRender(actions, [joinRequests, discoveredList]);
 	const actionMount = document.createElement("div");
 	actionMount.id = TEAM_SYNC_ACTIONS_MOUNT_ID;
 	actions.appendChild(actionMount);
@@ -431,7 +422,6 @@ export function renderTeamSync() {
 			discoveredListMount: discoveredList,
 			discoveredRows: visibleDiscoveredRows,
 			joinRequestsMount: joinRequests,
-			listMount: list,
 			onApproveJoinRequest: async () => null,
 			onAttentionAction: async (item) => {
 				if (item.kind === "possible-duplicate-person") {

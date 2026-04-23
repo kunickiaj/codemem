@@ -16,6 +16,7 @@ import {
 	ALL_TAB_IDS,
 	getVisibleTabs,
 	initState,
+	parseTabFromHash,
 	resolveAccessibleTab,
 	setActiveTab,
 	state,
@@ -214,11 +215,13 @@ function initTabs() {
 		btn?.addEventListener("click", () => switchTab(id));
 	});
 
-	// Listen for hash changes (back/forward navigation)
+	// Listen for hash changes (back/forward navigation). Hashes may include a
+	// sub-view segment (e.g. `#sync/diagnostics`) — parse with the shared
+	// helper so nested segments still resolve to their parent tab.
 	window.addEventListener("hashchange", () => {
-		const hash = window.location.hash.replace("#", "") as TabId;
-		if (ALL_TAB_IDS.includes(hash) && hash !== state.activeTab) {
-			switchTab(hash);
+		const top = parseTabFromHash();
+		if (top && top !== state.activeTab) {
+			switchTab(top);
 		}
 	});
 
