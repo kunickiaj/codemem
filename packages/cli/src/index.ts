@@ -23,6 +23,7 @@ import { embedCommand } from "./commands/embed.js";
 import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
 import { exportMemoriesCommand } from "./commands/export-memories.js";
 import { importMemoriesCommand } from "./commands/import-memories.js";
+import { maintenanceCommand } from "./commands/maintenance.js";
 import { mcpCommand } from "./commands/mcp.js";
 import {
 	forgetMemoryCommand,
@@ -177,6 +178,7 @@ program.addCommand(dbCommand);
 program.addCommand(exportMemoriesCommand);
 program.addCommand(importMemoriesCommand);
 program.addCommand(statsCommand);
+program.addCommand(maintenanceCommand);
 program.addCommand(embedCommand);
 program.addCommand(recentCommand);
 program.addCommand(searchCommand);

@@ -192,17 +192,25 @@ export function renderHealthOverview() {
 				? `${current.toLocaleString()}/${total.toLocaleString()} ${unit}${pct}`
 				: `${current.toLocaleString()} ${unit}`;
 		const isFailed = job.status === "failed";
-		const detail = isFailed ? String(job.error || "unknown error").trim() : undefined;
+		const isCompleted = job.status === "completed";
+		const value = isFailed ? "Failed" : isCompleted ? "Complete" : progress;
+		const detail = isFailed
+			? String(job.error || "unknown error").trim()
+			: isCompleted
+				? progress
+				: undefined;
 		return buildHealthCard({
 			key: String(job.kind || job.title || "background-maintenance"),
 			label: String(job.title || job.kind || "Background maintenance"),
-			value: isFailed ? "Failed" : progress,
+			value,
 			detail,
-			icon: isFailed ? "alert-triangle" : "loader",
+			icon: isFailed ? "alert-triangle" : isCompleted ? "check-circle" : "loader",
 			className: isFailed ? "status-attention" : undefined,
 			title: isFailed
 				? `Error: ${job.error || "unknown"}`
-				: `${String(job.title || "Maintenance")} in progress`,
+				: isCompleted
+					? `${String(job.title || "Maintenance")} finished`
+					: `${String(job.title || "Maintenance")} in progress`,
 		});
 	});
 
