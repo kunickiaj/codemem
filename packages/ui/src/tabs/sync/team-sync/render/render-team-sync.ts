@@ -16,7 +16,6 @@ import {
 	type TeamSyncDiscoveredRow,
 	TeamSyncPanel,
 	type TeamSyncPendingJoinRequest,
-	type TeamSyncStatusSummary,
 } from "../../components/team-sync-panel";
 import {
 	clearDuplicatePersonDecision,
@@ -92,10 +91,13 @@ function teardownTeamSyncRender(actions: HTMLElement | null, targets: Array<HTML
 export function renderTeamSync() {
 	const meta = document.getElementById("syncTeamMeta");
 	const setupPanel = document.getElementById("syncSetupPanel");
+	// The #syncTeamStatus list + its "Team status" heading are removed with
+	// the overview-card kill (Q3 in the redesign plan). Keep lookups tolerant
+	// for any lingering embedded markup.
 	const list = document.getElementById("syncTeamStatus");
 	const listHeading = list?.previousElementSibling as HTMLElement | null;
 	const actions = document.getElementById("syncTeamActions");
-	if (!meta || !setupPanel || !list || !actions) return;
+	if (!meta || !setupPanel || !actions) return;
 
 	renderAdminSetupDisclosure();
 	renderInvitePolicySelect();
@@ -243,7 +245,7 @@ export function renderTeamSync() {
 	if (!configured) {
 		teardownTeamSyncRender(actions, [list, joinRequests, discoveredList]);
 		setupPanel.hidden = false;
-		list.hidden = true;
+		if (list) list.hidden = true;
 		if (listHeading) listHeading.hidden = true;
 		actions.hidden = true;
 		if (joinRequests) joinRequests.hidden = true;
@@ -252,26 +254,13 @@ export function renderTeamSync() {
 	}
 
 	setupPanel.hidden = true;
-	list.hidden = false;
+	if (list) list.hidden = false;
 	if (listHeading) listHeading.hidden = false;
 	actions.hidden = false;
 
 	const presenceStatus = String(coordinator.presence_status || "");
-	const presenceLabel =
-		presenceStatus === "posted"
-			? "Connected"
-			: presenceStatus === "not_enrolled"
-				? "Needs enrollment"
-				: "Connection error";
 	const localPeers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
 	const attentionItems = Array.isArray(syncView.attentionItems) ? syncView.attentionItems : [];
-	const connectedCount = Number(syncView.summary?.connectedDeviceCount || 0);
-	const seenOnTeamCount = Number(syncView.summary?.seenOnTeamCount || 0);
-	const offlineTeamDeviceCount = Number(syncView.summary?.offlineTeamDeviceCount || 0);
-	const metricParts = [`Connected ${connectedCount}`, `Team ${seenOnTeamCount}`];
-	if (offlineTeamDeviceCount > 0) {
-		metricParts.push(`Offline ${offlineTeamDeviceCount}`);
-	}
 
 	const discoveredDevices = Array.isArray(coordinator.discovered_devices)
 		? coordinator.discovered_devices
@@ -387,60 +376,7 @@ export function renderTeamSync() {
 	).length;
 	const actionableCount =
 		attentionItems.length + pendingJoinRequests.length + discoveredActionableCount;
-	const attentionParts: string[] = [];
-	if (attentionItems.length > 0) {
-		const repairItems = attentionItems.filter((item) => item.kind === "device-needs-repair");
-		const nameItems = attentionItems.filter((item) => item.kind === "name-device");
-		const reviewItems = attentionItems.filter((item) => item.kind === "review-team-device");
-		const duplicateItems = attentionItems.filter(
-			(item) => item.kind === "possible-duplicate-person",
-		);
-		if (repairItems.length > 0)
-			attentionParts.push(
-				`${repairItems.length} device issue${repairItems.length === 1 ? "" : "s"} to review`,
-			);
-		if (nameItems.length > 0)
-			attentionParts.push(`${nameItems.length} device${nameItems.length === 1 ? "" : "s"} to name`);
-		if (reviewItems.length > 0)
-			attentionParts.push(
-				`${reviewItems.length} device${reviewItems.length === 1 ? "" : "s"} to review`,
-			);
-		if (duplicateItems.length > 0)
-			attentionParts.push(
-				`${duplicateItems.length} possible duplicate${duplicateItems.length === 1 ? "" : "s"}`,
-			);
-	}
-	if (pendingJoinRequests.length > 0)
-		attentionParts.push(
-			`${pendingJoinRequests.length} join request${pendingJoinRequests.length === 1 ? "" : "s"} to review`,
-		);
-	if (discoveredActionableCount > 0)
-		attentionParts.push(
-			`${discoveredActionableCount} discovered device${discoveredActionableCount === 1 ? "" : "s"}`,
-		);
-	const attentionDetail = attentionParts.join(", ");
 	const teamLabel = (coordinator.groups || []).join(", ") || "none";
-	const statusSummary: TeamSyncStatusSummary = {
-		badgeClassName: `pill ${presenceStatus === "posted" ? "pill-success" : presenceStatus === "not_enrolled" ? "pill-warning" : "pill-error"}`,
-		detail:
-			presenceStatus === "posted"
-				? actionableCount > 0
-					? `Team ${teamLabel}. Work through Needs attention above, then review people and devices.`
-					: `Team ${teamLabel}. Nothing urgent is blocking sync right now.`
-				: presenceStatus === "not_enrolled"
-					? `Team ${teamLabel}. Enroll this device first, then return here to review the rest of the team.`
-					: `Team ${teamLabel}. Fix the current sync issue first, then verify the rest of the team state.`,
-		headline:
-			presenceStatus === "posted"
-				? actionableCount > 0
-					? attentionDetail
-					: "Everything is healthy"
-				: presenceStatus === "not_enrolled"
-					? "This device is not enrolled in the team yet"
-					: "Sync needs attention",
-		metricsText: metricParts.join(" · "),
-		presenceLabel,
-	};
 	meta.textContent =
 		presenceStatus === "posted"
 			? actionableCount > 0
@@ -628,7 +564,6 @@ export function renderTeamSync() {
 			},
 			pendingJoinRequests,
 			presenceStatus,
-			statusSummary,
 		}),
 	);
 }
