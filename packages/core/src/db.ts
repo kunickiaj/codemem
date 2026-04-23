@@ -556,6 +556,39 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		// Keep compatibility shim fail-open for optional additive tables.
 	}
 
+	// Multi-team coordinator groups (v1) — additive columns + preferences table.
+	// Existing databases acquire these so peer enrollment can record the group
+	// it came from, and so per-group scope templates can be stored locally.
+	if (tableExists(db, "sync_peers")) {
+		for (const name of ["discovered_via_coordinator_id", "discovered_via_group_id"]) {
+			if (columnExists(db, "sync_peers", name)) continue;
+			try {
+				db.exec(`ALTER TABLE sync_peers ADD COLUMN ${name} TEXT`);
+			} catch (err) {
+				const message = err instanceof Error ? err.message.toLowerCase() : "";
+				if (message.includes("duplicate column name") && columnExists(db, "sync_peers", name)) {
+					continue;
+				}
+				throw err;
+			}
+		}
+	}
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS coordinator_group_preferences (
+				coordinator_id TEXT NOT NULL,
+				group_id TEXT NOT NULL,
+				projects_include_json TEXT,
+				projects_exclude_json TEXT,
+				auto_seed_scope INTEGER NOT NULL DEFAULT 1,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (coordinator_id, group_id)
+			)
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for optional additive tables.
+	}
+
 	if (!tableExists(db, "raw_event_flush_batches")) return;
 
 	const additiveColumns: Array<{ name: string; ddl: string }> = [

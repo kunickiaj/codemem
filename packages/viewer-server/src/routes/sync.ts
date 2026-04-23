@@ -40,6 +40,7 @@ import {
 	ensureDeviceIdentity,
 	extractReplicationOps,
 	fingerprintPublicKey,
+	getCoordinatorGroupPreference,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	listCoordinatorJoinRequests,
@@ -55,6 +56,7 @@ import {
 	schema,
 	syncProjectAllowedByFilters,
 	syncVisibilityAllowed,
+	upsertCoordinatorGroupPreference,
 	verifySignature,
 } from "@codemem/core";
 import { and, count, desc, eq, max, ne } from "drizzle-orm";
@@ -2475,6 +2477,80 @@ export function syncRoutes(
 			return c.json({ ok: true, device_id: deviceId, status });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
+		}
+	});
+
+	// Local-only preferences for a coordinator group — project-scope template
+	// + auto-seed toggle applied when peers are enrolled through the group.
+	// See docs/plans/2026-04-22-multi-team-coordinator-groups-design.md.
+	// Local-only preferences — these rows live in the viewer's own DB and never
+	// cross the wire to the coordinator. No admin-secret gate: the admin secret
+	// authorizes remote coordinator mutations, not local settings.
+	app.get("/api/coordinator/admin/groups/:group_id/preferences", (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		const coordinatorId = status.coordinator_url;
+		if (!coordinatorId) return c.json({ error: "coordinator_not_configured", status }, 400);
+		const store = getStore();
+		const existing = getCoordinatorGroupPreference(store.db, coordinatorId, groupId);
+		if (existing) return c.json({ preferences: existing, status });
+		return c.json({
+			preferences: {
+				coordinator_id: coordinatorId,
+				group_id: groupId,
+				projects_include: null,
+				projects_exclude: null,
+				auto_seed_scope: true,
+				updated_at: null,
+			},
+			status,
+		});
+	});
+
+	app.put("/api/coordinator/admin/groups/:group_id/preferences", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
+		}
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		const coordinatorId = status.coordinator_url;
+		if (!coordinatorId) return c.json({ error: "coordinator_not_configured", status }, 400);
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid_json", status }, 400);
+		}
+		const normalizeList = (value: unknown): string[] | null | undefined => {
+			if (value === undefined) return undefined;
+			if (value === null) return null;
+			if (!Array.isArray(value)) return undefined;
+			const cleaned = value
+				.map((item) => String(item ?? "").trim())
+				.filter((item) => item.length > 0);
+			return cleaned.length === 0 ? null : cleaned;
+		};
+		const autoSeed = typeof body.auto_seed_scope === "boolean" ? body.auto_seed_scope : undefined;
+		const store = getStore();
+		try {
+			const preferences = upsertCoordinatorGroupPreference(store.db, {
+				coordinator_id: coordinatorId,
+				group_id: groupId,
+				projects_include: normalizeList(body.projects_include),
+				projects_exclude: normalizeList(body.projects_exclude),
+				auto_seed_scope: autoSeed,
+			});
+			return c.json({ preferences, status });
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			return c.json({ error: msg, status }, 400);
 		}
 	});
 
