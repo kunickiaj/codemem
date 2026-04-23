@@ -1,5 +1,6 @@
 import type { TargetedInputEvent } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { PresencePip, type PresenceState } from "../../../components/primitives/presence-pip";
 import { RadixSelect } from "../../../components/primitives/radix-select";
 import { TextInput } from "../../../components/primitives/text-input";
 import { formatTimestamp } from "../../../lib/format";
@@ -18,9 +19,50 @@ import { openSyncConfirmDialog } from "../sync-dialogs";
 import {
 	derivePeerDirection,
 	derivePeerTrustSummary,
+	derivePeerUiStatus,
 	type PeerDirection,
 	type PeerLike,
 } from "../view-model";
+
+/* Map the view-model's UI-status vocabulary to the PresencePip state
+ * matrix defined in docs/plans/2026-04-23-sync-tab-redesign.md. */
+function presenceForPeer(peer: PeerLike): PresenceState {
+	switch (derivePeerUiStatus(peer)) {
+		case "connected":
+			return "online";
+		case "offline":
+			return "offline";
+		case "needs-repair":
+			return "attention";
+		default:
+			return "unknown";
+	}
+}
+
+/* Module-level expand state — only one device drawer open at a time.
+ * The row component subscribes via a tick counter in local state so
+ * React re-renders when the global pointer changes. */
+let expandedPeerId: string | null = null;
+let expandTickCounter = 0;
+const expandListeners = new Set<(tick: number) => void>();
+
+function setExpandedPeer(peerId: string | null): void {
+	if (expandedPeerId === peerId) return;
+	expandedPeerId = peerId;
+	expandTickCounter += 1;
+	for (const listener of expandListeners) listener(expandTickCounter);
+}
+
+function useExpandedPeer(): string | null {
+	const [, setTick] = useState(0);
+	useEffect(() => {
+		expandListeners.add(setTick);
+		return () => {
+			expandListeners.delete(setTick);
+		};
+	}, []);
+	return expandedPeerId;
+}
 
 const DIRECTION_GLYPH: Record<PeerDirection, { glyph: string; label: string } | null> = {
 	bidirectional: { glyph: "↕", label: "Bidirectional sync in the last 24 hours" },
@@ -342,173 +384,199 @@ function SyncPeerCard({
 		}
 	}
 
+	const currentExpandedId = useExpandedPeer();
+	const isExpanded = currentExpandedId === peerId && peerId !== "";
+	const drawerId = `device-drawer-${peerId || "unknown"}`;
+	const presenceState = presenceForPeer(peer);
+	const syncMetaText = lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never";
+
 	return (
 		<div ref={cardRef} className="peer-card" data-peer-device-id={peerId || undefined}>
-			<div className="peer-title">
-				<div>
-					<strong title={peerId || undefined}>{displayName}</strong>
-					{directionHint ? (
+			<button
+				aria-controls={drawerId}
+				aria-expanded={isExpanded}
+				className="device-row-head"
+				onClick={() => setExpandedPeer(isExpanded ? null : peerId)}
+				type="button"
+			>
+				<PresencePip state={presenceState} />
+				<span className="device-row-name" title={peerId || undefined}>
+					{displayName}
+				</span>
+				{directionHint ? (
+					<span
+						aria-label={directionHint.label}
+						className="peer-direction"
+						role="img"
+						title={directionHint.label}
+					>
+						{directionHint.glyph}
+					</span>
+				) : null}
+				<span className="device-row-chips">
+					<span className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}>
+						{trustSummary.badgeLabel}
+					</span>
+					{pendingScopeReview ? (
+						<span className="badge actor-badge">Needs scope review</span>
+					) : null}
+					{peer.discovered_via_group_id ? (
 						<span
-							aria-label={directionHint.label}
-							className="peer-direction"
-							role="img"
-							title={directionHint.label}
+							className="badge actor-badge"
+							title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
 						>
-							{directionHint.glyph}
+							{`via ${peer.discovered_via_group_id}`}
 						</span>
 					) : null}
-					<div className="peer-meta">
-						<span className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}>
-							{trustSummary.badgeLabel}
-						</span>
-						{pendingScopeReview ? (
-							<span className="badge actor-badge">Needs scope review</span>
-						) : null}
-						{peer.discovered_via_group_id ? (
-							<span
-								className="badge actor-badge"
-								title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
-							>
-								{`via ${peer.discovered_via_group_id}`}
-							</span>
-						) : null}
-					</div>
-				</div>
+				</span>
+				<span className="device-row-meta">{syncMetaText}</span>
+				<span aria-hidden="true" className="device-row-chevron">
+					{isExpanded ? "▾" : "▸"}
+				</span>
+			</button>
 
-				<div className="peer-actions">
-					<button
-						type="button"
-						className="settings-button"
-						disabled={!primaryAddress || syncBusy}
-						onClick={() => void sync()}
-					>
-						{syncBusy ? "Syncing…" : "Sync now"}
-					</button>
-					<div className="sync-labeled-field">
-						<label
-							className="sync-labeled-field-caption"
-							htmlFor={`device-name-${peerId || "unknown"}`}
-						>
-							Device name
-						</label>
-						<TextInput
-							aria-label={`Friendly name for ${displayName}`}
-							className="peer-scope-input"
-							data-device-name-input={peerId || undefined}
-							disabled={renameBusy}
-							id={`device-name-${peerId || "unknown"}`}
-							placeholder="Friendly device name"
-							type="text"
-							value={renameValue}
-							onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
-								setRenameValue(event.currentTarget.value)
-							}
-						/>
-					</div>
-					<button
-						type="button"
-						className="settings-button"
-						disabled={renameBusy}
-						onClick={() => void rename()}
-					>
-						{renameLabel}
-					</button>
-					<button
-						type="button"
-						className="settings-button danger"
-						disabled={removeBusy}
-						onClick={() => void remove()}
-					>
-						{removeLabel}
-					</button>
-				</div>
-			</div>
-
-			<div className="peer-scope">
-				{scopeReviewRequested ? (
-					<div className="peer-meta">
-						Review this device&apos;s sharing rules now if the defaults are too broad.
-					</div>
-				) : pendingScopeReview ? (
-					<div className="peer-meta">Sharing rule review is still pending for this device.</div>
-				) : null}
-
-				<div className="peer-scope-summary">Device details</div>
-				<div className="peer-addresses">{addressLine}</div>
-				<div className="peer-meta">
-					{[
-						lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
-						lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never",
-					].join(" · ")}
-				</div>
-
-				<div className="peer-scope-summary">Who this device belongs to</div>
-				<div className="peer-meta">{assignmentSummary}</div>
-				<div className="peer-actor-row">
-					<div className="sync-radix-select-host sync-actor-select-host">
-						<RadixSelect
-							ariaLabel={`Assigned person for ${displayName}`}
-							contentClassName="sync-radix-select-content sync-actor-select-content"
-							disabled={applyActorBusy}
-							itemClassName="sync-radix-select-item"
-							onValueChange={setSelectedActorId}
-							options={actorSelectOptions}
-							placeholder="No person assigned yet"
-							triggerClassName="sync-radix-select-trigger sync-actor-select"
-							value={selectedActorId}
-							viewportClassName="sync-radix-select-viewport"
-						/>
-					</div>
-					<button
-						type="button"
-						className="settings-button"
-						disabled={applyActorBusy}
-						onClick={() => void savePerson()}
-					>
-						{applyActorLabel}
-					</button>
-				</div>
-
-				<div className="peer-scope-summary">Advanced sharing scope</div>
-				<div className="peer-meta">
-					Review or tighten what this device can share when you need more than the global defaults.
-				</div>
-				<PeerScopeCollapsible
-					contentHost={scopeHost}
-					initialOpen={scopeEditorOpen}
-					onOpenChange={(open) => {
-						if (open) openPeerScopeEditors.add(peerId);
-						else openPeerScopeEditors.delete(peerId);
-					}}
+			{isExpanded ? (
+				<section
+					aria-label={`Device actions for ${displayName}`}
+					className="device-row-drawer"
+					id={drawerId}
 				>
-					<div>
-						<div className="peer-scope-row">
-							<ExistingElementSlot element={includeEditor.element} />
-							<ExistingElementSlot element={excludeEditor.element} />
-						</div>
-						<div className="peer-scope-actions">
-							<button
-								type="button"
-								className="settings-button"
-								disabled={saveScopeBusy}
-								onClick={() => void saveScope()}
+					<div className="peer-actions">
+						<button
+							type="button"
+							className="settings-button"
+							disabled={!primaryAddress || syncBusy}
+							onClick={() => void sync()}
+						>
+							{syncBusy ? "Syncing…" : "Sync now"}
+						</button>
+						<div className="sync-labeled-field">
+							<label
+								className="sync-labeled-field-caption"
+								htmlFor={`device-name-${peerId || "unknown"}`}
 							>
-								{saveScopeLabel}
-							</button>
-							<button
-								type="button"
-								className="settings-button"
-								disabled={resetScopeBusy}
-								onClick={() => void resetScope()}
-							>
-								{resetScopeLabel}
-							</button>
+								Device name
+							</label>
+							<TextInput
+								aria-label={`Friendly name for ${displayName}`}
+								className="peer-scope-input"
+								data-device-name-input={peerId || undefined}
+								disabled={renameBusy}
+								id={`device-name-${peerId || "unknown"}`}
+								placeholder="Friendly device name"
+								type="text"
+								value={renameValue}
+								onInput={(event: TargetedInputEvent<HTMLInputElement>) =>
+									setRenameValue(event.currentTarget.value)
+								}
+							/>
 						</div>
+						<button
+							type="button"
+							className="settings-button"
+							disabled={renameBusy}
+							onClick={() => void rename()}
+						>
+							{renameLabel}
+						</button>
+						<button
+							type="button"
+							className="settings-button danger"
+							disabled={removeBusy}
+							onClick={() => void remove()}
+						>
+							{removeLabel}
+						</button>
 					</div>
-				</PeerScopeCollapsible>
-				<SyncInlineFeedback feedback={feedback} />
-				<div ref={setScopeHost} />
-			</div>
+
+					<div className="peer-scope">
+						{scopeReviewRequested ? (
+							<div className="peer-meta">
+								Review this device&apos;s sharing rules now if the defaults are too broad.
+							</div>
+						) : pendingScopeReview ? (
+							<div className="peer-meta">Sharing rule review is still pending for this device.</div>
+						) : null}
+
+						<div className="peer-scope-summary">Device details</div>
+						<div className="peer-addresses">{addressLine}</div>
+						<div className="peer-meta">
+							{[
+								lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
+								lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never",
+							].join(" · ")}
+						</div>
+
+						<div className="peer-scope-summary">Who this device belongs to</div>
+						<div className="peer-meta">{assignmentSummary}</div>
+						<div className="peer-actor-row">
+							<div className="sync-radix-select-host sync-actor-select-host">
+								<RadixSelect
+									ariaLabel={`Assigned person for ${displayName}`}
+									contentClassName="sync-radix-select-content sync-actor-select-content"
+									disabled={applyActorBusy}
+									itemClassName="sync-radix-select-item"
+									onValueChange={setSelectedActorId}
+									options={actorSelectOptions}
+									placeholder="No person assigned yet"
+									triggerClassName="sync-radix-select-trigger sync-actor-select"
+									value={selectedActorId}
+									viewportClassName="sync-radix-select-viewport"
+								/>
+							</div>
+							<button
+								type="button"
+								className="settings-button"
+								disabled={applyActorBusy}
+								onClick={() => void savePerson()}
+							>
+								{applyActorLabel}
+							</button>
+						</div>
+
+						<div className="peer-scope-summary">Advanced sharing scope</div>
+						<div className="peer-meta">
+							Review or tighten what this device can share when you need more than the global
+							defaults.
+						</div>
+						<PeerScopeCollapsible
+							contentHost={scopeHost}
+							initialOpen={scopeEditorOpen}
+							onOpenChange={(open) => {
+								if (open) openPeerScopeEditors.add(peerId);
+								else openPeerScopeEditors.delete(peerId);
+							}}
+						>
+							<div>
+								<div className="peer-scope-row">
+									<ExistingElementSlot element={includeEditor.element} />
+									<ExistingElementSlot element={excludeEditor.element} />
+								</div>
+								<div className="peer-scope-actions">
+									<button
+										type="button"
+										className="settings-button"
+										disabled={saveScopeBusy}
+										onClick={() => void saveScope()}
+									>
+										{saveScopeLabel}
+									</button>
+									<button
+										type="button"
+										className="settings-button"
+										disabled={resetScopeBusy}
+										onClick={() => void resetScope()}
+									>
+										{resetScopeLabel}
+									</button>
+								</div>
+							</div>
+						</PeerScopeCollapsible>
+						<SyncInlineFeedback feedback={feedback} />
+						<div ref={setScopeHost} />
+					</div>
+				</section>
+			) : null}
 		</div>
 	);
 }
