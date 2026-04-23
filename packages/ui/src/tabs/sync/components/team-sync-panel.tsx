@@ -6,14 +6,6 @@ import type { UiSyncAttentionItem } from "../view-model";
 import type { SyncActionFeedback } from "./sync-inline-feedback";
 import { SyncInlineFeedback } from "./sync-inline-feedback";
 
-export interface TeamSyncStatusSummary {
-	badgeClassName: string;
-	detail: string | null;
-	headline: string | null;
-	presenceLabel: string;
-	metricsText: string;
-}
-
 export interface TeamSyncDiscoveredRow {
 	actionMessage: string | null;
 	actionLabel: string | null;
@@ -41,7 +33,11 @@ type TeamSyncPanelProps = {
 	discoveredListMount: HTMLElement | null;
 	discoveredRows: TeamSyncDiscoveredRow[];
 	joinRequestsMount: HTMLElement | null;
-	listMount: HTMLElement;
+	// Unused since the Team-status Overview card was removed (Q3 in
+	// docs/plans/2026-04-23-sync-tab-redesign.md). Still accepted because
+	// render-team-sync.ts looks up the legacy DOM node for backward
+	// compatibility with the teardown path.
+	listMount: HTMLElement | null;
 	onApproveJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
 	onAttentionAction: (item: UiSyncAttentionItem) => Promise<void>;
 	onDenyJoinRequest: (request: TeamSyncPendingJoinRequest) => Promise<SyncActionFeedback | null>;
@@ -50,7 +46,6 @@ type TeamSyncPanelProps = {
 	onReviewDiscoveredDevice: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 	pendingJoinRequests: TeamSyncPendingJoinRequest[];
 	presenceStatus: string;
-	statusSummary: TeamSyncStatusSummary;
 };
 
 function SectionHeading({ count, label }: { count?: number; label: string }) {
@@ -326,32 +321,6 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	);
 }
 
-function TeamStatusPortal({
-	mount,
-	statusSummary,
-}: {
-	mount: HTMLElement;
-	statusSummary: TeamSyncStatusSummary;
-}) {
-	return createPortal(
-		<div className="sync-team-summary">
-			<SectionHeading label="Overview" />
-			<div className="sync-team-status-row">
-				<span className="sync-team-status-label">Current status</span>
-				<span className={statusSummary.badgeClassName}>{statusSummary.presenceLabel}</span>
-			</div>
-			{statusSummary.headline ? (
-				<div className="sync-team-headline">{statusSummary.headline}</div>
-			) : null}
-			{statusSummary.detail ? <div className="section-meta">{statusSummary.detail}</div> : null}
-			<div className="sync-team-metrics sync-team-metrics-secondary">
-				{statusSummary.metricsText}
-			</div>
-		</div>,
-		mount,
-	);
-}
-
 function DiscoveredPortal({
 	mount,
 	rows,
@@ -421,11 +390,15 @@ function PendingRequestsPortal({
 }
 
 export function TeamSyncPanel(props: TeamSyncPanelProps) {
+	// The Team status > Overview portal is intentionally NOT rendered here:
+	// its data is already surfaced by the header presence chip ("Online"
+	// / "Offline") and the "Needs attention" section above. See
+	// docs/plans/2026-04-23-sync-tab-redesign.md (Q3). Status summary props
+	// stay on the panel so the header chip derivation still works.
 	return (
 		<>
 			<ActionContent {...props} />
 			<TeamActionsContent>{props.children}</TeamActionsContent>
-			<TeamStatusPortal mount={props.listMount} statusSummary={props.statusSummary} />
 			<PendingRequestsPortal
 				mount={props.joinRequestsMount}
 				requests={props.pendingJoinRequests}

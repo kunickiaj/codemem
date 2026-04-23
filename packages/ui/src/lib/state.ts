@@ -285,7 +285,10 @@ export function resolveAccessibleTab(
 /* ── Persistence helpers ───────────────────────────────────── */
 
 export function getActiveTab(): TabId {
-	const hash = window.location.hash.replace("#", "") as TabId;
+	// Strip an optional sub-view segment after `/` so hashes like
+	// `#sync/diagnostics` still resolve to the parent tab (`sync`). Sub-view
+	// state is owned per-tab (e.g. sync/sync-view-controller.ts).
+	const hash = window.location.hash.replace(/^#/, "").split("/")[0] as TabId;
 	if (ALL_TAB_IDS.includes(hash))
 		return resolveAccessibleTab(hash, state.lastCoordinatorAdminStatus);
 	const saved = localStorage.getItem(TAB_KEY);

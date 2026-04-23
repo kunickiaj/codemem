@@ -24,6 +24,7 @@ import {
 	setLoadSyncData as setPeopleLoadData,
 } from "./people";
 import { ensureSyncDialogHost } from "./sync-dialogs";
+import { applySyncSubView, ensureSyncSubViewListener } from "./sync-view-controller";
 import {
 	initTeamSyncEvents,
 	renderSyncSharingReview,
@@ -261,6 +262,11 @@ export function initSyncTab(refreshCallback: () => void) {
 	initTeamSyncEvents(refreshCallback, loadSyncData);
 	initPeopleEvents(loadSyncData);
 	initDiagnosticsEvents(refreshCallback);
+
+	// Apply the current #sync vs #sync/diagnostics sub-view and keep it in
+	// sync with future hash changes. See docs/plans/2026-04-23-sync-tab-redesign.md.
+	applySyncSubView();
+	ensureSyncSubViewListener();
 	// loadSyncData() is NOT called here — app.ts refresh() handles the initial load
 	// to avoid duplicate requests and state races at startup.
 }
