@@ -899,6 +899,12 @@ function mapPeerRow(
 			...currentProjectScope(row, readPeerProjectFilters(store, String(row.peer_device_id ?? ""))),
 		},
 		recent_ops: { in: recentOps.in, out: recentOps.out },
+		discovered_via_coordinator_id:
+			typeof row.discovered_via_coordinator_id === "string"
+				? row.discovered_via_coordinator_id
+				: null,
+		discovered_via_group_id:
+			typeof row.discovered_via_group_id === "string" ? row.discovered_via_group_id : null,
 	};
 }
 

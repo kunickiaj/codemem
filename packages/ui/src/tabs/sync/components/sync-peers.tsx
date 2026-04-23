@@ -46,6 +46,8 @@ type SyncPeer = PeerLike & {
 	addresses?: unknown[];
 	claimed_local_actor?: boolean;
 	project_scope?: PeerScopeLike;
+	discovered_via_coordinator_id?: string | null;
+	discovered_via_group_id?: string | null;
 };
 
 type SyncPeerStatus = NonNullable<SyncPeer["status"]> & {
@@ -361,6 +363,14 @@ function SyncPeerCard({
 						</span>
 						{pendingScopeReview ? (
 							<span className="badge actor-badge">Needs scope review</span>
+						) : null}
+						{peer.discovered_via_group_id ? (
+							<span
+								className="badge actor-badge"
+								title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
+							>
+								{`via ${peer.discovered_via_group_id}`}
+							</span>
 						) : null}
 					</div>
 				</div>
