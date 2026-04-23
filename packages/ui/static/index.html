@@ -1637,7 +1637,9 @@
         border-radius: var(--radius-sm);
         background: var(--surface-2);
       }
-      .sync-action + .sync-action { margin-top: var(--sp-2); }
+      /* General sibling, not adjacent: the invite/join panels sit in empty
+         portal <div>s between action rows and the `+` selector would miss. */
+      .sync-action ~ .sync-action { margin-top: var(--sp-2); }
 
       .health-action-text, .sync-action-text { font-size: 13px; color: var(--text-primary); flex: 1; min-width: 0; }
       .sync-section-heading {
