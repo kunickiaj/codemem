@@ -42,6 +42,7 @@ export {
 	createActor,
 	deactivateActor,
 	deletePeer,
+	enrollPeer,
 	importCoordinatorInvite,
 	loadPairing,
 	loadSyncActors,

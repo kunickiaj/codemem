@@ -146,6 +146,68 @@ export async function acceptDiscoveredPeer(
 	return payload;
 }
 
+export interface EnrollPeerResult {
+	ok?: boolean;
+	peer_device_id?: string;
+	created?: boolean;
+	updated?: boolean;
+	name?: string | null;
+	group_id?: string | null;
+	error?: string;
+	detail?: string;
+}
+
+export type EnrollPeerMode = "discovered" | "manual";
+
+export interface EnrollPeerPayload {
+	mode?: EnrollPeerMode;
+	peer_device_id?: string;
+	fingerprint?: string;
+	peer_public_key?: string;
+	peer_addresses?: string[];
+	name?: string | null;
+	projects_include?: string[] | null;
+	projects_exclude?: string[] | null;
+}
+
+/**
+ * Unified peer enrollment endpoint.
+ *
+ * Pass `payload.mode = "manual"` to pair a peer by `peer_public_key`
+ * directly — `groupId` is ignored and discovery attribution stays null.
+ * Otherwise (default `"discovered"`), `groupId` must be a real coordinator
+ * group id and the peer is promoted from the discovered list, seeded
+ * with the group's scope template when `auto_seed_scope` is true.
+ */
+export async function enrollPeer(
+	groupId: string,
+	payload: EnrollPeerPayload,
+): Promise<EnrollPeerResult> {
+	const resp = await fetch(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/enroll-peer`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ mode: payload.mode ?? "discovered", ...payload }),
+		},
+	);
+	const text = await resp.text();
+	let body: EnrollPeerResult = {};
+	try {
+		const parsed = text ? JSON.parse(text) : null;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			body = parsed as EnrollPeerResult;
+		}
+	} catch {
+		body = {};
+	}
+	if (!resp.ok) {
+		const msg = typeof body.detail === "string" ? body.detail : payloadError(body) || text;
+		throw new Error(msg || "request failed");
+	}
+	return body;
+}
+
 export async function createActor(displayName: string): Promise<unknown> {
 	const resp = await fetch("/api/sync/actors", {
 		method: "POST",
