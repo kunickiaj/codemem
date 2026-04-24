@@ -215,14 +215,14 @@ export function renderTeamSync() {
 
 	const reviewDiscoveredDeviceName = async (suggestedName: string) => {
 		return await openSyncInputDialog({
-			title: "Review device",
-			description: "Choose a friendly name for this device before connecting it on this machine.",
+			title: "Pair with this device",
+			description: "Choose a friendly name for this device before pairing it on this machine.",
 			initialValue: suggestedName,
 			placeholder: "Desk Mini",
-			confirmLabel: "Connect device",
+			confirmLabel: "Pair",
 			cancelLabel: "Cancel",
 			validate: (nextValue) =>
-				nextValue.trim() ? null : "Enter a device name to connect this device.",
+				nextValue.trim() ? null : "Enter a device name to pair this device.",
 		});
 	};
 
@@ -337,7 +337,11 @@ export function renderTeamSync() {
 
 		return {
 			actionMessage,
-			actionLabel: approvalSummary.actionLabel || "Review device",
+			// Unpaired team devices get the direct "Pair with this device"
+			// affordance. Devices that already need explicit approval keep
+			// their approval-specific label (e.g. "Approve on this device").
+			actionLabel:
+				approvalSummary.actionLabel || (pairedPeer ? "Review device" : "Pair with this device"),
 			approvalBadgeLabel: approvalSummary.badgeLabel,
 			availabilityLabel: device.stale ? "Offline" : "Available",
 			connectionLabel: hasConflict
@@ -382,7 +386,7 @@ export function renderTeamSync() {
 	}
 	if (discoveredMeta) {
 		discoveredMeta.textContent = visibleDiscoveredRows.length
-			? "Review anything here that still needs trust, follow-up, or approval."
+			? "Pair with a teammate's device to see it appear in People & devices and start syncing."
 			: "";
 	}
 	if (joinRequests) {
