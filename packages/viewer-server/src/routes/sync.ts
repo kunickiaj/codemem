@@ -55,6 +55,7 @@ import {
 	schema,
 	syncProjectAllowedByFilters,
 	syncVisibilityAllowed,
+	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	verifySignature,
 } from "@codemem/core";
@@ -92,6 +93,81 @@ const SYNC_STALE_AFTER_SECONDS = 10 * 60;
 const SYNC_PROTOCOL_VERSION = "2";
 const LEGACY_SYNC_ACTOR_DISPLAY_NAME = "Legacy synced peer";
 const LEGACY_SHARED_WORKSPACE_ID = "shared:legacy";
+
+/**
+ * Attempt to decode a pasted string as a device-pairing payload.
+ *
+ * Returns:
+ *   - `{ kind: "pair", ... }` when the payload base64-decodes to JSON with
+ *     the expected pairing shape AND the fingerprint matches the public
+ *     key.
+ *   - `{ kind: "invalid-pair", error }` when the payload looked like a
+ *     pairing payload but failed validation — the caller should 400 this
+ *     rather than falling back to coordinator-invite handling.
+ *   - `null` when the string is not a pairing payload at all.
+ */
+function tryParsePairingPayload(value: string):
+	| {
+			kind: "pair";
+			device_id: string;
+			fingerprint: string;
+			public_key: string;
+			addresses: string[];
+	  }
+	| { kind: "invalid-pair"; error: string }
+	| null {
+	// Accept both shapes the CLI can emit:
+	//   - raw JSON (`codemem sync pair --payload-only`)
+	//   - base64-encoded JSON (the inner blob inside the shell pipe wrapper)
+	let parsed: Record<string, unknown>;
+	if (value.trimStart().startsWith("{")) {
+		try {
+			parsed = JSON.parse(value) as Record<string, unknown>;
+		} catch {
+			return null;
+		}
+	} else {
+		let decoded: string;
+		try {
+			decoded = Buffer.from(value, "base64").toString("utf8");
+		} catch {
+			return null;
+		}
+		if (!decoded?.trimStart().startsWith("{")) return null;
+		try {
+			parsed = JSON.parse(decoded) as Record<string, unknown>;
+		} catch {
+			return null;
+		}
+	}
+	const deviceId = String(parsed.device_id ?? "").trim();
+	const fingerprint = String(parsed.fingerprint ?? "").trim();
+	const publicKey = String(parsed.public_key ?? "").trim();
+	// If the JSON doesn't carry any of the pairing discriminators, treat
+	// it as a different kind of payload (e.g. a coordinator invite happened
+	// to be JSON-encoded directly). Let the caller keep trying.
+	if (!deviceId && !fingerprint && !publicKey) return null;
+	const rawAddresses = Array.isArray(parsed.addresses) ? parsed.addresses : [];
+	const addresses = rawAddresses
+		.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+		.map((item) => item.trim());
+	if (!deviceId || !fingerprint || !publicKey || addresses.length === 0) {
+		return {
+			kind: "invalid-pair",
+			error: "Pairing payload missing device_id, fingerprint, public_key, or addresses",
+		};
+	}
+	if (fingerprintPublicKey(publicKey) !== fingerprint) {
+		return { kind: "invalid-pair", error: "Pairing payload fingerprint mismatch" };
+	}
+	return {
+		kind: "pair",
+		device_id: deviceId,
+		fingerprint,
+		public_key: publicKey,
+		addresses,
+	};
+}
 
 type CoordinatorAdminReadiness = "not_configured" | "partial" | "ready";
 
@@ -2155,6 +2231,12 @@ export function syncRoutes(
 		}
 	});
 
+	// POST /api/sync/invites/import accepts both team invites (coordinator
+	// invite envelope or codemem:// link) and device-pairing payloads
+	// (base64 JSON with { device_id, fingerprint, public_key, addresses }).
+	// The server discriminates by decoding the pasted text — UI callers get
+	// one textarea for both flows. Response carries `type: "team_join"` or
+	// `type: "pair"` so the UI can render the right success message.
 	app.post("/api/sync/invites/import", async (c) => {
 		const store = getStore();
 		let body: Record<string, unknown>;
@@ -2163,11 +2245,43 @@ export function syncRoutes(
 		} catch {
 			return c.json({ error: "invalid json" }, 400);
 		}
-		const inviteValue = String(body.invite ?? "").trim();
-		if (!inviteValue) return c.json({ error: "invite required" }, 400);
+		const rawValue = String(body.invite ?? "").trim();
+		if (!rawValue) return c.json({ error: "invite required" }, 400);
+
+		// Users often paste the whole shell command emitted by the Pairing
+		// diagnostics disclosure (`echo '<b64>' | base64 -d | codemem sync
+		// pair --accept-file -`). Peel the base64 out if we see that shape.
+		const shellMatch = rawValue.match(
+			/echo\s+['"]([A-Za-z0-9+/=]+)['"]\s*\|\s*base64\s+-d\s*\|\s*codemem/,
+		);
+		const normalized = shellMatch?.[1]?.trim() || rawValue;
+
+		const pairingResult = tryParsePairingPayload(normalized);
+		if (pairingResult?.kind === "invalid-pair") {
+			return c.json({ error: pairingResult.error }, 400);
+		}
+		if (pairingResult?.kind === "pair") {
+			try {
+				updatePeerAddresses(store.db, pairingResult.device_id, pairingResult.addresses, {
+					pinnedFingerprint: pairingResult.fingerprint,
+					publicKey: pairingResult.public_key,
+				});
+				return c.json({
+					ok: true,
+					type: "pair",
+					peer_device_id: pairingResult.device_id,
+				});
+			} catch (error) {
+				return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+			}
+		}
+
 		try {
-			const result = await coordinatorImportInviteAction({ inviteValue, dbPath: store.dbPath });
-			return c.json(result);
+			const result = await coordinatorImportInviteAction({
+				inviteValue: rawValue,
+				dbPath: store.dbPath,
+			});
+			return c.json({ ...result, type: "team_join" });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		}

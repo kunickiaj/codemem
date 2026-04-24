@@ -4780,6 +4780,154 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("accepts a device pairing payload and writes the peer row", async () => {
+			const peerKeysDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-keys-"));
+			const peerDbDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-db-"));
+			const peerDbPath = join(peerDbDir, "peer.sqlite");
+			const peerDb = new Database(peerDbPath);
+			initTestSchema(peerDb);
+			const [peerDeviceId, peerFingerprint] = ensureDeviceIdentity(peerDb, {
+				keysDir: peerKeysDir,
+			});
+			const peerPublicKey = loadPublicKey(peerKeysDir) ?? "";
+			peerDb.close();
+			const pairingPayload = {
+				device_id: peerDeviceId,
+				fingerprint: peerFingerprint,
+				public_key: peerPublicKey,
+				addresses: ["http://10.10.10.10:7337"],
+			};
+			const invite = Buffer.from(JSON.stringify(pairingPayload), "utf8").toString("base64");
+
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const res = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite }),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					ok: true,
+					type: "pair",
+					peer_device_id: peerDeviceId,
+				});
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const row = store.db
+					.prepare(
+						"SELECT peer_device_id, pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?",
+					)
+					.get(peerDeviceId) as
+					| { peer_device_id?: string; pinned_fingerprint?: string }
+					| undefined;
+				expect(row?.peer_device_id).toBe(peerDeviceId);
+				expect(row?.pinned_fingerprint).toBe(peerFingerprint);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("accepts a raw JSON pairing payload without base64 wrapping", async () => {
+			const peerKeysDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-keys-"));
+			const peerDbDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-db-"));
+			const peerDbPath = join(peerDbDir, "peer.sqlite");
+			const peerDb = new Database(peerDbPath);
+			initTestSchema(peerDb);
+			const [peerDeviceId, peerFingerprint] = ensureDeviceIdentity(peerDb, {
+				keysDir: peerKeysDir,
+			});
+			const peerPublicKey = loadPublicKey(peerKeysDir) ?? "";
+			peerDb.close();
+			const pairingJson = JSON.stringify({
+				device_id: peerDeviceId,
+				fingerprint: peerFingerprint,
+				public_key: peerPublicKey,
+				addresses: ["http://10.10.10.10:7337"],
+			});
+			const { app, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const res = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite: pairingJson }),
+				});
+				expect(res.status).toBe(200);
+				expect(await res.json()).toMatchObject({ type: "pair", peer_device_id: peerDeviceId });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("unwraps the shell pairing command and accepts the embedded payload", async () => {
+			const peerKeysDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-keys-"));
+			const peerDbDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-db-"));
+			const peerDbPath = join(peerDbDir, "peer.sqlite");
+			const peerDb = new Database(peerDbPath);
+			initTestSchema(peerDb);
+			const [peerDeviceId, peerFingerprint] = ensureDeviceIdentity(peerDb, {
+				keysDir: peerKeysDir,
+			});
+			const peerPublicKey = loadPublicKey(peerKeysDir) ?? "";
+			peerDb.close();
+			const pairingPayload = {
+				device_id: peerDeviceId,
+				fingerprint: peerFingerprint,
+				public_key: peerPublicKey,
+				addresses: ["http://10.10.10.10:7337"],
+			};
+			const b64 = Buffer.from(JSON.stringify(pairingPayload), "utf8").toString("base64");
+			const shellWrapper = `echo '${b64}' | base64 -d | codemem sync pair --accept-file -`;
+
+			const { app, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const res = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite: shellWrapper }),
+				});
+				expect(res.status).toBe(200);
+				expect(await res.json()).toMatchObject({ type: "pair", peer_device_id: peerDeviceId });
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects a pairing payload whose fingerprint does not match its public key", async () => {
+			const peerKeysDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-keys-"));
+			const peerDbDir = mkdtempSync(join(tmpdir(), "codemem-pair-peer-db-"));
+			const peerDbPath = join(peerDbDir, "peer.sqlite");
+			const peerDb = new Database(peerDbPath);
+			initTestSchema(peerDb);
+			const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+			const peerPublicKey = loadPublicKey(peerKeysDir) ?? "";
+			peerDb.close();
+			const tampered = {
+				device_id: peerDeviceId,
+				fingerprint: "ff".repeat(32), // wrong
+				public_key: peerPublicKey,
+				addresses: ["http://10.10.10.10:7337"],
+			};
+			const invite = Buffer.from(JSON.stringify(tampered), "utf8").toString("base64");
+			const { app, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const res = await app.request("/api/sync/invites/import", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ invite }),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({ error: "Pairing payload fingerprint mismatch" });
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("reports coordinator admin readiness states", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;

@@ -107,13 +107,14 @@ function JoinToggleRow({
 		<>
 			<div className="sync-action">
 				<div className="sync-action-text">
-					Join another team.
+					Accept an invite or pairing.
 					<span className="sync-action-command">
-						Paste an invite to join an additional team from this device.
+						Paste a team invite to join another team, or a pairing payload to connect another
+						device.
 					</span>
 				</div>
 				<button type="button" className="settings-button" onClick={onToggle}>
-					{joinPanelOpen ? "Hide join form" : "Join another team"}
+					{joinPanelOpen ? "Hide paste form" : "Paste invite or pairing"}
 				</button>
 			</div>
 			{joinPanel ? (
@@ -163,7 +164,8 @@ export function SyncInviteJoinPanels({
 						<div className="sync-action-text">
 							Join this device.
 							<span className="sync-action-command">
-								Paste an invite for this device below to join an existing team.
+								Paste a team invite or pairing payload below to join an existing team or connect
+								another of your devices.
 							</span>
 						</div>
 					</div>
