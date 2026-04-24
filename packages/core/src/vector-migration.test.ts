@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as embeddings from "./embeddings.js";
-import { getMaintenanceJob } from "./maintenance-jobs.js";
+import { getMaintenanceJob, startMaintenanceJob } from "./maintenance-jobs.js";
 import { applyBootstrapSnapshot } from "./sync-bootstrap.js";
 import { setSyncResetState } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
@@ -210,6 +210,47 @@ describe("vector migration", () => {
 			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
 			.all() as Array<{ model: string; c: number }>;
 		expect(models).toEqual([{ model: "test-model", c: 3 }]);
+	});
+
+	it("completes an in-flight running job without re-embedding when corpus is already covered", async () => {
+		// Reproduces codemem-ad6m: sync-incremental trigger leaves the job in
+		// 'running' status after its queue drains; every memory is already
+		// covered by target-model vectors and no source model remains. The
+		// runner should fast-exit, marking the job completed, not re-embed
+		// the entire corpus.
+		const sessionId = insertTestSession(db);
+		seedMemory(db, 1, sessionId, "One", "Body one");
+		seedMemory(db, 2, sessionId, "Two", "Body two");
+		seedVector(db, 1, "test-model");
+		seedVector(db, 2, "test-model");
+		startMaintenanceJob(db, {
+			kind: VECTOR_MODEL_MIGRATION_JOB,
+			title: "Re-indexing memories",
+			status: "running",
+			message: "Queued sync vector catch-up complete",
+			progressCurrent: 2,
+			progressTotal: 2,
+			metadata: {
+				target_model: "test-model",
+				source_model: null,
+				last_cursor_id: 0,
+				processed_embeddable: 2,
+				embeddable_total: 2,
+				trigger: "sync_incremental",
+			},
+		});
+		const embedSpy = vi.mocked(embeddings.embedTexts);
+		const callsBefore = embedSpy.mock.calls.length;
+
+		await runVectorMigrationPass(db, { batchSize: 50 });
+
+		expect(embedSpy.mock.calls.length).toBe(callsBefore);
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(job).toMatchObject({ status: "completed" });
+		const models = db
+			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+			.all() as Array<{ model: string; c: number }>;
+		expect(models).toEqual([{ model: "test-model", c: 2 }]);
 	});
 
 	it("resumes bootstrap-queued vector catch-up after restart", async () => {
