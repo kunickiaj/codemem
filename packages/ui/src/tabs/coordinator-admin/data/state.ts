@@ -38,6 +38,12 @@ export interface CoordinatorAdminState {
 	deviceRenameDrafts: Map<string, string>;
 	groupPreferencesOpen: Set<string>;
 	groupPreferencesDrafts: Map<string, GroupPreferencesDraft>;
+	/**
+	 * Cached list of project names from /api/projects so the scope-defaults
+	 * ProjectScopePicker can render them as clickable chips without
+	 * re-fetching per keystroke.
+	 */
+	availableProjects: string[];
 }
 
 export const ADMIN_TARGET_GROUP_KEY = "codemem-coordinator-admin-target-group";
@@ -61,4 +67,5 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	deviceRenameDrafts: new Map<string, string>(),
 	groupPreferencesOpen: new Set<string>(),
 	groupPreferencesDrafts: new Map<string, GroupPreferencesDraft>(),
+	availableProjects: [],
 };

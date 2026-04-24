@@ -28,7 +28,12 @@ import { initCoordinatorAdminTab, loadCoordinatorAdminData } from "./tabs/coordi
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
 import { initHealthTab, loadHealthData } from "./tabs/health";
 import { initSettings, isSettingsOpen, loadConfigData } from "./tabs/settings";
-import { initSyncTab, loadPairingData, loadSyncData } from "./tabs/sync";
+import {
+	initSyncTab,
+	invalidateSyncPeerScopeCache,
+	loadPairingData,
+	loadSyncData,
+} from "./tabs/sync";
 
 function setRuntimeLabel(version: string, commit: string | null) {
 	const el = $("runtimeLabel");
@@ -246,6 +251,11 @@ function initTabs() {
 async function loadProjects() {
 	try {
 		const projects = await api.loadProjects();
+		state.knownProjects = projects;
+		// The Sync peer-scope picker caches these as clickable chips; its
+		// render is otherwise deduped on an unrelated payload hash, so tell
+		// it to invalidate. No-op when Sync hasn't loaded yet.
+		invalidateSyncPeerScopeCache();
 		const projectFilter = $select("projectFilter");
 		if (!projectFilter) return;
 		projectFilter.textContent = "";

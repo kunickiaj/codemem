@@ -236,12 +236,12 @@ function SyncPeerCard({
 	]);
 
 	const includeEditor = useMemo(
-		() => createChipEditor(includeList, "Add included project", "All projects"),
-		[peerId, includeList.join("|")],
+		() => createChipEditor(includeList, "Add project", "All projects", state.knownProjects),
+		[peerId, includeList.join("|"), state.knownProjects.join("|")],
 	);
 	const excludeEditor = useMemo(
-		() => createChipEditor(excludeList, "Add excluded project", "No exclusions"),
-		[peerId, excludeList.join("|")],
+		() => createChipEditor(excludeList, "Add project", "No exclusions", state.knownProjects),
+		[peerId, excludeList.join("|"), state.knownProjects.join("|")],
 	);
 
 	useEffect(() => {

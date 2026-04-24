@@ -232,6 +232,20 @@ export async function loadSyncData() {
 	}
 }
 
+/**
+ * Called after `/api/projects` resolves (see app.ts loadProjects) so the
+ * Sync peer-scope picker rerenders with the freshly-cached project names.
+ * Without this, loadSyncData's dedup hash would skip the next render when
+ * the underlying sync payload hasn't changed, leaving the scope picker's
+ * clickable project list stuck on whatever was cached at first paint.
+ */
+export function invalidateSyncPeerScopeCache() {
+	lastSyncHash = "";
+	// Re-render immediately if we already have sync data; otherwise the
+	// next loadSyncData tick will hydrate the picker naturally.
+	if (state.lastSyncPeers?.length) renderSyncPeers();
+}
+
 export function resetSyncLoadStateForTests() {
 	lastSyncHash = "";
 	cachedSyncStatus = null;

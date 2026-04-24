@@ -7,7 +7,7 @@
 
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { Fragment, h } from "preact";
-import { ChipInput } from "../../../components/primitives/chip-input";
+import { ProjectScopePicker } from "../../../components/primitives/project-scope-picker";
 import { RadixSwitch } from "../../../components/primitives/radix-switch";
 import { RadixTabsContent } from "../../../components/primitives/radix-tabs";
 import { TextInput } from "../../../components/primitives/text-input";
@@ -177,10 +177,11 @@ function renderGroupPreferencesEditor(
 			"div",
 			{ class: "coordinator-admin-field" },
 			h("span", { id: includeLabelId }, "Include projects"),
-			h(ChipInput, {
+			h(ProjectScopePicker, {
 				"aria-labelledby": includeLabelId,
+				availableProjects: coordinatorAdminState.availableProjects,
 				disabled: fieldsDisabled,
-				emptyLabel: "All projects allowed",
+				emptyLabel: "All projects allowed.",
 				onValuesChange: (next: string[]) => {
 					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
 					coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
@@ -189,23 +190,24 @@ function renderGroupPreferencesEditor(
 					});
 					renderShell();
 				},
-				placeholder: "Type a project name and press Enter",
+				placeholder: "Add project",
 				values: draft.projects_include,
 			}),
 			h(
 				"span",
 				{ class: "peer-submeta" },
-				"Exact project names. Leave empty to allow every project.",
+				"Leave empty to allow every project. Type to search or create a new name.",
 			),
 		),
 		h(
 			"div",
 			{ class: "coordinator-admin-field" },
 			h("span", { id: excludeLabelId }, "Exclude projects"),
-			h(ChipInput, {
+			h(ProjectScopePicker, {
 				"aria-labelledby": excludeLabelId,
+				availableProjects: coordinatorAdminState.availableProjects,
 				disabled: fieldsDisabled,
-				emptyLabel: "Nothing excluded",
+				emptyLabel: "Nothing excluded.",
 				onValuesChange: (next: string[]) => {
 					const current = coordinatorAdminState.groupPreferencesDrafts.get(groupId) ?? draft;
 					coordinatorAdminState.groupPreferencesDrafts.set(groupId, {
@@ -214,7 +216,7 @@ function renderGroupPreferencesEditor(
 					});
 					renderShell();
 				},
-				placeholder: "Type a project name and press Enter",
+				placeholder: "Add project",
 				values: draft.projects_exclude,
 			}),
 		),
