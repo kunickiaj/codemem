@@ -155,6 +155,7 @@ async function runQueuedSyncVectorWork(
 	job: NonNullable<ReturnType<typeof getMaintenanceJob>>,
 	targetModel: string,
 	batchSize: number,
+	signal?: AbortSignal,
 ): Promise<{ completed: boolean; metadata: MigrationMetadata }> {
 	const metadata = (job.metadata ?? {}) as MigrationMetadata;
 	const pendingDeleteMemoryIds = metadataMemoryIds(metadata.pending_delete_memory_ids);
@@ -168,7 +169,14 @@ async function runQueuedSyncVectorWork(
 	}
 	const batchUpsertMemoryIds = pendingUpsertMemoryIds.slice(0, batchSize);
 	if (batchUpsertMemoryIds.length > 0) {
-		await backfillVectors(db, { memoryIds: batchUpsertMemoryIds });
+		await backfillVectors(db, { memoryIds: batchUpsertMemoryIds, signal });
+		// If the abort fired mid-batch, backfillVectors may have only
+		// processed a prefix. Skip the prune-and-drop bookkeeping so the
+		// unprocessed IDs stay in pending_upsert_memory_ids for the next
+		// tick to retry.
+		if (signal?.aborted) {
+			return { completed: false, metadata };
+		}
 		pruneStaleCurrentModelVectors(db, batchUpsertMemoryIds, targetModel);
 	}
 
@@ -323,7 +331,7 @@ function detectSourceModel(db: SqliteDatabase, targetModel: string): string | nu
 
 export async function runVectorMigrationPass(
 	db: SqliteDatabase,
-	options: { batchSize?: number } = {},
+	options: { batchSize?: number; signal?: AbortSignal } = {},
 ): Promise<void> {
 	let existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 	const isInFlightJob = existingJob?.status === "running" || existingJob?.status === "pending";
@@ -363,6 +371,7 @@ export async function runVectorMigrationPass(
 			existingJob,
 			targetModel,
 			effectiveBatchSize,
+			options.signal,
 		);
 		if (queuedSyncWork.completed) {
 			return;
@@ -495,7 +504,13 @@ export async function runVectorMigrationPass(
 	);
 
 	if (batchIds.length > 0) {
-		await backfillVectors(db, { memoryIds: batchIds });
+		await backfillVectors(db, { memoryIds: batchIds, signal: options.signal });
+		// If the signal fired mid-batch, backfillVectors may have processed
+		// only a prefix of batchRows. Don't advance the cursor or mark the
+		// job completed in that case — the next tick after restart needs to
+		// re-process this batch from the same cursor to cover any rows the
+		// abort skipped. Leave the metadata untouched.
+		if (options.signal?.aborted) return;
 		if (batchRows.length < effectiveBatchSize) {
 			db.transaction(() => {
 				const removed = cleanupStaleModels(db, targetModel);
@@ -626,7 +641,10 @@ export class VectorModelMigrationRunner {
 		try {
 			db = connect(this.dbPath) as SqliteDatabase;
 			loadSqliteVec(db);
-			await runVectorMigrationPass(db, { batchSize: this.batchSize });
+			await runVectorMigrationPass(db, {
+				batchSize: this.batchSize,
+				signal: this.signal,
+			});
 			this.lastTickWasIdle = this.computeIdle(db);
 		} catch (error) {
 			if (db) {
