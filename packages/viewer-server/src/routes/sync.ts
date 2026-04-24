@@ -1390,11 +1390,12 @@ export function syncRoutes(
 					.from(schema.syncPeers)
 					.get(),
 			);
+			// Always take the fast COUNT(DISTINCT) path. The slow
+			// per-memory vec0 probe blocks the event loop for seconds on
+			// larger DBs, which hangs every concurrent request — not
+			// acceptable from a status endpoint. See codemem-00jn.
 			const semanticIndex = traceSync("semanticIndex", () =>
-				redactSemanticIndexDiagnostics(
-					getSemanticIndexDiagnostics(store.db, { fastCounts: !showDiag }),
-					showDiag,
-				),
+				redactSemanticIndexDiagnostics(getSemanticIndexDiagnostics(store.db), showDiag),
 			);
 
 			const lastError = daemonState?.last_error as string | null;
