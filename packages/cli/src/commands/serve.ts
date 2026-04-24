@@ -554,8 +554,14 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		dbPath,
 		signal: retentionAbort.signal,
 	});
+	// Reuses backfillAbort intentionally: "abort all backfill-style work"
+	// is the shutdown signal callers care about. If a future use case
+	// needs to stop only the vector-migration runner (e.g. embeddings
+	// disabled mid-run) without touching the backfill coordinator, split
+	// this into its own controller.
 	const vectorMigrationRunner = new VectorModelMigrationRunner({
 		dbPath,
+		signal: backfillAbort.signal,
 	});
 	const backfillCoordinator = createSequentialBackfillCoordinator(
 		store,

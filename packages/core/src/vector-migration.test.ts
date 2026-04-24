@@ -212,6 +212,42 @@ describe("vector migration", () => {
 		expect(models).toEqual([{ model: "test-model", c: 3 }]);
 	});
 
+	it("bails out of a large batch when the AbortSignal fires", async () => {
+		// Cooperative shutdown (codemem-u5yn): with an aborted signal, the
+		// per-memory loop inside backfillVectors should break early rather
+		// than embed all queued rows. Critically, the cursor must NOT
+		// advance — the next post-restart tick needs to re-process this
+		// batch to cover the rows the abort skipped.
+		const sessionId = insertTestSession(db);
+		for (let i = 1; i <= 10; i++) {
+			seedMemory(db, i, sessionId, `Title ${i}`, `Body for memory ${i}`);
+			seedVector(db, i, "old-model");
+		}
+		const controller = new AbortController();
+		// Abort on the first embed call. backfillVectors processes memory 1
+		// and then breaks on the abort check before memory 2.
+		const embedSpy = vi.mocked(embeddings.embedTexts).mockImplementation(async () => {
+			controller.abort();
+			return [new Float32Array(384)];
+		});
+
+		await runVectorMigrationPass(db, { batchSize: 10, signal: controller.signal });
+
+		expect(embedSpy.mock.calls.length).toBe(1);
+		// Behavioral: only memory 1 got a target-model row; the other 9
+		// stayed on old-model.
+		const coverage = db
+			.prepare("SELECT model, COUNT(*) AS c FROM memory_vectors GROUP BY model ORDER BY model")
+			.all() as Array<{ model: string; c: number }>;
+		expect(coverage).toEqual([
+			{ model: "old-model", c: 10 },
+			{ model: "test-model", c: 1 },
+		]);
+		// Cursor must not advance — retry on next tick.
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		expect(job?.status).not.toBe("completed");
+	});
+
 	it("completes an in-flight running job without re-embedding when corpus is already covered", async () => {
 		// Reproduces codemem-ad6m: sync-incremental trigger leaves the job in
 		// 'running' status after its queue drains; every memory is already

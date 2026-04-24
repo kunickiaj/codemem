@@ -144,6 +144,12 @@ export interface BackfillVectorsOptions {
 	activeOnly?: boolean;
 	dryRun?: boolean;
 	memoryIds?: number[] | null;
+	/**
+	 * When provided, the per-memory loop bails after the current memory
+	 * finishes if the signal has fired. Used by the viewer serve shutdown
+	 * sequence so SIGTERM does not block on an entire 50-memory batch.
+	 */
+	signal?: AbortSignal;
 }
 
 export interface ReplicationVectorMaintenanceResult {
@@ -490,7 +496,7 @@ export async function backfillVectors(
 	const client = await getEmbeddingClient();
 	if (!client) return { checked: 0, embedded: 0, inserted: 0, skipped: 0 };
 
-	const { limit, since, project, activeOnly = true, dryRun = false, memoryIds } = opts;
+	const { limit, since, project, activeOnly = true, dryRun = false, memoryIds, signal } = opts;
 
 	const params: unknown[] = [];
 	const whereClauses: string[] = [];
@@ -535,6 +541,7 @@ export async function backfillVectors(
 	let skipped = 0;
 
 	for (const row of rows) {
+		if (signal?.aborted) break;
 		checked++;
 		const text = memoryText(row.title, row.body_text);
 		const chunks = chunkText(text);
