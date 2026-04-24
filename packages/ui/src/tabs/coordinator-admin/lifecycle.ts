@@ -245,6 +245,12 @@ export async function loadCoordinatorAdminData() {
 			state.lastCoordinatorAdminDevices = [];
 			coordinatorAdminState.deviceRenameDrafts.clear();
 		}
+		try {
+			coordinatorAdminState.availableProjects = await api.loadProjects();
+		} catch {
+			// Non-fatal — picker falls back to free-text entry.
+			coordinatorAdminState.availableProjects = [];
+		}
 	} else {
 		state.lastCoordinatorAdminGroups = [];
 		coordinatorAdminState.groupRenameDrafts.clear();

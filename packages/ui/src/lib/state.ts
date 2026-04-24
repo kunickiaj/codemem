@@ -234,6 +234,12 @@ export const state = {
 	lastSyncCoordinator: null as CachedSyncCoordinator | null,
 	lastCoordinatorAdminStatus: null as CachedCoordinatorAdminStatus | null,
 	coordinatorAdminTargetGroup: "",
+	/**
+	 * Project names cached from the most recent /api/projects fetch.
+	 * Populated on app boot; reused by the Sync peer-scope picker to render
+	 * clickable project chips without re-fetching per render.
+	 */
+	knownProjects: [] as string[],
 	lastCoordinatorAdminGroups: [] as CachedCoordinatorAdminGroup[],
 	lastCoordinatorAdminJoinRequests: [] as CachedSyncJoinRequest[],
 	lastCoordinatorAdminDevices: [] as CachedCoordinatorAdminDevice[],

@@ -233,57 +233,244 @@ export function actorMergeNote(targetActorId: string, secondaryActorId: string):
 
 /* ── Chip editor component ───────────────────────────────── */
 
-export function createChipEditor(initialValues: string[], placeholder: string, emptyLabel: string) {
+export function createChipEditor(
+	initialValues: string[],
+	placeholder: string,
+	emptyLabel: string,
+	availableProjects: string[] = [],
+) {
 	let values = [...initialValues];
-	const container = el("div", "peer-scope-editor");
-	const chips = el("div", "peer-scope-chips");
-	const input = el("input", "peer-scope-input") as HTMLInputElement;
-	input.placeholder = placeholder;
+	let query = "";
+	let activeIndex = 0;
+	let popoverOpen = false;
 
-	const syncChips = () => {
-		chips.textContent = "";
-		if (!values.length) {
-			chips.appendChild(el("span", "peer-scope-chip empty", emptyLabel));
+	const container = el("div", "project-scope-picker");
+	const selectedList = el("ul", "project-scope-picker-selected");
+	const trigger = el("button", "project-scope-picker-trigger settings-button") as HTMLButtonElement;
+	trigger.type = "button";
+	const triggerLabel = el("span", null, placeholder || "Add project");
+	const triggerPlus = el("span", null, "+");
+	triggerPlus.setAttribute("aria-hidden", "true");
+	trigger.append(triggerPlus, triggerLabel);
+	trigger.setAttribute("aria-haspopup", "listbox");
+	trigger.setAttribute("aria-expanded", "false");
+
+	const popover = el("div", "project-scope-picker-popover project-scope-picker-popover--inline");
+	popover.hidden = true;
+	const search = el("input", "project-scope-picker-search") as HTMLInputElement;
+	search.type = "text";
+	search.placeholder = "Search or create…";
+	search.setAttribute("aria-label", "Search projects");
+	const results = el("div", "project-scope-picker-results");
+	results.setAttribute("role", "listbox");
+	popover.append(search, results);
+
+	const knownPool = () => {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const item of [...availableProjects, ...values]) {
+			const trimmed = item.trim();
+			if (!trimmed || seen.has(trimmed)) continue;
+			seen.add(trimmed);
+			out.push(trimmed);
+		}
+		return out.sort((a, b) => a.localeCompare(b));
+	};
+
+	const filteredRows = () => {
+		const all = knownPool();
+		const q = query.trim().toLowerCase();
+		if (!q) return all;
+		return all.filter((project) => project.toLowerCase().includes(q));
+	};
+
+	const shouldShowCreateRow = () => {
+		const q = query.trim();
+		if (!q) return false;
+		return !knownPool().some((project) => project.toLowerCase() === q.toLowerCase());
+	};
+
+	const toggleValue = (project: string) => {
+		if (values.includes(project)) {
+			values = values.filter((value) => value !== project);
+		} else {
+			values = Array.from(new Set([...values, project]));
+		}
+		renderSelected();
+		renderResults();
+	};
+
+	const createFromQuery = () => {
+		const trimmed = query.trim();
+		if (!trimmed) return;
+		values = Array.from(new Set([...values, trimmed]));
+		query = "";
+		search.value = "";
+		activeIndex = 0;
+		renderSelected();
+		renderResults();
+	};
+
+	const activateRow = (index: number) => {
+		const rows = filteredRows();
+		if (index < rows.length) {
+			const project = rows[index];
+			if (project) toggleValue(project);
 			return;
 		}
-		values.forEach((value, index) => {
-			const chip = el("span", "peer-scope-chip");
+		if (shouldShowCreateRow()) createFromQuery();
+	};
+
+	const renderSelected = () => {
+		selectedList.textContent = "";
+		if (!values.length) {
+			const note = el("li", "project-scope-picker-selected-empty", emptyLabel);
+			selectedList.appendChild(note);
+			return;
+		}
+		values.forEach((value) => {
+			const chip = el("li", "project-scope-picker-selected-chip");
 			const label = el("span", null, value);
-			const remove = el("button", "peer-scope-chip-remove", "x") as HTMLButtonElement;
+			const remove = el("button", "project-scope-picker-selected-remove", "×") as HTMLButtonElement;
 			remove.type = "button";
 			remove.setAttribute("aria-label", `Remove ${value}`);
 			remove.addEventListener("click", () => {
-				values = values.filter((_, currentIndex) => currentIndex !== index);
-				syncChips();
+				values = values.filter((existing) => existing !== value);
+				renderSelected();
+				renderResults();
 			});
 			chip.append(label, remove);
-			chips.appendChild(chip);
+			selectedList.appendChild(chip);
 		});
 	};
 
-	const commitInput = () => {
-		const incoming = parseScopeList(input.value);
-		if (incoming.length) {
-			values = Array.from(new Set([...values, ...incoming]));
-			input.value = "";
-			syncChips();
+	const renderResults = () => {
+		results.textContent = "";
+		const rows = filteredRows();
+		const withCreate = shouldShowCreateRow();
+		const rowCount = rows.length + (withCreate ? 1 : 0);
+		if (activeIndex >= rowCount) activeIndex = Math.max(0, rowCount - 1);
+		if (!rows.length && !withCreate) {
+			const empty = el(
+				"div",
+				"project-scope-picker-empty-row",
+				"No projects yet. Type a name to create one.",
+			);
+			results.appendChild(empty);
+			return;
+		}
+		rows.forEach((project, index) => {
+			const selected = values.includes(project);
+			const active = index === activeIndex;
+			const row = el(
+				"button",
+				active
+					? "project-scope-picker-row project-scope-picker-row--active"
+					: "project-scope-picker-row",
+			) as HTMLButtonElement;
+			row.type = "button";
+			row.setAttribute("role", "option");
+			row.setAttribute("aria-selected", selected ? "true" : "false");
+			const check = el("span", "project-scope-picker-row-check", selected ? "✓" : "");
+			check.setAttribute("aria-hidden", "true");
+			const labelEl = el("span", "project-scope-picker-row-label", project);
+			row.append(check, labelEl);
+			row.addEventListener("click", () => {
+				activeIndex = index;
+				toggleValue(project);
+			});
+			row.addEventListener("mouseenter", () => {
+				activeIndex = index;
+				renderResults();
+			});
+			results.appendChild(row);
+		});
+		if (withCreate) {
+			const index = rows.length;
+			const active = index === activeIndex;
+			const row = el(
+				"button",
+				active
+					? "project-scope-picker-row project-scope-picker-row--create project-scope-picker-row--active"
+					: "project-scope-picker-row project-scope-picker-row--create",
+			) as HTMLButtonElement;
+			row.type = "button";
+			row.setAttribute("role", "option");
+			const check = el("span", "project-scope-picker-row-check", "+");
+			check.setAttribute("aria-hidden", "true");
+			const labelEl = el("span", "project-scope-picker-row-label", `Create "${query.trim()}"`);
+			row.append(check, labelEl);
+			row.addEventListener("click", () => createFromQuery());
+			row.addEventListener("mouseenter", () => {
+				activeIndex = index;
+				renderResults();
+			});
+			results.appendChild(row);
 		}
 	};
 
-	input.addEventListener("keydown", (event) => {
-		if (event.key === "Enter" || event.key === ",") {
-			event.preventDefault();
-			commitInput();
+	const setOpen = (next: boolean) => {
+		popoverOpen = next;
+		popover.hidden = !next;
+		trigger.setAttribute("aria-expanded", next ? "true" : "false");
+		if (next) {
+			query = "";
+			search.value = "";
+			activeIndex = 0;
+			renderResults();
+			// Defer focus so the element is laid out before we focus it.
+			requestAnimationFrame(() => search.focus());
 		}
-		if (event.key === "Backspace" && !input.value && values.length) {
-			values = values.slice(0, -1);
-			syncChips();
+	};
+
+	trigger.addEventListener("click", (event) => {
+		event.stopPropagation();
+		setOpen(!popoverOpen);
+	});
+
+	search.addEventListener("input", () => {
+		query = search.value;
+		activeIndex = 0;
+		renderResults();
+	});
+	search.addEventListener("keydown", (event) => {
+		const rowCount = filteredRows().length + (shouldShowCreateRow() ? 1 : 0);
+		if (event.key === "ArrowDown") {
+			event.preventDefault();
+			activeIndex = Math.min(rowCount - 1, activeIndex + 1);
+			renderResults();
+			return;
+		}
+		if (event.key === "ArrowUp") {
+			event.preventDefault();
+			activeIndex = Math.max(0, activeIndex - 1);
+			renderResults();
+			return;
+		}
+		if (event.key === "Enter") {
+			event.preventDefault();
+			activateRow(activeIndex);
+			return;
+		}
+		if (event.key === "Escape") {
+			event.preventDefault();
+			setOpen(false);
 		}
 	});
-	input.addEventListener("blur", commitInput);
 
-	syncChips();
-	container.append(chips, input);
+	const onDocumentClick = (event: MouseEvent) => {
+		if (!popoverOpen) return;
+		const target = event.target as Node | null;
+		if (!target) return;
+		if (container.contains(target)) return;
+		setOpen(false);
+	};
+	document.addEventListener("click", onDocumentClick);
+
+	container.append(selectedList, trigger, popover);
+	renderSelected();
+	renderResults();
+
 	return {
 		element: container,
 		values: () => [...values],
