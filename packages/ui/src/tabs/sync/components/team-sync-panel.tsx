@@ -171,27 +171,24 @@ function DiscoveredDeviceRow({
 }) {
 	const [busy, setBusy] = useState<"remove" | "review" | null>(null);
 	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
-	const [reviewLabel, setReviewLabel] = useState(row.actionLabel || "Review device");
+	const defaultReviewLabel = row.actionLabel || "Pair with this device";
+	const [reviewLabel, setReviewLabel] = useState(defaultReviewLabel);
 	const [removeLabel, setRemoveLabel] = useState("Remove broken device record");
 
 	return (
-		<div className="actor-row" data-discovered-device-id={row.deviceId}>
-			<div className="actor-details">
-				<div className="actor-title">
-					<strong title={row.displayTitle || undefined}>{row.displayName}</strong>
-					<span
-						className={`badge actor-badge${row.availabilityLabel === "Offline" ? "" : " local"}`}
-					>
-						{row.availabilityLabel}
-					</span>
-					<span className="badge actor-badge">{row.connectionLabel}</span>
-					{row.approvalBadgeLabel ? (
-						<span className="badge actor-badge">{row.approvalBadgeLabel}</span>
-					) : null}
-				</div>
-				<div className="peer-meta">{row.note}</div>
+		<div className="peer-card peer-card--padded" data-discovered-device-id={row.deviceId}>
+			<div className="peer-title">
+				<strong title={row.displayTitle || undefined}>{row.displayName}</strong>
+				<span className={`badge actor-badge${row.availabilityLabel === "Offline" ? "" : " local"}`}>
+					{row.availabilityLabel}
+				</span>
+				<span className="badge actor-badge">{row.connectionLabel}</span>
+				{row.approvalBadgeLabel ? (
+					<span className="badge actor-badge">{row.approvalBadgeLabel}</span>
+				) : null}
 			</div>
-			<div className="actor-actions">
+			<div className="peer-meta">{row.note}</div>
+			<div className="peer-actions">
 				{row.mode === "accept" ? (
 					<button
 						type="button"
@@ -200,10 +197,10 @@ function DiscoveredDeviceRow({
 						disabled={busy !== null}
 						onClick={async () => {
 							setBusy("review");
-							setReviewLabel("Reviewing…");
+							setReviewLabel("Pairing…");
 							try {
 								setFeedback((await onReview(row)) || null);
-								setReviewLabel(row.actionLabel || "Review device");
+								setReviewLabel(row.actionLabel || defaultReviewLabel);
 							} catch {
 								setReviewLabel("Retry");
 							} finally {
@@ -234,7 +231,7 @@ function DiscoveredDeviceRow({
 						</button>
 						<button
 							type="button"
-							className="settings-button"
+							className="settings-button danger"
 							aria-label={`${removeLabel} for ${row.displayName}`}
 							disabled={busy !== null}
 							onClick={async () => {
