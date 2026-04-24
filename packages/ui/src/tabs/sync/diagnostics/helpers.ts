@@ -22,21 +22,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
+function noPairingCommand(payloadText: string, hintText: string): PairingView {
+	state.pairingCommandRaw = "";
+	return { payloadText, hintText };
+}
+
 export function pairingView(payload: unknown): PairingView {
 	if (!isRecord(payload)) {
-		state.pairingCommandRaw = "";
-		return {
-			payloadText: "Pairing not available",
-			hintText: "Enable sync and retry.",
-		};
+		return noPairingCommand("Pairing not available", "Enable sync and retry.");
 	}
 
-	// The pairing payload is a local command you share with your own other
-	// device, not a secret — the outer "Show pairing command" disclosure
-	// already gates exposure. We do NOT additionally redact based on the
-	// generic diagnostics toggle, because that produced a confusing
-	// double-hide (a revealed card that just said "Pairing payload hidden").
 	const pairingPayload = payload as PairingPayloadState;
+	// Invariant: the pairing command is only constructed when the server
+	// returned a non-redacted payload. When sync redaction is on (the
+	// default) /api/sync/pairing strips device_id/fingerprint/public_key/
+	// addresses and returns { redacted: true }; turning that into a
+	// base64 command produces one the CLI accept path rejects. Surface
+	// the redaction state so the user can disable it and retry.
+	if (pairingPayload.redacted) {
+		return noPairingCommand(
+			"Pairing command hidden while sync redaction is on.",
+			"Turn off sync redaction in Settings → Device Sync to reveal the copyable pairing command for this device.",
+		);
+	}
 	const safePayload = {
 		...pairingPayload,
 		addresses: Array.isArray(pairingPayload.addresses) ? pairingPayload.addresses : [],

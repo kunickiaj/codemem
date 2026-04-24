@@ -55,9 +55,12 @@ function renderPairingCollapsible() {
 
 	const pairingCopy = document.getElementById("pairingCopy") as HTMLButtonElement | null;
 	if (pairingCopy) {
+		// Only copy the raw command produced by pairingView(). The old
+		// fallback to `#pairingPayload.textContent` picked up the placeholder
+		// string ("Pairing command hidden…") whenever pairingView() chose
+		// NOT to generate a command, so users copied non-functional text.
 		pairingCopy.onclick = async () => {
-			const text =
-				state.pairingCommandRaw || document.getElementById("pairingPayload")?.textContent || "";
+			const text = state.pairingCommandRaw;
 			if (text) await copyToClipboard(text, pairingCopy);
 		};
 	}
@@ -70,6 +73,9 @@ export function renderPairing() {
 	if (!pairingPayloadEl) return;
 
 	renderPairingView(pairingPayloadEl, pairingHint, pairingView(state.pairingPayloadRaw));
+	// Reflect whether there's anything copyable on the button itself.
+	const pairingCopy = document.getElementById("pairingCopy") as HTMLButtonElement | null;
+	if (pairingCopy) pairingCopy.disabled = !state.pairingCommandRaw;
 }
 
 function renderRedactControl() {
