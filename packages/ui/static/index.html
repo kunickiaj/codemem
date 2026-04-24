@@ -727,14 +727,30 @@
          header · helper · auto-seed toggle (master) · include chips
          · exclude chips · actions. Delimits itself as its own subsection
          with a top border + breathing room so it doesn't run into the
-         peer-actions row above. */
+         peer-actions row above. Radix Collapsible.Content is the host,
+         so open/close is driven by data-state. */
       .coordinator-admin-group-preferences {
         display: grid;
         gap: var(--sp-4);
-        margin-top: var(--sp-3);
         padding-top: var(--sp-3);
         border-top: 1px solid var(--border);
         min-width: 0;
+      }
+      .coordinator-admin-group-preferences[data-state="closed"] { display: none; }
+      /* Rotate the trigger's chevron when the scope-defaults disclosure
+         is open. Matches the sync-tab device-row chevron affordance. */
+      .coordinator-admin-scope-trigger[data-state="open"] .device-row-chevron {
+        transform: rotate(90deg);
+      }
+      .coordinator-admin-scope-trigger .device-row-chevron {
+        display: inline-flex;
+        width: 14px;
+        height: 14px;
+        transition: transform 140ms ease;
+      }
+      .coordinator-admin-scope-trigger .device-row-chevron svg {
+        width: 100%;
+        height: 100%;
       }
 
       .coordinator-admin-group-preferences > .coordinator-admin-field,
@@ -1883,6 +1899,14 @@
         padding: 0;
         display: block;
         overflow: hidden;
+      }
+      /* Padded variant for surfaces that reuse .peer-card as a generic
+         content card (e.g. coordinator-admin group cards). Device rows
+         keep padding:0 because their row-head owns its own interior. */
+      .peer-card.peer-card--padded {
+        padding: var(--sp-3);
+        display: grid;
+        gap: var(--sp-2);
       }
       .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-title strong { font-size: 14px; font-weight: 600; }
