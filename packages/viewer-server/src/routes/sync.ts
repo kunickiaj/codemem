@@ -1682,16 +1682,16 @@ export function syncRoutes(
 	});
 
 	// GET /api/sync/pairing — uses ensureDeviceIdentity from core (fix #5 context)
+	//
+	// The pairing payload is not redacted by the generic diagnostics toggle:
+	// it is the actual command the user shares with their own other devices,
+	// and the UI already hides it inside a "Show pairing command" disclosure
+	// that they explicitly open. Redacting the payload here broke the
+	// happy-path pairing flow because the UI had nothing to render as the
+	// command when diagnostics were off.
 	app.get("/api/sync/pairing", (c) => {
 		const store = getStore();
 		{
-			const showDiag = queryBool(c.req.query("includeDiagnostics"));
-			if (!showDiag) {
-				return c.json({
-					redacted: true,
-					pairing_filter_hint: PAIRING_FILTER_HINT,
-				});
-			}
 			const config = readCoordinatorSyncConfig();
 			const d = drizzle(store.db, { schema });
 			const deviceRow = d

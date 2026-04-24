@@ -33,18 +33,6 @@ export function pairingView(payload: unknown): PairingView {
 	}
 
 	const pairingPayload = payload as PairingPayloadState;
-	// Invariant: the pairing command is only constructed when the server
-	// returned a non-redacted payload. When sync redaction is on (the
-	// default) /api/sync/pairing strips device_id/fingerprint/public_key/
-	// addresses and returns { redacted: true }; turning that into a
-	// base64 command produces one the CLI accept path rejects. Surface
-	// the redaction state so the user can disable it and retry.
-	if (pairingPayload.redacted) {
-		return noPairingCommand(
-			"Pairing command hidden while sync redaction is on.",
-			"Turn off sync redaction in Settings → Device Sync to reveal the copyable pairing command for this device.",
-		);
-	}
 	const safePayload = {
 		...pairingPayload,
 		addresses: Array.isArray(pairingPayload.addresses) ? pairingPayload.addresses : [],

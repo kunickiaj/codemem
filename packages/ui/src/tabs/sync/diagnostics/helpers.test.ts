@@ -7,14 +7,7 @@ describe("pairingView", () => {
 		state.pairingCommandRaw = "";
 	});
 
-	it("returns a hidden-command message when the payload is redacted", () => {
-		const view = pairingView({ redacted: true, pairing_filter_hint: "sync_is_redacted" });
-		expect(view.payloadText).toBe("Pairing command hidden while sync redaction is on.");
-		expect(view.hintText).toMatch(/Settings → Device Sync/);
-		expect(state.pairingCommandRaw).toBe("");
-	});
-
-	it("builds a base64 copy command when the payload is not redacted", () => {
+	it("builds a base64 copy command when the payload is present", () => {
 		const view = pairingView({
 			device_id: "dev-a",
 			fingerprint: "fp",

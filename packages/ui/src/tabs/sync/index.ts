@@ -240,7 +240,10 @@ export function resetSyncLoadStateForTests() {
 
 export async function loadPairingData() {
 	try {
-		const payload = await api.loadPairing(!isSyncRedactionEnabled());
+		// Pairing payload is always returned in full — it's the actual
+		// command the user shares, not a diagnostic. The "Show pairing
+		// command" disclosure in the UI is the user-facing exposure gate.
+		const payload = await api.loadPairing();
 		state.pairingPayloadRaw = payload || null;
 		renderPairing();
 	} catch {
