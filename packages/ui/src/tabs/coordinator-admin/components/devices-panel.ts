@@ -47,7 +47,7 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 				)
 			: h(
 					"div",
-					{ class: "coordinator-admin-request-list" },
+					{ class: "peer-list" },
 					items.map((item) => {
 						const deviceId = String(item.device_id || "").trim();
 						const groupId = String(
@@ -61,7 +61,10 @@ export function renderDevicesPanel(deps: DevicesPanelDeps) {
 						const enabled = item.enabled !== false && item.enabled !== 0;
 						return h(
 							"div",
-							{ class: "peer-card", key: deviceId || String(item.fingerprint || "unknown") },
+							{
+								class: "peer-card peer-card--padded",
+								key: deviceId || String(item.fingerprint || "unknown"),
+							},
 							h("div", { class: "peer-title" }, h("strong", null, draft || displayName)),
 							h("div", { class: "peer-meta" }, `Device: ${deviceId || "unknown"}`),
 							groupId ? h("div", { class: "peer-submeta" }, `Group: ${groupId}`) : null,
