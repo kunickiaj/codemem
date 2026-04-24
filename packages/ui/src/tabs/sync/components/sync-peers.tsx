@@ -424,49 +424,54 @@ function SyncPeerCard({
 	return (
 		<Collapsible.Root asChild open={isExpanded} onOpenChange={handleOpenChange}>
 			<div ref={cardRef} className="peer-card" data-peer-device-id={peerId || undefined}>
-				{/* Row head: non-interactive content + a dedicated Radix
-				    Collapsible trigger on the right. Badges, direction glyph,
-				    and the name's title attribute live outside the trigger so
-				    they don't pollute its accessible name (the trigger reads
-				    "Expand device {name}"). */}
-				<div className="device-row-head">
-					<PresencePip state={presenceState} />
-					<span className="device-row-name" title={peerId || undefined}>
-						{displayName}
-					</span>
-					{directionHint ? (
-						<span
-							aria-label={directionHint.label}
-							className="peer-direction"
-							role="img"
-							title={directionHint.label}
-						>
-							{directionHint.glyph}
+				{/* Row head IS the Collapsible trigger — the whole band is
+				    clickable for a smoother expand/collapse. The chevron is
+				    a visual indicator driven by `data-state`, not a separate
+				    interactive element. */}
+				<Collapsible.Trigger asChild>
+					<button
+						aria-label={toggleLabel}
+						className="device-row-head device-row-head--trigger"
+						type="button"
+					>
+						<PresencePip state={presenceState} />
+						<span className="device-row-name" title={peerId || undefined}>
+							{displayName}
 						</span>
-					) : null}
-					<span className="device-row-chips">
-						<span className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}>
-							{trustSummary.badgeLabel}
-						</span>
-						{pendingScopeReview ? (
-							<span className="badge actor-badge">Needs scope review</span>
-						) : null}
-						{peer.discovered_via_group_id ? (
+						{directionHint ? (
 							<span
-								className="badge actor-badge"
-								title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
+								aria-label={directionHint.label}
+								className="peer-direction"
+								role="img"
+								title={directionHint.label}
 							>
-								{`via ${peer.discovered_via_group_id}`}
+								{directionHint.glyph}
 							</span>
 						) : null}
-					</span>
-					<span className="device-row-meta">{syncMetaText}</span>
-					<Collapsible.Trigger asChild>
-						<button aria-label={toggleLabel} className="device-row-toggle" type="button">
+						<span className="device-row-chips">
+							<span
+								className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}
+							>
+								{trustSummary.badgeLabel}
+							</span>
+							{pendingScopeReview ? (
+								<span className="badge actor-badge">Needs scope review</span>
+							) : null}
+							{peer.discovered_via_group_id ? (
+								<span
+									className="badge actor-badge"
+									title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
+								>
+									{`via ${peer.discovered_via_group_id}`}
+								</span>
+							) : null}
+						</span>
+						<span className="device-row-meta">{syncMetaText}</span>
+						<span aria-hidden="true" className="device-row-chevron">
 							<ChevronRightIcon />
-						</button>
-					</Collapsible.Trigger>
-				</div>
+						</span>
+					</button>
+				</Collapsible.Trigger>
 
 				<Collapsible.Content
 					aria-label={`Device actions for ${displayName}`}

@@ -11,7 +11,7 @@ import {
 	renderSyncEmptyState,
 	type SyncAttemptItem,
 } from "../../components/sync-diagnostics";
-import { renderActionList } from "../../helpers";
+import { redactIpOctets, renderActionList } from "../../helpers";
 import {
 	diagnosticsUnavailableState,
 	noAttemptsState,
@@ -48,13 +48,18 @@ export function renderSyncAttempts() {
 		// Progressive disclosure: show what's relevant for this attempt's outcome
 		const isError = attempt.status === "error";
 		const detailParts: string[] = [];
+		const redact = isSyncRedactionEnabled();
 		if (isError && attempt.error) {
-			detailParts.push(String(attempt.error));
+			// Error strings commonly embed the full peer URL that failed.
+			// Scrub the last two IPv4 octets when redact is on so the log
+			// doesn't leak private addresses.
+			const errText = String(attempt.error);
+			detailParts.push(redact ? redactIpOctets(errText) : errText);
 		}
 		if (!isError && (attempt.ops_in || attempt.ops_out)) {
 			detailParts.push(`${attempt.ops_in ?? 0} in · ${attempt.ops_out ?? 0} out`);
 		}
-		if (!isSyncRedactionEnabled() && attempt.address) {
+		if (!redact && attempt.address) {
 			detailParts.push(attempt.address);
 		}
 

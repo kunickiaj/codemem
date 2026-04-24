@@ -26,7 +26,7 @@ drawer, use a plain `.peer-card` instead.
   │  [Sync now]  [Device name ____]  [Save name]  [Remove] │  ← drawer (on expand)
   │                                                         │
   │  Device details                                         │
-  │  192.168.42.123:7337                                    │
+  │  No addresses                                           │
   │  Sync: 2:31PM · Ping: 2:31PM                            │
   │                                                         │
   │  Who this device belongs to                             │
