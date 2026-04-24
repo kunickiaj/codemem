@@ -40,7 +40,7 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 				)
 			: h(
 					"div",
-					{ class: "coordinator-admin-request-list" },
+					{ class: "peer-list" },
 					items.map((item) => {
 						const requestId = String(item.request_id || "").trim();
 						const deviceId = String(item.device_id || "unknown-device");
@@ -48,7 +48,7 @@ export function renderJoinRequestsPanel(deps: JoinRequestsPanelDeps) {
 						const pending = coordinatorAdminState.joinReviewPendingId === requestId;
 						return h(
 							"div",
-							{ class: "peer-card", key: requestId || deviceId },
+							{ class: "peer-card peer-card--padded", key: requestId || deviceId },
 							h("div", { class: "peer-title" }, h("strong", null, displayName)),
 							h("div", { class: "peer-meta" }, `Device: ${deviceId}`),
 							h(
