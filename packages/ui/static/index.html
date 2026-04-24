@@ -469,6 +469,16 @@
         flex-direction: column;
         gap: var(--sp-5);
       }
+      /* Sync tab wraps its cards in #syncMainView / #syncDiagnosticsView
+         sub-view containers, which breaks the .tab-panel flex gap inheritance.
+         Restore the gap inside each sub-view so Sync cards match the Feed
+         tab's card rhythm. */
+      #syncMainView,
+      #syncDiagnosticsView {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-5);
+      }
 
       /* ── Cards / sections ──────────────────────────────────── */
 
@@ -808,39 +818,30 @@
         align-items: center;
       }
 
-      /* Header link that points at a sibling sub-surface (e.g. the sync
-         diagnostics view). Deliberately quieter than a filled or ghost
-         button — it's navigation, not action. */
-      .sync-diagnostics-link {
+      /* Utility link that navigates between sibling sub-surfaces (e.g.
+         main Sync view ↔ diagnostics sub-view). One treatment used for
+         both directions so header/back links read as the same vocabulary
+         — quieter than any real button nearby, since it's navigation,
+         not action. */
+      .sync-subview-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
         font-size: 13px;
         font-weight: 500;
         color: var(--text-secondary);
         text-decoration: none;
-        padding: 6px 8px;
+        padding: 4px 6px;
         border-radius: var(--radius-sm);
-        transition: color 140ms ease, background 140ms ease;
+        transition: color 140ms ease;
       }
-      .sync-diagnostics-link:hover,
-      .sync-diagnostics-link:focus-visible {
+      .sync-subview-link:hover {
         color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 8%, transparent);
-        outline: none;
       }
-      .sync-diagnostics-link:focus-visible {
+      .sync-subview-link:focus-visible {
+        color: var(--accent);
         outline: 2px solid var(--accent);
         outline-offset: 2px;
-      }
-
-      .sync-diagnostics-back-link {
-        font-size: 12px;
-        font-weight: 500;
-        color: var(--text-secondary);
-        text-decoration: none;
-        margin-right: var(--sp-2);
-      }
-      .sync-diagnostics-back-link:hover,
-      .sync-diagnostics-back-link:focus-visible {
-        color: var(--accent);
       }
 
       .section-meta {
@@ -965,26 +966,35 @@
          clean ("Expand device work").
          See docs/plans/2026-04-23-sync-tab-redesign.md (PR 2). */
       .device-row-head {
-        display: grid;
-        grid-template-columns: auto 1fr auto auto auto;
+        display: flex;
         align-items: center;
         gap: var(--sp-3);
         width: 100%;
         min-height: 56px;
-        padding: 10px var(--sp-3);
+        padding: 10px var(--sp-4);
       }
       .device-row-toggle {
+        margin-left: auto;
+        flex-shrink: 0;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 28px;
-        height: 28px;
+        width: 32px;
+        height: 32px;
         padding: 0;
         background: transparent;
         border: none;
         border-radius: var(--radius-sm);
-        color: var(--text-tertiary);
+        color: var(--text-secondary);
         cursor: pointer;
+      }
+      .device-row-toggle svg {
+        width: 18px;
+        height: 18px;
+        transition: transform 140ms ease;
+      }
+      .device-row-toggle[data-state="open"] svg {
+        transform: rotate(90deg);
       }
       .device-row-toggle:hover {
         background: color-mix(in srgb, var(--surface-2) 70%, transparent);
@@ -995,13 +1005,14 @@
         outline-offset: 2px;
       }
       .device-row-head .device-row-name {
+        flex: 1 1 auto;
+        min-width: 0;
         font-size: 14px;
         font-weight: 600;
         color: var(--text-primary);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        min-width: 0;
       }
       .device-row-head .device-row-chips {
         display: inline-flex;
@@ -1014,22 +1025,6 @@
         color: var(--text-tertiary);
         font-feature-settings: 'tnum' 1;
         white-space: nowrap;
-      }
-      .device-row-head .device-row-chevron {
-        font-size: 12px;
-        color: var(--text-tertiary);
-        transition: transform 140ms ease;
-        font-family: var(--font-mono);
-      }
-      @media (max-width: 900px) {
-        .device-row-head {
-          grid-template-columns: auto 1fr auto;
-        }
-        .device-row-head .device-row-chips,
-        .device-row-head .device-row-meta {
-          grid-column: 1 / -1;
-          padding-left: calc(var(--presence-pip-size, 8px) + var(--sp-3));
-        }
       }
 
       /* Drawer content region revealed when the row is expanded.
@@ -1872,11 +1867,18 @@
 
       /* ── Peers ─────────────────────────────────────────────── */
 
-      .peer-list { display: grid; grid-template-columns: 1fr; gap: var(--sp-3); }
-      @media (min-width: 900px) {
-        .peer-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      /* Device list: full-width rows so the row head reads as a single
+         line and the expanded drawer uses the full card width. The old
+         2-column grid above 900px forced expansion into a narrow sidebar. */
+      .peer-list { display: grid; grid-template-columns: 1fr; gap: var(--sp-2); }
+      .peer-card {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface-1);
+        padding: 0;
+        display: block;
+        overflow: hidden;
       }
-      .peer-card { border-radius: var(--radius-lg); padding: var(--sp-4); display: grid; gap: var(--sp-2); }
       .peer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
       .peer-title strong { font-size: 14px; font-weight: 600; }
       /* Direction glyph rendered when a peer is in mutual-trust state.
@@ -3340,7 +3342,7 @@
           </div>
           <div class="section-actions">
             <button class="settings-button" id="syncNowButton">Sync now</button>
-            <a class="sync-diagnostics-link" href="#sync/diagnostics">View diagnostics &rarr;</a>
+            <a class="sync-subview-link" href="#sync/diagnostics">View diagnostics &rarr;</a>
           </div>
         </div>
         <div class="section-meta" id="syncTeamMeta">Start with the next step below, then review team status and device details.</div>
@@ -3431,7 +3433,7 @@
       <div class="card" style="animation-delay: 0.06s">
         <div class="section-header">
           <div class="section-header-title">
-            <a class="sync-diagnostics-back-link" href="#sync">&larr; Back to sync</a>
+            <a class="sync-subview-link" href="#sync">&larr; Back to sync</a>
             <h2>Sync diagnostics</h2>
           </div>
           <div class="section-actions">

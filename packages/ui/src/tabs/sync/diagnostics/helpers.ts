@@ -31,15 +31,12 @@ export function pairingView(payload: unknown): PairingView {
 		};
 	}
 
+	// The pairing payload is a local command you share with your own other
+	// device, not a secret — the outer "Show pairing command" disclosure
+	// already gates exposure. We do NOT additionally redact based on the
+	// generic diagnostics toggle, because that produced a confusing
+	// double-hide (a revealed card that just said "Pairing payload hidden").
 	const pairingPayload = payload as PairingPayloadState;
-	if (pairingPayload.redacted) {
-		state.pairingCommandRaw = "";
-		return {
-			payloadText: "Pairing payload hidden",
-			hintText: "Diagnostics are required to view the pairing payload.",
-		};
-	}
-
 	const safePayload = {
 		...pairingPayload,
 		addresses: Array.isArray(pairingPayload.addresses) ? pairingPayload.addresses : [],
