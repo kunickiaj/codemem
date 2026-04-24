@@ -1,6 +1,6 @@
 import type { Database as SqliteDatabase } from "better-sqlite3";
 import { connect, isEmbeddingDisabled, loadSqliteVec, resolveDbPath } from "./db.js";
-import { getEmbeddingClient } from "./embeddings.js";
+import { getEmbeddingClient, resolveEmbeddingModel } from "./embeddings.js";
 import {
 	completeMaintenanceJob,
 	failMaintenanceJob,
@@ -21,6 +21,16 @@ export interface VectorModelMigrationOptions {
 	dbPath?: string;
 	signal?: AbortSignal;
 }
+
+// Runner uses this cadence after a tick that detected no work. A live
+// migration or queued sync work switches back to intervalMs automatically.
+const IDLE_INTERVAL_MS = 60_000;
+
+// Module-level singleton so the queue writers can nudge the runner out of
+// its long idle cadence the moment new incremental/bootstrap work lands.
+// Assumes one active runner per process (the viewer serve loop), which
+// matches the current deployment model.
+let activeRunner: VectorModelMigrationRunner | null = null;
 
 type MemoryRow = { id: number; title: string | null; body_text: string | null };
 
@@ -84,6 +94,10 @@ function sameQueuedSyncMemoryIds(a: MigrationMetadata, b: MigrationMetadata): bo
 	);
 }
 
+export function wakeActiveVectorMigrationRunner(): void {
+	activeRunner?.wake();
+}
+
 export function queueVectorBackfillForIncrementalSync(
 	db: SqliteDatabase,
 	work: ReplicationVectorWork,
@@ -119,6 +133,7 @@ export function queueVectorBackfillForIncrementalSync(
 			progressTotal: null,
 			metadata,
 		});
+		wakeActiveVectorMigrationRunner();
 		return;
 	}
 
@@ -132,6 +147,7 @@ export function queueVectorBackfillForIncrementalSync(
 		progressTotal: existingJob.progress.total,
 		metadata,
 	});
+	wakeActiveVectorMigrationRunner();
 }
 
 async function runQueuedSyncVectorWork(
@@ -228,6 +244,7 @@ export function queueVectorBackfillForSyncBootstrap(
 		progressTotal: embeddableTotal,
 		metadata,
 	});
+	wakeActiveVectorMigrationRunner();
 }
 
 function vectorModels(db: SqliteDatabase): Array<{ model: string; rows: number }> {
@@ -543,6 +560,7 @@ export class VectorModelMigrationRunner {
 	private active = false;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private currentRun: Promise<void> | null = null;
+	private lastTickWasIdle = false;
 
 	constructor(options: VectorModelMigrationOptions = {}) {
 		this.dbPath = resolveDbPath(options.dbPath);
@@ -554,16 +572,35 @@ export class VectorModelMigrationRunner {
 	start(): void {
 		if (this.active) return;
 		this.active = true;
+		this.lastTickWasIdle = false;
+		activeRunner = this;
 		this.schedule(100);
 	}
 
 	async stop(): Promise<void> {
 		this.active = false;
+		if (activeRunner === this) activeRunner = null;
 		if (this.timer) {
 			clearTimeout(this.timer);
 			this.timer = null;
 		}
 		if (this.currentRun) await this.currentRun;
+	}
+
+	/**
+	 * Pulls the runner out of its idle cadence and schedules an immediate
+	 * tick. Queue writers (sync bootstrap / incremental replication) call
+	 * this through {@link wakeActiveVectorMigrationRunner} so freshly
+	 * replicated memories don't sit unembedded for the full idle interval.
+	 */
+	wake(): void {
+		if (!this.active) return;
+		this.lastTickWasIdle = false;
+		if (this.timer) {
+			clearTimeout(this.timer);
+			this.timer = null;
+			this.schedule(100);
+		}
 	}
 
 	private schedule(delayMs: number): void {
@@ -576,7 +613,8 @@ export class VectorModelMigrationRunner {
 				})
 				.finally(() => {
 					this.currentRun = null;
-					this.schedule(this.intervalMs);
+					const next = this.lastTickWasIdle ? IDLE_INTERVAL_MS : this.intervalMs;
+					this.schedule(next);
 				});
 		}, delayMs);
 		if (typeof this.timer === "object" && "unref" in this.timer) this.timer.unref();
@@ -589,6 +627,7 @@ export class VectorModelMigrationRunner {
 			db = connect(this.dbPath) as SqliteDatabase;
 			loadSqliteVec(db);
 			await runVectorMigrationPass(db, { batchSize: this.batchSize });
+			this.lastTickWasIdle = this.computeIdle(db);
 		} catch (error) {
 			if (db) {
 				failMaintenanceJob(
@@ -597,9 +636,57 @@ export class VectorModelMigrationRunner {
 					error instanceof Error ? error.message : String(error),
 				);
 			}
+			// Treat exceptions as idle — a thrown tick is not going to unthrow
+			// at 5s cadence. The failMaintenanceJob record captures the error;
+			// the next tick at IDLE_INTERVAL_MS will retry.
+			this.lastTickWasIdle = true;
 			console.warn("Vector migration runner failed", error);
 		} finally {
 			db?.close();
+		}
+	}
+
+	private computeIdle(db: SqliteDatabase): boolean {
+		// Embeddings disabled → the pass returns immediately with no work
+		// possible. Polling fast adds nothing.
+		if (isEmbeddingDisabled()) return true;
+		const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		if (job) {
+			// A `failed` job is not going to un-fail from polling; wait until
+			// an operator retries, queues new sync work, or embeddings become
+			// available again (all of which re-enter at full cadence on the
+			// next tick). Running/pending stay non-idle because work is in
+			// progress.
+			if (job.status === "running" || job.status === "pending") {
+				return false;
+			}
+			const meta = (job.metadata ?? {}) as MigrationMetadata;
+			const queued =
+				metadataMemoryIds(meta.pending_upsert_memory_ids).length +
+				metadataMemoryIds(meta.pending_delete_memory_ids).length;
+			if (queued > 0) return false;
+			return true;
+		}
+		// No job row yet. Peek coverage directly to tell whether the first
+		// tick on a fresh DB genuinely had nothing to do.
+		const targetModel = resolveEmbeddingModel();
+		try {
+			const uncovered = db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM memory_items
+					 WHERE active = 1
+					   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''
+					   AND id NOT IN (SELECT DISTINCT memory_id FROM memory_vectors WHERE model = ?)`,
+				)
+				.get(targetModel) as { c?: number } | undefined;
+			if (Number(uncovered?.c ?? 0) > 0) return false;
+			return detectSourceModel(db, targetModel) === null;
+		} catch (error) {
+			// Don't silently tick fast forever on a query failure; log so it
+			// shows up in dogfood logs. Conservatively treat as non-idle so
+			// the next tick tries again at full cadence.
+			console.warn("Vector migration runner idle peek failed", error);
+			return false;
 		}
 	}
 }
