@@ -179,7 +179,7 @@ describe("vectors", () => {
 		});
 	});
 
-	it("does not mark partially covered memories as healthy", () => {
+	it("does not mark partially covered memories as healthy under deep diagnostics", () => {
 		const sessionId = insertTestSession(db);
 		const now = new Date().toISOString();
 		const bodyText = "semantic chunk ".repeat(5000);
@@ -208,7 +208,7 @@ describe("vectors", () => {
 			)
 		`);
 
-		const diagnostics = getSemanticIndexDiagnostics(db);
+		const diagnostics = getSemanticIndexDiagnostics(db, { fastCounts: false });
 
 		expect(diagnostics).toMatchObject({
 			state: "pending",

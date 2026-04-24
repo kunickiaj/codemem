@@ -4,7 +4,6 @@
 
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import net from "node:net";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import type {
@@ -1001,21 +1000,6 @@ function readViewerBinding(dbPath: string): { host: string; port: number } | nul
 	return null;
 }
 
-async function portOpen(host: string, port: number): Promise<boolean> {
-	return new Promise((resolve) => {
-		const socket = net.createConnection({ host, port });
-		const done = (ok: boolean) => {
-			socket.removeAllListeners();
-			socket.destroy();
-			resolve(ok);
-		};
-		socket.setTimeout(300);
-		socket.once("connect", () => done(true));
-		socket.once("timeout", () => done(false));
-		socket.once("error", () => done(false));
-	});
-}
-
 const PEERS_QUERY = `
 	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
@@ -1406,24 +1390,29 @@ export function syncRoutes(
 					.from(schema.syncPeers)
 					.get(),
 			);
+			// Always take the fast COUNT(DISTINCT) path. The slow
+			// per-memory vec0 probe blocks the event loop for seconds on
+			// larger DBs, which hangs every concurrent request — not
+			// acceptable from a status endpoint. See codemem-00jn.
 			const semanticIndex = traceSync("semanticIndex", () =>
-				redactSemanticIndexDiagnostics(
-					getSemanticIndexDiagnostics(store.db, { fastCounts: !showDiag }),
-					showDiag,
-				),
+				redactSemanticIndexDiagnostics(getSemanticIndexDiagnostics(store.db), showDiag),
 			);
 
 			const lastError = daemonState?.last_error as string | null;
 			const lastErrorAt = daemonState?.last_error_at as string | null;
 			const lastOkAt = daemonState?.last_ok_at as string | null;
 			const viewerBinding = traceSync("readViewerBinding", () => readViewerBinding(store.dbPath));
-			const daemonRunning = viewerBinding
-				? await portOpen(viewerBinding.host, viewerBinding.port)
-				: false;
+			// The sync daemon runs inside the viewer-server process itself, so
+			// if this request is being served, the daemon is by definition
+			// running — the viewer is serving us right now. The prior
+			// `portOpen` self-probe occasionally timed out under GC / socket
+			// backlog pressure and mis-reported "stopped · unreachable" while
+			// every other request kept succeeding. Trust the pidfile's
+			// existence (a record was written at startup) and skip the loopback
+			// probe.
+			const daemonRunning = Boolean(viewerBinding);
 			const daemonDetail = viewerBinding
-				? daemonRunning
-					? `viewer pidfile at ${viewerBinding.host}:${viewerBinding.port}`
-					: `pidfile present but ${viewerBinding.host}:${viewerBinding.port} is unreachable`
+				? `viewer pidfile at ${viewerBinding.host}:${viewerBinding.port}`
 				: null;
 
 			let daemonStateValue = "ok";

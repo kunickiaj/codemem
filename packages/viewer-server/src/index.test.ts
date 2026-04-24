@@ -2889,25 +2889,26 @@ describe("viewer-server", () => {
 				const res = await app.request("/api/sync/status");
 				expect(res.status).toBe(200);
 				expect(diagnosticsSpy).toHaveBeenCalled();
-				expect(diagnosticsSpy).toHaveBeenCalledWith(expect.anything(), {
-					fastCounts: true,
-				});
+				const call = diagnosticsSpy.mock.calls.at(0);
+				expect(call?.[1]?.fastCounts).not.toBe(false);
 			} finally {
 				diagnosticsSpy.mockRestore();
 				cleanup();
 			}
 		});
 
-		it("uses full semantic diagnostics when sync diagnostics are explicitly requested", async () => {
+		it("keeps the cheap semantic diagnostics path when sync diagnostics are explicitly requested", async () => {
+			// The deep per-memory vec0 probe blocks the event loop, so the
+			// sync status endpoint always uses the fast count path regardless
+			// of `includeDiagnostics`. See codemem-00jn.
 			const diagnosticsSpy = vi.spyOn(core, "getSemanticIndexDiagnostics");
 			const { app, cleanup } = createTestApp();
 			try {
 				const res = await app.request("/api/sync/status?includeDiagnostics=1");
 				expect(res.status).toBe(200);
 				expect(diagnosticsSpy).toHaveBeenCalled();
-				expect(diagnosticsSpy).toHaveBeenCalledWith(expect.anything(), {
-					fastCounts: false,
-				});
+				const call = diagnosticsSpy.mock.calls.at(0);
+				expect(call?.[1]?.fastCounts).not.toBe(false);
 			} finally {
 				diagnosticsSpy.mockRestore();
 				cleanup();

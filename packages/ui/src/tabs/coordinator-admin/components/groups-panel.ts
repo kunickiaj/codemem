@@ -5,7 +5,8 @@
  * Takes action callbacks plus renderShell + reloadData as deps so the
  * archive switch and manage button can trigger the surrounding shell. */
 
-import { h } from "preact";
+import * as Collapsible from "@radix-ui/react-collapsible";
+import { Fragment, h } from "preact";
 import { ChipInput } from "../../../components/primitives/chip-input";
 import { RadixSwitch } from "../../../components/primitives/radix-switch";
 import { RadixTabsContent } from "../../../components/primitives/radix-tabs";
@@ -20,6 +21,28 @@ import {
 	currentAdminTargetGroup,
 	setAdminTargetGroup,
 } from "../data/target-group";
+
+/* Inlined chevron SVG — matches the sync-tab device-row chevron so the
+ * CSS `[data-state="open"]` rotation style is shared. Avoids depending
+ * on the viewer's CDN lucide bootstrap inside a Collapsible.Content
+ * that mounts after that sweep runs. */
+function ChevronRightIcon() {
+	return h(
+		"svg",
+		{
+			"aria-hidden": "true",
+			fill: "none",
+			stroke: "currentColor",
+			"stroke-linecap": "round",
+			"stroke-linejoin": "round",
+			"stroke-width": "2",
+			viewBox: "0 0 24 24",
+			xmlns: "http://www.w3.org/2000/svg",
+		},
+		h("title", null, "Chevron"),
+		h("path", { d: "m9 18 6-6-6-6" }),
+	);
+}
 
 function emptyDraft(): GroupPreferencesDraft {
 	return {
@@ -112,19 +135,15 @@ function renderGroupPreferencesEditor(
 	const draft = coordinatorAdminState.groupPreferencesDrafts.get(groupId);
 	if (!draft) return null;
 	if (!draft.loaded) {
-		return h(
-			"div",
-			{ class: "coordinator-admin-group-preferences" },
-			h("div", { class: "peer-submeta" }, "Loading scope defaults…"),
-		);
+		return h("div", { class: "peer-submeta" }, "Loading scope defaults…");
 	}
 	const autoSeedLabelId = `coord-admin-scope-autoseed-${groupId}`;
 	const includeLabelId = `coord-admin-scope-include-${groupId}`;
 	const excludeLabelId = `coord-admin-scope-exclude-${groupId}`;
 	const fieldsDisabled = !ready || draft.saving || !draft.auto_seed_scope;
 	return h(
-		"div",
-		{ class: "coordinator-admin-group-preferences" },
+		Fragment,
+		null,
 		h("h4", { class: "coordinator-admin-drawer-title" }, "Scope defaults"),
 		h(
 			"div",
@@ -371,7 +390,7 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 				)
 			: h(
 					"div",
-					{ class: "coordinator-admin-request-list" },
+					{ class: "peer-list" },
 					visibleGroups.map((group) => {
 						const selected = group.group_id === selectedGroup;
 						const pending = coordinatorAdminState.groupActionPendingId === group.group_id;
@@ -380,9 +399,10 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 							coordinatorAdminState.groupRenameDrafts.get(group.group_id) ??
 							group.display_name ??
 							group.group_id;
+						const scopeOpen = coordinatorAdminState.groupPreferencesOpen.has(group.group_id);
 						return h(
 							"div",
-							{ class: "peer-card", key: group.group_id },
+							{ class: "peer-card peer-card--padded", key: group.group_id },
 							h("div", { class: "peer-title" }, h("strong", null, draftName)),
 							h("div", { class: "peer-meta" }, `Group ID: ${group.group_id}`),
 							h("div", { class: "peer-submeta" }, archived ? "Archived" : "Active"),
@@ -441,10 +461,13 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 								h(
 									"button",
 									{
-										class: "settings-button",
+										"aria-expanded": scopeOpen,
+										"aria-controls": `coord-admin-scope-drawer-${group.group_id}`,
+										class: "settings-button coordinator-admin-scope-trigger",
+										"data-state": scopeOpen ? "open" : "closed",
 										disabled: summary.readiness !== "ready" || pending,
 										onClick: () => {
-											if (coordinatorAdminState.groupPreferencesOpen.has(group.group_id)) {
+											if (scopeOpen) {
 												closeGroupPreferences(group.group_id, renderShell);
 											} else {
 												void openGroupPreferences(group.group_id, renderShell);
@@ -452,9 +475,12 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 										},
 										type: "button",
 									},
-									coordinatorAdminState.groupPreferencesOpen.has(group.group_id)
-										? "Close scope defaults"
-										: "Scope defaults",
+									h("span", null, "Scope defaults"),
+									h(
+										"span",
+										{ "aria-hidden": "true", class: "device-row-chevron" },
+										h(ChevronRightIcon, null),
+									),
 								),
 								h(
 									"button",
@@ -480,13 +506,31 @@ export function renderGroupsPanel(deps: GroupsPanelDeps) {
 											: "Archive",
 								),
 							),
-							coordinatorAdminState.groupPreferencesOpen.has(group.group_id)
-								? renderGroupPreferencesEditor(
-										group.group_id,
-										renderShell,
-										summary.readiness === "ready",
-									)
-								: null,
+							h(
+								Collapsible.Root,
+								{
+									open: scopeOpen,
+									onOpenChange: (open: boolean) => {
+										if (open) void openGroupPreferences(group.group_id, renderShell);
+										else closeGroupPreferences(group.group_id, renderShell);
+									},
+								},
+								h(
+									Collapsible.Content,
+									{
+										"aria-label": `Scope defaults for ${draftName}`,
+										class: "coordinator-admin-group-preferences",
+										id: `coord-admin-scope-drawer-${group.group_id}`,
+									},
+									scopeOpen
+										? renderGroupPreferencesEditor(
+												group.group_id,
+												renderShell,
+												summary.readiness === "ready",
+											)
+										: null,
+								),
+							),
 						);
 					}),
 				),

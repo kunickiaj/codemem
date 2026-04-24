@@ -1,3 +1,4 @@
+import * as Collapsible from "@radix-ui/react-collapsible";
 import type { TargetedInputEvent } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { PresencePip, type PresenceState } from "../../../components/primitives/presence-pip";
@@ -23,6 +24,31 @@ import {
 	type PeerDirection,
 	type PeerLike,
 } from "../view-model";
+import { renderIntoSyncMount } from "./render-root";
+import { SyncEmptyState } from "./sync-empty-state";
+import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
+
+/* Lucide `chevron-right` inlined so Radix Collapsible can rotate it via
+ * CSS on open without depending on the viewer's CDN lucide bootstrap
+ * (which replaces `<i data-lucide=".." />` placeholders after mount —
+ * unreliable inside a portal that mounts after that sweep runs). */
+function ChevronRightIcon() {
+	return (
+		<svg
+			aria-hidden="true"
+			fill="none"
+			stroke="currentColor"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			stroke-width="2"
+			viewBox="0 0 24 24"
+			xmlns="http://www.w3.org/2000/svg"
+		>
+			<title>Chevron</title>
+			<path d="m9 18 6-6-6-6" />
+		</svg>
+	);
+}
 
 /* Map the view-model's UI-status vocabulary to the PresencePip state
  * matrix defined in docs/plans/2026-04-23-sync-tab-redesign.md. */
@@ -63,10 +89,6 @@ function useExpandedPeer(): string | null {
 	}, []);
 	return expandedPeerId;
 }
-
-import { renderIntoSyncMount } from "./render-root";
-import { SyncEmptyState } from "./sync-empty-state";
-import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
 
 const DIRECTION_GLYPH: Record<PeerDirection, { glyph: string; label: string } | null> = {
 	bidirectional: { glyph: "↕", label: "Bidirectional sync in the last 24 hours" },
@@ -389,66 +411,69 @@ function SyncPeerCard({
 	const presenceState: PresenceState = presenceForPeer(peer);
 	const syncMetaText = lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never";
 
-	const toggleExpand = () => setExpandedPeer(isExpanded ? null : peerId);
 	const toggleLabel = `${isExpanded ? "Collapse" : "Expand"} device ${displayName}`;
+	// Read module-level state directly (not the stale closure value of
+	// `isExpanded`) when handling the close callback. When another row
+	// takes over, Radix fires this row's onOpenChange(false) after the
+	// module-level pointer has already moved — we must NOT clobber it.
+	const handleOpenChange = (open: boolean) => {
+		if (open) setExpandedPeer(peerId);
+		else if (expandedPeerId === peerId) setExpandedPeer(null);
+	};
 
 	return (
-		<div ref={cardRef} className="peer-card" data-peer-device-id={peerId || undefined}>
-			{/* Row head: non-interactive content + a dedicated disclosure
-			    button on the right. This avoids burying badges, glyphs, and
-			    title attributes inside a button's accessible-name
-			    computation (which would produce a 40+ word announcement).
-			    Clicking anywhere in the row still toggles the drawer via a
-			    background click handler — the button is what assistive tech
-			    sees and keyboard users activate. */}
-			<div className="device-row-head">
-				<PresencePip state={presenceState} />
-				<span className="device-row-name" title={peerId || undefined}>
-					{displayName}
-				</span>
-				{directionHint ? (
-					<span
-						aria-label={directionHint.label}
-						className="peer-direction"
-						role="img"
-						title={directionHint.label}
+		<Collapsible.Root asChild open={isExpanded} onOpenChange={handleOpenChange}>
+			<div ref={cardRef} className="peer-card" data-peer-device-id={peerId || undefined}>
+				{/* Row head IS the Collapsible trigger — the whole band is
+				    clickable for a smoother expand/collapse. The chevron is
+				    a visual indicator driven by `data-state`, not a separate
+				    interactive element. */}
+				<Collapsible.Trigger asChild>
+					<button
+						aria-label={toggleLabel}
+						className="device-row-head device-row-head--trigger"
+						type="button"
 					>
-						{directionHint.glyph}
-					</span>
-				) : null}
-				<span className="device-row-chips">
-					<span className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}>
-						{trustSummary.badgeLabel}
-					</span>
-					{pendingScopeReview ? (
-						<span className="badge actor-badge">Needs scope review</span>
-					) : null}
-					{peer.discovered_via_group_id ? (
-						<span
-							className="badge actor-badge"
-							title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
-						>
-							{`via ${peer.discovered_via_group_id}`}
+						<PresencePip state={presenceState} />
+						<span className="device-row-name" title={peerId || undefined}>
+							{displayName}
 						</span>
-					) : null}
-				</span>
-				<span className="device-row-meta">{syncMetaText}</span>
-				<button
-					aria-controls={drawerId}
-					aria-expanded={isExpanded}
-					aria-label={toggleLabel}
-					className="device-row-toggle"
-					onClick={toggleExpand}
-					type="button"
-				>
-					<span aria-hidden="true" className="device-row-chevron">
-						{isExpanded ? "▾" : "▸"}
-					</span>
-				</button>
-			</div>
+						{directionHint ? (
+							<span
+								aria-label={directionHint.label}
+								className="peer-direction"
+								role="img"
+								title={directionHint.label}
+							>
+								{directionHint.glyph}
+							</span>
+						) : null}
+						<span className="device-row-chips">
+							<span
+								className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}
+							>
+								{trustSummary.badgeLabel}
+							</span>
+							{pendingScopeReview ? (
+								<span className="badge actor-badge">Needs scope review</span>
+							) : null}
+							{peer.discovered_via_group_id ? (
+								<span
+									className="badge actor-badge"
+									title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
+								>
+									{`via ${peer.discovered_via_group_id}`}
+								</span>
+							) : null}
+						</span>
+						<span className="device-row-meta">{syncMetaText}</span>
+						<span aria-hidden="true" className="device-row-chevron">
+							<ChevronRightIcon />
+						</span>
+					</button>
+				</Collapsible.Trigger>
 
-			{isExpanded ? (
-				<section
+				<Collapsible.Content
 					aria-label={`Device actions for ${displayName}`}
 					className="device-row-drawer"
 					id={drawerId}
@@ -587,9 +612,9 @@ function SyncPeerCard({
 						<SyncInlineFeedback feedback={feedback} />
 						<div ref={setScopeHost} />
 					</div>
-				</section>
-			) : null}
-		</div>
+				</Collapsible.Content>
+			</div>
+		</Collapsible.Root>
 	);
 }
 

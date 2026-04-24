@@ -190,17 +190,12 @@ export function deriveSyncViewModel(input: {
 					summary: detail,
 				}),
 			);
-		} else if (device.peer && peerStatus === "offline") {
-			attentionItems.push(
-				createRepairItem({
-					id: device.deviceId,
-					name,
-					title: `${name} is offline`,
-					summary:
-						"This device is offline or unreachable right now. Retry later, or review the local record if it should have been available.",
-				}),
-			);
 		}
+		// Peers that are merely offline are NOT pushed into Needs attention.
+		// Device rows already surface the offline state via their presence pip
+		// and the "Offline" badge, which is enough signal — computers turn off
+		// and on regularly and this doesn't warrant a separate action item.
+		// Auth/trust/repair failures (handled in the branch above) still do.
 
 		if (device.peer && trustSummary?.state === "trusted-by-you") {
 			attentionItems.push(

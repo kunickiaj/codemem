@@ -173,6 +173,12 @@ export interface SemanticIndexDiagnostics {
 }
 
 export interface SemanticIndexDiagnosticsOptions {
+	/**
+	 * Default true — runs a single indexed COUNT(DISTINCT) join. The slow
+	 * alternative does a vec0 probe per memory row, which blocks the event
+	 * loop; only set to false from non-request-path tooling that needs
+	 * per-chunk coverage precision.
+	 */
 	fastCounts?: boolean;
 }
 
@@ -271,6 +277,7 @@ export function getSemanticIndexDiagnostics(
 	db: Database,
 	options: SemanticIndexDiagnosticsOptions = {},
 ): SemanticIndexDiagnostics {
+	const fastCounts = options.fastCounts !== false;
 	const currentModel = traceSemanticDiag("resolveEmbeddingModel", () => resolveEmbeddingModel());
 	const semanticSearchModel = traceSemanticDiag("resolveSemanticSearchModel", () =>
 		resolveSemanticSearchModel(db, currentModel),
@@ -280,9 +287,9 @@ export function getSemanticIndexDiagnostics(
 		countEmbeddableActiveMemories(db),
 	);
 	const indexedMemoryCount = traceSemanticDiag(
-		options.fastCounts ? "countIndexedActiveMemoriesFast" : "countIndexedActiveMemories",
+		fastCounts ? "countIndexedActiveMemoriesFast" : "countIndexedActiveMemories",
 		() =>
-			options.fastCounts
+			fastCounts
 				? countIndexedActiveMemoriesFast(db, currentModel)
 				: countIndexedActiveMemories(db, currentModel),
 	);

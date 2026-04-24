@@ -74,15 +74,6 @@ async function isViewerReady() {
 	}
 }
 
-function stopReconnectLoop() {
-	if (reconnectTimer) {
-		clearTimeout(reconnectTimer);
-		reconnectTimer = null;
-	}
-	reconnecting = false;
-	setReconnectOverlay(false);
-}
-
 function canResumeRefresh() {
 	return document.visibilityState !== "hidden" && !isSettingsOpen();
 }
@@ -100,17 +91,38 @@ function scheduleReconnectLoop() {
 	const tick = async () => {
 		const ready = await isViewerReady();
 		if (ready) {
-			stopReconnectLoop();
+			// Keep the overlay visible through the handoff. Hiding here and
+			// then re-showing if the follow-up refresh fails (a common case
+			// when the server's HTTP port opens a moment before all handlers
+			// are wired) produces a visible background flash. Clear the tick
+			// timer, release the reconnecting flag so doRefresh can proceed,
+			// let doRefresh run under the overlay, and only dismiss after it
+			// completes without re-scheduling a reconnect.
+			if (reconnectTimer) {
+				clearTimeout(reconnectTimer);
+				reconnectTimer = null;
+			}
+			reconnecting = false;
+			setReconnectOverlay(true, "Viewer responded. Restoring your session…");
 			if (canResumeRefresh()) {
 				setRefreshStatus("refreshing");
 				startPolling();
-				void doRefresh();
+				try {
+					await doRefresh();
+				} catch {
+					// doRefresh handles its own failures (and may re-schedule
+					// the reconnect loop on catch).
+				}
 			} else {
 				setRefreshStatus(
 					"paused",
 					document.visibilityState === "hidden" ? "(tab hidden)" : "(settings open)",
 				);
 			}
+			// If doRefresh re-scheduled a reconnect, `reconnecting` is true
+			// again and the overlay is already showing the new message —
+			// leave it up. Otherwise the session is restored; dismiss.
+			if (!reconnecting) setReconnectOverlay(false);
 			return;
 		}
 		setReconnectOverlay(
@@ -387,9 +399,21 @@ $("viewerReconnectRetry")?.addEventListener("click", async () => {
 		scheduleReconnectLoop();
 		return;
 	}
-	stopReconnectLoop();
+	// Release the reconnecting flag but keep the overlay up while the first
+	// refresh runs — otherwise a failed refresh causes a hide→show flash.
+	if (reconnectTimer) {
+		clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+	}
+	reconnecting = false;
+	setReconnectOverlay(true, "Viewer responded. Restoring your session…");
 	startPolling();
-	void doRefresh();
+	try {
+		await doRefresh();
+	} catch {
+		// doRefresh handles its own failures
+	}
+	if (!reconnecting) setReconnectOverlay(false);
 });
 
 // Version label
