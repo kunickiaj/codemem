@@ -239,10 +239,14 @@ function vectorModels(db: SqliteDatabase): Array<{ model: string; rows: number }
 }
 
 function countEmbeddableActiveMemories(db: SqliteDatabase): number {
-	return db
-		.prepare("SELECT id, title, body_text FROM memory_items WHERE active = 1")
-		.all()
-		.filter((row) => isEmbeddableMemory(row as MemoryRow)).length;
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) AS c FROM memory_items
+			 WHERE active = 1
+			   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''`,
+		)
+		.get() as { c?: number } | undefined;
+	return Number(row?.c ?? 0);
 }
 
 function selectNextMigrationBatch(
@@ -362,8 +366,21 @@ export async function runVectorMigrationPass(
 		existingJob?.status === "running" ||
 		existingJob?.status === "pending" ||
 		existingJob?.status === "failed";
-	if (!sourceModel && !hasInFlightJob) {
-		// No stale model and no in-flight job — check if any active memories lack target vectors.
+	// codemem-ad6m: when a sync-triggered job (bootstrap or incremental)
+	// drains its queued work, status can remain 'running' without the
+	// batch loop having anything to do. The previous logic fell through
+	// and re-embedded the entire corpus. Fast-exit for that specific
+	// case — but ONLY for sync-triggered jobs, since the `uncovered`
+	// SQL counts memories that have ANY target-model row (even a single
+	// chunk of a multi-chunk memory). Full-migration jobs (no trigger,
+	// or an older full-migration trigger) must keep falling through to
+	// the batch loop so backfillVectors can detect partial chunk
+	// coverage and repair it.
+	const existingJobTrigger = (existingJob?.metadata as MigrationMetadata | undefined)?.trigger;
+	const fromSyncTrigger =
+		existingJobTrigger === SYNC_INCREMENTAL_TRIGGER ||
+		existingJobTrigger === SYNC_BOOTSTRAP_TRIGGER;
+	if (!sourceModel && fromSyncTrigger && hasInFlightJob) {
 		const uncovered = db
 			.prepare(
 				`SELECT COUNT(*) AS c FROM memory_items
@@ -372,6 +389,20 @@ export async function runVectorMigrationPass(
 			)
 			.get(targetModel) as { c?: number } | undefined;
 		if (Number(uncovered?.c ?? 0) <= 0) {
+			const jobMeta = (existingJob?.metadata ?? {}) as MigrationMetadata;
+			const indexedTotal = countEmbeddableActiveMemories(db);
+			completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+				message: "Finished re-indexing memories",
+				progressCurrent: indexedTotal,
+				progressTotal: indexedTotal,
+				metadata: {
+					...jobMeta,
+					source_model: null,
+					target_model: targetModel,
+					processed_embeddable: indexedTotal,
+					embeddable_total: indexedTotal,
+				},
+			});
 			return;
 		}
 	}
