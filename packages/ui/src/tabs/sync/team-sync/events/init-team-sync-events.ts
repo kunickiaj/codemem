@@ -95,22 +95,37 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		if (!syncJoinButton || !syncJoinInvite) return;
 		const inviteValue = syncJoinInvite.value.trim();
 		if (!inviteValue) {
-			markFieldError(syncJoinInvite, "Paste a team invite to join.");
+			markFieldError(syncJoinInvite, "Paste a team invite or pairing payload.");
 			return;
 		}
 		clearFieldError(syncJoinInvite);
 		syncJoinButton.disabled = true;
-		syncJoinButton.textContent = "Joining\u2026";
+		syncJoinButton.textContent = "Accepting\u2026";
 		try {
 			const result = await api.importCoordinatorInvite(inviteValue);
 			state.lastTeamJoin = result;
-			let feedback: SyncActionFeedback = {
-				message:
-					result.status === "pending"
-						? "Join request sent. Waiting for admin approval."
-						: "Joined the team.",
-				tone: "success",
-			};
+			const resultType =
+				typeof (result as { type?: unknown }).type === "string"
+					? ((result as { type: string }).type as "pair" | "team_join")
+					: "team_join";
+			let feedback: SyncActionFeedback;
+			if (resultType === "pair") {
+				const peerId = String((result as { peer_device_id?: unknown }).peer_device_id ?? "").trim();
+				feedback = {
+					message: peerId
+						? `Paired with device ${peerId.slice(0, 8)}. It will appear in People & devices.`
+						: "Paired the device. It will appear in People & devices.",
+					tone: "success",
+				};
+			} else {
+				feedback = {
+					message:
+						result.status === "pending"
+							? "Join request sent. Waiting for admin approval."
+							: "Joined the team.",
+					tone: "success",
+				};
+			}
 			state.syncJoinFlowFeedback = feedback;
 			setJoinFeedbackVisibility();
 			syncJoinInvite.value = "";
@@ -118,7 +133,10 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 				await loadSyncData();
 			} catch (error) {
 				feedback = {
-					message: friendlyError(error, "Joined the team, but this view has not refreshed yet."),
+					message: friendlyError(
+						error,
+						"Accepted the invite, but this view has not refreshed yet.",
+					),
 					tone: "warning",
 				};
 				state.syncJoinFlowFeedback = feedback;
@@ -128,7 +146,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 			state.syncJoinFlowFeedback = {
 				message: friendlyError(
 					error,
-					"Failed to import invite. Check that the invite is complete, current, and meant for this team, then try again.",
+					"Failed to accept. Check that the invite or pairing payload is complete and current, then try again.",
 				),
 				tone: "warning",
 			};
@@ -139,7 +157,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		} finally {
 			if (syncJoinButton.disabled) {
 				syncJoinButton.disabled = false;
-				syncJoinButton.textContent = "Join team";
+				syncJoinButton.textContent = "Accept";
 			}
 		}
 	});
