@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { buildRawEventEnvelopeFromHook } from "./claude-hooks.js";
@@ -6,7 +8,10 @@ import type { ObserverClient } from "./observer-client.js";
 import { initTestSchema } from "./test-utils.js";
 
 function createDbPath(name: string): string {
-	return `/tmp/codemem-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
+	return join(
+		tmpdir(),
+		`codemem-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`,
+	);
 }
 
 describe("extraction replay", () => {

@@ -916,6 +916,8 @@ describe("pruneReplicationOps", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-04-25T00:00:00Z"));
 		db = new Database(":memory:");
 		initTestSchema(db);
 		setSyncResetState(db, {
@@ -928,6 +930,7 @@ describe("pruneReplicationOps", () => {
 
 	afterEach(() => {
 		db.close();
+		vi.useRealTimers();
 	});
 
 	function insertOp(opId: string, createdAt: string) {

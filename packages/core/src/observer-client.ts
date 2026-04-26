@@ -11,9 +11,9 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { codememHomeDir } from "./home.js";
 
 import {
 	buildCodexHeaders,
@@ -387,11 +387,11 @@ export function loadObserverConfig(): ObserverConfig {
 	};
 
 	// Read config file
-	const configDir = join(homedir(), ".config", "codemem");
+	const configDir = join(codememHomeDir(), ".config", "codemem");
 	const envPath = process.env.CODEMEM_CONFIG;
 	let configPath: string | null = null;
 	if (envPath) {
-		configPath = envPath.replace(/^~/, homedir());
+		configPath = envPath.replace(/^~/, codememHomeDir());
 	} else {
 		const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
 		configPath = candidates.find((p) => existsSync(p)) ?? null;

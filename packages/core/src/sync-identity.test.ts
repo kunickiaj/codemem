@@ -21,7 +21,11 @@ import { initTestSchema } from "./test-utils.js";
 
 function sshKeygenAvailable(): boolean {
 	try {
-		execFileSync("which", ["ssh-keygen"], { stdio: "pipe" });
+		if (process.platform === "win32") {
+			execFileSync("where.exe", ["ssh-keygen"], { stdio: "pipe" });
+		} else {
+			execFileSync("which", ["ssh-keygen"], { stdio: "pipe" });
+		}
 		return true;
 	} catch {
 		return false;
@@ -29,6 +33,10 @@ function sshKeygenAvailable(): boolean {
 }
 
 const HAS_SSH_KEYGEN = sshKeygenAvailable();
+
+function slashPath(value: string): string {
+	return value.replace(/\\/g, "/");
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -68,15 +76,15 @@ describe("sync-identity", () => {
 	describe("resolveKeyPaths", () => {
 		it("returns correct paths for custom dir", () => {
 			const [priv, pub] = resolveKeyPaths("/tmp/mykeys");
-			expect(priv).toBe("/tmp/mykeys/device.key");
-			expect(pub).toBe("/tmp/mykeys/device.key.pub");
+			expect(slashPath(priv)).toBe("/tmp/mykeys/device.key");
+			expect(slashPath(pub)).toBe("/tmp/mykeys/device.key.pub");
 		});
 
 		it("uses default dir when none provided", () => {
 			const [priv, pub] = resolveKeyPaths();
 			expect(priv).toContain("device.key");
 			expect(pub).toContain("device.key.pub");
-			expect(priv).toContain(".config/codemem/keys");
+			expect(slashPath(priv)).toContain(".config/codemem/keys");
 		});
 	});
 

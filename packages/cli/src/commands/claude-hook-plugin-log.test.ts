@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { logHookFailure, pluginLogPath } from "./claude-hook-plugin-log.js";
 
+function slashPath(value: string): string {
+	return value.replace(/\\/g, "/");
+}
+
 describe("claude-hook-plugin-log", () => {
 	let baseDir: string;
 	const savedEnv: Record<string, string | undefined> = {};
@@ -26,7 +30,7 @@ describe("claude-hook-plugin-log", () => {
 
 	describe("pluginLogPath", () => {
 		it("returns the expanded default when no env override is set", () => {
-			expect(pluginLogPath().endsWith("/.codemem/plugin.log")).toBe(true);
+			expect(slashPath(pluginLogPath()).endsWith("/.codemem/plugin.log")).toBe(true);
 		});
 
 		it("uses CODEMEM_PLUGIN_LOG_PATH when it points at a real path", () => {
@@ -38,7 +42,7 @@ describe("claude-hook-plugin-log", () => {
 		it("treats boolean-shaped CODEMEM_PLUGIN_LOG values as toggles, not paths", () => {
 			for (const value of ["1", "0", "true", "false", "yes", "no", "on", "off", ""]) {
 				process.env.CODEMEM_PLUGIN_LOG = value;
-				expect(pluginLogPath().endsWith("/.codemem/plugin.log")).toBe(true);
+				expect(slashPath(pluginLogPath()).endsWith("/.codemem/plugin.log")).toBe(true);
 			}
 		});
 

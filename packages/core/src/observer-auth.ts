@@ -8,8 +8,9 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { arch, homedir, platform, release } from "node:os";
+import { arch, platform, release } from "node:os";
 import { join } from "node:path";
+import { codememHomeDir } from "./home.js";
 
 // Inline version to avoid circular import (index.ts re-exports from this module).
 // Keep in sync with the VERSION constant in index.ts.
@@ -49,7 +50,7 @@ function noAuth(): ObserverAuthMaterial {
 // ---------------------------------------------------------------------------
 
 function getOpenCodeAuthPath(): string {
-	return join(homedir(), ".local", "share", "opencode", "auth.json");
+	return join(codememHomeDir(), ".local", "share", "opencode", "auth.json");
 }
 
 /** Load the OpenCode OAuth token cache from `~/.local/share/opencode/auth.json`. */
@@ -208,7 +209,7 @@ export function runAuthCommand(command: string[], timeoutMs: number): string | n
 export function readAuthFile(filePath: string | null): string | null {
 	if (!filePath) return null;
 	// Expand ~ and $ENV_VAR
-	let resolved = filePath.replace(/^~/, homedir());
+	let resolved = filePath.replace(/^~/, codememHomeDir());
 	resolved = resolved.replace(
 		/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
 		(match, braced, bare) => {

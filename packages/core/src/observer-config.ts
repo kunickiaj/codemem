@@ -7,8 +7,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { codememHomeDir } from "./home.js";
 
 // ---------------------------------------------------------------------------
 // JSONC helpers
@@ -105,7 +105,7 @@ export function stripTrailingCommas(text: string): string {
 
 /** Load OpenCode config from `~/.config/opencode/opencode.json{c}`. */
 export function loadOpenCodeConfig(): Record<string, unknown> {
-	const configDir = join(homedir(), ".config", "opencode");
+	const configDir = join(codememHomeDir(), ".config", "opencode");
 	const candidates = [join(configDir, "opencode.json"), join(configDir, "opencode.jsonc")];
 
 	const configPath = candidates.find((p) => existsSync(p));
@@ -135,7 +135,7 @@ export function loadOpenCodeConfig(): Record<string, unknown> {
 
 /** Expand `~/...` paths like Python's `Path(...).expanduser()`. */
 export function expandUserPath(value: string): string {
-	return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
+	return value.startsWith("~/") ? join(codememHomeDir(), value.slice(2)) : value;
 }
 
 function isSafeWorkspaceId(value: string): boolean {
@@ -147,14 +147,14 @@ export function getWorkspaceCodememConfigPath(workspaceId: string): string {
 	if (!trimmed || !isSafeWorkspaceId(trimmed)) {
 		throw new Error(`Invalid workspace id for config path: ${workspaceId}`);
 	}
-	return join(homedir(), ".codemem", "workspaces", trimmed, "config", "codemem.json");
+	return join(codememHomeDir(), ".codemem", "workspaces", trimmed, "config", "codemem.json");
 }
 
 export function getWorkspaceScopedCodememConfigPath(): string | null {
 	const runtimeRoot = process.env.CODEMEM_RUNTIME_ROOT?.trim();
 	if (runtimeRoot) {
 		const expandedRoot = expandUserPath(runtimeRoot);
-		if (expandedRoot.startsWith("/")) {
+		if (isAbsolute(expandedRoot)) {
 			return join(expandedRoot, "config", "codemem.json");
 		}
 		// Invalid/relative runtime root — fall through to workspace-id lookup
@@ -167,7 +167,7 @@ export function getWorkspaceScopedCodememConfigPath(): string | null {
 }
 
 function getLegacyCodememConfigPath(): string {
-	const configDir = join(homedir(), ".config", "codemem");
+	const configDir = join(codememHomeDir(), ".config", "codemem");
 	const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
 	return candidates.find((p) => existsSync(p)) ?? join(configDir, "config.json");
 }
@@ -301,16 +301,16 @@ export function resolveCodememConfigPath(
 	const runtimeRoot = process.env.CODEMEM_RUNTIME_ROOT?.trim();
 	if (runtimeRoot) {
 		const expandedRoot = expandUserPath(runtimeRoot);
-		const isAbsolute = expandedRoot.startsWith("/");
+		const absolute = isAbsolute(expandedRoot);
 		const path = join(expandedRoot, "config", "codemem.json");
 		candidates.push({
 			path,
 			source: "env-runtime-root",
-			reason: isAbsolute
+			reason: absolute
 				? `CODEMEM_RUNTIME_ROOT='${runtimeRoot}'`
 				: `CODEMEM_RUNTIME_ROOT='${runtimeRoot}' is relative, not absolute`,
-			exists: isAbsolute ? existsSync(path) : false,
-			valid: isAbsolute,
+			exists: absolute ? existsSync(path) : false,
+			valid: absolute,
 		});
 	}
 
@@ -320,7 +320,7 @@ export function resolveCodememConfigPath(
 		const safe = isSafeWorkspaceId(workspaceId);
 		const path = safe
 			? getWorkspaceCodememConfigPath(workspaceId)
-			: join(homedir(), ".codemem", "workspaces", workspaceId, "config", "codemem.json");
+			: join(codememHomeDir(), ".codemem", "workspaces", workspaceId, "config", "codemem.json");
 		candidates.push({
 			path,
 			source: "env-workspace-id",
@@ -585,7 +585,7 @@ function resolveFilePlaceholder(value: string): string {
 	return value.replace(/\{file:([^}]+)\}/g, (match, rawPath: string) => {
 		const trimmed = rawPath.trim();
 		if (!trimmed) return match;
-		const resolved = expandEnvVars(trimmed).replace(/^~/, homedir());
+		const resolved = expandEnvVars(trimmed).replace(/^~/, codememHomeDir());
 		try {
 			return readFileSync(resolved, "utf-8").trim();
 		} catch {
