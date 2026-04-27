@@ -8,12 +8,12 @@
 import { execFileSync } from "node:child_process";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
+import { codememHomeDir } from "./home.js";
 import * as schema from "./schema.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -23,10 +23,13 @@ export { fingerprintPublicKey } from "./sync-fingerprint.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_KEYS_DIR = join(homedir(), ".config", "codemem", "keys");
 const PRIVATE_KEY_NAME = "device.key";
 const PUBLIC_KEY_NAME = "device.key.pub";
 const KEYCHAIN_SERVICE = "codemem-sync";
+
+function defaultKeysDir(): string {
+	return join(codememHomeDir(), ".config", "codemem", "keys");
+}
 
 // ---------------------------------------------------------------------------
 // Fingerprint
@@ -145,7 +148,7 @@ export function loadPrivateKeyKeychain(deviceId: string): Buffer | null {
 
 /** Resolve private and public key file paths. */
 export function resolveKeyPaths(keysDir?: string): [string, string] {
-	const dir = keysDir ?? DEFAULT_KEYS_DIR;
+	const dir = keysDir ?? defaultKeysDir();
 	return [join(dir, PRIVATE_KEY_NAME), join(dir, PUBLIC_KEY_NAME)];
 }
 
@@ -331,7 +334,7 @@ export function ensureDeviceIdentity(
 	db: Database,
 	options?: EnsureDeviceIdentityOptions,
 ): [string, string] {
-	const keysDir = options?.keysDir ?? DEFAULT_KEYS_DIR;
+	const keysDir = options?.keysDir ?? defaultKeysDir();
 	const [privatePath, publicPath] = resolveKeyPaths(keysDir);
 	warnKeychainLimitations();
 

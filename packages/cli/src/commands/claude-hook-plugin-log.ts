@@ -18,8 +18,9 @@ import { dirname, join } from "node:path";
 const BOOLEAN_TOGGLE_VALUES = new Set(["", "0", "false", "off", "1", "true", "yes", "on", "no"]);
 
 function expandHome(value: string): string {
-	if (value === "~") return homedir();
-	if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+	const home = process.env.HOME?.trim() || homedir();
+	if (value === "~") return home;
+	if (value.startsWith("~/")) return join(home, value.slice(2));
 	return value;
 }
 

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { runSyncRetentionPass } from "./sync-retention-runner.js";
 import { initTestSchema } from "./test-utils.js";
@@ -19,6 +19,8 @@ describe("runSyncRetentionPass", () => {
 	let db: ReturnType<typeof connect>;
 
 	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-04-25T00:00:00Z"));
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-sync-retention-test-"));
 		dbPath = join(tmpDir, "retention.sqlite");
 		db = connect(dbPath);
@@ -28,6 +30,7 @@ describe("runSyncRetentionPass", () => {
 	afterEach(() => {
 		db.close();
 		rmSync(tmpDir, { recursive: true, force: true });
+		vi.useRealTimers();
 	});
 
 	it("persists aggregated multi-pass pruning results", async () => {
