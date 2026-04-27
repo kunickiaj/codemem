@@ -26,7 +26,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { expandUserPath } from "./observer-config.js";
-import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
+import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 
 // Re-export the Database type for consumers
 export type { DatabaseType as Database };
@@ -51,6 +51,8 @@ const REQUIRED_TABLES = [
 	"raw_event_sessions",
 	"usage_events",
 ] as const;
+
+export const REQUIRED_BOOTSTRAPPED_TABLES = [...REQUIRED_TABLES, "memory_fts"] as const;
 
 /** Marker file written after the first successful TS access to a DB. */
 const TS_MARKER = ".codemem-ts-accessed";
@@ -202,6 +204,10 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 		// Match Python's connect() pragmas exactly
 		db.pragma("foreign_keys = ON");
 		db.pragma("busy_timeout = 5000");
+		const configureWal = canAutoBootstrapSchema(db) || hasBootstrappedCodememSchema(db);
+
+		ensureSchemaBootstrapped(db);
+		if (!configureWal) return db;
 
 		const journalMode = db.pragma("journal_mode = WAL", { simple: true }) as string;
 		if (journalMode.toLowerCase() !== "wal") {
@@ -211,13 +217,16 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 		}
 
 		db.pragma("synchronous = NORMAL");
-		ensureSchemaBootstrapped(db);
 
 		return db;
 	} catch (error) {
 		db.close();
 		throw error;
 	}
+}
+
+function hasBootstrappedCodememSchema(db: DatabaseType): boolean {
+	return REQUIRED_BOOTSTRAPPED_TABLES.every((table) => tableExists(db, table));
 }
 
 function hasPlannerStats(db: DatabaseType): boolean {
@@ -402,10 +411,16 @@ export function backupOnFirstAccess(dbPath: string): void {
 /**
  * Verify the database schema is initialized and compatible.
  *
+ * Empty writable first-run handles are bootstrapped here as a final safety net,
+ * even though `connect()` already does the same. A few lower-level maintenance
+ * and integration paths call this assertion after receiving an existing database
+ * handle, so keeping the bootstrap invariant here prevents one entry point from
+ * requiring a manual `codemem db init` while another works automatically.
+ *
  * Per the coexistence contract: TS tolerates additive newer schemas (Python may
  * have run migrations that add tables/columns the TS runtime doesn't know about).
  * TS only hard-fails if:
- *   - Schema is uninitialized (version 0)
+ *   - Schema is still uninitialized after a bootstrap attempt (version 0)
  *   - Schema is too old (below MIN_COMPATIBLE_SCHEMA)
  *   - Required tables are missing
  *   - FTS5 index is missing (needed for search)
@@ -414,6 +429,7 @@ export function backupOnFirstAccess(dbPath: string): void {
  * changes are assumed safe per the coexistence contract.
  */
 export function assertSchemaReady(db: DatabaseType): void {
+	ensureSchemaBootstrapped(db);
 	const version = getSchemaVersion(db);
 	if (version === 0) {
 		throw new Error(

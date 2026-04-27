@@ -4,7 +4,6 @@
 import { statSync } from "node:fs";
 import { assertSchemaReady, connect, getSchemaVersion, resolveDbPath } from "../db.js";
 import { ensureMaintenanceJobsSchema } from "../maintenance-jobs.js";
-import { bootstrapSchema } from "../schema-bootstrap.js";
 import { applyRawEventRelinkPlanWithDb } from "./relink.js";
 import { withDb } from "./with-db.js";
 
@@ -13,7 +12,10 @@ export function initDatabase(dbPath?: string): { path: string; sizeBytes: number
 	const db = connect(resolvedPath);
 	try {
 		if (getSchemaVersion(db) === 0) {
-			bootstrapSchema(db);
+			throw new Error(
+				`Refusing to initialize ${resolvedPath}: file exists and contains a non-codemem schema. ` +
+					"Choose a new --db-path or move the existing SQLite file before retrying.",
+			);
 		}
 		assertSchemaReady(db);
 		ensureMaintenanceJobsSchema(db);

@@ -130,6 +130,24 @@ describe("maintenance", { timeout: 15_000 }, () => {
 		}
 	});
 
+	it("does not initialize unrelated non-empty SQLite databases", () => {
+		const dbPath = createDbPath("unrelated-init");
+		const unrelated = new Database(dbPath);
+		unrelated.exec("CREATE TABLE unrelated_data (id INTEGER PRIMARY KEY)");
+		unrelated.close();
+
+		expect(() => initDatabase(dbPath)).toThrow(/Refusing to initialize .*non-codemem schema/);
+
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			expect(() => db.prepare("SELECT 1 FROM memory_items LIMIT 1").get()).toThrow();
+			expect(() => db.prepare("SELECT 1 FROM unrelated_data LIMIT 1").get()).not.toThrow();
+			expect(db.pragma("user_version", { simple: true })).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("reports max retry depth from raw_event_flush_batches.attempt_count", () => {
 		const dbPath = createDbPath("retry-depth");
 		seedMaintenanceDb(dbPath);
