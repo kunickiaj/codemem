@@ -1,5 +1,11 @@
 import type { Database } from "./db.js";
-import { getSchemaVersion, isEmbeddingDisabled, loadSqliteVec, SCHEMA_VERSION } from "./db.js";
+import {
+	getSchemaVersion,
+	isEmbeddingDisabled,
+	loadSqliteVec,
+	REQUIRED_BOOTSTRAPPED_TABLES,
+	SCHEMA_VERSION,
+} from "./db.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 
 const SCHEMA_AUX_DDL = `
@@ -145,10 +151,42 @@ function isSqliteVecLoaded(db: Database): boolean {
 }
 
 export function bootstrapSchema(db: Database): void {
-	db.exec(TEST_SCHEMA_BASE_DDL);
-	db.exec(SCHEMA_AUX_DDL);
+	db.transaction(() => {
+		db.exec(TEST_SCHEMA_BASE_DDL);
+		db.exec(SCHEMA_AUX_DDL);
+		assertBootstrapTablesCreated(db);
+		db.pragma(`user_version = ${SCHEMA_VERSION}`);
+	}).immediate();
+
+	// sqlite-vec support is optional/best-effort. Keep it outside the core
+	// bootstrap transaction so an unavailable extension cannot produce a
+	// half-successful core schema, and cannot prevent first-run stats/setup.
 	ensureVectorSchema(db);
-	db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
+function assertBootstrapTablesCreated(db: Database): void {
+	const missing = REQUIRED_BOOTSTRAPPED_TABLES.filter((table) => !tableExists(db, table));
+	if (missing.length > 0) {
+		throw new Error(`Schema bootstrap failed; missing required tables: ${missing.join(", ")}`);
+	}
+}
+
+function isSafeEmptyDatabase(db: Database): boolean {
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) AS count
+			 FROM sqlite_master
+			 WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'`,
+		)
+		.get() as { count?: number } | undefined;
+	return (row?.count ?? 0) === 0;
+}
+
+function tableExists(db: Database, table: string): boolean {
+	const row = db
+		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
+		.get(table);
+	return row !== undefined;
 }
 
 /**
@@ -158,7 +196,15 @@ export function bootstrapSchema(db: Database): void {
  * already-initialized databases are left untouched.
  */
 export function ensureSchemaBootstrapped(db: Database): void {
-	if (getSchemaVersion(db) === 0) {
+	if (!isReadonlyDatabase(db) && canAutoBootstrapSchema(db)) {
 		bootstrapSchema(db);
 	}
+}
+
+export function canAutoBootstrapSchema(db: Database): boolean {
+	return getSchemaVersion(db) === 0 && isSafeEmptyDatabase(db);
+}
+
+function isReadonlyDatabase(db: Database): boolean {
+	return (db as { readonly?: boolean }).readonly === true;
 }

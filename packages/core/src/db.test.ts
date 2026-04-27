@@ -31,7 +31,7 @@ function hasIndex(db: Database, name: string): boolean {
 
 describe("connect", () => {
 	let tmpDir: string;
-	let db: Database;
+	let db: Database | undefined;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
@@ -112,6 +112,52 @@ describe("connect", () => {
 				| { label: string }
 				| undefined,
 		).toEqual({ label: "still here" });
+	});
+
+	it("supports multiple handles racing the first-run bootstrap result", () => {
+		const dbPath = join(tmpDir, "multi-handle.sqlite");
+		const first = connect(dbPath);
+		const second = connect(dbPath);
+		try {
+			expect(getSchemaVersion(first)).toBe(SCHEMA_VERSION);
+			expect(getSchemaVersion(second)).toBe(SCHEMA_VERSION);
+			expect(tableExists(first, "memory_items")).toBe(true);
+			expect(tableExists(second, "memory_items")).toBe(true);
+			expect(() => assertSchemaReady(first)).not.toThrow();
+			expect(() => assertSchemaReady(second)).not.toThrow();
+		} finally {
+			first.close();
+			second.close();
+		}
+	});
+
+	it("does not bootstrap or switch unrelated non-empty databases to WAL", () => {
+		const dbPath = join(tmpDir, "unrelated.sqlite");
+		const unrelated = new BetterSqlite3(dbPath);
+		unrelated.exec("CREATE TABLE unrelated_data (id INTEGER PRIMARY KEY)");
+		unrelated.close();
+
+		db = connect(dbPath);
+
+		expect(getSchemaVersion(db)).toBe(0);
+		expect(tableExists(db, "memory_items")).toBe(false);
+		expect(tableExists(db, "unrelated_data")).toBe(true);
+		expect(existsSync(`${dbPath}-wal`)).toBe(false);
+	});
+
+	it("does not switch unrelated databases with nonzero user_version to WAL", () => {
+		const dbPath = join(tmpDir, "unrelated-versioned.sqlite");
+		const unrelated = new BetterSqlite3(dbPath);
+		unrelated.exec("CREATE TABLE unrelated_data (id INTEGER PRIMARY KEY)");
+		unrelated.pragma("user_version = 1");
+		unrelated.close();
+
+		db = connect(dbPath);
+
+		expect(getSchemaVersion(db)).toBe(1);
+		expect(tableExists(db, "memory_items")).toBe(false);
+		expect(tableExists(db, "unrelated_data")).toBe(true);
+		expect(existsSync(`${dbPath}-wal`)).toBe(false);
 	});
 });
 
@@ -266,12 +312,43 @@ describe("assertSchemaReady", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("throws for uninitialized schema (version 0)", () => {
+	it("bootstraps uninitialized writable schemas before asserting readiness", () => {
 		const uninitialized = new BetterSqlite3(join(tmpDir, "uninitialized.sqlite"));
 		try {
-			expect(() => assertSchemaReady(uninitialized)).toThrow(/not initialized/);
+			expect(getSchemaVersion(uninitialized)).toBe(0);
+			expect(() => assertSchemaReady(uninitialized)).not.toThrow();
+			expect(getSchemaVersion(uninitialized)).toBe(SCHEMA_VERSION);
+			expect(tableExists(uninitialized, "memory_items")).toBe(true);
 		} finally {
 			uninitialized.close();
+		}
+	});
+
+	it("does not bootstrap unrelated non-empty SQLite databases", () => {
+		const unrelated = new BetterSqlite3(join(tmpDir, "unrelated.sqlite"));
+		try {
+			unrelated.exec("CREATE TABLE unrelated_data (id INTEGER PRIMARY KEY)");
+			expect(getSchemaVersion(unrelated)).toBe(0);
+
+			expect(() => assertSchemaReady(unrelated)).toThrow(/not initialized/);
+			expect(tableExists(unrelated, "memory_items")).toBe(false);
+			expect(tableExists(unrelated, "unrelated_data")).toBe(true);
+		} finally {
+			unrelated.close();
+		}
+	});
+
+	it("does not try to bootstrap readonly uninitialized schemas", () => {
+		const dbPath = join(tmpDir, "readonly-uninitialized.sqlite");
+		const seed = new BetterSqlite3(dbPath);
+		seed.close();
+		const readonly = new BetterSqlite3(dbPath, { readonly: true });
+		try {
+			expect(getSchemaVersion(readonly)).toBe(0);
+			expect(() => assertSchemaReady(readonly)).toThrow(/not initialized/);
+			expect(() => assertSchemaReady(readonly)).not.toThrow(/readonly/i);
+		} finally {
+			readonly.close();
 		}
 	});
 
