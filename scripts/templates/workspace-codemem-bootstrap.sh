@@ -68,7 +68,7 @@ if [ "$CODEMEM_NODE_ROLE" = "worker-peer" ]; then
   require_var CODEMEM_SEED_PEER_PUBLIC_KEY "$CODEMEM_SEED_PEER_PUBLIC_KEY"
   require_var CODEMEM_SEED_PEER_ADDRESS "$CODEMEM_SEED_PEER_ADDRESS"
 
-  pnpm run codemem -- sync coordinator import-invite "$CODEMEM_INVITE" --db-path "$CODEMEM_DB" --keys-dir "$CODEMEM_KEYS_DIR" --config "$CODEMEM_CONFIG" --json
+  pnpm run codemem -- coordinator import-invite "$CODEMEM_INVITE" --db-path "$CODEMEM_DB" --keys-dir "$CODEMEM_KEYS_DIR" --config "$CODEMEM_CONFIG" --json
   pnpm run codemem -- sync enable --db-path "$CODEMEM_DB" --host "$CODEMEM_SYNC_HOST" --port "$CODEMEM_SYNC_PORT" --interval 5
   node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database(process.env.CODEMEM_DB); const now = new Date().toISOString(); const addrJson = JSON.stringify([process.env.CODEMEM_SEED_PEER_ADDRESS]); db.prepare(\"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, addresses_json, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(peer_device_id) DO UPDATE SET pinned_fingerprint = excluded.pinned_fingerprint, public_key = excluded.public_key, addresses_json = excluded.addresses_json, last_seen_at = excluded.last_seen_at\").run(process.env.CODEMEM_SEED_PEER_DEVICE_ID, process.env.CODEMEM_SEED_PEER_FINGERPRINT, process.env.CODEMEM_SEED_PEER_PUBLIC_KEY, addrJson, now, now); db.close();"
   pnpm run codemem -- sync bootstrap --peer "$CODEMEM_SEED_PEER_DEVICE_ID" --db-path "$CODEMEM_DB" --keys-dir "$CODEMEM_KEYS_DIR" --json --force
