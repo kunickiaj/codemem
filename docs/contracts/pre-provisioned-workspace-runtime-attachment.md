@@ -147,11 +147,68 @@ Minimum state model:
 - `pending`
 - `joining`
 - `joined`
+- `joined_pending_seed_trust`
 - `bootstrapping`
 - `bootstrapped`
 - `sync_verifying`
 - `ready`
 - `failed`
+
+## Two-phase worker attachment
+
+Workspace workers may need to emit their identity before the seed peer can safely trust them. The attachment contract therefore supports splitting worker setup into two orchestrator-friendly phases.
+
+### Phase 1: join-only
+
+Inputs:
+- coordinator URL and group
+- invite payload
+- seed peer identity and address
+- workspace config, DB, and keys paths
+
+Expected behavior:
+- initialize DB, config, keys, and local sync identity
+- import the coordinator invite
+- pin the seed peer locally as the bootstrap source
+- emit `identity.json`, `status.json`, and `summary.json`
+- stop before bootstrap
+
+Expected terminal state:
+- `state`: `joined_pending_seed_trust`
+- `readiness_result`: `pending_seed_trust`
+
+The orchestrator should now read the worker identity and grant trust on the seed peer.
+
+### Seed-side trust grant
+
+The seed peer must accept or pin the worker identity before serving bootstrap data. The public contract is intentionally generic: the orchestrator provides the worker device ID, fingerprint, public key, and reachable worker address to the seed peer's trust/pin operation.
+
+Expected outcome:
+- the seed peer has a trusted `sync_peers` entry for the worker
+- the worker can authenticate when requesting bootstrap or sync data
+
+### Phase 2: finish-bootstrap
+
+Inputs:
+- same workspace config, DB, and keys paths used during join-only
+- seed peer identity and address
+
+Expected behavior:
+- reuse the existing worker identity
+- pin or refresh the seed peer locally
+- bootstrap from the seed peer
+- run one sync verification pass
+- emit final `status.json` and `summary.json`
+
+Expected terminal state:
+- `state`: `ready`
+- `readiness_result`: `ready`
+
+### Full mode
+
+A full one-shot worker attachment is still valid when the seed peer already trusts the worker or the environment has an external trust automation layer. Full mode performs join, local seed pin, bootstrap, sync verification, and readiness publication in one run.
+
+Bootstrap force behavior must remain opt-in. Operators may expose an explicit override such as `CODEMEM_BOOTSTRAP_FORCE=1` for disposable workspaces, but the default path should preserve local dirty-state protection.
 
 ## Readiness contract
 
@@ -187,7 +244,7 @@ Recommended minimum artifacts:
 - sync verification result summary
 - failure detail if attachment fails
 
-Sensitive material such as private keys must never be copied into shared artifacts.
+Sensitive material such as private keys, coordinator admin secrets, invite tokens, and bootstrap tokens must never be copied into shared artifacts. Config snapshots should redact sensitive fields before publication.
 
 ## Cleanup contract
 

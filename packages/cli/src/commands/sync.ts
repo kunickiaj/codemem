@@ -895,7 +895,8 @@ enableCmd.action(
 
 		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 		try {
-			const [deviceId, fingerprint] = ensureDeviceIdentity(store.db);
+			const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+			const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir });
 			const config = readCliConfig(opts.config);
 			config.sync_enabled = true;
 			if (effectiveHost) config.sync_host = effectiveHost;

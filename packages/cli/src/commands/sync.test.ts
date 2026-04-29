@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, initTestSchema, MemoryStore, startMaintenanceJob } from "@codemem/core";
+import {
+	connect,
+	initTestSchema,
+	loadPublicKey,
+	MemoryStore,
+	startMaintenanceJob,
+} from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import { syncCommand } from "./sync.js";
 import {
@@ -210,6 +216,39 @@ describe("formatSyncAttempt", () => {
 		expect(listRequests?.registeredArguments[0]?.required).toBe(false);
 		expect(createInvite?.helpInformation()).toContain("[group]");
 		expect(listRequests?.helpInformation()).toContain("[group]");
+	});
+
+	it("initializes sync identity from CODEMEM_KEYS_DIR during sync enable", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-enable-keys-dir-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const configPath = join(tmpDbDir, "codemem.json");
+		const keysDir = join(tmpDbDir, "keys");
+		const prevKeysDir = process.env.CODEMEM_KEYS_DIR;
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			process.env.CODEMEM_KEYS_DIR = keysDir;
+			const enable = syncCommand.commands.find((command) => command.name() === "enable");
+			await enable?.parseAsync(["--db-path", dbPath, "--config", configPath, "--json"], {
+				from: "user",
+			});
+
+			const publicKey = loadPublicKey(keysDir);
+			expect(publicKey).toBeTruthy();
+			const store = new MemoryStore(dbPath);
+			try {
+				const row = store.db.prepare("SELECT public_key FROM sync_device LIMIT 1").get() as
+					| { public_key: string }
+					| undefined;
+				expect(row?.public_key).toBe(publicKey);
+			} finally {
+				store.close();
+			}
+		} finally {
+			logSpy.mockRestore();
+			if (prevKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = prevKeysDir;
+			rmSync(tmpDbDir, { recursive: true, force: true });
+		}
 	});
 
 	it("registers peer repair subcommands", () => {
