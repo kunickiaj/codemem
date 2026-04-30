@@ -47,7 +47,12 @@ import {
 	search as searchFn,
 	timeline as timelineFn,
 } from "./search.js";
-import { mergeDetections, type ScanDetection, SecretScanner } from "./secret-scanner.js";
+import {
+	loadScannerOptionsFromConfig,
+	mergeDetections,
+	type ScanDetection,
+	SecretScanner,
+} from "./secret-scanner.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
 	ExplainResponse,
@@ -233,7 +238,12 @@ export class MemoryStore {
 			this.db.close();
 			throw err;
 		}
-		this.scanner = new SecretScanner();
+
+		// Read config once and use it for both actor identity and scanner
+		// rule overrides. Workspace-scoped rules and allowlist live under the
+		// `secret_scanner` block (see loadScannerOptionsFromConfig).
+		const config = readCodememConfigFile();
+		this.scanner = new SecretScanner(loadScannerOptionsFromConfig(config));
 
 		// Resolve device ID: env var → sync_device table → stable "local" fallback.
 		// Python uses exactly this order and fallback.
@@ -258,7 +268,6 @@ export class MemoryStore {
 
 		// Resolve actor identity — matches Python load_config() precedence:
 		// config file, then env override, then local fallbacks.
-		const config = readCodememConfigFile();
 		const configActorId = Object.hasOwn(process.env, "CODEMEM_ACTOR_ID")
 			? cleanStr(process.env.CODEMEM_ACTOR_ID)
 			: (cleanStr(config.actor_id) ?? null);
