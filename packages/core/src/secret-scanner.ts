@@ -287,6 +287,105 @@ function aggregateMap(map: Map<string, number>): ScanDetection[] {
 	return Array.from(map.entries()).map(([kind, count]) => ({ kind, count }));
 }
 
+/**
+ * Build `ScannerOptions` from a parsed codemem config object's
+ * `secret_scanner` block. Workspace-scoped rule overrides and an allowlist
+ * for known-safe matches are accepted under a single config key so a team
+ * can tighten or loosen the default policy without forking codemem.
+ *
+ * Expected shape (all keys optional):
+ * ```jsonc
+ * {
+ *   "secret_scanner": {
+ *     "rules": [
+ *       { "kind": "internal_token", "pattern": "\\bACME-[A-Z0-9]{10}\\b", "flags": "g", "minEntropy": 3.0 }
+ *     ],
+ *     "allowlist": [
+ *       "AKIAFAKEFIXTURE0001",     // string entries match by exact equality
+ *       "/^test-fixture-.*$/i"     // strings of the form /pattern/flags become regexes
+ *     ]
+ *   }
+ * }
+ * ```
+ *
+ * Malformed entries are silently dropped — config errors should never block
+ * a workspace from opening.
+ */
+export function loadScannerOptionsFromConfig(
+	config: Record<string, unknown> | null | undefined,
+): ScannerOptions {
+	const empty: ScannerOptions = {};
+	if (!config || typeof config !== "object") return empty;
+	const block = (config as { secret_scanner?: unknown }).secret_scanner;
+	if (!block || typeof block !== "object" || Array.isArray(block)) return empty;
+	const out: ScannerOptions = {};
+
+	const rawRules = (block as { rules?: unknown }).rules;
+	if (Array.isArray(rawRules)) {
+		const rules: SecretRule[] = [];
+		for (const entry of rawRules) {
+			if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+			const e = entry as Record<string, unknown>;
+			if (typeof e.kind !== "string" || typeof e.pattern !== "string") continue;
+			const flagsRaw = typeof e.flags === "string" ? e.flags : "g";
+			const flags = flagsRaw.includes("g") ? flagsRaw : `${flagsRaw}g`;
+			let pattern: RegExp;
+			try {
+				pattern = new RegExp(e.pattern, flags);
+			} catch {
+				continue;
+			}
+			const rule: SecretRule = { kind: e.kind, pattern };
+			if (typeof e.minEntropy === "number" && Number.isFinite(e.minEntropy)) {
+				rule.minEntropy = e.minEntropy;
+			}
+			if (
+				typeof e.redactGroup === "number" &&
+				Number.isInteger(e.redactGroup) &&
+				e.redactGroup > 0
+			) {
+				rule.redactGroup = e.redactGroup;
+			}
+			rules.push(rule);
+		}
+		if (rules.length > 0) out.rules = rules;
+	}
+
+	const rawAllowlist = (block as { allowlist?: unknown }).allowlist;
+	if (Array.isArray(rawAllowlist)) {
+		const allowlist: Array<string | RegExp> = [];
+		for (const entry of rawAllowlist) {
+			if (typeof entry !== "string" || entry.length === 0) continue;
+			// Strings of the form /pattern/flags are parsed as regex; everything
+			// else is treated as a literal.
+			const re = parseRegexLiteral(entry);
+			allowlist.push(re ?? entry);
+		}
+		if (allowlist.length > 0) out.allowlist = allowlist;
+	}
+
+	return out;
+}
+
+function parseRegexLiteral(value: string): RegExp | null {
+	if (value.length < 2 || value[0] !== "/") return null;
+	const lastSlash = value.lastIndexOf("/");
+	if (lastSlash <= 0) return null;
+	const pattern = value.slice(1, lastSlash);
+	const flags = value.slice(lastSlash + 1);
+	if (!/^[gimsuy]*$/.test(flags)) return null;
+	// Allowlist regexes are tested via RegExp.test which is stateful when `g`
+	// or `y` is set. Strip those flags up front so a configured /^foo/g
+	// behaves the same as /^foo/ — the runtime guard in isAllowlisted is
+	// belt-and-suspenders, this is the suspenders.
+	const safeFlags = flags.replace(/[gy]/g, "");
+	try {
+		return new RegExp(pattern, safeFlags);
+	} catch {
+		return null;
+	}
+}
+
 /** Merge multiple detection lists into a single per-kind summary. */
 export function mergeDetections(...lists: ScanDetection[][]): ScanDetection[] {
 	const merged = new Map<string, number>();
