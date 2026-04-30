@@ -10,6 +10,7 @@ import { and, desc, eq, gt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
+import type { SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
@@ -37,6 +38,13 @@ import { bestEffortMaintainVectorsForSyncFallback } from "./vectors.js";
 
 /** Default max body size for sync POST requests (1 MiB). */
 const MAX_SYNC_BODY_BYTES = 1_048_576;
+
+/**
+ * One-shot warning latch so sync-apply paths log a single line per process if
+ * a caller forgot to thread the scanner through. Workspace-level rule overrides
+ * silently fail to apply to peer-shipped content otherwise.
+ */
+let syncOnceScannerWarned = false;
 
 /**
  * Default op fetch/push limit per round.
@@ -70,6 +78,13 @@ export interface SyncResult {
 export interface SyncPassOptions {
 	limit?: number;
 	keysDir?: string;
+	/**
+	 * Secret scanner used to redact peer-shipped content on apply. Callers that
+	 * own a `MemoryStore` should pass `store.scanner` so workspace-level rule
+	 * overrides apply uniformly to local writes and sync-receive. Omitting it
+	 * falls back to default rules only and prints a one-time warning.
+	 */
+	scanner?: SecretScanner;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +346,13 @@ export async function syncOnce(
 ): Promise<SyncResult> {
 	const limit = options?.limit ?? DEFAULT_LIMIT;
 	const keysDir = options?.keysDir;
+	const scanner = options?.scanner;
+	if (!scanner && !syncOnceScannerWarned) {
+		syncOnceScannerWarned = true;
+		process.stderr.write(
+			"[codemem] sync apply running without explicit scanner — workspace-level secret rules will not apply to inbound peer content\n",
+		);
+	}
 
 	// Look up pinned fingerprint
 	const d = drizzle(db, { schema });
@@ -449,7 +471,13 @@ export async function syncOnce(
 								addressErrors: [],
 							};
 						}
-						const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo);
+						const bootstrapResult = applyBootstrapSnapshot(
+							db,
+							peerDeviceId,
+							items,
+							resetInfo,
+							scanner,
+						);
 						if (!bootstrapResult.ok) {
 							throw new Error("initial bootstrap apply failed");
 						}
@@ -560,7 +588,13 @@ export async function syncOnce(
 						};
 					}
 
-					const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetRequired);
+					const bootstrapResult = applyBootstrapSnapshot(
+						db,
+						peerDeviceId,
+						items,
+						resetRequired,
+						scanner,
+					);
 					if (!bootstrapResult.ok) {
 						throw new Error("bootstrap apply failed");
 					}
@@ -610,7 +644,7 @@ export async function syncOnce(
 			);
 
 			// -- 3. Apply incoming ops to local entities --
-			const applied = applyReplicationOps(db, inboundOps, deviceId);
+			const applied = applyReplicationOps(db, inboundOps, deviceId, scanner);
 			try {
 				queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
 			} catch (queueError) {

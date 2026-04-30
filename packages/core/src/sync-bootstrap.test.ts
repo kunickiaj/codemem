@@ -184,6 +184,44 @@ describe("applyBootstrapSnapshot", () => {
 		});
 	});
 
+	it("redacts secrets in inbound bootstrap snapshot items", () => {
+		const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+		const awsId = "AKIAIOSFODNN7EXAMPLE";
+		const items = [
+			makeSnapshotItem("secret-key", {
+				payload: {
+					title: `peer title ${pat}`,
+					body_text: `peer body ${awsId}`,
+					narrative: `peer narrative ${pat}`,
+					tags_text: pat,
+					metadata_json: { clock_device_id: "peer-dev", password: "supersecretvalue123" },
+				},
+			}),
+		];
+		const result = applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+		expect(result.ok).toBe(true);
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare(
+				"SELECT title, body_text, narrative, tags_text, metadata_json FROM memory_items WHERE import_key = 'secret-key'",
+			)
+			.get() as {
+			title: string;
+			body_text: string;
+			narrative: string | null;
+			tags_text: string | null;
+			metadata_json: string | null;
+		};
+		expect(mem.title).not.toContain(pat);
+		expect(mem.title).toContain("[REDACTED:github_pat_classic]");
+		expect(mem.body_text).not.toContain(awsId);
+		expect(mem.body_text).toContain("[REDACTED:aws_access_key_id]");
+		expect(mem.narrative).not.toContain(pat);
+		expect(mem.tags_text ?? "").not.toContain(pat);
+		const meta = JSON.parse(mem.metadata_json ?? "{}");
+		expect(meta.password).toBe("[REDACTED:context_secret]");
+	});
+
 	it("applies empty snapshot (wipes shared, inserts nothing)", () => {
 		const now = new Date().toISOString();
 		db.prepare(
