@@ -18,6 +18,7 @@ import {
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
 import * as schema from "./schema.js";
+import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import { runSyncPass, shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
@@ -146,6 +147,7 @@ export async function syncDaemonTick(
 	db: Database,
 	keysDir?: string,
 	stalePeers?: Set<string>,
+	scanner?: SecretScanner,
 ): Promise<SyncTickResult[]> {
 	const d = drizzle(db, { schema });
 	const rows = d
@@ -181,7 +183,11 @@ export async function syncDaemonTick(
 			continue;
 		}
 
-		const result = await runSyncPass(db, peerDeviceId, { keysDir, limit: opsLimit });
+		const result = await runSyncPass(db, peerDeviceId, {
+			keysDir,
+			limit: opsLimit,
+			scanner,
+		});
 		results.push({
 			ok: result.ok,
 			error: result.error,

@@ -328,7 +328,10 @@ onceCmd.action(async (opts: { db?: string; dbPath?: string; peer?: string; json?
 			error?: string;
 		}> = [];
 		for (const row of rows) {
-			const result = await runSyncPass(store.db, row.peer_device_id, { keysDir });
+			const result = await runSyncPass(store.db, row.peer_device_id, {
+				keysDir,
+				scanner: store.scanner,
+			});
 			if (!result.ok) hadFailure = true;
 			results.push({
 				peer_device_id: row.peer_device_id,
@@ -1254,7 +1257,13 @@ bootstrapCmd.action(
 				pageSize,
 			});
 
-			const result = applyBootstrapSnapshot(store.db, peerDeviceId, items, resetInfo);
+			const result = applyBootstrapSnapshot(
+				store.db,
+				peerDeviceId,
+				items,
+				resetInfo,
+				store.scanner,
+			);
 
 			if (opts.json) {
 				console.log(
