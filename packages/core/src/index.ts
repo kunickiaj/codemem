@@ -267,6 +267,7 @@ export {
 	initDatabase,
 	rawEventsGate,
 	retryRawEventFailures,
+	scanSecretsRetroactive,
 	vacuumDatabase,
 } from "./maintenance.js";
 export type {
