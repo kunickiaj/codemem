@@ -1437,6 +1437,48 @@ describe("aiBackfillStructuredContent", () => {
 		}
 	});
 
+	it("redacts secrets in AI-generated narrative, facts, and concepts before persisting", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedMemory(
+				db,
+				sessionId,
+				"change",
+				"Memory with secret-shaped AI output",
+				"Original body.",
+			);
+
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const observer = makeObserver(
+				JSON.stringify({
+					narrative: `AI summary mentions ${pat} verbatim.`,
+					facts: [`fact A references ${pat}`, "harmless fact"],
+					concepts: ["what-changed"],
+				}),
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer });
+			expect(result).toMatchObject({ updated: 1 });
+
+			const row = db.prepare("SELECT narrative, facts FROM memory_items WHERE id = ?").get(id) as {
+				narrative: string | null;
+				facts: string | null;
+			};
+			expect(row.narrative ?? "").not.toContain(pat);
+			expect(row.narrative ?? "").toContain("[REDACTED:github_pat_classic]");
+			expect(row.facts ?? "").not.toContain(pat);
+			expect(row.facts ?? "").toContain("[REDACTED:github_pat_classic]");
+		} finally {
+			db.close();
+		}
+	});
+
 	it("preserves existing structured fields by default", async () => {
 		const db = new Database(":memory:");
 		try {

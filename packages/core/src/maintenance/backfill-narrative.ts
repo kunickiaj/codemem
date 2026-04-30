@@ -2,6 +2,7 @@
  */
 
 import type { Database } from "../db.js";
+import { SecretScanner } from "../secret-scanner.js";
 import { extractNarrativeFromBody } from "./narrative-extract.js";
 
 export interface BackfillNarrativeResult {
@@ -13,6 +14,12 @@ export interface BackfillNarrativeResult {
 export interface BackfillNarrativeOptions {
 	limit?: number | null;
 	dryRun?: boolean;
+	/**
+	 * Secret scanner used to redact extracted narrative before persistence.
+	 * Source body_text on legacy rows pre-dates the scanner, so the extracted
+	 * narrative cannot be assumed redaction-derivative.
+	 */
+	scanner?: SecretScanner;
 }
 
 /**
@@ -41,6 +48,7 @@ export function backfillNarrativeFromBody(
 		)
 		.all() as Array<{ id: number; body_text: string }>;
 
+	const scanner = opts.scanner ?? new SecretScanner();
 	let checked = 0;
 	let updated = 0;
 	let skipped = 0;
@@ -48,11 +56,12 @@ export function backfillNarrativeFromBody(
 
 	for (const row of rows) {
 		checked++;
-		const narrative = extractNarrativeFromBody(row.body_text);
-		if (!narrative) {
+		const extracted = extractNarrativeFromBody(row.body_text);
+		if (!extracted) {
 			skipped++;
 			continue;
 		}
+		const narrative = scanner.scan(extracted).redacted;
 		updates.push({ id: row.id, narrative });
 		updated++;
 	}
