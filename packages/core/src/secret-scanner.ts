@@ -295,3 +295,100 @@ export function mergeDetections(...lists: ScanDetection[][]): ScanDetection[] {
 	}
 	return aggregateMap(merged);
 }
+
+/**
+ * Shape of a parsed inbound memory payload (sync-replication or sync-bootstrap).
+ * Any field that is `undefined` is left untouched. The struct is mutated in
+ * place by `redactMemoryFields` so callers can redact-then-insert without
+ * cloning.
+ */
+export interface MemoryFieldRedactionTarget {
+	title?: string | null;
+	subtitle?: string | null;
+	body_text?: string | null;
+	tags_text?: string | null;
+	narrative?: string | null;
+	facts?: unknown;
+	concepts?: unknown;
+	files_read?: unknown;
+	files_modified?: unknown;
+	metadata_json?: unknown;
+	/**
+	 * Peer-controlled identity strings persisted alongside content. They show
+	 * up in the viewer and exports verbatim, so a malicious peer could smuggle
+	 * a secret in a display name. Scanned for the same well-known patterns as
+	 * everything else; not subject to context_secret heuristics since they
+	 * legitimately contain free-form text.
+	 */
+	actor_display_name?: string | null;
+	origin_source?: string | null;
+}
+
+/**
+ * Redact secrets from a parsed inbound memory payload before persistence.
+ * Used by sync-receive (sync-replication.ts) and bootstrap-snapshot apply
+ * (sync-bootstrap.ts) so peer-shipped content goes through the same scanner
+ * as locally-authored writes. Mutates the target in place; returns the merged
+ * detection summary across all scanned fields.
+ */
+export function redactMemoryFields<T extends MemoryFieldRedactionTarget>(
+	target: T,
+	scanner: SecretScanner,
+): { target: T; detections: ScanDetection[] } {
+	const lists: ScanDetection[][] = [];
+
+	const scanStringField = (key: keyof MemoryFieldRedactionTarget): void => {
+		const value = (target as MemoryFieldRedactionTarget)[key];
+		if (typeof value === "string" && value.length > 0) {
+			const result = scanner.scan(value);
+			(target as MemoryFieldRedactionTarget)[key] = result.redacted;
+			lists.push(result.detections);
+		}
+	};
+	scanStringField("title");
+	scanStringField("subtitle");
+	scanStringField("body_text");
+	scanStringField("narrative");
+	scanStringField("actor_display_name");
+	scanStringField("origin_source");
+
+	// tags_text is a whitespace-joined string here. Local writes scan each tag
+	// individually before joining (store.ts), so to keep behavior consistent
+	// when peer payloads arrive pre-joined we split, scan-per-tag, and rejoin.
+	const rawTagsText = (target as MemoryFieldRedactionTarget).tags_text;
+	if (typeof rawTagsText === "string" && rawTagsText.length > 0) {
+		const parts = rawTagsText.split(/\s+/).filter(Boolean);
+		const scannedParts: string[] = [];
+		for (const part of parts) {
+			const result = scanner.scan(part);
+			scannedParts.push(result.redacted);
+			lists.push(result.detections);
+		}
+		(target as MemoryFieldRedactionTarget).tags_text = scannedParts.join(" ");
+	}
+
+	for (const key of ["facts", "concepts", "files_read", "files_modified"] as const) {
+		const value = (target as MemoryFieldRedactionTarget)[key];
+		if (Array.isArray(value)) {
+			const next: unknown[] = [];
+			for (const item of value) {
+				if (typeof item === "string") {
+					const result = scanner.scan(item);
+					next.push(result.redacted);
+					lists.push(result.detections);
+				} else {
+					next.push(item);
+				}
+			}
+			(target as MemoryFieldRedactionTarget)[key] = next;
+		}
+	}
+
+	if (target.metadata_json && typeof target.metadata_json === "object") {
+		const result = scanner.redactValue(target.metadata_json);
+		target.metadata_json = result.value;
+		lists.push(result.detections);
+	}
+
+	return { target, detections: mergeDetections(...lists) };
+}

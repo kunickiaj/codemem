@@ -15,6 +15,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { toJson } from "./db.js";
 import * as schema from "./schema.js";
+import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { requestJson } from "./sync-http-client.js";
 import { setReplicationCursor, setSyncResetState } from "./sync-replication.js";
@@ -222,8 +223,14 @@ export function applyBootstrapSnapshot(
 	peerDeviceId: string,
 	items: SyncMemorySnapshotItem[],
 	resetInfo: SyncResetRequired,
+	scanner?: SecretScanner,
 ): BootstrapResult {
 	const result: BootstrapResult = { ok: false, applied: 0, deleted: 0 };
+	// Bootstrap items are peer-authored content. Run them through the same
+	// scanner as locally-authored writes; without this, a single bootstrap
+	// from a misbehaving peer could re-populate the local store with secrets
+	// the peer emitted before they ran scanner-aware versions.
+	const activeScanner = scanner ?? new SecretScanner();
 
 	db.transaction(() => {
 		const d = drizzle(db, { schema });
@@ -253,6 +260,7 @@ export function applyBootstrapSnapshot(
 		for (const item of items) {
 			const payload = parseSnapshotPayload(item);
 			if (!payload) continue;
+			redactMemoryFields(payload, activeScanner);
 			const project =
 				typeof payload.project === "string" && payload.project.trim()
 					? payload.project.trim()

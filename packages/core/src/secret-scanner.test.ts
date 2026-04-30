@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_RULES,
 	mergeDetections,
+	redactMemoryFields,
 	type SecretRule,
 	SecretScanner,
 } from "./secret-scanner.js";
@@ -298,6 +299,57 @@ describe("mergeDetections", () => {
 		);
 		expect(merged.find((d) => d.kind === "jwt")?.count).toBe(4);
 		expect(merged.find((d) => d.kind === "github_pat_classic")?.count).toBe(2);
+	});
+});
+
+describe("redactMemoryFields", () => {
+	const scanner = new SecretScanner();
+
+	it("redacts string fields and array string entries in a memory payload shape", () => {
+		const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+		const awsId = "AKIAIOSFODNN7EXAMPLE";
+		const payload: Record<string, unknown> = {
+			title: `t ${pat}`,
+			subtitle: `s ${pat}`,
+			body_text: `b ${awsId}`,
+			narrative: `n ${pat}`,
+			tags_text: pat,
+			facts: [`fact ${pat}`, "clean"],
+			concepts: ["clean concept"],
+			metadata_json: { password: "supersecretvalue123", note: "harmless" },
+		};
+		const r = redactMemoryFields(payload, scanner);
+		expect(r.target.title).not.toContain(pat);
+		expect(r.target.subtitle).not.toContain(pat);
+		expect(r.target.body_text).not.toContain(awsId);
+		expect(r.target.narrative).not.toContain(pat);
+		expect(r.target.tags_text).not.toContain(pat);
+		expect((r.target.facts as string[])[0]).not.toContain(pat);
+		expect((r.target.facts as string[])[1]).toBe("clean");
+		expect((r.target.metadata_json as { password: string }).password).toBe(
+			"[REDACTED:context_secret]",
+		);
+		expect(r.detections.length).toBeGreaterThan(0);
+	});
+
+	it("ignores undefined and non-string optional fields without throwing", () => {
+		const payload = { other: "irrelevant" } as Record<string, unknown>;
+		expect(() => redactMemoryFields(payload, scanner)).not.toThrow();
+	});
+
+	it("redacts peer-supplied file path arrays", () => {
+		const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+		const payload: Record<string, unknown> = {
+			files_read: [`/tmp/${pat}.log`, "/clean/path"],
+			files_modified: [`relative/${pat}.txt`],
+		};
+		redactMemoryFields(payload, scanner);
+		const filesRead = payload.files_read as string[];
+		const filesModified = payload.files_modified as string[];
+		expect(filesRead[0]).not.toContain(pat);
+		expect(filesRead[0]).toContain("[REDACTED:github_pat_classic]");
+		expect(filesRead[1]).toBe("/clean/path");
+		expect(filesModified[0]).not.toContain(pat);
 	});
 });
 

@@ -1373,7 +1373,12 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 
 		const filteredInbound = filterOpsForPeer(store, peerDeviceId, normalizedOps);
-		const result = applyReplicationOps(store.db, filteredInbound.allowed, localDeviceId);
+		const result = applyReplicationOps(
+			store.db,
+			filteredInbound.allowed,
+			localDeviceId,
+			store.scanner,
+		);
 		return c.json({
 			...result,
 			skipped: result.skipped + filteredInbound.skipped,
@@ -1885,7 +1890,7 @@ export function syncRoutes(
 		}
 		const items = [] as Array<Record<string, unknown>>;
 		for (const peerId of peerIds) {
-			const result = await runSyncPass(store.db, peerId);
+			const result = await runSyncPass(store.db, peerId, { scanner: store.scanner });
 			items.push({ peer_device_id: peerId, ...result });
 		}
 		return c.json({ items });
