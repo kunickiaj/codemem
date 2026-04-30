@@ -2023,6 +2023,63 @@ describe("scanSecretsRetroactive", () => {
 		}
 	});
 
+	it("does not flag rows as changed when metadata only differs by JSON canonicalization", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			// Stored JSON has whitespace and key order V8's JSON.stringify will
+			// not reproduce. The row contains no secrets, so the sweep must
+			// report changed=false rather than re-stringifying and treating the
+			// canonicalization diff as a redaction.
+			const noisyMeta = '{"b": 2,  "a":1,\n"nested": {"x": "ok"}}';
+			seedLegacyRow(db, sessionId, "Title", "Body no secrets", { metadata_json: noisyMeta });
+			const result = scanSecretsRetroactive(db);
+			expect(result.checked).toBe(1);
+			expect(result.updated).toBe(0);
+			expect(result.detections).toEqual([]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("completes without stack overflow on a large no-op sweep", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			// Seed enough rows that the previous mergeDetections(...detectionLists)
+			// spread would have tripped V8's argument-stack limit (~10k entries).
+			// Pre-redacted titles ensure changed=false so the only thing we're
+			// stressing is the accumulator path.
+			const insert = db.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+				 VALUES (?, 'discovery', ?, '', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+			);
+			const now = new Date().toISOString();
+			db.transaction(() => {
+				for (let i = 0; i < 12_000; i++) {
+					insert.run(sessionId, `clean title ${i}`, now, now);
+				}
+			})();
+			expect(() => scanSecretsRetroactive(db)).not.toThrow();
+			const result = scanSecretsRetroactive(db);
+			expect(result.checked).toBe(12_000);
+			expect(result.updated).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("rejects updates with a stale rev when a concurrent writer bumps rev mid-scan", async () => {
 		const { SecretScanner } = await import("./secret-scanner.js");
 		const db = new Database(":memory:");
@@ -2052,6 +2109,10 @@ describe("scanSecretsRetroactive", () => {
 			const result = scanSecretsRetroactive(db, { scanner: racy });
 			expect(result.updated).toBe(0);
 			expect(result.staleWrites).toBe(1);
+			// Stale-write rows must NOT appear in samples or detections — those
+			// only describe persisted redactions.
+			expect(result.samples).toEqual([]);
+			expect(result.detections).toEqual([]);
 			const row = db.prepare("SELECT title FROM memory_items WHERE id = ?").get(id) as {
 				title: string;
 			};
