@@ -138,6 +138,67 @@ describe("MemoryStore", () => {
 			expect(row?.deleted_at).toBeNull();
 		});
 
+		it("redacts secrets in title, body, and metadata before persisting", () => {
+			const sessionId = insertTestSession(store.db);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const awsId = "AKIAIOSFODNN7EXAMPLE";
+			const memId = store.remember(
+				sessionId,
+				"discovery",
+				`Found token ${pat} in config`,
+				`Body has ${awsId} embedded`,
+				0.5,
+				undefined,
+				{ password: "supersecretvalue123", note: "harmless" },
+			);
+
+			const row = store.get(memId);
+			expect(row?.title).toContain("[REDACTED:github_pat_classic]");
+			expect(row?.title).not.toContain(pat);
+			expect(row?.body_text).toContain("[REDACTED:aws_access_key_id]");
+			expect(row?.body_text).not.toContain(awsId);
+			const meta = row?.metadata_json as Record<string, unknown>;
+			expect(meta.password).toBe("[REDACTED:context_secret]");
+			expect(meta.note).toBe("harmless");
+		});
+
+		it("redacts secrets in tags before persisting", () => {
+			const sessionId = insertTestSession(store.db);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const memId = store.remember(sessionId, "discovery", "Title", "Body", 0.5, ["safe-tag", pat]);
+			const row = store.get(memId);
+			expect(row?.tags_text).toContain("[REDACTED:github_pat_classic]");
+			expect(row?.tags_text).toContain("safe-tag");
+			expect(row?.tags_text).not.toContain(pat);
+		});
+
+		it("never persists original secrets to the replication_ops payload", () => {
+			const sessionId = insertTestSession(store.db);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const awsId = "AKIAIOSFODNN7EXAMPLE";
+			const memId = store.remember(
+				sessionId,
+				"discovery",
+				`title with ${pat}`,
+				`body with ${awsId}`,
+				0.5,
+				[pat],
+				{ password: "supersecretvalue123" },
+			);
+			expect(memId).toBeGreaterThan(0);
+
+			const ops = store.db
+				.prepare("SELECT payload_json FROM replication_ops WHERE entity_type = 'memory_item'")
+				.all() as Array<{ payload_json: string | null }>;
+			expect(ops.length).toBeGreaterThan(0);
+			for (const op of ops) {
+				const payload = op.payload_json ?? "";
+				expect(payload).not.toContain(pat);
+				expect(payload).not.toContain(awsId);
+				expect(payload).not.toContain("supersecretvalue123");
+			}
+		});
+
 		it("generates an import_key when not provided", () => {
 			const sessionId = insertTestSession(store.db);
 			const memId = store.remember(sessionId, "discovery", "Title", "Body");

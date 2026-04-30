@@ -47,6 +47,7 @@ import {
 	search as searchFn,
 	timeline as timelineFn,
 } from "./search.js";
+import { mergeDetections, type ScanDetection, SecretScanner } from "./secret-scanner.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
 	ExplainResponse,
@@ -204,6 +205,13 @@ export class MemoryStore {
 	readonly actorId: string;
 	readonly actorDisplayName: string;
 	readonly crossSessionDedupWindowMs: number;
+	/**
+	 * Per-store secret scanner. Lives on the instance (not as a module global)
+	 * so workspace-level rule overrides and allowlists can be wired without
+	 * coupling between stores in the same process. Mutable so tests and
+	 * follow-on issues (codemem-ben8, codemem-jasn) can swap it.
+	 */
+	scanner: SecretScanner;
 	private readonly pendingVectorWrites = new Set<Promise<void>>();
 
 	/** Lazy Drizzle ORM wrapper — shares the same better-sqlite3 connection. */
@@ -225,6 +233,7 @@ export class MemoryStore {
 			this.db.close();
 			throw err;
 		}
+		this.scanner = new SecretScanner();
 
 		// Resolve device ID: env var → sync_device table → stable "local" fallback.
 		// Python uses exactly this order and fallback.
@@ -551,9 +560,32 @@ export class MemoryStore {
 	): number {
 		const validKind = validateMemoryKind(kind);
 		const now = nowIso();
-		const tagsText = tags ? [...new Set(tags)].sort().join(" ") : "";
-		const metaPayload = { ...(metadata ?? {}) };
-		const dedupKey = buildMemoryDedupKey(title);
+
+		// Scan for secrets BEFORE any further processing. The redacted forms are
+		// what get deduped, embedded, and persisted; the originals never reach
+		// disk. There is no override flag — see secret-scanner.ts.
+		const scanner = this.scanner;
+		const titleScan = scanner.scan(title);
+		const bodyScan = scanner.scan(bodyText);
+		const safeTitle = titleScan.redacted;
+		const safeBody = bodyScan.redacted;
+
+		// Tags are written verbatim into tags_text and mirrored into the FTS
+		// index. Scan each one so a malformed caller can't use a tag as a
+		// scanner bypass.
+		const tagDetections: ScanDetection[] = [];
+		const safeTags = tags
+			? tags.map((t) => {
+					const r = scanner.scan(t);
+					tagDetections.push(...r.detections);
+					return r.redacted;
+				})
+			: undefined;
+		const tagsText = safeTags ? [...new Set(safeTags)].sort().join(" ") : "";
+
+		const metaScan = scanner.redactValue(metadata ?? {});
+		const metaPayload = { ...(metaScan.value as Record<string, unknown>) };
+		const dedupKey = buildMemoryDedupKey(safeTitle);
 
 		metaPayload.clock_device_id ??= this.deviceId;
 		const importKey = (metaPayload.import_key as string) || randomUUID();
@@ -579,13 +611,13 @@ export class MemoryStore {
 		const existingHit = this.findExistingDuplicateMemory(
 			sessionId,
 			validKind,
-			title,
+			safeTitle,
 			dedupKey,
 			provenance,
 			now,
 		);
 		if (existingHit != null) {
-			this.logDedupHit(existingHit, validKind, title);
+			this.logDedupHit(existingHit, validKind, safeTitle);
 			return existingHit.id;
 		}
 
@@ -600,9 +632,9 @@ export class MemoryStore {
 					.values({
 						session_id: sessionId,
 						kind: validKind,
-						title,
+						title: safeTitle,
 						subtitle,
-						body_text: bodyText,
+						body_text: safeBody,
 						confidence,
 						tags_text: tagsText,
 						active: 1,
@@ -651,21 +683,44 @@ export class MemoryStore {
 			const existingSameSessionHit = this.findExistingDuplicateMemory(
 				sessionId,
 				validKind,
-				title,
+				safeTitle,
 				dedupKey,
 				provenance,
 				now,
 			);
 			if (existingSameSessionHit != null) {
-				this.logDedupHit(existingSameSessionHit, validKind, title);
+				this.logDedupHit(existingSameSessionHit, validKind, safeTitle);
 				return existingSameSessionHit.id;
 			}
 			throw error;
 		}
 
-		this.enqueueVectorWrite(memoryId, title, bodyText);
+		this.enqueueVectorWrite(memoryId, safeTitle, safeBody);
+
+		const detections = mergeDetections(
+			titleScan.detections,
+			bodyScan.detections,
+			metaScan.detections,
+		);
+		if (detections.length > 0) {
+			this.logSecretRedactions(memoryId, validKind, detections);
+		}
 
 		return memoryId;
+	}
+
+	/**
+	 * Log secret-redaction events for observability. Records the kind and
+	 * count only — never the matched value. Gated on CODEMEM_DEBUG so normal
+	 * use stays quiet, but the call site always runs so test coverage and
+	 * future structured-logging hooks have a single chokepoint to grow into.
+	 */
+	private logSecretRedactions(memoryId: number, kind: string, detections: ScanDetection[]): void {
+		if (process.env[CODEMEM_DEBUG_ENV] !== "1") return;
+		const summary = detections.map((d) => `${d.kind}=${d.count}`).join(",");
+		process.stderr.write(
+			`[codemem] secret_scanner redacted memory_id=${memoryId} kind=${kind} detections=${summary}\n`,
+		);
 	}
 
 	// provenance resolution
