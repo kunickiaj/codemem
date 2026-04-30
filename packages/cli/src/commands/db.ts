@@ -534,6 +534,7 @@ backfillTagsCmd.action(
 				project,
 				activeOnly: !opts.inactive,
 				dryRun: opts.dryRun === true,
+				scanner: store.scanner,
 			});
 
 			if (opts.json) {
@@ -761,6 +762,7 @@ backfillNarrativeCmd.action(
 			const result = backfillNarrativeFromBody(store.db, {
 				limit,
 				dryRun: opts.dryRun === true,
+				scanner: store.scanner,
 			});
 
 			if (opts.json) {
@@ -816,6 +818,7 @@ aiBackfillStructuredCmd.action(
 				kinds,
 				overwrite: opts.overwrite === true,
 				dryRun: opts.dryRun === true,
+				scanner: store.scanner,
 			});
 
 			if (opts.json) {
