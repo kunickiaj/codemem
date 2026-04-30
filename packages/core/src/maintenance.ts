@@ -97,3 +97,8 @@ export type {
 	AIBackfillStructuredContentResult,
 } from "./maintenance/ai-structured.js";
 export { aiBackfillStructuredContent } from "./maintenance/ai-structured.js";
+export type {
+	ScanSecretsRetroactiveOptions,
+	ScanSecretsRetroactiveResult,
+} from "./maintenance/scan-secrets.js";
+export { scanSecretsRetroactive } from "./maintenance/scan-secrets.js";
