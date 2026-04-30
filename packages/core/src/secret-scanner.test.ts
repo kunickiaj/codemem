@@ -353,6 +353,90 @@ describe("redactMemoryFields", () => {
 	});
 });
 
+describe("loadScannerOptionsFromConfig", () => {
+	it("returns empty options for missing or malformed config", async () => {
+		const { loadScannerOptionsFromConfig } = await import("./secret-scanner.js");
+		expect(loadScannerOptionsFromConfig(null)).toEqual({});
+		expect(loadScannerOptionsFromConfig({})).toEqual({});
+		expect(loadScannerOptionsFromConfig({ secret_scanner: "not-an-object" })).toEqual({});
+		expect(loadScannerOptionsFromConfig({ secret_scanner: [] })).toEqual({});
+	});
+
+	it("loads workspace rules with regex compilation and entropy floor", async () => {
+		const { loadScannerOptionsFromConfig, SecretScanner } = await import("./secret-scanner.js");
+		const opts = loadScannerOptionsFromConfig({
+			secret_scanner: {
+				rules: [
+					{
+						kind: "internal_acme_token",
+						pattern: "\\bACME-[A-Z0-9]{10}\\b",
+						minEntropy: 2.0,
+					},
+				],
+			},
+		});
+		expect(opts.rules).toHaveLength(1);
+		const scanner = new SecretScanner(opts);
+		const r = scanner.scan("internal: ACME-AB12CD34EF and clean text");
+		expect(r.redacted).toContain("[REDACTED:internal_acme_token]");
+	});
+
+	it("drops malformed rule entries silently", async () => {
+		const { loadScannerOptionsFromConfig } = await import("./secret-scanner.js");
+		const opts = loadScannerOptionsFromConfig({
+			secret_scanner: {
+				rules: [
+					{ kind: "ok", pattern: "\\bok\\b" },
+					{ kind: "missing_pattern" },
+					{ pattern: "\\bnope\\b" },
+					{ kind: "bad_regex", pattern: "[unterminated" },
+					"not-an-object",
+					42,
+				],
+			},
+		});
+		expect(opts.rules).toHaveLength(1);
+		expect(opts.rules?.[0]?.kind).toBe("ok");
+	});
+
+	it("loads allowlist with literal strings and regex literals", async () => {
+		const { loadScannerOptionsFromConfig, SecretScanner } = await import("./secret-scanner.js");
+		const opts = loadScannerOptionsFromConfig({
+			secret_scanner: {
+				allowlist: ["AKIAFAKEFIXTURE0001", "/^test-fixture-.*$/i", "", 42 as unknown as string],
+			},
+		});
+		expect(opts.allowlist).toHaveLength(2);
+		const scanner = new SecretScanner(opts);
+		// Literal allowlist entry
+		expect(scanner.scan("creds: AKIAFAKEFIXTURE0001 in env").redacted).toContain(
+			"AKIAFAKEFIXTURE0001",
+		);
+	});
+
+	it("strips g and y flags from parsed allowlist regex literals", async () => {
+		const { loadScannerOptionsFromConfig, SecretScanner } = await import("./secret-scanner.js");
+		const opts = loadScannerOptionsFromConfig({
+			secret_scanner: {
+				allowlist: ["/^AKIAFAKEFIXTURE\\d{4}$/g", "/^anchored$/y"],
+			},
+		});
+		expect(opts.allowlist).toHaveLength(2);
+		for (const entry of opts.allowlist ?? []) {
+			expect(entry).toBeInstanceOf(RegExp);
+			const re = entry as RegExp;
+			expect(re.global).toBe(false);
+			expect(re.sticky).toBe(false);
+		}
+		// Behavior is stable across repeated allowlist tests.
+		const scanner = new SecretScanner(opts);
+		const fixture = "AKIAFAKEFIXTURE0001";
+		for (let i = 0; i < 4; i++) {
+			expect(scanner.scan(`creds: ${fixture} in env`).redacted).toContain(fixture);
+		}
+	});
+});
+
 describe("DEFAULT_RULES", () => {
 	it("exposes a non-empty rule set", () => {
 		expect(DEFAULT_RULES.length).toBeGreaterThan(5);

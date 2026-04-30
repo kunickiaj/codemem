@@ -172,6 +172,36 @@ describe("MemoryStore", () => {
 			expect(row?.tags_text).not.toContain(pat);
 		});
 
+		it("applies workspace-config secret_scanner rules to local writes", () => {
+			store.close();
+			writeFileSync(
+				process.env.CODEMEM_CONFIG as string,
+				JSON.stringify({
+					secret_scanner: {
+						rules: [{ kind: "internal_acme_token", pattern: "\\bACME-[A-Z0-9]{10}\\b" }],
+						allowlist: ["AKIAFAKEFIXTURE0001"],
+					},
+				}),
+			);
+			store = new MemoryStore(dbPath);
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(
+				sessionId,
+				"discovery",
+				"workspace title with ACME-AB12CD34EF token",
+				"Body has AKIAFAKEFIXTURE0001 fixture and AKIAIOSFODNN7EXAMPLE real",
+			);
+			const row = store.get(memId);
+			// Workspace rule fires
+			expect(row?.title).toContain("[REDACTED:internal_acme_token]");
+			expect(row?.title).not.toContain("ACME-AB12CD34EF");
+			// Allowlist entry passes through
+			expect(row?.body_text).toContain("AKIAFAKEFIXTURE0001");
+			// Default rules still active for everything else
+			expect(row?.body_text).toContain("[REDACTED:aws_access_key_id]");
+			expect(row?.body_text).not.toContain("AKIAIOSFODNN7EXAMPLE");
+		});
+
 		it("never persists original secrets to the replication_ops payload", () => {
 			const sessionId = insertTestSession(store.db);
 			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
