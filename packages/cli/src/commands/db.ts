@@ -883,6 +883,14 @@ scanSecretsCmd.action(
 				const summary = result.detections.map((d) => `${d.kind}=${d.count}`).join(", ");
 				p.log.info(`Detections: ${summary}`);
 			}
+			if (result.samples.length > 0) {
+				const lines = result.samples.map((s) => {
+					const kinds = s.detections.map((d) => `${d.kind}=${d.count}`).join(", ");
+					const title = (s.redactedTitle ?? "").slice(0, 80);
+					return `  #${s.id} [${kinds}]  ${title}`;
+				});
+				p.log.info(`Affected memories:\n${lines.join("\n")}`);
+			}
 			p.outro("Re-run with no changes to confirm idempotency");
 		} catch (error) {
 			p.log.error(error instanceof Error ? error.message : String(error));

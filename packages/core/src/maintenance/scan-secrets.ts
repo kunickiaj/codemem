@@ -40,12 +40,25 @@ export interface ScanSecretsRetroactiveOptions {
 	maxRowBytes?: number;
 }
 
+/**
+ * Per-row summary of what got redacted. The redacted title is safe to display
+ * (markers, not the original value) and lets a caller manually look the
+ * memory up in the DB to confirm a hit was a real secret vs. a false positive
+ * before committing to a non-dry-run sweep.
+ */
+export interface ScanSecretsRetroactiveSample {
+	id: number;
+	redactedTitle: string | null;
+	detections: ScanDetection[];
+}
+
 export interface ScanSecretsRetroactiveResult {
 	checked: number;
 	updated: number;
 	skippedOversized: number;
 	staleWrites: number;
 	detections: ScanDetection[];
+	samples: ScanSecretsRetroactiveSample[];
 }
 
 interface MemoryRow {
@@ -143,9 +156,14 @@ function scanMetadataJson(
 		return { json, detections: [], changed: false };
 	}
 	const r = scanner.redactValue(parsed);
-	const nextJson = JSON.stringify(r.value);
-	const changed = nextJson !== json;
-	return { json: changed ? nextJson : json, detections: r.detections, changed };
+	if (r.detections.length === 0) {
+		// Nothing matched. Preserve the original JSON bytes — re-stringifying a
+		// parse round-trip would canonicalize whitespace and key order, which
+		// makes every row with metadata report `changed=true` and triggers a
+		// spurious UPDATE for content that was never actually touched.
+		return { json, detections: [], changed: false };
+	}
+	return { json: JSON.stringify(r.value), detections: r.detections, changed: true };
 }
 
 function scanTagsText(
@@ -226,7 +244,15 @@ export function scanSecretsRetroactive(
 		 WHERE id = ? AND rev = ?`,
 	);
 
-	const detectionLists: ScanDetection[][] = [];
+	// Accumulate detections inline into a single map. We previously kept an
+	// array-of-arrays and called `mergeDetections(...detectionLists)` at the
+	// end; spreading >65k entries into a function call trips V8's argument-
+	// stack limit on large stores ("Maximum call stack size exceeded").
+	const detectionCounts = new Map<string, number>();
+	const recordDetections = (list: ScanDetection[]): void => {
+		for (const d of list) detectionCounts.set(d.kind, (detectionCounts.get(d.kind) ?? 0) + d.count);
+	};
+	const samples: ScanSecretsRetroactiveSample[] = [];
 	let checked = 0;
 	let updated = 0;
 	let skippedOversized = 0;
@@ -268,22 +294,48 @@ export function scanSecretsRetroactive(
 
 		if (!changed) continue;
 
-		detectionLists.push(
-			titleResult.detections,
-			subtitleResult.detections,
-			bodyResult.detections,
-			narrativeResult.detections,
-			actorNameResult.detections,
-			originSourceResult.detections,
-			tagsResult.detections,
-			factsResult.detections,
-			conceptsResult.detections,
-			filesReadResult.detections,
-			filesModifiedResult.detections,
-			metaResult.detections,
-		);
+		// Aggregate detections + sample only when the operation will actually
+		// land. For dry-run that is "always" — the read-only path always
+		// reports what it would have done. For real runs we defer recording
+		// until after the transaction-with-rev-guard succeeds, so a stale
+		// write (concurrent rev bump) does not appear in `detections` /
+		// `samples` as if it had been redacted.
+		const recordResult = (): void => {
+			recordDetections(titleResult.detections);
+			recordDetections(subtitleResult.detections);
+			recordDetections(bodyResult.detections);
+			recordDetections(narrativeResult.detections);
+			recordDetections(actorNameResult.detections);
+			recordDetections(originSourceResult.detections);
+			recordDetections(tagsResult.detections);
+			recordDetections(factsResult.detections);
+			recordDetections(conceptsResult.detections);
+			recordDetections(filesReadResult.detections);
+			recordDetections(filesModifiedResult.detections);
+			recordDetections(metaResult.detections);
+			const perRow = mergeDetections(
+				titleResult.detections,
+				subtitleResult.detections,
+				bodyResult.detections,
+				narrativeResult.detections,
+				actorNameResult.detections,
+				originSourceResult.detections,
+				tagsResult.detections,
+				factsResult.detections,
+				conceptsResult.detections,
+				filesReadResult.detections,
+				filesModifiedResult.detections,
+				metaResult.detections,
+			);
+			samples.push({
+				id: row.id,
+				redactedTitle: titleResult.value,
+				detections: perRow,
+			});
+		};
 
 		if (dryRun) {
+			recordResult();
 			updated++;
 			continue;
 		}
@@ -344,6 +396,7 @@ export function scanSecretsRetroactive(
 		})();
 
 		if (ok) {
+			recordResult();
 			updated++;
 		} else {
 			staleWrites++;
@@ -355,6 +408,7 @@ export function scanSecretsRetroactive(
 		updated,
 		skippedOversized,
 		staleWrites,
-		detections: mergeDetections(...detectionLists),
+		detections: Array.from(detectionCounts.entries()).map(([kind, count]) => ({ kind, count })),
+		samples,
 	};
 }
