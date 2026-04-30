@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toJson } from "./db.js";
+import { SecretScanner } from "./secret-scanner.js";
 import {
 	applyReplicationOps,
 	backfillReplicationOps,
@@ -1594,6 +1595,117 @@ describe("applyReplicationOps", () => {
 		expect(mem.rev).toBe(1);
 		expect(result.vectorWork.upsertMemoryIds).toEqual([Number(mem.id)]);
 		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
+	});
+
+	it("redacts secrets in inbound peer payloads on insert", () => {
+		const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+		const awsId = "AKIAIOSFODNN7EXAMPLE";
+		const op = makeReplicationOp({
+			payload_json: toJson({
+				kind: "discovery",
+				title: `peer title ${pat}`,
+				body_text: `peer body ${awsId}`,
+				narrative: `peer narrative ${pat}`,
+				tags_text: pat,
+				facts: [`fact contains ${pat}`],
+				concepts: ["clean"],
+				metadata_json: { password: "supersecretvalue123", note: "harmless" },
+			}),
+		});
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare(
+				"SELECT title, body_text, narrative, tags_text, facts, metadata_json FROM memory_items WHERE import_key = ?",
+			)
+			.get("key:test-1") as {
+			title: string;
+			body_text: string;
+			narrative: string | null;
+			tags_text: string | null;
+			facts: string | null;
+			metadata_json: string | null;
+		};
+		expect(mem.title).not.toContain(pat);
+		expect(mem.title).toContain("[REDACTED:github_pat_classic]");
+		expect(mem.body_text).not.toContain(awsId);
+		expect(mem.body_text).toContain("[REDACTED:aws_access_key_id]");
+		expect(mem.narrative).not.toContain(pat);
+		expect(mem.tags_text ?? "").not.toContain(pat);
+		expect(mem.facts ?? "").not.toContain(pat);
+		const meta = JSON.parse(mem.metadata_json ?? "{}");
+		expect(meta.password).toBe("[REDACTED:context_secret]");
+		expect(meta.note).toBe("harmless");
+	});
+
+	it("applies a custom scanner's extra rules to inbound peer payloads", () => {
+		const op = makeReplicationOp({
+			payload_json: toJson({
+				kind: "discovery",
+				title: "internal token ACME-XYZ12 in title",
+				body_text: "ACME-XYZ12 in body",
+			}),
+		});
+		const customScanner = new SecretScanner({
+			rules: [{ kind: "internal_acme_token", pattern: /\bACME-[A-Z0-9]{5}\b/g }],
+		});
+		const result = applyReplicationOps(db, [op], "dev-local", customScanner);
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare("SELECT title, body_text FROM memory_items WHERE import_key = ?")
+			.get("key:test-1") as { title: string; body_text: string };
+		expect(mem.title).toContain("[REDACTED:internal_acme_token]");
+		expect(mem.title).not.toContain("ACME-XYZ12");
+		expect(mem.body_text).toContain("[REDACTED:internal_acme_token]");
+	});
+
+	it("redacts peer-controlled actor_display_name and origin_source", () => {
+		const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+		const op = makeReplicationOp({
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Title",
+				body_text: "Body",
+				actor_display_name: `Peer ${pat}`,
+				origin_source: `tool ${pat}`,
+			}),
+		});
+		const result = applyReplicationOps(db, [op], "dev-local");
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare("SELECT actor_display_name, origin_source FROM memory_items WHERE import_key = ?")
+			.get("key:test-1") as { actor_display_name: string | null; origin_source: string | null };
+		expect(mem.actor_display_name ?? "").not.toContain(pat);
+		expect(mem.actor_display_name ?? "").toContain("[REDACTED:github_pat_classic]");
+		expect(mem.origin_source ?? "").not.toContain(pat);
+	});
+
+	it("redacts secrets in inbound peer payloads on update of existing row", () => {
+		// Insert a baseline row
+		const baselineOp = makeReplicationOp({ op_id: "op-baseline" });
+		applyReplicationOps(db, [baselineOp], "dev-local");
+
+		// Replicate an update that contains a secret
+		const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+		const updateOp = makeReplicationOp({
+			op_id: "op-update",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			payload_json: toJson({
+				kind: "discovery",
+				title: `updated ${pat}`,
+				body_text: `updated body ${pat}`,
+				updated_at: "2026-01-02T00:00:00Z",
+			}),
+		});
+		const result = applyReplicationOps(db, [updateOp], "dev-local");
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare("SELECT title, body_text FROM memory_items WHERE import_key = ?")
+			.get("key:test-1") as { title: string; body_text: string };
+		expect(mem.title).not.toContain(pat);
+		expect(mem.title).toContain("[REDACTED:github_pat_classic]");
+		expect(mem.body_text).not.toContain(pat);
 	});
 
 	it("populates ref tables when inserting a new memory with files and concepts", () => {

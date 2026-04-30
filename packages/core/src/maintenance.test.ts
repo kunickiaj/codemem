@@ -21,6 +21,7 @@ import {
 	getReliabilityMetrics,
 	initDatabase,
 	retryRawEventFailures,
+	scanSecretsRetroactive,
 	vacuumDatabase,
 } from "./maintenance.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
@@ -1437,6 +1438,48 @@ describe("aiBackfillStructuredContent", () => {
 		}
 	});
 
+	it("redacts secrets in AI-generated narrative, facts, and concepts before persisting", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const id = seedMemory(
+				db,
+				sessionId,
+				"change",
+				"Memory with secret-shaped AI output",
+				"Original body.",
+			);
+
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const observer = makeObserver(
+				JSON.stringify({
+					narrative: `AI summary mentions ${pat} verbatim.`,
+					facts: [`fact A references ${pat}`, "harmless fact"],
+					concepts: ["what-changed"],
+				}),
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer });
+			expect(result).toMatchObject({ updated: 1 });
+
+			const row = db.prepare("SELECT narrative, facts FROM memory_items WHERE id = ?").get(id) as {
+				narrative: string | null;
+				facts: string | null;
+			};
+			expect(row.narrative ?? "").not.toContain(pat);
+			expect(row.narrative ?? "").toContain("[REDACTED:github_pat_classic]");
+			expect(row.facts ?? "").not.toContain(pat);
+			expect(row.facts ?? "").toContain("[REDACTED:github_pat_classic]");
+		} finally {
+			db.close();
+		}
+	});
+
 	it("preserves existing structured fields by default", async () => {
 		const db = new Database(":memory:");
 		try {
@@ -1672,6 +1715,296 @@ describe("aiBackfillStructuredContent", () => {
 			expect(row.narrative).toBeNull();
 			expect(row.facts).toBeNull();
 			expect(row.concepts).toBeNull();
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("scanSecretsRetroactive", () => {
+	function seedLegacyRow(
+		db: Database,
+		sessionId: number,
+		title: string,
+		body: string,
+		extras: Partial<{
+			subtitle: string;
+			narrative: string;
+			tags_text: string;
+			facts: string;
+			concepts: string;
+			metadata_json: string;
+		}> = {},
+	): number {
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, subtitle, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+				 narrative, facts, concepts)
+				 VALUES (?, ?, ?, ?, ?, 0.5, ?, 1, ?, ?, ?, 1, 'shared', ?, ?, ?)`,
+			)
+			.run(
+				sessionId,
+				"discovery",
+				title,
+				extras.subtitle ?? null,
+				body,
+				extras.tags_text ?? "",
+				now,
+				now,
+				extras.metadata_json ?? "{}",
+				extras.narrative ?? null,
+				extras.facts ?? null,
+				extras.concepts ?? null,
+			);
+		return Number(info.lastInsertRowid);
+	}
+
+	it("redacts legacy unredacted memories in place", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const awsId = "AKIAIOSFODNN7EXAMPLE";
+			const id = seedLegacyRow(db, sessionId, `legacy ${pat}`, `body has ${awsId}`, {
+				narrative: `narrative has ${pat}`,
+				tags_text: `safe ${pat}`,
+				facts: JSON.stringify([`fact has ${pat}`, "clean"]),
+				metadata_json: JSON.stringify({ password: "supersecretvalue123", note: "fine" }),
+			});
+
+			const result = scanSecretsRetroactive(db);
+			expect(result.checked).toBe(1);
+			expect(result.updated).toBe(1);
+			expect(result.detections.length).toBeGreaterThan(0);
+
+			const row = db
+				.prepare(
+					"SELECT title, body_text, narrative, tags_text, facts, metadata_json FROM memory_items WHERE id = ?",
+				)
+				.get(id) as {
+				title: string;
+				body_text: string;
+				narrative: string | null;
+				tags_text: string | null;
+				facts: string | null;
+				metadata_json: string | null;
+			};
+			expect(row.title).not.toContain(pat);
+			expect(row.title).toContain("[REDACTED:github_pat_classic]");
+			expect(row.body_text).not.toContain(awsId);
+			expect(row.narrative).not.toContain(pat);
+			expect(row.tags_text ?? "").not.toContain(pat);
+			expect(row.facts ?? "").not.toContain(pat);
+			const meta = JSON.parse(row.metadata_json ?? "{}");
+			expect(meta.password).toBe("[REDACTED:context_secret]");
+			expect(meta.note).toBe("fine");
+		} finally {
+			db.close();
+		}
+	});
+
+	it("is idempotent — second run reports zero updates", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			seedLegacyRow(db, sessionId, "legacy ghp_abcdefghijklmnopqrstuvwxyz0123456789", "clean body");
+			const first = scanSecretsRetroactive(db);
+			expect(first.updated).toBe(1);
+			const second = scanSecretsRetroactive(db);
+			expect(second.checked).toBeGreaterThan(0);
+			expect(second.updated).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("dry-run reports detections without writing", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const id = seedLegacyRow(db, sessionId, `legacy ${pat}`, "clean body");
+			const result = scanSecretsRetroactive(db, { dryRun: true });
+			expect(result.updated).toBe(1);
+			expect(result.detections.find((d) => d.kind === "github_pat_classic")?.count).toBe(1);
+			const row = db.prepare("SELECT title FROM memory_items WHERE id = ?").get(id) as {
+				title: string;
+			};
+			expect(row.title).toContain(pat);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("skips rows over the size cap and reports them", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			seedLegacyRow(db, sessionId, "huge", `${"x".repeat(200)}${pat}`);
+			const result = scanSecretsRetroactive(db, { maxRowBytes: 100 });
+			expect(result.skippedOversized).toBe(1);
+			expect(result.updated).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("idempotent on dual-rule redactions (secret-context plus pattern match)", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			// "secret: ghp_..." triggers BOTH generic_assigned_secret and github_pat_classic.
+			const id = seedLegacyRow(
+				db,
+				sessionId,
+				"title",
+				"secret: ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+			);
+			const first = scanSecretsRetroactive(db);
+			expect(first.updated).toBe(1);
+			const firstBody = db.prepare("SELECT body_text FROM memory_items WHERE id = ?").get(id) as {
+				body_text: string;
+			};
+			expect(firstBody.body_text).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+			const second = scanSecretsRetroactive(db);
+			expect(second.updated).toBe(0);
+			const secondBody = db.prepare("SELECT body_text FROM memory_items WHERE id = ?").get(id) as {
+				body_text: string;
+			};
+			expect(secondBody.body_text).toBe(firstBody.body_text);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("redacts actor_display_name and origin_source", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const now = new Date().toISOString();
+			const id = Number(
+				db
+					.prepare(
+						`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+						 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+						 actor_display_name, origin_source)
+						 VALUES (?, 'discovery', 'Title', 'Body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?, ?)`,
+					)
+					.run(sessionId, now, now, `peer ${pat}`, `tool ${pat}`).lastInsertRowid,
+			);
+			const result = scanSecretsRetroactive(db);
+			expect(result.updated).toBe(1);
+			const row = db
+				.prepare("SELECT actor_display_name, origin_source FROM memory_items WHERE id = ?")
+				.get(id) as { actor_display_name: string | null; origin_source: string | null };
+			expect(row.actor_display_name ?? "").not.toContain(pat);
+			expect(row.actor_display_name ?? "").toContain("[REDACTED:github_pat_classic]");
+			expect(row.origin_source ?? "").not.toContain(pat);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("refreshes memory_concept_refs after redacting concepts", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const conceptsRaw = JSON.stringify([`leaks ${pat}`, "clean"]);
+			const id = seedLegacyRow(db, sessionId, "Title", "Body", { concepts: conceptsRaw });
+			// Seed the junction table with the unredacted concept (mimic what
+			// would have happened if remember() had been called pre-scanner).
+			db.prepare("INSERT INTO memory_concept_refs (memory_id, concept) VALUES (?, ?), (?, ?)").run(
+				id,
+				`leaks ${pat}`.toLowerCase(),
+				id,
+				"clean",
+			);
+			const result = scanSecretsRetroactive(db);
+			expect(result.updated).toBe(1);
+			const refs = db
+				.prepare("SELECT concept FROM memory_concept_refs WHERE memory_id = ? ORDER BY concept")
+				.all(id) as Array<{ concept: string }>;
+			const all = refs.map((r) => r.concept).join("|");
+			expect(all).not.toContain(pat);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("rejects updates with a stale rev when a concurrent writer bumps rev mid-scan", async () => {
+		const { SecretScanner } = await import("./secret-scanner.js");
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = Number(
+				db
+					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+			);
+			const pat = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+			const id = seedLegacyRow(db, sessionId, `legacy ${pat}`, "Body");
+			// Inject a concurrent rev bump between the sweep's SELECT (which
+			// loaded rev=1) and its UPDATE. The first scan call happens on
+			// the title; we hijack it to bump rev in the DB so the UPDATE's
+			// WHERE rev=1 guard fails.
+			const racy = new SecretScanner();
+			const orig = racy.scan.bind(racy);
+			let bumped = false;
+			racy.scan = (text: string) => {
+				if (!bumped && text.includes(pat)) {
+					bumped = true;
+					db.prepare("UPDATE memory_items SET rev = rev + 1 WHERE id = ?").run(id);
+				}
+				return orig(text);
+			};
+			const result = scanSecretsRetroactive(db, { scanner: racy });
+			expect(result.updated).toBe(0);
+			expect(result.staleWrites).toBe(1);
+			const row = db.prepare("SELECT title FROM memory_items WHERE id = ?").get(id) as {
+				title: string;
+			};
+			// Original content survives because the rev guard rejected the write.
+			expect(row.title).toContain(pat);
 		} finally {
 			db.close();
 		}

@@ -17,6 +17,7 @@ import { readCodememConfigFile } from "./observer-config.js";
 import { projectBasename } from "./project.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
+import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { deriveTags } from "./tags.js";
 import type {
 	ReplicationOp,
@@ -1754,8 +1755,14 @@ export function applyReplicationOps(
 	db: Database,
 	ops: ReplicationOp[],
 	localDeviceId: string,
+	scanner?: SecretScanner,
 ): ApplyResult {
 	const d = drizzle(db, { schema });
+	// Peer-shipped content goes through the same redaction policy as
+	// locally-authored writes. Callers that maintain their own scanner
+	// (typically a MemoryStore instance) should pass it so workspace-level
+	// rule overrides apply uniformly. Otherwise fall back to defaults.
+	const activeScanner = scanner ?? new SecretScanner();
 	const result: ApplyResult = {
 		applied: 0,
 		skipped: 0,
@@ -1832,6 +1839,7 @@ export function applyReplicationOps(
 						// Update existing row from payload — skip if malformed
 						const payload = parseMemoryPayload(op, result.errors);
 						if (!payload) continue;
+						redactMemoryFields(payload, activeScanner);
 						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
 						const nextTitle = resolveReplicatedTextUpdate(payload.title, memRow.title);
 						const nextBodyText = resolveReplicatedTextUpdate(payload.body_text, memRow.body_text);
@@ -1896,6 +1904,7 @@ export function applyReplicationOps(
 						// Insert new memory item — skip if malformed
 						const payload = parseMemoryPayload(op, result.errors);
 						if (!payload) continue;
+						redactMemoryFields(payload, activeScanner);
 						const replicatedProject =
 							typeof payload.project === "string" && payload.project.trim()
 								? payload.project.trim()

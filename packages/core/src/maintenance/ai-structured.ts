@@ -9,6 +9,7 @@ import {
 	updateMaintenanceJob,
 } from "../maintenance-jobs.js";
 import { loadObserverConfig, ObserverClient } from "../observer-client.js";
+import { SecretScanner } from "../secret-scanner.js";
 import { isSummaryLikeMemory } from "../summary-memory.js";
 
 const AI_BACKFILL_KINDS = [
@@ -71,6 +72,13 @@ export interface AIBackfillStructuredContentOptions {
 	dryRun?: boolean;
 	overwrite?: boolean;
 	observer?: StructuredBackfillObserver;
+	/**
+	 * Secret scanner used to redact AI-generated narrative/facts/concepts
+	 * before they are written back to memory_items. The summarizer can launder
+	 * a secret past pattern-based detection on the source or invent new
+	 * secret-shaped strings, so output must be re-scanned independent of input.
+	 */
+	scanner?: SecretScanner;
 }
 
 interface ParsedStructuredBackfill {
@@ -289,6 +297,7 @@ export async function aiBackfillStructuredContent(
 	);
 
 	const observer = opts.observer ?? createStructuredBackfillObserver();
+	const scanner = opts.scanner ?? new SecretScanner();
 	const total = eligibleRows.length;
 	startMaintenanceJob(db, {
 		kind: AI_BACKFILL_JOB_KIND,
@@ -337,6 +346,16 @@ export async function aiBackfillStructuredContent(
 					response.usedStructuredOutputs && response.parsed
 						? parseStructuredBackfillResponse(JSON.stringify(response.parsed))
 						: parseStructuredBackfillResponse(response.raw);
+
+				// Redact AI output before adoption. Source content was already
+				// scanned at write time, but the model can paraphrase past pattern
+				// detection or invent secret-shaped strings, so output is its own
+				// scan surface.
+				if (parsed.narrative != null) {
+					parsed.narrative = scanner.scan(parsed.narrative).redacted;
+				}
+				parsed.facts = parsed.facts.map((f) => scanner.scan(f).redacted);
+				parsed.concepts = parsed.concepts.map((c) => scanner.scan(c).redacted);
 
 				const nextNarrative =
 					row.narrative?.trim() && !opts.overwrite ? row.narrative : parsed.narrative;

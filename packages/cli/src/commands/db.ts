@@ -18,6 +18,7 @@ import {
 	resolveDbPath,
 	resolveProject,
 	retryRawEventFailures,
+	scanSecretsRetroactive,
 	vacuumDatabase,
 } from "@codemem/core";
 import { Command } from "commander";
@@ -534,6 +535,7 @@ backfillTagsCmd.action(
 				project,
 				activeOnly: !opts.inactive,
 				dryRun: opts.dryRun === true,
+				scanner: store.scanner,
 			});
 
 			if (opts.json) {
@@ -761,6 +763,7 @@ backfillNarrativeCmd.action(
 			const result = backfillNarrativeFromBody(store.db, {
 				limit,
 				dryRun: opts.dryRun === true,
+				scanner: store.scanner,
 			});
 
 			if (opts.json) {
@@ -816,6 +819,7 @@ aiBackfillStructuredCmd.action(
 				kinds,
 				overwrite: opts.overwrite === true,
 				dryRun: opts.dryRun === true,
+				scanner: store.scanner,
 			});
 
 			if (opts.json) {
@@ -838,3 +842,54 @@ aiBackfillStructuredCmd.action(
 	},
 );
 dbCommand.addCommand(aiBackfillStructuredCmd);
+
+// --- db scan-secrets ---
+const scanSecretsCmd = new Command("scan-secrets")
+	.configureHelp(helpStyle)
+	.description("Sweep existing memories and redact any secrets found in stored content")
+	.option("--limit <n>", "max memories to scan in this run")
+	.option("--dry-run", "report detections without rewriting any rows");
+addDbOption(scanSecretsCmd);
+addJsonOption(scanSecretsCmd);
+scanSecretsCmd.action(
+	(
+		opts: DbOpts &
+			JsonOpts & {
+				limit?: string;
+				dryRun?: boolean;
+			},
+	) => {
+		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+		try {
+			const limit = parseOptionalPositiveInt(opts.limit);
+			const result = scanSecretsRetroactive(store.db, {
+				limit,
+				dryRun: opts.dryRun === true,
+				scanner: store.scanner,
+			});
+
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+
+			const action = opts.dryRun ? "Would redact" : "Redacted";
+			p.intro("codemem db scan-secrets");
+			p.log.success(`${action} ${result.updated} of ${result.checked} memories`);
+			if (result.skippedOversized > 0) {
+				p.log.warn(`Skipped ${result.skippedOversized} oversized rows (above default 1 MiB cap)`);
+			}
+			if (result.detections.length > 0) {
+				const summary = result.detections.map((d) => `${d.kind}=${d.count}`).join(", ");
+				p.log.info(`Detections: ${summary}`);
+			}
+			p.outro("Re-run with no changes to confirm idempotency");
+		} catch (error) {
+			p.log.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		} finally {
+			store.close();
+		}
+	},
+);
+dbCommand.addCommand(scanSecretsCmd);
