@@ -3,6 +3,7 @@
 
 import type { Database } from "../db.js";
 import { projectClause } from "../project.js";
+import { SecretScanner } from "../secret-scanner.js";
 import { deriveTags, parseJsonStringList } from "./tag-helpers.js";
 
 export interface BackfillTagsTextOptions {
@@ -12,6 +13,16 @@ export interface BackfillTagsTextOptions {
 	activeOnly?: boolean;
 	dryRun?: boolean;
 	memoryIds?: number[] | null;
+	/**
+	 * Secret scanner used to redact derived tag values before persistence.
+	 * Tags derive from kind/title/concepts/files which are persisted columns —
+	 * but legacy rows pre-date the scanner so we cannot trust those columns to
+	 * be redacted-derivative. Caveat: `deriveTags` lowercases tags before this
+	 * scan runs, so case-sensitive rules (AWS AKIA*, Google AIza*, JWT eyJ*)
+	 * won't fire on legacy-derived tags. Catching the long tail there is the
+	 * job of the retroactive sweep (codemem-vb2s).
+	 */
+	scanner?: SecretScanner;
 }
 
 export interface BackfillTagsTextResult {
@@ -78,6 +89,7 @@ export function backfillTagsText(
 		files_modified: string | null;
 	}>;
 
+	const scanner = opts.scanner ?? new SecretScanner();
 	let checked = 0;
 	let updated = 0;
 	let skipped = 0;
@@ -96,7 +108,8 @@ export function backfillTagsText(
 			filesRead: parseJsonStringList(row.files_read),
 			filesModified: parseJsonStringList(row.files_modified),
 		});
-		const tagsText = tags.join(" ");
+		const safeTags = tags.map((t) => scanner.scan(t).redacted);
+		const tagsText = safeTags.join(" ");
 		if (!tagsText) {
 			skipped += 1;
 			continue;
