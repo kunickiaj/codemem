@@ -202,6 +202,14 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							groupId: "shared-group",
 						}),
 					).rejects.toThrow("membership coordinatorId must match the scope coordinatorId");
+					await expect(
+						store.grantScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							coordinatorId: "coord-a",
+							groupId: "other-group",
+						}),
+					).rejects.toThrow("membership groupId must match the scope groupId");
 					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
 				});
 			});
@@ -379,6 +387,97 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							membershipEpoch: 8,
 						}),
 					).rejects.toThrow("membershipEpoch must not move backwards");
+				});
+			});
+
+			it("keeps grants and revocations isolated per scope", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("group-a");
+					await store.enrollDevice("group-a", {
+						deviceId: "device-a",
+						fingerprint: "fp-a",
+						publicKey: "pk-a",
+					});
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						groupId: "group-a",
+						membershipEpoch: 2,
+					});
+					await store.createScope({
+						scopeId: "scope-oss",
+						label: "OSS codemem",
+						groupId: "group-a",
+						membershipEpoch: 2,
+					});
+
+					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+					await store.grantScopeMembership({ scopeId: "scope-oss", deviceId: "device-a" });
+					expect(
+						await store.revokeScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							membershipEpoch: 3,
+						}),
+					).toBe(true);
+
+					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
+					expect(await store.listScopeMemberships("scope-acme", true)).toEqual([
+						expect.objectContaining({
+							device_id: "device-a",
+							status: "revoked",
+							membership_epoch: 3,
+						}),
+					]);
+					expect(await store.listScopeMemberships("scope-oss")).toEqual([
+						expect.objectContaining({
+							device_id: "device-a",
+							status: "active",
+							membership_epoch: 2,
+						}),
+					]);
+				});
+			});
+
+			it("keeps group presence independent from scope revocation", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("group-a");
+					await store.enrollDevice("group-a", {
+						deviceId: "device-a",
+						fingerprint: "fp-a",
+						publicKey: "pk-a",
+					});
+					await store.enrollDevice("group-a", {
+						deviceId: "device-b",
+						fingerprint: "fp-b",
+						publicKey: "pk-b",
+					});
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						groupId: "group-a",
+					});
+					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-b" });
+					await store.upsertPresence({
+						groupId: "group-a",
+						deviceId: "device-b",
+						addresses: ["http://10.0.0.5:7337"],
+						ttlS: 300,
+					});
+
+					expect(
+						await store.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-b" }),
+					).toBe(true);
+
+					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
+					expect(await store.listGroupPeers("group-a", "device-a")).toEqual([
+						expect.objectContaining({
+							device_id: "device-b",
+							fingerprint: "fp-b",
+							stale: false,
+							addresses: ["http://10.0.0.5:7337"],
+						}),
+					]);
 				});
 			});
 		});
@@ -912,6 +1011,14 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 				await withContext(async ({ store }) => {
 					expect(await store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:00Z")).toBe(true);
 					expect(await store.recordNonce("d1", "nonce-1", "2026-03-28T00:00:01Z")).toBe(false);
+				});
+			});
+
+			it("scopes nonce replay checks by device", async () => {
+				await withContext(async ({ store }) => {
+					expect(await store.recordNonce("d1", "shared-nonce", "2026-03-28T00:00:00Z")).toBe(true);
+					expect(await store.recordNonce("d2", "shared-nonce", "2026-03-28T00:00:00Z")).toBe(true);
+					expect(await store.recordNonce("d1", "shared-nonce", "2026-03-28T00:00:01Z")).toBe(false);
 				});
 			});
 
