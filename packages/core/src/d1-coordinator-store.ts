@@ -4,18 +4,24 @@ import type {
 	CoordinatorCreateInviteInput,
 	CoordinatorCreateJoinRequestInput,
 	CoordinatorCreateReciprocalApprovalInput,
+	CoordinatorCreateScopeInput,
 	CoordinatorEnrollDeviceInput,
 	CoordinatorEnrollment,
+	CoordinatorGrantScopeMembershipInput,
 	CoordinatorGroup,
 	CoordinatorInvite,
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
 	CoordinatorListReciprocalApprovalsInput,
+	CoordinatorListScopesInput,
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
 	CoordinatorReciprocalApproval,
 	CoordinatorReviewJoinRequestBootstrapGrantInput,
 	CoordinatorReviewJoinRequestInput,
+	CoordinatorRevokeScopeMembershipInput,
+	CoordinatorScope,
+	CoordinatorScopeMembership,
 	CoordinatorStore,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
@@ -143,6 +149,86 @@ function requireTrimmedBootstrapGrantInput(opts: CoordinatorCreateBootstrapGrant
 		throw new Error("groupId, seedDeviceId, workerDeviceId, and expiresAt are required.");
 	}
 	return { groupId, seedDeviceId, workerDeviceId, expiresAt, createdBy };
+}
+
+function clean(value: string | null | undefined): string | null {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : null;
+}
+
+function normalizeEpoch(value: number | null | undefined, fallback = 0): number {
+	if (value == null) return fallback;
+	if (!Number.isFinite(value) || value < 0)
+		throw new Error("membershipEpoch must be non-negative.");
+	return Math.trunc(value);
+}
+
+function normalizeCreateScopeInput(opts: CoordinatorCreateScopeInput) {
+	const scopeId = clean(opts.scopeId);
+	const label = clean(opts.label);
+	if (!scopeId || !label) throw new Error("scopeId and label are required.");
+	return {
+		scopeId,
+		label,
+		kind: clean(opts.kind) ?? "user",
+		authorityType: clean(opts.authorityType) ?? "coordinator",
+		coordinatorId: clean(opts.coordinatorId),
+		groupId: clean(opts.groupId),
+		manifestIssuerDeviceId: clean(opts.manifestIssuerDeviceId),
+		membershipEpoch: normalizeEpoch(opts.membershipEpoch),
+		manifestHash: clean(opts.manifestHash),
+		status: clean(opts.status) ?? "active",
+	};
+}
+
+function normalizeGrantInput(
+	opts: CoordinatorGrantScopeMembershipInput,
+	scope: CoordinatorScope | null,
+	existing: CoordinatorScopeMembership | null,
+) {
+	const scopeId = clean(opts.scopeId);
+	const deviceId = clean(opts.deviceId);
+	if (!scopeId || !deviceId) throw new Error("scopeId and deviceId are required.");
+	const coordinatorId = clean(opts.coordinatorId);
+	const groupId = clean(opts.groupId);
+	if (coordinatorId && coordinatorId !== scope?.coordinator_id) {
+		throw new Error("membership coordinatorId must match the scope coordinatorId.");
+	}
+	if (groupId && groupId !== scope?.group_id) {
+		throw new Error("membership groupId must match the scope groupId.");
+	}
+	const requestedEpoch = opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
+	const inheritedEpoch = scope?.membership_epoch ?? 0;
+	if (requestedEpoch != null && requestedEpoch < inheritedEpoch) {
+		throw new Error("membershipEpoch must not be lower than the scope membershipEpoch.");
+	}
+	if (requestedEpoch != null && existing) {
+		const minimumEpoch =
+			existing.status === "revoked" ? existing.membership_epoch + 1 : existing.membership_epoch;
+		if (requestedEpoch < minimumEpoch) {
+			throw new Error("membershipEpoch must not move backwards.");
+		}
+	}
+	const membershipEpoch =
+		requestedEpoch ??
+		(existing
+			? Math.max(
+					inheritedEpoch,
+					existing.membership_epoch + (existing.status === "revoked" ? 1 : 0),
+				)
+			: inheritedEpoch);
+	return {
+		scopeId,
+		deviceId,
+		role: clean(opts.role) ?? "member",
+		membershipEpoch,
+		coordinatorId: scope?.coordinator_id ?? null,
+		groupId: scope?.group_id ?? null,
+		manifestIssuerDeviceId:
+			clean(opts.manifestIssuerDeviceId) ?? scope?.manifest_issuer_device_id ?? null,
+		manifestHash: clean(opts.manifestHash) ?? scope?.manifest_hash ?? null,
+		signedManifestJson: clean(opts.signedManifestJson),
+	};
 }
 
 function normalizeBootstrapGrantRequest(
@@ -751,6 +837,199 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.bind(grantId),
 		);
 		return rowToRecord<CoordinatorBootstrapGrant>(row);
+	}
+
+	private async getScope(scopeId: string): Promise<CoordinatorScope | null> {
+		const row = await firstRow<CoordinatorScope>(
+			this.db
+				.prepare(`SELECT scope_id, label, kind, authority_type, coordinator_id, group_id,
+						manifest_issuer_device_id, membership_epoch, manifest_hash, status, created_at, updated_at
+					 FROM coordinator_scopes WHERE scope_id = ?`)
+				.bind(scopeId),
+		);
+		return row ? rowToRecord<CoordinatorScope>(row) : null;
+	}
+
+	private async getScopeMembership(
+		scopeId: string,
+		deviceId: string,
+	): Promise<CoordinatorScopeMembership | null> {
+		const row = await firstRow<CoordinatorScopeMembership>(
+			this.db
+				.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+					 FROM coordinator_scope_memberships
+					 WHERE scope_id = ? AND device_id = ?`)
+				.bind(scopeId, deviceId),
+		);
+		return row ? rowToRecord<CoordinatorScopeMembership>(row) : null;
+	}
+
+	async createScope(opts: CoordinatorCreateScopeInput): Promise<CoordinatorScope> {
+		const normalized = normalizeCreateScopeInput(opts);
+		if (await this.getScope(normalized.scopeId)) throw new Error("scopeId already exists.");
+		const now = nowISO();
+		await this.db
+			.prepare(`INSERT INTO coordinator_scopes(
+					scope_id, label, kind, authority_type, coordinator_id, group_id,
+					manifest_issuer_device_id, membership_epoch, manifest_hash, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.bind(
+				normalized.scopeId,
+				normalized.label,
+				normalized.kind,
+				normalized.authorityType,
+				normalized.coordinatorId,
+				normalized.groupId,
+				normalized.manifestIssuerDeviceId,
+				normalized.membershipEpoch,
+				normalized.manifestHash,
+				normalized.status,
+				now,
+				now,
+			)
+			.run();
+		const scope = await this.getScope(normalized.scopeId);
+		if (!scope) throw new Error("scope insert returned no row");
+		return scope;
+	}
+
+	async listScopes(opts: CoordinatorListScopesInput = {}): Promise<CoordinatorScope[]> {
+		const where: string[] = [];
+		const params: unknown[] = [];
+		const coordinatorId = clean(opts.coordinatorId);
+		const groupId = clean(opts.groupId);
+		const status = clean(opts.status);
+		if (coordinatorId) {
+			where.push("coordinator_id = ?");
+			params.push(coordinatorId);
+		}
+		if (groupId) {
+			where.push("group_id = ?");
+			params.push(groupId);
+		}
+		if (status) {
+			where.push("status = ?");
+			params.push(status);
+		} else if (!opts.includeInactive) {
+			where.push("status = 'active'");
+		}
+		const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+		const statement =
+			this.db.prepare(`SELECT scope_id, label, kind, authority_type, coordinator_id, group_id,
+				manifest_issuer_device_id, membership_epoch, manifest_hash, status, created_at, updated_at
+			 FROM coordinator_scopes ${whereSql}
+			 ORDER BY coordinator_id ASC, group_id ASC, scope_id ASC`);
+		return (
+			await allRows<CoordinatorScope>(params.length ? statement.bind(...params) : statement)
+		).map((row) => rowToRecord<CoordinatorScope>(row));
+	}
+
+	async grantScopeMembership(
+		opts: CoordinatorGrantScopeMembershipInput,
+	): Promise<CoordinatorScopeMembership> {
+		const scopeId = clean(opts.scopeId);
+		const deviceId = clean(opts.deviceId);
+		const scope = scopeId ? await this.getScope(scopeId) : null;
+		if (!scope) throw new Error("scopeId must reference an existing scope.");
+		const existing = scopeId && deviceId ? await this.getScopeMembership(scopeId, deviceId) : null;
+		const normalized = normalizeGrantInput(opts, scope, existing);
+		const now = nowISO();
+		await this.db
+			.prepare(`INSERT INTO coordinator_scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+					manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+				) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(scope_id, device_id) DO UPDATE SET
+					role = excluded.role,
+					status = 'active',
+					membership_epoch = excluded.membership_epoch,
+					coordinator_id = excluded.coordinator_id,
+					group_id = excluded.group_id,
+					manifest_issuer_device_id = excluded.manifest_issuer_device_id,
+					manifest_hash = excluded.manifest_hash,
+					signed_manifest_json = excluded.signed_manifest_json,
+					updated_at = excluded.updated_at
+				WHERE excluded.membership_epoch > coordinator_scope_memberships.membership_epoch
+				   OR (
+					excluded.membership_epoch = coordinator_scope_memberships.membership_epoch
+					AND coordinator_scope_memberships.status != 'revoked'
+				   )`)
+			.bind(
+				normalized.scopeId,
+				normalized.deviceId,
+				normalized.role,
+				normalized.membershipEpoch,
+				normalized.coordinatorId,
+				normalized.groupId,
+				normalized.manifestIssuerDeviceId,
+				normalized.manifestHash,
+				normalized.signedManifestJson,
+				now,
+			)
+			.run();
+		const row = await firstRow<CoordinatorScopeMembership>(
+			this.db
+				.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+					 FROM coordinator_scope_memberships
+					 WHERE scope_id = ? AND device_id = ?`)
+				.bind(normalized.scopeId, normalized.deviceId),
+		);
+		return rowToRecord<CoordinatorScopeMembership>(row);
+	}
+
+	async revokeScopeMembership(opts: CoordinatorRevokeScopeMembershipInput): Promise<boolean> {
+		const scopeId = clean(opts.scopeId);
+		const deviceId = clean(opts.deviceId);
+		if (!scopeId || !deviceId) throw new Error("scopeId and deviceId are required.");
+		const membershipEpoch =
+			opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
+		const existing = await this.getScopeMembership(scopeId, deviceId);
+		if (membershipEpoch != null && existing && membershipEpoch <= existing.membership_epoch) {
+			throw new Error("membershipEpoch must increase on revoke.");
+		}
+		return (
+			(await runChanges(
+				this.db
+					.prepare(`UPDATE coordinator_scope_memberships
+						 SET status = 'revoked',
+							 membership_epoch = CASE WHEN ? IS NULL THEN membership_epoch + 1 ELSE ? END,
+							 manifest_hash = COALESCE(?, manifest_hash),
+							 signed_manifest_json = COALESCE(?, signed_manifest_json),
+							 updated_at = ?
+						 WHERE scope_id = ? AND device_id = ?`)
+					.bind(
+						membershipEpoch,
+						membershipEpoch,
+						clean(opts.manifestHash),
+						clean(opts.signedManifestJson),
+						nowISO(),
+						scopeId,
+						deviceId,
+					),
+			)) > 0
+		);
+	}
+
+	async listScopeMemberships(
+		scopeId: string,
+		includeRevoked = false,
+	): Promise<CoordinatorScopeMembership[]> {
+		const normalizedScopeId = clean(scopeId);
+		if (!normalizedScopeId) throw new Error("scopeId is required.");
+		const statusWhere = includeRevoked ? "" : "AND status = 'active'";
+		return (
+			await allRows<CoordinatorScopeMembership>(
+				this.db
+					.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+							manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+						 FROM coordinator_scope_memberships
+						 WHERE scope_id = ? ${statusWhere}
+						 ORDER BY device_id ASC`)
+					.bind(normalizedScopeId),
+			)
+		).map((row) => rowToRecord<CoordinatorScopeMembership>(row));
 	}
 
 	async getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null> {
