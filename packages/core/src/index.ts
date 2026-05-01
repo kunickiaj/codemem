@@ -370,6 +370,24 @@ export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
 export * as schema from "./schema.js";
 export { bootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
 export type {
+	LegacyMemoryScopeClassification,
+	LegacyMemoryScopeInput,
+	ScopeBackfillOptions,
+	ScopeBackfillReason,
+	ScopeBackfillResult,
+	ScopeBackfillRunnerOptions,
+} from "./scope-backfill.js";
+export {
+	backfillScopeIds,
+	classifyLegacyMemoryScope,
+	ensureScopeBackfillScopes,
+	hasPendingScopeBackfill,
+	LEGACY_SHARED_REVIEW_SCOPE_ID,
+	runScopeBackfillPass,
+	SCOPE_BACKFILL_JOB,
+	ScopeBackfillRunner,
+} from "./scope-backfill.js";
+export type {
 	CanonicalWorkspaceIdentity,
 	ResolveProjectScopeInput,
 	ScopeMapping,
