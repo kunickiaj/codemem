@@ -369,6 +369,20 @@ export { findByConcept, findByFile } from "./ref-queries.js";
 export type { MaintenanceJob, NewMaintenanceJob } from "./schema.js";
 export * as schema from "./schema.js";
 export { bootstrapSchema, ensureSchemaBootstrapped } from "./schema-bootstrap.js";
+export type {
+	CanonicalWorkspaceIdentity,
+	ResolveProjectScopeInput,
+	ScopeMapping,
+	ScopeResolution,
+	ScopeResolutionReason,
+	WorkspaceIdentityInput,
+	WorkspaceIdentitySource,
+} from "./scope-resolution.js";
+export {
+	canonicalWorkspaceIdentity,
+	LOCAL_DEFAULT_SCOPE_ID,
+	resolveProjectScope,
+} from "./scope-resolution.js";
 export type { StoreHandle } from "./search.js";
 export {
 	dedupeOrderedIds,
