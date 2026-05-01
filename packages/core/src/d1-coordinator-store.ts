@@ -23,6 +23,7 @@ import type {
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 	CoordinatorStore,
+	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
 
@@ -178,6 +179,52 @@ function normalizeCreateScopeInput(opts: CoordinatorCreateScopeInput) {
 		membershipEpoch: normalizeEpoch(opts.membershipEpoch),
 		manifestHash: clean(opts.manifestHash),
 		status: clean(opts.status) ?? "active",
+	};
+}
+
+function cleanRequiredUpdate(
+	value: string | null | undefined,
+	current: string,
+	fieldName: string,
+): string {
+	if (value === undefined) return current;
+	const cleaned = clean(value);
+	if (!cleaned) throw new Error(`${fieldName} must not be empty.`);
+	return cleaned;
+}
+
+function cleanNullableUpdate(
+	value: string | null | undefined,
+	current: string | null,
+): string | null {
+	return value === undefined ? current : clean(value);
+}
+
+function normalizeUpdateScopeInput(opts: CoordinatorUpdateScopeInput, existing: CoordinatorScope) {
+	const scopeId = clean(opts.scopeId);
+	if (!scopeId) throw new Error("scopeId is required.");
+	const requestedEpoch = opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
+	if (requestedEpoch != null && requestedEpoch < existing.membership_epoch) {
+		throw new Error("membershipEpoch must not move backwards.");
+	}
+	return {
+		scopeId,
+		label: cleanRequiredUpdate(opts.label, existing.label, "label"),
+		kind: cleanRequiredUpdate(opts.kind, existing.kind, "kind"),
+		authorityType: cleanRequiredUpdate(
+			opts.authorityType,
+			existing.authority_type,
+			"authorityType",
+		),
+		coordinatorId: cleanNullableUpdate(opts.coordinatorId, existing.coordinator_id),
+		groupId: cleanNullableUpdate(opts.groupId, existing.group_id),
+		manifestIssuerDeviceId: cleanNullableUpdate(
+			opts.manifestIssuerDeviceId,
+			existing.manifest_issuer_device_id,
+		),
+		membershipEpoch: requestedEpoch ?? existing.membership_epoch,
+		manifestHash: cleanNullableUpdate(opts.manifestHash, existing.manifest_hash),
+		status: cleanRequiredUpdate(opts.status, existing.status, "status"),
 	};
 }
 
@@ -894,6 +941,41 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return scope;
 	}
 
+	async updateScope(opts: CoordinatorUpdateScopeInput): Promise<CoordinatorScope | null> {
+		const scopeId = clean(opts.scopeId);
+		const existing = scopeId ? await this.getScope(scopeId) : null;
+		if (!existing) return null;
+		const normalized = normalizeUpdateScopeInput(opts, existing);
+		await this.db
+			.prepare(`UPDATE coordinator_scopes
+				 SET label = ?,
+					 kind = ?,
+					 authority_type = ?,
+					 coordinator_id = ?,
+					 group_id = ?,
+					 manifest_issuer_device_id = ?,
+					 membership_epoch = ?,
+					 manifest_hash = ?,
+					 status = ?,
+					 updated_at = ?
+				 WHERE scope_id = ?`)
+			.bind(
+				normalized.label,
+				normalized.kind,
+				normalized.authorityType,
+				normalized.coordinatorId,
+				normalized.groupId,
+				normalized.manifestIssuerDeviceId,
+				normalized.membershipEpoch,
+				normalized.manifestHash,
+				normalized.status,
+				nowISO(),
+				normalized.scopeId,
+			)
+			.run();
+		return await this.getScope(normalized.scopeId);
+	}
+
 	async listScopes(opts: CoordinatorListScopesInput = {}): Promise<CoordinatorScope[]> {
 		const where: string[] = [];
 		const params: unknown[] = [];
@@ -934,6 +1016,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (!scope) throw new Error("scopeId must reference an existing scope.");
 		const existing = scopeId && deviceId ? await this.getScopeMembership(scopeId, deviceId) : null;
 		const normalized = normalizeGrantInput(opts, scope, existing);
+		if (normalized.groupId) {
+			const enrollment = await this.getEnrollment(normalized.groupId, normalized.deviceId);
+			if (!enrollment) {
+				throw new Error("device must be enrolled and enabled in the scope group.");
+			}
+		}
 		const now = nowISO();
 		await this.db
 			.prepare(`INSERT INTO coordinator_scope_memberships(

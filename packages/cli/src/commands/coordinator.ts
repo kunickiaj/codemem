@@ -17,17 +17,23 @@ import * as p from "@clack/prompts";
 import {
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
+	coordinatorCreateScopeAction,
 	coordinatorDisableDeviceAction,
 	coordinatorEnrollDeviceAction,
+	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
+	coordinatorListScopeMembershipsAction,
+	coordinatorListScopesAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
+	coordinatorRevokeScopeMembershipAction,
+	coordinatorUpdateScopeAction,
 	createBetterSqliteCoordinatorApp,
 	DEFAULT_COORDINATOR_DB_PATH,
 	fingerprintPublicKey,
@@ -54,6 +60,13 @@ function readCoordinatorPublicKey(opts: { publicKey?: string; publicKeyFile?: st
 	}
 	if (!inline) throw new Error("Public key required via --public-key or --public-key-file");
 	return inline;
+}
+
+function parseOptionalInteger(value: string | undefined, name: string): number | null {
+	if (value == null || !String(value).trim()) return null;
+	const parsed = Number.parseInt(String(value), 10);
+	if (!Number.isFinite(parsed)) throw new Error(`${name} must be an integer`);
+	return parsed;
 }
 
 /**
@@ -266,6 +279,421 @@ export function buildCoordinatorCommand(): Command {
 		},
 	);
 	cmd.addCommand(listDevicesCmd);
+
+	// ---- list-scopes ----
+
+	const listScopesCmd = new Command("list-scopes")
+		.configureHelp(helpStyle)
+		.description("List coordinator Sharing domains for a group")
+		.argument("<group>", "group id")
+		.option("--include-inactive", "include inactive Sharing domains")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override");
+	addDbOption(listScopesCmd);
+	addJsonOption(listScopesCmd);
+	listScopesCmd.action(
+		async (
+			groupId: string,
+			opts: {
+				includeInactive?: boolean;
+				remoteUrl?: string;
+				adminSecret?: string;
+				db?: string;
+				dbPath?: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				const rows = await coordinatorListScopesAction({
+					groupId,
+					includeInactive: opts.includeInactive === true,
+					dbPath: resolveDbOpt(opts) ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(rows, null, 2));
+					return;
+				}
+				p.intro("codemem coordinator list-scopes");
+				if (rows.length === 0) {
+					p.outro(`No Sharing domains for ${groupId.trim()}`);
+					return;
+				}
+				for (const row of rows) {
+					p.log.message(
+						`- ${row.label} (${row.scope_id}) status=${row.status} epoch=${row.membership_epoch}`,
+					);
+				}
+				p.outro(`${rows.length} Sharing domain(s)`);
+			} catch (err) {
+				if (opts.json) {
+					emitJsonError("list_scopes_failed", err instanceof Error ? err.message : String(err));
+					return;
+				}
+				p.log.error(err instanceof Error ? err.message : String(err));
+				process.exitCode = 1;
+			}
+		},
+	);
+	cmd.addCommand(listScopesCmd);
+
+	// ---- create-scope ----
+
+	const createScopeCmd = new Command("create-scope")
+		.configureHelp(helpStyle)
+		.description("Create a coordinator Sharing domain")
+		.argument("<group>", "group id")
+		.argument("<scope-id>", "Sharing domain scope_id")
+		.requiredOption("--label <label>", "Sharing domain label")
+		.option("--kind <kind>", "Sharing domain kind")
+		.option("--authority-type <type>", "authority type")
+		.option("--coordinator-id <id>", "coordinator id assertion")
+		.option("--membership-epoch <epoch>", "membership epoch")
+		.option("--manifest-hash <hash>", "membership manifest hash")
+		.option("--status <status>", "Sharing domain status")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override");
+	addDbOption(createScopeCmd);
+	addJsonOption(createScopeCmd);
+	createScopeCmd.action(
+		async (
+			groupId: string,
+			scopeId: string,
+			opts: {
+				label: string;
+				kind?: string;
+				authorityType?: string;
+				coordinatorId?: string;
+				membershipEpoch?: string;
+				manifestHash?: string;
+				status?: string;
+				remoteUrl?: string;
+				adminSecret?: string;
+				db?: string;
+				dbPath?: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				const scope = await coordinatorCreateScopeAction({
+					groupId,
+					scopeId,
+					label: opts.label.trim(),
+					kind: opts.kind?.trim() || null,
+					authorityType: opts.authorityType?.trim() || null,
+					coordinatorId: opts.coordinatorId?.trim() || null,
+					membershipEpoch: parseOptionalInteger(opts.membershipEpoch, "membership epoch"),
+					manifestHash: opts.manifestHash?.trim() || null,
+					status: opts.status?.trim() || null,
+					dbPath: resolveDbOpt(opts) ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(scope, null, 2));
+					return;
+				}
+				p.intro("codemem coordinator create-scope");
+				p.log.success(`Sharing domain ready: ${scope.scope_id}`);
+				p.outro(scope.label);
+			} catch (err) {
+				if (opts.json) {
+					emitJsonError("create_scope_failed", err instanceof Error ? err.message : String(err));
+					return;
+				}
+				p.log.error(err instanceof Error ? err.message : String(err));
+				process.exitCode = 1;
+			}
+		},
+	);
+	cmd.addCommand(createScopeCmd);
+
+	// ---- update-scope ----
+
+	const updateScopeCmd = new Command("update-scope")
+		.configureHelp(helpStyle)
+		.description("Update coordinator Sharing domain metadata")
+		.argument("<group>", "group id")
+		.argument("<scope-id>", "Sharing domain scope_id")
+		.option("--label <label>", "Sharing domain label")
+		.option("--kind <kind>", "Sharing domain kind")
+		.option("--authority-type <type>", "authority type")
+		.option("--coordinator-id <id>", "coordinator id assertion")
+		.option("--membership-epoch <epoch>", "membership epoch")
+		.option("--manifest-hash <hash>", "membership manifest hash")
+		.option("--status <status>", "Sharing domain status")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override");
+	addDbOption(updateScopeCmd);
+	addJsonOption(updateScopeCmd);
+	updateScopeCmd.action(
+		async (
+			groupId: string,
+			scopeId: string,
+			opts: {
+				label?: string;
+				kind?: string;
+				authorityType?: string;
+				coordinatorId?: string;
+				membershipEpoch?: string;
+				manifestHash?: string;
+				status?: string;
+				remoteUrl?: string;
+				adminSecret?: string;
+				db?: string;
+				dbPath?: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				const scope = await coordinatorUpdateScopeAction({
+					groupId,
+					scopeId,
+					label: opts.label?.trim(),
+					kind: opts.kind?.trim(),
+					authorityType: opts.authorityType?.trim(),
+					coordinatorId: opts.coordinatorId?.trim(),
+					membershipEpoch: parseOptionalInteger(opts.membershipEpoch, "membership epoch"),
+					manifestHash: opts.manifestHash?.trim(),
+					status: opts.status?.trim(),
+					dbPath: resolveDbOpt(opts) ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (!scope) {
+					if (opts.json) {
+						emitJsonError("scope_not_found", `Sharing domain not found: ${scopeId.trim()}`);
+						return;
+					}
+					p.log.error(`Sharing domain not found: ${scopeId.trim()}`);
+					process.exitCode = 1;
+					return;
+				}
+				if (opts.json) {
+					console.log(JSON.stringify(scope, null, 2));
+					return;
+				}
+				p.intro("codemem coordinator update-scope");
+				p.log.success(`Updated Sharing domain: ${scope.scope_id}`);
+				p.outro(scope.label);
+			} catch (err) {
+				if (opts.json) {
+					emitJsonError("update_scope_failed", err instanceof Error ? err.message : String(err));
+					return;
+				}
+				p.log.error(err instanceof Error ? err.message : String(err));
+				process.exitCode = 1;
+			}
+		},
+	);
+	cmd.addCommand(updateScopeCmd);
+
+	// ---- list-scope-members ----
+
+	const listScopeMembersCmd = new Command("list-scope-members")
+		.configureHelp(helpStyle)
+		.description("List explicit members of a Sharing domain")
+		.argument("<group>", "group id")
+		.argument("<scope-id>", "Sharing domain scope_id")
+		.option("--include-revoked", "include revoked memberships")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override");
+	addDbOption(listScopeMembersCmd);
+	addJsonOption(listScopeMembersCmd);
+	listScopeMembersCmd.action(
+		async (
+			groupId: string,
+			scopeId: string,
+			opts: {
+				includeRevoked?: boolean;
+				remoteUrl?: string;
+				adminSecret?: string;
+				db?: string;
+				dbPath?: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				const rows = await coordinatorListScopeMembershipsAction({
+					groupId,
+					scopeId,
+					includeRevoked: opts.includeRevoked === true,
+					dbPath: resolveDbOpt(opts) ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(rows, null, 2));
+					return;
+				}
+				p.intro("codemem coordinator list-scope-members");
+				if (rows.length === 0) {
+					p.outro(`No members for Sharing domain ${scopeId.trim()}`);
+					return;
+				}
+				for (const row of rows) {
+					p.log.message(
+						`- ${row.device_id} role=${row.role} status=${row.status} epoch=${row.membership_epoch}`,
+					);
+				}
+				p.outro(`${rows.length} member(s)`);
+			} catch (err) {
+				if (opts.json) {
+					emitJsonError(
+						"list_scope_members_failed",
+						err instanceof Error ? err.message : String(err),
+					);
+					return;
+				}
+				p.log.error(err instanceof Error ? err.message : String(err));
+				process.exitCode = 1;
+			}
+		},
+	);
+	cmd.addCommand(listScopeMembersCmd);
+
+	// ---- grant-scope-member ----
+
+	const grantScopeMemberCmd = new Command("grant-scope-member")
+		.configureHelp(helpStyle)
+		.description("Grant a device explicit access to a Sharing domain")
+		.argument("<group>", "group id")
+		.argument("<scope-id>", "Sharing domain scope_id")
+		.argument("<device-id>", "device id")
+		.option("--role <role>", "membership role")
+		.option("--membership-epoch <epoch>", "membership epoch")
+		.option("--manifest-hash <hash>", "membership manifest hash")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override");
+	addDbOption(grantScopeMemberCmd);
+	addJsonOption(grantScopeMemberCmd);
+	grantScopeMemberCmd.action(
+		async (
+			groupId: string,
+			scopeId: string,
+			deviceId: string,
+			opts: {
+				role?: string;
+				membershipEpoch?: string;
+				manifestHash?: string;
+				remoteUrl?: string;
+				adminSecret?: string;
+				db?: string;
+				dbPath?: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				const membership = await coordinatorGrantScopeMembershipAction({
+					groupId,
+					scopeId,
+					deviceId,
+					role: opts.role?.trim() || null,
+					membershipEpoch: parseOptionalInteger(opts.membershipEpoch, "membership epoch"),
+					manifestHash: opts.manifestHash?.trim() || null,
+					dbPath: resolveDbOpt(opts) ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (opts.json) {
+					console.log(JSON.stringify(membership, null, 2));
+					return;
+				}
+				p.intro("codemem coordinator grant-scope-member");
+				p.log.success(`Granted ${deviceId.trim()} to Sharing domain ${scopeId.trim()}`);
+				p.outro(membership.role);
+			} catch (err) {
+				if (opts.json) {
+					emitJsonError(
+						"grant_scope_member_failed",
+						err instanceof Error ? err.message : String(err),
+					);
+					return;
+				}
+				p.log.error(err instanceof Error ? err.message : String(err));
+				process.exitCode = 1;
+			}
+		},
+	);
+	cmd.addCommand(grantScopeMemberCmd);
+
+	// ---- revoke-scope-member ----
+
+	const revokeScopeMemberCmd = new Command("revoke-scope-member")
+		.configureHelp(helpStyle)
+		.description("Revoke a device from a Sharing domain")
+		.argument("<group>", "group id")
+		.argument("<scope-id>", "Sharing domain scope_id")
+		.argument("<device-id>", "device id")
+		.option("--membership-epoch <epoch>", "membership epoch")
+		.option("--manifest-hash <hash>", "membership manifest hash")
+		.option("--remote-url <url>", "remote coordinator URL override")
+		.option("--admin-secret <secret>", "remote coordinator admin secret override");
+	addDbOption(revokeScopeMemberCmd);
+	addJsonOption(revokeScopeMemberCmd);
+	revokeScopeMemberCmd.action(
+		async (
+			groupId: string,
+			scopeId: string,
+			deviceId: string,
+			opts: {
+				membershipEpoch?: string;
+				manifestHash?: string;
+				remoteUrl?: string;
+				adminSecret?: string;
+				db?: string;
+				dbPath?: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				const ok = await coordinatorRevokeScopeMembershipAction({
+					groupId,
+					scopeId,
+					deviceId,
+					membershipEpoch: parseOptionalInteger(opts.membershipEpoch, "membership epoch"),
+					manifestHash: opts.manifestHash?.trim() || null,
+					dbPath: resolveDbOpt(opts) ?? null,
+					remoteUrl: opts.remoteUrl?.trim() || null,
+					adminSecret: opts.adminSecret?.trim() || null,
+				});
+				if (!ok) {
+					if (opts.json) {
+						emitJsonError("scope_membership_not_found", "Sharing domain membership not found");
+						return;
+					}
+					p.log.error("Sharing domain membership not found");
+					process.exitCode = 1;
+					return;
+				}
+				if (opts.json) {
+					console.log(
+						JSON.stringify(
+							{ ok: true, scope_id: scopeId.trim(), device_id: deviceId.trim() },
+							null,
+							2,
+						),
+					);
+					return;
+				}
+				p.intro("codemem coordinator revoke-scope-member");
+				p.log.success(`Revoked ${deviceId.trim()} from Sharing domain ${scopeId.trim()}`);
+				p.outro("revoked");
+			} catch (err) {
+				if (opts.json) {
+					emitJsonError(
+						"revoke_scope_member_failed",
+						err instanceof Error ? err.message : String(err),
+					);
+					return;
+				}
+				p.log.error(err instanceof Error ? err.message : String(err));
+				process.exitCode = 1;
+			}
+		},
+	);
+	cmd.addCommand(revokeScopeMemberCmd);
 
 	// ---- rename-device ----
 

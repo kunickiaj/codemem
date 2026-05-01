@@ -5323,6 +5323,265 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("gates coordinator Sharing domain admin routes without an admin secret", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			const prevFetch = globalThis.fetch;
+			const fetchMock = vi.fn();
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const res = await app.request("/api/coordinator/admin/groups/team-a/scopes");
+					expect(res.status).toBe(400);
+					expect(await res.json()).toMatchObject({
+						error: "coordinator_admin_secret_missing",
+						status: { readiness: "partial", has_admin_secret: false },
+					});
+					expect(fetchMock).not.toHaveBeenCalled();
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevSecret;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
+		it("proxies coordinator Sharing domain metadata routes without relaying memory payloads", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			const bodyJson = (init: RequestInit | undefined): Record<string, unknown> => {
+				const body = init?.body;
+				if (body instanceof Uint8Array) {
+					return JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+				}
+				if (typeof body === "string") return JSON.parse(body) as Record<string, unknown>;
+				return {};
+			};
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/groups/team-a/scopes?include_inactive=1")) {
+					return new Response(
+						JSON.stringify({
+							items: [{ scope_id: "scope-a", group_id: "team-a", label: "Scope A" }],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.endsWith("/v1/admin/groups/team-a/scopes")) {
+					return new Response(
+						JSON.stringify({
+							scope: { scope_id: "scope-b", group_id: "team-a", label: "Scope B" },
+						}),
+						{ status: 201 },
+					);
+				}
+				if (url.endsWith("/v1/admin/groups/team-a/scopes/scope-b")) {
+					return new Response(
+						JSON.stringify({
+							scope: { scope_id: "scope-b", group_id: "team-a", label: "Renamed" },
+						}),
+						{ status: 200 },
+					);
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = "secret";
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const listed = await app.request(
+						"/api/coordinator/admin/groups/team-a/scopes?include_inactive=1",
+					);
+					expect(listed.status).toBe(200);
+					expect(await listed.json()).toMatchObject({
+						group_id: "team-a",
+						items: [expect.objectContaining({ scope_id: "scope-a" })],
+					});
+
+					const created = await app.request("/api/coordinator/admin/groups/team-a/scopes", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							scope_id: "scope-b",
+							label: "Scope B",
+							membership_epoch: 2,
+							memory_payload: { id: 1 },
+						}),
+					});
+					expect(created.status).toBe(200);
+					const createdBody = (await created.json()) as Record<string, unknown>;
+					expect(createdBody).toMatchObject({
+						status: { has_admin_secret: true },
+					});
+					expect(createdBody).not.toHaveProperty("sync_coordinator_admin_secret");
+					expect(Object.values(createdBody.status as Record<string, unknown>)).not.toContain(
+						"secret",
+					);
+
+					const updated = await app.request("/api/coordinator/admin/groups/team-a/scopes/scope-b", {
+						method: "PATCH",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ label: "Renamed", memory_items: [{ id: 1 }] }),
+					});
+					expect(updated.status).toBe(200);
+
+					const calls = fetchMock.mock.calls;
+					expect(calls).toHaveLength(3);
+					for (const call of calls) {
+						const init = call[1] as RequestInit | undefined;
+						const headers = init?.headers as Record<string, string> | undefined;
+						expect(headers?.["X-Codemem-Coordinator-Admin"]).toBe("secret");
+					}
+					const createBody = bodyJson(calls[1]?.[1] as RequestInit | undefined);
+					expect(createBody).toMatchObject({ scope_id: "scope-b", membership_epoch: 2 });
+					expect(createBody).not.toHaveProperty("memory_payload");
+					const updateBody = bodyJson(calls[2]?.[1] as RequestInit | undefined);
+					expect(updateBody).toMatchObject({ label: "Renamed" });
+					expect(updateBody).not.toHaveProperty("memory_items");
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevSecret;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
+		it("proxies coordinator Sharing domain membership routes without relaying memory payloads", async () => {
+			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+			const prevConfig = process.env.CODEMEM_CONFIG;
+			const prevSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			const bodyJson = (init: RequestInit | undefined): Record<string, unknown> => {
+				const body = init?.body;
+				if (body instanceof Uint8Array) {
+					return JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+				}
+				if (typeof body === "string") return JSON.parse(body) as Record<string, unknown>;
+				return {};
+			};
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/v1/admin/groups/team-a/scopes/scope-a/members?include_revoked=1")) {
+					return new Response(
+						JSON.stringify({
+							items: [{ scope_id: "scope-a", group_id: "team-a", device_id: "device-1" }],
+						}),
+						{ status: 200 },
+					);
+				}
+				if (url.endsWith("/v1/admin/groups/team-a/scopes/scope-a/members")) {
+					return new Response(
+						JSON.stringify({
+							membership: { scope_id: "scope-a", group_id: "team-a", device_id: "device-1" },
+						}),
+						{ status: 201 },
+					);
+				}
+				if (url.endsWith("/v1/admin/groups/team-a/scopes/scope-a/members/device-1/revoke")) {
+					return new Response(JSON.stringify({ ok: true }), { status: 200 });
+				}
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+			});
+			const prevFetch = globalThis.fetch;
+			try {
+				process.env.CODEMEM_CONFIG = configPath;
+				process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = "secret";
+				writeFileSync(
+					configPath,
+					JSON.stringify({
+						sync_coordinator_url: "https://coord.example.test",
+						sync_coordinator_group: "team-a",
+						sync_coordinator_admin_secret: "secret",
+					}),
+				);
+				globalThis.fetch = fetchMock as typeof fetch;
+				const { app, cleanup } = createTestApp();
+				try {
+					const listed = await app.request(
+						"/api/coordinator/admin/groups/team-a/scopes/scope-a/members?include_revoked=1",
+					);
+					expect(listed.status).toBe(200);
+					expect(await listed.json()).toMatchObject({
+						group_id: "team-a",
+						scope_id: "scope-a",
+						items: [expect.objectContaining({ device_id: "device-1" })],
+					});
+
+					const granted = await app.request(
+						"/api/coordinator/admin/groups/team-a/scopes/scope-a/members",
+						{
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({
+								device_id: "device-1",
+								role: "reader",
+								membership_epoch: 3,
+								memory_payload: { id: 1 },
+							}),
+						},
+					);
+					expect(granted.status).toBe(200);
+
+					const revoked = await app.request(
+						"/api/coordinator/admin/groups/team-a/scopes/scope-a/members/device-1/revoke",
+						{
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({ membership_epoch: 4, memory_items: [{ id: 1 }] }),
+						},
+					);
+					expect(revoked.status).toBe(200);
+
+					const calls = fetchMock.mock.calls;
+					expect(calls).toHaveLength(3);
+					const grantBody = bodyJson(calls[1]?.[1] as RequestInit | undefined);
+					expect(grantBody).toMatchObject({ device_id: "device-1", role: "reader" });
+					expect(grantBody).not.toHaveProperty("memory_payload");
+					const revokeBody = bodyJson(calls[2]?.[1] as RequestInit | undefined);
+					expect(revokeBody).toMatchObject({ membership_epoch: 4 });
+					expect(revokeBody).not.toHaveProperty("memory_items");
+				} finally {
+					cleanup();
+				}
+			} finally {
+				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+				else process.env.CODEMEM_CONFIG = prevConfig;
+				if (prevSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+				else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevSecret;
+				globalThis.fetch = prevFetch;
+			}
+		});
+
 		it("reviews coordinator join requests through the admin route", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;

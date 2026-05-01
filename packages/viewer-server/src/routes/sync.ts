@@ -20,20 +20,26 @@ import {
 	coordinatorArchiveGroupAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
+	coordinatorCreateScopeAction,
 	coordinatorDisableDeviceAction,
 	coordinatorEnableDeviceAction,
+	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
+	coordinatorListScopeMembershipsAction,
+	coordinatorListScopesAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
 	coordinatorRenameGroupAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
+	coordinatorRevokeScopeMembershipAction,
 	coordinatorStatusSnapshot,
 	coordinatorUnarchiveGroupAction,
+	coordinatorUpdateScopeAction,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
 	ensureDeviceIdentity,
@@ -189,6 +195,78 @@ function coordinatorAdminStatusPayload(config = readCoordinatorSyncConfig()) {
 		has_admin_secret: hasAdminSecret,
 		has_groups: hasGroups,
 	};
+}
+
+function coordinatorAdminUnavailable(status: ReturnType<typeof coordinatorAdminStatusPayload>): {
+	body: Record<string, unknown>;
+	httpStatus: 400;
+} | null {
+	if (status.readiness === "not_configured") {
+		return { body: { error: "coordinator_not_configured", status }, httpStatus: 400 };
+	}
+	if (!status.has_admin_secret) {
+		return { body: { error: "coordinator_admin_secret_missing", status }, httpStatus: 400 };
+	}
+	return null;
+}
+
+async function parseViewerJsonBody(
+	c: Context,
+	options: { allowEmpty?: boolean } = {},
+): Promise<Record<string, unknown> | null> {
+	const raw = await c.req.text();
+	if (!raw.trim()) return options.allowEmpty ? {} : null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		return parsed as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
+function optionalViewerString(body: Record<string, unknown>, key: string): string | null {
+	const value = body[key];
+	if (value == null) return null;
+	return String(value).trim() || null;
+}
+
+function optionalViewerNumber(body: Record<string, unknown>, key: string): number | null {
+	const value = body[key];
+	if (value == null || value === "") return null;
+	const number = typeof value === "number" ? value : Number(value);
+	return Number.isFinite(number) ? Math.trunc(number) : Number.NaN;
+}
+
+function coordinatorAdminMutationStatus(message: string): 400 | 404 | 409 | 502 {
+	if (
+		message.includes("scope_not_found") ||
+		message.includes("membership_not_found") ||
+		message.includes("group_not_found") ||
+		message.includes("Group not found") ||
+		message.includes("Scope not found") ||
+		message.includes("device_not_enrolled_for_scope_group") ||
+		message.includes("device must be enrolled")
+	) {
+		return 404;
+	}
+	if (
+		message.includes("not active") ||
+		message.includes("scope_not_active") ||
+		message.includes("group_archived") ||
+		message.includes("Group is archived")
+	) {
+		return 409;
+	}
+	if (
+		message.includes("Remote coordinator request failed (5") ||
+		message.includes("fetch failed") ||
+		message.includes("network") ||
+		message.includes("timed out")
+	) {
+		return 502;
+	}
+	return 400;
 }
 
 function pairingAdvertiseAddresses(config = readCoordinatorSyncConfig()): string[] {
@@ -2328,7 +2406,7 @@ export function syncRoutes(
 			return c.json({ items, status });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "unknown";
-			return c.json({ error: message, status }, 502);
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
 		}
 	});
 
@@ -2444,6 +2522,222 @@ export function syncRoutes(
 		}
 	});
 
+	app.get("/api/coordinator/admin/groups/:group_id/scopes", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		try {
+			const items = await coordinatorListScopesAction({
+				groupId,
+				includeInactive: queryBool(c.req.query("include_inactive")),
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ items, group_id: groupId, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown";
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
+		}
+	});
+
+	app.post("/api/coordinator/admin/groups/:group_id/scopes", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json", status }, 400);
+		const scopeId = optionalViewerString(body, "scope_id");
+		const label = optionalViewerString(body, "label");
+		const membershipEpoch = optionalViewerNumber(body, "membership_epoch");
+		if (!scopeId || !label) return c.json({ error: "scope_id and label required", status }, 400);
+		if (Number.isNaN(membershipEpoch)) {
+			return c.json({ error: "membership_epoch must be number", status }, 400);
+		}
+		try {
+			const scope = await coordinatorCreateScopeAction({
+				groupId,
+				scopeId,
+				label,
+				kind: optionalViewerString(body, "kind"),
+				authorityType: optionalViewerString(body, "authority_type"),
+				coordinatorId: optionalViewerString(body, "coordinator_id"),
+				manifestIssuerDeviceId: optionalViewerString(body, "manifest_issuer_device_id"),
+				membershipEpoch,
+				manifestHash: optionalViewerString(body, "manifest_hash"),
+				status: optionalViewerString(body, "status"),
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ ok: true, scope, group_id: groupId, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
+		}
+	});
+
+	app.patch("/api/coordinator/admin/groups/:group_id/scopes/:scope_id", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		if (!scopeId) return c.json({ error: "scope_id required", status }, 400);
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json", status }, 400);
+		const membershipEpoch = optionalViewerNumber(body, "membership_epoch");
+		if (Number.isNaN(membershipEpoch)) {
+			return c.json({ error: "membership_epoch must be number", status }, 400);
+		}
+		try {
+			const scope = await coordinatorUpdateScopeAction({
+				groupId,
+				scopeId,
+				label: body.label === undefined ? undefined : optionalViewerString(body, "label"),
+				kind: body.kind === undefined ? undefined : optionalViewerString(body, "kind"),
+				authorityType:
+					body.authority_type === undefined
+						? undefined
+						: optionalViewerString(body, "authority_type"),
+				coordinatorId:
+					body.coordinator_id === undefined
+						? undefined
+						: optionalViewerString(body, "coordinator_id"),
+				manifestIssuerDeviceId:
+					body.manifest_issuer_device_id === undefined
+						? undefined
+						: optionalViewerString(body, "manifest_issuer_device_id"),
+				membershipEpoch,
+				manifestHash:
+					body.manifest_hash === undefined
+						? undefined
+						: optionalViewerString(body, "manifest_hash"),
+				status: body.status === undefined ? undefined : optionalViewerString(body, "status"),
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			if (!scope) return c.json({ error: "scope_not_found", status }, 404);
+			return c.json({ ok: true, scope, group_id: groupId, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
+		}
+	});
+
+	app.get("/api/coordinator/admin/groups/:group_id/scopes/:scope_id/members", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		if (!scopeId) return c.json({ error: "scope_id required", status }, 400);
+		try {
+			const items = await coordinatorListScopeMembershipsAction({
+				groupId,
+				scopeId,
+				includeRevoked: queryBool(c.req.query("include_revoked")),
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ items, group_id: groupId, scope_id: scopeId, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown";
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
+		}
+	});
+
+	app.post("/api/coordinator/admin/groups/:group_id/scopes/:scope_id/members", async (c) => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		if (!groupId) return c.json({ error: "group_id required", status }, 400);
+		if (!scopeId) return c.json({ error: "scope_id required", status }, 400);
+		const body = await parseViewerJsonBody(c);
+		if (!body) return c.json({ error: "invalid json", status }, 400);
+		const deviceId = optionalViewerString(body, "device_id");
+		const membershipEpoch = optionalViewerNumber(body, "membership_epoch");
+		if (!deviceId) return c.json({ error: "device_id required", status }, 400);
+		if (Number.isNaN(membershipEpoch)) {
+			return c.json({ error: "membership_epoch must be number", status }, 400);
+		}
+		try {
+			const membership = await coordinatorGrantScopeMembershipAction({
+				groupId,
+				scopeId,
+				deviceId,
+				role: optionalViewerString(body, "role"),
+				membershipEpoch,
+				coordinatorId: optionalViewerString(body, "coordinator_id"),
+				manifestIssuerDeviceId: optionalViewerString(body, "manifest_issuer_device_id"),
+				manifestHash: optionalViewerString(body, "manifest_hash"),
+				signedManifestJson: optionalViewerString(body, "signed_manifest_json"),
+				remoteUrl: config.syncCoordinatorUrl || null,
+				adminSecret: config.syncCoordinatorAdminSecret || null,
+			});
+			return c.json({ ok: true, membership, group_id: groupId, scope_id: scopeId, status });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
+		}
+	});
+
+	app.post(
+		"/api/coordinator/admin/groups/:group_id/scopes/:scope_id/members/:device_id/revoke",
+		async (c) => {
+			const config = readCoordinatorSyncConfig();
+			const status = coordinatorAdminStatusPayload(config);
+			const unavailable = coordinatorAdminUnavailable(status);
+			if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+			const groupId = String(c.req.param("group_id") ?? "").trim();
+			const scopeId = String(c.req.param("scope_id") ?? "").trim();
+			const deviceId = String(c.req.param("device_id") ?? "").trim();
+			if (!groupId) return c.json({ error: "group_id required", status }, 400);
+			if (!scopeId) return c.json({ error: "scope_id required", status }, 400);
+			if (!deviceId) return c.json({ error: "device_id required", status }, 400);
+			const body = await parseViewerJsonBody(c, { allowEmpty: true });
+			if (!body) return c.json({ error: "invalid json", status }, 400);
+			const membershipEpoch = optionalViewerNumber(body, "membership_epoch");
+			if (Number.isNaN(membershipEpoch)) {
+				return c.json({ error: "membership_epoch must be number", status }, 400);
+			}
+			try {
+				const ok = await coordinatorRevokeScopeMembershipAction({
+					groupId,
+					scopeId,
+					deviceId,
+					membershipEpoch,
+					manifestHash: optionalViewerString(body, "manifest_hash"),
+					signedManifestJson: optionalViewerString(body, "signed_manifest_json"),
+					remoteUrl: config.syncCoordinatorUrl || null,
+					adminSecret: config.syncCoordinatorAdminSecret || null,
+				});
+				if (!ok) return c.json({ error: "membership_not_found", status }, 404);
+				return c.json({
+					ok: true,
+					group_id: groupId,
+					scope_id: scopeId,
+					device_id: deviceId,
+					status,
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
+			}
+		},
+	);
+
 	app.post("/api/coordinator/admin/invites", async (c) => {
 		const config = readCoordinatorSyncConfig();
 		const status = coordinatorAdminStatusPayload(config);
@@ -2509,7 +2803,7 @@ export function syncRoutes(
 			return c.json({ items, group_id: groupId, status });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "unknown";
-			return c.json({ error: message, status }, 502);
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
 		}
 	});
 
@@ -2594,7 +2888,7 @@ export function syncRoutes(
 			return c.json({ items, group_id: groupId, status });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "unknown";
-			return c.json({ error: message, status }, 502);
+			return c.json({ error: message, status }, coordinatorAdminMutationStatus(message));
 		}
 	});
 

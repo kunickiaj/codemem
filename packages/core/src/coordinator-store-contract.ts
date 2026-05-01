@@ -186,6 +186,21 @@ export interface CoordinatorCreateScopeInput {
 	status?: string | null;
 }
 
+export interface CoordinatorUpdateScopeInput {
+	/** Internal sharing-domain identifier (`scope_id`). */
+	scopeId: string;
+	/** User-facing Sharing domain label. Omitted fields keep existing metadata. */
+	label?: string | null;
+	kind?: string | null;
+	authorityType?: string | null;
+	coordinatorId?: string | null;
+	groupId?: string | null;
+	manifestIssuerDeviceId?: string | null;
+	membershipEpoch?: number | null;
+	manifestHash?: string | null;
+	status?: string | null;
+}
+
 export interface CoordinatorListScopesInput {
 	coordinatorId?: string | null;
 	groupId?: string | null;
@@ -253,6 +268,7 @@ export interface CoordinatorStore {
 		opts: CoordinatorCreateBootstrapGrantInput,
 	): Promise<CoordinatorBootstrapGrant>;
 	createScope(opts: CoordinatorCreateScopeInput): Promise<CoordinatorScope>;
+	updateScope(opts: CoordinatorUpdateScopeInput): Promise<CoordinatorScope | null>;
 	listScopes(opts?: CoordinatorListScopesInput): Promise<CoordinatorScope[]>;
 	grantScopeMembership(
 		opts: CoordinatorGrantScopeMembershipInput,

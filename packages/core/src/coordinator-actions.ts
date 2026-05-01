@@ -14,9 +14,13 @@ import {
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorEnrollment,
+	CoordinatorGrantScopeMembershipInput,
 	CoordinatorGroup,
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
+	CoordinatorRevokeScopeMembershipInput,
+	CoordinatorScope,
+	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
 import { connect } from "./db.js";
 import { initDatabase } from "./maintenance.js";
@@ -32,13 +36,12 @@ function coordinatorRemoteTarget(config = readCodememConfigFile()): {
 	adminSecret: string | null;
 } {
 	const remoteUrl = String(config.sync_coordinator_url ?? "").trim() || null;
-	const adminSecret = remoteUrl
-		? String(
-				process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ??
-					config.sync_coordinator_admin_secret ??
-					"",
-			).trim() || null
-		: null;
+	const adminSecret =
+		String(
+			process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ??
+				config.sync_coordinator_admin_secret ??
+				"",
+		).trim() || null;
 	return { remoteUrl, adminSecret };
 }
 
@@ -138,6 +141,28 @@ function inviteUrlWarnings(rawUrl: string | null | undefined): string[] {
 		];
 	}
 	return [];
+}
+
+async function requireLocalActiveGroup(
+	store: BetterSqliteCoordinatorStore,
+	groupId: string,
+): Promise<void> {
+	const group = await store.getGroup(groupId);
+	if (!group) throw new Error(`Group not found: ${groupId}`);
+	if (group.archived_at) throw new Error(`Group is archived: ${groupId}`);
+}
+
+async function localScopeForGroup(
+	store: BetterSqliteCoordinatorStore,
+	groupId: string,
+	scopeId: string,
+): Promise<CoordinatorScope | null> {
+	await requireLocalActiveGroup(store, groupId);
+	return (
+		(await store.listScopes({ groupId, includeInactive: true })).find(
+			(scope) => scope.scope_id === scopeId,
+		) ?? null
+	);
 }
 
 function inviteImportTransportError(error: unknown, coordinatorUrl: string): Error {
@@ -332,6 +357,324 @@ export async function coordinatorListGroupsAction(opts?: {
 	const store = new BetterSqliteCoordinatorStore(opts?.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {
 		return await store.listGroups(includeArchived);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorListScopesAction(opts: {
+	groupId: string;
+	includeInactive?: boolean;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorScope[]> {
+	const groupId = String(opts.groupId ?? "").trim();
+	if (!groupId) throw new Error("Group id required.");
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret ?? target.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"GET",
+			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes${opts.includeInactive ? "?include_inactive=1" : ""}`,
+			adminSecret,
+		);
+		return Array.isArray(payload?.items)
+			? payload.items.filter(
+					(row): row is CoordinatorScope => Boolean(row) && typeof row === "object",
+				)
+			: [];
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		await requireLocalActiveGroup(store, groupId);
+		return await store.listScopes({ groupId, includeInactive: opts.includeInactive === true });
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorCreateScopeAction(opts: {
+	groupId: string;
+	scopeId: string;
+	label: string;
+	kind?: string | null;
+	authorityType?: string | null;
+	coordinatorId?: string | null;
+	manifestIssuerDeviceId?: string | null;
+	membershipEpoch?: number | null;
+	manifestHash?: string | null;
+	status?: string | null;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorScope> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const scopeId = String(opts.scopeId ?? "").trim();
+	const label = String(opts.label ?? "").trim();
+	if (!groupId || !scopeId || !label)
+		throw new Error("group_id, scope_id, and label are required.");
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret ?? target.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"POST",
+			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes`,
+			adminSecret,
+			{
+				scope_id: scopeId,
+				label,
+				kind: opts.kind ?? null,
+				authority_type: opts.authorityType ?? null,
+				coordinator_id: opts.coordinatorId ?? null,
+				manifest_issuer_device_id: opts.manifestIssuerDeviceId ?? null,
+				membership_epoch: opts.membershipEpoch ?? null,
+				manifest_hash: opts.manifestHash ?? null,
+				status: opts.status ?? null,
+			},
+		);
+		const scope = payload?.scope;
+		if (!scope || typeof scope !== "object") {
+			throw new Error("Remote coordinator did not return scope payload.");
+		}
+		return scope as CoordinatorScope;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		await requireLocalActiveGroup(store, groupId);
+		return await store.createScope({
+			scopeId,
+			label,
+			kind: opts.kind ?? null,
+			authorityType: opts.authorityType ?? null,
+			coordinatorId: opts.coordinatorId ?? null,
+			groupId,
+			manifestIssuerDeviceId: opts.manifestIssuerDeviceId ?? null,
+			membershipEpoch: opts.membershipEpoch ?? null,
+			manifestHash: opts.manifestHash ?? null,
+			status: opts.status ?? null,
+		});
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorUpdateScopeAction(opts: {
+	groupId: string;
+	scopeId: string;
+	label?: string | null;
+	kind?: string | null;
+	authorityType?: string | null;
+	coordinatorId?: string | null;
+	manifestIssuerDeviceId?: string | null;
+	membershipEpoch?: number | null;
+	manifestHash?: string | null;
+	status?: string | null;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorScope | null> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const scopeId = String(opts.scopeId ?? "").trim();
+	if (!groupId || !scopeId) throw new Error("group_id and scope_id are required.");
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret ?? target.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		let payload: Record<string, unknown> | null;
+		try {
+			payload = await remoteRequest(
+				"PATCH",
+				`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}`,
+				adminSecret,
+				{
+					label: opts.label ?? undefined,
+					kind: opts.kind ?? undefined,
+					authority_type: opts.authorityType ?? undefined,
+					coordinator_id: opts.coordinatorId ?? undefined,
+					manifest_issuer_device_id: opts.manifestIssuerDeviceId ?? undefined,
+					membership_epoch: opts.membershipEpoch ?? undefined,
+					manifest_hash: opts.manifestHash ?? undefined,
+					status: opts.status ?? undefined,
+				},
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("scope_not_found")) return null;
+			throw error;
+		}
+		const scope = payload?.scope;
+		return scope && typeof scope === "object" ? (scope as CoordinatorScope) : null;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		const existing = await localScopeForGroup(store, groupId, scopeId);
+		if (!existing) return null;
+		return await store.updateScope({
+			scopeId,
+			label: opts.label,
+			kind: opts.kind,
+			authorityType: opts.authorityType,
+			coordinatorId: opts.coordinatorId,
+			groupId,
+			manifestIssuerDeviceId: opts.manifestIssuerDeviceId,
+			membershipEpoch: opts.membershipEpoch,
+			manifestHash: opts.manifestHash,
+			status: opts.status,
+		});
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorListScopeMembershipsAction(opts: {
+	groupId: string;
+	scopeId: string;
+	includeRevoked?: boolean;
+	dbPath?: string | null;
+	remoteUrl?: string | null;
+	adminSecret?: string | null;
+}): Promise<CoordinatorScopeMembership[]> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const scopeId = String(opts.scopeId ?? "").trim();
+	if (!groupId || !scopeId) throw new Error("group_id and scope_id are required.");
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret ?? target.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"GET",
+			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members${opts.includeRevoked ? "?include_revoked=1" : ""}`,
+			adminSecret,
+		);
+		return Array.isArray(payload?.items)
+			? payload.items.filter(
+					(row): row is CoordinatorScopeMembership => Boolean(row) && typeof row === "object",
+				)
+			: [];
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		if (!(await localScopeForGroup(store, groupId, scopeId))) {
+			throw new Error(`Scope not found: ${scopeId}`);
+		}
+		return await store.listScopeMemberships(scopeId, opts.includeRevoked === true);
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorGrantScopeMembershipAction(
+	opts: CoordinatorGrantScopeMembershipInput & {
+		groupId: string;
+		dbPath?: string | null;
+		remoteUrl?: string | null;
+		adminSecret?: string | null;
+	},
+): Promise<CoordinatorScopeMembership> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const scopeId = String(opts.scopeId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	if (!groupId || !scopeId || !deviceId) {
+		throw new Error("group_id, scope_id, and device_id are required.");
+	}
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret ?? target.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		const payload = await remoteRequest(
+			"POST",
+			`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members`,
+			adminSecret,
+			{
+				device_id: deviceId,
+				role: opts.role ?? null,
+				membership_epoch: opts.membershipEpoch ?? null,
+				coordinator_id: opts.coordinatorId ?? null,
+				manifest_issuer_device_id: opts.manifestIssuerDeviceId ?? null,
+				manifest_hash: opts.manifestHash ?? null,
+				signed_manifest_json: opts.signedManifestJson ?? null,
+			},
+		);
+		const membership = payload?.membership;
+		if (!membership || typeof membership !== "object") {
+			throw new Error("Remote coordinator did not return membership payload.");
+		}
+		return membership as CoordinatorScopeMembership;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		const scope = await localScopeForGroup(store, groupId, scopeId);
+		if (!scope) throw new Error(`Scope not found: ${scopeId}`);
+		if (scope.status !== "active") throw new Error(`Scope is not active: ${scopeId}`);
+		return await store.grantScopeMembership({
+			scopeId,
+			deviceId,
+			role: opts.role ?? null,
+			membershipEpoch: opts.membershipEpoch ?? null,
+			coordinatorId: opts.coordinatorId ?? null,
+			groupId,
+			manifestIssuerDeviceId: opts.manifestIssuerDeviceId ?? null,
+			manifestHash: opts.manifestHash ?? null,
+			signedManifestJson: opts.signedManifestJson ?? null,
+		});
+	} finally {
+		await store.close();
+	}
+}
+
+export async function coordinatorRevokeScopeMembershipAction(
+	opts: CoordinatorRevokeScopeMembershipInput & {
+		groupId: string;
+		dbPath?: string | null;
+		remoteUrl?: string | null;
+		adminSecret?: string | null;
+	},
+): Promise<boolean> {
+	const groupId = String(opts.groupId ?? "").trim();
+	const scopeId = String(opts.scopeId ?? "").trim();
+	const deviceId = String(opts.deviceId ?? "").trim();
+	if (!groupId || !scopeId || !deviceId) {
+		throw new Error("group_id, scope_id, and device_id are required.");
+	}
+	const target = coordinatorRemoteTarget();
+	const remote = opts.remoteUrl ?? (opts.dbPath ? null : target.remoteUrl);
+	const adminSecret = opts.adminSecret ?? target.adminSecret;
+	if (remote) {
+		if (!adminSecret) throw new Error("Admin secret required.");
+		try {
+			await remoteRequest(
+				"POST",
+				`${remote.replace(/\/+$/, "")}/v1/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(deviceId)}/revoke`,
+				adminSecret,
+				{
+					membership_epoch: opts.membershipEpoch ?? null,
+					manifest_hash: opts.manifestHash ?? null,
+					signed_manifest_json: opts.signedManifestJson ?? null,
+				},
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("membership_not_found")) return false;
+			throw error;
+		}
+		return true;
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
+	try {
+		if (!(await localScopeForGroup(store, groupId, scopeId))) return false;
+		return await store.revokeScopeMembership({
+			scopeId,
+			deviceId,
+			membershipEpoch: opts.membershipEpoch ?? null,
+			manifestHash: opts.manifestHash ?? null,
+			signedManifestJson: opts.signedManifestJson ?? null,
+		});
 	} finally {
 		await store.close();
 	}
