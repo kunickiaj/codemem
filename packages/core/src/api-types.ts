@@ -11,6 +11,7 @@
  * Import existing store/entity types where shapes match.
  */
 
+import type { SyncCapability } from "./sync-capability.js";
 import type {
 	Actor,
 	MemoryItemResponse,
@@ -434,6 +435,9 @@ export interface ApiSyncAttemptItem {
 	finished_at: string | null;
 	ops_in: number;
 	ops_out: number;
+	local_sync_capability: SyncCapability | null;
+	peer_sync_capability: SyncCapability | null;
+	negotiated_sync_capability: SyncCapability | null;
 }
 
 /** Enriched sync attempt — embedded in /api/sync/status with extra fields. */
@@ -817,8 +821,17 @@ export interface ApiSyncResetBoundary {
 	retained_floor_cursor: string | null;
 }
 
+export interface ApiSyncProtocolStatusResponse {
+	device_id: string;
+	protocol_version: string;
+	fingerprint: string;
+	sync_reset: ApiSyncResetBoundary;
+	sync_capability: SyncCapability;
+}
+
 export interface ApiSyncOpsIncrementalResponse extends ApiSyncResetBoundary {
 	reset_required: false;
+	sync_capability: SyncCapability;
 	ops: ReplicationOp[];
 	next_cursor: string | null;
 	skipped: number;
@@ -827,6 +840,7 @@ export interface ApiSyncOpsIncrementalResponse extends ApiSyncResetBoundary {
 export interface ApiSyncOpsResetRequiredResponse extends ApiSyncResetBoundary {
 	error: "reset_required";
 	reset_required: true;
+	sync_capability: SyncCapability;
 	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
 }
 
@@ -841,6 +855,7 @@ export interface ApiSyncMemorySnapshotPageRequestQuery {
 }
 
 export interface ApiSyncMemorySnapshotPageResponse extends ApiSyncResetBoundary {
+	sync_capability: SyncCapability;
 	items: SyncMemorySnapshotItem[];
 	next_page_token: string | null;
 	has_more: boolean;

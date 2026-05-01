@@ -9,10 +9,18 @@
 import { and, desc, eq, gt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
+import { ensureAdditiveSchemaCompatibility } from "./db.js";
 import * as schema from "./schema.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
+import {
+	LOCAL_SYNC_CAPABILITY,
+	negotiateSyncCapability,
+	normalizeSyncCapability,
+	SYNC_CAPABILITY_HEADER,
+	type SyncCapability,
+} from "./sync-capability.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
@@ -183,16 +191,49 @@ function isValidIncrementalOpsResponse(payload: Record<string, unknown> | null):
 	return true;
 }
 
+interface SyncCapabilityDiagnostics {
+	local: SyncCapability;
+	peer: SyncCapability;
+	negotiated: SyncCapability;
+}
+
+function capabilityDiagnostics(peerCapability: unknown): SyncCapabilityDiagnostics {
+	const peer = normalizeSyncCapability(peerCapability);
+	return {
+		local: LOCAL_SYNC_CAPABILITY,
+		peer,
+		negotiated: negotiateSyncCapability(LOCAL_SYNC_CAPABILITY, peer),
+	};
+}
+
+function capabilityHeader(): Record<string, string> {
+	// Diagnostic advertisement only. The receiver must never use this unsigned
+	// GET header for authorization; behavioral negotiation comes from response
+	// payloads and signed POST bodies.
+	return { [SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY };
+}
+
+function defaultCapabilityDiagnostics(): SyncCapabilityDiagnostics {
+	return capabilityDiagnostics("unsupported");
+}
+
 /**
  * Record a sync attempt in the sync_attempts table.
  */
 function recordSyncAttempt(
 	db: Database,
 	peerDeviceId: string,
-	options: { ok: boolean; opsIn?: number; opsOut?: number; error?: string },
+	options: {
+		ok: boolean;
+		opsIn?: number;
+		opsOut?: number;
+		error?: string;
+		capabilities?: SyncCapabilityDiagnostics;
+	},
 ): void {
 	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
+	const capabilities = options.capabilities ?? defaultCapabilityDiagnostics();
 	d.insert(schema.syncAttempts)
 		.values({
 			peer_device_id: peerDeviceId,
@@ -202,6 +243,9 @@ function recordSyncAttempt(
 			ops_in: options.opsIn ?? 0,
 			ops_out: options.opsOut ?? 0,
 			error: options.error ?? null,
+			local_sync_capability: capabilities.local,
+			peer_sync_capability: capabilities.peer,
+			negotiated_sync_capability: capabilities.negotiated,
 		})
 		.run();
 }
@@ -284,15 +328,18 @@ async function pushOps(
 ): Promise<void> {
 	if (ops.length === 0) return;
 
-	const body = { ops };
+	const body = { ops, sync_capability: LOCAL_SYNC_CAPABILITY };
 	const bodyBytes = Buffer.from(JSON.stringify(body), "utf-8");
-	const headers = buildAuthHeaders({
-		deviceId,
-		method: "POST",
-		url: postUrl,
-		bodyBytes,
-		keysDir,
-	});
+	const headers = {
+		...buildAuthHeaders({
+			deviceId,
+			method: "POST",
+			url: postUrl,
+			bodyBytes,
+			keysDir,
+		}),
+		...capabilityHeader(),
+	};
 	const [status, payload] = await requestJson("POST", postUrl, {
 		headers,
 		body,
@@ -324,6 +371,7 @@ async function pushOps(
 
 /** Run migration + replication backfill preflight. */
 export function syncPassPreflight(db: Database): void {
+	ensureAdditiveSchemaCompatibility(db);
 	migrateLegacyImportKeys(db, 2000);
 	backfillReplicationOps(db, 200);
 }
@@ -344,6 +392,7 @@ export async function syncOnce(
 	addresses: string[],
 	options?: SyncPassOptions,
 ): Promise<SyncResult> {
+	ensureAdditiveSchemaCompatibility(db);
 	const limit = options?.limit ?? DEFAULT_LIMIT;
 	const keysDir = options?.keysDir;
 	const scanner = options?.scanner;
@@ -382,6 +431,7 @@ export async function syncOnce(
 
 	const addressErrors: Array<{ address: string; error: string }> = [];
 	let attemptedAny = false;
+	let lastCapabilityDiagnostics: SyncCapabilityDiagnostics | undefined;
 
 	for (const address of addresses) {
 		const baseUrl = buildBaseUrl(address);
@@ -391,13 +441,16 @@ export async function syncOnce(
 		try {
 			// -- 1. Verify peer identity via /v1/status --
 			const statusUrl = `${baseUrl}/v1/status`;
-			const statusHeaders = buildAuthHeaders({
-				deviceId,
-				method: "GET",
-				url: statusUrl,
-				bodyBytes: Buffer.alloc(0),
-				keysDir,
-			});
+			const statusHeaders = {
+				...buildAuthHeaders({
+					deviceId,
+					method: "GET",
+					url: statusUrl,
+					bodyBytes: Buffer.alloc(0),
+					keysDir,
+				}),
+				...capabilityHeader(),
+			};
 			const [statusCode, statusPayload] = await requestJson("GET", statusUrl, {
 				headers: statusHeaders,
 			});
@@ -409,6 +462,7 @@ export async function syncOnce(
 			if (statusPayload.fingerprint !== pinnedFingerprint) {
 				throw new Error("peer fingerprint mismatch");
 			}
+			lastCapabilityDiagnostics = capabilityDiagnostics(statusPayload.sync_capability);
 			if (String(statusPayload.protocol_version ?? "") !== EXPECTED_SYNC_PROTOCOL_VERSION) {
 				throw new Error(
 					`peer protocol mismatch (expected ${EXPECTED_SYNC_PROTOCOL_VERSION}, got ${String(statusPayload.protocol_version ?? "missing")})`,
@@ -461,6 +515,7 @@ export async function syncOnce(
 							recordSyncAttempt(db, peerDeviceId, {
 								ok: false,
 								error: "needs_attention:shared_memories_appeared_during_bootstrap",
+								capabilities: lastCapabilityDiagnostics,
 							});
 							return {
 								ok: false,
@@ -486,6 +541,7 @@ export async function syncOnce(
 							ok: true,
 							opsIn: bootstrapResult.applied,
 							opsOut: 0,
+							capabilities: lastCapabilityDiagnostics,
 						});
 						return {
 							ok: true,
@@ -516,13 +572,16 @@ export async function syncOnce(
 			}
 			const query = queryParams.toString();
 			const getUrl = `${baseUrl}/v1/ops?${query}`;
-			const getHeaders = buildAuthHeaders({
-				deviceId,
-				method: "GET",
-				url: getUrl,
-				bodyBytes: Buffer.alloc(0),
-				keysDir,
-			});
+			const getHeaders = {
+				...buildAuthHeaders({
+					deviceId,
+					method: "GET",
+					url: getUrl,
+					bodyBytes: Buffer.alloc(0),
+					keysDir,
+				}),
+				...capabilityHeader(),
+			};
 			const [getStatus, getPayload] = await requestJson("GET", getUrl, {
 				headers: getHeaders,
 			});
@@ -551,6 +610,7 @@ export async function syncOnce(
 					recordSyncAttempt(db, peerDeviceId, {
 						ok: false,
 						error: `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`,
+						capabilities: lastCapabilityDiagnostics,
 					});
 					return {
 						ok: false,
@@ -576,6 +636,7 @@ export async function syncOnce(
 						recordSyncAttempt(db, peerDeviceId, {
 							ok: false,
 							error: `needs_attention:local_unsynced_shared_memory:${dirtyAfterFetch.count}`,
+							capabilities: lastCapabilityDiagnostics,
 						});
 						return {
 							ok: false,
@@ -603,6 +664,7 @@ export async function syncOnce(
 						ok: true,
 						opsIn: bootstrapResult.applied,
 						opsOut: 0,
+						capabilities: lastCapabilityDiagnostics,
 					});
 					return {
 						ok: true,
@@ -616,6 +678,7 @@ export async function syncOnce(
 					recordSyncAttempt(db, peerDeviceId, {
 						ok: false,
 						error: `bootstrap_failed:${msg}`,
+						capabilities: lastCapabilityDiagnostics,
 					});
 					return {
 						ok: false,
@@ -689,6 +752,7 @@ export async function syncOnce(
 				ok: true,
 				opsIn: applied.applied,
 				opsOut: outboundOps.length,
+				capabilities: lastCapabilityDiagnostics,
 			});
 			return {
 				ok: true,
@@ -711,7 +775,11 @@ export async function syncOnce(
 	if (!error) {
 		error = "sync failed without diagnostic detail";
 	}
-	recordSyncAttempt(db, peerDeviceId, { ok: false, error });
+	recordSyncAttempt(db, peerDeviceId, {
+		ok: false,
+		error,
+		capabilities: lastCapabilityDiagnostics,
+	});
 	return { ok: false, error, opsIn: 0, opsOut: 0, addressErrors };
 }
 

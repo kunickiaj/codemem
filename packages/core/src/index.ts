@@ -411,6 +411,14 @@ export {
 export { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 export type { BootstrapOptions, BootstrapResult } from "./sync-bootstrap.js";
 export { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
+export type { SyncCapability } from "./sync-capability.js";
+export {
+	LOCAL_SYNC_CAPABILITY,
+	negotiateSyncCapability,
+	normalizeSyncCapability,
+	SYNC_CAPABILITIES,
+	SYNC_CAPABILITY_HEADER,
+} from "./sync-capability.js";
 export type { SyncDaemonOptions, SyncDaemonPhase, SyncTickResult } from "./sync-daemon.js";
 export {
 	getSyncDaemonPhase,

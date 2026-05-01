@@ -5,6 +5,8 @@
  * data structures in codemem/store/types.py.
  */
 
+import type { SyncCapability } from "./sync-capability.js";
+
 // ---------------------------------------------------------------------------
 // Core entities
 // ---------------------------------------------------------------------------
@@ -413,6 +415,9 @@ export interface SyncAttempt {
 	ops_in: number;
 	ops_out: number;
 	error: string | null;
+	local_sync_capability: SyncCapability | null;
+	peer_sync_capability: SyncCapability | null;
+	negotiated_sync_capability: SyncCapability | null;
 }
 
 export interface Actor {

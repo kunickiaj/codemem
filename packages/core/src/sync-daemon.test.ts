@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { columnExists } from "./db.js";
 import {
 	getSyncDaemonPhase,
 	refreshCoordinatorPresenceForDaemon,
@@ -217,6 +218,58 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			expect(syncPassPreflight).toHaveBeenCalledTimes(1);
 		} finally {
 			fileDb.close();
+			rmSync(dbPath, { force: true });
+		}
+	});
+
+	it("applies additive schema compatibility before daemon tick state writes", async () => {
+		const dbPath = join(tmpdir(), `codemem-sync-daemon-legacy-${Date.now()}.sqlite`);
+		const fileDb = new Database(dbPath);
+		try {
+			fileDb.exec(`
+				CREATE TABLE sync_peers (
+					peer_device_id TEXT PRIMARY KEY,
+					created_at TEXT NOT NULL
+				);
+				CREATE TABLE sync_daemon_state (
+					id INTEGER PRIMARY KEY,
+					last_error TEXT,
+					last_traceback TEXT,
+					last_error_at TEXT,
+					last_ok_at TEXT
+				);
+				CREATE TABLE sync_attempts (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					peer_device_id TEXT NOT NULL,
+					started_at TEXT NOT NULL,
+					finished_at TEXT,
+					ok INTEGER NOT NULL DEFAULT 0,
+					ops_in INTEGER NOT NULL DEFAULT 0,
+					ops_out INTEGER NOT NULL DEFAULT 0,
+					error TEXT
+				);
+			`);
+			expect(columnExists(fileDb, "sync_daemon_state", "phase")).toBe(false);
+			expect(columnExists(fileDb, "sync_attempts", "local_sync_capability")).toBe(false);
+		} finally {
+			fileDb.close();
+		}
+
+		await runTickOnce(dbPath);
+
+		const verified = new Database(dbPath);
+		try {
+			expect(columnExists(verified, "sync_daemon_state", "phase")).toBe(true);
+			expect(columnExists(verified, "sync_attempts", "local_sync_capability")).toBe(true);
+			expect(columnExists(verified, "sync_attempts", "peer_sync_capability")).toBe(true);
+			expect(columnExists(verified, "sync_attempts", "negotiated_sync_capability")).toBe(true);
+			const row = verified
+				.prepare("SELECT last_ok_at, phase FROM sync_daemon_state WHERE id = 1")
+				.get() as { last_ok_at: string | null; phase: string | null } | undefined;
+			expect(row?.last_ok_at).toBeTruthy();
+			expect(row?.phase).toBeNull();
+		} finally {
+			verified.close();
 			rmSync(dbPath, { force: true });
 		}
 	});

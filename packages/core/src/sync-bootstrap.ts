@@ -12,11 +12,13 @@
 
 import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
 import type { Database } from "./db.js";
 import { toJson } from "./db.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
+import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
 import { requestJson } from "./sync-http-client.js";
 import { setReplicationCursor, setSyncResetState } from "./sync-replication.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
@@ -48,15 +50,7 @@ export interface BootstrapOptions {
 // Snapshot page fetcher
 // ---------------------------------------------------------------------------
 
-interface SnapshotPageResponse {
-	generation: number;
-	snapshot_id: string;
-	baseline_cursor: string | null;
-	retained_floor_cursor: string | null;
-	items: SyncMemorySnapshotItem[];
-	next_page_token: string | null;
-	has_more: boolean;
-}
+type SnapshotPageResponse = ApiSyncMemorySnapshotPageResponse;
 
 /**
  * Fetch all snapshot pages from a peer's /v1/snapshot endpoint.
@@ -98,14 +92,17 @@ export async function fetchAllSnapshotPages(
 		}
 
 		const url = `${baseUrl}/v1/snapshot?${params.toString()}`;
-		const headers = buildAuthHeaders({
-			deviceId,
-			method: "GET",
-			url,
-			bodyBytes: Buffer.alloc(0),
-			bootstrapGrantId,
-			keysDir,
-		});
+		const headers = {
+			...buildAuthHeaders({
+				deviceId,
+				method: "GET",
+				url,
+				bodyBytes: Buffer.alloc(0),
+				bootstrapGrantId,
+				keysDir,
+			}),
+			[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
+		};
 
 		const [status, payload] = await requestJson("GET", url, { headers, timeoutS });
 		if (status !== 200 || !payload) {

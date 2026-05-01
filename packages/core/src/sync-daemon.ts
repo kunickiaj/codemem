@@ -16,7 +16,7 @@ import {
 } from "./coordinator-runtime.js";
 
 import type { Database } from "./db.js";
-import { connect as connectDb, resolveDbPath } from "./db.js";
+import { connect as connectDb, ensureAdditiveSchemaCompatibility, resolveDbPath } from "./db.js";
 import * as schema from "./schema.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
@@ -287,6 +287,7 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 export async function runTickOnce(dbPath: string, keysDir?: string): Promise<void> {
 	const db = connectDb(dbPath);
 	try {
+		ensureAdditiveSchemaCompatibility(db);
 		try {
 			await refreshCoordinatorPresenceForDaemon(db, dbPath, keysDir);
 		} catch {

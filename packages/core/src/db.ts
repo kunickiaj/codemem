@@ -589,6 +589,24 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			}
 		}
 	}
+	if (tableExists(db, "sync_attempts")) {
+		for (const name of [
+			"local_sync_capability",
+			"peer_sync_capability",
+			"negotiated_sync_capability",
+		]) {
+			if (columnExists(db, "sync_attempts", name)) continue;
+			try {
+				db.exec(`ALTER TABLE sync_attempts ADD COLUMN ${name} TEXT`);
+			} catch (err) {
+				const message = err instanceof Error ? err.message.toLowerCase() : "";
+				if (message.includes("duplicate column name") && columnExists(db, "sync_attempts", name)) {
+					continue;
+				}
+				throw err;
+			}
+		}
+	}
 	try {
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS coordinator_group_preferences (

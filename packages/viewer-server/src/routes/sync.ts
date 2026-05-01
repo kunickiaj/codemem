@@ -42,6 +42,7 @@ import {
 	getCoordinatorGroupPreference,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
+	LOCAL_SYNC_CAPABILITY,
 	listCoordinatorJoinRequests,
 	listMaintenanceJobs,
 	loadMemorySnapshotPageForPeer,
@@ -1169,6 +1170,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					protocol_version: SYNC_PROTOCOL_VERSION,
 					fingerprint,
 					sync_reset: syncReset,
+					sync_capability: LOCAL_SYNC_CAPABILITY,
 				});
 			} catch {
 				return c.json({ error: "internal_error" }, 500);
@@ -1212,6 +1214,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				return c.json(
 					{
 						error: "reset_required",
+						sync_capability: LOCAL_SYNC_CAPABILITY,
 						...result.reset,
 					},
 					409,
@@ -1221,6 +1224,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const filtered = filterOpsForPeer(store, peerDeviceId, ops);
 			return c.json({
 				reset_required: false,
+				sync_capability: LOCAL_SYNC_CAPABILITY,
 				generation: boundary.generation,
 				snapshot_id: boundary.snapshot_id,
 				baseline_cursor: boundary.baseline_cursor,
@@ -1308,6 +1312,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					snapshot_id: result.boundary.snapshot_id,
 					baseline_cursor: result.boundary.baseline_cursor,
 					retained_floor_cursor: result.boundary.retained_floor_cursor,
+					sync_capability: LOCAL_SYNC_CAPABILITY,
 					items: result.items,
 					next_page_token: result.nextPageToken,
 					has_more: result.hasMore,
@@ -1381,6 +1386,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		);
 		return c.json({
 			...result,
+			sync_capability: LOCAL_SYNC_CAPABILITY,
 			skipped: result.skipped + filteredInbound.skipped,
 		});
 	});
@@ -1596,6 +1602,9 @@ export function syncRoutes(
 						finished_at: schema.syncAttempts.finished_at,
 						ops_in: schema.syncAttempts.ops_in,
 						ops_out: schema.syncAttempts.ops_out,
+						local_sync_capability: schema.syncAttempts.local_sync_capability,
+						peer_sync_capability: schema.syncAttempts.peer_sync_capability,
+						negotiated_sync_capability: schema.syncAttempts.negotiated_sync_capability,
 					})
 					.from(schema.syncAttempts)
 					.orderBy(desc(schema.syncAttempts.finished_at))
@@ -1753,6 +1762,9 @@ export function syncRoutes(
 					finished_at: schema.syncAttempts.finished_at,
 					ops_in: schema.syncAttempts.ops_in,
 					ops_out: schema.syncAttempts.ops_out,
+					local_sync_capability: schema.syncAttempts.local_sync_capability,
+					peer_sync_capability: schema.syncAttempts.peer_sync_capability,
+					negotiated_sync_capability: schema.syncAttempts.negotiated_sync_capability,
 				})
 				.from(schema.syncAttempts)
 				.orderBy(desc(schema.syncAttempts.finished_at))

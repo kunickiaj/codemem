@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
 import * as syncAuth from "./sync-auth.js";
 import * as syncBootstrap from "./sync-bootstrap.js";
+import {
+	LOCAL_SYNC_CAPABILITY,
+	negotiateSyncCapability,
+	normalizeSyncCapability,
+	SYNC_CAPABILITY_HEADER,
+} from "./sync-capability.js";
 import * as syncHttpClient from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
 import {
@@ -50,7 +56,10 @@ function addSyncTables(db: InstanceType<typeof Database>): void {
 			ok INTEGER NOT NULL DEFAULT 0,
 			ops_in INTEGER NOT NULL DEFAULT 0,
 			ops_out INTEGER NOT NULL DEFAULT 0,
-			error TEXT
+			error TEXT,
+			local_sync_capability TEXT,
+			peer_sync_capability TEXT,
+			negotiated_sync_capability TEXT
 		);
 
 			CREATE TABLE IF NOT EXISTS replication_ops (
@@ -105,6 +114,27 @@ describe("cursorAdvances", () => {
 	});
 });
 
+describe("sync capability negotiation", () => {
+	it("normalizes missing or unknown peer capability to unsupported", () => {
+		expect(normalizeSyncCapability(undefined)).toBe("unsupported");
+		expect(normalizeSyncCapability("unknown-future-mode")).toBe("unsupported");
+		expect(normalizeSyncCapability(" AWARE ")).toBe("aware");
+	});
+
+	it("downgrades unsupported-to-aware sessions to unsupported", () => {
+		expect(negotiateSyncCapability("aware", "unsupported")).toBe("unsupported");
+	});
+
+	it("downgrades aware-to-enforcing sessions to aware", () => {
+		expect(negotiateSyncCapability("aware", "enforcing")).toBe("aware");
+	});
+
+	it("does not upgrade a local aware peer from an enforcing advertisement", () => {
+		expect(LOCAL_SYNC_CAPABILITY).toBe("aware");
+		expect(negotiateSyncCapability(LOCAL_SYNC_CAPABILITY, "enforcing")).toBe("aware");
+	});
+});
+
 // ---------------------------------------------------------------------------
 // syncOnce — edge cases (no network)
 // ---------------------------------------------------------------------------
@@ -153,6 +183,34 @@ describe("syncOnce", () => {
 		expect(result.error).toBeTruthy();
 	});
 
+	it("records local capability diagnostics when device identity fails before status", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-identity-fail", "abc123", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockImplementation(() => {
+			throw new Error("private key missing");
+		});
+
+		const result = await syncOnce(db, "peer-identity-fail", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("device identity unavailable");
+		const attempt = db
+			.prepare(
+				`SELECT local_sync_capability, peer_sync_capability, negotiated_sync_capability
+				   FROM sync_attempts
+				  WHERE peer_device_id = ?
+				  ORDER BY id DESC
+				  LIMIT 1`,
+			)
+			.get("peer-identity-fail") as Record<string, unknown>;
+		expect(attempt).toMatchObject({
+			local_sync_capability: "aware",
+			peer_sync_capability: "unsupported",
+			negotiated_sync_capability: "unsupported",
+		});
+	});
+
 	it("queues durable vector catch-up after applying incremental inbound ops", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
@@ -172,6 +230,7 @@ describe("syncOnce", () => {
 				{
 					fingerprint: "abc123",
 					protocol_version: "2",
+					sync_capability: "enforcing",
 					sync_reset: {
 						generation: 1,
 						snapshot_id: "snap-1",
@@ -233,6 +292,85 @@ describe("syncOnce", () => {
 		expect(syncReplication.getReplicationCursor(db, "peer-1")[0]).toBe(
 			"2026-01-01T00:00:00Z|remote-op-1",
 		);
+		expect(vi.mocked(syncHttpClient.requestJson).mock.calls[0]?.[2]?.headers).toMatchObject({
+			[SYNC_CAPABILITY_HEADER]: "aware",
+		});
+		expect(vi.mocked(syncHttpClient.requestJson).mock.calls[1]?.[2]?.headers).toMatchObject({
+			[SYNC_CAPABILITY_HEADER]: "aware",
+		});
+		const attempt = db
+			.prepare(
+				`SELECT local_sync_capability, peer_sync_capability, negotiated_sync_capability
+				   FROM sync_attempts
+				  WHERE peer_device_id = ?
+				  ORDER BY id DESC
+				  LIMIT 1`,
+			)
+			.get("peer-1") as Record<string, unknown>;
+		expect(attempt).toMatchObject({
+			local_sync_capability: "aware",
+			peer_sync_capability: "enforcing",
+			negotiated_sync_capability: "aware",
+		});
+	});
+
+	it("treats missing peer capability as unsupported while preserving legacy sync", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-legacy", "legacy-fp", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-legacy", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "legacy-fp",
+					protocol_version: "2",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-legacy",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-legacy",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-legacy", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(true);
+		const attempt = db
+			.prepare(
+				`SELECT local_sync_capability, peer_sync_capability, negotiated_sync_capability
+				   FROM sync_attempts
+				  WHERE peer_device_id = ?
+				  ORDER BY id DESC
+				  LIMIT 1`,
+			)
+			.get("peer-legacy") as Record<string, unknown>;
+		expect(attempt).toMatchObject({
+			local_sync_capability: "aware",
+			peer_sync_capability: "unsupported",
+			negotiated_sync_capability: "unsupported",
+		});
 	});
 
 	it("falls back to immediate vector maintenance when durable queueing throws", async () => {
