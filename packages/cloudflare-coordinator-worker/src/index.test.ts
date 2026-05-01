@@ -89,6 +89,8 @@ describe("createCloudflareCoordinatorWorker", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "cloudflare-coord-worker-test-"));
 		db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
+			DROP TABLE IF EXISTS coordinator_scope_memberships;
+			DROP TABLE IF EXISTS coordinator_scopes;
 			DROP TABLE IF EXISTS coordinator_reciprocal_approvals;
 			DROP TABLE IF EXISTS coordinator_join_requests;
 			DROP TABLE IF EXISTS coordinator_invites;

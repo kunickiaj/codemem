@@ -87,6 +87,260 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 			});
 		});
 
+		describe("scope memberships", () => {
+			it("creates and lists scopes with explicit authority fields", async () => {
+				await withContext(async ({ store }) => {
+					const scope = await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						kind: "team",
+						authorityType: "coordinator",
+						coordinatorId: "coord-a",
+						groupId: "group-a",
+						manifestIssuerDeviceId: "admin-device",
+						membershipEpoch: 7,
+						manifestHash: "hash-1",
+					});
+
+					expect(scope).toEqual(
+						expect.objectContaining({
+							scope_id: "scope-acme",
+							label: "Acme Work",
+							kind: "team",
+							coordinator_id: "coord-a",
+							group_id: "group-a",
+							membership_epoch: 7,
+							manifest_issuer_device_id: "admin-device",
+							manifest_hash: "hash-1",
+							status: "active",
+						}),
+					);
+					expect(await store.listScopes({ coordinatorId: "coord-a", groupId: "group-a" })).toEqual([
+						expect.objectContaining({ scope_id: "scope-acme" }),
+					]);
+				});
+			});
+
+			it("rejects duplicate scope ids instead of silently changing authority", async () => {
+				await withContext(async ({ store }) => {
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						coordinatorId: "coord-a",
+						groupId: "group-a",
+					});
+
+					await expect(
+						store.createScope({
+							scopeId: "scope-acme",
+							label: "Conflicting Work",
+							coordinatorId: "coord-b",
+							groupId: "group-b",
+						}),
+					).rejects.toThrow("scopeId already exists");
+					expect(await store.listScopes({ includeInactive: true })).toEqual([
+						expect.objectContaining({
+							scope_id: "scope-acme",
+							label: "Acme Work",
+							coordinator_id: "coord-a",
+							group_id: "group-a",
+						}),
+					]);
+				});
+			});
+
+			it("keeps group enrollment separate from scope grants", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("group-a");
+					await store.enrollDevice("group-a", {
+						deviceId: "device-a",
+						fingerprint: "fp-a",
+						publicKey: "pk-a",
+					});
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						coordinatorId: "coord-a",
+						groupId: "group-a",
+					});
+
+					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
+
+					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+
+					expect(await store.listScopeMemberships("scope-acme")).toEqual([
+						expect.objectContaining({
+							device_id: "device-a",
+							status: "active",
+							coordinator_id: "coord-a",
+							group_id: "group-a",
+						}),
+					]);
+				});
+			});
+
+			it("rejects scope grants with mismatched authority fields", async () => {
+				await withContext(async ({ store }) => {
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						coordinatorId: "coord-a",
+						groupId: "shared-group",
+					});
+					await store.createScope({
+						scopeId: "scope-other",
+						label: "Other Work",
+						coordinatorId: "coord-b",
+						groupId: "shared-group",
+					});
+
+					await expect(
+						store.grantScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							coordinatorId: "coord-b",
+							groupId: "shared-group",
+						}),
+					).rejects.toThrow("membership coordinatorId must match the scope coordinatorId");
+					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
+				});
+			});
+
+			it("grants and revokes explicit device membership per scope", async () => {
+				await withContext(async ({ store }) => {
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						coordinatorId: "coord-a",
+						groupId: "group-a",
+					});
+					const grant = await store.grantScopeMembership({
+						scopeId: "scope-acme",
+						deviceId: "device-a",
+						role: "admin",
+						membershipEpoch: 3,
+						manifestIssuerDeviceId: "admin-device",
+						manifestHash: "hash-grant",
+						signedManifestJson: '{"grant":true}',
+					});
+
+					expect(grant).toEqual(
+						expect.objectContaining({
+							device_id: "device-a",
+							role: "admin",
+							status: "active",
+							membership_epoch: 3,
+							coordinator_id: "coord-a",
+							group_id: "group-a",
+							manifest_issuer_device_id: "admin-device",
+							manifest_hash: "hash-grant",
+							signed_manifest_json: '{"grant":true}',
+						}),
+					);
+
+					expect(
+						await store.revokeScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							membershipEpoch: 4,
+							manifestHash: "hash-revoke",
+							signedManifestJson: '{"grant":false}',
+						}),
+					).toBe(true);
+					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
+					expect(await store.listScopeMemberships("scope-acme", true)).toEqual([
+						expect.objectContaining({
+							device_id: "device-a",
+							status: "revoked",
+							membership_epoch: 4,
+							manifest_hash: "hash-revoke",
+							signed_manifest_json: '{"grant":false}',
+						}),
+					]);
+				});
+			});
+
+			it("rejects first-time grant epochs below the scope epoch", async () => {
+				await withContext(async ({ store }) => {
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						membershipEpoch: 7,
+					});
+
+					await expect(
+						store.grantScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							membershipEpoch: 6,
+						}),
+					).rejects.toThrow("membershipEpoch must not be lower than the scope membershipEpoch");
+					expect(await store.listScopeMemberships("scope-acme", true)).toEqual([]);
+				});
+			});
+
+			it("keeps membership epochs monotonic across revoke and re-grant", async () => {
+				await withContext(async ({ store }) => {
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						membershipEpoch: 7,
+					});
+					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+					expect(
+						await store.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+					).toBe(true);
+					expect(await store.listScopeMemberships("scope-acme", true)).toEqual([
+						expect.objectContaining({
+							device_id: "device-a",
+							status: "revoked",
+							membership_epoch: 8,
+						}),
+					]);
+					await expect(
+						store.grantScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							membershipEpoch: 8,
+						}),
+					).rejects.toThrow("membershipEpoch must not move backwards");
+					expect(await store.listScopeMemberships("scope-acme", true)).toEqual([
+						expect.objectContaining({
+							device_id: "device-a",
+							status: "revoked",
+							membership_epoch: 8,
+						}),
+					]);
+
+					const regrant = await store.grantScopeMembership({
+						scopeId: "scope-acme",
+						deviceId: "device-a",
+					});
+
+					expect(regrant).toEqual(
+						expect.objectContaining({
+							status: "active",
+							membership_epoch: 9,
+						}),
+					);
+					await expect(
+						store.revokeScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							membershipEpoch: 8,
+						}),
+					).rejects.toThrow("membershipEpoch must increase on revoke");
+					await expect(
+						store.grantScopeMembership({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							membershipEpoch: 8,
+						}),
+					).rejects.toThrow("membershipEpoch must not move backwards");
+				});
+			});
+		});
+
 		describe("devices", () => {
 			it("enrolls and retrieves a device", async () => {
 				await withContext(async ({ store }) => {

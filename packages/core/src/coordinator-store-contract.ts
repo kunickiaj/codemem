@@ -92,6 +92,35 @@ export interface CoordinatorBootstrapGrant {
 	revoked_at: string | null;
 }
 
+export interface CoordinatorScope {
+	scope_id: string;
+	label: string;
+	kind: string;
+	authority_type: string;
+	coordinator_id: string | null;
+	group_id: string | null;
+	manifest_issuer_device_id: string | null;
+	membership_epoch: number;
+	manifest_hash: string | null;
+	status: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CoordinatorScopeMembership {
+	scope_id: string;
+	device_id: string;
+	role: string;
+	status: string;
+	membership_epoch: number;
+	coordinator_id: string | null;
+	group_id: string | null;
+	manifest_issuer_device_id: string | null;
+	manifest_hash: string | null;
+	signed_manifest_json: string | null;
+	updated_at: string;
+}
+
 export interface CoordinatorEnrollDeviceInput {
 	deviceId: string;
 	fingerprint: string;
@@ -144,6 +173,48 @@ export interface CoordinatorCreateBootstrapGrantInput {
 	createdBy?: string | null;
 }
 
+export interface CoordinatorCreateScopeInput {
+	scopeId: string;
+	label: string;
+	kind?: string | null;
+	authorityType?: string | null;
+	coordinatorId?: string | null;
+	groupId?: string | null;
+	manifestIssuerDeviceId?: string | null;
+	membershipEpoch?: number | null;
+	manifestHash?: string | null;
+	status?: string | null;
+}
+
+export interface CoordinatorListScopesInput {
+	coordinatorId?: string | null;
+	groupId?: string | null;
+	status?: string | null;
+	includeInactive?: boolean;
+}
+
+export interface CoordinatorGrantScopeMembershipInput {
+	scopeId: string;
+	deviceId: string;
+	role?: string | null;
+	membershipEpoch?: number | null;
+	/** Optional assertion; persisted authority is derived from the referenced scope. */
+	coordinatorId?: string | null;
+	/** Optional assertion; persisted authority is derived from the referenced scope. */
+	groupId?: string | null;
+	manifestIssuerDeviceId?: string | null;
+	manifestHash?: string | null;
+	signedManifestJson?: string | null;
+}
+
+export interface CoordinatorRevokeScopeMembershipInput {
+	scopeId: string;
+	deviceId: string;
+	membershipEpoch?: number | null;
+	manifestHash?: string | null;
+	signedManifestJson?: string | null;
+}
+
 export interface CoordinatorListReciprocalApprovalsInput {
 	groupId: string;
 	deviceId: string;
@@ -181,6 +252,16 @@ export interface CoordinatorStore {
 	createBootstrapGrant(
 		opts: CoordinatorCreateBootstrapGrantInput,
 	): Promise<CoordinatorBootstrapGrant>;
+	createScope(opts: CoordinatorCreateScopeInput): Promise<CoordinatorScope>;
+	listScopes(opts?: CoordinatorListScopesInput): Promise<CoordinatorScope[]>;
+	grantScopeMembership(
+		opts: CoordinatorGrantScopeMembershipInput,
+	): Promise<CoordinatorScopeMembership>;
+	revokeScopeMembership(opts: CoordinatorRevokeScopeMembershipInput): Promise<boolean>;
+	listScopeMemberships(
+		scopeId: string,
+		includeRevoked?: boolean,
+	): Promise<CoordinatorScopeMembership[]>;
 	getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null>;
 	listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]>;
 	revokeBootstrapGrant(grantId: string, revokedAt?: string): Promise<boolean>;

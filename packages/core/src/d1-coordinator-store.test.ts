@@ -132,6 +132,8 @@ describe("D1CoordinatorStore", () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "d1-coord-test-"));
 		const db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
+			DROP TABLE IF EXISTS coordinator_scope_memberships;
+			DROP TABLE IF EXISTS coordinator_scopes;
 			DROP TABLE IF EXISTS coordinator_reciprocal_approvals;
 			DROP TABLE IF EXISTS coordinator_join_requests;
 			DROP TABLE IF EXISTS coordinator_invites;

@@ -33,6 +33,8 @@ describe("CoordinatorStore", () => {
 					"coordinator_invites",
 					"coordinator_join_requests",
 					"coordinator_reciprocal_approvals",
+					"coordinator_scope_memberships",
+					"coordinator_scopes",
 					"enrolled_devices",
 					"groups",
 					"presence_records",
