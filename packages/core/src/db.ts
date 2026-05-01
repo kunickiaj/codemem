@@ -32,7 +32,7 @@ import { canAutoBootstrapSchema, ensureSchemaBootstrapped } from "./schema-boots
 export type { DatabaseType as Database };
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -485,6 +485,24 @@ export function columnExists(db: DatabaseType, table: string, column: string): b
 	return row !== undefined;
 }
 
+function addColumnIfMissing(
+	db: DatabaseType,
+	table: string,
+	name: string,
+	definition: string,
+): void {
+	if (columnExists(db, table, name)) return;
+	try {
+		db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+	} catch (err) {
+		const message = err instanceof Error ? err.message.toLowerCase() : "";
+		if (message.includes("duplicate column name") && columnExists(db, table, name)) {
+			return;
+		}
+		throw err;
+	}
+}
+
 /**
  * Apply additive compatibility fixes for legacy TS-era schemas.
  *
@@ -545,6 +563,89 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		} catch {
 			// Keep additive compatibility best-effort for index creation.
 		}
+
+		addColumnIfMissing(db, "memory_items", "scope_id", "TEXT");
+		try {
+			db.exec(
+				"CREATE INDEX IF NOT EXISTS idx_memory_items_scope_visibility_created ON memory_items(scope_id, visibility, created_at)",
+			);
+		} catch {
+			// Keep additive compatibility best-effort for index creation.
+		}
+	}
+
+	if (tableExists(db, "replication_ops")) {
+		addColumnIfMissing(db, "replication_ops", "scope_id", "TEXT");
+		try {
+			db.exec(
+				"CREATE INDEX IF NOT EXISTS idx_replication_ops_scope_created ON replication_ops(scope_id, created_at, op_id)",
+			);
+		} catch {
+			// Keep additive compatibility best-effort for index creation.
+		}
+	}
+
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS replication_scopes (
+				scope_id TEXT PRIMARY KEY NOT NULL,
+				label TEXT NOT NULL,
+				kind TEXT NOT NULL DEFAULT 'user',
+				authority_type TEXT NOT NULL DEFAULT 'local',
+				coordinator_id TEXT,
+				group_id TEXT,
+				manifest_issuer_device_id TEXT,
+				membership_epoch INTEGER NOT NULL DEFAULT 0,
+				manifest_hash TEXT,
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_replication_scopes_status
+				ON replication_scopes(status);
+			CREATE INDEX IF NOT EXISTS idx_replication_scopes_authority_group
+				ON replication_scopes(coordinator_id, group_id);
+
+			CREATE TABLE IF NOT EXISTS project_scope_mappings (
+				id INTEGER PRIMARY KEY,
+				workspace_identity TEXT,
+				project_pattern TEXT NOT NULL,
+				scope_id TEXT NOT NULL,
+				priority INTEGER NOT NULL DEFAULT 0,
+				source TEXT NOT NULL DEFAULT 'user',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_project_scope_mappings_workspace_priority
+				ON project_scope_mappings(workspace_identity, priority);
+			CREATE INDEX IF NOT EXISTS idx_project_scope_mappings_pattern_priority
+				ON project_scope_mappings(project_pattern, priority);
+			CREATE INDEX IF NOT EXISTS idx_project_scope_mappings_scope
+				ON project_scope_mappings(scope_id);
+
+			CREATE TABLE IF NOT EXISTS scope_memberships (
+				scope_id TEXT NOT NULL,
+				device_id TEXT NOT NULL,
+				role TEXT NOT NULL DEFAULT 'member',
+				status TEXT NOT NULL DEFAULT 'active',
+				membership_epoch INTEGER NOT NULL DEFAULT 0,
+				coordinator_id TEXT,
+				group_id TEXT,
+				manifest_issuer_device_id TEXT,
+				manifest_hash TEXT,
+				signed_manifest_json TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (scope_id, device_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_scope_memberships_device_status
+				ON scope_memberships(device_id, status);
+			CREATE INDEX IF NOT EXISTS idx_scope_memberships_scope_status
+				ON scope_memberships(scope_id, status);
+			CREATE INDEX IF NOT EXISTS idx_scope_memberships_authority_group
+				ON scope_memberships(coordinator_id, group_id);
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for optional additive scope metadata.
 	}
 
 	// Junction tables for structured file/concept references on memories.
