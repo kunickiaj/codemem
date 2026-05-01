@@ -41,6 +41,7 @@ import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
+import { resolveSessionScopeId } from "./scope-stamping.js";
 import {
 	type ExplainOptions,
 	explain as explainFn,
@@ -286,6 +287,7 @@ export class MemoryStore {
 		kind: string,
 		title: string,
 		dedupKey: string | null,
+		scopeId: string,
 		provenance: {
 			visibility: string;
 			workspace_id: string;
@@ -299,16 +301,24 @@ export class MemoryStore {
 		const sameSessionRows = this.db
 			.prepare(
 				`SELECT id, title
-				 FROM memory_items
-				 WHERE active = 1
+					 FROM memory_items
+					 WHERE active = 1
 				   AND session_id = ?
 				   AND kind = ?
 				   AND visibility = ?
 				   AND workspace_id = ?
+				   AND (scope_id = ? OR scope_id IS NULL OR TRIM(scope_id) = '')
 				   AND (dedup_key = ? OR dedup_key IS NULL)
 				 ORDER BY created_at DESC, id DESC`,
 			)
-			.all(sessionId, kind, provenance.visibility, provenance.workspace_id, dedupKey) as Array<{
+			.all(
+				sessionId,
+				kind,
+				provenance.visibility,
+				provenance.workspace_id,
+				scopeId,
+				dedupKey,
+			) as Array<{
 			id: number;
 			title: string;
 		}>;
@@ -328,12 +338,13 @@ export class MemoryStore {
 		const crossSessionRows = this.db
 			.prepare(
 				`SELECT id, title
-				 FROM memory_items
-				 WHERE active = 1
+					 FROM memory_items
+					 WHERE active = 1
 				   AND session_id != ?
 				   AND kind = ?
 				   AND visibility = ?
 				   AND workspace_id = ?
+				   AND scope_id = ?
 				   AND created_at >= ?
 				   AND (dedup_key = ? OR dedup_key IS NULL)
 				 ORDER BY confidence DESC, created_at DESC, id DESC`,
@@ -343,6 +354,7 @@ export class MemoryStore {
 				kind,
 				provenance.visibility,
 				provenance.workspace_id,
+				scopeId,
 				since,
 				dedupKey,
 			) as Array<{
@@ -616,12 +628,17 @@ export class MemoryStore {
 
 		// Resolve provenance fields
 		const provenance = this.resolveProvenance(metaPayload);
+		const scopeId = resolveSessionScopeId(this.db, {
+			sessionId,
+			workspaceId: provenance.workspace_id,
+		});
 
 		const existingHit = this.findExistingDuplicateMemory(
 			sessionId,
 			validKind,
 			safeTitle,
 			dedupKey,
+			scopeId,
 			provenance,
 			now,
 		);
@@ -669,6 +686,7 @@ export class MemoryStore {
 						rev: 1,
 						dedup_key: dedupKey,
 						import_key: importKey,
+						scope_id: scopeId,
 					})
 					.returning({ id: schema.memoryItems.id })
 					.all();
@@ -694,6 +712,7 @@ export class MemoryStore {
 				validKind,
 				safeTitle,
 				dedupKey,
+				scopeId,
 				provenance,
 				now,
 			);

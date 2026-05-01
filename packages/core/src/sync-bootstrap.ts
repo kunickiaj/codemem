@@ -317,6 +317,7 @@ export function applyBootstrapSnapshot(
 					user_prompt_id:
 						typeof payload.user_prompt_id === "number" ? payload.user_prompt_id : null,
 					prompt_number: typeof payload.prompt_number === "number" ? payload.prompt_number : null,
+					scope_id: typeof payload.scope_id === "string" ? payload.scope_id : null,
 				})
 				.run();
 			result.applied++;

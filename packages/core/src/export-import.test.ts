@@ -136,6 +136,9 @@ describe("export/import", () => {
 				inactiveMemory: checkDb
 					.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = ?")
 					.get("memory-2") as { active: number; deleted_at: string | null },
+				memoryScopes: checkDb
+					.prepare("SELECT DISTINCT scope_id FROM memory_items ORDER BY scope_id")
+					.all() as Array<{ scope_id: string | null }>,
 			};
 			expect(counts).toEqual({
 				sessions: 1,
@@ -144,6 +147,7 @@ describe("export/import", () => {
 				summaries: 1,
 				project: "/tmp/remapped",
 				inactiveMemory: { active: 0, deleted_at: "2026-03-01T10:03:30Z" },
+				memoryScopes: [{ scope_id: "local-default" }],
 			});
 			// Original created_at_epoch values (1) from the source DB are preserved
 			expect(promptEpoch).toBe(1);

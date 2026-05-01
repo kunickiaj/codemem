@@ -12,6 +12,7 @@ import {
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
 import * as schema from "./schema.js";
+import { resolveSessionScopeId } from "./scope-stamping.js";
 
 type JsonObject = Record<string, unknown>;
 type MemoryInsert = typeof schema.memoryItems.$inferInsert;
@@ -346,12 +347,18 @@ function insertPrompt(d: DrizzleDb, row: JsonObject): number {
 	return id;
 }
 
-function insertMemory(d: DrizzleDb, row: JsonObject): number {
+function insertMemory(db: Database, d: DrizzleDb, row: JsonObject): number {
 	const now = nowIso();
 	const parsedActive = row.active == null ? 1 : Number(row.active);
 	const active = Number.isFinite(parsedActive) ? parsedActive : 1;
 	const deletedAt =
 		typeof row.deleted_at === "string" && row.deleted_at.trim().length > 0 ? row.deleted_at : null;
+	const workspaceId = row.workspace_id == null ? null : String(row.workspace_id);
+	// Imports are local writes: resolve against destination policy instead of preserving source scope.
+	const scopeId = resolveSessionScopeId(db, {
+		sessionId: Number(row.session_id),
+		workspaceId,
+	});
 	const values: MemoryInsert = {
 		session_id: Number(row.session_id),
 		kind: String(row.kind ?? "observation"),
@@ -367,7 +374,7 @@ function insertMemory(d: DrizzleDb, row: JsonObject): number {
 		actor_id: row.actor_id == null ? null : String(row.actor_id),
 		actor_display_name: row.actor_display_name == null ? null : String(row.actor_display_name),
 		visibility: row.visibility == null ? null : String(row.visibility),
-		workspace_id: row.workspace_id == null ? null : String(row.workspace_id),
+		workspace_id: workspaceId,
 		workspace_kind: row.workspace_kind == null ? null : String(row.workspace_kind),
 		origin_device_id: row.origin_device_id == null ? null : String(row.origin_device_id),
 		origin_source: row.origin_source == null ? null : String(row.origin_source),
@@ -382,6 +389,7 @@ function insertMemory(d: DrizzleDb, row: JsonObject): number {
 		deleted_at: deletedAt,
 		rev: Number(row.rev ?? 1),
 		import_key: String(row.import_key),
+		scope_id: scopeId,
 	};
 	const rows = d
 		.insert(schema.memoryItems)
@@ -561,7 +569,7 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 						? mergeSummaryMetadata(baseMetadata, memory.metadata_json ?? null)
 						: baseMetadata;
 
-				insertMemory(d, {
+				insertMemory(db, d, {
 					...memory,
 					session_id: newSessionId,
 					project,

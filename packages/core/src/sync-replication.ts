@@ -17,6 +17,7 @@ import { readCodememConfigFile } from "./observer-config.js";
 import { projectBasename } from "./project.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
+import { ensureMemoryScopeId } from "./scope-stamping.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { deriveTags } from "./tags.js";
 import type {
@@ -568,7 +569,9 @@ export function recordReplicationOp(
 	const updatedAt = row?.updated_at ?? now;
 	const entityId = row?.import_key ?? String(opts.memoryId);
 	const metadata = fromJson(row?.metadata_json);
-	const scopeId = row?.scope_id ?? null;
+	// Backfill missing memory scope before emitting an op so storage, op row,
+	// and payload all carry the same authoritative local scope.
+	const scopeId = row ? ensureMemoryScopeId(db, opts.memoryId) : null;
 	const clockDeviceId =
 		typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim().length > 0
 			? metadata.clock_device_id
@@ -584,7 +587,7 @@ export function recordReplicationOp(
 		: null;
 
 	// Build payload from the memory row so peers can reconstruct the full item.
-	// Explicit payload override takes precedence (used by tests).
+	// Explicit payload override wins except for authoritative scope_id on upserts.
 	let payloadJson: string | null;
 	if (opts.payload) {
 		payloadJson = toJson(
@@ -1669,7 +1672,8 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 
 		const clockDeviceId = originDeviceId;
 		if (!clockDeviceId) continue;
-		const payload = buildPayloadFromMemoryRow(row);
+		const scopeId = ensureMemoryScopeId(db, rowId);
+		const payload = buildPayloadFromMemoryRow({ ...row, scope_id: scopeId });
 
 		d.insert(schema.replicationOps)
 			.values({
@@ -1683,7 +1687,7 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 				clock_device_id: clockDeviceId,
 				device_id: clockDeviceId,
 				created_at: now,
-				scope_id: row.scope_id ?? null,
+				scope_id: scopeId,
 			})
 			.onConflictDoNothing()
 			.run();

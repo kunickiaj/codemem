@@ -250,6 +250,54 @@ describe("recordReplicationOp", () => {
 		expect(row.clock_device_id).toBe("dev-a");
 	});
 
+	it("stamps a missing memory scope before recording the replication op", () => {
+		const sessionId = insertTestSession(db);
+		db.prepare("UPDATE sessions SET cwd = ?, project = ? WHERE id = ?").run(
+			"/work/acme/service",
+			"service",
+			sessionId,
+		);
+		db.prepare(
+			`INSERT INTO project_scope_mappings(
+				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			"/work/acme/service",
+			"/work/acme/*",
+			"acme-work",
+			10,
+			"user",
+			"2026-05-01T00:00:00Z",
+			"2026-05-01T00:00:00Z",
+		);
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(sessionId, "discovery", "Test", "body", now, now, "key:scope-stamp", 3, toJson({}));
+
+		const memId = (
+			db.prepare("SELECT id FROM memory_items WHERE import_key = ?").get("key:scope-stamp") as {
+				id: number;
+			}
+		).id;
+
+		const opId = recordReplicationOp(db, {
+			memoryId: memId,
+			opType: "delete",
+			deviceId: "dev-a",
+		});
+
+		const memory = db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memId) as {
+			scope_id: string | null;
+		};
+		expect(memory.scope_id).toBe("acme-work");
+		const op = db.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?").get(opId) as {
+			scope_id: string | null;
+		};
+		expect(op.scope_id).toBe("acme-work");
+	});
+
 	it("includes full memory payload in upsert ops and round-trips all columns", () => {
 		const sessionId = insertTestSession(db);
 		const now = new Date().toISOString();
@@ -1368,6 +1416,60 @@ describe("legacy key migration + replication backfill", () => {
 		expect(count.n).toBe(2);
 	});
 
+	it("stamps missing memory scope before backfilling replication ops", () => {
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+		).run("dev-local", "pub", "fp", "2026-01-01T00:00:00Z");
+		const sessionId = insertTestSession(db);
+		db.prepare("UPDATE sessions SET cwd = ?, project = ? WHERE id = ?").run(
+			"/work/acme/service",
+			"service",
+			sessionId,
+		);
+		db.prepare(
+			`INSERT INTO project_scope_mappings(
+				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			"/work/acme/service",
+			"/work/acme/*",
+			"acme-work",
+			10,
+			"user",
+			"2026-05-01T00:00:00Z",
+			"2026-05-01T00:00:00Z",
+		);
+		const now = "2026-01-02T00:00:00Z";
+		db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"feature",
+			"Live row",
+			"live",
+			now,
+			now,
+			"key:missing-scope",
+			1,
+			1,
+			toJson({}),
+		);
+
+		const inserted = backfillReplicationOps(db, 10);
+
+		expect(inserted).toBe(1);
+		const memory = db
+			.prepare("SELECT scope_id FROM memory_items WHERE import_key = ?")
+			.get("key:missing-scope") as { scope_id: string | null };
+		expect(memory.scope_id).toBe("acme-work");
+		const op = db
+			.prepare("SELECT scope_id, payload_json FROM replication_ops WHERE entity_id = ?")
+			.get("key:missing-scope") as { scope_id: string | null; payload_json: string };
+		expect(op.scope_id).toBe("acme-work");
+		expect(JSON.parse(op.payload_json).scope_id).toBe("acme-work");
+	});
+
 	it("does not mint legacy:local import keys before device identity exists", () => {
 		const sessionId = insertTestSession(db);
 		const now = "2026-01-02T00:00:00Z";
@@ -1813,6 +1915,80 @@ describe("applyReplicationOps", () => {
 		expect(mem.title).not.toContain(pat);
 		expect(mem.title).toContain("[REDACTED:github_pat_classic]");
 		expect(mem.body_text).not.toContain(pat);
+	});
+
+	it("uses authoritative inbound op scope_id when updating existing memories", () => {
+		const sessionId = insertTestSession(db);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, created_at, updated_at, import_key, rev, metadata_json, scope_id
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Local old title",
+			"Local old body",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"key:test-1",
+			0,
+			toJson({ clock_device_id: "dev-local" }),
+			"local-default",
+		);
+		const op = makeReplicationOp({ scope_id: "acme-work", clock_rev: 2 });
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
+			.get(op.entity_id) as { title: string; scope_id: string | null };
+		expect(mem.title).toBe("Remote memory");
+		expect(mem.scope_id).toBe("acme-work");
+		const recordedOp = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get(op.op_id) as { scope_id: string | null };
+		expect(recordedOp.scope_id).toBe("acme-work");
+	});
+
+	it("uses authoritative inbound op scope_id when deleting existing memories", () => {
+		const sessionId = insertTestSession(db);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json, scope_id
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Local old title",
+			"Local old body",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"key:test-1",
+			0,
+			1,
+			toJson({ clock_device_id: "dev-local" }),
+			"local-default",
+		);
+		const op = makeReplicationOp({
+			op_type: "delete",
+			payload_json: null,
+			scope_id: "acme-work",
+			clock_rev: 2,
+		});
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare("SELECT active, scope_id FROM memory_items WHERE import_key = ?")
+			.get(op.entity_id) as { active: number; scope_id: string | null };
+		expect(mem.active).toBe(0);
+		expect(mem.scope_id).toBe("acme-work");
+		const recordedOp = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get(op.op_id) as { scope_id: string | null };
+		expect(recordedOp.scope_id).toBe("acme-work");
 	});
 
 	it("populates ref tables when inserting a new memory with files and concepts", () => {
