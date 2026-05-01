@@ -18,6 +18,7 @@ import {
 import type { Database } from "./db.js";
 import { connect as connectDb, ensureAdditiveSchemaCompatibility, resolveDbPath } from "./db.js";
 import * as schema from "./schema.js";
+import { refreshConfiguredScopeMembershipCache } from "./scope-membership-cache.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
@@ -130,6 +131,7 @@ export async function refreshCoordinatorPresenceForDaemon(
 	const config = readCoordinatorSyncConfig();
 	if (!coordinatorEnabled(config)) return false;
 	await registerCoordinatorPresence({ db, dbPath }, config, { keysDir });
+	await refreshConfiguredScopeMembershipCache(db, config);
 	return true;
 }
 

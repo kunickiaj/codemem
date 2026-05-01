@@ -643,6 +643,16 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				ON scope_memberships(scope_id, status);
 			CREATE INDEX IF NOT EXISTS idx_scope_memberships_authority_group
 				ON scope_memberships(coordinator_id, group_id);
+
+			CREATE TABLE IF NOT EXISTS scope_membership_cache_state (
+				coordinator_id TEXT NOT NULL,
+				group_id TEXT NOT NULL,
+				last_refresh_at TEXT NOT NULL,
+				last_success_at TEXT,
+				last_error TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (coordinator_id, group_id)
+			);
 		`);
 	} catch {
 		// Keep compatibility shim fail-open for optional additive scope metadata.
