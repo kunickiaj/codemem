@@ -45,6 +45,7 @@ function makeOp(id: string, payloadSize = 10): ReplicationOp {
 		clock_device_id: "dev-a",
 		device_id: "dev-a",
 		created_at: "2026-01-01T00:00:00Z",
+		scope_id: null,
 	};
 }
 
@@ -1424,6 +1425,7 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 			clock_device_id: "peer-1",
 			device_id: "peer-1",
 			created_at: "2026-01-01T00:00:00Z",
+			scope_id: null,
 			...overrides,
 		};
 	}
@@ -1576,6 +1578,7 @@ describe("applyReplicationOps", () => {
 			clock_device_id: "dev-remote",
 			device_id: "dev-remote",
 			created_at: "2026-01-01T00:00:00Z",
+			scope_id: null,
 			...overrides,
 		};
 	}
@@ -2316,6 +2319,7 @@ describe("replication payload round-trip parity", () => {
 			clock_device_id: "remote-device",
 			device_id: "remote-device",
 			created_at: op.created_at,
+			scope_id: op.scope_id,
 		};
 
 		const result = applyReplicationOps(db, [replicationOp], "target-device");

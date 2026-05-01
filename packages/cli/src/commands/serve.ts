@@ -9,6 +9,7 @@ import {
 	getMaintenanceJob,
 	hasPendingDedupKeyBackfill,
 	hasPendingRefBackfill,
+	hasPendingScopeBackfill,
 	hasPendingSessionContextBackfill,
 	hasPendingSummaryDedupBackfill,
 	initDatabase,
@@ -23,6 +24,8 @@ import {
 	readCoordinatorSyncConfig,
 	resolveDbPath,
 	runSyncDaemon,
+	SCOPE_BACKFILL_JOB,
+	ScopeBackfillRunner,
 	SESSION_CONTEXT_BACKFILL_JOB,
 	SessionContextBackfillRunner,
 	SUMMARY_DEDUP_BACKFILL_JOB,
@@ -566,6 +569,16 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const backfillCoordinator = createSequentialBackfillCoordinator(
 		store,
 		[
+			{
+				name: "Sharing-domain",
+				kind: SCOPE_BACKFILL_JOB,
+				isPending: hasPendingScopeBackfill,
+				createRunner: () =>
+					new ScopeBackfillRunner({
+						dbPath,
+						signal: backfillAbort.signal,
+					}),
+			},
 			{
 				name: "Dedup-key",
 				kind: DEDUP_KEY_BACKFILL_JOB,
