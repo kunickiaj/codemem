@@ -331,6 +331,81 @@ describe("scope membership cache", () => {
 		});
 	});
 
+	it("allows regrant only when the membership epoch advances", async () => {
+		const local = setup();
+		await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			now: new Date(now()),
+			fetchers: {
+				listScopes: async () => [scope({ membership_epoch: 9 })],
+				listMemberships: async () => [membership({ membership_epoch: 8, status: "revoked" })],
+			},
+		});
+		await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			now: new Date(now(1)),
+			fetchers: {
+				listScopes: async () => [scope({ membership_epoch: 9 })],
+				listMemberships: async () => [membership({ membership_epoch: 9, status: "active" })],
+			},
+		});
+
+		expect(
+			getCachedScopeAuthorization(local, {
+				deviceId: "device-a",
+				scopeId: "scope-acme",
+				now: new Date(now(2)),
+			}),
+		).toMatchObject({ authorized: true, state: "authorized" });
+	});
+
+	it("detects stale membership epochs without listing the scope as authorized", async () => {
+		const local = setup();
+		await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			now: new Date(now()),
+			fetchers: {
+				listScopes: async () => [scope({ membership_epoch: 5 })],
+				listMemberships: async () => [membership({ membership_epoch: 3 })],
+			},
+		});
+
+		expect(
+			getCachedScopeAuthorization(local, {
+				deviceId: "device-a",
+				scopeId: "scope-acme",
+			}),
+		).toMatchObject({
+			authorized: false,
+			state: "stale_epoch",
+			epoch: { membership_epoch: 3, required_epoch: 5, stale: true },
+		});
+		expect(listCachedScopesForDevice(local, "device-a").memberships).toEqual([]);
+	});
+
+	it("includes revocation limitation payloads for revoked memberships", () => {
+		const local = setup();
+		upsertCachedScopeMemberships(local, [membership({ membership_epoch: 8, status: "revoked" })]);
+
+		const authorization = getCachedScopeAuthorization(local, {
+			deviceId: "device-a",
+			scopeId: "scope-acme",
+		});
+
+		expect(authorization.revocation).toEqual({
+			scope_id: "scope-acme",
+			device_id: "device-a",
+			membership_epoch: 8,
+			prevents_future_sync: true,
+			deletes_already_copied_data: false,
+			message:
+				"Revocation prevents future sync only; it does not remove data already copied to the revoked device.",
+		});
+	});
+
 	it("does not authorize active memberships when scope metadata is missing", () => {
 		const local = setup();
 		upsertCachedScopeMemberships(local, [membership()]);

@@ -1035,6 +1035,21 @@ describe("createCoordinatorApp dependency injection", () => {
 			})),
 			listScopes: vi.fn(async () => [scope]),
 			revokeScopeMembership: vi.fn(async () => true),
+			listScopeMemberships: vi.fn(async () => [
+				{
+					scope_id: "scope-acme",
+					device_id: "device-a",
+					role: "member",
+					status: "revoked",
+					membership_epoch: 5,
+					coordinator_id: "coord-a",
+					group_id: "g1",
+					manifest_issuer_device_id: null,
+					manifest_hash: "hash-revoke",
+					signed_manifest_json: null,
+					updated_at: "2026-03-28T00:00:00Z",
+				},
+			]),
 		});
 		const app = createCoordinatorApp({
 			storeFactory: () => store,
@@ -1059,6 +1074,15 @@ describe("createCoordinatorApp dependency injection", () => {
 			ok: true,
 			scope_id: "scope-acme",
 			device_id: "device-a",
+			revocation: {
+				scope_id: "scope-acme",
+				device_id: "device-a",
+				membership_epoch: 5,
+				prevents_future_sync: true,
+				deletes_already_copied_data: false,
+				message:
+					"Revocation prevents future sync only; it does not remove data already copied to the revoked device.",
+			},
 		});
 		expect(store.revokeScopeMembership).toHaveBeenCalledWith({
 			scopeId: "scope-acme",
@@ -1066,6 +1090,139 @@ describe("createCoordinatorApp dependency injection", () => {
 			membershipEpoch: 5,
 			manifestHash: "hash-revoke",
 			signedManifestJson: null,
+		});
+		expect(store.listScopeMemberships).toHaveBeenCalledWith("scope-acme", true);
+	});
+
+	it("does not fail a persisted revoke when response enrichment cannot reload it", async () => {
+		const scope: CoordinatorScope = {
+			scope_id: "scope-acme",
+			label: "Acme Work",
+			kind: "team",
+			authority_type: "coordinator",
+			coordinator_id: "coord-a",
+			group_id: "g1",
+			manifest_issuer_device_id: null,
+			membership_epoch: 3,
+			manifest_hash: null,
+			status: "active",
+			created_at: "2026-03-28T00:00:00Z",
+			updated_at: "2026-03-28T00:00:00Z",
+		};
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Acme",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			listScopes: vi.fn(async () => [scope]),
+			revokeScopeMembership: vi.fn(async () => true),
+			listScopeMemberships: vi.fn(async () => {
+				throw new Error("temporarily locked");
+			}),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ membership_epoch: 5 }),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			revocation: {
+				membership_epoch: 5,
+				prevents_future_sync: true,
+				deletes_already_copied_data: false,
+			},
+		});
+		expect(store.revokeScopeMembership).toHaveBeenCalledWith({
+			scopeId: "scope-acme",
+			deviceId: "device-a",
+			membershipEpoch: 5,
+			manifestHash: null,
+			signedManifestJson: null,
+		});
+		expect(store.listScopeMemberships).toHaveBeenCalledWith("scope-acme", true);
+	});
+
+	it("reports persisted revoke epoch when request omits membership_epoch", async () => {
+		const scope: CoordinatorScope = {
+			scope_id: "scope-acme",
+			label: "Acme Work",
+			kind: "team",
+			authority_type: "coordinator",
+			coordinator_id: "coord-a",
+			group_id: "g1",
+			manifest_issuer_device_id: null,
+			membership_epoch: 3,
+			manifest_hash: null,
+			status: "active",
+			created_at: "2026-03-28T00:00:00Z",
+			updated_at: "2026-03-28T00:00:00Z",
+		};
+		const store = createMockStore({
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Acme",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+			listScopes: vi.fn(async () => [scope]),
+			revokeScopeMembership: vi.fn(async () => true),
+			listScopeMemberships: vi.fn(async () => [
+				{
+					scope_id: "scope-acme",
+					device_id: "device-a",
+					role: "member",
+					status: "revoked",
+					membership_epoch: 4,
+					coordinator_id: "coord-a",
+					group_id: "g1",
+					manifest_issuer_device_id: null,
+					manifest_hash: null,
+					signed_manifest_json: null,
+					updated_at: "2026-03-28T00:00:00Z",
+				},
+			]),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: {
+				adminSecret: () => "test-secret",
+				now: () => "2026-03-28T00:00:00Z",
+			},
+			requestVerifier: allowRequest,
+		});
+
+		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({}),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			revocation: {
+				membership_epoch: 4,
+				prevents_future_sync: true,
+				deletes_already_copied_data: false,
+			},
 		});
 	});
 });

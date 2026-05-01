@@ -423,6 +423,15 @@ export {
 	upsertCachedScopeMemberships,
 } from "./scope-membership-cache.js";
 export type {
+	ScopeMembershipEpochStatus,
+	ScopeMembershipRevocationNotice,
+} from "./scope-membership-semantics.js";
+export {
+	explainScopeMembershipRevocation,
+	SCOPE_MEMBERSHIP_REVOCATION_LIMITATION,
+	scopeMembershipEpochStatus,
+} from "./scope-membership-semantics.js";
+export type {
 	CanonicalWorkspaceIdentity,
 	ResolveProjectScopeInput,
 	ScopeMapping,

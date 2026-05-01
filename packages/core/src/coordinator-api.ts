@@ -13,12 +13,14 @@ import type {
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorEnrollment,
 	CoordinatorScope,
+	CoordinatorScopeMembership,
 	CoordinatorStore,
 } from "./coordinator-store-contract.js";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
+import { explainScopeMembershipRevocation } from "./scope-membership-semantics.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -920,7 +922,24 @@ export function createCoordinatorApp(
 				signedManifestJson: optionalString(data, "signed_manifest_json"),
 			});
 			if (!ok) return c.json({ error: "membership_not_found" }, 404);
-			return c.json({ ok: true, scope_id: scopeId, device_id: deviceId });
+			let revokedMembership: CoordinatorScopeMembership | undefined;
+			try {
+				revokedMembership = (await store.listScopeMemberships(scopeId, true)).find(
+					(membership) => membership.device_id === deviceId,
+				);
+			} catch {
+				revokedMembership = undefined;
+			}
+			return c.json({
+				ok: true,
+				scope_id: scopeId,
+				device_id: deviceId,
+				revocation: explainScopeMembershipRevocation({
+					scopeId,
+					deviceId,
+					membershipEpoch: revokedMembership?.membership_epoch ?? membershipEpoch,
+				}),
+			});
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		} finally {
