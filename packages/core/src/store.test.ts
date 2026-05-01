@@ -229,6 +229,56 @@ describe("MemoryStore", () => {
 			}
 		});
 
+		it("stamps local-default scope on new memory and replication op by default", () => {
+			const sessionId = insertTestSession(store.db);
+			const memId = store.remember(sessionId, "feature", "Scoped default", "Feature body");
+
+			const memory = store.db
+				.prepare("SELECT import_key, scope_id FROM memory_items WHERE id = ?")
+				.get(memId) as { import_key: string; scope_id: string | null };
+			expect(memory.scope_id).toBe("local-default");
+
+			const op = store.db
+				.prepare("SELECT scope_id, payload_json FROM replication_ops WHERE entity_id = ?")
+				.get(memory.import_key) as { scope_id: string | null; payload_json: string };
+			expect(op.scope_id).toBe("local-default");
+			expect(JSON.parse(op.payload_json).scope_id).toBe("local-default");
+		});
+
+		it("stamps mapped scope on new memory and replication op", () => {
+			const sessionId = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, project = ? WHERE id = ?")
+				.run("/work/acme/service", "service", sessionId);
+			store.db
+				.prepare(
+					`INSERT INTO project_scope_mappings(
+						workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					"/work/acme/service",
+					"/work/acme/*",
+					"acme-work",
+					10,
+					"user",
+					"2026-05-01T00:00:00Z",
+					"2026-05-01T00:00:00Z",
+				);
+
+			const memId = store.remember(sessionId, "feature", "Scoped mapped", "Feature body");
+			const memory = store.db
+				.prepare("SELECT import_key, scope_id FROM memory_items WHERE id = ?")
+				.get(memId) as { import_key: string; scope_id: string | null };
+			expect(memory.scope_id).toBe("acme-work");
+
+			const op = store.db
+				.prepare("SELECT scope_id, payload_json FROM replication_ops WHERE entity_id = ?")
+				.get(memory.import_key) as { scope_id: string | null; payload_json: string };
+			expect(op.scope_id).toBe("acme-work");
+			expect(JSON.parse(op.payload_json).scope_id).toBe("acme-work");
+		});
+
 		it("generates an import_key when not provided", () => {
 			const sessionId = insertTestSession(store.db);
 			const memId = store.remember(sessionId, "discovery", "Title", "Body");
@@ -380,6 +430,47 @@ describe("MemoryStore", () => {
 			expect(count.count).toBe(1);
 		});
 
+		it("returns same-session duplicates when legacy scope is missing", () => {
+			const nullScopeSessionId = insertTestSession(store.db);
+			const nullScopeId = store.remember(
+				nullScopeSessionId,
+				"feature",
+				"Legacy null scope title",
+				"Original body",
+			);
+			store.db.prepare("UPDATE memory_items SET scope_id = NULL WHERE id = ?").run(nullScopeId);
+
+			const nullScopeDuplicateId = store.remember(
+				nullScopeSessionId,
+				"feature",
+				"Legacy null scope title",
+				"Duplicate body",
+			);
+
+			const emptyScopeSessionId = insertTestSession(store.db);
+			const emptyScopeId = store.remember(
+				emptyScopeSessionId,
+				"feature",
+				"Legacy empty scope title",
+				"Original body",
+			);
+			store.db.prepare("UPDATE memory_items SET scope_id = '' WHERE id = ?").run(emptyScopeId);
+
+			const emptyScopeDuplicateId = store.remember(
+				emptyScopeSessionId,
+				"feature",
+				"Legacy empty scope title",
+				"Duplicate body",
+			);
+
+			expect(nullScopeDuplicateId).toBe(nullScopeId);
+			expect(emptyScopeDuplicateId).toBe(emptyScopeId);
+			const count = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+				count: number;
+			};
+			expect(count.count).toBe(2);
+		});
+
 		it("logs same-session dedup hits when CODEMEM_DEBUG=1", () => {
 			process.env.CODEMEM_DEBUG = "1";
 			const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -437,6 +528,48 @@ describe("MemoryStore", () => {
 				count: number;
 			};
 			expect(count.count).toBe(1);
+		});
+
+		it("does not dedup duplicate titles across different scopes", () => {
+			const sessionA = insertTestSession(store.db);
+			const sessionB = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, project = ? WHERE id = ?")
+				.run("/work/acme/service", "service", sessionA);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, project = ? WHERE id = ?")
+				.run("/oss/codemem", "codemem", sessionB);
+			store.db
+				.prepare(
+					`INSERT INTO project_scope_mappings(
+						workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					"/work/acme/service",
+					"/work/acme/*",
+					"acme-work",
+					10,
+					"user",
+					"2026-05-01T00:00:00Z",
+					"2026-05-01T00:00:00Z",
+					"/oss/codemem",
+					"/oss/*",
+					"oss-codemem",
+					10,
+					"user",
+					"2026-05-01T00:00:00Z",
+					"2026-05-01T00:00:00Z",
+				);
+
+			const firstId = store.remember(sessionA, "discovery", "Shared title", "Original body", 0.9);
+			const secondId = store.remember(sessionB, "discovery", "Shared title", "Duplicate body", 0.5);
+
+			expect(secondId).not.toBe(firstId);
+			const scopes = store.db
+				.prepare("SELECT scope_id FROM memory_items ORDER BY id")
+				.all() as Array<{ scope_id: string | null }>;
+			expect(scopes).toEqual([{ scope_id: "acme-work" }, { scope_id: "oss-codemem" }]);
 		});
 
 		it("logs cross-session dedup hits when CODEMEM_DEBUG=1", () => {

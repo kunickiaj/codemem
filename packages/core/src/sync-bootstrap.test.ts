@@ -98,6 +98,18 @@ describe("applyBootstrapSnapshot", () => {
 		expect(newA.visibility).toBe("shared");
 	});
 
+	it("preserves snapshot payload scope_id on inserted memories", () => {
+		const items = [makeSnapshotItem("scoped-key", { payload: { scope_id: "acme-work" } })];
+
+		const result = applyBootstrapSnapshot(db, "peer-1", items, makeResetInfo());
+
+		expect(result.ok).toBe(true);
+		const scoped = db
+			.prepare("SELECT scope_id FROM memory_items WHERE import_key = 'scoped-key'")
+			.get() as Record<string, unknown>;
+		expect(scoped.scope_id).toBe("acme-work");
+	});
+
 	it("preserves private memories during bootstrap", () => {
 		const now = new Date().toISOString();
 		db.prepare(
