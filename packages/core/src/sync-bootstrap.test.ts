@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
 import { applyBootstrapSnapshot, fetchAllSnapshotPages } from "./sync-bootstrap.js";
+import { SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import { getSyncResetState, setSyncResetState } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
@@ -248,6 +249,7 @@ describe("fetchAllSnapshotPages", () => {
 			globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 				expect(init?.headers).toMatchObject({
 					"X-Codemem-Bootstrap-Grant": "grant-1",
+					[SYNC_CAPABILITY_HEADER]: "aware",
 					"X-Opencode-Device": deviceId,
 				});
 				return new Response(

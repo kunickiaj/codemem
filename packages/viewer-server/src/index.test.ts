@@ -1820,7 +1820,11 @@ describe("viewer-server", () => {
 						keysDir: peerKeysDir,
 					});
 
-					expect((await syncApp.request(url, { headers })).status).toBe(200);
+					const res = await syncApp.request(url, { headers });
+					expect(res.status).toBe(200);
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.protocol_version).toBe("2");
+					expect(body.sync_capability).toBe("aware");
 				} finally {
 					peerDb.close();
 				}
@@ -2133,6 +2137,7 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.error).toBe("reset_required");
 					expect(body.reset_required).toBe(true);
+					expect(body.sync_capability).toBe("aware");
 					expect(body.reason).toBe("stale_cursor");
 					expect(body.generation).toBe(7);
 					expect(body.snapshot_id).toBe("snapshot-7");
@@ -2206,10 +2211,71 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.error).toBe("reset_required");
 					expect(body.reset_required).toBe(true);
+					expect(body.sync_capability).toBe("aware");
 					expect(body.reason).toBe("boundary_mismatch");
 					expect(body.generation).toBe(9);
 					expect(body.snapshot_id).toBe("snapshot-9");
 					expect(body.baseline_cursor).toBe("2026-01-01T00:00:02Z|base-op");
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
+			}
+		});
+
+		it("advertises capability on incremental /v1/ops responses", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					const peerPublicKey = loadPublicKey(peerKeysDir);
+					if (!peerPublicKey) throw new Error("peer public key missing");
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+					const now = new Date().toISOString();
+
+					store.db
+						.prepare(
+							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+							 VALUES (?, ?, ?, ?)`,
+						)
+						.run(peerDeviceId, peerFingerprint.fingerprint, peerPublicKey, now);
+
+					store.db
+						.prepare(
+							`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+							 VALUES (1, ?, ?, ?, ?, ?)`,
+						)
+						.run(3, "snapshot-3", null, null, now);
+
+					const url = "http://localhost/v1/ops?since=&limit=50&generation=3&snapshot_id=snapshot-3";
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "GET",
+						url,
+						bodyBytes: Buffer.alloc(0),
+						keysDir: peerKeysDir,
+					});
+
+					const res = await syncApp.request(url, { headers });
+					expect(res.status).toBe(200);
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.reset_required).toBe(false);
+					expect(body.sync_capability).toBe("aware");
+					expect(body.ops).toEqual([]);
 				} finally {
 					peerDb.close();
 				}
@@ -2310,6 +2376,7 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.generation).toBe(11);
 					expect(body.snapshot_id).toBe("snapshot-11");
+					expect(body.sync_capability).toBe("aware");
 					const items = body.items as Array<Record<string, unknown>>;
 					expect(items.map((item) => item.entity_id)).toEqual(["key-a", "key-b"]);
 					expect(items[1]?.op_type).toBe("delete");
@@ -2335,6 +2402,71 @@ describe("viewer-server", () => {
 				expect(obsRes.status).toBe(404);
 			} finally {
 				cleanup();
+			}
+		});
+
+		it("accepts capability metadata on POST /v1/ops bodies", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					const peerPublicKey = loadPublicKey(peerKeysDir);
+					if (!peerPublicKey) throw new Error("peer public key missing");
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+
+					store.db
+						.prepare(
+							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+							 VALUES (?, ?, ?, ?)`,
+						)
+						.run(
+							peerDeviceId,
+							peerFingerprint.fingerprint,
+							peerPublicKey,
+							new Date().toISOString(),
+						);
+
+					const url = "http://localhost/v1/ops";
+					const payload = { ops: [], sync_capability: "aware" };
+					const bodyText = JSON.stringify(payload);
+					const bodyBytes = Buffer.from(bodyText);
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "POST",
+						url,
+						bodyBytes,
+						keysDir: peerKeysDir,
+					});
+
+					const res = await syncApp.request(url, {
+						method: "POST",
+						headers: {
+							...headers,
+							"Content-Type": "application/json",
+						},
+						body: bodyText,
+					});
+					expect(res.status).toBe(200);
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.sync_capability).toBe("aware");
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
 			}
 		});
 

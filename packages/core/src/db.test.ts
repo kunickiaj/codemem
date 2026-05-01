@@ -555,6 +555,31 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(row.group_id).toBe("team-alpha");
 	});
 
+	it("adds sync_attempts capability diagnostics columns on legacy schemas", () => {
+		db.exec(`
+			CREATE TABLE sync_attempts (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				peer_device_id TEXT NOT NULL,
+				started_at TEXT NOT NULL,
+				finished_at TEXT,
+				ok INTEGER NOT NULL DEFAULT 0,
+				ops_in INTEGER NOT NULL DEFAULT 0,
+				ops_out INTEGER NOT NULL DEFAULT 0,
+				error TEXT
+			)
+		`);
+
+		expect(columnExists(db, "sync_attempts", "local_sync_capability")).toBe(false);
+		expect(columnExists(db, "sync_attempts", "peer_sync_capability")).toBe(false);
+		expect(columnExists(db, "sync_attempts", "negotiated_sync_capability")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnExists(db, "sync_attempts", "local_sync_capability")).toBe(true);
+		expect(columnExists(db, "sync_attempts", "peer_sync_capability")).toBe(true);
+		expect(columnExists(db, "sync_attempts", "negotiated_sync_capability")).toBe(true);
+	});
+
 	it("creates memory_file_refs and memory_concept_refs on v6 databases missing them", () => {
 		// Simulate a v6 database that has memory_items but lacks the junction tables.
 		db.exec(`
