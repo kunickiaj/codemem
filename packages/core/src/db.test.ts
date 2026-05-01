@@ -29,6 +29,16 @@ function hasIndex(db: Database, name: string): boolean {
 	return row?.ok === 1;
 }
 
+function columnInfo(
+	db: Database,
+	table: string,
+	column: string,
+): { is_not_null: number } | undefined {
+	return db
+		.prepare('SELECT "notnull" AS is_not_null FROM pragma_table_info(?) WHERE name = ? LIMIT 1')
+		.get(table, column) as { is_not_null: number } | undefined;
+}
+
 describe("connect", () => {
 	let tmpDir: string;
 	let db: Database | undefined;
@@ -83,6 +93,13 @@ describe("connect", () => {
 		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 		expect(tableExists(db, "memory_items")).toBe(true);
 		expect(tableExists(db, "sessions")).toBe(true);
+		expect(tableExists(db, "replication_scopes")).toBe(true);
+		expect(tableExists(db, "project_scope_mappings")).toBe(true);
+		expect(tableExists(db, "scope_memberships")).toBe(true);
+		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
+		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
+		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(true);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
@@ -578,6 +595,143 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "sync_attempts", "local_sync_capability")).toBe(true);
 		expect(columnExists(db, "sync_attempts", "peer_sync_capability")).toBe(true);
 		expect(columnExists(db, "sync_attempts", "negotiated_sync_capability")).toBe(true);
+	});
+
+	it("creates replication scope tables and indexes on legacy schemas", () => {
+		expect(tableExists(db, "replication_scopes")).toBe(false);
+		expect(tableExists(db, "project_scope_mappings")).toBe(false);
+		expect(tableExists(db, "scope_memberships")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(tableExists(db, "replication_scopes")).toBe(true);
+		expect(tableExists(db, "project_scope_mappings")).toBe(true);
+		expect(tableExists(db, "scope_memberships")).toBe(true);
+		expect(hasIndex(db, "idx_replication_scopes_status")).toBe(true);
+		expect(hasIndex(db, "idx_replication_scopes_authority_group")).toBe(true);
+		expect(columnInfo(db, "replication_scopes", "scope_id")?.is_not_null).toBe(1);
+		expect(hasIndex(db, "idx_project_scope_mappings_workspace_priority")).toBe(true);
+		expect(hasIndex(db, "idx_project_scope_mappings_pattern_priority")).toBe(true);
+		expect(hasIndex(db, "idx_project_scope_mappings_scope")).toBe(true);
+		expect(hasIndex(db, "idx_scope_memberships_device_status")).toBe(true);
+		expect(hasIndex(db, "idx_scope_memberships_scope_status")).toBe(true);
+		expect(hasIndex(db, "idx_scope_memberships_authority_group")).toBe(true);
+
+		db.prepare(
+			`INSERT INTO replication_scopes
+				(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			"local-default",
+			"Local only",
+			"system",
+			"local",
+			0,
+			"active",
+			"2026-04-30T00:00:00Z",
+			"2026-04-30T00:00:00Z",
+		);
+		const row = db.prepare("SELECT label, authority_type FROM replication_scopes").get() as
+			| { label: string; authority_type: string }
+			| undefined;
+		expect(row).toEqual({ label: "Local only", authority_type: "local" });
+	});
+
+	it("creates missing scope indexes when scope tables already exist", () => {
+		db.exec(`
+			CREATE TABLE replication_scopes (
+				scope_id TEXT PRIMARY KEY NOT NULL,
+				label TEXT NOT NULL,
+				kind TEXT NOT NULL DEFAULT 'user',
+				authority_type TEXT NOT NULL DEFAULT 'local',
+				coordinator_id TEXT,
+				group_id TEXT,
+				manifest_issuer_device_id TEXT,
+				membership_epoch INTEGER NOT NULL DEFAULT 0,
+				manifest_hash TEXT,
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE project_scope_mappings (
+				id INTEGER PRIMARY KEY,
+				workspace_identity TEXT,
+				project_pattern TEXT NOT NULL,
+				scope_id TEXT NOT NULL,
+				priority INTEGER NOT NULL DEFAULT 0,
+				source TEXT NOT NULL DEFAULT 'user',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE scope_memberships (
+				scope_id TEXT NOT NULL,
+				device_id TEXT NOT NULL,
+				role TEXT NOT NULL DEFAULT 'member',
+				status TEXT NOT NULL DEFAULT 'active',
+				membership_epoch INTEGER NOT NULL DEFAULT 0,
+				coordinator_id TEXT,
+				group_id TEXT,
+				manifest_issuer_device_id TEXT,
+				manifest_hash TEXT,
+				signed_manifest_json TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (scope_id, device_id)
+			);
+		`);
+
+		expect(hasIndex(db, "idx_replication_scopes_status")).toBe(false);
+		expect(hasIndex(db, "idx_project_scope_mappings_scope")).toBe(false);
+		expect(hasIndex(db, "idx_scope_memberships_scope_status")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(hasIndex(db, "idx_replication_scopes_status")).toBe(true);
+		expect(hasIndex(db, "idx_project_scope_mappings_scope")).toBe(true);
+		expect(hasIndex(db, "idx_scope_memberships_scope_status")).toBe(true);
+		expect(columnInfo(db, "replication_scopes", "scope_id")?.is_not_null).toBe(1);
+	});
+
+	it("adds nullable scope columns and indexes on legacy memory/op tables", () => {
+		db.exec(`
+			CREATE TABLE memory_items (
+				id INTEGER PRIMARY KEY,
+				session_id INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				title TEXT NOT NULL,
+				body_text TEXT NOT NULL,
+				visibility TEXT,
+				workspace_id TEXT,
+				active INTEGER DEFAULT 1,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE replication_ops (
+				op_id TEXT PRIMARY KEY,
+				entity_type TEXT NOT NULL,
+				entity_id TEXT NOT NULL,
+				op_type TEXT NOT NULL,
+				payload_json TEXT,
+				clock_rev INTEGER NOT NULL,
+				clock_updated_at TEXT NOT NULL,
+				clock_device_id TEXT NOT NULL,
+				device_id TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+		`);
+
+		expect(columnExists(db, "memory_items", "scope_id")).toBe(false);
+		expect(columnExists(db, "replication_ops", "scope_id")).toBe(false);
+		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(false);
+		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
+		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
+		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
+		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(true);
 	});
 
 	it("creates memory_file_refs and memory_concept_refs on v6 databases missing them", () => {

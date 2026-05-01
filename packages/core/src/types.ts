@@ -60,6 +60,7 @@ export interface MemoryItem {
 	// Soft delete + replication
 	deleted_at: string | null;
 	rev: number;
+	scope_id: string | null;
 }
 
 export interface Artifact {
@@ -304,6 +305,47 @@ export interface ReplicationOp {
 	clock_device_id: string;
 	device_id: string;
 	created_at: string;
+	scope_id: string | null;
+}
+
+export interface ReplicationScope {
+	scope_id: string;
+	label: string;
+	kind: string;
+	authority_type: string;
+	coordinator_id: string | null;
+	group_id: string | null;
+	manifest_issuer_device_id: string | null;
+	membership_epoch: number;
+	manifest_hash: string | null;
+	status: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ProjectScopeMapping {
+	id: number;
+	workspace_identity: string | null;
+	project_pattern: string;
+	scope_id: string;
+	priority: number;
+	source: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ScopeMembership {
+	scope_id: string;
+	device_id: string;
+	role: string;
+	status: string;
+	membership_epoch: number;
+	coordinator_id: string | null;
+	group_id: string | null;
+	manifest_issuer_device_id: string | null;
+	manifest_hash: string | null;
+	signed_manifest_json: string | null;
+	updated_at: string;
 }
 
 export interface ReplicationClock {

@@ -106,6 +106,7 @@ interface MemoryPayload {
 	user_prompt_id: number | null;
 	prompt_number: number | null;
 	deleted_at: string | null;
+	scope_id: string | null;
 	// Wire payloads use this as "sender explicitly included deleted_at" so we can
 	// distinguish a tombstone clear (`deleted_at: null`) from an omitted field.
 	// Row-derived payloads set it from current storage truth instead.
@@ -189,6 +190,7 @@ function parseMemoryPayload(op: ReplicationOp, errors: string[]): MemoryPayload 
 		user_prompt_id: asNumberOrNull(raw.user_prompt_id),
 		prompt_number: asNumberOrNull(raw.prompt_number),
 		deleted_at: asStringOrNull(raw.deleted_at),
+		scope_id: asStringOrNull(raw.scope_id),
 		has_deleted_at: Object.hasOwn(raw, "deleted_at"),
 		rev: asNumberOrNull(raw.rev) ?? 0,
 		import_key: asStringOrNull(raw.import_key),
@@ -566,6 +568,7 @@ export function recordReplicationOp(
 	const updatedAt = row?.updated_at ?? now;
 	const entityId = row?.import_key ?? String(opts.memoryId);
 	const metadata = fromJson(row?.metadata_json);
+	const scopeId = row?.scope_id ?? null;
 	const clockDeviceId =
 		typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim().length > 0
 			? metadata.clock_device_id
@@ -584,7 +587,9 @@ export function recordReplicationOp(
 	// Explicit payload override takes precedence (used by tests).
 	let payloadJson: string | null;
 	if (opts.payload) {
-		payloadJson = toJson(opts.payload);
+		payloadJson = toJson(
+			row && opts.opType === "upsert" ? { ...opts.payload, scope_id: scopeId } : opts.payload,
+		);
 	} else if (row && opts.opType === "upsert") {
 		// Parse JSON-string columns so they round-trip as objects, not double-encoded strings
 		const parseSqliteJson = (val: string | null | undefined): unknown => {
@@ -625,6 +630,7 @@ export function recordReplicationOp(
 			user_prompt_id: row.user_prompt_id,
 			prompt_number: row.prompt_number,
 			deleted_at: row.deleted_at,
+			scope_id: scopeId,
 		});
 	} else {
 		payloadJson = null;
@@ -642,6 +648,7 @@ export function recordReplicationOp(
 			clock_device_id: clockDeviceId,
 			device_id: opts.deviceId,
 			created_at: now,
+			scope_id: scopeId,
 		})
 		.run();
 
@@ -714,6 +721,7 @@ export function loadReplicationOpsSince(
 		clock_device_id: r.clock_device_id,
 		device_id: r.device_id,
 		created_at: r.created_at,
+		scope_id: r.scope_id,
 	}));
 
 	let nextCursor: string | null = null;
@@ -1675,6 +1683,7 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 				clock_device_id: clockDeviceId,
 				device_id: clockDeviceId,
 				created_at: now,
+				scope_id: row.scope_id ?? null,
 			})
 			.onConflictDoNothing()
 			.run();
@@ -1734,6 +1743,7 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
 		user_prompt_id: row.user_prompt_id ?? null,
 		prompt_number: row.prompt_number ?? null,
 		deleted_at: row.deleted_at ?? null,
+		scope_id: row.scope_id ?? null,
 		has_deleted_at: row.deleted_at != null,
 		rev: row.rev ?? 0,
 		import_key: row.import_key ?? null,
@@ -1805,6 +1815,10 @@ export function applyReplicationOps(
 
 				if (op.op_type === "upsert") {
 					const importKey = op.entity_id;
+					const opScopeId =
+						typeof op.scope_id === "string" && op.scope_id.trim().length > 0
+							? op.scope_id.trim()
+							: null;
 					const memRow = d
 						.select({
 							id: schema.memoryItems.id,
@@ -1886,6 +1900,7 @@ export function applyReplicationOps(
 								files_modified: toJsonNullable(payload.files_modified),
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
+								scope_id: sql`COALESCE(${opScopeId}, ${schema.memoryItems.scope_id})`,
 							})
 							.where(eq(schema.memoryItems.import_key, importKey))
 							.run();
@@ -1948,6 +1963,7 @@ export function applyReplicationOps(
 								files_modified: toJsonNullable(payload.files_modified),
 								user_prompt_id: payload.user_prompt_id,
 								prompt_number: payload.prompt_number,
+								scope_id: opScopeId,
 							})
 							.returning({ id: schema.memoryItems.id })
 							.all();
@@ -1968,6 +1984,10 @@ export function applyReplicationOps(
 					}
 				} else if (op.op_type === "delete") {
 					const importKey = op.entity_id;
+					const opScopeId =
+						typeof op.scope_id === "string" && op.scope_id.trim().length > 0
+							? op.scope_id.trim()
+							: null;
 					const existingForDelete = d
 						.select({
 							id: schema.memoryItems.id,
@@ -2000,6 +2020,7 @@ export function applyReplicationOps(
 								deleted_at: sql`COALESCE(${schema.memoryItems.deleted_at}, ${now})`,
 								rev: op.clock_rev,
 								updated_at: op.clock_updated_at,
+								scope_id: sql`COALESCE(${opScopeId}, ${schema.memoryItems.scope_id})`,
 							})
 							.where(eq(schema.memoryItems.id, existingForDelete.id))
 							.run();
@@ -2043,6 +2064,7 @@ function insertReplicationOpRow(d: ReturnType<typeof drizzle>, op: ReplicationOp
 			clock_device_id: op.clock_device_id,
 			device_id: op.device_id,
 			created_at: op.created_at,
+			scope_id: op.scope_id ?? null,
 		})
 		.onConflictDoNothing()
 		.run();

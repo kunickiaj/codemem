@@ -259,8 +259,8 @@ describe("recordReplicationOp", () => {
 				created_at, updated_at, import_key, rev, metadata_json, active,
 				actor_id, actor_display_name, visibility, workspace_id, workspace_kind,
 				origin_device_id, origin_source, trust_state, narrative,
-				facts, concepts, files_read, files_modified
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				facts, concepts, files_read, files_modified, scope_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			sessionId,
 			"feature",
@@ -288,6 +288,7 @@ describe("recordReplicationOp", () => {
 			toJson(["concept-1"]),
 			toJson(["src/a.ts"]),
 			toJson(["src/b.ts"]),
+			"acme-work",
 		);
 
 		const memId = (
@@ -298,8 +299,9 @@ describe("recordReplicationOp", () => {
 
 		const opId = recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
 		const row = db
-			.prepare("SELECT payload_json FROM replication_ops WHERE op_id = ?")
-			.get(opId) as { payload_json: string | null };
+			.prepare("SELECT payload_json, scope_id FROM replication_ops WHERE op_id = ?")
+			.get(opId) as { payload_json: string | null; scope_id: string | null };
+		expect(row.scope_id).toBe("acme-work");
 
 		const payloadJson = row.payload_json;
 		if (payloadJson === null) throw new Error("expected row.payload_json to be non-null");
@@ -322,6 +324,7 @@ describe("recordReplicationOp", () => {
 		// JSON array fields should be arrays, not strings
 		expect(payload.facts).toEqual(["fact-1"]);
 		expect(payload.files_read).toEqual(["src/a.ts"]);
+		expect(payload.scope_id).toBe("acme-work");
 
 		// Full round-trip: load op → apply to a second DB → verify all columns
 		const [ops] = loadReplicationOpsSince(db, null);
@@ -354,6 +357,7 @@ describe("recordReplicationOp", () => {
 			expect(applied.origin_device_id).toBe("dev-a");
 			expect(applied.origin_source).toBe("manual");
 			expect(applied.trust_state).toBe("verified");
+			expect(applied.scope_id).toBe("acme-work");
 			expect(applied.narrative).toBe("Full narrative text");
 			// metadata_json round-trips as proper JSON with clock_device_id added
 			const appliedMeta = JSON.parse(applied.metadata_json as string);
@@ -1298,25 +1302,63 @@ describe("legacy key migration + replication backfill", () => {
 		const now = "2026-01-02T00:00:00Z";
 
 		db.prepare(
-			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run(sessionId, "feature", "Live row", "live", now, now, "key:live", 1, 1, toJson({}));
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json, scope_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"feature",
+			"Live row",
+			"live",
+			now,
+			now,
+			"key:live",
+			1,
+			1,
+			toJson({}),
+			"local-default",
+		);
 
 		db.prepare(
-			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, metadata_json)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run(sessionId, "bugfix", "Deleted row", "gone", now, now, "key:gone", 2, 0, now, toJson({}));
+			`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, deleted_at, metadata_json, scope_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"bugfix",
+			"Deleted row",
+			"gone",
+			now,
+			now,
+			"key:gone",
+			2,
+			0,
+			now,
+			toJson({}),
+			"legacy-shared-review",
+		);
 
 		const first = backfillReplicationOps(db, 10);
 		expect(first).toBe(2);
 
 		const ops = db
 			.prepare(
-				"SELECT op_id, entity_id, op_type, clock_rev FROM replication_ops ORDER BY op_type, entity_id",
+				"SELECT op_id, entity_id, op_type, clock_rev, scope_id, payload_json FROM replication_ops ORDER BY op_type, entity_id",
 			)
-			.all() as Array<{ op_id: string; entity_id: string; op_type: string; clock_rev: number }>;
+			.all() as Array<{
+			op_id: string;
+			entity_id: string;
+			op_type: string;
+			clock_rev: number;
+			scope_id: string | null;
+			payload_json: string;
+		}>;
 		expect(ops).toHaveLength(2);
 		expect(ops.map((op) => op.op_type).sort()).toEqual(["delete", "upsert"]);
+		expect(new Set(ops.map((op) => op.scope_id))).toEqual(
+			new Set(["legacy-shared-review", "local-default"]),
+		);
+		expect(new Set(ops.map((op) => JSON.parse(op.payload_json).scope_id))).toEqual(
+			new Set(["legacy-shared-review", "local-default"]),
+		);
 		expect(ops[0]?.op_id).toContain("backfill:memory_item:");
 
 		const second = backfillReplicationOps(db, 10);
@@ -1595,6 +1637,68 @@ describe("applyReplicationOps", () => {
 		expect(mem.rev).toBe(1);
 		expect(result.vectorWork.upsertMemoryIds).toEqual([Number(mem.id)]);
 		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
+	});
+
+	it("preserves authoritative inbound scope_id on inserted memories and recorded ops", () => {
+		const op = makeReplicationOp({ scope_id: "acme-work" });
+
+		const result = applyReplicationOps(db, [op], "dev-local");
+
+		expect(result.applied).toBe(1);
+		const mem = db
+			.prepare("SELECT scope_id FROM memory_items WHERE import_key = ?")
+			.get(op.entity_id) as { scope_id: string | null };
+		expect(mem.scope_id).toBe("acme-work");
+		const recordedOp = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get(op.op_id) as { scope_id: string | null };
+		expect(recordedOp.scope_id).toBe("acme-work");
+	});
+
+	it("preserves authoritative inbound scope_id on existing upserts and deletes", () => {
+		const sessionId = insertTestSession(db);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json, scope_id
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Local old title",
+			"Local old body",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"key:test-1",
+			0,
+			1,
+			toJson({ clock_device_id: "dev-local" }),
+			"local-default",
+		);
+		const updateOp = makeReplicationOp({ scope_id: "acme-work", clock_rev: 2 });
+		const deleteOp = makeReplicationOp({
+			op_id: "delete-scoped-op",
+			op_type: "delete",
+			payload_json: null,
+			scope_id: "client-a",
+			clock_rev: 3,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+		});
+
+		const updateResult = applyReplicationOps(db, [updateOp], "dev-local");
+		const deleteResult = applyReplicationOps(db, [deleteOp], "dev-local");
+
+		expect(updateResult.applied).toBe(1);
+		expect(deleteResult.applied).toBe(1);
+		const mem = db
+			.prepare("SELECT title, active, scope_id FROM memory_items WHERE import_key = ?")
+			.get(updateOp.entity_id) as { title: string; active: number; scope_id: string | null };
+		expect(mem.title).toBe("Remote memory");
+		expect(mem.active).toBe(0);
+		expect(mem.scope_id).toBe("client-a");
+		const recordedScopes = db
+			.prepare("SELECT scope_id FROM replication_ops ORDER BY clock_rev")
+			.all() as Array<{ scope_id: string | null }>;
+		expect(recordedScopes).toEqual([{ scope_id: "acme-work" }, { scope_id: "client-a" }]);
 	});
 
 	it("redacts secrets in inbound peer payloads on insert", () => {

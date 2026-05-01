@@ -30,6 +30,82 @@ export const sessions = sqliteTable("sessions", {
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
 
+export const replicationScopes = sqliteTable(
+	"replication_scopes",
+	{
+		scope_id: text("scope_id").primaryKey(),
+		label: text("label").notNull(),
+		kind: text("kind").notNull().default("user"),
+		authority_type: text("authority_type").notNull().default("local"),
+		coordinator_id: text("coordinator_id"),
+		group_id: text("group_id"),
+		manifest_issuer_device_id: text("manifest_issuer_device_id"),
+		membership_epoch: integer("membership_epoch").notNull().default(0),
+		manifest_hash: text("manifest_hash"),
+		status: text("status").notNull().default("active"),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		index("idx_replication_scopes_status").on(table.status),
+		index("idx_replication_scopes_authority_group").on(table.coordinator_id, table.group_id),
+	],
+);
+
+export type ReplicationScope = typeof replicationScopes.$inferSelect;
+export type NewReplicationScope = typeof replicationScopes.$inferInsert;
+
+export const projectScopeMappings = sqliteTable(
+	"project_scope_mappings",
+	{
+		id: integer("id").primaryKey(),
+		workspace_identity: text("workspace_identity"),
+		project_pattern: text("project_pattern").notNull(),
+		scope_id: text("scope_id").notNull(),
+		priority: integer("priority").notNull().default(0),
+		source: text("source").notNull().default("user"),
+		created_at: text("created_at").notNull(),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		index("idx_project_scope_mappings_workspace_priority").on(
+			table.workspace_identity,
+			table.priority,
+		),
+		index("idx_project_scope_mappings_pattern_priority").on(table.project_pattern, table.priority),
+		index("idx_project_scope_mappings_scope").on(table.scope_id),
+	],
+);
+
+export type ProjectScopeMapping = typeof projectScopeMappings.$inferSelect;
+export type NewProjectScopeMapping = typeof projectScopeMappings.$inferInsert;
+
+export const scopeMemberships = sqliteTable(
+	"scope_memberships",
+	{
+		scope_id: text("scope_id").notNull(),
+		device_id: text("device_id").notNull(),
+		role: text("role").notNull().default("member"),
+		status: text("status").notNull().default("active"),
+		membership_epoch: integer("membership_epoch").notNull().default(0),
+		coordinator_id: text("coordinator_id"),
+		group_id: text("group_id"),
+		manifest_issuer_device_id: text("manifest_issuer_device_id"),
+		manifest_hash: text("manifest_hash"),
+		signed_manifest_json: text("signed_manifest_json"),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.scope_id, table.device_id] }),
+		index("idx_scope_memberships_device_status").on(table.device_id, table.status),
+		index("idx_scope_memberships_scope_status").on(table.scope_id, table.status),
+		index("idx_scope_memberships_authority_group").on(table.coordinator_id, table.group_id),
+	],
+);
+
+export type ScopeMembership = typeof scopeMemberships.$inferSelect;
+export type NewScopeMembership = typeof scopeMemberships.$inferInsert;
+
 export const artifacts = sqliteTable(
 	"artifacts",
 	{
@@ -86,10 +162,16 @@ export const memoryItems = sqliteTable(
 		rev: integer("rev").default(0),
 		dedup_key: text("dedup_key"),
 		import_key: text("import_key"),
+		scope_id: text("scope_id"),
 	},
 	(table) => [
 		index("idx_memory_items_active_created").on(table.active, table.created_at),
 		index("idx_memory_items_session").on(table.session_id),
+		index("idx_memory_items_scope_visibility_created").on(
+			table.scope_id,
+			table.visibility,
+			table.created_at,
+		),
 		index("idx_memory_items_dedup_key_active_created").on(
 			table.dedup_key,
 			table.active,
@@ -368,10 +450,12 @@ export const replicationOps = sqliteTable(
 		clock_device_id: text("clock_device_id").notNull(),
 		device_id: text("device_id").notNull(),
 		created_at: text("created_at").notNull(),
+		scope_id: text("scope_id"),
 	},
 	(table) => [
 		index("idx_replication_ops_created").on(table.created_at, table.op_id),
 		index("idx_replication_ops_entity").on(table.entity_type, table.entity_id),
+		index("idx_replication_ops_scope_created").on(table.scope_id, table.created_at, table.op_id),
 	],
 );
 
@@ -553,6 +637,9 @@ export type NewActor = typeof actors.$inferInsert;
 
 export const schema = {
 	sessions,
+	replicationScopes,
+	projectScopeMappings,
+	scopeMemberships,
 	artifacts,
 	memoryItems,
 	memoryFileRefs,
