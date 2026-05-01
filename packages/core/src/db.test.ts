@@ -96,10 +96,14 @@ describe("connect", () => {
 		expect(tableExists(db, "replication_scopes")).toBe(true);
 		expect(tableExists(db, "project_scope_mappings")).toBe(true);
 		expect(tableExists(db, "scope_memberships")).toBe(true);
+		expect(tableExists(db, "sync_reset_state_v2")).toBe(true);
+		expect(tableExists(db, "sync_retention_state_v2")).toBe(true);
+		expect(tableExists(db, "replication_cursors_v2")).toBe(true);
 		expect(columnExists(db, "memory_items", "scope_id")).toBe(true);
 		expect(columnExists(db, "replication_ops", "scope_id")).toBe(true);
 		expect(hasIndex(db, "idx_memory_items_scope_visibility_created")).toBe(true);
 		expect(hasIndex(db, "idx_replication_ops_scope_created")).toBe(true);
+		expect(hasIndex(db, "idx_replication_cursors_v2_scope")).toBe(true);
 		expect(() => assertSchemaReady(db)).not.toThrow();
 	});
 
@@ -690,6 +694,140 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(hasIndex(db, "idx_project_scope_mappings_scope")).toBe(true);
 		expect(hasIndex(db, "idx_scope_memberships_scope_status")).toBe(true);
 		expect(columnInfo(db, "replication_scopes", "scope_id")?.is_not_null).toBe(1);
+	});
+
+	it("creates and seeds per-scope sync state tables from legacy state", () => {
+		db.exec(`
+			CREATE TABLE sync_reset_state (
+				id INTEGER PRIMARY KEY,
+				generation INTEGER NOT NULL,
+				snapshot_id TEXT NOT NULL,
+				baseline_cursor TEXT,
+				retained_floor_cursor TEXT,
+				updated_at TEXT NOT NULL
+			);
+			INSERT INTO sync_reset_state
+				(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+			VALUES
+				(1, 7, 'snapshot-legacy', 'cursor-baseline', 'cursor-floor', '2026-04-30T00:00:00Z');
+
+			CREATE TABLE sync_retention_state (
+				id INTEGER PRIMARY KEY,
+				last_run_at TEXT,
+				last_duration_ms INTEGER,
+				last_deleted_ops INTEGER NOT NULL DEFAULT 0,
+				last_estimated_bytes_before INTEGER,
+				last_estimated_bytes_after INTEGER,
+				retained_floor_cursor TEXT,
+				last_error TEXT,
+				last_error_at TEXT
+			);
+			INSERT INTO sync_retention_state
+				(
+					id,
+					last_run_at,
+					last_duration_ms,
+					last_deleted_ops,
+					last_estimated_bytes_before,
+					last_estimated_bytes_after,
+					retained_floor_cursor,
+					last_error,
+					last_error_at
+				)
+			VALUES
+				(
+					1,
+					'2026-04-30T01:00:00Z',
+					42,
+					3,
+					1000,
+					700,
+					'cursor-floor',
+					NULL,
+					NULL
+				);
+
+			CREATE TABLE replication_cursors (
+				peer_device_id TEXT PRIMARY KEY,
+				last_applied_cursor TEXT,
+				last_acked_cursor TEXT,
+				updated_at TEXT NOT NULL
+			);
+			INSERT INTO replication_cursors
+				(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at)
+			VALUES
+				('peer-a', 'op-10', 'op-9', '2026-04-30T02:00:00Z');
+		`);
+
+		expect(tableExists(db, "sync_reset_state_v2")).toBe(false);
+		expect(tableExists(db, "sync_retention_state_v2")).toBe(false);
+		expect(tableExists(db, "replication_cursors_v2")).toBe(false);
+
+		ensureAdditiveSchemaCompatibility(db);
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(tableExists(db, "sync_reset_state_v2")).toBe(true);
+		expect(tableExists(db, "sync_retention_state_v2")).toBe(true);
+		expect(tableExists(db, "replication_cursors_v2")).toBe(true);
+		expect(hasIndex(db, "idx_replication_cursors_v2_scope")).toBe(true);
+		expect(columnInfo(db, "sync_reset_state_v2", "scope_id")?.is_not_null).toBe(1);
+		expect(columnInfo(db, "replication_cursors_v2", "scope_id")?.is_not_null).toBe(1);
+
+		const reset = db
+			.prepare("SELECT * FROM sync_reset_state_v2 WHERE scope_id = ?")
+			.get("local-default") as {
+			generation: number;
+			snapshot_id: string;
+			baseline_cursor: string;
+			retained_floor_cursor: string;
+			updated_at: string;
+		};
+		expect(reset).toMatchObject({
+			generation: 7,
+			snapshot_id: "snapshot-legacy",
+			baseline_cursor: "cursor-baseline",
+			retained_floor_cursor: "cursor-floor",
+			updated_at: "2026-04-30T00:00:00Z",
+		});
+
+		const retention = db
+			.prepare("SELECT * FROM sync_retention_state_v2 WHERE scope_id = ?")
+			.get("local-default") as {
+			last_run_at: string;
+			last_duration_ms: number;
+			last_deleted_ops: number;
+			last_estimated_bytes_before: number;
+			last_estimated_bytes_after: number;
+			retained_floor_cursor: string;
+		};
+		expect(retention).toMatchObject({
+			last_run_at: "2026-04-30T01:00:00Z",
+			last_duration_ms: 42,
+			last_deleted_ops: 3,
+			last_estimated_bytes_before: 1000,
+			last_estimated_bytes_after: 700,
+			retained_floor_cursor: "cursor-floor",
+		});
+
+		const cursor = db
+			.prepare("SELECT * FROM replication_cursors_v2 WHERE peer_device_id = ? AND scope_id = ?")
+			.get("peer-a", "local-default") as {
+			last_applied_cursor: string;
+			last_acked_cursor: string;
+			updated_at: string;
+		};
+		expect(cursor).toMatchObject({
+			last_applied_cursor: "op-10",
+			last_acked_cursor: "op-9",
+			updated_at: "2026-04-30T02:00:00Z",
+		});
+
+		db.prepare(
+			"INSERT INTO sync_reset_state_v2 (scope_id, generation, snapshot_id, updated_at) VALUES (?, ?, ?, ?)",
+		).run("work-scope", 1, "snapshot-work", "2026-04-30T03:00:00Z");
+		expect(
+			db.prepare("SELECT scope_id FROM sync_reset_state_v2 ORDER BY scope_id").pluck().all(),
+		).toEqual(["local-default", "work-scope"]);
 	});
 
 	it("adds nullable scope columns and indexes on legacy memory/op tables", () => {

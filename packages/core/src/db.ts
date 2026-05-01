@@ -526,6 +526,104 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		// Keep compatibility shim fail-open for optional additive tables.
 	}
 
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS sync_reset_state_v2 (
+				scope_id TEXT PRIMARY KEY NOT NULL,
+				generation INTEGER NOT NULL,
+				snapshot_id TEXT NOT NULL,
+				baseline_cursor TEXT,
+				retained_floor_cursor TEXT,
+				updated_at TEXT NOT NULL
+			);
+
+			CREATE TABLE IF NOT EXISTS sync_retention_state_v2 (
+				scope_id TEXT PRIMARY KEY NOT NULL,
+				last_run_at TEXT,
+				last_duration_ms INTEGER,
+				last_deleted_ops INTEGER NOT NULL DEFAULT 0,
+				last_estimated_bytes_before INTEGER,
+				last_estimated_bytes_after INTEGER,
+				retained_floor_cursor TEXT,
+				last_error TEXT,
+				last_error_at TEXT
+			);
+
+			CREATE TABLE IF NOT EXISTS replication_cursors_v2 (
+				peer_device_id TEXT NOT NULL,
+				scope_id TEXT NOT NULL,
+				last_applied_cursor TEXT,
+				last_acked_cursor TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (peer_device_id, scope_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_replication_cursors_v2_scope
+				ON replication_cursors_v2(scope_id);
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for optional additive tables.
+	}
+
+	if (tableExists(db, "sync_reset_state") && tableExists(db, "sync_reset_state_v2")) {
+		try {
+			db.exec(`
+				INSERT OR IGNORE INTO sync_reset_state_v2
+					(scope_id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+				SELECT 'local-default', generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at
+				FROM sync_reset_state
+				WHERE id = 1
+			`);
+		} catch {
+			// Best-effort bridge from legacy singleton state.
+		}
+	}
+
+	if (tableExists(db, "sync_retention_state") && tableExists(db, "sync_retention_state_v2")) {
+		try {
+			db.exec(`
+				INSERT OR IGNORE INTO sync_retention_state_v2
+					(
+						scope_id,
+						last_run_at,
+						last_duration_ms,
+						last_deleted_ops,
+						last_estimated_bytes_before,
+						last_estimated_bytes_after,
+						retained_floor_cursor,
+						last_error,
+						last_error_at
+					)
+				SELECT
+					'local-default',
+					last_run_at,
+					last_duration_ms,
+					last_deleted_ops,
+					last_estimated_bytes_before,
+					last_estimated_bytes_after,
+					retained_floor_cursor,
+					last_error,
+					last_error_at
+				FROM sync_retention_state
+				WHERE id = 1
+			`);
+		} catch {
+			// Best-effort bridge from legacy singleton state.
+		}
+	}
+
+	if (tableExists(db, "replication_cursors") && tableExists(db, "replication_cursors_v2")) {
+		try {
+			db.exec(`
+				INSERT OR IGNORE INTO replication_cursors_v2
+					(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
+				SELECT peer_device_id, 'local-default', last_applied_cursor, last_acked_cursor, updated_at
+				FROM replication_cursors
+			`);
+		} catch {
+			// Best-effort bridge from legacy peer-level cursors.
+		}
+	}
+
 	// Add phase column to sync_daemon_state for rebootstrap safety gate.
 	if (tableExists(db, "sync_daemon_state") && !columnExists(db, "sync_daemon_state", "phase")) {
 		try {

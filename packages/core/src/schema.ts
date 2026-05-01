@@ -472,6 +472,24 @@ export const replicationCursors = sqliteTable("replication_cursors", {
 export type ReplicationCursor = typeof replicationCursors.$inferSelect;
 export type NewReplicationCursor = typeof replicationCursors.$inferInsert;
 
+export const replicationCursorsV2 = sqliteTable(
+	"replication_cursors_v2",
+	{
+		peer_device_id: text("peer_device_id").notNull(),
+		scope_id: text("scope_id").notNull(),
+		last_applied_cursor: text("last_applied_cursor"),
+		last_acked_cursor: text("last_acked_cursor"),
+		updated_at: text("updated_at").notNull(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.peer_device_id, table.scope_id] }),
+		index("idx_replication_cursors_v2_scope").on(table.scope_id),
+	],
+);
+
+export type ReplicationCursorV2 = typeof replicationCursorsV2.$inferSelect;
+export type NewReplicationCursorV2 = typeof replicationCursorsV2.$inferInsert;
+
 export const syncPeers = sqliteTable("sync_peers", {
 	peer_device_id: text("peer_device_id").primaryKey(),
 	name: text("name"),
@@ -557,6 +575,18 @@ export const syncResetState = sqliteTable("sync_reset_state", {
 export type SyncResetState = typeof syncResetState.$inferSelect;
 export type NewSyncResetState = typeof syncResetState.$inferInsert;
 
+export const syncResetStateV2 = sqliteTable("sync_reset_state_v2", {
+	scope_id: text("scope_id").primaryKey(),
+	generation: integer("generation").notNull(),
+	snapshot_id: text("snapshot_id").notNull(),
+	baseline_cursor: text("baseline_cursor"),
+	retained_floor_cursor: text("retained_floor_cursor"),
+	updated_at: text("updated_at").notNull(),
+});
+
+export type SyncResetStateV2 = typeof syncResetStateV2.$inferSelect;
+export type NewSyncResetStateV2 = typeof syncResetStateV2.$inferInsert;
+
 export const syncRetentionState = sqliteTable("sync_retention_state", {
 	id: integer("id").primaryKey(),
 	last_run_at: text("last_run_at"),
@@ -571,6 +601,21 @@ export const syncRetentionState = sqliteTable("sync_retention_state", {
 
 export type SyncRetentionState = typeof syncRetentionState.$inferSelect;
 export type NewSyncRetentionState = typeof syncRetentionState.$inferInsert;
+
+export const syncRetentionStateV2 = sqliteTable("sync_retention_state_v2", {
+	scope_id: text("scope_id").primaryKey(),
+	last_run_at: text("last_run_at"),
+	last_duration_ms: integer("last_duration_ms"),
+	last_deleted_ops: integer("last_deleted_ops").notNull().default(0),
+	last_estimated_bytes_before: integer("last_estimated_bytes_before"),
+	last_estimated_bytes_after: integer("last_estimated_bytes_after"),
+	retained_floor_cursor: text("retained_floor_cursor"),
+	last_error: text("last_error"),
+	last_error_at: text("last_error_at"),
+});
+
+export type SyncRetentionStateV2 = typeof syncRetentionStateV2.$inferSelect;
+export type NewSyncRetentionStateV2 = typeof syncRetentionStateV2.$inferInsert;
 
 export const rawEventIngestSamples = sqliteTable("raw_event_ingest_samples", {
 	id: integer("id").primaryKey({ autoIncrement: true }),
@@ -653,12 +698,15 @@ export const schema = {
 	sessionSummaries,
 	replicationOps,
 	replicationCursors,
+	replicationCursorsV2,
 	syncPeers,
 	syncNonces,
 	syncDevice,
 	syncAttempts,
 	syncDaemonState,
 	syncResetState,
+	syncResetStateV2,
+	syncRetentionStateV2,
 	rawEventIngestSamples,
 	rawEventIngestStats,
 	coordinatorGroupPreferences,
