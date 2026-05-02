@@ -50,9 +50,13 @@ async function remoteRequest(
 	url: string,
 	adminSecret: string,
 	body?: Record<string, unknown>,
+	actorId?: string | null,
 ): Promise<Record<string, unknown> | null> {
+	const headers: Record<string, string> = { "X-Codemem-Coordinator-Admin": adminSecret };
+	const normalizedActorId = String(actorId ?? "").trim();
+	if (normalizedActorId) headers["X-Codemem-Coordinator-Admin-Actor"] = normalizedActorId;
 	const [status, payload] = await requestJson(method, url, {
-		headers: { "X-Codemem-Coordinator-Admin": adminSecret },
+		headers,
 		body,
 		timeoutS: 3,
 	});
@@ -601,6 +605,7 @@ export async function coordinatorGrantScopeMembershipAction(
 				manifest_hash: opts.manifestHash ?? null,
 				signed_manifest_json: opts.signedManifestJson ?? null,
 			},
+			opts.actorId ?? null,
 		);
 		const membership = payload?.membership;
 		if (!membership || typeof membership !== "object") {
@@ -623,6 +628,8 @@ export async function coordinatorGrantScopeMembershipAction(
 			manifestIssuerDeviceId: opts.manifestIssuerDeviceId ?? null,
 			manifestHash: opts.manifestHash ?? null,
 			signedManifestJson: opts.signedManifestJson ?? null,
+			actorType: opts.actorType ?? "admin",
+			actorId: opts.actorId ?? null,
 		});
 	} finally {
 		await store.close();
@@ -658,6 +665,7 @@ export async function coordinatorRevokeScopeMembershipAction(
 					manifest_hash: opts.manifestHash ?? null,
 					signed_manifest_json: opts.signedManifestJson ?? null,
 				},
+				opts.actorId ?? null,
 			);
 		} catch (error) {
 			if (error instanceof Error && error.message.includes("membership_not_found")) return false;
@@ -674,6 +682,8 @@ export async function coordinatorRevokeScopeMembershipAction(
 			membershipEpoch: opts.membershipEpoch ?? null,
 			manifestHash: opts.manifestHash ?? null,
 			signedManifestJson: opts.signedManifestJson ?? null,
+			actorType: opts.actorType ?? "admin",
+			actorId: opts.actorId ?? null,
 		});
 	} finally {
 		await store.close();

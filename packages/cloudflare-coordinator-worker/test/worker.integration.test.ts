@@ -69,8 +69,9 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 	};
 }
 
-describe("workers vitest + local D1 validation", () => {
+	describe("workers vitest + local D1 validation", () => {
 	afterEach(async () => {
+		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_membership_audit_log").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_memberships").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scopes").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_join_requests").run();
@@ -214,6 +215,7 @@ describe("workers vitest + local D1 validation", () => {
 		const adminHeaders = {
 			"content-type": "application/json",
 			"X-Codemem-Coordinator-Admin": "test-secret",
+			"X-Codemem-Coordinator-Admin-Actor": "admin-worker",
 		};
 
 		const enrollRes = await exports.default.fetch("https://example.com/v1/admin/devices", {
@@ -398,6 +400,40 @@ describe("workers vitest + local D1 validation", () => {
 		};
 		expect(revokedMembersJson.items).toEqual([
 			expect.objectContaining({ device_id: device.deviceId, status: "revoked" }),
+		]);
+
+		const auditRows = await env.COORDINATOR_DB.prepare(
+			`SELECT action, scope_id, device_id, status, membership_epoch,
+				previous_status, previous_membership_epoch, actor_type, actor_id
+			 FROM coordinator_scope_membership_audit_log
+			 WHERE scope_id = ?
+			 ORDER BY event_id ASC`,
+		)
+			.bind("scope-a")
+			.all<Record<string, unknown>>();
+		expect(auditRows.results).toEqual([
+			expect.objectContaining({
+				action: "grant",
+				scope_id: "scope-a",
+				device_id: device.deviceId,
+				status: "active",
+				membership_epoch: 3,
+				previous_status: null,
+				previous_membership_epoch: null,
+				actor_type: "admin",
+				actor_id: "admin-worker",
+			}),
+			expect.objectContaining({
+				action: "revoke",
+				scope_id: "scope-a",
+				device_id: device.deviceId,
+				status: "revoked",
+				membership_epoch: 4,
+				previous_status: "active",
+				previous_membership_epoch: 3,
+				actor_type: "admin",
+				actor_id: "admin-worker",
+			}),
 		]);
 
 		const dataPlaneRes = await exports.default.fetch(

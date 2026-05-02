@@ -165,6 +165,7 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 					});
 
 					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
+					expect(await store.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual([]);
 
 					await store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
 
@@ -272,6 +273,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 						manifestIssuerDeviceId: "admin-device",
 						manifestHash: "hash-grant",
 						signedManifestJson: '{"grant":true}',
+						actorType: "admin",
+						actorId: "admin-device",
 					});
 
 					expect(grant).toEqual(
@@ -295,6 +298,8 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							membershipEpoch: 4,
 							manifestHash: "hash-revoke",
 							signedManifestJson: '{"grant":false}',
+							actorType: "admin",
+							actorId: "admin-device",
 						}),
 					).toBe(true);
 					expect(await store.listScopeMemberships("scope-acme")).toEqual([]);
@@ -307,6 +312,47 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							signed_manifest_json: '{"grant":false}',
 						}),
 					]);
+					expect(await store.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual([
+						expect.objectContaining({
+							action: "grant",
+							scope_id: "scope-acme",
+							device_id: "device-a",
+							role: "admin",
+							status: "active",
+							membership_epoch: 3,
+							previous_role: null,
+							previous_status: null,
+							previous_membership_epoch: null,
+							coordinator_id: "coord-a",
+							group_id: "group-a",
+							actor_type: "admin",
+							actor_id: "admin-device",
+							manifest_hash: "hash-grant",
+						}),
+						expect.objectContaining({
+							action: "revoke",
+							scope_id: "scope-acme",
+							device_id: "device-a",
+							role: "admin",
+							status: "revoked",
+							membership_epoch: 4,
+							previous_role: "admin",
+							previous_status: "active",
+							previous_membership_epoch: 3,
+							coordinator_id: "coord-a",
+							group_id: "group-a",
+							actor_type: "admin",
+							actor_id: "admin-device",
+							manifest_hash: "hash-revoke",
+						}),
+					]);
+					expect(
+						await store.listScopeMembershipAuditEvents({
+							scopeId: "scope-acme",
+							deviceId: "device-a",
+							limit: 1,
+						}),
+					).toHaveLength(1);
 				});
 			});
 

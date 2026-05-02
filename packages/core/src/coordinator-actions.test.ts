@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
@@ -216,6 +217,7 @@ describe("coordinator local admin actions", () => {
 			deviceId: "device-1",
 			role: "admin",
 			membershipEpoch: 3,
+			actorId: "admin-alice",
 			dbPath,
 		});
 		expect(grant).toEqual(
@@ -238,6 +240,7 @@ describe("coordinator local admin actions", () => {
 				groupId: "team-a",
 				scopeId: "scope-acme",
 				deviceId: "device-1",
+				actorId: "admin-bob",
 				dbPath,
 			}),
 		).toBe(true);
@@ -256,6 +259,28 @@ describe("coordinator local admin actions", () => {
 				dbPath,
 			}),
 		).toEqual([expect.objectContaining({ device_id: "device-1", status: "revoked" })]);
+		const auditStore = new BetterSqliteCoordinatorStore(dbPath);
+		try {
+			expect(await auditStore.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual([
+				expect.objectContaining({
+					action: "grant",
+					device_id: "device-1",
+					membership_epoch: 3,
+					actor_type: "admin",
+					actor_id: "admin-alice",
+				}),
+				expect.objectContaining({
+					action: "revoke",
+					device_id: "device-1",
+					status: "revoked",
+					previous_membership_epoch: 3,
+					actor_type: "admin",
+					actor_id: "admin-bob",
+				}),
+			]);
+		} finally {
+			await auditStore.close();
+		}
 	});
 
 	it("rejects local Sharing domain actions for missing groups or scopes", async () => {

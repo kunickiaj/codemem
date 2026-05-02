@@ -30,6 +30,7 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const ADMIN_HEADER = "X-Codemem-Coordinator-Admin";
+const ADMIN_ACTOR_HEADER = "X-Codemem-Coordinator-Admin-Actor";
 const DEFAULT_COORDINATOR_READ_LIMIT = 120;
 const DEFAULT_COORDINATOR_MUTATION_LIMIT = 30;
 
@@ -268,6 +269,10 @@ export function createCoordinatorApp(
 		const value = data[key];
 		if (value == null) return null;
 		return String(value).trim() || null;
+	}
+
+	function optionalHeaderString(value: string | null | undefined): string | null {
+		return value?.trim() || null;
 	}
 
 	function optionalNumber(data: Record<string, unknown>, key: string): number | null {
@@ -879,6 +884,8 @@ export function createCoordinatorApp(
 				manifestIssuerDeviceId: optionalString(data, "manifest_issuer_device_id"),
 				manifestHash: optionalString(data, "manifest_hash"),
 				signedManifestJson: optionalString(data, "signed_manifest_json"),
+				actorType: "admin",
+				actorId: optionalHeaderString(c.req.header(ADMIN_ACTOR_HEADER)),
 			});
 			return c.json({ ok: true, membership }, 201);
 		} catch (error) {
@@ -920,6 +927,8 @@ export function createCoordinatorApp(
 				membershipEpoch,
 				manifestHash: optionalString(data, "manifest_hash"),
 				signedManifestJson: optionalString(data, "signed_manifest_json"),
+				actorType: "admin",
+				actorId: optionalHeaderString(c.req.header(ADMIN_ACTOR_HEADER)),
 			});
 			if (!ok) return c.json({ error: "membership_not_found" }, 404);
 			let revokedMembership: CoordinatorScopeMembership | undefined;

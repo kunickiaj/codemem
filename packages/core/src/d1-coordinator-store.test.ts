@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database as DatabaseType, Statement } from "better-sqlite3";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
 import { runCoordinatorStoreContract } from "./coordinator-store-test-harness.js";
 import {
@@ -127,11 +127,41 @@ class RacingSqliteD1Database extends SqliteD1Database {
 	}
 }
 
+class FailingAuditBatchD1Database extends SqliteD1Database {
+	override async batch(statements: D1PreparedStatementLike[]): Promise<unknown[]> {
+		return this.db.transaction(() => {
+			const [mutation] = statements;
+			if (!(mutation instanceof SqliteD1Statement)) {
+				throw new Error("Unsupported D1 statement test double.");
+			}
+			mutation.executeRunSync();
+			throw new Error("audit insert failed");
+		})();
+	}
+}
+
+class RacingRevokeBatchD1Database extends SqliteD1Database {
+	private injected = false;
+
+	override async batch(statements: D1PreparedStatementLike[]): Promise<unknown[]> {
+		if (!this.injected) {
+			this.injected = true;
+			this.db
+				.prepare(`UPDATE coordinator_scope_memberships
+					SET status = 'revoked', membership_epoch = membership_epoch + 1, updated_at = ?
+					WHERE scope_id = ? AND device_id = ?`)
+				.run("2026-05-02T00:00:00.000Z", "scope-acme", "device-a");
+		}
+		return await super.batch(statements);
+	}
+}
+
 describe("D1CoordinatorStore", () => {
 	function setupStore() {
 		const tmpDir = mkdtempSync(join(tmpdir(), "d1-coord-test-"));
 		const db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
 		db.exec(`
+			DROP TABLE IF EXISTS coordinator_scope_membership_audit_log;
 			DROP TABLE IF EXISTS coordinator_scope_memberships;
 			DROP TABLE IF EXISTS coordinator_scopes;
 			DROP TABLE IF EXISTS coordinator_reciprocal_approvals;
@@ -288,6 +318,88 @@ describe("D1CoordinatorStore", () => {
 				}),
 			).rejects.toThrow("groupId, seedDeviceId, workerDeviceId, and expiresAt are required.");
 		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rolls back D1 membership changes when the audit batch fails", async () => {
+		const { db, cleanup } = setupStore();
+		const normalStore = new D1CoordinatorStore(new SqliteD1Database(db));
+		const failingStore = new D1CoordinatorStore(new FailingAuditBatchD1Database(db));
+		try {
+			await normalStore.createGroup("group-a");
+			await normalStore.enrollDevice("group-a", {
+				deviceId: "device-a",
+				fingerprint: "fp-a",
+				publicKey: "pk-a",
+			});
+			await normalStore.createScope({
+				scopeId: "scope-acme",
+				label: "Acme Work",
+				groupId: "group-a",
+			});
+
+			await expect(
+				failingStore.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+			).rejects.toThrow("audit insert failed");
+			expect(await normalStore.listScopeMemberships("scope-acme", true)).toEqual([]);
+
+			await normalStore.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+			await expect(
+				failingStore.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+			).rejects.toThrow("audit insert failed");
+			expect(await normalStore.listScopeMemberships("scope-acme", true)).toEqual([
+				expect.objectContaining({ device_id: "device-a", status: "active" }),
+			]);
+			expect(await normalStore.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual([
+				expect.objectContaining({ action: "grant", device_id: "device-a" }),
+			]);
+		} finally {
+			await failingStore.close();
+			await normalStore.close();
+			await cleanup();
+		}
+	});
+
+	it("returns false without audit when D1 revoke loses the guarded update race", async () => {
+		const { db, cleanup } = setupStore();
+		const normalStore = new D1CoordinatorStore(new SqliteD1Database(db));
+		const racingStore = new D1CoordinatorStore(new RacingRevokeBatchD1Database(db));
+		try {
+			await normalStore.createGroup("group-a");
+			await normalStore.enrollDevice("group-a", {
+				deviceId: "device-a",
+				fingerprint: "fp-a",
+				publicKey: "pk-a",
+			});
+			await normalStore.createScope({
+				scopeId: "scope-acme",
+				label: "Acme Work",
+				groupId: "group-a",
+			});
+			await normalStore.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" });
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-05-02T00:00:00.000Z"));
+
+			await expect(
+				racingStore.revokeScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+			).resolves.toBe(false);
+			vi.useRealTimers();
+
+			expect(await normalStore.listScopeMemberships("scope-acme", true)).toEqual([
+				expect.objectContaining({
+					device_id: "device-a",
+					status: "revoked",
+					membership_epoch: 1,
+				}),
+			]);
+			expect(await normalStore.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual([
+				expect.objectContaining({ action: "grant", device_id: "device-a" }),
+			]);
+		} finally {
+			vi.useRealTimers();
+			await racingStore.close();
+			await normalStore.close();
 			await cleanup();
 		}
 	});

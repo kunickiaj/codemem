@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+	BetterSqliteCoordinatorStore,
 	type CoordinatorCreateInviteInput,
 	type CoordinatorCreateJoinRequestInput,
 	type CoordinatorCreateReciprocalApprovalInput,
@@ -12,6 +16,7 @@ import {
 	type CoordinatorJoinRequest,
 	type CoordinatorJoinRequestReviewResult,
 	type CoordinatorListReciprocalApprovalsInput,
+	type CoordinatorListScopeMembershipAuditInput,
 	type CoordinatorListScopesInput,
 	type CoordinatorPeerRecord,
 	type CoordinatorPresenceRecord,
@@ -21,6 +26,7 @@ import {
 	type CoordinatorRevokeScopeMembershipInput,
 	type CoordinatorScope,
 	type CoordinatorScopeMembership,
+	type CoordinatorScopeMembershipAuditEvent,
 	type CoordinatorStoreInterface,
 	type CoordinatorUpdateScopeInput,
 	type CoordinatorUpsertPresenceInput,
@@ -107,6 +113,11 @@ function createMockStore(
 		),
 		listScopeMemberships: vi.fn(
 			async (_: string, __?: boolean): Promise<CoordinatorScopeMembership[]> => [],
+		),
+		listScopeMembershipAuditEvents: vi.fn(
+			async (
+				_: CoordinatorListScopeMembershipAuditInput,
+			): Promise<CoordinatorScopeMembershipAuditEvent[]> => [],
 		),
 	};
 	return { ...defaultStore, ...overrides };
@@ -913,7 +924,103 @@ describe("createCoordinatorApp dependency injection", () => {
 			manifestIssuerDeviceId: null,
 			manifestHash: "hash-2",
 			signedManifestJson: null,
+			actorType: "admin",
+			actorId: null,
 		});
+	});
+
+	it("writes audit rows through admin Sharing domain grant and revoke APIs", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "coord-api-audit-test-"));
+		const dbPath = join(tmpDir, "coordinator.sqlite");
+		const setupStore = new BetterSqliteCoordinatorStore(dbPath);
+		try {
+			await setupStore.createGroup("g1", "Acme");
+			await setupStore.enrollDevice("g1", {
+				deviceId: "device-a",
+				fingerprint: "fp-a",
+				publicKey: "pk-a",
+			});
+			await setupStore.createScope({
+				scopeId: "scope-acme",
+				label: "Acme Work",
+				coordinatorId: "coord-a",
+				groupId: "g1",
+				membershipEpoch: 1,
+			});
+
+			const app = createCoordinatorApp({
+				storeFactory: () => new BetterSqliteCoordinatorStore(dbPath),
+				runtime: {
+					adminSecret: () => "test-secret",
+					now: () => "2026-03-28T00:00:00Z",
+				},
+				requestVerifier: allowRequest,
+			});
+
+			const grantRes = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Codemem-Coordinator-Admin": "test-secret",
+					"X-Codemem-Coordinator-Admin-Actor": "admin-alice",
+				},
+				body: JSON.stringify({
+					device_id: "device-a",
+					membership_epoch: 2,
+					manifest_hash: "hash-grant",
+					actor_id: "spoofed-body-actor",
+				}),
+			});
+			expect(grantRes.status).toBe(201);
+
+			const revokeRes = await app.request(
+				"/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke",
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Codemem-Coordinator-Admin": "test-secret",
+						"X-Codemem-Coordinator-Admin-Actor": "admin-bob",
+					},
+					body: JSON.stringify({ membership_epoch: 3, manifest_hash: "hash-revoke" }),
+				},
+			);
+			expect(revokeRes.status).toBe(200);
+
+			const verifyStore = new BetterSqliteCoordinatorStore(dbPath);
+			try {
+				expect(await verifyStore.listScopeMembershipAuditEvents({ scopeId: "scope-acme" })).toEqual(
+					[
+						expect.objectContaining({
+							action: "grant",
+							device_id: "device-a",
+							membership_epoch: 2,
+							previous_status: null,
+							previous_membership_epoch: null,
+							actor_type: "admin",
+							actor_id: "admin-alice",
+							manifest_hash: "hash-grant",
+						}),
+						expect.objectContaining({
+							action: "revoke",
+							device_id: "device-a",
+							status: "revoked",
+							membership_epoch: 3,
+							previous_status: "active",
+							previous_membership_epoch: 2,
+							actor_type: "admin",
+							actor_id: "admin-bob",
+							manifest_hash: "hash-revoke",
+						}),
+					],
+				);
+			} finally {
+				await verifyStore.close();
+			}
+		} finally {
+			await setupStore.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
 	});
 
 	it("validates Sharing domain grant inputs", async () => {
@@ -1090,6 +1197,8 @@ describe("createCoordinatorApp dependency injection", () => {
 			membershipEpoch: 5,
 			manifestHash: "hash-revoke",
 			signedManifestJson: null,
+			actorType: "admin",
+			actorId: null,
 		});
 		expect(store.listScopeMemberships).toHaveBeenCalledWith("scope-acme", true);
 	});
@@ -1154,6 +1263,8 @@ describe("createCoordinatorApp dependency injection", () => {
 			membershipEpoch: 5,
 			manifestHash: null,
 			signedManifestJson: null,
+			actorType: "admin",
+			actorId: null,
 		});
 		expect(store.listScopeMemberships).toHaveBeenCalledWith("scope-acme", true);
 	});
