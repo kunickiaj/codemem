@@ -121,6 +121,27 @@ export interface CoordinatorScopeMembership {
 	updated_at: string;
 }
 
+export type CoordinatorScopeMembershipAuditAction = "grant" | "revoke";
+
+export interface CoordinatorScopeMembershipAuditEvent {
+	event_id: number;
+	action: CoordinatorScopeMembershipAuditAction;
+	scope_id: string;
+	device_id: string;
+	role: string | null;
+	status: string;
+	membership_epoch: number;
+	previous_role: string | null;
+	previous_status: string | null;
+	previous_membership_epoch: number | null;
+	coordinator_id: string | null;
+	group_id: string | null;
+	actor_type: string | null;
+	actor_id: string | null;
+	manifest_hash: string | null;
+	created_at: string;
+}
+
 export interface CoordinatorEnrollDeviceInput {
 	deviceId: string;
 	fingerprint: string;
@@ -220,6 +241,8 @@ export interface CoordinatorGrantScopeMembershipInput {
 	manifestIssuerDeviceId?: string | null;
 	manifestHash?: string | null;
 	signedManifestJson?: string | null;
+	actorType?: string | null;
+	actorId?: string | null;
 }
 
 export interface CoordinatorRevokeScopeMembershipInput {
@@ -228,6 +251,14 @@ export interface CoordinatorRevokeScopeMembershipInput {
 	membershipEpoch?: number | null;
 	manifestHash?: string | null;
 	signedManifestJson?: string | null;
+	actorType?: string | null;
+	actorId?: string | null;
+}
+
+export interface CoordinatorListScopeMembershipAuditInput {
+	scopeId: string;
+	deviceId?: string | null;
+	limit?: number | null;
 }
 
 export interface CoordinatorListReciprocalApprovalsInput {
@@ -278,6 +309,9 @@ export interface CoordinatorStore {
 		scopeId: string,
 		includeRevoked?: boolean,
 	): Promise<CoordinatorScopeMembership[]>;
+	listScopeMembershipAuditEvents(
+		opts: CoordinatorListScopeMembershipAuditInput,
+	): Promise<CoordinatorScopeMembershipAuditEvent[]>;
 	getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null>;
 	listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]>;
 	revokeBootstrapGrant(grantId: string, revokedAt?: string): Promise<boolean>;

@@ -31,6 +31,7 @@ import type {
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
 	CoordinatorListReciprocalApprovalsInput,
+	CoordinatorListScopeMembershipAuditInput,
 	CoordinatorListScopesInput,
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
@@ -40,6 +41,7 @@ import type {
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
+	CoordinatorScopeMembershipAuditEvent,
 	CoordinatorStore,
 	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
@@ -260,7 +262,49 @@ function normalizeGrantInput(
 			clean(opts.manifestIssuerDeviceId) ?? scope?.manifest_issuer_device_id ?? null,
 		manifestHash: clean(opts.manifestHash) ?? scope?.manifest_hash ?? null,
 		signedManifestJson: clean(opts.signedManifestJson),
+		actorType: clean(opts.actorType),
+		actorId: clean(opts.actorId),
 	};
+}
+
+function normalizeAuditLimit(limit: number | null | undefined): number {
+	if (limit == null) return 100;
+	if (!Number.isFinite(limit)) return 100;
+	return Math.max(1, Math.min(1000, Math.trunc(limit)));
+}
+
+function insertMembershipAuditSync(
+	db: DatabaseType,
+	input: {
+		action: "grant" | "revoke";
+		current: CoordinatorScopeMembership;
+		previous: CoordinatorScopeMembership | null;
+		actorType: string | null;
+		actorId: string | null;
+		createdAt: string;
+	},
+): void {
+	db.prepare(`INSERT INTO coordinator_scope_membership_audit_log(
+			action, scope_id, device_id, role, status, membership_epoch,
+			previous_role, previous_status, previous_membership_epoch,
+			coordinator_id, group_id, actor_type, actor_id, manifest_hash, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+		input.action,
+		input.current.scope_id,
+		input.current.device_id,
+		input.current.role,
+		input.current.status,
+		input.current.membership_epoch,
+		input.previous?.role ?? null,
+		input.previous?.status ?? null,
+		input.previous?.membership_epoch ?? null,
+		input.current.coordinator_id,
+		input.current.group_id,
+		input.actorType,
+		input.actorId,
+		input.current.manifest_hash,
+		input.createdAt,
+	);
 }
 
 function assertScopeMembershipDeviceEnrolled(
@@ -427,6 +471,30 @@ function initializeSchema(db: DatabaseType): void {
 			ON coordinator_scope_memberships(scope_id, status);
 		CREATE INDEX IF NOT EXISTS idx_coordinator_scope_memberships_authority_group
 			ON coordinator_scope_memberships(coordinator_id, group_id);
+
+		CREATE TABLE IF NOT EXISTS coordinator_scope_membership_audit_log (
+			event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			action TEXT NOT NULL,
+			scope_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			role TEXT,
+			status TEXT NOT NULL,
+			membership_epoch INTEGER NOT NULL,
+			previous_role TEXT,
+			previous_status TEXT,
+			previous_membership_epoch INTEGER,
+			coordinator_id TEXT,
+			group_id TEXT,
+			actor_type TEXT,
+			actor_id TEXT,
+			manifest_hash TEXT,
+			created_at TEXT NOT NULL
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_coordinator_scope_membership_audit_scope_created
+			ON coordinator_scope_membership_audit_log(scope_id, created_at, event_id);
+		CREATE INDEX IF NOT EXISTS idx_coordinator_scope_membership_audit_device_created
+			ON coordinator_scope_membership_audit_log(device_id, created_at, event_id);
 	`);
 	try {
 		db.prepare("ALTER TABLE groups ADD COLUMN archived_at TEXT").run();
@@ -943,45 +1011,59 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const normalized = normalizeGrantInput(opts, scope, existing);
 		assertScopeMembershipDeviceEnrolled(this.db, normalized.groupId, normalized.deviceId);
 		const now = nowISO();
-		this.db
-			.prepare(`INSERT INTO coordinator_scope_memberships(
-					scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
-					manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
-				) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(scope_id, device_id) DO UPDATE SET
-					role = excluded.role,
-					status = 'active',
-					membership_epoch = excluded.membership_epoch,
-					coordinator_id = excluded.coordinator_id,
-					group_id = excluded.group_id,
-					manifest_issuer_device_id = excluded.manifest_issuer_device_id,
-					manifest_hash = excluded.manifest_hash,
-					signed_manifest_json = excluded.signed_manifest_json,
-					updated_at = excluded.updated_at
-				WHERE excluded.membership_epoch > coordinator_scope_memberships.membership_epoch
-				   OR (
-					excluded.membership_epoch = coordinator_scope_memberships.membership_epoch
-					AND coordinator_scope_memberships.status != 'revoked'
-				   )`)
-			.run(
-				normalized.scopeId,
-				normalized.deviceId,
-				normalized.role,
-				normalized.membershipEpoch,
-				normalized.coordinatorId,
-				normalized.groupId,
-				normalized.manifestIssuerDeviceId,
-				normalized.manifestHash,
-				normalized.signedManifestJson,
-				now,
-			);
-		const row = this.db
-			.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
-					manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
-				 FROM coordinator_scope_memberships
-				 WHERE scope_id = ? AND device_id = ?`)
-			.get(normalized.scopeId, normalized.deviceId);
-		return rowToRecord<CoordinatorScopeMembership>(row);
+		return this.db.transaction(() => {
+			const result = this.db
+				.prepare(`INSERT INTO coordinator_scope_memberships(
+						scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+					) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(scope_id, device_id) DO UPDATE SET
+						role = excluded.role,
+						status = 'active',
+						membership_epoch = excluded.membership_epoch,
+						coordinator_id = excluded.coordinator_id,
+						group_id = excluded.group_id,
+						manifest_issuer_device_id = excluded.manifest_issuer_device_id,
+						manifest_hash = excluded.manifest_hash,
+						signed_manifest_json = excluded.signed_manifest_json,
+						updated_at = excluded.updated_at
+					WHERE excluded.membership_epoch > coordinator_scope_memberships.membership_epoch
+					   OR (
+						excluded.membership_epoch = coordinator_scope_memberships.membership_epoch
+						AND coordinator_scope_memberships.status != 'revoked'
+					   )`)
+				.run(
+					normalized.scopeId,
+					normalized.deviceId,
+					normalized.role,
+					normalized.membershipEpoch,
+					normalized.coordinatorId,
+					normalized.groupId,
+					normalized.manifestIssuerDeviceId,
+					normalized.manifestHash,
+					normalized.signedManifestJson,
+					now,
+				);
+			if (result.changes <= 0) {
+				throw new Error("scope membership grant was not applied.");
+			}
+			const row = this.db
+				.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
+					 FROM coordinator_scope_memberships
+					 WHERE scope_id = ? AND device_id = ?`)
+				.get(normalized.scopeId, normalized.deviceId);
+			const membership = rowToRecord<CoordinatorScopeMembership>(row);
+			insertMembershipAuditSync(this.db, {
+				action: "grant",
+				current: membership,
+				previous: existing,
+				actorType: normalized.actorType,
+				actorId: normalized.actorId,
+				createdAt: now,
+			});
+			return membership;
+		})();
 	}
 
 	async revokeScopeMembership(opts: CoordinatorRevokeScopeMembershipInput): Promise<boolean> {
@@ -991,27 +1073,45 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const membershipEpoch =
 			opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
 		const existing = this.getScopeMembershipSync(scopeId, deviceId);
+		if (!existing) return false;
 		if (membershipEpoch != null && existing && membershipEpoch <= existing.membership_epoch) {
 			throw new Error("membershipEpoch must increase on revoke.");
 		}
-		const result = this.db
-			.prepare(`UPDATE coordinator_scope_memberships
-				 SET status = 'revoked',
-					 membership_epoch = CASE WHEN ? IS NULL THEN membership_epoch + 1 ELSE ? END,
-					 manifest_hash = COALESCE(?, manifest_hash),
-					 signed_manifest_json = COALESCE(?, signed_manifest_json),
-					 updated_at = ?
-				 WHERE scope_id = ? AND device_id = ?`)
-			.run(
-				membershipEpoch,
-				membershipEpoch,
-				clean(opts.manifestHash),
-				clean(opts.signedManifestJson),
-				nowISO(),
-				scopeId,
-				deviceId,
-			);
-		return result.changes > 0;
+		const now = nowISO();
+		return this.db.transaction(() => {
+			const result = this.db
+				.prepare(`UPDATE coordinator_scope_memberships
+						 SET status = 'revoked',
+							 membership_epoch = CASE WHEN ? IS NULL THEN membership_epoch + 1 ELSE ? END,
+							 manifest_hash = COALESCE(?, manifest_hash),
+							 signed_manifest_json = COALESCE(?, signed_manifest_json),
+							 updated_at = ?
+						 WHERE scope_id = ? AND device_id = ? AND membership_epoch = ? AND status = ?`)
+				.run(
+					membershipEpoch,
+					membershipEpoch,
+					clean(opts.manifestHash),
+					clean(opts.signedManifestJson),
+					now,
+					scopeId,
+					deviceId,
+					existing.membership_epoch,
+					existing.status,
+				);
+			if (result.changes <= 0) return false;
+			const membership = this.getScopeMembershipSync(scopeId, deviceId);
+			if (membership) {
+				insertMembershipAuditSync(this.db, {
+					action: "revoke",
+					current: membership,
+					previous: existing,
+					actorType: clean(opts.actorType),
+					actorId: clean(opts.actorId),
+					createdAt: now,
+				});
+			}
+			return true;
+		})();
 	}
 
 	async listScopeMemberships(
@@ -1029,6 +1129,27 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				 ORDER BY device_id ASC`)
 			.all(normalizedScopeId)
 			.map((row) => rowToRecord<CoordinatorScopeMembership>(row));
+	}
+
+	async listScopeMembershipAuditEvents(
+		opts: CoordinatorListScopeMembershipAuditInput,
+	): Promise<CoordinatorScopeMembershipAuditEvent[]> {
+		const scopeId = clean(opts.scopeId);
+		if (!scopeId) throw new Error("scopeId is required.");
+		const deviceId = clean(opts.deviceId);
+		const limit = normalizeAuditLimit(opts.limit);
+		const where = deviceId ? "scope_id = ? AND device_id = ?" : "scope_id = ?";
+		const params = deviceId ? [scopeId, deviceId, limit] : [scopeId, limit];
+		return this.db
+			.prepare(`SELECT event_id, action, scope_id, device_id, role, status, membership_epoch,
+					previous_role, previous_status, previous_membership_epoch,
+					coordinator_id, group_id, actor_type, actor_id, manifest_hash, created_at
+				 FROM coordinator_scope_membership_audit_log
+				 WHERE ${where}
+				 ORDER BY event_id ASC
+				 LIMIT ?`)
+			.all(...params)
+			.map((row) => rowToRecord<CoordinatorScopeMembershipAuditEvent>(row));
 	}
 
 	async getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null> {

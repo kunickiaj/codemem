@@ -13,6 +13,7 @@ import type {
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
 	CoordinatorListReciprocalApprovalsInput,
+	CoordinatorListScopeMembershipAuditInput,
 	CoordinatorListScopesInput,
 	CoordinatorPeerRecord,
 	CoordinatorPresenceRecord,
@@ -22,6 +23,7 @@ import type {
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
+	CoordinatorScopeMembershipAuditEvent,
 	CoordinatorStore,
 	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
@@ -275,7 +277,82 @@ function normalizeGrantInput(
 			clean(opts.manifestIssuerDeviceId) ?? scope?.manifest_issuer_device_id ?? null,
 		manifestHash: clean(opts.manifestHash) ?? scope?.manifest_hash ?? null,
 		signedManifestJson: clean(opts.signedManifestJson),
+		actorType: clean(opts.actorType),
+		actorId: clean(opts.actorId),
 	};
+}
+
+function normalizeAuditLimit(limit: number | null | undefined): number {
+	if (limit == null) return 100;
+	if (!Number.isFinite(limit)) return 100;
+	return Math.max(1, Math.min(1000, Math.trunc(limit)));
+}
+
+function prepareMembershipAuditFromCurrentRow(
+	db: D1DatabaseLike,
+	input: {
+		action: "grant" | "revoke";
+		previous: CoordinatorScopeMembership | null;
+		scopeId: string;
+		deviceId: string;
+		status: string;
+		membershipEpoch: number;
+		updatedAt: string;
+		actorType: string | null;
+		actorId: string | null;
+		createdAt: string;
+	},
+): D1PreparedStatementLike {
+	// D1 batch() is the transaction boundary for audited membership changes.
+	// changes() ties the audit insert to the immediately preceding mutation in
+	// the same batch. Losing guarded updates insert no audit row, while winning
+	// mutations still emit one required row; if the post-mutation membership row
+	// is then missing, NOT NULL audit columns make the statement fail and roll
+	// back the batch instead of committing an unaudited grant/revoke.
+	return db
+		.prepare(`INSERT INTO coordinator_scope_membership_audit_log(
+			action, scope_id, device_id, role, status, membership_epoch,
+			previous_role, previous_status, previous_membership_epoch,
+			coordinator_id, group_id, actor_type, actor_id, manifest_hash, created_at
+		)
+		SELECT ?, membership.scope_id, membership.device_id, membership.role, membership.status,
+			membership.membership_epoch, ?, ?, ?, membership.coordinator_id, membership.group_id,
+			?, ?, membership.manifest_hash, ?
+		FROM (SELECT 1 WHERE changes() > 0) AS required
+		LEFT JOIN coordinator_scope_memberships AS membership
+			ON membership.scope_id = ?
+			AND membership.device_id = ?
+			AND membership.status = ?
+			AND membership.membership_epoch = ?
+			AND membership.updated_at = ?`)
+		.bind(
+			input.action,
+			input.previous?.role ?? null,
+			input.previous?.status ?? null,
+			input.previous?.membership_epoch ?? null,
+			input.actorType,
+			input.actorId,
+			input.createdAt,
+			input.scopeId,
+			input.deviceId,
+			input.status,
+			input.membershipEpoch,
+			input.updatedAt,
+		);
+}
+
+async function runAuditedBatch(
+	db: D1DatabaseLike,
+	statements: D1PreparedStatementLike[],
+): Promise<unknown[]> {
+	if (!db.batch) {
+		throw new Error("D1 batch support is required for audited scope membership changes.");
+	}
+	return await db.batch(statements);
+}
+
+function batchResultChanges(result: unknown): number {
+	return Number((result as D1RunResultLike | undefined)?.meta?.changes ?? 0);
 }
 
 function normalizeBootstrapGrantRequest(
@@ -1023,8 +1100,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			}
 		}
 		const now = nowISO();
-		await this.db
-			.prepare(`INSERT INTO coordinator_scope_memberships(
+		const batchResults = await runAuditedBatch(this.db, [
+			this.db
+				.prepare(`INSERT INTO coordinator_scope_memberships(
 					scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
 					manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
 				) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
@@ -1043,19 +1121,34 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					excluded.membership_epoch = coordinator_scope_memberships.membership_epoch
 					AND coordinator_scope_memberships.status != 'revoked'
 				   )`)
-			.bind(
-				normalized.scopeId,
-				normalized.deviceId,
-				normalized.role,
-				normalized.membershipEpoch,
-				normalized.coordinatorId,
-				normalized.groupId,
-				normalized.manifestIssuerDeviceId,
-				normalized.manifestHash,
-				normalized.signedManifestJson,
-				now,
-			)
-			.run();
+				.bind(
+					normalized.scopeId,
+					normalized.deviceId,
+					normalized.role,
+					normalized.membershipEpoch,
+					normalized.coordinatorId,
+					normalized.groupId,
+					normalized.manifestIssuerDeviceId,
+					normalized.manifestHash,
+					normalized.signedManifestJson,
+					now,
+				),
+			prepareMembershipAuditFromCurrentRow(this.db, {
+				action: "grant",
+				previous: existing,
+				scopeId: normalized.scopeId,
+				deviceId: normalized.deviceId,
+				status: "active",
+				membershipEpoch: normalized.membershipEpoch,
+				updatedAt: now,
+				actorType: normalized.actorType,
+				actorId: normalized.actorId,
+				createdAt: now,
+			}),
+		]);
+		if (batchResultChanges(batchResults[0]) <= 0) {
+			throw new Error("scope membership grant was not applied.");
+		}
 		const row = await firstRow<CoordinatorScopeMembership>(
 			this.db
 				.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
@@ -1074,30 +1167,59 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const membershipEpoch =
 			opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
 		const existing = await this.getScopeMembership(scopeId, deviceId);
+		if (!existing) return false;
 		if (membershipEpoch != null && existing && membershipEpoch <= existing.membership_epoch) {
 			throw new Error("membershipEpoch must increase on revoke.");
 		}
-		return (
-			(await runChanges(
-				this.db
-					.prepare(`UPDATE coordinator_scope_memberships
+		const now = nowISO();
+		const revokedEpoch = membershipEpoch ?? existing.membership_epoch + 1;
+		const updateStatement = this.db
+			.prepare(`UPDATE coordinator_scope_memberships
 						 SET status = 'revoked',
 							 membership_epoch = CASE WHEN ? IS NULL THEN membership_epoch + 1 ELSE ? END,
 							 manifest_hash = COALESCE(?, manifest_hash),
 							 signed_manifest_json = COALESCE(?, signed_manifest_json),
 							 updated_at = ?
-						 WHERE scope_id = ? AND device_id = ?`)
-					.bind(
-						membershipEpoch,
-						membershipEpoch,
-						clean(opts.manifestHash),
-						clean(opts.signedManifestJson),
-						nowISO(),
-						scopeId,
-						deviceId,
-					),
-			)) > 0
-		);
+						 WHERE scope_id = ? AND device_id = ? AND membership_epoch = ? AND status = ?`)
+			.bind(
+				membershipEpoch,
+				membershipEpoch,
+				clean(opts.manifestHash),
+				clean(opts.signedManifestJson),
+				now,
+				scopeId,
+				deviceId,
+				existing.membership_epoch,
+				existing.status,
+			);
+		const auditStatement = prepareMembershipAuditFromCurrentRow(this.db, {
+			action: "revoke",
+			previous: existing,
+			scopeId,
+			deviceId,
+			status: "revoked",
+			membershipEpoch: revokedEpoch,
+			updatedAt: now,
+			actorType: clean(opts.actorType),
+			actorId: clean(opts.actorId),
+			createdAt: now,
+		});
+		let batchResults: unknown[];
+		try {
+			batchResults = await runAuditedBatch(this.db, [updateStatement, auditStatement]);
+		} catch (err) {
+			const current = await this.getScopeMembership(scopeId, deviceId);
+			if (
+				!current ||
+				current.membership_epoch !== existing.membership_epoch ||
+				current.status !== existing.status
+			) {
+				return false;
+			}
+			throw err;
+		}
+		if (batchResultChanges(batchResults[0]) <= 0) return false;
+		return true;
 	}
 
 	async listScopeMemberships(
@@ -1118,6 +1240,30 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					.bind(normalizedScopeId),
 			)
 		).map((row) => rowToRecord<CoordinatorScopeMembership>(row));
+	}
+
+	async listScopeMembershipAuditEvents(
+		opts: CoordinatorListScopeMembershipAuditInput,
+	): Promise<CoordinatorScopeMembershipAuditEvent[]> {
+		const scopeId = clean(opts.scopeId);
+		if (!scopeId) throw new Error("scopeId is required.");
+		const deviceId = clean(opts.deviceId);
+		const limit = normalizeAuditLimit(opts.limit);
+		const where = deviceId ? "scope_id = ? AND device_id = ?" : "scope_id = ?";
+		const params = deviceId ? [scopeId, deviceId, limit] : [scopeId, limit];
+		return (
+			await allRows<CoordinatorScopeMembershipAuditEvent>(
+				this.db
+					.prepare(`SELECT event_id, action, scope_id, device_id, role, status, membership_epoch,
+							previous_role, previous_status, previous_membership_epoch,
+							coordinator_id, group_id, actor_type, actor_id, manifest_hash, created_at
+						 FROM coordinator_scope_membership_audit_log
+						 WHERE ${where}
+						 ORDER BY event_id ASC
+						 LIMIT ?`)
+					.bind(...params),
+			)
+		).map((row) => rowToRecord<CoordinatorScopeMembershipAuditEvent>(row));
 	}
 
 	async getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null> {
