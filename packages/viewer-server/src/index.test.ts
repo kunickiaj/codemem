@@ -2763,6 +2763,137 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("does not let claimed_local_actor widen inbound personal-scope authorization", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+			const peerDbPath = join(peerDir, "peer.sqlite");
+			const peerKeysDir = join(peerDir, "keys");
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+
+				const peerDb = connect(peerDbPath);
+				try {
+					initTestSchema(peerDb);
+					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+					const peerPublicKey = loadPublicKey(peerKeysDir);
+					if (!peerPublicKey) throw new Error("peer public key missing");
+					const peerFingerprint = peerDb
+						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
+						.get() as { fingerprint: string } | undefined;
+					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+
+					store.db
+						.prepare(
+							`INSERT INTO sync_peers(
+								peer_device_id, pinned_fingerprint, public_key, claimed_local_actor, created_at
+							 ) VALUES (?, ?, ?, 1, ?)`,
+						)
+						.run(
+							peerDeviceId,
+							peerFingerprint.fingerprint,
+							peerPublicKey,
+							new Date().toISOString(),
+						);
+					const sessionId = insertTestSession(store.db);
+					const sharedMemoryId = insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title: "shared tombstone target",
+					});
+					store.db
+						.prepare("UPDATE memory_items SET import_key = ?, rev = 1 WHERE id = ?")
+						.run("shared-delete-key", sharedMemoryId);
+
+					const url = "http://localhost/v1/ops";
+					const now = "2026-01-01T00:00:00Z";
+					const payload = {
+						ops: [
+							{
+								op_id: "private-op-1",
+								entity_type: "memory_item",
+								entity_id: "private-key-1",
+								op_type: "upsert",
+								payload_json: JSON.stringify({
+									actor_id: "actor-1",
+									body_text: "private body",
+									created_at: now,
+									kind: "discovery",
+									scope_id: "personal:actor-1",
+									title: "private title",
+									updated_at: now,
+									workspace_id: "personal:actor-1",
+									workspace_kind: "personal",
+								}),
+								clock_rev: 1,
+								clock_updated_at: now,
+								clock_device_id: peerDeviceId,
+								device_id: peerDeviceId,
+								created_at: now,
+								scope_id: "personal:actor-1",
+							},
+							{
+								op_id: "private-delete-1",
+								entity_type: "memory_item",
+								entity_id: "private-key-1",
+								op_type: "delete",
+								payload_json: null,
+								clock_rev: 2,
+								clock_updated_at: now,
+								clock_device_id: peerDeviceId,
+								device_id: peerDeviceId,
+								created_at: "2026-01-01T00:00:01Z",
+								scope_id: "personal:actor-1",
+							},
+							{
+								op_id: "shared-delete-1",
+								entity_type: "memory_item",
+								entity_id: "shared-delete-key",
+								op_type: "delete",
+								payload_json: null,
+								clock_rev: 2,
+								clock_updated_at: now,
+								clock_device_id: peerDeviceId,
+								device_id: peerDeviceId,
+								created_at: "2026-01-01T00:00:02Z",
+								scope_id: null,
+							},
+						],
+					};
+					const bodyText = JSON.stringify(payload);
+					const bodyBytes = Buffer.from(bodyText);
+					const headers = buildAuthHeaders({
+						deviceId: peerDeviceId,
+						method: "POST",
+						url,
+						bodyBytes,
+						keysDir: peerKeysDir,
+					});
+
+					const res = await syncApp.request(url, {
+						method: "POST",
+						headers: { ...headers, "Content-Type": "application/json" },
+						body: bodyText,
+					});
+					expect(res.status).toBe(200);
+					const body = (await res.json()) as Record<string, unknown>;
+					expect(body.applied).toBe(1);
+					expect(body.skipped).toBe(2);
+					const deleted = store.db
+						.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = ?")
+						.get("shared-delete-key") as { active: number; deleted_at: string | null } | undefined;
+					expect(deleted?.active).toBe(0);
+					expect(deleted?.deleted_at).toBeTruthy();
+				} finally {
+					peerDb.close();
+				}
+			} finally {
+				cleanup();
+				rmSync(peerDir, { recursive: true, force: true });
+			}
+		});
+
 		it("sync app does not apply CORS origin guard on POST", async () => {
 			const { syncApp, cleanup } = createTestApp();
 			try {
@@ -4294,6 +4425,63 @@ describe("viewer-server", () => {
 				cleanup();
 				if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
 				else process.env.CODEMEM_CONFIG = prevConfig;
+			}
+		});
+
+		it("identifies claimed local actor peers that need a personal scope grant", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, name, actor_id, claimed_local_actor, created_at)
+						 VALUES (?, ?, ?, 1, ?)`,
+					)
+					.run("peer-claim", "Peer Claim", store.actorId, now);
+
+				const missingRes = await app.request("/api/sync/peers?includeDiagnostics=1");
+				expect(missingRes.status).toBe(200);
+				const missingBody = (await missingRes.json()) as {
+					items: Array<{ claimed_local_actor_scope: Record<string, unknown> | null }>;
+				};
+				expect(missingBody.items[0]?.claimed_local_actor_scope).toMatchObject({
+					scope_id: `personal:${store.actorId}`,
+					authorized: false,
+					state: "not_authorized",
+					action_required: true,
+				});
+
+				store.db
+					.prepare(
+						`INSERT INTO replication_scopes(
+							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+						 ) VALUES (?, ?, 'user', 'coordinator', 1, 'active', ?, ?)`,
+					)
+					.run(`personal:${store.actorId}`, "Personal", now, now);
+				store.db
+					.prepare(
+						`INSERT INTO scope_memberships(
+							scope_id, device_id, role, status, membership_epoch, updated_at
+						 ) VALUES (?, ?, 'member', 'active', 1, ?)`,
+					)
+					.run(`personal:${store.actorId}`, "peer-claim", now);
+
+				const authorizedRes = await app.request("/api/sync/peers?includeDiagnostics=1");
+				expect(authorizedRes.status).toBe(200);
+				const authorizedBody = (await authorizedRes.json()) as {
+					items: Array<{ claimed_local_actor_scope: Record<string, unknown> | null }>;
+				};
+				expect(authorizedBody.items[0]?.claimed_local_actor_scope).toMatchObject({
+					scope_id: `personal:${store.actorId}`,
+					authorized: true,
+					state: "authorized",
+					action_required: false,
+				});
+			} finally {
+				cleanup();
 			}
 		});
 
