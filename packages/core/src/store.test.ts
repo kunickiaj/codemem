@@ -6,6 +6,7 @@ import { connect, tableExists } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 import { MemoryStore } from "./store.js";
 import { setSyncDaemonPhase } from "./sync-daemon.js";
+import { loadReplicationOpsSince } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import * as vectors from "./vectors.js";
 
@@ -277,6 +278,76 @@ describe("MemoryStore", () => {
 				.get(memory.import_key) as { scope_id: string | null; payload_json: string };
 			expect(op.scope_id).toBe("acme-work");
 			expect(JSON.parse(op.payload_json).scope_id).toBe("acme-work");
+		});
+
+		it("reassigns memory scope with an old-scope tombstone and new-scope upsert", () => {
+			const sessionId = insertTestSession(store.db);
+			store.db
+				.prepare(
+					`INSERT INTO replication_scopes(
+						scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+					 ) VALUES (?, ?, 'team', 'local', 0, 'active', ?, ?)`,
+				)
+				.run("acme-work", "Acme Work", "2026-05-01T00:00:00Z", "2026-05-01T00:00:00Z");
+
+			const memId = store.remember(sessionId, "feature", "Scoped reassignment", "Feature body");
+			const before = store.db
+				.prepare("SELECT import_key, scope_id, rev FROM memory_items WHERE id = ?")
+				.get(memId) as { import_key: string; scope_id: string | null; rev: number };
+			expect(before.scope_id).toBe("local-default");
+
+			const updated = store.reassignMemoryScope(memId, "acme-work");
+
+			expect(updated.scope_id).toBe("acme-work");
+			expect(updated.rev).toBe(before.rev + 2);
+			expect(updated.metadata_json).toMatchObject({
+				last_scope_reassignment: {
+					old_scope_id: "local-default",
+					new_scope_id: "acme-work",
+				},
+			});
+			const ops = store.db
+				.prepare(`SELECT op_id, op_type, clock_rev, scope_id, payload_json, created_at
+					 FROM replication_ops
+					 WHERE entity_id = ?
+					 ORDER BY clock_rev ASC, op_type ASC`)
+				.all(before.import_key) as Array<{
+				op_id: string;
+				op_type: string;
+				clock_rev: number;
+				scope_id: string | null;
+				payload_json: string | null;
+				created_at: string;
+			}>;
+
+			expect(ops).toHaveLength(3);
+			expect(ops[0]).toEqual(
+				expect.objectContaining({ op_type: "upsert", clock_rev: 1, scope_id: "local-default" }),
+			);
+			expect(ops[1]).toEqual(
+				expect.objectContaining({ op_type: "delete", clock_rev: 2, scope_id: "local-default" }),
+			);
+			expect(ops[1]?.payload_json).toBeNull();
+			expect(ops[2]).toEqual(
+				expect.objectContaining({ op_type: "upsert", clock_rev: 3, scope_id: "acme-work" }),
+			);
+			expect(JSON.parse(ops[2]?.payload_json ?? "{}").scope_id).toBe("acme-work");
+
+			const reassignmentStreamOps = ops
+				.filter((op) => op.clock_rev > before.rev)
+				.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.op_id.localeCompare(b.op_id));
+			expect(reassignmentStreamOps).toHaveLength(2);
+			expect(reassignmentStreamOps.map((op) => op.op_type)).toEqual(["delete", "upsert"]);
+			const [deleteStreamOp, upsertStreamOp] = reassignmentStreamOps;
+			if (!deleteStreamOp || !upsertStreamOp) throw new Error("expected reassignment pair");
+			expect(deleteStreamOp.created_at).toBe(upsertStreamOp.created_at);
+			expect(deleteStreamOp.op_id < upsertStreamOp.op_id).toBe(true);
+			const [sameTimestampOps] = loadReplicationOpsSince(
+				store.db,
+				`${deleteStreamOp.created_at}|zzzzzzzz`,
+				10,
+			);
+			expect(sameTimestampOps.map((op) => op.op_type)).toEqual(["delete", "upsert"]);
 		});
 
 		it("generates an import_key when not provided", () => {
