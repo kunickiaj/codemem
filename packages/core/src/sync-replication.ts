@@ -552,11 +552,17 @@ export function recordReplicationOp(
 		opType: "upsert" | "delete";
 		deviceId: string;
 		payload?: Record<string, unknown>;
+		scopeId?: string | null;
+		clockRev?: number;
+		clockUpdatedAt?: string;
+		clockDeviceId?: string;
+		createdAt?: string;
+		opId?: string;
 	},
 ): string {
 	const d = drizzle(db, { schema });
-	const opId = randomUUID();
-	const now = new Date().toISOString();
+	const opId = opts.opId ?? randomUUID();
+	const now = opts.createdAt ?? new Date().toISOString();
 
 	// Read the full memory row — typed via Drizzle schema
 	const row = d
@@ -565,17 +571,20 @@ export function recordReplicationOp(
 		.where(eq(schema.memoryItems.id, opts.memoryId))
 		.get();
 
-	const rev = Number(row?.rev ?? 0);
-	const updatedAt = row?.updated_at ?? now;
+	const rev = opts.clockRev ?? Number(row?.rev ?? 0);
+	const updatedAt = opts.clockUpdatedAt ?? row?.updated_at ?? now;
 	const entityId = row?.import_key ?? String(opts.memoryId);
 	const metadata = fromJson(row?.metadata_json);
 	// Backfill missing memory scope before emitting an op so storage, op row,
 	// and payload all carry the same authoritative local scope.
-	const scopeId = row ? ensureMemoryScopeId(db, opts.memoryId) : null;
+	const scopeId =
+		opts.scopeId !== undefined ? opts.scopeId : row ? ensureMemoryScopeId(db, opts.memoryId) : null;
 	const clockDeviceId =
-		typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim().length > 0
-			? metadata.clock_device_id
-			: opts.deviceId;
+		typeof opts.clockDeviceId === "string" && opts.clockDeviceId.trim().length > 0
+			? opts.clockDeviceId.trim()
+			: typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim().length > 0
+				? metadata.clock_device_id
+				: opts.deviceId;
 
 	// Resolve session project so peers can reconstruct the project association.
 	const sessionProject = row?.session_id
@@ -2018,12 +2027,15 @@ export function applyReplicationOps(
 							continue;
 						}
 						const now = new Date().toISOString();
+						const deleteMetadata = fromJson(existingForDelete.metadata_json);
+						deleteMetadata.clock_device_id = op.clock_device_id;
 						d.update(schema.memoryItems)
 							.set({
 								active: 0,
 								deleted_at: sql`COALESCE(${schema.memoryItems.deleted_at}, ${now})`,
 								rev: op.clock_rev,
 								updated_at: op.clock_updated_at,
+								metadata_json: toJson(deleteMetadata),
 								scope_id: sql`COALESCE(${opScopeId}, ${schema.memoryItems.scope_id})`,
 							})
 							.where(eq(schema.memoryItems.id, existingForDelete.id))

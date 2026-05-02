@@ -41,7 +41,7 @@ import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
-import { resolveSessionScopeId } from "./scope-stamping.js";
+import { ensureMemoryScopeId, resolveSessionScopeId } from "./scope-stamping.js";
 import {
 	type ExplainOptions,
 	explain as explainFn,
@@ -1154,6 +1154,110 @@ export class MemoryStore {
 				if (!updated) {
 					throw new Error("memory not found after update");
 				}
+				return updated;
+			})
+			.immediate();
+	}
+
+	// reassignMemoryScope
+
+	/**
+	 * Move an active, locally owned memory to another Sharing domain.
+	 *
+	 * Scope assignment is effectively immutable once a memory may have replicated,
+	 * so this is not a bare `scope_id` update. The transaction emits an old-scope
+	 * delete/tombstone op followed by a new-scope upsert op with a newer Lamport
+	 * revision. Old-scope recipients learn to stop syncing the memory, while
+	 * already-copied data on those devices may still remain outside this store.
+	 */
+	reassignMemoryScope(memoryId: number, newScopeId: string): MemoryItemResponse {
+		const cleanedScopeId = newScopeId.trim();
+		if (!cleanedScopeId) throw new Error("scope_id must be a non-empty string");
+
+		return this.db
+			.transaction(() => {
+				const row = this.d
+					.select()
+					.from(schema.memoryItems)
+					.where(and(eq(schema.memoryItems.id, memoryId), eq(schema.memoryItems.active, 1)))
+					.get() as MemoryItem | undefined;
+				if (!row) throw new Error("memory not found");
+				if (!this.memoryOwnedBySelf(row)) throw new Error("memory not owned by this device");
+
+				const targetScope = this.d
+					.select({ scope_id: schema.replicationScopes.scope_id })
+					.from(schema.replicationScopes)
+					.where(
+						and(
+							eq(schema.replicationScopes.scope_id, cleanedScopeId),
+							eq(schema.replicationScopes.status, "active"),
+						),
+					)
+					.get();
+				if (!targetScope) throw new Error(`scope not found or inactive: ${cleanedScopeId}`);
+
+				const oldScopeId = ensureMemoryScopeId(this.db, memoryId);
+				if (!oldScopeId) throw new Error("memory scope could not be resolved");
+				if (oldScopeId === cleanedScopeId) {
+					const current = this.get(memoryId);
+					if (!current) throw new Error("memory not found after scope check");
+					return current;
+				}
+
+				// Block shared-memory scope moves while sync requires attention.
+				this.assertSharedMutationAllowed(row.visibility);
+
+				const now = nowIso();
+				const reassignmentOpPrefix = `~scope-reassign:${randomUUID()}`;
+				const oldRev = row.rev ?? 0;
+				const tombstoneRev = oldRev + 1;
+				const upsertRev = oldRev + 2;
+				const meta = fromJson(row.metadata_json);
+				meta.clock_device_id = this.deviceId;
+				meta.last_scope_reassignment = {
+					old_scope_id: oldScopeId,
+					new_scope_id: cleanedScopeId,
+					reassigned_at: now,
+					warning:
+						"Already-copied data may remain on devices that previously received the old scope.",
+				};
+
+				this.d
+					.update(schema.memoryItems)
+					.set({
+						scope_id: cleanedScopeId,
+						updated_at: now,
+						metadata_json: toJson(meta),
+						rev: upsertRev,
+					})
+					.where(eq(schema.memoryItems.id, memoryId))
+					.run();
+
+				recordReplicationOp(this.db, {
+					memoryId,
+					opType: "delete",
+					deviceId: this.deviceId,
+					scopeId: oldScopeId,
+					clockRev: tombstoneRev,
+					clockUpdatedAt: now,
+					clockDeviceId: this.deviceId,
+					createdAt: now,
+					opId: `${reassignmentOpPrefix}:0-delete`,
+				});
+				recordReplicationOp(this.db, {
+					memoryId,
+					opType: "upsert",
+					deviceId: this.deviceId,
+					scopeId: cleanedScopeId,
+					clockRev: upsertRev,
+					clockUpdatedAt: now,
+					clockDeviceId: this.deviceId,
+					createdAt: now,
+					opId: `${reassignmentOpPrefix}:1-upsert`,
+				});
+
+				const updated = this.get(memoryId);
+				if (!updated) throw new Error("memory not found after scope reassignment");
 				return updated;
 			})
 			.immediate();

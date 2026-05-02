@@ -1991,6 +1991,60 @@ describe("applyReplicationOps", () => {
 		expect(recordedOp.scope_id).toBe("acme-work");
 	});
 
+	it("uses inbound delete clock device metadata for later Lamport tie-breaks", () => {
+		const sessionId = insertTestSession(db);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, created_at, updated_at, import_key, rev, active, metadata_json, scope_id
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Local old title",
+			"Local old body",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"key:test-1",
+			1,
+			1,
+			toJson({ clock_device_id: "a-local" }),
+			"local-default",
+		);
+
+		const deleteOp = makeReplicationOp({
+			op_id: "delete-lamport-op",
+			op_type: "delete",
+			payload_json: null,
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			clock_device_id: "z-delete-device",
+		});
+		const staleTieUpsert = makeReplicationOp({
+			op_id: "stale-tie-upsert-op",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-02T00:00:00Z",
+			clock_device_id: "m-upsert-device",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Should not resurrect",
+				body_text: "Remote body",
+				active: 1,
+			}),
+		});
+
+		const deleteResult = applyReplicationOps(db, [deleteOp], "dev-local");
+		const tieResult = applyReplicationOps(db, [staleTieUpsert], "dev-local");
+
+		expect(deleteResult.applied).toBe(1);
+		expect(tieResult.conflicts).toBe(1);
+		const mem = db
+			.prepare("SELECT title, active, metadata_json FROM memory_items WHERE import_key = ?")
+			.get(deleteOp.entity_id) as { title: string; active: number; metadata_json: string };
+		expect(mem.title).toBe("Local old title");
+		expect(mem.active).toBe(0);
+		expect(JSON.parse(mem.metadata_json).clock_device_id).toBe("z-delete-device");
+	});
+
 	it("populates ref tables when inserting a new memory with files and concepts", () => {
 		const op = makeReplicationOp({
 			payload_json: toJson({
