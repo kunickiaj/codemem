@@ -9,6 +9,12 @@ import {
 } from "./coordinator-runtime.js";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
+import {
+	explainScopeMembershipRevocation,
+	type ScopeMembershipEpochStatus,
+	type ScopeMembershipRevocationNotice,
+	scopeMembershipEpochStatus,
+} from "./scope-membership-semantics.js";
 import { buildBaseUrl } from "./sync-http-client.js";
 
 export const DEFAULT_SCOPE_MEMBERSHIP_CACHE_MAX_AGE_MS = 60_000;
@@ -19,6 +25,7 @@ export type ScopeMembershipAuthorizationState =
 	| "authorized"
 	| "not_authorized"
 	| "revoked"
+	| "stale_epoch"
 	| "scope_unknown"
 	| "scope_inactive";
 
@@ -51,6 +58,8 @@ export interface CachedScopeAuthorization {
 	authorized: boolean;
 	state: ScopeMembershipAuthorizationState;
 	freshness: ScopeMembershipCacheFreshness;
+	epoch: ScopeMembershipEpochStatus;
+	revocation: ScopeMembershipRevocationNotice | null;
 	membership: CoordinatorScopeMembership | null;
 	scope: CoordinatorScope | null;
 	cacheStates: ScopeMembershipCacheState[];
@@ -617,7 +626,7 @@ export function listCachedScopesForDevice(
 	const rows = db
 		.prepare(
 			`${joinedMembershipSelect(
-				`WHERE sm.device_id = ? AND sm.status = 'active' AND rs.scope_id IS NOT NULL AND rs.status = 'active'${authorityFilter}`,
+				`WHERE sm.device_id = ? AND sm.status = 'active' AND rs.scope_id IS NOT NULL AND rs.status = 'active' AND sm.membership_epoch >= rs.membership_epoch${authorityFilter}`,
 			)} ORDER BY sm.scope_id ASC`,
 		)
 		.all(...params) as JoinedMembershipRow[];
@@ -660,6 +669,10 @@ export function getCachedScopeAuthorization(
 	);
 	const cacheStates = loadCacheStates(db, authority);
 	const currentFreshness = freshness(cacheStates, input);
+	const epoch = scopeMembershipEpochStatus({
+		membershipEpoch: membership?.membership_epoch ?? null,
+		requiredEpoch: scope?.membership_epoch ?? null,
+	});
 	if (!membership) {
 		return {
 			deviceId,
@@ -667,6 +680,8 @@ export function getCachedScopeAuthorization(
 			authorized: false,
 			state: "not_authorized",
 			freshness: currentFreshness,
+			epoch,
+			revocation: null,
 			membership: null,
 			scope,
 			cacheStates,
@@ -679,6 +694,12 @@ export function getCachedScopeAuthorization(
 			authorized: false,
 			state: "revoked",
 			freshness: currentFreshness,
+			epoch,
+			revocation: explainScopeMembershipRevocation({
+				scopeId,
+				deviceId,
+				membershipEpoch: membership.membership_epoch,
+			}),
 			membership,
 			scope,
 			cacheStates,
@@ -691,6 +712,8 @@ export function getCachedScopeAuthorization(
 			authorized: false,
 			state: "scope_inactive",
 			freshness: currentFreshness,
+			epoch,
+			revocation: null,
 			membership,
 			scope,
 			cacheStates,
@@ -703,8 +726,24 @@ export function getCachedScopeAuthorization(
 			authorized: false,
 			state: "scope_unknown",
 			freshness: currentFreshness,
+			epoch,
+			revocation: null,
 			membership,
 			scope: null,
+			cacheStates,
+		};
+	}
+	if (epoch.stale) {
+		return {
+			deviceId,
+			scopeId,
+			authorized: false,
+			state: "stale_epoch",
+			freshness: currentFreshness,
+			epoch,
+			revocation: null,
+			membership,
+			scope,
 			cacheStates,
 		};
 	}
@@ -714,6 +753,8 @@ export function getCachedScopeAuthorization(
 		authorized: membership.status === "active",
 		state: membership.status === "active" ? "authorized" : "not_authorized",
 		freshness: currentFreshness,
+		epoch,
+		revocation: null,
 		membership,
 		scope,
 		cacheStates,
