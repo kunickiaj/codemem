@@ -210,6 +210,7 @@ describe("workers vitest + local D1 validation", () => {
 			.run();
 
 		const device = createIdentity();
+		const observer = createIdentity();
 		const adminHeaders = {
 			"content-type": "application/json",
 			"X-Codemem-Coordinator-Admin": "test-secret",
@@ -227,6 +228,18 @@ describe("workers vitest + local D1 validation", () => {
 			}),
 		});
 		expect(enrollRes.status).toBe(200);
+		const enrollObserverRes = await exports.default.fetch("https://example.com/v1/admin/devices", {
+			method: "POST",
+			headers: adminHeaders,
+			body: JSON.stringify({
+				group_id: "g1",
+				device_id: observer.deviceId,
+				fingerprint: observer.fingerprint,
+				public_key: observer.publicKey,
+				display_name: "Observer Device",
+			}),
+		});
+		expect(enrollObserverRes.status).toBe(200);
 
 		const createScopeRes = await exports.default.fetch(
 			"https://example.com/v1/admin/groups/g1/scopes",
@@ -326,6 +339,54 @@ describe("workers vitest + local D1 validation", () => {
 			scope_id: "scope-a",
 			device_id: device.deviceId,
 		});
+
+		const revokedDevicePresenceBody = JSON.stringify({
+			group_id: "g1",
+			fingerprint: device.fingerprint,
+			addresses: ["http://10.0.0.7:7337"],
+			ttl_s: 180,
+		});
+		const revokedDevicePresenceRes = await exports.default.fetch("https://example.com/v1/presence", {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				...signHeaders(
+					device,
+					"POST",
+					"https://example.com/v1/presence",
+					revokedDevicePresenceBody,
+				),
+			},
+			body: revokedDevicePresenceBody,
+		});
+		expect(revokedDevicePresenceRes.status).toBe(200);
+
+		const peersAfterRevokeRes = await exports.default.fetch(
+			"https://example.com/v1/peers?group_id=g1",
+			{
+				method: "GET",
+				headers: signHeaders(observer, "GET", "https://example.com/v1/peers?group_id=g1", ""),
+			},
+		);
+		expect(peersAfterRevokeRes.status).toBe(200);
+		const peersAfterRevokeJson = (await peersAfterRevokeRes.json()) as {
+			items: CoordinatorPeerRecord[];
+		};
+		expect(peersAfterRevokeJson.items).toEqual([
+			expect.objectContaining({
+				device_id: device.deviceId,
+				fingerprint: device.fingerprint,
+				stale: false,
+				addresses: ["http://10.0.0.7:7337"],
+			}),
+		]);
+
+		const activeMembersAfterRevokeRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/scope-a/members",
+			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },
+		);
+		expect(activeMembersAfterRevokeRes.status).toBe(200);
+		expect(await activeMembersAfterRevokeRes.json()).toMatchObject({ items: [] });
 
 		const revokedMembersRes = await exports.default.fetch(
 			"https://example.com/v1/admin/groups/g1/scopes/scope-a/members?include_revoked=1",
