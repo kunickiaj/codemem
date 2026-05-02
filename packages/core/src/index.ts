@@ -401,6 +401,28 @@ export {
 	ScopeBackfillRunner,
 } from "./scope-backfill.js";
 export type {
+	CachedDeviceScopeMemberships,
+	CachedScopeAuthorization,
+	CachedScopeMembership,
+	RefreshScopeMembershipCacheGroupResult,
+	RefreshScopeMembershipCacheOptions,
+	RefreshScopeMembershipCacheResult,
+	ScopeMembershipAuthorizationState,
+	ScopeMembershipCacheAuthority,
+	ScopeMembershipCacheFetchers,
+	ScopeMembershipCacheFreshness,
+	ScopeMembershipCacheState,
+} from "./scope-membership-cache.js";
+export {
+	DEFAULT_SCOPE_MEMBERSHIP_CACHE_MAX_AGE_MS,
+	ensureScopeMembershipCacheStateTable,
+	getCachedScopeAuthorization,
+	listCachedScopesForDevice,
+	refreshConfiguredScopeMembershipCache,
+	refreshScopeMembershipCache,
+	upsertCachedScopeMemberships,
+} from "./scope-membership-cache.js";
+export type {
 	CanonicalWorkspaceIdentity,
 	ResolveProjectScopeInput,
 	ScopeMapping,

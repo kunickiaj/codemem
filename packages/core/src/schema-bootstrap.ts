@@ -96,6 +96,16 @@ CREATE TABLE IF NOT EXISTS coordinator_group_preferences (
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (coordinator_id, group_id)
 );
+
+CREATE TABLE IF NOT EXISTS scope_membership_cache_state (
+	coordinator_id TEXT NOT NULL,
+	group_id TEXT NOT NULL,
+	last_refresh_at TEXT NOT NULL,
+	last_success_at TEXT,
+	last_error TEXT,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (coordinator_id, group_id)
+);
 `;
 
 /**

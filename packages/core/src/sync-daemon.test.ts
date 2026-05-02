@@ -23,6 +23,14 @@ vi.mock("./coordinator-runtime.js", () => ({
 	registerCoordinatorPresence: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("./scope-membership-cache.js", () => ({
+	refreshConfiguredScopeMembershipCache: vi.fn().mockResolvedValue({
+		status: "skipped",
+		coordinatorId: null,
+		groups: [],
+	}),
+}));
+
 // Mock sync-pass to avoid needing real keys/network
 vi.mock("./sync-pass.js", () => ({
 	syncPassPreflight: vi.fn(),
@@ -167,19 +175,23 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 		const { coordinatorEnabled, registerCoordinatorPresence } = await import(
 			"./coordinator-runtime.js"
 		);
+		const { refreshConfiguredScopeMembershipCache } = await import("./scope-membership-cache.js");
 		vi.mocked(coordinatorEnabled).mockReturnValue(false);
 
 		expect(await refreshCoordinatorPresenceForDaemon(db, ":memory:")).toBe(false);
 		expect(registerCoordinatorPresence).not.toHaveBeenCalled();
+		expect(refreshConfiguredScopeMembershipCache).not.toHaveBeenCalled();
 	});
 
-	it("posts coordinator presence with the daemon db and keys context when enabled", async () => {
+	it("posts coordinator presence and refreshes scope membership cache when enabled", async () => {
 		const { coordinatorEnabled, readCoordinatorSyncConfig, registerCoordinatorPresence } =
 			await import("./coordinator-runtime.js");
+		const { refreshConfiguredScopeMembershipCache } = await import("./scope-membership-cache.js");
 		vi.mocked(coordinatorEnabled).mockReturnValue(true);
 		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
 			syncCoordinatorUrl: "http://coord",
 			syncCoordinatorGroups: ["team"],
+			syncCoordinatorAdminSecret: "secret",
 		} as never);
 
 		expect(await refreshCoordinatorPresenceForDaemon(db, ":memory:", "/tmp/keys")).toBe(true);
@@ -190,6 +202,14 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 				syncCoordinatorGroups: ["team"],
 			}),
 			{ keysDir: "/tmp/keys" },
+		);
+		expect(refreshConfiguredScopeMembershipCache).toHaveBeenCalledWith(
+			db,
+			expect.objectContaining({
+				syncCoordinatorUrl: "http://coord",
+				syncCoordinatorGroups: ["team"],
+				syncCoordinatorAdminSecret: "secret",
+			}),
 		);
 	});
 
