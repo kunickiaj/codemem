@@ -206,8 +206,50 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 				});
 			});
 
+			it("requires scope members to be enrolled in the scope group", async () => {
+				await withContext(async ({ store }) => {
+					await store.createGroup("group-a");
+					await store.createGroup("group-b");
+					await store.enrollDevice("group-b", {
+						deviceId: "device-a",
+						fingerprint: "fp-a",
+						publicKey: "pk-a",
+					});
+					await store.createScope({
+						scopeId: "scope-acme",
+						label: "Acme Work",
+						groupId: "group-a",
+					});
+
+					await expect(
+						store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+					).rejects.toThrow("device must be enrolled and enabled in the scope group");
+
+					await store.enrollDevice("group-a", {
+						deviceId: "device-a",
+						fingerprint: "fp-a",
+						publicKey: "pk-a",
+					});
+					expect(await store.setDeviceEnabled("group-a", "device-a", false)).toBe(true);
+					await expect(
+						store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+					).rejects.toThrow("device must be enrolled and enabled in the scope group");
+
+					expect(await store.setDeviceEnabled("group-a", "device-a", true)).toBe(true);
+					await expect(
+						store.grantScopeMembership({ scopeId: "scope-acme", deviceId: "device-a" }),
+					).resolves.toEqual(expect.objectContaining({ status: "active" }));
+				});
+			});
+
 			it("grants and revokes explicit device membership per scope", async () => {
 				await withContext(async ({ store }) => {
+					await store.createGroup("group-a");
+					await store.enrollDevice("group-a", {
+						deviceId: "device-a",
+						fingerprint: "fp-a",
+						publicKey: "pk-a",
+					});
 					await store.createScope({
 						scopeId: "scope-acme",
 						label: "Acme Work",

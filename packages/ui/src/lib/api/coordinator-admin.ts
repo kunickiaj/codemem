@@ -70,6 +70,120 @@ export async function unarchiveCoordinatorAdminGroup(groupId: string): Promise<u
 	return data;
 }
 
+export interface CoordinatorAdminScopePayload {
+	scope_id?: string;
+	label?: string | null;
+	kind?: string | null;
+	authority_type?: string | null;
+	coordinator_id?: string | null;
+	manifest_issuer_device_id?: string | null;
+	membership_epoch?: number | null;
+	manifest_hash?: string | null;
+	status?: string | null;
+}
+
+export interface CoordinatorAdminScopeMemberPayload {
+	device_id?: string;
+	role?: string | null;
+	membership_epoch?: number | null;
+	coordinator_id?: string | null;
+	manifest_issuer_device_id?: string | null;
+	manifest_hash?: string | null;
+	signed_manifest_json?: string | null;
+}
+
+export async function loadCoordinatorAdminScopes(
+	groupId: string,
+	includeInactive = false,
+): Promise<unknown> {
+	const params = new URLSearchParams();
+	if (includeInactive) params.set("include_inactive", "1");
+	const suffix = params.size ? `?${params.toString()}` : "";
+	return fetchJson(`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/scopes${suffix}`);
+}
+
+export async function createCoordinatorAdminScope(
+	groupId: string,
+	payload: CoordinatorAdminScopePayload & { scope_id: string; label: string },
+): Promise<unknown> {
+	const resp = await fetch(`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/scopes`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function updateCoordinatorAdminScope(
+	groupId: string,
+	scopeId: string,
+	payload: Omit<CoordinatorAdminScopePayload, "scope_id">,
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}`,
+		{
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(payload),
+		},
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function loadCoordinatorAdminScopeMembers(
+	groupId: string,
+	scopeId: string,
+	includeRevoked = false,
+): Promise<unknown> {
+	const params = new URLSearchParams();
+	if (includeRevoked) params.set("include_revoked", "1");
+	const suffix = params.size ? `?${params.toString()}` : "";
+	return fetchJson(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members${suffix}`,
+	);
+}
+
+export async function grantCoordinatorAdminScopeMember(
+	groupId: string,
+	scopeId: string,
+	payload: CoordinatorAdminScopeMemberPayload & { device_id: string },
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(payload),
+		},
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
+export async function revokeCoordinatorAdminScopeMember(
+	groupId: string,
+	scopeId: string,
+	deviceId: string,
+	payload: Omit<CoordinatorAdminScopeMemberPayload, "device_id"> = {},
+): Promise<unknown> {
+	const resp = await fetch(
+		`/api/coordinator/admin/groups/${encodeURIComponent(groupId)}/scopes/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(deviceId)}/revoke`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(payload),
+		},
+	);
+	const { text, payload: data } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(data) || text || "request failed");
+	return data;
+}
+
 export async function loadCoordinatorAdminJoinRequests(groupId?: string | null): Promise<unknown> {
 	const params = new URLSearchParams();
 	if (groupId) params.set("group_id", groupId);

@@ -1,17 +1,23 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
+	coordinatorCreateScopeAction,
 	coordinatorDisableDeviceAction,
 	coordinatorEnableDeviceAction,
 	coordinatorEnrollDeviceAction,
+	coordinatorGrantScopeMembershipAction,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
+	coordinatorListScopeMembershipsAction,
+	coordinatorListScopesAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
+	coordinatorRevokeScopeMembershipAction,
+	coordinatorUpdateScopeAction,
 } from "./coordinator-actions.js";
 
 describe("coordinator local admin actions", () => {
@@ -27,6 +33,7 @@ describe("coordinator local admin actions", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllGlobals();
 		if (prevConfigPath == null) delete process.env.CODEMEM_CONFIG;
 		else process.env.CODEMEM_CONFIG = prevConfigPath;
 		rmSync(tmpDir, { recursive: true, force: true });
@@ -154,6 +161,244 @@ describe("coordinator local admin actions", () => {
 				dbPath,
 			}),
 		).rejects.toThrow("Group not found: missing");
+	});
+
+	it("creates, updates, lists, grants, and revokes local Sharing domain memberships", async () => {
+		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		await coordinatorEnrollDeviceAction({
+			groupId: "team-a",
+			deviceId: "device-1",
+			fingerprint: "fp-1",
+			publicKey: "pk-1",
+			dbPath,
+		});
+		const created = await coordinatorCreateScopeAction({
+			groupId: "team-a",
+			scopeId: "scope-acme",
+			label: "Acme Work",
+			kind: "team",
+			coordinatorId: "coord-a",
+			membershipEpoch: 2,
+			dbPath,
+		});
+		expect(created).toEqual(
+			expect.objectContaining({
+				scope_id: "scope-acme",
+				label: "Acme Work",
+				group_id: "team-a",
+				membership_epoch: 2,
+			}),
+		);
+		expect(await coordinatorListScopesAction({ groupId: "team-a", dbPath })).toEqual([
+			expect.objectContaining({ scope_id: "scope-acme" }),
+		]);
+		expect(
+			await coordinatorListScopeMembershipsAction({
+				groupId: "team-a",
+				scopeId: "scope-acme",
+				dbPath,
+			}),
+		).toEqual([]);
+		const updated = await coordinatorUpdateScopeAction({
+			groupId: "team-a",
+			scopeId: "scope-acme",
+			label: "Acme Engineering",
+			membershipEpoch: 3,
+			dbPath,
+		});
+		expect(updated).toEqual(
+			expect.objectContaining({ label: "Acme Engineering", membership_epoch: 3 }),
+		);
+
+		const grant = await coordinatorGrantScopeMembershipAction({
+			groupId: "team-a",
+			scopeId: "scope-acme",
+			deviceId: "device-1",
+			role: "admin",
+			membershipEpoch: 3,
+			dbPath,
+		});
+		expect(grant).toEqual(
+			expect.objectContaining({
+				scope_id: "scope-acme",
+				device_id: "device-1",
+				role: "admin",
+				status: "active",
+			}),
+		);
+		expect(
+			await coordinatorListScopeMembershipsAction({
+				groupId: "team-a",
+				scopeId: "scope-acme",
+				dbPath,
+			}),
+		).toEqual([expect.objectContaining({ device_id: "device-1", status: "active" })]);
+		expect(
+			await coordinatorRevokeScopeMembershipAction({
+				groupId: "team-a",
+				scopeId: "scope-acme",
+				deviceId: "device-1",
+				dbPath,
+			}),
+		).toBe(true);
+		expect(
+			await coordinatorListScopeMembershipsAction({
+				groupId: "team-a",
+				scopeId: "scope-acme",
+				dbPath,
+			}),
+		).toEqual([]);
+		expect(
+			await coordinatorListScopeMembershipsAction({
+				groupId: "team-a",
+				scopeId: "scope-acme",
+				includeRevoked: true,
+				dbPath,
+			}),
+		).toEqual([expect.objectContaining({ device_id: "device-1", status: "revoked" })]);
+	});
+
+	it("rejects local Sharing domain actions for missing groups or scopes", async () => {
+		await expect(
+			coordinatorCreateScopeAction({
+				groupId: "missing",
+				scopeId: "scope-acme",
+				label: "Acme Work",
+				dbPath,
+			}),
+		).rejects.toThrow("Group not found: missing");
+		await coordinatorCreateGroupAction({ groupId: "team-a", dbPath });
+		expect(
+			await coordinatorUpdateScopeAction({
+				groupId: "team-a",
+				scopeId: "missing-scope",
+				label: "Nope",
+				dbPath,
+			}),
+		).toBeNull();
+		await expect(
+			coordinatorListScopeMembershipsAction({
+				groupId: "team-a",
+				scopeId: "missing-scope",
+				dbPath,
+			}),
+		).rejects.toThrow("Scope not found: missing-scope");
+		await expect(
+			coordinatorGrantScopeMembershipAction({
+				groupId: "team-a",
+				scopeId: "missing-scope",
+				deviceId: "device-1",
+				dbPath,
+			}),
+		).rejects.toThrow("Scope not found: missing-scope");
+	});
+
+	it("sends remote Sharing domain admin requests with the admin secret", async () => {
+		const prevAdminSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+		process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = "secret";
+		const scope = {
+			scope_id: "scope-acme",
+			label: "Acme Work",
+			kind: "team",
+			authority_type: "coordinator",
+			coordinator_id: "coord-a",
+			group_id: "team-a",
+			manifest_issuer_device_id: null,
+			membership_epoch: 2,
+			manifest_hash: null,
+			status: "active",
+			created_at: "2026-03-28T00:00:00Z",
+			updated_at: "2026-03-28T00:00:00Z",
+		};
+		const membership = {
+			scope_id: "scope-acme",
+			device_id: "device-1",
+			role: "member",
+			status: "active",
+			membership_epoch: 2,
+			coordinator_id: "coord-a",
+			group_id: "team-a",
+			manifest_issuer_device_id: null,
+			manifest_hash: null,
+			signed_manifest_json: null,
+			updated_at: "2026-03-28T00:00:00Z",
+		};
+		const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const path = new URL(String(url)).pathname;
+			expect(init?.headers).toMatchObject({ "X-Codemem-Coordinator-Admin": "secret" });
+			if (path.endsWith("/scopes") && init?.method === "GET") {
+				return new Response(JSON.stringify({ items: [scope] }), { status: 200 });
+			}
+			if (path.endsWith("/scopes") && init?.method === "POST") {
+				return new Response(JSON.stringify({ ok: true, scope }), { status: 201 });
+			}
+			if (path.endsWith("/members") && init?.method === "POST") {
+				return new Response(JSON.stringify({ ok: true, membership }), { status: 201 });
+			}
+			if (path.endsWith("/revoke") && init?.method === "POST") {
+				return new Response(JSON.stringify({ ok: true }), { status: 200 });
+			}
+			return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		try {
+			expect(
+				await coordinatorListScopesAction({
+					groupId: "team-a",
+					includeInactive: true,
+					remoteUrl: "https://coord.example.test/",
+				}),
+			).toEqual([scope]);
+			expect(
+				await coordinatorCreateScopeAction({
+					groupId: "team-a",
+					scopeId: "scope-acme",
+					label: "Acme Work",
+					remoteUrl: "https://coord.example.test/",
+				}),
+			).toEqual(scope);
+			expect(
+				await coordinatorGrantScopeMembershipAction({
+					groupId: "team-a",
+					scopeId: "scope-acme",
+					deviceId: "device-1",
+					remoteUrl: "https://coord.example.test/",
+				}),
+			).toEqual(membership);
+			expect(
+				await coordinatorRevokeScopeMembershipAction({
+					groupId: "team-a",
+					scopeId: "scope-acme",
+					deviceId: "device-1",
+					remoteUrl: "https://coord.example.test/",
+				}),
+			).toBe(true);
+			expect(fetchMock).toHaveBeenCalledTimes(4);
+		} finally {
+			if (prevAdminSecret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+			else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = prevAdminSecret;
+		}
+	});
+
+	it("maps remote missing Sharing domain membership revokes to false", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ error: "membership_not_found" }), { status: 404 }),
+			),
+		);
+
+		expect(
+			await coordinatorRevokeScopeMembershipAction({
+				groupId: "team-a",
+				scopeId: "scope-acme",
+				deviceId: "device-1",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			}),
+		).toBe(false);
 	});
 
 	it("warns when local invite coordinator URL looks private-only", async () => {

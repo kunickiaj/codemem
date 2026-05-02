@@ -12,6 +12,7 @@ import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type {
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorEnrollment,
+	CoordinatorScope,
 	CoordinatorStore,
 } from "./coordinator-store-contract.js";
 import {
@@ -259,6 +260,57 @@ export function createCoordinatorApp(
 		} catch {
 			return null;
 		}
+	}
+
+	function optionalString(data: Record<string, unknown>, key: string): string | null {
+		const value = data[key];
+		if (value == null) return null;
+		return String(value).trim() || null;
+	}
+
+	function optionalNumber(data: Record<string, unknown>, key: string): number | null {
+		const value = data[key];
+		if (value == null || value === "") return null;
+		if (typeof value !== "number" && typeof value !== "string") return Number.NaN;
+		if (typeof value === "string") {
+			const trimmed = value.trim();
+			if (!trimmed) return Number.NaN;
+			const number = Number(trimmed);
+			return Number.isFinite(number) ? Math.trunc(number) : Number.NaN;
+		}
+		const number = value;
+		return Number.isFinite(number) ? Math.trunc(number) : Number.NaN;
+	}
+
+	function queryFlag(value: string | undefined | null): boolean {
+		return ["1", "true", "yes"].includes(
+			String(value ?? "")
+				.trim()
+				.toLowerCase(),
+		);
+	}
+
+	async function requireActiveAdminGroup(store: CoordinatorStore, groupId: string, c: Context) {
+		if (!groupId) return c.json({ error: "group_id_required" }, 400);
+		const group = await store.getGroup(groupId);
+		if (!group) return c.json({ error: "group_not_found" }, 404);
+		if (group.archived_at) return c.json({ error: "group_archived" }, 409);
+		return null;
+	}
+
+	async function findAdminScope(
+		store: CoordinatorStore,
+		groupId: string,
+		scopeId: string,
+		c: Context,
+	): Promise<{ scope: CoordinatorScope | null; response: Response | null }> {
+		const groupError = await requireActiveAdminGroup(store, groupId, c);
+		if (groupError) return { scope: null, response: groupError };
+		if (!scopeId) return { scope: null, response: c.json({ error: "scope_id_required" }, 400) };
+		const matching = await store.listScopes({ groupId, includeInactive: true });
+		const scope = matching.find((item) => item.scope_id === scopeId) ?? null;
+		if (!scope) return { scope: null, response: c.json({ error: "scope_not_found" }, 404) };
+		return { scope, response: null };
 	}
 
 	// -----------------------------------------------------------------------
@@ -639,6 +691,238 @@ export function createCoordinatorApp(
 			const ok = await store.unarchiveGroup(groupId);
 			if (!ok) return c.json({ error: "group_not_found_or_not_archived" }, 404);
 			return c.json({ ok: true, group: await store.getGroup(groupId) });
+		} finally {
+			await store.close();
+		}
+	});
+
+	// GET /v1/admin/groups/:group_id/scopes — list Sharing domains for a group
+	app.get("/v1/admin/groups/:group_id/scopes", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const store = createStore();
+		try {
+			const groupError = await requireActiveAdminGroup(store, groupId, c);
+			if (groupError) return groupError;
+			const includeInactive = queryFlag(c.req.query("include_inactive"));
+			return c.json({
+				items: await store.listScopes({ groupId, includeInactive }),
+			});
+		} finally {
+			await store.close();
+		}
+	});
+
+	// POST /v1/admin/groups/:group_id/scopes — create a Sharing domain
+	app.post("/v1/admin/groups/:group_id/scopes", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = optionalString(data, "scope_id");
+		const label = optionalString(data, "label");
+		const membershipEpoch = optionalNumber(data, "membership_epoch");
+		if (!scopeId || !label) return c.json({ error: "scope_id_and_label_required" }, 400);
+		if (Number.isNaN(membershipEpoch)) {
+			return c.json({ error: "membership_epoch_must_be_number" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const groupError = await requireActiveAdminGroup(store, groupId, c);
+			if (groupError) return groupError;
+			const scope = await store.createScope({
+				scopeId,
+				label,
+				kind: optionalString(data, "kind"),
+				authorityType: optionalString(data, "authority_type"),
+				coordinatorId: optionalString(data, "coordinator_id"),
+				groupId,
+				manifestIssuerDeviceId: optionalString(data, "manifest_issuer_device_id"),
+				membershipEpoch,
+				manifestHash: optionalString(data, "manifest_hash"),
+				status: optionalString(data, "status"),
+			});
+			return c.json({ ok: true, scope }, 201);
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		} finally {
+			await store.close();
+		}
+	});
+
+	// PATCH /v1/admin/groups/:group_id/scopes/:scope_id — update Sharing domain metadata
+	app.patch("/v1/admin/groups/:group_id/scopes/:scope_id", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		const membershipEpoch = optionalNumber(data, "membership_epoch");
+		if (!scopeId) return c.json({ error: "scope_id_required" }, 400);
+		if (Number.isNaN(membershipEpoch)) {
+			return c.json({ error: "membership_epoch_must_be_number" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const lookup = await findAdminScope(store, groupId, scopeId, c);
+			if (lookup.response) return lookup.response;
+			const scope = await store.updateScope({
+				scopeId,
+				label: data.label === undefined ? undefined : optionalString(data, "label"),
+				kind: data.kind === undefined ? undefined : optionalString(data, "kind"),
+				authorityType:
+					data.authority_type === undefined ? undefined : optionalString(data, "authority_type"),
+				coordinatorId:
+					data.coordinator_id === undefined ? undefined : optionalString(data, "coordinator_id"),
+				groupId,
+				manifestIssuerDeviceId:
+					data.manifest_issuer_device_id === undefined
+						? undefined
+						: optionalString(data, "manifest_issuer_device_id"),
+				membershipEpoch,
+				manifestHash:
+					data.manifest_hash === undefined ? undefined : optionalString(data, "manifest_hash"),
+				status: data.status === undefined ? undefined : optionalString(data, "status"),
+			});
+			if (!scope) return c.json({ error: "scope_not_found" }, 404);
+			return c.json({ ok: true, scope });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		} finally {
+			await store.close();
+		}
+	});
+
+	// GET /v1/admin/groups/:group_id/scopes/:scope_id/members — list explicit grants
+	app.get("/v1/admin/groups/:group_id/scopes/:scope_id/members", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		const store = createStore();
+		try {
+			const lookup = await findAdminScope(store, groupId, scopeId, c);
+			if (lookup.response) return lookup.response;
+			return c.json({
+				items: await store.listScopeMemberships(scopeId, queryFlag(c.req.query("include_revoked"))),
+			});
+		} finally {
+			await store.close();
+		}
+	});
+
+	// POST /v1/admin/groups/:group_id/scopes/:scope_id/members — grant device access
+	app.post("/v1/admin/groups/:group_id/scopes/:scope_id/members", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = parseJsonObject(raw);
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		const deviceId = optionalString(data, "device_id");
+		const membershipEpoch = optionalNumber(data, "membership_epoch");
+		if (!deviceId) return c.json({ error: "device_id_required" }, 400);
+		if (Number.isNaN(membershipEpoch)) {
+			return c.json({ error: "membership_epoch_must_be_number" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const lookup = await findAdminScope(store, groupId, scopeId, c);
+			if (lookup.response) return lookup.response;
+			if (lookup.scope?.status !== "active") return c.json({ error: "scope_not_active" }, 409);
+			const enrollment = await store.getEnrollment(groupId, deviceId);
+			if (!enrollment) return c.json({ error: "device_not_enrolled_for_scope_group" }, 404);
+			const membership = await store.grantScopeMembership({
+				scopeId,
+				deviceId,
+				role: optionalString(data, "role"),
+				membershipEpoch,
+				coordinatorId: optionalString(data, "coordinator_id"),
+				groupId,
+				manifestIssuerDeviceId: optionalString(data, "manifest_issuer_device_id"),
+				manifestHash: optionalString(data, "manifest_hash"),
+				signedManifestJson: optionalString(data, "signed_manifest_json"),
+			});
+			return c.json({ ok: true, membership }, 201);
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+		} finally {
+			await store.close();
+		}
+	});
+
+	// POST /v1/admin/groups/:group_id/scopes/:scope_id/members/:device_id/revoke
+	app.post("/v1/admin/groups/:group_id/scopes/:scope_id/members/:device_id/revoke", async (c) => {
+		const adminAuth = authorizeAdmin(c.req.header(ADMIN_HEADER), runtime);
+		if (!adminAuth.ok)
+			return rateLimitedResponse(c, c.req.path, false) ?? c.json({ error: adminAuth.error }, 401);
+		const limited = rateLimitedResponse(c, "admin", true);
+		if (limited) return limited;
+
+		const raw = await readRequestBytes(c);
+		if (raw == null) return c.json({ error: "body_too_large" }, 413);
+		const data = raw.byteLength > 0 ? parseJsonObject(raw) : {};
+		if (!data) return c.json({ error: "invalid_json" }, 400);
+
+		const groupId = String(c.req.param("group_id") ?? "").trim();
+		const scopeId = String(c.req.param("scope_id") ?? "").trim();
+		const deviceId = String(c.req.param("device_id") ?? "").trim();
+		const membershipEpoch = optionalNumber(data, "membership_epoch");
+		if (!deviceId) return c.json({ error: "device_id_required" }, 400);
+		if (Number.isNaN(membershipEpoch)) {
+			return c.json({ error: "membership_epoch_must_be_number" }, 400);
+		}
+
+		const store = createStore();
+		try {
+			const lookup = await findAdminScope(store, groupId, scopeId, c);
+			if (lookup.response) return lookup.response;
+			const ok = await store.revokeScopeMembership({
+				scopeId,
+				deviceId,
+				membershipEpoch,
+				manifestHash: optionalString(data, "manifest_hash"),
+				signedManifestJson: optionalString(data, "signed_manifest_json"),
+			});
+			if (!ok) return c.json({ error: "membership_not_found" }, 404);
+			return c.json({ ok: true, scope_id: scopeId, device_id: deviceId });
+		} catch (error) {
+			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
 		} finally {
 			await store.close();
 		}

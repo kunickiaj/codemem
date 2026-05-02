@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	connect,
+	fingerprintPublicKey,
 	initTestSchema,
 	loadPublicKey,
 	MemoryStore,
 	startMaintenanceJob,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
+import { buildCoordinatorCommand } from "./coordinator.js";
 import { syncCommand } from "./sync.js";
 import {
 	buildServeLifecycleArgs,
@@ -158,6 +160,12 @@ describe("formatSyncAttempt", () => {
 			"list-groups",
 			"enroll-device",
 			"list-devices",
+			"list-scopes",
+			"create-scope",
+			"update-scope",
+			"list-scope-members",
+			"grant-scope-member",
+			"revoke-scope-member",
 			"rename-device",
 			"disable-device",
 			"remove-device",
@@ -179,6 +187,12 @@ describe("formatSyncAttempt", () => {
 		expect(help).toContain("list-groups");
 		expect(help).toContain("enroll-device");
 		expect(help).toContain("list-devices");
+		expect(help).toContain("list-scopes");
+		expect(help).toContain("create-scope");
+		expect(help).toContain("update-scope");
+		expect(help).toContain("list-scope-members");
+		expect(help).toContain("grant-scope-member");
+		expect(help).toContain("revoke-scope-member");
 		expect(help).toContain("rename-device");
 		expect(help).toContain("disable-device");
 		expect(help).toContain("remove-device");
@@ -188,6 +202,125 @@ describe("formatSyncAttempt", () => {
 		expect(help).toContain("list-join-requests");
 		expect(help).toContain("approve-join-request");
 		expect(help).toContain("deny-join-request");
+	});
+
+	it("manages Sharing domains through coordinator CLI JSON commands", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "coordinator-scope-cli-test-"));
+		const dbPath = join(tmpDbDir, "coordinator.sqlite");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const prevExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			const devicePublicKey = "test-public-key-device-a";
+			await buildCoordinatorCommand().parseAsync(
+				["group-create", "team-a", "--db-path", dbPath, "--json"],
+				{ from: "user" },
+			);
+			await buildCoordinatorCommand().parseAsync(
+				[
+					"enroll-device",
+					"team-a",
+					"device-a",
+					"--fingerprint",
+					fingerprintPublicKey(devicePublicKey),
+					"--public-key",
+					devicePublicKey,
+					"--db-path",
+					dbPath,
+					"--json",
+				],
+				{ from: "user" },
+			);
+			logSpy.mockClear();
+			await buildCoordinatorCommand().parseAsync(
+				[
+					"create-scope",
+					"team-a",
+					"scope-acme",
+					"--label",
+					"Acme Work",
+					"--membership-epoch",
+					"2",
+					"--db-path",
+					dbPath,
+					"--json",
+				],
+				{ from: "user" },
+			);
+			await buildCoordinatorCommand().parseAsync(
+				[
+					"grant-scope-member",
+					"team-a",
+					"scope-acme",
+					"device-a",
+					"--role",
+					"admin",
+					"--db-path",
+					dbPath,
+					"--json",
+				],
+				{ from: "user" },
+			);
+			await buildCoordinatorCommand().parseAsync(
+				["list-scope-members", "team-a", "scope-acme", "--db-path", dbPath, "--json"],
+				{ from: "user" },
+			);
+
+			const createdScope = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as Record<string, unknown>;
+			const grant = JSON.parse(String(logSpy.mock.calls[1]?.[0])) as Record<string, unknown>;
+			const members = JSON.parse(String(logSpy.mock.calls[2]?.[0])) as Array<
+				Record<string, unknown>
+			>;
+			expect(createdScope).toMatchObject({
+				scope_id: "scope-acme",
+				label: "Acme Work",
+				membership_epoch: 2,
+			});
+			expect(grant).toMatchObject({ device_id: "device-a", role: "admin" });
+			expect(members).toEqual([expect.objectContaining({ device_id: "device-a" })]);
+			expect(process.exitCode).toBeUndefined();
+		} finally {
+			logSpy.mockRestore();
+			process.exitCode = prevExitCode;
+			rmSync(tmpDbDir, { recursive: true, force: true });
+		}
+	});
+
+	it("reports Sharing domain CLI errors as JSON", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "coordinator-scope-cli-error-test-"));
+		const dbPath = join(tmpDbDir, "coordinator.sqlite");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const prevExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await buildCoordinatorCommand().parseAsync(
+				["group-create", "team-a", "--db-path", dbPath, "--json"],
+				{ from: "user" },
+			);
+			await buildCoordinatorCommand().parseAsync(
+				[
+					"grant-scope-member",
+					"team-a",
+					"missing-scope",
+					"device-a",
+					"--db-path",
+					dbPath,
+					"--json",
+				],
+				{ from: "user" },
+			);
+
+			const error = JSON.parse(String(logSpy.mock.calls[1]?.[0])) as Record<string, unknown>;
+			expect(error).toMatchObject({
+				error: "grant_scope_member_failed",
+				message: "Scope not found: missing-scope",
+			});
+			expect(process.exitCode).toBe(1);
+		} finally {
+			logSpy.mockRestore();
+			process.exitCode = prevExitCode;
+			rmSync(tmpDbDir, { recursive: true, force: true });
+		}
 	});
 
 	it("defaults coordinator serve to the coordinator store database", () => {

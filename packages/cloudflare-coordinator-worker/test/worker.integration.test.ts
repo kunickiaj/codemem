@@ -71,6 +71,8 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 
 describe("workers vitest + local D1 validation", () => {
 	afterEach(async () => {
+		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scope_memberships").run();
+		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_scopes").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_join_requests").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_invites").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM request_nonces").run();
@@ -198,5 +200,149 @@ describe("workers vitest + local D1 validation", () => {
 		const replayRes = await exports.default.fetch("https://example.com/v1/presence", joinerPresenceInit);
 		expect(replayRes.status).toBe(401);
 		expect(await replayRes.json()).toEqual({ error: "nonce_replay" });
+	});
+
+	it("manages Sharing domain metadata and explicit memberships through worker admin routes", async () => {
+		await env.COORDINATOR_DB.prepare(
+			"INSERT INTO groups (group_id, display_name, created_at) VALUES (?, ?, ?)",
+		)
+			.bind("g1", "Team Alpha", "2026-03-28T00:00:00Z")
+			.run();
+
+		const device = createIdentity();
+		const adminHeaders = {
+			"content-type": "application/json",
+			"X-Codemem-Coordinator-Admin": "test-secret",
+		};
+
+		const enrollRes = await exports.default.fetch("https://example.com/v1/admin/devices", {
+			method: "POST",
+			headers: adminHeaders,
+			body: JSON.stringify({
+				group_id: "g1",
+				device_id: device.deviceId,
+				fingerprint: device.fingerprint,
+				public_key: device.publicKey,
+				display_name: "Laptop",
+			}),
+		});
+		expect(enrollRes.status).toBe(200);
+
+		const createScopeRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes",
+			{
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({
+					scope_id: "scope-a",
+					label: "Scope A",
+					membership_epoch: 1,
+					memory_payload: { must_not_matter: true },
+				}),
+			},
+		);
+		expect(createScopeRes.status).toBe(201);
+		expect(await createScopeRes.json()).toMatchObject({
+			ok: true,
+			scope: { scope_id: "scope-a", group_id: "g1", label: "Scope A" },
+		});
+
+		const listScopesRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes",
+			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },
+		);
+		expect(listScopesRes.status).toBe(200);
+		const scopesJson = (await listScopesRes.json()) as { items: Array<Record<string, unknown>> };
+		expect(scopesJson.items).toEqual([
+			expect.objectContaining({ scope_id: "scope-a", label: "Scope A" }),
+		]);
+
+		const updateScopeRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/scope-a",
+			{
+				method: "PATCH",
+				headers: adminHeaders,
+				body: JSON.stringify({ label: "Renamed Scope", membership_epoch: 2 }),
+			},
+		);
+		expect(updateScopeRes.status).toBe(200);
+		expect(await updateScopeRes.json()).toMatchObject({
+			scope: { scope_id: "scope-a", label: "Renamed Scope", membership_epoch: 2 },
+		});
+
+		const initialMembersRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/scope-a/members",
+			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },
+		);
+		expect(initialMembersRes.status).toBe(200);
+		expect(await initialMembersRes.json()).toMatchObject({ items: [] });
+
+		const grantRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/scope-a/members",
+			{
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({
+					device_id: device.deviceId,
+					role: "reader",
+					membership_epoch: 3,
+					memory_items: [{ id: 1 }],
+				}),
+			},
+		);
+		expect(grantRes.status).toBe(201);
+		expect(await grantRes.json()).toMatchObject({
+			membership: {
+				scope_id: "scope-a",
+				group_id: "g1",
+				device_id: device.deviceId,
+				status: "active",
+			},
+		});
+
+		const activeMembersRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/scope-a/members",
+			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },
+		);
+		expect(activeMembersRes.status).toBe(200);
+		const activeMembersJson = (await activeMembersRes.json()) as {
+			items: Array<Record<string, unknown>>;
+		};
+		expect(activeMembersJson.items).toEqual([
+			expect.objectContaining({ device_id: device.deviceId, status: "active" }),
+		]);
+
+		const revokeRes = await exports.default.fetch(
+			`https://example.com/v1/admin/groups/g1/scopes/scope-a/members/${encodeURIComponent(device.deviceId)}/revoke`,
+			{
+				method: "POST",
+				headers: adminHeaders,
+				body: JSON.stringify({ membership_epoch: 4, memory_payload: { id: 1 } }),
+			},
+		);
+		expect(revokeRes.status).toBe(200);
+		expect(await revokeRes.json()).toMatchObject({
+			ok: true,
+			scope_id: "scope-a",
+			device_id: device.deviceId,
+		});
+
+		const revokedMembersRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/scope-a/members?include_revoked=1",
+			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },
+		);
+		expect(revokedMembersRes.status).toBe(200);
+		const revokedMembersJson = (await revokedMembersRes.json()) as {
+			items: Array<Record<string, unknown>>;
+		};
+		expect(revokedMembersJson.items).toEqual([
+			expect.objectContaining({ device_id: device.deviceId, status: "revoked" }),
+		]);
+
+		const dataPlaneRes = await exports.default.fetch(
+			"https://example.com/v1/admin/groups/g1/scopes/scope-a/members/device-1/memories",
+			{ headers: { "X-Codemem-Coordinator-Admin": "test-secret" } },
+		);
+		expect(dataPlaneRes.status).toBe(404);
 	});
 });

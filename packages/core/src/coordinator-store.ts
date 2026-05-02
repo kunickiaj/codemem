@@ -27,5 +27,6 @@ export type {
 	CoordinatorScopeMembership,
 	CoordinatorStore,
 	CoordinatorStore as CoordinatorStoreInterface,
+	CoordinatorUpdateScopeInput,
 	CoordinatorUpsertPresenceInput,
 } from "./coordinator-store-contract.js";
