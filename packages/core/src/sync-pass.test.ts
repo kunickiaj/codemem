@@ -84,6 +84,28 @@ function addSyncTables(db: InstanceType<typeof Database>): void {
 		`);
 }
 
+function grantScopeForSyncPass(
+	db: InstanceType<typeof Database>,
+	scopeId: string,
+	deviceIds: string[],
+): void {
+	const now = "2026-01-01T00:00:00Z";
+	db.prepare(
+		`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+		 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)
+		 ON CONFLICT(scope_id) DO UPDATE SET updated_at = excluded.updated_at`,
+	).run(scopeId, scopeId, now, now);
+	for (const deviceId of deviceIds) {
+		db.prepare(
+			`INSERT INTO scope_memberships(
+				scope_id, device_id, role, status, membership_epoch, updated_at
+			 ) VALUES (?, ?, 'member', 'active', 1, ?)
+			 ON CONFLICT(scope_id, device_id) DO UPDATE SET updated_at = excluded.updated_at`,
+		).run(scopeId, deviceId, now);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // cursorAdvances
 // ---------------------------------------------------------------------------
@@ -223,6 +245,7 @@ describe("syncOnce", () => {
 			"ed25519 AAAA",
 		]);
 		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
 
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([
@@ -259,13 +282,15 @@ describe("syncOnce", () => {
 								body_text: "Remote body",
 								active: 1,
 								created_at: "2026-01-01T00:00:00Z",
+								scope_id: "acme-work",
 								updated_at: "2026-01-01T00:00:00Z",
 							}),
 							clock_rev: 1,
 							clock_updated_at: "2026-01-01T00:00:00Z",
-							clock_device_id: "dev-remote",
-							device_id: "dev-remote",
+							clock_device_id: "peer-1",
+							device_id: "peer-1",
 							created_at: "2026-01-01T00:00:00Z",
+							scope_id: "acme-work",
 						},
 					],
 					next_cursor: "2026-01-01T00:00:00Z|remote-op-1",
@@ -314,6 +339,155 @@ describe("syncOnce", () => {
 		});
 	});
 
+	it("rejects pulled ops that spoof the local device without advancing cursor", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "abc123", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
+
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "abc123",
+					protocol_version: "2",
+					sync_capability: "enforcing",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-1",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [
+						{
+							op_id: "spoof-local-op",
+							entity_type: "memory_item",
+							entity_id: "key:spoof-local",
+							op_type: "upsert",
+							payload_json: JSON.stringify({
+								kind: "discovery",
+								title: "Spoofed title",
+								body_text: "Spoofed body",
+								scope_id: "acme-work",
+							}),
+							clock_rev: 1,
+							clock_updated_at: "2026-01-01T00:00:00Z",
+							clock_device_id: "peer-1",
+							device_id: "local-device-id",
+							created_at: "2026-01-01T00:00:00Z",
+							scope_id: "acme-work",
+						},
+					],
+					next_cursor: "2026-01-01T00:00:00Z|spoof-local-op",
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-1", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("inbound op device mismatch:spoof-local-op");
+		expect(syncReplication.getReplicationCursor(db, "peer-1")[0]).toBe(
+			"2025-12-31T00:00:00Z|local-op-0",
+		);
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE import_key = ?").get("key:spoof-local"),
+		).toBeUndefined();
+		expect(
+			db.prepare("SELECT reason FROM sync_scope_rejections WHERE op_id = ?").get("spoof-local-op"),
+		).toBeUndefined();
+	});
+
+	it("rejects spoofed local-device ops from unsupported peers without advancing cursor", async () => {
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-legacy", "legacy-fp", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-legacy", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "legacy-fp",
+					protocol_version: "2",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-legacy",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					reset_required: false,
+					generation: 1,
+					snapshot_id: "snap-legacy",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					ops: [
+						{
+							op_id: "legacy-spoof-local-op",
+							entity_type: "memory_item",
+							entity_id: "legacy-spoof-key",
+							op_type: "upsert",
+							payload_json: JSON.stringify({
+								body_text: "Spoofed legacy body",
+								created_at: "2026-01-01T00:00:00Z",
+								kind: "discovery",
+								title: "Spoofed legacy title",
+								updated_at: "2026-01-01T00:00:00Z",
+								visibility: "shared",
+							}),
+							clock_rev: 1,
+							clock_updated_at: "2026-01-01T00:00:00Z",
+							clock_device_id: "peer-legacy",
+							device_id: "local-device-id",
+							created_at: "2026-01-01T00:00:00Z",
+						},
+					],
+					next_cursor: "2026-01-01T00:00:00Z|legacy-spoof-local-op",
+					skipped: 0,
+				},
+			]);
+
+		const result = await syncOnce(db, "peer-legacy", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("inbound op device mismatch:legacy-spoof-local-op");
+		expect(syncReplication.getReplicationCursor(db, "peer-legacy")[0]).toBe(
+			"2025-12-31T00:00:00Z|local-op-0",
+		);
+		expect(
+			db.prepare("SELECT 1 FROM memory_items WHERE import_key = ?").get("legacy-spoof-key"),
+		).toBeUndefined();
+	});
+
 	it("treats missing peer capability as unsupported while preserving legacy sync", async () => {
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
@@ -348,8 +522,29 @@ describe("syncOnce", () => {
 					snapshot_id: "snap-legacy",
 					baseline_cursor: null,
 					retained_floor_cursor: null,
-					ops: [],
-					next_cursor: null,
+					ops: [
+						{
+							op_id: "legacy-op-1",
+							entity_type: "memory_item",
+							entity_id: "legacy-key-1",
+							op_type: "upsert",
+							payload_json: JSON.stringify({
+								active: 1,
+								body_text: "Legacy body",
+								created_at: "2026-01-01T00:00:00Z",
+								kind: "discovery",
+								title: "Legacy title",
+								updated_at: "2026-01-01T00:00:00Z",
+								visibility: "shared",
+							}),
+							clock_rev: 1,
+							clock_updated_at: "2026-01-01T00:00:00Z",
+							clock_device_id: "peer-legacy",
+							device_id: "peer-legacy",
+							created_at: "2026-01-01T00:00:00Z",
+						},
+					],
+					next_cursor: "2026-01-01T00:00:00Z|legacy-op-1",
 					skipped: 0,
 				},
 			]);
@@ -357,6 +552,18 @@ describe("syncOnce", () => {
 		const result = await syncOnce(db, "peer-legacy", ["http://127.0.0.1:9090"]);
 
 		expect(result.ok).toBe(true);
+		expect(result.opsIn).toBe(1);
+		expect(syncReplication.getReplicationCursor(db, "peer-legacy")[0]).toBe(
+			"2026-01-01T00:00:00Z|legacy-op-1",
+		);
+		expect(
+			db
+				.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
+				.get("legacy-key-1"),
+		).toMatchObject({ title: "Legacy title", scope_id: null });
+		expect(db.prepare("SELECT count(*) AS count FROM sync_scope_rejections").get()).toMatchObject({
+			count: 0,
+		});
 		const attempt = db
 			.prepare(
 				`SELECT local_sync_capability, peer_sync_capability, negotiated_sync_capability
@@ -388,6 +595,7 @@ describe("syncOnce", () => {
 		vi.spyOn(vectorMigration, "queueVectorBackfillForIncrementalSync").mockImplementation(() => {
 			throw new Error("queue write failed");
 		});
+		grantScopeForSyncPass(db, "acme-work", ["peer-1", "local-device-id"]);
 		const fallbackSpy = vi
 			.spyOn(vectors, "bestEffortMaintainVectorsForSyncFallback")
 			.mockResolvedValue({ deleted: 0, inserted: 1, errors: [] });
@@ -426,13 +634,15 @@ describe("syncOnce", () => {
 								body_text: "Remote body",
 								active: 1,
 								created_at: "2026-01-01T00:00:00Z",
+								scope_id: "acme-work",
 								updated_at: "2026-01-01T00:00:00Z",
 							}),
 							clock_rev: 1,
 							clock_updated_at: "2026-01-01T00:00:00Z",
-							clock_device_id: "dev-remote",
-							device_id: "dev-remote",
+							clock_device_id: "peer-1",
+							device_id: "peer-1",
 							created_at: "2026-01-01T00:00:00Z",
+							scope_id: "acme-work",
 						},
 					],
 					next_cursor: "2026-01-01T00:00:00Z|remote-op-fallback",

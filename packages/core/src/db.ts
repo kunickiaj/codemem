@@ -528,6 +528,27 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 
 	try {
 		db.exec(`
+			CREATE TABLE IF NOT EXISTS sync_scope_rejections (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				peer_device_id TEXT,
+				op_id TEXT NOT NULL,
+				entity_type TEXT NOT NULL,
+				entity_id TEXT NOT NULL,
+				scope_id TEXT,
+				reason TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_peer_created
+				ON sync_scope_rejections(peer_device_id, created_at);
+			CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_scope_created
+				ON sync_scope_rejections(scope_id, created_at);
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for optional additive diagnostics.
+	}
+
+	try {
+		db.exec(`
 			CREATE TABLE IF NOT EXISTS sync_reset_state_v2 (
 				scope_id TEXT PRIMARY KEY NOT NULL,
 				generation INTEGER NOT NULL,

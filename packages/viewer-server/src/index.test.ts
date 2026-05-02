@@ -150,7 +150,7 @@ function createAuthenticatedSyncPeer(
 		method?: "GET" | "POST";
 		bodyBytes?: Buffer;
 	},
-): { headers: Record<string, string>; cleanup: () => void } {
+): { headers: Record<string, string>; keysDir: string; peerDeviceId: string; cleanup: () => void } {
 	const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 	const peerDb = connect(join(peerDir, "peer.sqlite"));
 	const peerKeysDir = join(peerDir, "keys");
@@ -177,6 +177,8 @@ function createAuthenticatedSyncPeer(
 				bodyBytes: input.bodyBytes ?? Buffer.alloc(0),
 				keysDir: peerKeysDir,
 			}),
+			keysDir: peerKeysDir,
+			peerDeviceId,
 			cleanup: () => {
 				peerDb.close();
 				rmSync(peerDir, { recursive: true, force: true });
@@ -186,6 +188,28 @@ function createAuthenticatedSyncPeer(
 		peerDb.close();
 		rmSync(peerDir, { recursive: true, force: true });
 		throw err;
+	}
+}
+
+function grantSyncScopeToDevices(store: MemoryStore, scopeId: string, deviceIds: string[]): void {
+	const now = "2026-01-01T00:00:00Z";
+	store.db
+		.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)
+			 ON CONFLICT(scope_id) DO UPDATE SET updated_at = excluded.updated_at`,
+		)
+		.run(scopeId, scopeId, now, now);
+	for (const deviceId of deviceIds) {
+		store.db
+			.prepare(
+				`INSERT INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES (?, ?, 'member', 'active', 1, ?)
+				 ON CONFLICT(scope_id, device_id) DO UPDATE SET updated_at = excluded.updated_at`,
+			)
+			.run(scopeId, deviceId, now);
 	}
 }
 
@@ -2763,7 +2787,225 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("does not let claimed_local_actor widen inbound personal-scope authorization", async () => {
+		it("accepts non-empty legacy pushes from unsupported peers", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				const now = "2026-01-01T00:00:00Z";
+				const payload = {
+					sync_capability: "unsupported",
+					ops: [
+						{
+							op_id: "legacy-push-op",
+							entity_type: "memory_item",
+							entity_id: "legacy-push-key",
+							op_type: "upsert",
+							payload_json: JSON.stringify({
+								body_text: "Legacy push body",
+								created_at: now,
+								kind: "discovery",
+								title: "Legacy push title",
+								updated_at: now,
+								visibility: "shared",
+							}),
+							clock_rev: 1,
+							clock_updated_at: now,
+							clock_device_id: peer.peerDeviceId,
+							device_id: peer.peerDeviceId,
+							created_at: now,
+						},
+					],
+				};
+				const bodyText = JSON.stringify(payload);
+				const bodyBytes = Buffer.from(bodyText);
+				const headers = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "POST",
+					url,
+					bodyBytes,
+					keysDir: peer.keysDir,
+				});
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({ applied: 1, skipped: 0, rejected: 0 });
+				expect(
+					store.db
+						.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
+						.get("legacy-push-key"),
+				).toMatchObject({ title: "Legacy push title", scope_id: null });
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("filters pushed ops by peer project filters before applying", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				store.db
+					.prepare("UPDATE sync_peers SET projects_include_json = ? WHERE peer_device_id = ?")
+					.run('["allowed-project"]', peer.peerDeviceId);
+				grantSyncScopeToDevices(store, "acme-work", ["test-device-001", peer.peerDeviceId]);
+
+				const now = "2026-01-01T00:00:00Z";
+				const makeOp = (opId: string, project: string) => ({
+					op_id: opId,
+					entity_type: "memory_item",
+					entity_id: `${opId}-key`,
+					op_type: "upsert",
+					payload_json: JSON.stringify({
+						body_text: `${project} body`,
+						created_at: now,
+						kind: "discovery",
+						project,
+						scope_id: "acme-work",
+						title: `${project} title`,
+						updated_at: now,
+						visibility: "shared",
+					}),
+					clock_rev: 1,
+					clock_updated_at: now,
+					clock_device_id: peer.peerDeviceId,
+					device_id: peer.peerDeviceId,
+					created_at: now,
+					scope_id: "acme-work",
+				});
+				const payload = {
+					ops: [makeOp("allowed-op", "allowed-project"), makeOp("blocked-op", "blocked-project")],
+				};
+				const bodyText = JSON.stringify(payload);
+				const bodyBytes = Buffer.from(bodyText);
+				const headers = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "POST",
+					url,
+					bodyBytes,
+					keysDir: peer.keysDir,
+				});
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({ applied: 1, skipped: 1, rejected: 0 });
+				expect(
+					store.db
+						.prepare("SELECT title FROM memory_items WHERE import_key = ?")
+						.get("allowed-op-key"),
+				).toMatchObject({ title: "allowed-project title" });
+				expect(
+					store.db.prepare("SELECT 1 FROM memory_items WHERE import_key = ?").get("blocked-op-key"),
+				).toBeUndefined();
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("filters null-payload pushed deletes by the existing memory project", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				store.db
+					.prepare("UPDATE sync_peers SET projects_include_json = ? WHERE peer_device_id = ?")
+					.run('["allowed-project"]', peer.peerDeviceId);
+				grantSyncScopeToDevices(store, "acme-work", ["test-device-001", peer.peerDeviceId]);
+
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("blocked-project", sessionId);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "blocked delete target",
+				});
+				store.db
+					.prepare("UPDATE memory_items SET import_key = ?, rev = 1, scope_id = ? WHERE id = ?")
+					.run("blocked-delete-key", "acme-work", memoryId);
+
+				const now = "2026-01-01T00:00:00Z";
+				const payload = {
+					sync_capability: "aware",
+					ops: [
+						{
+							op_id: "blocked-delete-op",
+							entity_type: "memory_item",
+							entity_id: "blocked-delete-key",
+							op_type: "delete",
+							payload_json: null,
+							clock_rev: 2,
+							clock_updated_at: now,
+							clock_device_id: peer.peerDeviceId,
+							device_id: peer.peerDeviceId,
+							created_at: now,
+							scope_id: "acme-work",
+						},
+					],
+				};
+				const bodyText = JSON.stringify(payload);
+				const bodyBytes = Buffer.from(bodyText);
+				const headers = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "POST",
+					url,
+					bodyBytes,
+					keysDir: peer.keysDir,
+				});
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({ applied: 0, skipped: 1, rejected: 0 });
+				expect(
+					store.db
+						.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = ?")
+						.get("blocked-delete-key"),
+				).toMatchObject({ active: 1, deleted_at: null });
+				expect(
+					store.db
+						.prepare("SELECT 1 FROM replication_ops WHERE op_id = ?")
+						.get("blocked-delete-op"),
+				).toBeUndefined();
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("hard-rejects inbound scope failures without claimed_local_actor bypass", async () => {
 			const { syncApp, getStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
@@ -2796,6 +3038,29 @@ describe("viewer-server", () => {
 							peerPublicKey,
 							new Date().toISOString(),
 						);
+					const localDevice = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
+						| { device_id: string }
+						| undefined;
+					if (!localDevice?.device_id) throw new Error("local sync device missing");
+					store.db
+						.prepare(
+							`INSERT INTO replication_scopes(
+								scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+							 ) VALUES (?, ?, 'personal', 'coordinator', 1, 'active', ?, ?)`,
+						)
+						.run(
+							"personal:actor-1",
+							"Personal actor",
+							new Date().toISOString(),
+							new Date().toISOString(),
+						);
+					store.db
+						.prepare(
+							`INSERT INTO scope_memberships(
+								scope_id, device_id, role, status, membership_epoch, updated_at
+							 ) VALUES (?, ?, 'member', 'active', 1, ?)`,
+						)
+						.run("personal:actor-1", localDevice.device_id, new Date().toISOString());
 					const sessionId = insertTestSession(store.db);
 					const sharedMemoryId = insertTestMemory(store, {
 						sessionId,
@@ -2809,6 +3074,7 @@ describe("viewer-server", () => {
 					const url = "http://localhost/v1/ops";
 					const now = "2026-01-01T00:00:00Z";
 					const payload = {
+						sync_capability: "aware",
 						ops: [
 							{
 								op_id: "private-op-1",
@@ -2876,15 +3142,33 @@ describe("viewer-server", () => {
 						headers: { ...headers, "Content-Type": "application/json" },
 						body: bodyText,
 					});
-					expect(res.status).toBe(200);
+					expect(res.status).toBe(403);
 					const body = (await res.json()) as Record<string, unknown>;
-					expect(body.applied).toBe(1);
-					expect(body.skipped).toBe(2);
+					expect(body).toMatchObject({
+						error: "scope_rejected",
+						reason: "sender_not_member",
+					});
+					expect(body.rejections).toEqual(
+						expect.arrayContaining([
+							expect.objectContaining({ op_id: "private-op-1", reason: "sender_not_member" }),
+							expect.objectContaining({ op_id: "private-delete-1", reason: "sender_not_member" }),
+							expect.objectContaining({ op_id: "shared-delete-1", reason: "missing_scope" }),
+						]),
+					);
 					const deleted = store.db
 						.prepare("SELECT active, deleted_at FROM memory_items WHERE import_key = ?")
 						.get("shared-delete-key") as { active: number; deleted_at: string | null } | undefined;
-					expect(deleted?.active).toBe(0);
-					expect(deleted?.deleted_at).toBeTruthy();
+					expect(deleted?.active).toBe(1);
+					expect(deleted?.deleted_at).toBeNull();
+					const logged = store.db
+						.prepare("SELECT reason, count(*) AS count FROM sync_scope_rejections GROUP BY reason")
+						.all() as Array<{ reason: string; count: number }>;
+					expect(logged).toEqual(
+						expect.arrayContaining([
+							{ reason: "sender_not_member", count: 2 },
+							{ reason: "missing_scope", count: 1 },
+						]),
+					);
 				} finally {
 					peerDb.close();
 				}

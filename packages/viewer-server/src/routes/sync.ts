@@ -56,11 +56,14 @@ import {
 	loadReplicationOpsForPeer,
 	lookupCoordinatorPeers,
 	mergeAddresses,
+	negotiateSyncCapability,
+	normalizeSyncCapability,
 	parseSyncScopeRequest,
 	peerCanSyncPrivateOpByPersonalScopeGrant,
 	personalScopeGrantStatusForPeer,
 	readCoordinatorSyncConfig,
 	recordNonce,
+	rejectInboundScopeFailures,
 	replicationOpRequiresPersonalScopeAuthorization,
 	requestJson,
 	runSyncPass,
@@ -733,6 +736,58 @@ function parseOpPayload(op: { payload_json: string | null }): Record<string, unk
 	}
 }
 
+function parseMetadataObject(raw: string | null): Record<string, unknown> {
+	if (!raw?.trim()) return {};
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+		return parsed as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
+function lookupExistingMemoryFilterContext(
+	store: MemoryStore,
+	importKey: string,
+): { payload: Record<string, unknown>; project: string | null } | null {
+	const row = store.db
+		.prepare(
+			`SELECT
+				m.actor_id,
+				m.metadata_json,
+				m.visibility,
+				m.workspace_id,
+				m.workspace_kind,
+				s.project
+			 FROM memory_items m
+			 LEFT JOIN sessions s ON s.id = m.session_id
+			 WHERE m.import_key = ?
+			 LIMIT 1`,
+		)
+		.get(importKey) as
+		| {
+				actor_id: string | null;
+				metadata_json: string | null;
+				project: string | null;
+				visibility: string | null;
+				workspace_id: string | null;
+				workspace_kind: string | null;
+		  }
+		| undefined;
+	if (!row) return null;
+	return {
+		payload: {
+			actor_id: row.actor_id,
+			metadata_json: parseMetadataObject(row.metadata_json),
+			visibility: row.visibility,
+			workspace_id: row.workspace_id,
+			workspace_kind: row.workspace_kind,
+		},
+		project: typeof row.project === "string" && row.project.trim() ? row.project.trim() : null,
+	};
+}
+
 function redactCoordinatorStatus(
 	coordinator: Record<string, unknown>,
 	showDiag: boolean,
@@ -1005,7 +1060,31 @@ function filterOpsForPeer(
 		}
 		const payload = parseOpPayload(op);
 		const requiresPersonalScope = replicationOpRequiresPersonalScopeAuthorization(op, payload);
-		if (op.op_type === "delete" && payload == null && !requiresPersonalScope) {
+		if (op.op_type === "delete" && payload == null) {
+			const existing = lookupExistingMemoryFilterContext(store, op.entity_id);
+			if (!existing) {
+				if (requiresPersonalScope || filters.include.length > 0 || filters.exclude.length > 0) {
+					skipped++;
+					continue;
+				}
+				allowed.push(op);
+				continue;
+			}
+			const deleteRequiresPersonalScope = replicationOpRequiresPersonalScopeAuthorization(
+				op,
+				existing.payload,
+			);
+			if (
+				(deleteRequiresPersonalScope || !syncVisibilityAllowed(existing.payload)) &&
+				!peerCanSyncPrivateOpByPersonalScopeGrant(store.db, op, existing.payload, peerDeviceId)
+			) {
+				skipped++;
+				continue;
+			}
+			if (!syncProjectAllowedByFilters(existing.project, filters)) {
+				skipped++;
+				continue;
+			}
 			allowed.push(op);
 			continue;
 		}
@@ -1515,19 +1594,37 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			}
 		}
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-
-		const filteredInbound = filterOpsForPeer(store, peerDeviceId, normalizedOps);
-		const result = applyReplicationOps(
-			store.db,
-			filteredInbound.allowed,
-			localDeviceId,
-			store.scanner,
+		const negotiatedCapability = negotiateSyncCapability(
+			LOCAL_SYNC_CAPABILITY,
+			normalizeSyncCapability(body.sync_capability),
 		);
+		const filtered = filterOpsForPeer(store, peerDeviceId, normalizedOps);
+		// Scope validation runs against the full signed batch so bad scoped ops cannot
+		// evade fail-closed rejection by also tripping peer project filters.
+		const rejected = rejectInboundScopeFailures(store.db, normalizedOps, localDeviceId, {
+			enabled: negotiatedCapability !== "unsupported",
+			peerDeviceId,
+		});
+		if (rejected) {
+			return c.json(
+				{
+					error: "scope_rejected",
+					reason: rejected.rejections[0]?.reason ?? "scope_mismatch",
+					rejections: rejected.rejections,
+					sync_capability: LOCAL_SYNC_CAPABILITY,
+					scope_id: scopeRequest.scope_id,
+				},
+				403,
+			);
+		}
+
+		const result = applyReplicationOps(store.db, filtered.allowed, localDeviceId, store.scanner);
+		const skipped = result.skipped + filtered.skipped;
 		return c.json({
 			...result,
+			skipped,
 			sync_capability: LOCAL_SYNC_CAPABILITY,
 			scope_id: scopeRequest.scope_id,
-			skipped: result.skipped + filteredInbound.skipped,
 		});
 	});
 

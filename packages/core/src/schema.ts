@@ -551,6 +551,27 @@ export const syncAttempts = sqliteTable(
 export type SyncAttempt = typeof syncAttempts.$inferSelect;
 export type NewSyncAttempt = typeof syncAttempts.$inferInsert;
 
+export const syncScopeRejections = sqliteTable(
+	"sync_scope_rejections",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		peer_device_id: text("peer_device_id"),
+		op_id: text("op_id").notNull(),
+		entity_type: text("entity_type").notNull(),
+		entity_id: text("entity_id").notNull(),
+		scope_id: text("scope_id"),
+		reason: text("reason").notNull(),
+		created_at: text("created_at").notNull(),
+	},
+	(table) => [
+		index("idx_sync_scope_rejections_peer_created").on(table.peer_device_id, table.created_at),
+		index("idx_sync_scope_rejections_scope_created").on(table.scope_id, table.created_at),
+	],
+);
+
+export type SyncScopeRejection = typeof syncScopeRejections.$inferSelect;
+export type NewSyncScopeRejection = typeof syncScopeRejections.$inferInsert;
+
 export const syncDaemonState = sqliteTable("sync_daemon_state", {
 	id: integer("id").primaryKey(),
 	last_error: text("last_error"),
@@ -703,6 +724,7 @@ export const schema = {
 	syncNonces,
 	syncDevice,
 	syncAttempts,
+	syncScopeRejections,
 	syncDaemonState,
 	syncResetState,
 	syncResetStateV2,

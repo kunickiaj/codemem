@@ -30,7 +30,6 @@ import {
 	chunkOpsBySize,
 	extractReplicationOps,
 	filterReplicationOpsForSync,
-	filterReplicationOpsForSyncWithStatus,
 	getReplicationCursor,
 	hasUnsyncedSharedMemoryChanges,
 	migrateLegacyImportKeys,
@@ -708,14 +707,23 @@ export async function syncOnce(
 				throw new Error("invalid ops response");
 			}
 			const ops = extractReplicationOps(getPayload);
-			const [inboundOps, inboundCursor] = filterReplicationOpsForSyncWithStatus(
-				db,
-				ops,
-				peerDeviceId,
+			const mismatchedOp = ops.find(
+				(op) => op.device_id !== peerDeviceId || op.clock_device_id !== peerDeviceId,
 			);
+			if (mismatchedOp) {
+				throw new Error(`inbound op device mismatch:${mismatchedOp.op_id}`);
+			}
+			const inboundScopeValidation =
+				lastCapabilityDiagnostics?.negotiated === "unsupported"
+					? { peerDeviceId, enabled: false }
+					: { peerDeviceId };
 
 			// -- 3. Apply incoming ops to local entities --
-			const applied = applyReplicationOps(db, inboundOps, deviceId, scanner);
+			const applied = applyReplicationOps(db, ops, deviceId, scanner, { inboundScopeValidation });
+			if (applied.rejected > 0) {
+				const firstReason = applied.rejections[0]?.reason ?? "scope_rejected";
+				throw new Error(`inbound scope rejected:${firstReason}`);
+			}
 			try {
 				queueVectorBackfillForIncrementalSync(db, applied.vectorWork);
 			} catch (queueError) {
@@ -728,7 +736,7 @@ export async function syncOnce(
 				}
 			}
 
-			const inboundCursorCandidate = inboundCursor || asOptionalCursor(getPayload.next_cursor);
+			const inboundCursorCandidate = asOptionalCursor(getPayload.next_cursor);
 			if (cursorAdvances(lastApplied, inboundCursorCandidate)) {
 				setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate });
 				lastApplied = inboundCursorCandidate;
