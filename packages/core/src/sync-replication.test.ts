@@ -129,6 +129,35 @@ describe("replication cursors", () => {
 		const [applied] = getReplicationCursor(db, "peer-3");
 		expect(applied).toBe("new");
 	});
+
+	it("keeps cursor values independent per scope", () => {
+		setReplicationCursor(db, "peer-scoped", { lastApplied: "default-applied" });
+		setReplicationCursor(
+			db,
+			"peer-scoped",
+			{ lastApplied: "work-applied", lastAcked: "work-acked" },
+			"work-scope",
+		);
+
+		expect(getReplicationCursor(db, "peer-scoped")).toEqual(["default-applied", null]);
+		expect(getReplicationCursor(db, "peer-scoped", "work-scope")).toEqual([
+			"work-applied",
+			"work-acked",
+		]);
+	});
+
+	it("seeds legacy default cursor before a partial v2 update", () => {
+		db.prepare("DELETE FROM replication_cursors_v2").run();
+		db.prepare(
+			`INSERT INTO replication_cursors(
+				peer_device_id, last_applied_cursor, last_acked_cursor, updated_at
+			 ) VALUES (?, ?, ?, ?)`,
+		).run("peer-legacy", "legacy-applied", "legacy-acked", "2026-01-01T00:00:00Z");
+
+		setReplicationCursor(db, "peer-legacy", { lastApplied: "new-applied" });
+
+		expect(getReplicationCursor(db, "peer-legacy")).toEqual(["new-applied", "legacy-acked"]);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -485,11 +514,16 @@ describe("loadReplicationOpsSince", () => {
 		db.close();
 	});
 
-	function insertOp(opId: string, createdAt: string, deviceId = "dev-a") {
+	function insertOp(
+		opId: string,
+		createdAt: string,
+		deviceId = "dev-a",
+		scopeId: string | null = null,
+	) {
 		db.prepare(
-			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at)
-			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, ?, ?, ?)`,
-		).run(opId, `ent-${opId}`, createdAt, deviceId, deviceId, createdAt);
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
+			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, ?, ?, ?, ?)`,
+		).run(opId, `ent-${opId}`, createdAt, deviceId, deviceId, createdAt, scopeId);
 	}
 
 	it("returns all ops when cursor is null", () => {
@@ -577,6 +611,30 @@ describe("sync reset state", () => {
 		});
 		expect(getSyncResetState(db)).toEqual(updated);
 	});
+
+	it("keeps reset boundaries independent per scope", () => {
+		const defaultBoundary = setSyncResetState(db, {
+			generation: 2,
+			snapshot_id: "snapshot-default",
+			baseline_cursor: "2026-01-01T00:00:01Z|default-base",
+			retained_floor_cursor: "2026-01-01T00:00:02Z|default-floor",
+		});
+		const workBoundary = setSyncResetState(
+			db,
+			{
+				generation: 9,
+				snapshot_id: "snapshot-work",
+				baseline_cursor: "2026-01-01T00:00:03Z|work-base",
+				retained_floor_cursor: "2026-01-01T00:00:04Z|work-floor",
+			},
+			"work-scope",
+		);
+
+		expect(getSyncResetState(db)).toEqual(defaultBoundary);
+		expect(getSyncResetState(db, "work-scope")).toEqual(workBoundary);
+		expect(getSyncResetState(db).snapshot_id).toBe("snapshot-default");
+		expect(getSyncResetState(db, "work-scope").snapshot_id).toBe("snapshot-work");
+	});
 });
 
 describe("loadReplicationOpsForPeer", () => {
@@ -597,11 +655,16 @@ describe("loadReplicationOpsForPeer", () => {
 		db.close();
 	});
 
-	function insertOp(opId: string, createdAt: string, deviceId = "dev-a") {
+	function insertOp(
+		opId: string,
+		createdAt: string,
+		deviceId = "dev-a",
+		scopeId: string | null = null,
+	) {
 		db.prepare(
-			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at)
-			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, ?, ?, ?)`,
-		).run(opId, `ent-${opId}`, createdAt, deviceId, deviceId, createdAt);
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
+			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, ?, ?, ?, ?)`,
+		).run(opId, `ent-${opId}`, createdAt, deviceId, deviceId, createdAt, scopeId);
 	}
 
 	it("returns reset_required when the cursor is older than the retained floor", () => {
@@ -678,6 +741,57 @@ describe("loadReplicationOpsForPeer", () => {
 			expect(result.boundary.generation).toBe(2);
 			expect(result.ops.map((op) => op.op_id)).toEqual(["op-1"]);
 			expect(result.nextCursor).toBe("2026-01-01T00:00:03Z|op-1");
+		}
+	});
+
+	it("uses scoped reset boundaries and op windows independently", () => {
+		setSyncResetState(
+			db,
+			{
+				generation: 7,
+				snapshot_id: "snapshot-work",
+				baseline_cursor: "2026-01-01T00:00:05Z|work-base",
+				retained_floor_cursor: "2026-01-01T00:00:06Z|work-floor",
+			},
+			"work-scope",
+		);
+		insertOp("op-default", "2026-01-01T00:00:07Z");
+		insertOp("op-work", "2026-01-01T00:00:08Z", "dev-a", "work-scope");
+
+		const result = loadReplicationOpsForPeer(db, {
+			scopeId: "work-scope",
+			since: "2026-01-01T00:00:06Z|work-floor",
+			generation: 7,
+			snapshotId: "snapshot-work",
+			baselineCursor: "2026-01-01T00:00:05Z|work-base",
+		});
+
+		expect(result.reset_required).toBe(false);
+		if (!result.reset_required) {
+			expect(result.boundary.scope_id).toBe("work-scope");
+			expect(result.boundary.snapshot_id).toBe("snapshot-work");
+			expect(result.ops.map((op) => op.op_id)).toEqual(["op-work"]);
+			expect(result.nextCursor).toBe("2026-01-01T00:00:08Z|op-work");
+		}
+	});
+
+	it("omitted scope returns only default-scope ops under the default boundary", () => {
+		insertOp("op-default", "2026-01-01T00:00:03Z");
+		insertOp("op-local-default", "2026-01-01T00:00:04Z", "dev-a", "local-default");
+		insertOp("op-work", "2026-01-01T00:00:05Z", "dev-a", "work-scope");
+
+		const result = loadReplicationOpsForPeer(db, {
+			since: "2026-01-01T00:00:02Z|floor-op",
+			generation: 2,
+			snapshotId: "snapshot-2",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+
+		expect(result.reset_required).toBe(false);
+		if (!result.reset_required) {
+			expect(result.boundary.scope_id).toBeUndefined();
+			expect(result.ops.map((op) => op.op_id)).toEqual(["op-default", "op-local-default"]);
+			expect(result.nextCursor).toBe("2026-01-01T00:00:04Z|op-local-default");
 		}
 	});
 });
@@ -803,7 +917,32 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		expect(page.items.map((item) => item.entity_id)).toEqual(["key-shared"]);
 	});
 
+	it("omitted scope returns only default-scope snapshot rows", () => {
+		insertMemory("key-default");
+		insertMemory("key-local-default", { scopeId: "local-default" });
+		insertMemory("key-work", { scopeId: "work-scope" });
+
+		const page = loadMemorySnapshotPageForPeer(db, {
+			generation: 4,
+			snapshotId: "snapshot-4",
+			baselineCursor: "2026-01-01T00:00:01Z|base-op",
+		});
+
+		expect(page.boundary.scope_id).toBeUndefined();
+		expect(page.items.map((item) => item.entity_id)).toEqual(["key-default", "key-local-default"]);
+	});
+
 	it("requires a matching personal scope grant for claimed local actor snapshot rows", () => {
+		setSyncResetState(
+			db,
+			{
+				generation: 4,
+				snapshot_id: "snapshot-4",
+				baseline_cursor: "2026-01-01T00:00:01Z|base-op",
+				retained_floor_cursor: "2026-01-01T00:00:02Z|floor-op",
+			},
+			"personal:actor-1",
+		);
 		db.prepare(
 			"INSERT INTO sync_peers(peer_device_id, claimed_local_actor, created_at) VALUES (?, 1, ?)",
 		).run("peer-1", "2026-01-01T00:00:00Z");
@@ -818,6 +957,7 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		const blocked = loadMemorySnapshotPageForPeer(db, {
 			generation: 4,
 			peerDeviceId: "peer-1",
+			scopeId: "personal:actor-1",
 			snapshotId: "snapshot-4",
 			baselineCursor: "2026-01-01T00:00:01Z|base-op",
 		});
@@ -827,6 +967,7 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		const allowed = loadMemorySnapshotPageForPeer(db, {
 			generation: 4,
 			peerDeviceId: "peer-1",
+			scopeId: "personal:actor-1",
 			snapshotId: "snapshot-4",
 			baselineCursor: "2026-01-01T00:00:01Z|base-op",
 		});
@@ -834,6 +975,16 @@ describe("loadMemorySnapshotPageForPeer", () => {
 	});
 
 	it("requires a personal scope grant for snapshot rows with personal scope but missing visibility", () => {
+		setSyncResetState(
+			db,
+			{
+				generation: 4,
+				snapshot_id: "snapshot-4",
+				baseline_cursor: "2026-01-01T00:00:01Z|base-op",
+				retained_floor_cursor: "2026-01-01T00:00:02Z|floor-op",
+			},
+			"personal:actor-1",
+		);
 		insertMemory("key-personal-no-visibility", {
 			actorId: "actor-1",
 			scopeId: "personal:actor-1",
@@ -845,6 +996,7 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		const blocked = loadMemorySnapshotPageForPeer(db, {
 			generation: 4,
 			peerDeviceId: "peer-1",
+			scopeId: "personal:actor-1",
 			snapshotId: "snapshot-4",
 			baselineCursor: "2026-01-01T00:00:01Z|base-op",
 		});
@@ -854,6 +1006,7 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		const allowed = loadMemorySnapshotPageForPeer(db, {
 			generation: 4,
 			peerDeviceId: "peer-1",
+			scopeId: "personal:actor-1",
 			snapshotId: "snapshot-4",
 			baselineCursor: "2026-01-01T00:00:01Z|base-op",
 		});
@@ -1089,11 +1242,11 @@ describe("pruneReplicationOps", () => {
 		vi.useRealTimers();
 	});
 
-	function insertOp(opId: string, createdAt: string) {
+	function insertOp(opId: string, createdAt: string, scopeId: string | null = null) {
 		db.prepare(
-			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at)
-			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, 'dev-a', 'dev-a', ?)`,
-		).run(opId, `ent-${opId}`, createdAt, createdAt);
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
+			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, 'dev-a', 'dev-a', ?, ?)`,
+		).run(opId, `ent-${opId}`, createdAt, createdAt, scopeId);
 	}
 
 	it("prunes oldest ops beyond size budget and updates retained floor", () => {
@@ -1101,23 +1254,9 @@ describe("pruneReplicationOps", () => {
 		insertOp("op-2", "2026-01-01T00:00:02Z");
 		insertOp("op-3", "2026-01-01T00:00:03Z");
 
-		const estimatedBytes = Number(
-			(
-				db
-					.prepare(
-						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
-						 FROM dbstat
-						 WHERE name = 'replication_ops'
-						    OR name LIKE 'idx_replication_ops_%'
-						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
-					)
-					.get() as { total_bytes: number }
-			).total_bytes,
-		);
-
 		const result = pruneReplicationOps(db, {
 			maxAgeDays: 3650,
-			maxSizeBytes: Math.max(1, estimatedBytes - 1),
+			maxSizeBytes: 1,
 		});
 		expect(result.deleted).toBeGreaterThanOrEqual(1);
 		expect(result.retained_floor_cursor).toMatch(/^2026-01-01T00:00:0[1-3]Z\|op-[1-3]$/);
@@ -1141,24 +1280,85 @@ describe("pruneReplicationOps", () => {
 		expect(getSyncResetState(db).retained_floor_cursor).toBe("2026-01-01T00:00:09Z|existing-floor");
 	});
 
+	it("prunes one scope without deleting ops or advancing floors in another scope", () => {
+		setSyncResetState(db, {
+			generation: 5,
+			snapshot_id: "snapshot-default",
+			baseline_cursor: "2026-01-01T00:00:01Z|default-base",
+			retained_floor_cursor: null,
+		});
+		setSyncResetState(
+			db,
+			{
+				generation: 6,
+				snapshot_id: "snapshot-work",
+				baseline_cursor: "2026-01-01T00:00:01Z|work-base",
+				retained_floor_cursor: null,
+			},
+			"work-scope",
+		);
+		insertOp("op-default", "2026-01-01T00:00:01Z");
+		insertOp("op-work", "2026-01-01T00:00:02Z", "work-scope");
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 30,
+			maxSizeBytes: 1_000_000,
+			maxDeleteOps: 10,
+			maxRuntimeMs: 60_000,
+			scopeId: "work-scope",
+		});
+
+		expect(result.deleted).toBe(1);
+		expect(result.retained_floor_cursor).toBe("2026-01-01T00:00:02Z|op-work");
+		expect(getSyncResetState(db).retained_floor_cursor).toBeNull();
+		expect(getSyncResetState(db, "work-scope").retained_floor_cursor).toBe(
+			"2026-01-01T00:00:02Z|op-work",
+		);
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-default"]);
+	});
+
+	it("does not size-prune a scope because another scope is large", () => {
+		setSyncResetState(
+			db,
+			{
+				generation: 6,
+				snapshot_id: "snapshot-work",
+				baseline_cursor: "2026-01-01T00:00:01Z|work-base",
+				retained_floor_cursor: null,
+			},
+			"work-scope",
+		);
+		insertOp("op-work", "2026-03-20T00:00:01Z", "work-scope");
+		db.prepare(
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json, clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
+			 VALUES ('op-other-large', 'memory_item', 'ent-other', 'upsert', ?, 1, '2026-03-20T00:00:02Z', 'dev-a', 'dev-a', '2026-03-20T00:00:02Z', 'other-scope')`,
+		).run("x".repeat(50_000));
+
+		const result = pruneReplicationOps(db, {
+			maxAgeDays: 3650,
+			maxSizeBytes: 10_000,
+			maxDeleteOps: 10,
+			maxRuntimeMs: 60_000,
+			scopeId: "work-scope",
+		});
+
+		expect(result.deleted).toBe(0);
+		expect(result.retained_floor_cursor).toBeNull();
+		expect(getSyncResetState(db, "work-scope").retained_floor_cursor).toBeNull();
+		const remaining = db
+			.prepare("SELECT op_id FROM replication_ops ORDER BY created_at, op_id")
+			.all() as Array<{ op_id: string }>;
+		expect(remaining.map((row) => row.op_id)).toEqual(["op-work", "op-other-large"]);
+	});
+
 	it("accepts a cursor equal to the retained floor as still replayable", () => {
 		insertOp("op-1", "2026-01-01T00:00:01Z");
 		insertOp("op-2", "2026-01-01T00:00:02Z");
 		insertOp("op-3", "2026-01-01T00:00:03Z");
-		const estimatedBytes = Number(
-			(
-				db
-					.prepare(
-						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
-						 FROM dbstat
-						 WHERE name = 'replication_ops'
-						    OR name LIKE 'idx_replication_ops_%'
-						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
-					)
-					.get() as { total_bytes: number }
-			).total_bytes,
-		);
-		pruneReplicationOps(db, { maxAgeDays: 3650, maxSizeBytes: Math.max(1, estimatedBytes - 1) });
+		pruneReplicationOps(db, { maxAgeDays: 3650, maxSizeBytes: 1 });
 
 		const result = loadReplicationOpsForPeer(db, {
 			since: getSyncResetState(db).retained_floor_cursor,
@@ -1272,23 +1472,9 @@ describe("pruneReplicationOps", () => {
 		insertOp("op-3", "2026-03-20T00:00:03Z");
 		insertOp("op-4", "2026-03-20T00:00:04Z");
 
-		const estimatedBytes = Number(
-			(
-				db
-					.prepare(
-						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
-						 FROM dbstat
-						 WHERE name = 'replication_ops'
-						    OR name LIKE 'idx_replication_ops_%'
-						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
-					)
-					.get() as { total_bytes: number }
-			).total_bytes,
-		);
-
 		const result = pruneReplicationOps(db, {
 			maxAgeDays: 3650,
-			maxSizeBytes: Math.max(1, estimatedBytes - 1),
+			maxSizeBytes: 1,
 			maxDeleteOps: 2,
 			maxRuntimeMs: 60_000,
 		});
@@ -1309,23 +1495,9 @@ describe("pruneReplicationOps", () => {
 		insertOp("op-4", "2026-03-20T00:00:04Z");
 		insertOp("op-5", "2026-03-20T00:00:05Z");
 
-		const estimatedBytes = Number(
-			(
-				db
-					.prepare(
-						`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
-						 FROM dbstat
-						 WHERE name = 'replication_ops'
-						    OR name LIKE 'idx_replication_ops_%'
-						    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
-					)
-					.get() as { total_bytes: number }
-			).total_bytes,
-		);
-
 		const result = pruneReplicationOps(db, {
 			maxAgeDays: 3650,
-			maxSizeBytes: Math.max(1, estimatedBytes - 1),
+			maxSizeBytes: 1,
 			maxDeleteOps: 4,
 			maxRuntimeMs: 60_000,
 		});
