@@ -578,6 +578,17 @@ export {
 	syncVisibilityAllowed,
 } from "./sync-replication.js";
 export { SyncRetentionRunner } from "./sync-retention-runner.js";
+export type {
+	SyncScopeRequest,
+	SyncScopeRequestMode,
+	SyncScopeResetReason,
+} from "./sync-scope-protocol.js";
+export {
+	addSyncScopeToBoundary,
+	parseSyncScopeRequest,
+	SYNC_SCOPE_QUERY_PARAM,
+	syncScopeResetRequiredPayload,
+} from "./sync-scope-protocol.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 // Test utilities (exported for consumer packages like viewer-server)
 export { initTestSchema, insertTestSession } from "./test-utils.js";

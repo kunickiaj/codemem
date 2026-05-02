@@ -809,12 +809,15 @@ export interface ApiSyncNowResponse {
 export interface ApiSyncOpsRequestQuery {
 	since: string | null;
 	limit: number;
+	scope_id?: string | null;
 	generation: number;
 	snapshot_id: string;
 	baseline_cursor: string | null;
 }
 
 export interface ApiSyncResetBoundary {
+	/** Null means the peer used the legacy unscoped compatibility request shape. */
+	scope_id: string | null;
 	generation: number;
 	snapshot_id: string;
 	baseline_cursor: string | null;
@@ -841,7 +844,12 @@ export interface ApiSyncOpsResetRequiredResponse extends ApiSyncResetBoundary {
 	error: "reset_required";
 	reset_required: true;
 	sync_capability: SyncCapability;
-	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
+	reason:
+		| "stale_cursor"
+		| "generation_mismatch"
+		| "boundary_mismatch"
+		| "missing_scope"
+		| "unsupported_scope";
 }
 
 export type ApiSyncOpsResponse = ApiSyncOpsIncrementalResponse | ApiSyncOpsResetRequiredResponse;
@@ -849,6 +857,7 @@ export type ApiSyncOpsResponse = ApiSyncOpsIncrementalResponse | ApiSyncOpsReset
 export interface ApiSyncMemorySnapshotPageRequestQuery {
 	limit: number;
 	page_token: string | null;
+	scope_id?: string | null;
 	generation: number;
 	snapshot_id: string;
 	baseline_cursor: string | null;

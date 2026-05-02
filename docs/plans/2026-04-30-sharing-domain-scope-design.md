@@ -452,6 +452,19 @@ Snapshot bootstrap should also be scope-aware. A peer joining `acme-work` should
 
 Snapshot generations, baselines, and retained floors should be tracked per scope so pruning or resetting one sharing domain does not force unrelated domains to resync.
 
+### Compatibility contract locked by `codemem-ov4g.4.1`
+
+Until per-scope cursors and scope-limited snapshots land, the wire protocol reserves `scope_id` without serving scoped data from the legacy singleton stream:
+
+- Omitted `scope_id` means legacy compatibility mode. The peer uses the current singleton reset boundary and existing visibility/project filters. Responses include `scope_id: null` so aware peers can distinguish this from a scoped stream.
+- `GET /v1/ops` uses `scope_id` as a query parameter.
+- `POST /v1/ops` may carry `scope_id` in the JSON body alongside `ops`.
+- `GET /v1/snapshot` uses `scope_id` as a query parameter.
+- Present but empty `scope_id` returns HTTP 409 with `error: "reset_required"`, `reset_required: true`, `reason: "missing_scope"`, the current reset boundary, and `sync_capability: "aware"`.
+- Present non-empty `scope_id` returns HTTP 409 with `reason: "unsupported_scope"` until later `ov4g.4` work adds per-scope cursor/reset/snapshot state and scope-bounded queries.
+- Servers MUST NOT silently ignore an explicit `scope_id`; that would let a caller believe it received a bounded Sharing domain stream when it actually received the legacy unscoped stream.
+- This compatibility slice does not add membership enforcement. Phase 1 still treats `scope_id` metadata as informational and preserves legacy peers that omit `scope_id`.
+
 ### Applying ops
 
 The receiver should reject ops when:

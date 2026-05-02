@@ -143,6 +143,52 @@ function createTestApp(opts?: {
 	};
 }
 
+function createAuthenticatedSyncPeer(
+	store: MemoryStore,
+	input: {
+		url: string;
+		method?: "GET" | "POST";
+		bodyBytes?: Buffer;
+	},
+): { headers: Record<string, string>; cleanup: () => void } {
+	const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
+	const peerDb = connect(join(peerDir, "peer.sqlite"));
+	const peerKeysDir = join(peerDir, "keys");
+	try {
+		initTestSchema(peerDb);
+		const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
+		const peerPublicKey = loadPublicKey(peerKeysDir);
+		if (!peerPublicKey) throw new Error("peer public key missing");
+		const peerFingerprint = peerDb.prepare("SELECT fingerprint FROM sync_device LIMIT 1").get() as
+			| { fingerprint: string }
+			| undefined;
+		if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
+		store.db
+			.prepare(
+				`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+				 VALUES (?, ?, ?, ?)`,
+			)
+			.run(peerDeviceId, peerFingerprint.fingerprint, peerPublicKey, new Date().toISOString());
+		return {
+			headers: buildAuthHeaders({
+				deviceId: peerDeviceId,
+				method: input.method ?? "GET",
+				url: input.url,
+				bodyBytes: input.bodyBytes ?? Buffer.alloc(0),
+				keysDir: peerKeysDir,
+			}),
+			cleanup: () => {
+				peerDb.close();
+				rmSync(peerDir, { recursive: true, force: true });
+			},
+		};
+	} catch (err) {
+		peerDb.close();
+		rmSync(peerDir, { recursive: true, force: true });
+		throw err;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1825,6 +1871,7 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.protocol_version).toBe("2");
 					expect(body.sync_capability).toBe("aware");
+					expect(body.sync_reset).toMatchObject({ scope_id: null });
 				} finally {
 					peerDb.close();
 				}
@@ -2225,6 +2272,249 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("returns reset_required when GET /v1/ops receives an empty scope_id", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops?scope_id=&limit=50";
+				peer = createAuthenticatedSyncPeer(store, { url });
+
+				const res = await syncApp.request(url, { headers: peer.headers });
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "missing_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("returns reset_required when GET /v1/ops receives an unsupported scope_id", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops?scope_id=acme-work&limit=50";
+				peer = createAuthenticatedSyncPeer(store, { url });
+
+				const res = await syncApp.request(url, { headers: peer.headers });
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "unsupported_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("returns reset_required when GET /v1/snapshot receives an unsupported scope_id", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/snapshot?scope_id=acme-work&generation=1&snapshot_id=test";
+				peer = createAuthenticatedSyncPeer(store, { url });
+
+				const res = await syncApp.request(url, { headers: peer.headers });
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "unsupported_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("returns reset_required when GET /v1/snapshot receives an empty scope_id", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/snapshot?scope_id=&generation=1&snapshot_id=test";
+				peer = createAuthenticatedSyncPeer(store, { url });
+
+				const res = await syncApp.request(url, { headers: peer.headers });
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "missing_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("returns reset_required when POST /v1/ops receives an unsupported body scope_id", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				const bodyText = JSON.stringify({ ops: [], scope_id: "acme-work" });
+				const bodyBytes = Buffer.from(bodyText);
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...peer.headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "unsupported_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("returns reset_required for unsupported POST scope_id before missing ops validation", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				const bodyText = JSON.stringify({ scope_id: "acme-work" });
+				const bodyBytes = Buffer.from(bodyText);
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...peer.headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "unsupported_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("returns reset_required for empty POST scope_id before missing ops validation", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				const bodyText = JSON.stringify({ scope_id: "" });
+				const bodyBytes = Buffer.from(bodyText);
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...peer.headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "missing_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("returns reset_required for unsupported POST scope_id before oversized ops validation", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				const bodyText = JSON.stringify({
+					scope_id: "acme-work",
+					ops: Array.from({ length: 2001 }, () => null),
+				});
+				const bodyBytes = Buffer.from(bodyText);
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...peer.headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					sync_capability: "aware",
+					reason: "unsupported_scope",
+					scope_id: null,
+				});
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
 		it("advertises capability on incremental /v1/ops responses", async () => {
 			const { syncApp, getStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
@@ -2275,6 +2565,7 @@ describe("viewer-server", () => {
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.reset_required).toBe(false);
 					expect(body.sync_capability).toBe("aware");
+					expect(body.scope_id).toBeNull();
 					expect(body.ops).toEqual([]);
 				} finally {
 					peerDb.close();
@@ -2377,6 +2668,7 @@ describe("viewer-server", () => {
 					expect(body.generation).toBe(11);
 					expect(body.snapshot_id).toBe("snapshot-11");
 					expect(body.sync_capability).toBe("aware");
+					expect(body.scope_id).toBeNull();
 					const items = body.items as Array<Record<string, unknown>>;
 					expect(items.map((item) => item.entity_id)).toEqual(["key-a", "key-b"]);
 					expect(items[1]?.op_type).toBe("delete");
@@ -2461,6 +2753,7 @@ describe("viewer-server", () => {
 					expect(res.status).toBe(200);
 					const body = (await res.json()) as Record<string, unknown>;
 					expect(body.sync_capability).toBe("aware");
+					expect(body.scope_id).toBeNull();
 				} finally {
 					peerDb.close();
 				}

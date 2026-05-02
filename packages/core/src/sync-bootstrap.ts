@@ -87,6 +87,9 @@ export async function fetchAllSnapshotPages(
 		if (resetInfo.baseline_cursor) {
 			params.set("baseline_cursor", resetInfo.baseline_cursor);
 		}
+		if (resetInfo.scope_id) {
+			params.set("scope_id", resetInfo.scope_id);
+		}
 		if (pageToken) {
 			params.set("page_token", pageToken);
 		}
