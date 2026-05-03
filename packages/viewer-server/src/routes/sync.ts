@@ -50,8 +50,10 @@ import {
 	getCoordinatorGroupPreference,
 	getSemanticIndexDiagnostics,
 	getSyncResetState,
+	type InboundScopeRejectionPeerSummary,
 	LOCAL_SYNC_CAPABILITY,
 	listCoordinatorJoinRequests,
+	listInboundScopeRejections,
 	listMaintenanceJobs,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
@@ -68,6 +70,7 @@ import {
 	runSyncPass,
 	SYNC_SCOPE_QUERY_PARAM,
 	schema,
+	summarizeInboundScopeRejections,
 	syncScopeResetRequiredPayload,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
@@ -1023,9 +1026,11 @@ function mapPeerRow(
 	row: Record<string, unknown>,
 	showDiag: boolean,
 	recentOpsByPeer?: Map<string, { in: number; out: number }>,
+	scopeRejectionsByPeer?: Map<string, InboundScopeRejectionPeerSummary>,
 ): Record<string, unknown> {
 	const peerId = String(row.peer_device_id ?? "");
 	const recentOps = recentOpsByPeer?.get(peerId) ?? { in: 0, out: 0 };
+	const scopeRejections = scopeRejectionsByPeer?.get(peerId);
 	return {
 		peer_device_id: row.peer_device_id,
 		name: row.name,
@@ -1044,6 +1049,11 @@ function mapPeerRow(
 			...currentProjectScope(row, readPeerProjectFilters(store, String(row.peer_device_id ?? ""))),
 		},
 		recent_ops: { in: recentOps.in, out: recentOps.out },
+		scope_rejections: {
+			total: scopeRejections?.total ?? 0,
+			by_reason: scopeRejections?.by_reason ?? {},
+			last_at: scopeRejections?.last_at ?? null,
+		},
 		discovered_via_coordinator_id:
 			typeof row.discovered_via_coordinator_id === "string"
 				? row.discovered_via_coordinator_id
@@ -1051,6 +1061,22 @@ function mapPeerRow(
 		discovered_via_group_id:
 			typeof row.discovered_via_group_id === "string" ? row.discovered_via_group_id : null,
 	};
+}
+
+const SYNC_SCOPE_REJECTION_WINDOW_SECONDS = 24 * 60 * 60;
+
+function recentScopeRejectionsByPeer(
+	store: MemoryStore,
+): Map<string, InboundScopeRejectionPeerSummary> {
+	const cutoff = new Date(Date.now() - SYNC_SCOPE_REJECTION_WINDOW_SECONDS * 1000).toISOString();
+	const summaries = summarizeInboundScopeRejections(store.db, { sinceIso: cutoff });
+	const map = new Map<string, InboundScopeRejectionPeerSummary>();
+	for (const summary of summaries) {
+		const id = String(summary.peer_device_id ?? "").trim();
+		if (!id) continue;
+		map.set(id, summary);
+	}
+	return map;
 }
 
 // Aggregate ops_in / ops_out across recent successful sync_attempts per peer.
@@ -1710,8 +1736,11 @@ export function syncRoutes(
 				() => store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[],
 			);
 			const recentOpsByPeer = traceSync("recentPeerOps", () => recentPeerOps(store));
+			const scopeRejectionsByPeer = traceSync("recentScopeRejectionsByPeer", () =>
+				recentScopeRejectionsByPeer(store),
+			);
 			const peersItems = peerRows.map((row) => {
-				const peer = mapPeerRow(store, row, showDiag, recentOpsByPeer);
+				const peer = mapPeerRow(store, row, showDiag, recentOpsByPeer, scopeRejectionsByPeer);
 				peer.status = peerStatus(peer);
 				return peer;
 			});
@@ -1851,10 +1880,55 @@ export function syncRoutes(
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
 			const rows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
 			const recentOpsByPeer = recentPeerOps(store);
+			const scopeRejectionsByPeer = recentScopeRejectionsByPeer(store);
 			// Use deduplicated mapPeerRow helper (fix #4)
-			const peers = rows.map((row) => mapPeerRow(store, row, showDiag, recentOpsByPeer));
+			const peers = rows.map((row) =>
+				mapPeerRow(store, row, showDiag, recentOpsByPeer, scopeRejectionsByPeer),
+			);
 			return c.json({ items: peers, redacted: !showDiag });
 		}
+	});
+
+	// GET /api/sync/peers/:peer_device_id/scope-rejections
+	//
+	// Recent scope-rejection records produced by the inbound fail-closed gate.
+	// Each row is metadata only — op id, entity ref, scope id, reason code,
+	// timestamp. The rejection log never stores op payloads, so this endpoint
+	// can never leak inbound payload contents regardless of diagnostics state.
+	app.get("/api/sync/peers/:peer_device_id/scope-rejections", (c) => {
+		const store = getStore();
+		const peerDeviceId = String(c.req.param("peer_device_id") || "").trim();
+		if (!peerDeviceId) return c.json({ error: "missing_peer_device_id" }, 400);
+		const limit = queryInt(c.req.query("limit"), 100);
+		if (limit <= 0) return c.json({ error: "invalid_limit" }, 400);
+		const sinceMinutesRaw = queryInt(c.req.query("sinceMinutes"), 24 * 60);
+		// Cap at ~10 years so a hostile or fat-fingered query cannot push the
+		// computed timestamp past the Date range and turn toISOString() into
+		// a 500. Anything older than 10 years is effectively "all rejections".
+		const SINCE_MINUTES_MAX = 10 * 365 * 24 * 60;
+		const sinceMinutes = Math.min(Math.max(sinceMinutesRaw, 0), SINCE_MINUTES_MAX);
+		const sinceIso =
+			sinceMinutes > 0 ? new Date(Date.now() - sinceMinutes * 60_000).toISOString() : undefined;
+		const records = listInboundScopeRejections(store.db, {
+			peerDeviceId,
+			sinceIso,
+			limit,
+		});
+		const summaries = summarizeInboundScopeRejections(store.db, {
+			peerDeviceId,
+			sinceIso,
+		});
+		const summary = summaries[0] ?? {
+			peer_device_id: peerDeviceId,
+			total: 0,
+			by_reason: {},
+			last_at: null,
+		};
+		return c.json({
+			peer_device_id: peerDeviceId,
+			summary,
+			items: records,
+		});
 	});
 
 	// GET /api/sync/actors

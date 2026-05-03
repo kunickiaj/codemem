@@ -16,6 +16,7 @@ import {
 	getSyncResetState,
 	hasUnsyncedSharedMemoryChanges,
 	isNewerClock,
+	listInboundScopeRejections,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
@@ -26,6 +27,7 @@ import {
 	recordReplicationOp,
 	setReplicationCursor,
 	setSyncResetState,
+	summarizeInboundScopeRejections,
 } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
@@ -3458,5 +3460,134 @@ describe("bootstrap snapshot round-trip parity", () => {
 		expect(applied.narrative).toBe("Bootstrap narrative");
 		expect(applied.user_prompt_id).toBe(99);
 		expect(applied.prompt_number).toBe(3);
+	});
+});
+
+describe("inbound scope rejection diagnostics", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	function insertRejection(
+		peerDeviceId: string | null,
+		reason: string,
+		opts: {
+			opId?: string;
+			scopeId?: string | null;
+			createdAt?: string;
+			entityId?: string;
+		} = {},
+	): void {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS sync_scope_rejections (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				peer_device_id TEXT,
+				op_id TEXT NOT NULL,
+				entity_type TEXT NOT NULL,
+				entity_id TEXT NOT NULL,
+				scope_id TEXT,
+				reason TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+		`);
+		db.prepare(
+			`INSERT INTO sync_scope_rejections(
+				peer_device_id, op_id, entity_type, entity_id, scope_id, reason, created_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			peerDeviceId,
+			opts.opId ?? `op-${Math.random().toString(36).slice(2, 8)}`,
+			"memory_item",
+			opts.entityId ?? "key:test",
+			opts.scopeId ?? "acme-work",
+			reason,
+			opts.createdAt ?? "2026-01-02T00:00:00Z",
+		);
+	}
+
+	it("returns an empty summary when the rejection log table does not exist", () => {
+		expect(summarizeInboundScopeRejections(db)).toEqual([]);
+		expect(listInboundScopeRejections(db)).toEqual([]);
+	});
+
+	it("groups rejection counts by peer and reason", () => {
+		insertRejection("dev-remote-a", "missing_scope", { createdAt: "2026-01-02T00:00:00Z" });
+		insertRejection("dev-remote-a", "missing_scope", { createdAt: "2026-01-02T00:00:01Z" });
+		insertRejection("dev-remote-a", "stale_epoch", { createdAt: "2026-01-02T00:00:02Z" });
+		insertRejection("dev-remote-b", "scope_mismatch", { createdAt: "2026-01-02T00:00:03Z" });
+
+		const summaries = summarizeInboundScopeRejections(db);
+		const byPeer = new Map(summaries.map((entry) => [entry.peer_device_id, entry]));
+
+		expect(byPeer.get("dev-remote-a")).toEqual({
+			peer_device_id: "dev-remote-a",
+			total: 3,
+			by_reason: { missing_scope: 2, stale_epoch: 1 },
+			last_at: "2026-01-02T00:00:02Z",
+		});
+		expect(byPeer.get("dev-remote-b")).toEqual({
+			peer_device_id: "dev-remote-b",
+			total: 1,
+			by_reason: { scope_mismatch: 1 },
+			last_at: "2026-01-02T00:00:03Z",
+		});
+	});
+
+	it("filters rejections by peer and time window", () => {
+		insertRejection("dev-remote-a", "missing_scope", { createdAt: "2026-01-01T00:00:00Z" });
+		insertRejection("dev-remote-a", "stale_epoch", { createdAt: "2026-01-03T00:00:00Z" });
+		insertRejection("dev-remote-b", "stale_epoch", { createdAt: "2026-01-03T00:00:00Z" });
+
+		const recent = summarizeInboundScopeRejections(db, {
+			sinceIso: "2026-01-02T00:00:00Z",
+			peerDeviceId: "dev-remote-a",
+		});
+		expect(recent).toEqual([
+			{
+				peer_device_id: "dev-remote-a",
+				total: 1,
+				by_reason: { stale_epoch: 1 },
+				last_at: "2026-01-03T00:00:00Z",
+			},
+		]);
+	});
+
+	it("lists rejection records newest-first without exposing payloads", () => {
+		insertRejection("dev-remote", "missing_scope", {
+			opId: "op-old",
+			scopeId: null,
+			createdAt: "2026-01-02T00:00:00Z",
+		});
+		insertRejection("dev-remote", "stale_epoch", {
+			opId: "op-new",
+			scopeId: "acme-work",
+			createdAt: "2026-01-03T00:00:00Z",
+		});
+
+		const records = listInboundScopeRejections(db, { peerDeviceId: "dev-remote", limit: 10 });
+		expect(records.map((r) => r.op_id)).toEqual(["op-new", "op-old"]);
+		for (const record of records) {
+			expect(record).not.toHaveProperty("payload_json");
+			expect(record.peer_device_id).toBe("dev-remote");
+		}
+	});
+
+	it("clamps the list limit to a sensible maximum", () => {
+		for (let i = 0; i < 10; i++) {
+			insertRejection("dev-remote", "missing_scope", {
+				opId: `op-${i}`,
+				createdAt: `2026-01-02T00:00:${String(i).padStart(2, "0")}Z`,
+			});
+		}
+		expect(listInboundScopeRejections(db, { limit: 3 })).toHaveLength(3);
+		expect(listInboundScopeRejections(db, { limit: 0 })).toHaveLength(1);
+		expect(listInboundScopeRejections(db, { limit: 10_000 }).length).toBeLessThanOrEqual(500);
 	});
 });

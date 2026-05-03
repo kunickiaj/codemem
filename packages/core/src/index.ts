@@ -554,7 +554,11 @@ export type {
 	ApplyReplicationOpsOptions,
 	ApplyResult,
 	InboundScopeRejection,
+	InboundScopeRejectionPeerSummary,
 	InboundScopeRejectionReason,
+	InboundScopeRejectionRecord,
+	InboundScopeRejectionSummaryOptions,
+	ListInboundScopeRejectionsOptions,
 } from "./sync-replication.js";
 export {
 	applyReplicationOps,
@@ -570,6 +574,7 @@ export {
 	getSyncResetState,
 	hasUnsyncedSharedMemoryChanges,
 	isNewerClock,
+	listInboundScopeRejections,
 	loadMemorySnapshotPageForPeer,
 	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
@@ -584,6 +589,7 @@ export {
 	replicationOpRequiresPersonalScopeAuthorization,
 	setReplicationCursor,
 	setSyncResetState,
+	summarizeInboundScopeRejections,
 	syncProjectAllowedByFilters,
 	syncVisibilityAllowed,
 } from "./sync-replication.js";
