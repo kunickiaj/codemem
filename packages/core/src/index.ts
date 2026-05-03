@@ -550,7 +550,12 @@ export {
 	syncOnce,
 	syncPassPreflight,
 } from "./sync-pass.js";
-export type { ApplyResult } from "./sync-replication.js";
+export type {
+	ApplyReplicationOpsOptions,
+	ApplyResult,
+	InboundScopeRejection,
+	InboundScopeRejectionReason,
+} from "./sync-replication.js";
 export {
 	applyReplicationOps,
 	backfillReplicationOps,
@@ -575,6 +580,7 @@ export {
 	pruneReplicationOps,
 	pruneReplicationOpsUntilCaughtUp,
 	recordReplicationOp,
+	rejectInboundScopeFailures,
 	replicationOpRequiresPersonalScopeAuthorization,
 	setReplicationCursor,
 	setSyncResetState,

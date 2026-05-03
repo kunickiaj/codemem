@@ -1874,14 +1874,253 @@ export function filterReplicationOpsForSync(
 export interface ApplyResult {
 	applied: number;
 	skipped: number;
+	rejected: number;
 	conflicts: number;
 	errors: string[];
+	rejections: InboundScopeRejection[];
 	vectorWork: ReplicationVectorWork;
 }
 
 export interface ReplicationVectorWork {
 	upsertMemoryIds: number[];
 	deleteMemoryIds: number[];
+}
+
+export type InboundScopeRejectionReason =
+	| "missing_scope"
+	| "sender_not_member"
+	| "receiver_not_member"
+	| "stale_epoch"
+	| "scope_mismatch";
+
+export interface InboundScopeRejection {
+	op_id: string;
+	entity_type: string;
+	entity_id: string;
+	scope_id: string | null;
+	peer_device_id: string | null;
+	reason: InboundScopeRejectionReason;
+}
+
+export interface InboundScopeValidationOptions {
+	peerDeviceId?: string | null;
+	enabled?: boolean;
+}
+
+export interface ApplyReplicationOpsOptions {
+	inboundScopeValidation?: InboundScopeValidationOptions | null;
+}
+
+type CachedScopeAuthorizationResult = ReturnType<typeof getCachedScopeAuthorization>;
+
+function inboundScopeRejection(
+	op: ReplicationOp,
+	reason: InboundScopeRejectionReason,
+	peerDeviceId: string | null,
+	scopeId: string | null,
+): InboundScopeRejection {
+	return {
+		op_id: op.op_id,
+		entity_type: op.entity_type,
+		entity_id: op.entity_id,
+		scope_id: scopeId,
+		peer_device_id: peerDeviceId,
+		reason,
+	};
+}
+
+function normalizeInboundScopeId(value: unknown): string | null {
+	return cleanText(value);
+}
+
+function metadataObject(payload: Record<string, unknown> | null): Record<string, unknown> {
+	const metadata = payload?.metadata_json;
+	if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
+	return metadata as Record<string, unknown>;
+}
+
+function payloadContradictsInboundScope(
+	opScopeId: string,
+	payload: Record<string, unknown> | null,
+): boolean {
+	const metadata = metadataObject(payload);
+	const payloadScopeId = cleanText(payload?.scope_id ?? metadata.scope_id);
+	if (payloadScopeId && payloadScopeId !== opScopeId) return true;
+
+	const workspaceId = cleanText(payload?.workspace_id ?? metadata.workspace_id);
+	if (workspaceId?.startsWith("personal:") && workspaceId !== opScopeId) return true;
+
+	const workspaceKind = cleanText(
+		payload?.workspace_kind ?? metadata.workspace_kind,
+	)?.toLowerCase();
+	const actorId = cleanText(payload?.actor_id ?? metadata.actor_id);
+	if (workspaceKind === "personal" && actorId && `personal:${actorId}` !== opScopeId) {
+		return true;
+	}
+
+	return false;
+}
+
+function authorizationFailureReason(
+	auth: CachedScopeAuthorizationResult,
+	notMemberReason: "sender_not_member" | "receiver_not_member",
+): InboundScopeRejectionReason | null {
+	if (auth.authorized) return null;
+	if (
+		!auth.scope ||
+		auth.state === "revoked" ||
+		auth.state === "stale_epoch" ||
+		auth.state === "scope_unknown" ||
+		auth.state === "scope_inactive"
+	) {
+		return "stale_epoch";
+	}
+	return notMemberReason;
+}
+
+function validateInboundScopeOp(
+	db: Database,
+	op: ReplicationOp,
+	localDeviceId: string,
+	options: InboundScopeValidationOptions,
+): InboundScopeRejection | null {
+	const peerDeviceId = cleanText(options.peerDeviceId) ?? cleanText(op.device_id);
+	const senderDeviceId = peerDeviceId ?? cleanText(op.clock_device_id);
+	const receiverDeviceId = cleanText(localDeviceId);
+	const opScopeId = normalizeInboundScopeId(op.scope_id);
+
+	if (!opScopeId) return inboundScopeRejection(op, "missing_scope", peerDeviceId, null);
+	if (opScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
+	}
+
+	const payload = parsePayload(op.payload_json);
+	if (payloadContradictsInboundScope(opScopeId, payload)) {
+		return inboundScopeRejection(op, "scope_mismatch", peerDeviceId, opScopeId);
+	}
+
+	if (
+		!senderDeviceId ||
+		cleanText(op.device_id) !== senderDeviceId ||
+		cleanText(op.clock_device_id) !== senderDeviceId
+	) {
+		return inboundScopeRejection(op, "sender_not_member", peerDeviceId, opScopeId);
+	}
+
+	const senderAuth = getCachedScopeAuthorization(db, {
+		deviceId: senderDeviceId,
+		scopeId: opScopeId,
+	});
+	const senderFailure = authorizationFailureReason(senderAuth, "sender_not_member");
+	if (senderFailure) return inboundScopeRejection(op, senderFailure, peerDeviceId, opScopeId);
+
+	if (!receiverDeviceId) {
+		return inboundScopeRejection(op, "receiver_not_member", peerDeviceId, opScopeId);
+	}
+	const receiverAuth = getCachedScopeAuthorization(db, {
+		deviceId: receiverDeviceId,
+		scopeId: opScopeId,
+	});
+	const receiverFailure = authorizationFailureReason(receiverAuth, "receiver_not_member");
+	if (receiverFailure) return inboundScopeRejection(op, receiverFailure, peerDeviceId, opScopeId);
+
+	return null;
+}
+
+function validateInboundScopeBatch(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	options: InboundScopeValidationOptions,
+): InboundScopeRejection[] {
+	const rejections: InboundScopeRejection[] = [];
+	const expectedPeerDeviceId = cleanText(options.peerDeviceId);
+	for (const op of ops) {
+		if (!expectedPeerDeviceId && op.device_id === localDeviceId) continue;
+		const rejection = validateInboundScopeOp(db, op, localDeviceId, options);
+		if (rejection) rejections.push(rejection);
+	}
+	return rejections;
+}
+
+function ensureSyncScopeRejectionLogTable(db: Database): void {
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS sync_scope_rejections (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			peer_device_id TEXT,
+			op_id TEXT NOT NULL,
+			entity_type TEXT NOT NULL,
+			entity_id TEXT NOT NULL,
+			scope_id TEXT,
+			reason TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_peer_created
+			ON sync_scope_rejections(peer_device_id, created_at);
+		CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_scope_created
+			ON sync_scope_rejections(scope_id, created_at);
+	`);
+}
+
+function recordInboundScopeRejections(db: Database, rejections: InboundScopeRejection[]): void {
+	if (rejections.length === 0) return;
+	ensureSyncScopeRejectionLogTable(db);
+	const now = new Date().toISOString();
+	const insert = db.prepare(
+		`INSERT INTO sync_scope_rejections(
+			peer_device_id, op_id, entity_type, entity_id, scope_id, reason, created_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	);
+	db.transaction(() => {
+		for (const rejection of rejections) {
+			insert.run(
+				rejection.peer_device_id,
+				rejection.op_id,
+				rejection.entity_type,
+				rejection.entity_id,
+				rejection.scope_id,
+				rejection.reason,
+				now,
+			);
+		}
+	})();
+}
+
+function emptyApplyResult(): ApplyResult {
+	return {
+		applied: 0,
+		skipped: 0,
+		rejected: 0,
+		conflicts: 0,
+		errors: [],
+		rejections: [],
+		vectorWork: { upsertMemoryIds: [], deleteMemoryIds: [] },
+	};
+}
+
+export function rejectInboundScopeFailures(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	options: InboundScopeValidationOptions,
+): ApplyResult | null {
+	if (options.enabled === false) return null;
+	const rejections = validateInboundScopeBatch(db, ops, localDeviceId, options);
+	if (rejections.length === 0) return null;
+	const result = emptyApplyResult();
+	result.rejected = rejections.length;
+	result.rejections = rejections;
+	result.errors.push(
+		...rejections.map((rejection) => `op ${rejection.op_id}: rejected — ${rejection.reason}`),
+	);
+	try {
+		recordInboundScopeRejections(db, rejections);
+	} catch (err) {
+		result.errors.push(
+			`scope rejection log failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+	return result;
 }
 
 const LEGACY_IMPORT_KEY_OLD_RE = /^legacy:memory_item:(.+)$/;
@@ -2173,6 +2412,7 @@ export function applyReplicationOps(
 	ops: ReplicationOp[],
 	localDeviceId: string,
 	scanner?: SecretScanner,
+	options: ApplyReplicationOpsOptions = {},
 ): ApplyResult {
 	const d = drizzle(db, { schema });
 	// Peer-shipped content goes through the same redaction policy as
@@ -2180,13 +2420,12 @@ export function applyReplicationOps(
 	// (typically a MemoryStore instance) should pass it so workspace-level
 	// rule overrides apply uniformly. Otherwise fall back to defaults.
 	const activeScanner = scanner ?? new SecretScanner();
-	const result: ApplyResult = {
-		applied: 0,
-		skipped: 0,
-		conflicts: 0,
-		errors: [],
-		vectorWork: { upsertMemoryIds: [], deleteMemoryIds: [] },
-	};
+	const result: ApplyResult = emptyApplyResult();
+	const inboundScopeValidation = options.inboundScopeValidation;
+	if (inboundScopeValidation) {
+		const rejected = rejectInboundScopeFailures(db, ops, localDeviceId, inboundScopeValidation);
+		if (rejected) return rejected;
+	}
 	const upsertMemoryIds = new Set<number>();
 	const deleteMemoryIds = new Set<number>();
 	const queueVectorUpsert = (memoryId: number): void => {

@@ -8,6 +8,7 @@ import {
 	bulkPruneReplicationOpsByAgeCutoff,
 	chunkOpsBySize,
 	clockTuple,
+	DEFAULT_SYNC_SCOPE_ID,
 	extractReplicationOps,
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,
@@ -2093,6 +2094,51 @@ describe("applyReplicationOps", () => {
 		};
 	}
 
+	function grantScope(
+		scopeId: string,
+		deviceIds: string[],
+		overrides: { scopeEpoch?: number; membershipEpoch?: number; status?: string } = {},
+	): void {
+		const now = "2026-01-01T00:00:00Z";
+		const scopeEpoch = overrides.scopeEpoch ?? 1;
+		db.prepare(
+			`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, ?, 'team', 'coordinator', ?, 'active', ?, ?)
+			 ON CONFLICT(scope_id) DO UPDATE SET
+				membership_epoch = excluded.membership_epoch,
+				status = excluded.status,
+				updated_at = excluded.updated_at`,
+		).run(scopeId, scopeId, scopeEpoch, now, now);
+		for (const deviceId of deviceIds) {
+			db.prepare(
+				`INSERT INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES (?, ?, 'member', ?, ?, ?)
+				 ON CONFLICT(scope_id, device_id) DO UPDATE SET
+					status = excluded.status,
+					membership_epoch = excluded.membership_epoch,
+					updated_at = excluded.updated_at`,
+			).run(
+				scopeId,
+				deviceId,
+				overrides.status ?? "active",
+				overrides.membershipEpoch ?? scopeEpoch,
+				now,
+			);
+		}
+	}
+
+	function applyWithScopeValidation(op: ReplicationOp) {
+		return applyReplicationOps(db, [op], "dev-local", undefined, {
+			inboundScopeValidation: { peerDeviceId: "dev-remote" },
+		});
+	}
+
+	function memoryExists(importKey: string): boolean {
+		return Boolean(db.prepare("SELECT 1 FROM memory_items WHERE import_key = ?").get(importKey));
+	}
+
 	it("skips ops from the local device", () => {
 		const op = makeReplicationOp({ device_id: "dev-local" });
 		const result = applyReplicationOps(db, [op], "dev-local");
@@ -2212,6 +2258,156 @@ describe("applyReplicationOps", () => {
 			.prepare("SELECT scope_id FROM replication_ops ORDER BY clock_rev")
 			.all() as Array<{ scope_id: string | null }>;
 		expect(recordedScopes).toEqual([{ scope_id: "acme-work" }, { scope_id: "client-a" }]);
+	});
+
+	it("applies scoped inbound ops only when sender and receiver are members", () => {
+		grantScope("acme-work", ["dev-remote", "dev-local"]);
+		const op = makeReplicationOp({
+			scope_id: "acme-work",
+			payload_json: toJson({
+				kind: "discovery",
+				title: "Authorized scope",
+				body_text: "Remote body",
+				scope_id: "acme-work",
+			}),
+		});
+
+		const result = applyWithScopeValidation(op);
+
+		expect(result.applied).toBe(1);
+		expect(result.rejected).toBe(0);
+		expect(memoryExists(op.entity_id)).toBe(true);
+	});
+
+	it.each([
+		{
+			name: "missing op-row scope_id",
+			op: () => makeReplicationOp({ scope_id: null }),
+			setup: () => grantScope("acme-work", ["dev-remote", "dev-local"]),
+			reason: "missing_scope",
+		},
+		{
+			name: "sender is not a scope member",
+			op: () => makeReplicationOp({ scope_id: "acme-work" }),
+			setup: () => grantScope("acme-work", ["dev-local"]),
+			reason: "sender_not_member",
+		},
+		{
+			name: "sender spoofs the receiver device id",
+			op: () =>
+				makeReplicationOp({
+					device_id: "dev-local",
+					clock_device_id: "dev-remote",
+					scope_id: "acme-work",
+				}),
+			setup: () => grantScope("acme-work", ["dev-remote", "dev-local"]),
+			reason: "sender_not_member",
+		},
+		{
+			name: "receiver is not a scope member",
+			op: () => makeReplicationOp({ scope_id: "acme-work" }),
+			setup: () => grantScope("acme-work", ["dev-remote"]),
+			reason: "receiver_not_member",
+		},
+		{
+			name: "revoked or stale sender membership",
+			op: () => makeReplicationOp({ scope_id: "acme-work" }),
+			setup: () => {
+				grantScope("acme-work", ["dev-local"], { scopeEpoch: 3 });
+				grantScope("acme-work", ["dev-remote"], {
+					scopeEpoch: 3,
+					membershipEpoch: 2,
+				});
+			},
+			reason: "stale_epoch",
+		},
+		{
+			name: "no cached membership manifest",
+			op: () => makeReplicationOp({ scope_id: "ghost-scope" }),
+			setup: () => {},
+			reason: "stale_epoch",
+		},
+		{
+			name: "payload scope contradicts op-row scope",
+			op: () =>
+				makeReplicationOp({
+					scope_id: "acme-work",
+					payload_json: toJson({
+						kind: "discovery",
+						title: "Contradiction",
+						body_text: "Remote body",
+						workspace_id: "personal:actor-1",
+						workspace_kind: "personal",
+						actor_id: "actor-1",
+					}),
+				}),
+			setup: () => grantScope("acme-work", ["dev-remote", "dev-local"]),
+			reason: "scope_mismatch",
+		},
+		{
+			name: "local-default inbound scope",
+			op: () => makeReplicationOp({ scope_id: DEFAULT_SYNC_SCOPE_ID }),
+			setup: () => grantScope(DEFAULT_SYNC_SCOPE_ID, ["dev-remote", "dev-local"]),
+			reason: "scope_mismatch",
+		},
+	] as const)("rejects inbound ops before mutation when $name", ({ op, setup, reason }) => {
+		setup();
+		const inbound = op();
+
+		const result = applyWithScopeValidation(inbound);
+
+		expect(result.applied).toBe(0);
+		expect(result.rejected).toBe(1);
+		expect(result.rejections).toEqual([
+			expect.objectContaining({
+				op_id: inbound.op_id,
+				peer_device_id: "dev-remote",
+				reason,
+			}),
+		]);
+		expect(memoryExists(inbound.entity_id)).toBe(false);
+		expect(
+			db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ?").get(inbound.op_id),
+		).toBeUndefined();
+		const logged = db
+			.prepare("SELECT op_id, reason FROM sync_scope_rejections WHERE op_id = ?")
+			.get(inbound.op_id) as { op_id: string; reason: string } | undefined;
+		expect(logged).toEqual({ op_id: inbound.op_id, reason });
+	});
+
+	it("rejects a replayed duplicate op after revocation instead of idempotently accepting it", () => {
+		grantScope("acme-work", ["dev-remote", "dev-local"]);
+		const op = makeReplicationOp({ op_id: "replayed-op", scope_id: "acme-work" });
+		expect(applyWithScopeValidation(op).applied).toBe(1);
+		grantScope("acme-work", ["dev-remote"], { status: "revoked", membershipEpoch: 2 });
+
+		const replay = applyWithScopeValidation(op);
+
+		expect(replay.applied).toBe(0);
+		expect(replay.rejections[0]?.reason).toBe("stale_epoch");
+	});
+
+	it("allows non-personal null-payload deletes when the op row carries an authorized scope", () => {
+		grantScope("acme-work", ["dev-remote", "dev-local"]);
+		const insert = makeReplicationOp({ scope_id: "acme-work" });
+		expect(applyWithScopeValidation(insert).applied).toBe(1);
+		const deleteOp = makeReplicationOp({
+			op_id: "scoped-delete",
+			op_type: "delete",
+			payload_json: null,
+			scope_id: "acme-work",
+			clock_rev: 2,
+			clock_updated_at: "2026-01-01T00:00:01Z",
+		});
+
+		const result = applyWithScopeValidation(deleteOp);
+
+		expect(result.applied).toBe(1);
+		expect(result.rejected).toBe(0);
+		const mem = db
+			.prepare("SELECT active, scope_id FROM memory_items WHERE import_key = ?")
+			.get(deleteOp.entity_id) as { active: number; scope_id: string | null };
+		expect(mem).toMatchObject({ active: 0, scope_id: "acme-work" });
 	});
 
 	it("redacts secrets in inbound peer payloads on insert", () => {

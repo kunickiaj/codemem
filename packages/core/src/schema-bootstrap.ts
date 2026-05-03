@@ -41,6 +41,23 @@ CREATE TABLE IF NOT EXISTS maintenance_jobs (
 CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_status_updated
 	ON maintenance_jobs(status, updated_at);
 
+CREATE TABLE IF NOT EXISTS sync_scope_rejections (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	peer_device_id TEXT,
+	op_id TEXT NOT NULL,
+	entity_type TEXT NOT NULL,
+	entity_id TEXT NOT NULL,
+	scope_id TEXT,
+	reason TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_peer_created
+	ON sync_scope_rejections(peer_device_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_scope_created
+	ON sync_scope_rejections(scope_id, created_at);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 	title, body_text, tags_text,
 	content='memory_items',
