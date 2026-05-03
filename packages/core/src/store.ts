@@ -219,6 +219,19 @@ export class MemoryStore {
 	 */
 	scanner: SecretScanner;
 	private readonly pendingVectorWrites = new Set<Promise<void>>();
+	// Ownership predicate cache for memoryOwnedBySelf. Recomputed once per
+	// OWNERSHIP_CACHE_TTL_MS instead of issuing two fresh sqlite SELECTs on
+	// every call. Hot search paths (search.ts:866, 879 + per-item rankers
+	// at 353, 496) can fan a single search out to thousands of ownership
+	// checks; without the cache that fan-out blocks the libuv event loop.
+	// Mutations to sync_peers happen via low-frequency UI/admin flows, so
+	// a short TTL keeps perceived staleness below interaction thresholds.
+	private _ownershipCache: {
+		actorIds: Set<string>;
+		deviceIds: Set<string>;
+		expiresAt: number;
+	} | null = null;
+	private static readonly OWNERSHIP_CACHE_TTL_MS = 5000;
 
 	/** Lazy Drizzle ORM wrapper — shares the same better-sqlite3 connection. */
 	private _drizzle: ReturnType<typeof drizzle> | null = null;
@@ -850,13 +863,44 @@ export class MemoryStore {
 		const deviceId = cleanStr(rec.origin_device_id) ?? cleanStr(meta.origin_device_id);
 		if (deviceId === this.deviceId) return true;
 
-		const claimedPeers = new Set(this.sameActorPeerIds());
-		if (deviceId && claimedPeers.has(deviceId)) return true;
-
-		const legacyActorIds = new Set(this.claimedSameActorLegacyActorIds());
-		if (actorId && legacyActorIds.has(actorId)) return true;
+		const sets = this.ownershipSets();
+		if (deviceId && sets.deviceIds.has(deviceId)) return true;
+		if (actorId && sets.actorIds.has(actorId)) return true;
 
 		return false;
+	}
+
+	/**
+	 * Return the (cached) sets of peer device ids and legacy actor ids this
+	 * store treats as "owned by self" for memory ranking. Recomputed every
+	 * OWNERSHIP_CACHE_TTL_MS to bound staleness on peer rename/identity
+	 * changes without forcing every UI mutation site to plumb invalidation
+	 * hooks.
+	 */
+	private ownershipSets(): { actorIds: Set<string>; deviceIds: Set<string> } {
+		const now = Date.now();
+		if (this._ownershipCache && this._ownershipCache.expiresAt > now) {
+			return this._ownershipCache;
+		}
+		const peerIds = this.sameActorPeerIds();
+		const deviceIds = new Set(peerIds);
+		const actorIds = new Set(peerIds.map((peerId) => `legacy-sync:${peerId}`));
+		this._ownershipCache = {
+			actorIds,
+			deviceIds,
+			expiresAt: now + MemoryStore.OWNERSHIP_CACHE_TTL_MS,
+		};
+		return this._ownershipCache;
+	}
+
+	/**
+	 * Drop the ownership cache. Callers that just mutated sync_peers in a
+	 * way that affects ownership (claim, identity change, rename, delete)
+	 * can call this to force the next memoryOwnedBySelf check to refresh.
+	 * Optional — the cache also expires on its own TTL.
+	 */
+	invalidateOwnershipCache(): void {
+		this._ownershipCache = null;
 	}
 
 	// forget
