@@ -27,6 +27,21 @@ type FileContextDeps = {
 const FILE_GATE_MIN_BYTES = 1500;
 const FETCH_LIMIT = 40;
 const DISPLAY_LIMIT = 15;
+// Mtime tolerance — observations from within ~5 minutes of the file's
+// mtime are treated as fresh enough to surface without a staleness
+// header. Smaller than this we'd false-positive on routine edits;
+// larger and branch switches read clean.
+const MTIME_FRESH_TOLERANCE_MS = 5 * 60 * 1000;
+
+// Small but high-signal file extensions: configs and infra files are
+// load-bearing for past decisions even at <1500 bytes, so bypass the
+// size gate for them.
+const SMALL_FILE_BYPASS_PATTERNS: RegExp[] = [
+	/\.(json|jsonc|toml|ya?ml)$/i,
+	/\.env(\.|$)/i,
+	/(^|\/)dockerfile(\.|$)/i,
+	/\.config\.(js|ts|mjs|cjs|json)$/i,
+];
 
 const KIND_ICONS: Record<string, string> = {
 	decision: "⚖️",
@@ -38,8 +53,14 @@ const KIND_ICONS: Record<string, string> = {
 	exploration: "🔬",
 };
 
-function emitJson(value: FileContextResult | { error: string; message: string }): void {
+function emitJson(value: FileContextResult): void {
 	console.log(JSON.stringify(value));
+}
+
+function emitError(value: { error: string; message: string }): void {
+	// Errors go to stderr so a non-zero exit from `codemem` doesn't poison
+	// the bash hook's stdout when it falls back to `npx -y codemem ...`.
+	process.stderr.write(`${JSON.stringify(value)}\n`);
 }
 
 function continueResult(): FileContextResult {
@@ -101,42 +122,50 @@ function normalizePathForCompare(path: string): string {
 	return path.replace(/\\/g, "/");
 }
 
-type ScoredObservation = { row: RefQueryResult; score: number };
+type ScoredObservation = { row: RefQueryResult; score: number; idx: number };
+
+function scoreRow(row: RefQueryResult, normalizedTarget: string, idx: number): ScoredObservation {
+	const filesModified = parseJsonArray(row.files_modified);
+	const inModified = filesModified.some((f) => normalizePathForCompare(f) === normalizedTarget);
+
+	// Specificity is "did this session focus on the target file?"
+	// `files_read` is dominated by the agent crawling the repo for
+	// context, so it shouldn't dilute that signal — score by
+	// files_modified only.
+	let score = 0;
+	if (inModified) score += 2;
+	if (filesModified.length <= 1) score += 2;
+	else if (filesModified.length <= 3) score += 1;
+
+	return { row, score, idx };
+}
 
 function scoreAndDedupe(
 	rows: RefQueryResult[],
 	targetPath: string,
 	limit: number,
 ): RefQueryResult[] {
-	// One observation per session: keep the most recent (rows arrive
-	// ORDER BY created_at DESC) and drop the rest so the timeline doesn't
-	// fill up with sibling observations from the same chat.
-	const seenSessions = new Set<number>();
-	const dedupedBySession: RefQueryResult[] = [];
-	for (const row of rows) {
-		if (!seenSessions.has(row.session_id)) {
-			seenSessions.add(row.session_id);
-			dedupedBySession.push(row);
+	const normalizedTarget = normalizePathForCompare(targetPath);
+	const scored = rows.map((row, idx) => scoreRow(row, normalizedTarget, idx));
+
+	// Dedupe by session keeping the highest-scoring observation per
+	// session. Tiebreak on smaller idx — `findByFile` returns rows
+	// ORDER BY created_at DESC so a smaller idx means more recent.
+	const bestPerSession = new Map<number, ScoredObservation>();
+	for (const item of scored) {
+		const existing = bestPerSession.get(item.row.session_id);
+		if (
+			!existing ||
+			item.score > existing.score ||
+			(item.score === existing.score && item.idx < existing.idx)
+		) {
+			bestPerSession.set(item.row.session_id, item);
 		}
 	}
 
-	const normalizedTarget = normalizePathForCompare(targetPath);
-	const scored: ScoredObservation[] = dedupedBySession.map((row) => {
-		const filesRead = parseJsonArray(row.files_read);
-		const filesModified = parseJsonArray(row.files_modified);
-		const totalFiles = filesRead.length + filesModified.length;
-		const inModified = filesModified.some((f) => normalizePathForCompare(f) === normalizedTarget);
-
-		let score = 0;
-		if (inModified) score += 2;
-		if (totalFiles <= 3) score += 2;
-		else if (totalFiles <= 8) score += 1;
-
-		return { row, score };
-	});
-
-	scored.sort((a, b) => b.score - a.score);
-	return scored.slice(0, limit).map((s) => s.row);
+	const deduped = Array.from(bestPerSession.values());
+	deduped.sort((a, b) => b.score - a.score || a.idx - b.idx);
+	return deduped.slice(0, limit).map((s) => s.row);
 }
 
 function compactTime(timeStr: string): string {
@@ -159,12 +188,15 @@ function formatDate(epochMs: number): string {
 	});
 }
 
-function formatTimeline(rows: RefQueryResult[], filePath: string): string {
+function formatTimeline(
+	rows: RefQueryResult[],
+	filePath: string,
+	staleness: { fileMtimeMs: number; newestObservationMs: number } | null,
+): string {
 	const safePath = filePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
-	const enriched = rows.map((row) => ({
-		row,
-		epochMs: Date.parse(row.created_at) || 0,
-	}));
+	const enriched = rows
+		.map((row) => ({ row, epochMs: Date.parse(row.created_at) }))
+		.filter((item) => Number.isFinite(item.epochMs) && item.epochMs > 0);
 
 	const byDay = new Map<string, typeof enriched>();
 	for (const item of enriched) {
@@ -180,10 +212,20 @@ function formatTimeline(rows: RefQueryResult[], filePath: string): string {
 		return aMin - bMin;
 	});
 
+	const ids = rows.map((r) => r.id);
 	const lines: string[] = [
 		`This file (${safePath}) has prior codemem observations. The Read result below is unchanged.`,
-		"- Need full detail on a past observation? memory.get_observations([IDs]) — fetches body + narrative.",
+		`- Fetch full bodies on demand: memory.get_observations([${ids.join(", ")}]).`,
 	];
+	if (staleness) {
+		const driftMinutes = Math.max(
+			1,
+			Math.round((staleness.fileMtimeMs - staleness.newestObservationMs) / 60_000),
+		);
+		lines.unshift(
+			`Heads up: this file was modified ~${driftMinutes} min after the most recent observation below. Past entries may be partially stale — verify against the Read result before relying on them.`,
+		);
+	}
 
 	for (const [day, dayItems] of sortedDays) {
 		const chronological = [...dayItems].sort((a, b) => a.epochMs - b.epochMs);
@@ -246,7 +288,17 @@ export async function buildClaudeFileContext(
 	const absolutePath = isAbsolute(expandedPath) ? expandedPath : resolve(cwd, expandedPath);
 	const relativePath = relative(cwd, absolutePath).split(sep).join("/");
 
-	if (!relativePath || relativePath.startsWith("..")) {
+	// Reject paths that escape cwd. `startsWith("..")` would also reject
+	// in-repo basenames that begin with `..` (e.g. `..hidden`); a
+	// segment-aware check distinguishes those from the `../foo` parent
+	// traversal. `isAbsolute` catches the Windows cross-drive case where
+	// `relative('C:\\repo', 'D:\\x')` returns an absolute-shaped string.
+	const escapesCwd =
+		relativePath === ".." || relativePath.startsWith("../") || isAbsolute(relativePath);
+	if (!relativePath || escapesCwd) {
+		logHookEvent(
+			`file_context.skip reason=outside_cwd path=${JSON.stringify(filePath)} cwd=${JSON.stringify(cwd)}`,
+		);
 		return continueResult();
 	}
 
@@ -259,9 +311,14 @@ export async function buildClaudeFileContext(
 
 	const stat = (deps.statFile ?? statFile)(absolutePath);
 	if (!stat) {
+		logHookEvent(`file_context.skip reason=stat_failed path=${JSON.stringify(relativePath)}`);
 		return continueResult();
 	}
-	if (stat.sizeBytes < minBytesEffective) {
+	const bypassSizeGate = SMALL_FILE_BYPASS_PATTERNS.some((p) => p.test(relativePath));
+	if (stat.sizeBytes < minBytesEffective && !bypassSizeGate) {
+		logHookEvent(
+			`file_context.skip reason=below_size_gate path=${JSON.stringify(relativePath)} size=${stat.sizeBytes} gate=${minBytesEffective}`,
+		);
 		return continueResult();
 	}
 
@@ -287,28 +344,29 @@ export async function buildClaudeFileContext(
 		return continueResult();
 	}
 
-	if (stat.mtimeMs > 0) {
-		const newestObservationMs = rows.reduce((max, row) => {
-			const epoch = Date.parse(row.created_at);
-			return Number.isFinite(epoch) && epoch > max ? epoch : max;
-		}, 0);
-		if (newestObservationMs > 0 && stat.mtimeMs >= newestObservationMs) {
-			logHookEvent(
-				`file_context.skip reason=file_newer path=${JSON.stringify(relativePath)} mtime_ms=${stat.mtimeMs} newest_obs_ms=${newestObservationMs}`,
-			);
-			return continueResult();
-		}
-	}
-
 	const top = scoreAndDedupe(rows, relativePath, DISPLAY_LIMIT);
 	if (top.length === 0) {
+		logHookEvent(
+			`file_context.skip reason=no_top_after_dedupe path=${JSON.stringify(relativePath)} candidates=${rows.length}`,
+		);
 		return continueResult();
 	}
 
-	const timeline = formatTimeline(top, relativePath);
+	let staleness: { fileMtimeMs: number; newestObservationMs: number } | null = null;
+	if (stat.mtimeMs > 0) {
+		const newestObservationMs = top.reduce((max, row) => {
+			const epoch = Date.parse(row.created_at);
+			return Number.isFinite(epoch) && epoch > max ? epoch : max;
+		}, 0);
+		if (newestObservationMs > 0 && stat.mtimeMs > newestObservationMs + MTIME_FRESH_TOLERANCE_MS) {
+			staleness = { fileMtimeMs: stat.mtimeMs, newestObservationMs };
+		}
+	}
+
+	const timeline = formatTimeline(top, relativePath, staleness);
 
 	logHookEvent(
-		`file_context.ok path=${JSON.stringify(relativePath)} candidates=${rows.length} surfaced=${top.length} project=${JSON.stringify(project ?? "")}`,
+		`file_context.ok path=${JSON.stringify(relativePath)} candidates=${rows.length} surfaced=${top.length} project=${JSON.stringify(project ?? "")} stale=${staleness ? "true" : "false"}`,
 	);
 
 	return {
@@ -344,13 +402,13 @@ export const claudeHookFileContextCommand = claudeHookFileContextCmd.action(
 		try {
 			const parsed = JSON.parse(trimmed) as unknown;
 			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				emitJson({ error: "parse_error", message: "payload must be a JSON object" });
+				emitError({ error: "parse_error", message: "payload must be a JSON object" });
 				process.exitCode = 1;
 				return;
 			}
 			payload = parsed as Record<string, unknown>;
 		} catch {
-			emitJson({ error: "parse_error", message: "invalid JSON" });
+			emitError({ error: "parse_error", message: "invalid JSON" });
 			process.exitCode = 1;
 			return;
 		}

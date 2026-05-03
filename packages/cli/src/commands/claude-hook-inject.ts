@@ -52,8 +52,14 @@ const DEFAULT_VIEWER_PORT = 38888;
 const DEFAULT_MAX_CHARS = 16000;
 const DEFAULT_HTTP_MAX_TIME_S = 2;
 
-function emitJson(value: InjectResult | { error: string; message: string }): void {
+function emitJson(value: InjectResult): void {
 	console.log(JSON.stringify(value));
+}
+
+function emitError(value: { error: string; message: string }): void {
+	// Errors go to stderr so a non-zero exit from `codemem` doesn't poison
+	// the bash hook's stdout when it falls back to `npx -y codemem ...`.
+	process.stderr.write(`${JSON.stringify(value)}\n`);
 }
 
 function envNotDisabled(value: string | undefined): boolean {
@@ -292,13 +298,13 @@ export const claudeHookInjectCommand = claudeHookInjectCmd.action(async (opts: I
 	try {
 		const parsed = JSON.parse(trimmed) as unknown;
 		if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-			emitJson({ error: "parse_error", message: "payload must be a JSON object" });
+			emitError({ error: "parse_error", message: "payload must be a JSON object" });
 			process.exitCode = 1;
 			return;
 		}
 		payload = parsed as Record<string, unknown>;
 	} catch {
-		emitJson({ error: "parse_error", message: "invalid JSON" });
+		emitError({ error: "parse_error", message: "invalid JSON" });
 		process.exitCode = 1;
 		return;
 	}

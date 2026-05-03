@@ -133,11 +133,13 @@ describe("claude-hook-file-context command", () => {
 		expect(result).toEqual({ continue: true });
 	});
 
-	it("returns continue when file mtime is newer than the newest observation", async () => {
+	it("annotates the timeline header when the file was modified after the newest observation", async () => {
 		const file = join(tmp, "stale.ts");
 		writeFileSync(file, "x".repeat(2000));
 		const fileMtimeMs = Date.now();
-		const observationMs = fileMtimeMs - 60_000;
+		// 30 minutes — outside the 5-minute fresh tolerance, so the
+		// staleness header should appear.
+		const observationMs = fileMtimeMs - 30 * 60 * 1000;
 
 		const result = await buildClaudeFileContext(
 			{
@@ -150,8 +152,9 @@ describe("claude-hook-file-context command", () => {
 			{
 				queryByFile: () => [
 					baseRow({
-						id: 1,
+						id: 7,
 						kind: "decision",
+						title: "Old decision about stale.ts",
 						created_at: new Date(observationMs).toISOString(),
 						files_modified: JSON.stringify(["stale.ts"]),
 					}),
@@ -161,9 +164,48 @@ describe("claude-hook-file-context command", () => {
 			},
 		);
 
-		expect(result).toEqual({ continue: true });
+		const ctx = result.hookSpecificOutput?.additionalContext ?? "";
+		expect(ctx).toContain("Heads up");
+		expect(ctx).toContain("Old decision about stale.ts");
 		const log = readFileSync(pluginLogPath, "utf8");
-		expect(log).toContain("file_context.skip reason=file_newer");
+		expect(log).toContain("file_context.ok");
+		expect(log).toContain("stale=true");
+	});
+
+	it("does not annotate when the file mtime is within the fresh tolerance window", async () => {
+		const file = join(tmp, "fresh.ts");
+		writeFileSync(file, "x".repeat(2000));
+		const fileMtimeMs = Date.now();
+		// 1 minute drift — under the 5-minute tolerance.
+		const observationMs = fileMtimeMs - 60 * 1000;
+
+		const result = await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: file },
+				cwd: tmp,
+			},
+			{},
+			{
+				queryByFile: () => [
+					baseRow({
+						id: 11,
+						kind: "feature",
+						title: "Recent feature touching fresh.ts",
+						created_at: new Date(observationMs).toISOString(),
+						files_modified: JSON.stringify(["fresh.ts"]),
+					}),
+				],
+				resolveDb: () => "/tmp/test.sqlite",
+				statFile: () => ({ sizeBytes: 2000, mtimeMs: fileMtimeMs }),
+			},
+		);
+
+		const ctx = result.hookSpecificOutput?.additionalContext ?? "";
+		expect(ctx).not.toContain("Heads up");
+		const log = readFileSync(pluginLogPath, "utf8");
+		expect(log).toContain("stale=false");
 	});
 
 	it("emits a PreToolUse additionalContext when observations exist and file is older", async () => {
@@ -282,6 +324,158 @@ describe("claude-hook-file-context command", () => {
 			if (original === undefined) delete process.env.CODEMEM_FILE_CONTEXT;
 			else process.env.CODEMEM_FILE_CONTEXT = original;
 		}
+	});
+
+	it("bypasses the size gate for small config files (json/toml/yaml)", async () => {
+		const file = join(tmp, "tsconfig.json");
+		writeFileSync(file, '{"x":1}');
+
+		const result = await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: file },
+				cwd: tmp,
+			},
+			{},
+			{
+				queryByFile: () => [
+					baseRow({
+						id: 21,
+						kind: "decision",
+						title: "Switched moduleResolution to bundler",
+						created_at: new Date(Date.now() - 86_400_000).toISOString(),
+						files_modified: JSON.stringify(["tsconfig.json"]),
+					}),
+				],
+				resolveDb: () => "/tmp/test.sqlite",
+				statFile: () => ({ sizeBytes: 8, mtimeMs: Date.now() - 86_400_000 }),
+			},
+		);
+
+		const ctx = result.hookSpecificOutput?.additionalContext ?? "";
+		expect(ctx).toContain("Switched moduleResolution to bundler");
+	});
+
+	it("score-then-dedupe surfaces the highest-scoring observation per session", async () => {
+		const file = join(tmp, "auth.ts");
+		writeFileSync(file, "x".repeat(2000));
+		const fileMtimeMs = Date.now() - 86_400_000;
+		const obsMs = fileMtimeMs + 3600_000;
+
+		const result = await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: file },
+				cwd: tmp,
+			},
+			{},
+			{
+				queryByFile: () => [
+					// Most-recent row from session 9 doesn't touch auth.ts —
+					// score 0. Older row from same session targets auth.ts —
+					// score 4. Score-then-dedupe should surface the older one.
+					baseRow({
+						id: 200,
+						session_id: 9,
+						kind: "discovery",
+						title: "Sprawling crawl, no auth focus",
+						created_at: new Date(obsMs).toISOString(),
+						files_modified: JSON.stringify(["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"]),
+					}),
+					baseRow({
+						id: 201,
+						session_id: 9,
+						kind: "decision",
+						title: "Targeted auth fix",
+						created_at: new Date(obsMs - 3600_000).toISOString(),
+						files_modified: JSON.stringify(["auth.ts"]),
+					}),
+				],
+				resolveDb: () => "/tmp/test.sqlite",
+				statFile: () => ({ sizeBytes: 2000, mtimeMs: fileMtimeMs }),
+			},
+		);
+
+		const ctx = result.hookSpecificOutput?.additionalContext ?? "";
+		expect(ctx).toContain("Targeted auth fix");
+		expect(ctx).not.toContain("Sprawling crawl, no auth focus");
+	});
+
+	it("logs file_context.skip when the file is below the size gate and not a small-config bypass", async () => {
+		const file = join(tmp, "small.ts");
+		writeFileSync(file, "x");
+
+		await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: file },
+				cwd: tmp,
+			},
+			{},
+			{
+				queryByFile: () => [],
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+
+		const log = readFileSync(pluginLogPath, "utf8");
+		expect(log).toContain("file_context.skip reason=below_size_gate");
+	});
+
+	it("does not classify in-repo basenames starting with .. as outside cwd", async () => {
+		const file = join(tmp, "..hidden.json");
+		writeFileSync(file, '{"x":1}');
+
+		const result = await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: file },
+				cwd: tmp,
+			},
+			{},
+			{
+				queryByFile: () => [
+					baseRow({
+						id: 31,
+						kind: "decision",
+						title: "Decision about ..hidden.json",
+						created_at: new Date(Date.now() - 86_400_000).toISOString(),
+						files_modified: JSON.stringify(["..hidden.json"]),
+					}),
+				],
+				resolveDb: () => "/tmp/test.sqlite",
+				statFile: () => ({ sizeBytes: 8, mtimeMs: Date.now() - 86_400_000 }),
+			},
+		);
+
+		const ctx = result.hookSpecificOutput?.additionalContext ?? "";
+		expect(ctx).toContain("Decision about ..hidden.json");
+		const log = readFileSync(pluginLogPath, "utf8");
+		expect(log).not.toContain("reason=outside_cwd");
+	});
+
+	it("logs file_context.skip when the file resolves outside cwd", async () => {
+		await buildClaudeFileContext(
+			{
+				hook_event_name: "PreToolUse",
+				tool_name: "Read",
+				tool_input: { file_path: "/etc/passwd" },
+				cwd: tmp,
+			},
+			{},
+			{
+				queryByFile: () => [],
+				resolveDb: () => "/tmp/test.sqlite",
+				statFile: () => ({ sizeBytes: 9999, mtimeMs: 0 }),
+			},
+		);
+
+		const log = readFileSync(pluginLogPath, "utf8");
+		expect(log).toContain("file_context.skip reason=outside_cwd");
 	});
 
 	it("logs file_context.skip when the query returns no observations", async () => {
