@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	deriveCoordinatorApprovalSummary,
 	deriveDuplicatePeople,
+	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	deriveSyncViewModel,
@@ -136,6 +137,43 @@ describe("derivePeerTrustSummary", () => {
 		expect(
 			derivePeerTrustSummary({ status: { sync_status: "ok", peer_state: "online" } }).state,
 		).toBe("mutual-trust");
+	});
+});
+
+describe("derivePeerScopeRejectionsView", () => {
+	it("returns an empty view when nothing has been rejected", () => {
+		expect(derivePeerScopeRejectionsView({}).total).toBe(0);
+		expect(derivePeerScopeRejectionsView({}).badgeLabel).toBeNull();
+		expect(
+			derivePeerScopeRejectionsView({
+				scope_rejections: { total: 0, by_reason: {} },
+			}).total,
+		).toBe(0);
+	});
+
+	it("renders human-readable labels and orders reasons by count desc", () => {
+		const view = derivePeerScopeRejectionsView({
+			scope_rejections: {
+				total: 4,
+				by_reason: { missing_scope: 1, stale_epoch: 3 },
+				last_at: "2026-05-03T00:00:00Z",
+			},
+		});
+		expect(view.total).toBe(4);
+		expect(view.badgeLabel).toBe("4 sync rejections");
+		expect(view.reasons.map((entry) => [entry.reason, entry.count])).toEqual([
+			["stale_epoch", 3],
+			["missing_scope", 1],
+		]);
+		expect(view.reasons[0]?.label).toBe("Stale or revoked membership");
+		expect(view.lastAt).toBe("2026-05-03T00:00:00Z");
+	});
+
+	it("uses singular badge label when there is exactly one rejection", () => {
+		const view = derivePeerScopeRejectionsView({
+			scope_rejections: { total: 1, by_reason: { missing_scope: 1 } },
+		});
+		expect(view.badgeLabel).toBe("1 sync rejection");
 	});
 });
 

@@ -19,10 +19,12 @@ import { PeerScopeCollapsible } from "../peer-scope-collapsible";
 import { openSyncConfirmDialog } from "../sync-dialogs";
 import {
 	derivePeerDirection,
+	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
 	type PeerDirection,
 	type PeerLike,
+	type PeerScopeRejectionsSummary,
 } from "../view-model";
 import { renderIntoSyncMount } from "./render-root";
 import { SyncEmptyState } from "./sync-empty-state";
@@ -110,6 +112,7 @@ type SyncPeer = PeerLike & {
 	addresses?: unknown[];
 	claimed_local_actor?: boolean;
 	project_scope?: PeerScopeLike;
+	scope_rejections?: PeerScopeRejectionsSummary;
 	discovered_via_coordinator_id?: string | null;
 	discovered_via_group_id?: string | null;
 };
@@ -176,6 +179,7 @@ function SyncPeerCard({
 	const trustSummary = derivePeerTrustSummary(peer);
 	const directionHint = DIRECTION_GLYPH[derivePeerDirection(peer)];
 	const peerStatus: SyncPeerStatus = peer.status || {};
+	const scopeRejections = derivePeerScopeRejectionsView(peer);
 	const scope = peer.project_scope || {};
 	const includeList = listText(scope.include);
 	const excludeList = listText(scope.exclude);
@@ -457,6 +461,14 @@ function SyncPeerCard({
 							{pendingScopeReview ? (
 								<span className="badge actor-badge">Needs scope review</span>
 							) : null}
+							{scopeRejections.badgeLabel ? (
+								<span
+									className="badge badge-offline"
+									title="Inbound ops rejected by the sharing-domain scope gate. Expand for reason codes."
+								>
+									{scopeRejections.badgeLabel}
+								</span>
+							) : null}
 							{peer.discovered_via_group_id ? (
 								<span
 									className="badge actor-badge"
@@ -543,6 +555,34 @@ function SyncPeerCard({
 								lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never",
 							].join(" · ")}
 						</div>
+
+						{scopeRejections.total > 0 ? (
+							<div
+								className="peer-scope-rejections"
+								data-peer-rejection-count={scopeRejections.total}
+							>
+								<div className="peer-scope-summary">Sharing-rule rejections (24h)</div>
+								<div className="peer-meta">
+									Inbound ops the local fail-closed gate refused. Diagnostics never expose op
+									payloads.
+								</div>
+								<ul className="peer-scope-rejections-list">
+									{scopeRejections.reasons.map((entry) => (
+										<li key={entry.reason}>
+											<span className="peer-scope-rejection-label">{entry.label}</span>
+											<span className="peer-scope-rejection-count">
+												{entry.count.toLocaleString()}
+											</span>
+										</li>
+									))}
+								</ul>
+								{scopeRejections.lastAt ? (
+									<div className="peer-meta">
+										Last rejected {formatTimestamp(scopeRejections.lastAt)}
+									</div>
+								) : null}
+							</div>
+						) : null}
 
 						<div className="peer-scope-summary">Who this device belongs to</div>
 						<div className="peer-meta">{assignmentSummary}</div>

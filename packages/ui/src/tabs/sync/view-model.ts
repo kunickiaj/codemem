@@ -14,8 +14,10 @@ export {
 export { deviceNeedsFriendlyName, resolveFriendlyDeviceName } from "./view-model/device-names";
 export {
 	derivePeerDirection,
+	derivePeerScopeRejectionsView,
 	derivePeerTrustSummary,
 	derivePeerUiStatus,
+	type PeerScopeRejectionsView,
 } from "./view-model/peer-status";
 export {
 	deriveDuplicatePeople,
@@ -28,6 +30,8 @@ export {
 	type PeerDirection,
 	type PeerLike,
 	type PeerRecentOps,
+	type PeerScopeRejectionReason,
+	type PeerScopeRejectionsSummary,
 	SYNC_TERMINOLOGY,
 	type UiCoordinatorApprovalState,
 	type UiCoordinatorApprovalSummary,

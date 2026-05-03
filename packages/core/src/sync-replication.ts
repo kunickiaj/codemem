@@ -2266,6 +2266,163 @@ export function rejectInboundScopeFailures(
 	return result;
 }
 
+/** Aggregate counts of recorded inbound-scope rejections per peer device. */
+export interface InboundScopeRejectionPeerSummary {
+	peer_device_id: string | null;
+	total: number;
+	by_reason: Partial<Record<InboundScopeRejectionReason, number>>;
+	last_at: string | null;
+}
+
+export interface InboundScopeRejectionSummaryOptions {
+	/** ISO timestamp; rejections older than this are ignored. */
+	sinceIso?: string;
+	/** Optional: only summarize rejections recorded for this peer. */
+	peerDeviceId?: string | null;
+}
+
+/**
+ * Read-only summary of recorded inbound-scope rejections grouped by peer.
+ * Pure aggregate over the rejection log — never reads payloads (the log
+ * does not store any). Used by the sync API to render reason-code
+ * breakdowns without exposing op contents.
+ */
+export function summarizeInboundScopeRejections(
+	db: Database,
+	options: InboundScopeRejectionSummaryOptions = {},
+): InboundScopeRejectionPeerSummary[] {
+	if (!syncScopeRejectionsTableExists(db)) return [];
+	const params: unknown[] = [];
+	const filters: string[] = [];
+	if (options.sinceIso) {
+		filters.push(`created_at >= ?`);
+		params.push(options.sinceIso);
+	}
+	if (options.peerDeviceId !== undefined) {
+		const id = cleanText(options.peerDeviceId);
+		if (id === null) {
+			filters.push(`peer_device_id IS NULL`);
+		} else {
+			filters.push(`peer_device_id = ?`);
+			params.push(id);
+		}
+	}
+	const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+	const rows = db
+		.prepare(
+			`SELECT peer_device_id, reason, COUNT(*) AS count, MAX(created_at) AS last_at
+			   FROM sync_scope_rejections
+			   ${where}
+			  GROUP BY peer_device_id, reason`,
+		)
+		.all(...params) as Array<{
+		peer_device_id: string | null;
+		reason: string;
+		count: number;
+		last_at: string | null;
+	}>;
+
+	const summaries = new Map<string, InboundScopeRejectionPeerSummary>();
+	for (const row of rows) {
+		const key = row.peer_device_id ?? "";
+		let entry = summaries.get(key);
+		if (!entry) {
+			entry = {
+				peer_device_id: row.peer_device_id ?? null,
+				total: 0,
+				by_reason: {},
+				last_at: null,
+			};
+			summaries.set(key, entry);
+		}
+		const reason = row.reason as InboundScopeRejectionReason;
+		const count = Number(row.count ?? 0);
+		entry.by_reason[reason] = (entry.by_reason[reason] ?? 0) + count;
+		entry.total += count;
+		if (row.last_at && (!entry.last_at || row.last_at > entry.last_at)) {
+			entry.last_at = row.last_at;
+		}
+	}
+	return Array.from(summaries.values());
+}
+
+export interface InboundScopeRejectionRecord extends InboundScopeRejection {
+	id: number;
+	created_at: string;
+}
+
+export interface ListInboundScopeRejectionsOptions {
+	peerDeviceId?: string | null;
+	sinceIso?: string;
+	limit?: number;
+}
+
+/**
+ * List recently recorded inbound-scope rejections (newest first). Each row
+ * is metadata only — op id, entity ref, scope id, reason, timestamp — and
+ * never includes op payloads (the log does not store them).
+ */
+export function listInboundScopeRejections(
+	db: Database,
+	options: ListInboundScopeRejectionsOptions = {},
+): InboundScopeRejectionRecord[] {
+	if (!syncScopeRejectionsTableExists(db)) return [];
+	const params: unknown[] = [];
+	const filters: string[] = [];
+	if (options.sinceIso) {
+		filters.push(`created_at >= ?`);
+		params.push(options.sinceIso);
+	}
+	if (options.peerDeviceId !== undefined) {
+		const id = cleanText(options.peerDeviceId);
+		if (id === null) {
+			filters.push(`peer_device_id IS NULL`);
+		} else {
+			filters.push(`peer_device_id = ?`);
+			params.push(id);
+		}
+	}
+	const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+	const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
+	const rows = db
+		.prepare(
+			`SELECT id, peer_device_id, op_id, entity_type, entity_id, scope_id, reason, created_at
+			   FROM sync_scope_rejections
+			   ${where}
+			  ORDER BY created_at DESC, id DESC
+			  LIMIT ?`,
+		)
+		.all(...params, limit) as Array<{
+		id: number;
+		peer_device_id: string | null;
+		op_id: string;
+		entity_type: string;
+		entity_id: string;
+		scope_id: string | null;
+		reason: string;
+		created_at: string;
+	}>;
+	return rows.map((row) => ({
+		id: Number(row.id),
+		peer_device_id: row.peer_device_id ?? null,
+		op_id: row.op_id,
+		entity_type: row.entity_type,
+		entity_id: row.entity_id,
+		scope_id: row.scope_id ?? null,
+		reason: row.reason as InboundScopeRejectionReason,
+		created_at: row.created_at,
+	}));
+}
+
+function syncScopeRejectionsTableExists(db: Database): boolean {
+	const row = db
+		.prepare(
+			`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_scope_rejections' LIMIT 1`,
+		)
+		.get();
+	return Boolean(row);
+}
+
 const LEGACY_IMPORT_KEY_OLD_RE = /^legacy:memory_item:(.+)$/;
 
 /**

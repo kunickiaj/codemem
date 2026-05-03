@@ -100,6 +100,19 @@ export type PeerRecentOps = {
 
 export type PeerDirection = "bidirectional" | "publishing" | "subscribed" | "none";
 
+export type PeerScopeRejectionReason =
+	| "missing_scope"
+	| "sender_not_member"
+	| "receiver_not_member"
+	| "stale_epoch"
+	| "scope_mismatch";
+
+export interface PeerScopeRejectionsSummary {
+	total?: number;
+	by_reason?: Partial<Record<PeerScopeRejectionReason, number>>;
+	last_at?: string | null;
+}
+
 export interface PeerLike {
 	peer_device_id?: string;
 	name?: string;
@@ -109,6 +122,7 @@ export interface PeerLike {
 	actor_id?: string;
 	status?: SyncPeerStatusLike;
 	recent_ops?: PeerRecentOps;
+	scope_rejections?: PeerScopeRejectionsSummary;
 }
 
 export interface DiscoveredDeviceLike {

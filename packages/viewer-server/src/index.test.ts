@@ -1687,6 +1687,166 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("surfaces inbound scope-rejection summary per peer", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers (
+							peer_device_id, name, claimed_local_actor, created_at
+						) VALUES (?, ?, 0, ?)`,
+					)
+					.run("peer-rej", "Peer Rej", new Date().toISOString());
+				store.db.exec(`
+					CREATE TABLE IF NOT EXISTS sync_scope_rejections (
+						id INTEGER PRIMARY KEY AUTOINCREMENT,
+						peer_device_id TEXT,
+						op_id TEXT NOT NULL,
+						entity_type TEXT NOT NULL,
+						entity_id TEXT NOT NULL,
+						scope_id TEXT,
+						reason TEXT NOT NULL,
+						created_at TEXT NOT NULL
+					);
+				`);
+				const recent = new Date().toISOString();
+				const insert = store.db.prepare(
+					`INSERT INTO sync_scope_rejections(
+						peer_device_id, op_id, entity_type, entity_id, scope_id, reason, created_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				);
+				insert.run(
+					"peer-rej",
+					"op-1",
+					"memory_item",
+					"key:a",
+					"acme-work",
+					"missing_scope",
+					recent,
+				);
+				insert.run(
+					"peer-rej",
+					"op-2",
+					"memory_item",
+					"key:b",
+					"acme-work",
+					"missing_scope",
+					recent,
+				);
+				insert.run("peer-rej", "op-3", "memory_item", "key:c", "acme-work", "stale_epoch", recent);
+
+				const res = await app.request("/api/sync/peers");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					items: Array<{
+						peer_device_id: string;
+						scope_rejections: {
+							total: number;
+							by_reason: Record<string, number>;
+							last_at: string | null;
+						};
+					}>;
+				};
+				const peer = body.items.find((p) => p.peer_device_id === "peer-rej");
+				expect(peer?.scope_rejections.total).toBe(3);
+				expect(peer?.scope_rejections.by_reason).toEqual({
+					missing_scope: 2,
+					stale_epoch: 1,
+				});
+				expect(peer?.scope_rejections.last_at).toBe(recent);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("returns scope-rejection records for a peer without exposing payloads", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				store.db.exec(`
+					CREATE TABLE IF NOT EXISTS sync_scope_rejections (
+						id INTEGER PRIMARY KEY AUTOINCREMENT,
+						peer_device_id TEXT,
+						op_id TEXT NOT NULL,
+						entity_type TEXT NOT NULL,
+						entity_id TEXT NOT NULL,
+						scope_id TEXT,
+						reason TEXT NOT NULL,
+						created_at TEXT NOT NULL
+					);
+				`);
+				const insert = store.db.prepare(
+					`INSERT INTO sync_scope_rejections(
+						peer_device_id, op_id, entity_type, entity_id, scope_id, reason, created_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				);
+				const now = new Date().toISOString();
+				insert.run("peer-x", "op-old", "memory_item", "key:1", "acme", "missing_scope", now);
+				insert.run("peer-x", "op-new", "memory_item", "key:2", "acme", "stale_epoch", now);
+				insert.run("peer-y", "op-other", "memory_item", "key:3", "other", "scope_mismatch", now);
+
+				const res = await app.request("/api/sync/peers/peer-x/scope-rejections");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					peer_device_id: string;
+					summary: { total: number; by_reason: Record<string, number> };
+					items: Array<Record<string, unknown>>;
+				};
+				expect(body.peer_device_id).toBe("peer-x");
+				expect(body.summary.total).toBe(2);
+				expect(body.summary.by_reason).toEqual({
+					missing_scope: 1,
+					stale_epoch: 1,
+				});
+				expect(body.items).toHaveLength(2);
+				for (const item of body.items) {
+					expect(item).not.toHaveProperty("payload_json");
+					expect(item.peer_device_id).toBe("peer-x");
+				}
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects scope-rejections lookup with missing peer id", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const res = await app.request("/api/sync/peers/%20/scope-rejections");
+				expect(res.status).toBe(400);
+				const body = (await res.json()) as { error: string };
+				expect(body.error).toBe("missing_peer_device_id");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("clamps absurd sinceMinutes values instead of throwing on Date overflow", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				// Number.MAX_SAFE_INTEGER minutes would push the computed
+				// timestamp past the JS Date range and make toISOString()
+				// throw RangeError → 500. The handler must clamp first.
+				const res = await app.request(
+					`/api/sync/peers/peer-x/scope-rejections?sinceMinutes=${Number.MAX_SAFE_INTEGER}`,
+				);
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					summary: { total: number };
+					items: unknown[];
+				};
+				expect(body.summary.total).toBe(0);
+				expect(body.items).toEqual([]);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("treats naive sync timestamps as UTC", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
