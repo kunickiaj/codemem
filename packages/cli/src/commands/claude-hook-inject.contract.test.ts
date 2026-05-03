@@ -274,23 +274,28 @@ describe("claude-hook-inject contract fixtures", () => {
 		}
 
 		try {
+			const toPack = (text: string) => ({
+				packText: text,
+				items: text ? 1 : 0,
+				packTokens: text ? text.length : 0,
+			});
 			const buildLocalPack = deps?.buildLocalPack
 				? async (
 						context: string,
 						project: string | null,
 						dbPath: string,
-						workingSetPaths?: string[],
+						workingSetPaths: string[] = [],
 					) => {
 						const result = deps.buildLocalPack?.(context, project, dbPath, workingSetPaths);
-						return await Promise.resolve(result ?? "");
+						return toPack(await Promise.resolve(result ?? ""));
 					}
-				: async () => "";
+				: async () => toPack("");
 			const httpPack = deps?.httpPack
 				? async (context: string, project: string | null, maxTimeMs?: number) => {
 						const result = deps.httpPack?.(context, project, maxTimeMs);
-						return await Promise.resolve(result ?? "");
+						return toPack(await Promise.resolve(result ?? ""));
 					}
-				: async () => "";
+				: async () => toPack("");
 
 			const result = await buildClaudeHookInjection(
 				payload,

@@ -1537,17 +1537,17 @@ export const OpencodeMemPlugin = async ({
       return "";
     }
     const metrics = parsePackMetrics(result.stdout);
-    if (debug) {
-      const itemCount = Number.isFinite(Number(metrics?.items))
-        ? Number(metrics.items)
-        : 0;
-      const packTokens = Number.isFinite(Number(metrics?.pack_tokens))
-        ? Number(metrics.pack_tokens)
-        : 0;
-      await logLine(
-        `inject.pack.ok query_len=${query ? query.length : 0} items=${itemCount} pack_tokens=${packTokens}`
-      );
-    }
+    // The pack JSON exposes the item count as `total_items`; `metrics.items`
+    // does not exist on that payload, so reading it would always log 0.
+    const itemCount = Number.isFinite(Number(metrics?.total_items))
+      ? Number(metrics.total_items)
+      : 0;
+    const packTokens = Number.isFinite(Number(metrics?.pack_tokens))
+      ? Number(metrics.pack_tokens)
+      : 0;
+    await logLine(
+      `inject.pack.ok source=opencode items=${itemCount} pack_tokens=${packTokens} query_len=${query ? query.length : 0}`
+    );
     if (metrics) {
       return {
         text: `[codemem context]\n${packText}`,
