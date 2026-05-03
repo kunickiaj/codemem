@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { logHookFailure, pluginLogPath } from "./claude-hook-plugin-log.js";
+import { logHookEvent, pluginLogPath } from "./claude-hook-plugin-log.js";
 
 function slashPath(value: string): string {
 	return value.replace(/\\/g, "/");
@@ -54,13 +54,13 @@ describe("claude-hook-plugin-log", () => {
 		});
 	});
 
-	describe("logHookFailure", () => {
+	describe("logHookEvent", () => {
 		it("appends a timestamped line to the configured log path", () => {
 			const target = join(baseDir, "logs", "plugin.log");
 			process.env.CODEMEM_PLUGIN_LOG_PATH = target;
 
-			logHookFailure("first failure");
-			logHookFailure("second failure");
+			logHookEvent("first failure");
+			logHookEvent("second failure");
 
 			expect(existsSync(target)).toBe(true);
 			const content = readFileSync(target, "utf8");
@@ -73,7 +73,7 @@ describe("claude-hook-plugin-log", () => {
 		it("creates parent directories on first write", () => {
 			const target = join(baseDir, "deep", "nested", "plugin.log");
 			process.env.CODEMEM_PLUGIN_LOG_PATH = target;
-			logHookFailure("nested write");
+			logHookEvent("nested write");
 			expect(existsSync(target)).toBe(true);
 		});
 
@@ -83,7 +83,7 @@ describe("claude-hook-plugin-log", () => {
 			const blocker = join(baseDir, "blocker");
 			writeFileSync(blocker, "not a dir", "utf8");
 			process.env.CODEMEM_PLUGIN_LOG_PATH = join(blocker, "plugin.log");
-			expect(() => logHookFailure("should not throw")).not.toThrow();
+			expect(() => logHookEvent("should not throw")).not.toThrow();
 		});
 	});
 });

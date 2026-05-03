@@ -1,7 +1,7 @@
 /**
- * Append-only plugin failure log used by both `claude-hook-inject` and
- * `claude-hook-ingest` to record errors that don't justify crashing the
- * hook command itself.
+ * Append-only plugin event log used by `claude-hook-inject` and
+ * `claude-hook-ingest` to record successes (e.g. `inject.pack.ok ...`) and
+ * errors that don't justify crashing the hook command itself.
  *
  * Behavior:
  * - Default log path is `~/.codemem/plugin.log`.
@@ -38,7 +38,7 @@ export function pluginLogPath(): string {
  * filesystem error is swallowed so a logging failure can never bubble up
  * into a Claude hook crash.
  */
-export function logHookFailure(message: string): void {
+export function logHookEvent(message: string): void {
 	const path = pluginLogPath();
 	try {
 		mkdirSync(dirname(path), { recursive: true });

@@ -1,9 +1,19 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildClaudeHookInjection, claudeHookInjectCommand } from "./claude-hook-inject.js";
+import {
+	buildClaudeHookInjection,
+	claudeHookInjectCommand,
+	type PackResult,
+} from "./claude-hook-inject.js";
 import { saveSessionState, statePathForSession } from "./claude-hook-session-state.js";
+
+const pack = (packText: string, items = 0, packTokens = 0): PackResult => ({
+	packText,
+	items,
+	packTokens,
+});
 
 describe("claude-hook-inject command", () => {
 	let stateDir: string;
@@ -55,7 +65,7 @@ describe("claude-hook-inject command", () => {
 					expect(project).toBe("codemem");
 					expect(dbPath).toBe("/tmp/test.sqlite");
 					expect(workingSetPaths).toEqual([]);
-					return "## Summary\n[1] (decision) Auth fix";
+					return pack("## Summary\n[1] (decision) Auth fix", 1, 42);
 				},
 				httpPack: async () => {
 					throw new Error("http fallback should not run");
@@ -97,7 +107,7 @@ describe("claude-hook-inject command", () => {
 						expect(context).toBe("continue sync work codemem");
 						expect(project).toBe("codemem");
 						expect(maxTimeMs).toBe(7000);
-						return "## Timeline\n[4] (feature) Sync continuation";
+						return pack("## Timeline\n[4] (feature) Sync continuation", 1, 53);
 					},
 					resolveDb: () => "/tmp/test.sqlite",
 				},
@@ -181,8 +191,8 @@ describe("claude-hook-inject command", () => {
 				},
 				{},
 				{
-					buildLocalPack: async () => "12345678901234567890",
-					httpPack: async () => "",
+					buildLocalPack: async () => pack("12345678901234567890"),
+					httpPack: async () => pack(""),
 					resolveDb: () => "/tmp/test.sqlite",
 				},
 			);
@@ -215,8 +225,8 @@ describe("claude-hook-inject command", () => {
 			},
 			{},
 			{
-				buildLocalPack: async () => "Remember to run targeted tests.",
-				httpPack: async () => "",
+				buildLocalPack: async () => pack("Remember to run targeted tests."),
+				httpPack: async () => pack(""),
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -238,8 +248,8 @@ describe("claude-hook-inject command", () => {
 			},
 			{},
 			{
-				buildLocalPack: async () => "## Summary\nmemory pack",
-				httpPack: async () => "",
+				buildLocalPack: async () => pack("## Summary\nmemory pack"),
+				httpPack: async () => pack(""),
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
@@ -281,7 +291,7 @@ describe("claude-hook-inject command", () => {
 						"packages/cli/src/b.ts",
 						"packages/cli/src/c.ts",
 					]);
-					return "## Memory pack";
+					return pack("## Memory pack");
 				},
 				httpPack: async () => {
 					throw new Error("http fallback should not run");
@@ -309,8 +319,8 @@ describe("claude-hook-inject command", () => {
 				},
 				{},
 				{
-					buildLocalPack: async () => "memory_one memory_two memory_three memory_four",
-					httpPack: async () => "",
+					buildLocalPack: async () => pack("memory_one memory_two memory_three memory_four"),
+					httpPack: async () => pack(""),
 					resolveDb: () => "/tmp/test.sqlite",
 				},
 			);
@@ -384,14 +394,115 @@ describe("claude-hook-inject command", () => {
 					// equal post-normalization).
 					expect(context).not.toContain("\n");
 					expect(context).toBe("fix the auth callback flow codemem");
-					return "## Pack";
+					return pack("## Pack");
 				},
-				httpPack: async () => "",
+				httpPack: async () => pack(""),
 				resolveDb: () => "/tmp/test.sqlite",
 			},
 		);
 
 		expect(result.hookSpecificOutput?.additionalContext).toBe("## Pack");
+	});
+
+	it("logs inject.pack.ok with metrics on local pack success", async () => {
+		await buildClaudeHookInjection(
+			{
+				hook_event_name: "UserPromptSubmit",
+				session_id: "sess-metrics",
+				prompt: "ship the feature",
+				cwd: "/tmp/codemem",
+				project: "codemem",
+			},
+			{},
+			{
+				buildLocalPack: async () => pack("## Summary\nmemory pack body", 4, 137),
+				httpPack: async () => {
+					throw new Error("http fallback should not run");
+				},
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+
+		const log = readFileSync(pluginLogPath, "utf8");
+		const line = log.trim().split("\n").pop() ?? "";
+		expect(line).toContain("inject.pack.ok");
+		expect(line).toContain("source=claude");
+		expect(line).toContain("origin=local");
+		expect(line).toContain("items=4");
+		expect(line).toContain("pack_tokens=137");
+		expect(line).toContain('project="codemem"');
+		expect(line).toContain("empty=false");
+		expect(line).toMatch(/query_len=\d+/);
+	});
+
+	it("logs origin=http when local pack fails and http fallback succeeds", async () => {
+		const originalFallback = process.env.CODEMEM_INJECT_HTTP_FALLBACK;
+		process.env.CODEMEM_INJECT_HTTP_FALLBACK = "1";
+		try {
+			await buildClaudeHookInjection(
+				{
+					hook_event_name: "UserPromptSubmit",
+					session_id: "sess-http-origin",
+					prompt: "fallback path",
+					cwd: "/tmp/codemem",
+				},
+				{},
+				{
+					buildLocalPack: async () => {
+						throw new Error("local pack failed");
+					},
+					httpPack: async () => pack("## Timeline\nfallback pack", 2, 64),
+					resolveDb: () => "/tmp/test.sqlite",
+				},
+			);
+
+			const log = readFileSync(pluginLogPath, "utf8");
+			const okLine =
+				log
+					.trim()
+					.split("\n")
+					.reverse()
+					.find((l) => l.includes("inject.pack.ok")) ?? "";
+			expect(okLine).toContain("origin=http");
+			expect(okLine).toContain("items=2");
+			expect(okLine).toContain("pack_tokens=64");
+			expect(okLine).toContain("empty=false");
+		} finally {
+			if (originalFallback === undefined) delete process.env.CODEMEM_INJECT_HTTP_FALLBACK;
+			else process.env.CODEMEM_INJECT_HTTP_FALLBACK = originalFallback;
+		}
+	});
+
+	it("logs inject.pack.ok with empty=true when no pack is produced", async () => {
+		const originalFallback = process.env.CODEMEM_INJECT_HTTP_FALLBACK;
+		process.env.CODEMEM_INJECT_HTTP_FALLBACK = "0";
+		try {
+			await buildClaudeHookInjection(
+				{
+					hook_event_name: "UserPromptSubmit",
+					session_id: "sess-empty",
+					prompt: "no memories yet",
+					cwd: "/tmp/codemem",
+				},
+				{},
+				{
+					buildLocalPack: async () => pack(""),
+					httpPack: async () => {
+						throw new Error("http fallback disabled");
+					},
+					resolveDb: () => "/tmp/test.sqlite",
+				},
+			);
+
+			const log = readFileSync(pluginLogPath, "utf8");
+			const line = log.trim().split("\n").pop() ?? "";
+			expect(line).toContain("inject.pack.ok");
+			expect(line).toContain("empty=true");
+			expect(line).toContain("items=0");
+		} finally {
+			if (originalFallback === undefined) delete process.env.CODEMEM_INJECT_HTTP_FALLBACK;
+			else process.env.CODEMEM_INJECT_HTTP_FALLBACK = originalFallback;
+		}
 	});
 
 	it("returns continue without additionalContext when all generation paths fail", async () => {
@@ -409,7 +520,7 @@ describe("claude-hook-inject command", () => {
 					buildLocalPack: async () => {
 						throw new Error("local pack failed");
 					},
-					httpPack: async () => "",
+					httpPack: async () => pack(""),
 					resolveDb: () => "/tmp/test.sqlite",
 				},
 			);

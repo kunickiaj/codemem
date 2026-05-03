@@ -2,7 +2,7 @@ import { MemoryStore, resolveDbPath, resolveHookProject } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
-import { logHookFailure } from "./claude-hook-plugin-log.js";
+import { logHookEvent } from "./claude-hook-plugin-log.js";
 import {
 	buildInjectQuery,
 	normalizePromptText,
@@ -27,8 +27,18 @@ const HOOK_EVENT_NAME = "UserPromptSubmit" as const;
 
 type InjectOpts = DbOpts;
 
+export type PackResult = {
+	packText: string;
+	items: number;
+	packTokens: number;
+};
+
+const EMPTY_PACK: PackResult = { packText: "", items: 0, packTokens: 0 };
+
 type HttpPackResponse = {
 	pack_text?: string;
+	items?: unknown;
+	metrics?: { pack_tokens?: unknown };
 };
 
 type InjectDeps = {
@@ -114,7 +124,7 @@ async function buildLocalPack(
 	project: string | null,
 	dbPath: string,
 	workingSetPaths: string[] = [],
-): Promise<string> {
+): Promise<PackResult> {
 	const store = new MemoryStore(dbPath);
 	try {
 		const limit = parsePositiveInt(process.env.CODEMEM_INJECT_LIMIT, 8);
@@ -127,7 +137,12 @@ async function buildLocalPack(
 			filters.working_set_paths = workingSetPaths;
 		}
 		const pack = await store.buildMemoryPackAsync(context, limit, budget, filters);
-		return String(pack.pack_text ?? "").trim();
+		const packText = String(pack.pack_text ?? "").trim();
+		const items = Array.isArray(pack.items) ? pack.items.length : 0;
+		const packTokens = Number.isFinite(Number(pack.metrics?.pack_tokens))
+			? Number(pack.metrics.pack_tokens)
+			: 0;
+		return { packText, items, packTokens };
 	} finally {
 		store.close();
 	}
@@ -137,7 +152,8 @@ async function tryHttpPack(
 	context: string,
 	project: string | null,
 	maxTimeMs = DEFAULT_HTTP_MAX_TIME_S * 1000,
-): Promise<string> {
+): Promise<PackResult> {
+	const empty: PackResult = { packText: "", items: 0, packTokens: 0 };
 	const host = process.env.CODEMEM_VIEWER_HOST || DEFAULT_VIEWER_HOST;
 	const port = parsePositiveInt(process.env.CODEMEM_VIEWER_PORT, DEFAULT_VIEWER_PORT);
 	const url = new URL(`http://${host}:${port}/api/pack`);
@@ -156,12 +172,17 @@ async function tryHttpPack(
 	try {
 		const res = await fetch(url, { signal: controller.signal });
 		if (!res.ok) {
-			return "";
+			return empty;
 		}
 		const body = (await res.json()) as HttpPackResponse;
-		return String(body.pack_text ?? "").trim();
+		const packText = String(body.pack_text ?? "").trim();
+		const items = Array.isArray(body.items) ? body.items.length : 0;
+		const packTokens = Number.isFinite(Number(body.metrics?.pack_tokens))
+			? Number(body.metrics?.pack_tokens)
+			: 0;
+		return { packText, items, packTokens };
 	} catch {
-		return "";
+		return empty;
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -206,26 +227,48 @@ export async function buildClaudeHookInjection(
 	const httpMaxTimeMs =
 		parsePositiveInt(process.env.CODEMEM_INJECT_HTTP_MAX_TIME_S, DEFAULT_HTTP_MAX_TIME_S) * 1000;
 
-	let additionalContext = "";
+	let pack: PackResult = EMPTY_PACK;
+	let origin: "local" | "http" | "none" = "none";
 	try {
 		const dbPath = resolveDb(resolveDbOpt(opts));
-		additionalContext = await buildPack(query, project, dbPath, workingSetPaths);
+		pack = await buildPack(query, project, dbPath, workingSetPaths);
+		if (pack.packText) {
+			origin = "local";
+		}
 	} catch (err) {
-		additionalContext = "";
-		logHookFailure(
+		logHookEvent(
 			`codemem claude-hook-inject local pack failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 
-	if (!additionalContext && envNotDisabled(process.env.CODEMEM_INJECT_HTTP_FALLBACK || "1")) {
-		// tryHttpPack swallows its own network errors and returns "" on
-		// failure; don't wrap it here so tests that throw from a stub mock
-		// still surface as failures (the existing
-		// "should not run" assertions rely on this).
-		additionalContext = await httpPack(query, project, httpMaxTimeMs);
+	if (!pack.packText && envNotDisabled(process.env.CODEMEM_INJECT_HTTP_FALLBACK || "1")) {
+		// tryHttpPack swallows its own network errors and returns an empty
+		// result on failure; don't wrap it here so tests that throw from a
+		// stub mock still surface as failures (the existing "should not run"
+		// assertions rely on this).
+		pack = await httpPack(query, project, httpMaxTimeMs);
+		if (pack.packText) {
+			origin = "http";
+		}
 	}
 
-	return continueResult(truncateAdditionalContext(additionalContext, maxChars));
+	// `empty` reflects retrieval, not post-truncation delivery, so the metric
+	// stays load-bearing for measuring whether the pipeline is producing
+	// memory candidates at all.
+	const fields = [
+		"inject.pack.ok",
+		"source=claude",
+		`origin=${origin}`,
+		`items=${pack.items}`,
+		`pack_tokens=${pack.packTokens}`,
+		`query_len=${query.length}`,
+		`empty=${pack.packText ? "false" : "true"}`,
+	];
+	if (project) {
+		fields.push(`project=${JSON.stringify(project)}`);
+	}
+	logHookEvent(fields.join(" "));
+	return continueResult(truncateAdditionalContext(pack.packText, maxChars));
 }
 
 const claudeHookInjectCmd = new Command("claude-hook-inject")
