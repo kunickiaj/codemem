@@ -3,7 +3,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 
-const SEMVER_RE = /^\d+\.\d+\.\d+$/;
+// Plain X.Y.Z plus the prerelease tags the Release workflow already
+// recognizes for npm dist-tag routing (alpha/beta/rc; see .github/workflows/release.yml).
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/;
 const CORE_VERSION_RE = /^(export\s+const\s+VERSION\s*=\s*")([^"]+)(";\s*)$/m;
 const CORE_TEST_VERSION_RE = /^(\s*expect\(VERSION\)\.toBe\(")([^"]+)("\);\s*)$/m;
 const PLUGIN_PIN_RE = /^(const\s+PINNED_BACKEND_VERSION\s*=\s*")([^"]+)(";\s*)$/m;
