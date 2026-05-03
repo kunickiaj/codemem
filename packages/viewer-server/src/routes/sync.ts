@@ -14,6 +14,7 @@ import type {
 	SemanticIndexDiagnostics,
 } from "@codemem/core";
 import {
+	addSyncScopeToBoundary,
 	applyReplicationOps,
 	buildBaseUrl,
 	cleanupNonces,
@@ -55,12 +56,15 @@ import {
 	loadReplicationOpsForPeer,
 	lookupCoordinatorPeers,
 	mergeAddresses,
+	parseSyncScopeRequest,
 	readCoordinatorSyncConfig,
 	recordNonce,
 	requestJson,
 	runSyncPass,
+	SYNC_SCOPE_QUERY_PARAM,
 	schema,
 	syncProjectAllowedByFilters,
+	syncScopeResetRequiredPayload,
 	syncVisibilityAllowed,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
@@ -1247,7 +1251,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					device_id: deviceId,
 					protocol_version: SYNC_PROTOCOL_VERSION,
 					fingerprint,
-					sync_reset: syncReset,
+					sync_reset: addSyncScopeToBoundary(syncReset, null),
 					sync_capability: LOCAL_SYNC_CAPABILITY,
 				});
 			} catch {
@@ -1269,6 +1273,18 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		const peerDeviceId = auth.deviceId;
 
 		try {
+			const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
+			const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined);
+			if (!scopeRequest.ok) {
+				return c.json(
+					syncScopeResetRequiredPayload(
+						getSyncResetState(store.db),
+						scopeRequest.reason,
+						LOCAL_SYNC_CAPABILITY,
+					),
+					409,
+				);
+			}
 			const since = c.req.query("since") ?? null;
 			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
 			const rawGeneration = c.req.query("generation");
@@ -1293,7 +1309,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 					{
 						error: "reset_required",
 						sync_capability: LOCAL_SYNC_CAPABILITY,
-						...result.reset,
+						...addSyncScopeToBoundary(result.reset, scopeRequest.scope_id),
 					},
 					409,
 				);
@@ -1303,6 +1319,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			return c.json({
 				reset_required: false,
 				sync_capability: LOCAL_SYNC_CAPABILITY,
+				scope_id: scopeRequest.scope_id,
 				generation: boundary.generation,
 				snapshot_id: boundary.snapshot_id,
 				baseline_cursor: boundary.baseline_cursor,
@@ -1357,6 +1374,18 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			if (limited) return limited;
 
 			try {
+				const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
+				const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined);
+				if (!scopeRequest.ok) {
+					return c.json(
+						syncScopeResetRequiredPayload(
+							getSyncResetState(store.db),
+							scopeRequest.reason,
+							LOCAL_SYNC_CAPABILITY,
+						),
+						409,
+					);
+				}
 				const rawGeneration = c.req.query("generation");
 				const generation =
 					rawGeneration != null && rawGeneration.trim().length > 0
@@ -1386,6 +1415,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				});
 
 				return c.json({
+					scope_id: scopeRequest.scope_id,
 					generation: result.boundary.generation,
 					snapshot_id: result.boundary.snapshot_id,
 					baseline_cursor: result.boundary.baseline_cursor,
@@ -1433,6 +1463,17 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			return c.json({ error: "invalid_json" }, 400);
 		}
 
+		const scopeRequest = parseSyncScopeRequest(body.scope_id, Object.hasOwn(body, "scope_id"));
+		if (!scopeRequest.ok) {
+			return c.json(
+				syncScopeResetRequiredPayload(
+					getSyncResetState(store.db),
+					scopeRequest.reason,
+					LOCAL_SYNC_CAPABILITY,
+				),
+				409,
+			);
+		}
 		if (!Array.isArray(body.ops)) {
 			return c.json({ error: "invalid_ops" }, 400);
 		}
@@ -1465,6 +1506,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		return c.json({
 			...result,
 			sync_capability: LOCAL_SYNC_CAPABILITY,
+			scope_id: scopeRequest.scope_id,
 			skipped: result.skipped + filteredInbound.skipped,
 		});
 	});

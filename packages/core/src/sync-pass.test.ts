@@ -795,7 +795,13 @@ describe("syncOnce auto-bootstrap", () => {
 	it("triggers bootstrap for empty local state with no cursor", async () => {
 		seedPeer();
 
-		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([200, statusPayload]);
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValue([
+			200,
+			{
+				...statusPayload,
+				sync_reset: { ...statusPayload.sync_reset, scope_id: "acme-work" },
+			},
+		]);
 		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockResolvedValue({
 			items: [],
 			generation: 1,
@@ -817,6 +823,7 @@ describe("syncOnce auto-bootstrap", () => {
 
 		// Verify the elevated page size was used
 		const fetchCall = vi.mocked(syncBootstrap.fetchAllSnapshotPages).mock.calls[0];
+		expect(fetchCall?.[1]).toMatchObject({ scope_id: "acme-work" });
 		expect(fetchCall?.[3]?.pageSize).toBe(2000);
 	});
 

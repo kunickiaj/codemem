@@ -29,6 +29,7 @@ import type {
 } from "./types.js";
 
 export interface SyncResetBoundary {
+	scope_id?: string | null;
 	generation: number;
 	snapshot_id: string;
 	baseline_cursor: string | null;
@@ -37,7 +38,12 @@ export interface SyncResetBoundary {
 
 export interface SyncResetRequired extends SyncResetBoundary {
 	reset_required: true;
-	reason: "stale_cursor" | "generation_mismatch" | "boundary_mismatch";
+	reason:
+		| "stale_cursor"
+		| "generation_mismatch"
+		| "boundary_mismatch"
+		| "missing_scope"
+		| "unsupported_scope";
 }
 
 export interface LoadReplicationOpsForPeerOptions {

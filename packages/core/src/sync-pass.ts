@@ -143,6 +143,7 @@ function asOptionalCursor(value: unknown): string | null {
 }
 
 function parsePeerResetBoundary(payload: Record<string, unknown> | null): {
+	scope_id: string | null;
 	generation: number;
 	snapshot_id: string;
 	baseline_cursor: string | null;
@@ -157,6 +158,7 @@ function parsePeerResetBoundary(payload: Record<string, unknown> | null): {
 	}
 	const baseline = asOptionalCursor(boundary.baseline_cursor);
 	return {
+		scope_id: asOptionalCursor(boundary.scope_id),
 		generation: Number(boundary.generation),
 		snapshot_id: boundary.snapshot_id.trim(),
 		baseline_cursor: baseline,
@@ -489,6 +491,7 @@ export async function syncOnce(
 				if (localSharedCount === 0) {
 					try {
 						const resetInfo = {
+							scope_id: peerResetBoundary.scope_id,
 							generation: peerResetBoundary.generation,
 							snapshot_id: peerResetBoundary.snapshot_id,
 							baseline_cursor: peerResetBoundary.baseline_cursor ?? null,
@@ -587,12 +590,17 @@ export async function syncOnce(
 			});
 			if (getStatus === 409 && getPayload?.reset_required === true) {
 				const dirtyLocal = hasUnsyncedSharedMemoryChanges(db);
+				const resetReason =
+					getPayload.reason === "generation_mismatch" ||
+					getPayload.reason === "boundary_mismatch" ||
+					getPayload.reason === "missing_scope" ||
+					getPayload.reason === "unsupported_scope"
+						? getPayload.reason
+						: "stale_cursor";
 				const resetRequired: SyncResult["resetRequired"] = {
 					reset_required: true,
-					reason:
-						getPayload.reason === "generation_mismatch" || getPayload.reason === "boundary_mismatch"
-							? getPayload.reason
-							: "stale_cursor",
+					reason: resetReason,
+					scope_id: typeof getPayload.scope_id === "string" ? getPayload.scope_id : null,
 					generation: Number(getPayload.generation ?? 1),
 					snapshot_id: String(getPayload.snapshot_id ?? ""),
 					baseline_cursor:

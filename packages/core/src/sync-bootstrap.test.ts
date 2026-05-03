@@ -259,6 +259,7 @@ describe("fetchAllSnapshotPages", () => {
 		const prevFetch = globalThis.fetch;
 		try {
 			globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(_input)).toContain("scope_id=acme-work");
 				expect(init?.headers).toMatchObject({
 					"X-Codemem-Bootstrap-Grant": "grant-1",
 					[SYNC_CAPABILITY_HEADER]: "aware",
@@ -280,7 +281,7 @@ describe("fetchAllSnapshotPages", () => {
 
 			const result = await fetchAllSnapshotPages(
 				"http://peer.example.test:47337",
-				makeResetInfo(),
+				makeResetInfo({ scope_id: "acme-work" }),
 				deviceId,
 				{ keysDir, bootstrapGrantId: "grant-1" },
 			);
