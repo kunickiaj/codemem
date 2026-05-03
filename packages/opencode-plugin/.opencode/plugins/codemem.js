@@ -254,8 +254,14 @@ const applyInjectedContextToOutput = async ({
     return false;
   }
 
-  // Recompute the pack against the live query on every transform call so
-  // a single session never gets stuck with the first turn's pack.
+  // The previous incarnation cached by sessionID-only, so a follow-up
+  // turn whose query happened to match the cache key (e.g. because
+  // lastPromptText hadn't yet been captured by the time
+  // experimental.chat.system.transform fired) would silently re-serve
+  // the first turn's pack. Recompute on every call instead — the chat
+  // path tolerates the runCli round trip, and correctness beats the
+  // O(1) hit when the cache key isn't tied to the prompt that produced
+  // the pack.
   const query = resolveInjectQuery();
   const injected = await buildInjectedContext(query);
   if (!injected?.text) {
@@ -1782,24 +1788,35 @@ export const OpencodeMemPlugin = async ({
           } inject_enabled=${injectEnabled} tui_toast=${Boolean(client.tui?.showToast)} query=${JSON.stringify(safeQuery)} first_prompt_len=${firstPromptLen} last_prompt_len=${lastPromptLen} project=${JSON.stringify(projectName)} files_modified=${filesModifiedCount}`
         );
       }
-      const applied = await applyInjectedContextToOutput({
-        injectEnabled,
-        input,
-        output,
-        injectionToastShown,
-        showToast: client.tui?.showToast
-          ? async (message) => {
-            await client.tui.showToast({
-              body: {
-                message,
-                variant: "info",
-              },
-            });
-          }
-          : null,
-        resolveInjectQuery,
-        buildInjectedContext,
-      });
+      // Without the old per-session cache, every transform call shells out
+      // through `runCli`. Swallow rejections here so a single failed pack
+      // build (CLI crash, sqlite locked, network blip on HTTP fallback)
+      // can't take down the chat path.
+      let applied = false;
+      try {
+        applied = await applyInjectedContextToOutput({
+          injectEnabled,
+          input,
+          output,
+          injectionToastShown,
+          showToast: client.tui?.showToast
+            ? async (message) => {
+              await client.tui.showToast({
+                body: {
+                  message,
+                  variant: "info",
+                },
+              });
+            }
+            : null,
+          resolveInjectQuery,
+          buildInjectedContext,
+        });
+      } catch (err) {
+        await logLine(
+          `inject.transform.error sessionID=${input.sessionID} message=${JSON.stringify(err instanceof Error ? err.message : String(err))}`
+        );
+      }
       if (debug) {
         await logLine(
           `inject.transform.result sessionID=${input.sessionID} applied=${Boolean(applied)} system_entries=${Array.isArray(output.system) ? output.system.length : 0}`
@@ -1985,6 +2002,9 @@ export const OpencodeMemPlugin = async ({
       }
       if (eventType === "session.deleted") {
         activeSessionID = null;
+        if (sessionID) {
+          injectionToastShown.delete(sessionID);
+        }
         await stopViewer();
       }
     },

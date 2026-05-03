@@ -209,6 +209,64 @@ describe("applyInjectedContextToOutput", () => {
     expect(output.system).toEqual(["existing"]);
   });
 
+  test("turn N+1 empty rebuild does not leak turn N's pack and does not re-toast", async () => {
+    const injectionToastShown = new Set();
+    const buildInjectedContext = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: "[codemem context]\nturn1",
+        metrics: { items: 1, pack_tokens: 42, pack_delta_available: false },
+      })
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce({
+        text: "[codemem context]\nturn3",
+        metrics: { items: 1, pack_tokens: 50, pack_delta_available: false },
+      });
+    const showToast = vi.fn().mockResolvedValue(undefined);
+    const resolveInjectQuery = vi.fn().mockReturnValue("auth fix codemem");
+
+    const firstOutput = {};
+    const firstApplied = await __testUtils.applyInjectedContextToOutput({
+      injectEnabled: true,
+      input: { sessionID: "sess-leak" },
+      output: firstOutput,
+      injectionToastShown,
+      showToast,
+      resolveInjectQuery,
+      buildInjectedContext,
+    });
+
+    const secondOutput = { system: ["pre-existing"] };
+    const secondApplied = await __testUtils.applyInjectedContextToOutput({
+      injectEnabled: true,
+      input: { sessionID: "sess-leak" },
+      output: secondOutput,
+      injectionToastShown,
+      showToast,
+      resolveInjectQuery,
+      buildInjectedContext,
+    });
+
+    const thirdOutput = {};
+    const thirdApplied = await __testUtils.applyInjectedContextToOutput({
+      injectEnabled: true,
+      input: { sessionID: "sess-leak" },
+      output: thirdOutput,
+      injectionToastShown,
+      showToast,
+      resolveInjectQuery,
+      buildInjectedContext,
+    });
+
+    expect(firstApplied).toBe(true);
+    expect(firstOutput.system).toEqual(["[codemem context]\nturn1"]);
+    expect(secondApplied).toBe(false);
+    expect(secondOutput.system).toEqual(["pre-existing"]);
+    expect(thirdApplied).toBe(true);
+    expect(thirdOutput.system).toEqual(["[codemem context]\nturn3"]);
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
   test("returns false immediately when injection is disabled", async () => {
     const buildInjectedContext = vi.fn();
 
