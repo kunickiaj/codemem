@@ -763,6 +763,66 @@ describe("MemoryStore", () => {
 				}),
 			).toBe(true);
 		});
+
+		it("does not re-query sync_peers on every call when invoked in a hot loop", () => {
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-cache-1", store.actorId, 1, "2026-01-01T00:00:00Z");
+
+			// First call seeds the cache. Subsequent calls hit the cache and
+			// must not re-issue SELECTs against sync_peers — the previous
+			// implementation issued two per call which blocked the libuv
+			// event loop on large stores.
+			expect(
+				store.memoryOwnedBySelf({
+					origin_device_id: "peer-cache-1",
+					metadata: {},
+				}),
+			).toBe(true);
+
+			const spy = vi.spyOn(store, "sameActorPeerIds");
+			try {
+				for (let index = 0; index < 50; index += 1) {
+					store.memoryOwnedBySelf({
+						origin_device_id: "peer-cache-1",
+						metadata: {},
+					});
+				}
+				expect(spy).not.toHaveBeenCalled();
+			} finally {
+				spy.mockRestore();
+			}
+		});
+
+		it("invalidateOwnershipCache forces the next call to re-query sync_peers", () => {
+			// Prime the cache without any peers configured so isolated callers
+			// see "not owned" first.
+			expect(
+				store.memoryOwnedBySelf({
+					origin_device_id: "peer-cache-2",
+					metadata: {},
+				}),
+			).toBe(false);
+
+			// Add a claimed peer after the cache was seeded; without
+			// invalidation the cached negative result would survive its TTL.
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-cache-2", store.actorId, 1, "2026-01-01T00:00:00Z");
+
+			store.invalidateOwnershipCache();
+
+			expect(
+				store.memoryOwnedBySelf({
+					origin_device_id: "peer-cache-2",
+					metadata: {},
+				}),
+			).toBe(true);
+		});
 	});
 
 	describe("forget", () => {
