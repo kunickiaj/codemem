@@ -1754,14 +1754,140 @@ function parsePayload(payloadJson: string | null): Record<string, unknown> | nul
 }
 
 export interface FilterReplicationSkipped {
-	reason: "visibility_filter" | "project_filter";
+	reason: "scope_filter" | "visibility_filter" | "project_filter";
 	op_id: string;
 	created_at: string;
 	entity_type: string;
 	entity_id: string;
 	skipped_count: number;
 	project?: string | null;
+	scope_id?: string | null;
 	visibility?: string | null;
+}
+
+export interface FilterReplicationOpsForSyncOptions {
+	localDeviceId?: string | null;
+	applyScopeFilter?: boolean;
+}
+
+interface ExistingMemoryFilterContext {
+	payload: Record<string, unknown>;
+	project: string | null;
+	scopeId: string | null;
+}
+
+function addSkipped(
+	state: { count: number; first: FilterReplicationSkipped | null },
+	op: ReplicationOp,
+	skipped: Pick<FilterReplicationSkipped, "reason"> &
+		Partial<Omit<FilterReplicationSkipped, "reason" | "skipped_count">>,
+): void {
+	state.count += 1;
+	if (!state.first) {
+		state.first = {
+			...skipped,
+			op_id: op.op_id,
+			created_at: op.created_at,
+			entity_type: op.entity_type,
+			entity_id: op.entity_id,
+			skipped_count: 0,
+		};
+	}
+}
+
+function metadataRecord(payload: Record<string, unknown> | null): Record<string, unknown> {
+	const metadata = payload?.metadata_json;
+	if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
+	return metadata as Record<string, unknown>;
+}
+
+function payloadScopeId(payload: Record<string, unknown> | null): string | null {
+	const metadata = metadataRecord(payload);
+	return cleanText(payload?.scope_id ?? metadata.scope_id);
+}
+
+function payloadContradictsOutboundScope(
+	op: Pick<ReplicationOp, "scope_id">,
+	payload: Record<string, unknown> | null,
+): boolean {
+	const opScopeId = cleanText(op.scope_id);
+	const explicitPayloadScopeId = payloadScopeId(payload);
+	if (explicitPayloadScopeId && explicitPayloadScopeId !== opScopeId) return true;
+	if (!opScopeId) return explicitPayloadScopeId != null;
+
+	const personalRequirement = personalScopeAuthorizationRequirement(op, payload);
+	return Boolean(
+		personalRequirement.required &&
+			personalRequirement.scopeId &&
+			personalRequirement.scopeId !== opScopeId,
+	);
+}
+
+function existingMemoryFilterContext(
+	db: Database,
+	importKey: string,
+): ExistingMemoryFilterContext | null {
+	const key = cleanText(importKey);
+	if (!key) return null;
+	const row = db
+		.prepare(
+			`SELECT
+				m.actor_id,
+				m.metadata_json,
+				m.scope_id,
+				m.visibility,
+				m.workspace_id,
+				m.workspace_kind,
+				s.project
+			 FROM memory_items m
+			 LEFT JOIN sessions s ON s.id = m.session_id
+			 WHERE m.import_key = ?
+			 LIMIT 1`,
+		)
+		.get(key) as
+		| {
+				actor_id: string | null;
+				metadata_json: string | null;
+				project: string | null;
+				scope_id: string | null;
+				visibility: string | null;
+				workspace_id: string | null;
+				workspace_kind: string | null;
+		  }
+		| undefined;
+	if (!row) return null;
+	return {
+		payload: {
+			actor_id: row.actor_id,
+			metadata_json: fromJson(row.metadata_json),
+			visibility: row.visibility,
+			workspace_id: row.workspace_id,
+			workspace_kind: row.workspace_kind,
+		},
+		project: cleanText(row.project),
+		scopeId: cleanText(row.scope_id),
+	};
+}
+
+function outboundScopeAllowed(
+	db: Database,
+	op: ReplicationOp,
+	payload: Record<string, unknown> | null,
+	peerDeviceId: string | null,
+	localDeviceId: string | null,
+): boolean {
+	if (payloadContradictsOutboundScope(op, payload)) return false;
+	const scopeId = cleanText(op.scope_id);
+	if (!scopeId) return true;
+	if (scopeId === DEFAULT_SYNC_SCOPE_ID) return false;
+	const peerId = cleanText(peerDeviceId);
+	if (!peerId) return false;
+	const peerAuth = getCachedScopeAuthorization(db, { deviceId: peerId, scopeId });
+	if (!peerAuth.authorized || peerAuth.scope?.authority_type === "local") return false;
+	const localId = cleanText(localDeviceId);
+	if (!localId) return true;
+	const localAuth = getCachedScopeAuthorization(db, { deviceId: localId, scopeId });
+	return localAuth.authorized && localAuth.scope?.authority_type !== "local";
 }
 
 /**
@@ -1775,30 +1901,60 @@ export function filterReplicationOpsForSyncWithStatus(
 	db: Database,
 	ops: ReplicationOp[],
 	peerDeviceId: string | null,
+	options: FilterReplicationOpsForSyncOptions = {},
 ): [ReplicationOp[], string | null, FilterReplicationSkipped | null] {
 	const allowed: ReplicationOp[] = [];
 	let nextCursor: string | null = null;
-	let skippedCount = 0;
-	let firstSkipped: FilterReplicationSkipped | null = null;
+	const skipped = { count: 0, first: null as FilterReplicationSkipped | null };
+	const applyScopeFilter = options.applyScopeFilter !== false;
 	for (const op of ops) {
 		if (op.entity_type === "memory_item") {
 			const payload = parsePayload(op.payload_json);
+			if (
+				applyScopeFilter &&
+				!outboundScopeAllowed(db, op, payload, peerDeviceId, options.localDeviceId ?? null)
+			) {
+				addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
+				nextCursor = computeCursor(op.created_at, op.op_id);
+				continue;
+			}
 			if (op.op_type === "delete" && payload == null) {
+				const existing = existingMemoryFilterContext(db, op.entity_id);
+				if (existing) {
+					if (applyScopeFilter && existing.scopeId && existing.scopeId !== cleanText(op.scope_id)) {
+						addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
+						nextCursor = computeCursor(op.created_at, op.op_id);
+						continue;
+					}
+					if (
+						(replicationOpRequiresPersonalScopeAuthorization(op, existing.payload) ||
+							!syncVisibilityAllowed(existing.payload)) &&
+						!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, existing.payload, peerDeviceId)
+					) {
+						addSkipped(skipped, op, {
+							reason: "visibility_filter",
+							visibility:
+								typeof existing.payload.visibility === "string"
+									? String(existing.payload.visibility)
+									: null,
+						});
+						nextCursor = computeCursor(op.created_at, op.op_id);
+						continue;
+					}
+					if (!syncProjectAllowed(db, existing.project, peerDeviceId)) {
+						addSkipped(skipped, op, {
+							reason: "project_filter",
+							project: existing.project,
+						});
+						nextCursor = computeCursor(op.created_at, op.op_id);
+						continue;
+					}
+				}
 				if (
 					replicationOpRequiresPersonalScopeAuthorization(op, payload) &&
 					!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, payload, peerDeviceId)
 				) {
-					skippedCount += 1;
-					if (!firstSkipped) {
-						firstSkipped = {
-							reason: "visibility_filter",
-							op_id: op.op_id,
-							created_at: op.created_at,
-							entity_type: op.entity_type,
-							entity_id: op.entity_id,
-							skipped_count: 0,
-						};
-					}
+					addSkipped(skipped, op, { reason: "visibility_filter" });
 					nextCursor = computeCursor(op.created_at, op.op_id);
 					continue;
 				}
@@ -1811,18 +1967,10 @@ export function filterReplicationOpsForSyncWithStatus(
 					!syncVisibilityAllowed(payload)) &&
 				!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, payload, peerDeviceId)
 			) {
-				skippedCount += 1;
-				if (!firstSkipped) {
-					firstSkipped = {
-						reason: "visibility_filter",
-						op_id: op.op_id,
-						created_at: op.created_at,
-						entity_type: op.entity_type,
-						entity_id: op.entity_id,
-						visibility: typeof payload?.visibility === "string" ? String(payload.visibility) : null,
-						skipped_count: 0,
-					};
-				}
+				addSkipped(skipped, op, {
+					reason: "visibility_filter",
+					visibility: typeof payload?.visibility === "string" ? String(payload.visibility) : null,
+				});
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
 			}
@@ -1832,18 +1980,7 @@ export function filterReplicationOpsForSyncWithStatus(
 					? payload.project.trim()
 					: null;
 			if (!syncProjectAllowed(db, project, peerDeviceId)) {
-				skippedCount += 1;
-				if (!firstSkipped) {
-					firstSkipped = {
-						reason: "project_filter",
-						op_id: op.op_id,
-						created_at: op.created_at,
-						entity_type: op.entity_type,
-						entity_id: op.entity_id,
-						project,
-						skipped_count: 0,
-					};
-				}
+				addSkipped(skipped, op, { reason: "project_filter", project });
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
 			}
@@ -1853,19 +1990,25 @@ export function filterReplicationOpsForSyncWithStatus(
 		nextCursor = computeCursor(op.created_at, op.op_id);
 	}
 
-	if (firstSkipped) {
-		firstSkipped.skipped_count = skippedCount;
+	if (skipped.first) {
+		skipped.first.skipped_count = skipped.count;
 	}
 
-	return [allowed, nextCursor, firstSkipped];
+	return [allowed, nextCursor, skipped.first];
 }
 
 export function filterReplicationOpsForSync(
 	db: Database,
 	ops: ReplicationOp[],
 	peerDeviceId: string | null,
+	options: FilterReplicationOpsForSyncOptions = {},
 ): [ReplicationOp[], string | null] {
-	const [allowed, nextCursor] = filterReplicationOpsForSyncWithStatus(db, ops, peerDeviceId);
+	const [allowed, nextCursor] = filterReplicationOpsForSyncWithStatus(
+		db,
+		ops,
+		peerDeviceId,
+		options,
+	);
 	return [allowed, nextCursor];
 }
 

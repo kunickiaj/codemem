@@ -748,6 +748,7 @@ export async function syncOnce(
 				db,
 				outboundWindow,
 				peerDeviceId,
+				{ localDeviceId: deviceId },
 			);
 			const postUrl = `${baseUrl}/v1/ops`;
 			if (outboundOps.length > 0) {

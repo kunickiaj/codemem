@@ -45,6 +45,7 @@ import {
 	DEFAULT_TIME_WINDOW_S,
 	ensureDeviceIdentity,
 	extractReplicationOps,
+	filterReplicationOpsForSyncWithStatus,
 	fingerprintPublicKey,
 	getCoordinatorGroupPreference,
 	getSemanticIndexDiagnostics,
@@ -59,19 +60,15 @@ import {
 	negotiateSyncCapability,
 	normalizeSyncCapability,
 	parseSyncScopeRequest,
-	peerCanSyncPrivateOpByPersonalScopeGrant,
 	personalScopeGrantStatusForPeer,
 	readCoordinatorSyncConfig,
 	recordNonce,
 	rejectInboundScopeFailures,
-	replicationOpRequiresPersonalScopeAuthorization,
 	requestJson,
 	runSyncPass,
 	SYNC_SCOPE_QUERY_PARAM,
 	schema,
-	syncProjectAllowedByFilters,
 	syncScopeResetRequiredPayload,
-	syncVisibilityAllowed,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	verifySignature,
@@ -725,69 +722,6 @@ function claimLegacyDeviceAsSelf(store: MemoryStore, originDeviceId: string): nu
 	return Number(result.changes ?? 0);
 }
 
-function parseOpPayload(op: { payload_json: string | null }): Record<string, unknown> | null {
-	if (!op.payload_json || !String(op.payload_json).trim()) return null;
-	try {
-		const parsed = JSON.parse(op.payload_json) as unknown;
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-		return parsed as Record<string, unknown>;
-	} catch {
-		return null;
-	}
-}
-
-function parseMetadataObject(raw: string | null): Record<string, unknown> {
-	if (!raw?.trim()) return {};
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-		return parsed as Record<string, unknown>;
-	} catch {
-		return {};
-	}
-}
-
-function lookupExistingMemoryFilterContext(
-	store: MemoryStore,
-	importKey: string,
-): { payload: Record<string, unknown>; project: string | null } | null {
-	const row = store.db
-		.prepare(
-			`SELECT
-				m.actor_id,
-				m.metadata_json,
-				m.visibility,
-				m.workspace_id,
-				m.workspace_kind,
-				s.project
-			 FROM memory_items m
-			 LEFT JOIN sessions s ON s.id = m.session_id
-			 WHERE m.import_key = ?
-			 LIMIT 1`,
-		)
-		.get(importKey) as
-		| {
-				actor_id: string | null;
-				metadata_json: string | null;
-				project: string | null;
-				visibility: string | null;
-				workspace_id: string | null;
-				workspace_kind: string | null;
-		  }
-		| undefined;
-	if (!row) return null;
-	return {
-		payload: {
-			actor_id: row.actor_id,
-			metadata_json: parseMetadataObject(row.metadata_json),
-			visibility: row.visibility,
-			workspace_id: row.workspace_id,
-			workspace_kind: row.workspace_kind,
-		},
-		project: typeof row.project === "string" && row.project.trim() ? row.project.trim() : null,
-	};
-}
-
 function redactCoordinatorStatus(
 	coordinator: Record<string, unknown>,
 	showDiag: boolean,
@@ -1048,61 +982,15 @@ async function acceptDiscoveredPeer(
 function filterOpsForPeer(
 	store: MemoryStore,
 	peerDeviceId: string,
+	localDeviceId: string | null,
 	ops: ReplicationOp[],
+	options: { applyScopeFilter?: boolean } = {},
 ): { allowed: ReplicationOp[]; skipped: number } {
-	const filters = readPeerProjectFilters(store, peerDeviceId);
-	const allowed: ReplicationOp[] = [];
-	let skipped = 0;
-	for (const op of ops) {
-		if (op.entity_type !== "memory_item") {
-			allowed.push(op);
-			continue;
-		}
-		const payload = parseOpPayload(op);
-		const requiresPersonalScope = replicationOpRequiresPersonalScopeAuthorization(op, payload);
-		if (op.op_type === "delete" && payload == null) {
-			const existing = lookupExistingMemoryFilterContext(store, op.entity_id);
-			if (!existing) {
-				if (requiresPersonalScope || filters.include.length > 0 || filters.exclude.length > 0) {
-					skipped++;
-					continue;
-				}
-				allowed.push(op);
-				continue;
-			}
-			const deleteRequiresPersonalScope = replicationOpRequiresPersonalScopeAuthorization(
-				op,
-				existing.payload,
-			);
-			if (
-				(deleteRequiresPersonalScope || !syncVisibilityAllowed(existing.payload)) &&
-				!peerCanSyncPrivateOpByPersonalScopeGrant(store.db, op, existing.payload, peerDeviceId)
-			) {
-				skipped++;
-				continue;
-			}
-			if (!syncProjectAllowedByFilters(existing.project, filters)) {
-				skipped++;
-				continue;
-			}
-			allowed.push(op);
-			continue;
-		}
-		if (
-			(requiresPersonalScope || !syncVisibilityAllowed(payload)) &&
-			!peerCanSyncPrivateOpByPersonalScopeGrant(store.db, op, payload, peerDeviceId)
-		) {
-			skipped++;
-			continue;
-		}
-		const project = payload && typeof payload.project === "string" ? payload.project : null;
-		if (!syncProjectAllowedByFilters(project, filters)) {
-			skipped++;
-			continue;
-		}
-		allowed.push(op);
-	}
-	return { allowed, skipped };
+	const [allowed, , skipped] = filterReplicationOpsForSyncWithStatus(store.db, ops, peerDeviceId, {
+		localDeviceId,
+		applyScopeFilter: options.applyScopeFilter,
+	});
+	return { allowed, skipped: skipped?.skipped_count ?? 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,7 +1302,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				);
 			}
 			const { ops, nextCursor, boundary } = result;
-			const filtered = filterOpsForPeer(store, peerDeviceId, ops);
+			const filtered = filterOpsForPeer(store, peerDeviceId, localDeviceId, ops);
 			return c.json({
 				reset_required: false,
 				sync_capability: LOCAL_SYNC_CAPABILITY,
@@ -1598,7 +1486,12 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			LOCAL_SYNC_CAPABILITY,
 			normalizeSyncCapability(body.sync_capability),
 		);
-		const filtered = filterOpsForPeer(store, peerDeviceId, normalizedOps);
+		// Inbound POSTs still use legacy visibility/project filters, but must not run
+		// the outbound scope gate. Unsupported peers deliberately bypass strict inbound
+		// scope rejection during rollout, so outbound filtering would silently drop data.
+		const filtered = filterOpsForPeer(store, peerDeviceId, localDeviceId, normalizedOps, {
+			applyScopeFilter: false,
+		});
 		// Scope validation runs against the full signed batch so bad scoped ops cannot
 		// evade fail-closed rejection by also tripping peer project filters.
 		const rejected = rejectInboundScopeFailures(store.db, normalizedOps, localDeviceId, {
