@@ -192,7 +192,9 @@ export function readVersions(root) {
 
 export function versionsAreAligned(snapshot) {
 	const entries = Object.entries(snapshot);
-	const invalid = entries.filter(([, value]) => typeof value !== "string" || !SEMVER_RE.test(value));
+	const invalid = entries.filter(
+		([, value]) => typeof value !== "string" || !SEMVER_RE.test(value),
+	);
 	const unique = [...new Set(entries.map(([, value]) => value))];
 	if (unique.length <= 1 && invalid.length === 0) {
 		return { aligned: true, details: [] };
@@ -227,6 +229,16 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 	setPackageVersion(repoRoot, "packages/mcp-server/package.json", version, writes, changed);
 	setPackageVersion(repoRoot, "packages/viewer-server/package.json", version, writes, changed);
 
+	// PINNED_BACKEND_VERSION lives in two files:
+	//   - packages/opencode-plugin/.opencode/plugins/codemem.js (the real
+	//     plugin source; @codemem/opencode-plugin ships this directly).
+	//   - packages/cli/.opencode/plugins/codemem.js (a thin wrapper that
+	//     re-exports __testUtils etc. from the standalone plugin; shipped
+	//     inside the codemem CLI package).
+	// Both must track the release version exactly so the OpenCode plugin
+	// always spawns a matching codemem CLI via `npx codemem@${PINNED}`.
+	// Alpha plugin testers want the alpha CLI; that is the whole point of
+	// publishing both packages under the alpha dist-tag together.
 	const textUpdates = [
 		{
 			relativePath: "packages/core/src/index.ts",
