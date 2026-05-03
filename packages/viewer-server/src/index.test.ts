@@ -2600,6 +2600,65 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("filters local-only outbound /v1/ops before project filters", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-01-01T00:00:00Z";
+				store.db
+					.prepare(
+						`INSERT OR REPLACE INTO sync_reset_state(
+							id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at
+						 ) VALUES (1, ?, ?, ?, ?, ?)`,
+					)
+					.run(3, "snapshot-3", null, null, now);
+				store.db
+					.prepare(
+						`INSERT INTO replication_ops(
+							op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+							clock_updated_at, clock_device_id, device_id, created_at, scope_id
+						 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						"local-default-outbound-op",
+						"memory_item",
+						"local-default-outbound-key",
+						"upsert",
+						JSON.stringify({
+							project: "proj-a",
+							scope_id: "local-default",
+							visibility: "shared",
+						}),
+						1,
+						now,
+						"test-device-001",
+						"test-device-001",
+						now,
+						"local-default",
+					);
+
+				const url = "http://localhost/v1/ops?since=&limit=50&generation=3&snapshot_id=snapshot-3";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				store.db
+					.prepare("UPDATE sync_peers SET projects_include_json = ? WHERE peer_device_id = ?")
+					.run('["proj-a"]', peer.peerDeviceId);
+
+				const res = await syncApp.request(url, { headers: peer.headers });
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.ops).toEqual([]);
+				expect(body.skipped).toBe(1);
+				expect(body.next_cursor).toBe("2026-01-01T00:00:00Z|local-default-outbound-op");
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
 		it("serves paginated memory bootstrap pages with tombstones", async () => {
 			const { syncApp, getStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
@@ -2845,6 +2904,72 @@ describe("viewer-server", () => {
 						.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
 						.get("legacy-push-key"),
 				).toMatchObject({ title: "Legacy push title", scope_id: null });
+			} finally {
+				peer?.cleanup();
+				cleanup();
+			}
+		});
+
+		it("does not outbound-scope-filter scoped pushes from unsupported peers", async () => {
+			const { syncApp, getStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
+			try {
+				await syncApp.request("/v1/status");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const url = "http://localhost/v1/ops";
+				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
+				const now = "2026-01-01T00:00:00Z";
+				const payload = {
+					sync_capability: "unsupported",
+					ops: [
+						{
+							op_id: "unsupported-scoped-push-op",
+							entity_type: "memory_item",
+							entity_id: "unsupported-scoped-push-key",
+							op_type: "upsert",
+							payload_json: JSON.stringify({
+								body_text: "Unsupported scoped push body",
+								created_at: now,
+								kind: "discovery",
+								scope_id: "local-default",
+								title: "Unsupported scoped push title",
+								updated_at: now,
+								visibility: "shared",
+							}),
+							clock_rev: 1,
+							clock_updated_at: now,
+							clock_device_id: peer.peerDeviceId,
+							device_id: peer.peerDeviceId,
+							created_at: now,
+							scope_id: "local-default",
+						},
+					],
+				};
+				const bodyText = JSON.stringify(payload);
+				const bodyBytes = Buffer.from(bodyText);
+				const headers = buildAuthHeaders({
+					deviceId: peer.peerDeviceId,
+					method: "POST",
+					url,
+					bodyBytes,
+					keysDir: peer.keysDir,
+				});
+
+				const res = await syncApp.request(url, {
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/json" },
+					body: bodyText,
+				});
+
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body).toMatchObject({ applied: 1, skipped: 0, rejected: 0 });
+				expect(
+					store.db
+						.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
+						.get("unsupported-scoped-push-key"),
+				).toMatchObject({ title: "Unsupported scoped push title", scope_id: "local-default" });
 			} finally {
 				peer?.cleanup();
 				cleanup();

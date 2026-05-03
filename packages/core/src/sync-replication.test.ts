@@ -851,18 +851,24 @@ describe("loadMemorySnapshotPageForPeer", () => {
 		);
 	}
 
-	function grantPersonalScope(scopeId: string, peerDeviceId: string) {
+	function grantScope(scopeId: string, deviceIds: string[], authorityType = "coordinator") {
 		const now = new Date().toISOString();
 		db.prepare(
 			`INSERT OR IGNORE INTO replication_scopes(
 				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-			 ) VALUES (?, ?, 'user', 'coordinator', 1, 'active', ?, ?)`,
-		).run(scopeId, scopeId, now, now);
-		db.prepare(
-			`INSERT OR REPLACE INTO scope_memberships(
-				scope_id, device_id, role, status, membership_epoch, updated_at
-			 ) VALUES (?, ?, 'member', 'active', 1, ?)`,
-		).run(scopeId, peerDeviceId, now);
+			 ) VALUES (?, ?, 'user', ?, 1, 'active', ?, ?)`,
+		).run(scopeId, scopeId, authorityType, now, now);
+		for (const deviceId of deviceIds) {
+			db.prepare(
+				`INSERT OR REPLACE INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES (?, ?, 'member', 'active', 1, ?)`,
+			).run(scopeId, deviceId, now);
+		}
+	}
+
+	function grantPersonalScope(scopeId: string, peerDeviceId: string) {
+		grantScope(scopeId, [peerDeviceId]);
 	}
 
 	function insertSessionWithProject(project: string): number {
@@ -1807,18 +1813,24 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		};
 	}
 
-	function grantPersonalScope(scopeId: string, peerDeviceId: string) {
+	function grantScope(scopeId: string, deviceIds: string[], authorityType = "coordinator") {
 		const now = new Date().toISOString();
 		db.prepare(
 			`INSERT OR IGNORE INTO replication_scopes(
 				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-			 ) VALUES (?, ?, 'user', 'coordinator', 1, 'active', ?, ?)`,
-		).run(scopeId, scopeId, now, now);
-		db.prepare(
-			`INSERT OR REPLACE INTO scope_memberships(
-				scope_id, device_id, role, status, membership_epoch, updated_at
-			 ) VALUES (?, ?, 'member', 'active', 1, ?)`,
-		).run(scopeId, peerDeviceId, now);
+			 ) VALUES (?, ?, 'user', ?, 1, 'active', ?, ?)`,
+		).run(scopeId, scopeId, authorityType, now, now);
+		for (const deviceId of deviceIds) {
+			db.prepare(
+				`INSERT OR REPLACE INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, updated_at
+				 ) VALUES (?, ?, 'member', 'active', 1, ?)`,
+			).run(scopeId, deviceId, now);
+		}
+	}
+
+	function grantPersonalScope(scopeId: string, peerDeviceId: string) {
+		grantScope(scopeId, [peerDeviceId]);
 	}
 
 	it("filters by peer include scope and advances cursor past skipped ops", () => {
@@ -1852,6 +1864,89 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		expect(nextOnly).toBe("2026-01-01T00:00:02Z|op-2");
 	});
 
+	it("applies scope membership before broad project filters", () => {
+		db.prepare(
+			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, created_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", toJson(["proj-a"]), toJson([]), "2026-01-01T00:00:00Z");
+		grantScope("acme-work", ["local-device"]);
+		const scopedOp = makeOp({
+			op_id: "op-scoped",
+			payload_json: toJson({ project: "proj-a", scope_id: "acme-work", visibility: "shared" }),
+			scope_id: "acme-work",
+		});
+
+		const [blockedOps, blockedCursor, blockedMeta] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[scopedOp],
+			"peer-1",
+			{ localDeviceId: "local-device" },
+		);
+		expect(blockedOps).toEqual([]);
+		expect(blockedCursor).toBe("2026-01-01T00:00:00Z|op-scoped");
+		expect(blockedMeta).toMatchObject({ reason: "scope_filter", scope_id: "acme-work" });
+
+		grantScope("acme-work", ["local-device", "peer-1"]);
+		const [allowedOps, allowedCursor, allowedMeta] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[scopedOp],
+			"peer-1",
+			{ localDeviceId: "local-device" },
+		);
+		expect(allowedOps.map((op) => op.op_id)).toEqual(["op-scoped"]);
+		expect(allowedCursor).toBe("2026-01-01T00:00:00Z|op-scoped");
+		expect(allowedMeta).toBeNull();
+	});
+
+	it("never sends local-authority scopes outbound", () => {
+		grantScope("local-only", ["local-device", "peer-1"], "local");
+		const localOnlyOp = makeOp({
+			op_id: "op-local-only",
+			payload_json: toJson({ project: "proj-a", scope_id: "local-only", visibility: "shared" }),
+			scope_id: "local-only",
+		});
+		const defaultScopeOp = makeOp({
+			op_id: "op-local-default",
+			payload_json: toJson({
+				project: "proj-a",
+				scope_id: DEFAULT_SYNC_SCOPE_ID,
+				visibility: "shared",
+			}),
+			scope_id: DEFAULT_SYNC_SCOPE_ID,
+			created_at: "2026-01-01T00:00:01Z",
+		});
+
+		const [allowed, cursor, skipped] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[localOnlyOp, defaultScopeOp],
+			"peer-1",
+			{ localDeviceId: "local-device" },
+		);
+
+		expect(allowed).toEqual([]);
+		expect(cursor).toBe("2026-01-01T00:00:01Z|op-local-default");
+		expect(skipped).toMatchObject({ reason: "scope_filter", skipped_count: 2 });
+	});
+
+	it("requires the local device to remain a scope member before outbound sync", () => {
+		grantScope("acme-work", ["peer-1"]);
+		const scopedOp = makeOp({
+			op_id: "op-local-revoked",
+			payload_json: toJson({ project: "proj-a", scope_id: "acme-work", visibility: "shared" }),
+			scope_id: "acme-work",
+		});
+
+		const [allowed, cursor, skipped] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[scopedOp],
+			"peer-1",
+			{ localDeviceId: "local-device" },
+		);
+
+		expect(allowed).toEqual([]);
+		expect(cursor).toBe("2026-01-01T00:00:00Z|op-local-revoked");
+		expect(skipped?.reason).toBe("scope_filter");
+	});
+
 	it("requires a matching personal scope grant instead of a claimed local actor flag", () => {
 		db.prepare(
 			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, claimed_local_actor, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -1877,7 +1972,7 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		);
 		expect(blockedOps).toEqual([]);
 		expect(blockedCursor).toBe("2026-01-01T00:00:00Z|op-private");
-		expect(blockedMeta?.reason).toBe("visibility_filter");
+		expect(blockedMeta?.reason).toBe("scope_filter");
 
 		db.prepare("UPDATE sync_peers SET claimed_local_actor = 1 WHERE peer_device_id = ?").run(
 			"peer-1",
@@ -1887,7 +1982,7 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 			filterReplicationOpsForSyncWithStatus(db, [privateOp], "peer-1");
 		expect(stillBlockedOps).toEqual([]);
 		expect(stillBlockedCursor).toBe("2026-01-01T00:00:00Z|op-private");
-		expect(stillBlockedMeta?.reason).toBe("visibility_filter");
+		expect(stillBlockedMeta?.reason).toBe("scope_filter");
 
 		grantPersonalScope("personal:actor-1", "peer-1");
 		db.prepare("UPDATE sync_peers SET claimed_local_actor = 0 WHERE peer_device_id = ?").run(
@@ -1901,6 +1996,34 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		expect(allowedOps.map((op) => op.op_id)).toEqual(["op-private"]);
 		expect(allowedCursor).toBe("2026-01-01T00:00:00Z|op-private");
 		expect(allowedMeta).toBeNull();
+	});
+
+	it("does not let personal grants make private payloads leave through org scopes", () => {
+		grantScope("acme-work", ["local-device", "peer-1"]);
+		grantScope("personal:actor-1", ["local-device", "peer-1"]);
+		const privateOrgOp = makeOp({
+			op_id: "op-private-org",
+			payload_json: toJson({
+				actor_id: "actor-1",
+				project: "proj-a",
+				scope_id: "acme-work",
+				visibility: "private",
+				workspace_id: "personal:actor-1",
+				workspace_kind: "personal",
+			}),
+			scope_id: "acme-work",
+		});
+
+		const [allowed, cursor, skipped] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[privateOrgOp],
+			"peer-1",
+			{ localDeviceId: "local-device" },
+		);
+
+		expect(allowed).toEqual([]);
+		expect(cursor).toBe("2026-01-01T00:00:00Z|op-private-org");
+		expect(skipped?.reason).toBe("scope_filter");
 	});
 
 	it("requires a personal scope grant when visibility is missing but scope is personal", () => {
@@ -1923,7 +2046,7 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		);
 		expect(blockedOps).toEqual([]);
 		expect(blockedCursor).toBe("2026-01-01T00:00:00Z|op-personal-no-visibility");
-		expect(blockedMeta?.reason).toBe("visibility_filter");
+		expect(blockedMeta?.reason).toBe("scope_filter");
 
 		grantPersonalScope("personal:actor-1", "peer-1");
 		const [allowedOps, allowedCursor, allowedMeta] = filterReplicationOpsForSyncWithStatus(
@@ -2013,7 +2136,7 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		);
 		expect(blockedPersonal).toEqual([]);
 		expect(blockedCursor).toBe("2026-01-01T00:00:06Z|op-personal-del");
-		expect(blockedMeta?.reason).toBe("visibility_filter");
+		expect(blockedMeta?.reason).toBe("scope_filter");
 
 		grantPersonalScope("personal:actor-1", "peer-1");
 		const [allowedPersonal, allowedCursor, allowedMeta] = filterReplicationOpsForSyncWithStatus(
@@ -2024,6 +2147,53 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 		expect(allowedPersonal.map((op) => op.op_id)).toEqual(["op-personal-del"]);
 		expect(allowedCursor).toBe("2026-01-01T00:00:06Z|op-personal-del");
 		expect(allowedMeta).toBeNull();
+	});
+
+	it("applies project filters to null-payload deletes when local context exists", () => {
+		db.prepare(
+			"INSERT INTO sync_peers(peer_device_id, projects_include_json, projects_exclude_json, created_at) VALUES (?, ?, ?, ?)",
+		).run("peer-1", toJson(["allowed-project"]), toJson([]), "2026-01-01T00:00:00Z");
+		grantScope("acme-work", ["local-device", "peer-1"]);
+		const sessionId = insertTestSession(db);
+		db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("blocked-project", sessionId);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, created_at, updated_at, import_key, rev,
+				active, visibility, metadata_json, scope_id
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			sessionId,
+			"discovery",
+			"Blocked delete target",
+			"Blocked delete target",
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"blocked-delete-key",
+			1,
+			1,
+			"shared",
+			toJson({}),
+			"acme-work",
+		);
+		const deleteOp = makeOp({
+			op_id: "op-blocked-delete",
+			entity_id: "blocked-delete-key",
+			op_type: "delete",
+			payload_json: null,
+			created_at: "2026-01-01T00:00:05Z",
+			scope_id: "acme-work",
+		});
+
+		const [allowed, cursor, skipped] = filterReplicationOpsForSyncWithStatus(
+			db,
+			[deleteOp],
+			"peer-1",
+			{ localDeviceId: "local-device" },
+		);
+
+		expect(allowed).toEqual([]);
+		expect(cursor).toBe("2026-01-01T00:00:05Z|op-blocked-delete");
+		expect(skipped).toMatchObject({ reason: "project_filter", project: "blocked-project" });
 	});
 
 	it("respects CODEMEM_SYNC_PROJECTS_* env overrides", () => {
