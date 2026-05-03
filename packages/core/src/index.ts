@@ -557,6 +557,7 @@ export {
 	bulkPruneReplicationOpsByAgeCutoff,
 	chunkOpsBySize,
 	clockTuple,
+	DEFAULT_SYNC_SCOPE_ID,
 	extractReplicationOps,
 	filterReplicationOpsForSync,
 	filterReplicationOpsForSyncWithStatus,

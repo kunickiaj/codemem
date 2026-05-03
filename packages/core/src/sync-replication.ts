@@ -29,6 +29,8 @@ import type {
 	SyncMemorySnapshotItem,
 } from "./types.js";
 
+export const DEFAULT_SYNC_SCOPE_ID = "local-default";
+
 export interface SyncResetBoundary {
 	scope_id?: string | null;
 	generation: number;
@@ -51,6 +53,7 @@ export interface LoadReplicationOpsForPeerOptions {
 	since: string | null;
 	limit?: number;
 	deviceId?: string;
+	scopeId?: string | null;
 	generation?: number | null;
 	snapshotId?: string | null;
 	baselineCursor?: string | null;
@@ -72,6 +75,7 @@ export interface LoadMemorySnapshotPageForPeerOptions {
 	limit?: number;
 	pageToken?: string | null;
 	peerDeviceId?: string | null;
+	scopeId?: string | null;
 	generation?: number | null;
 	snapshotId?: string | null;
 	baselineCursor?: string | null;
@@ -233,6 +237,35 @@ function normalizeCursor(value: string | null | undefined): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizeSyncStateScopeId(scopeId: string | null | undefined): string {
+	const trimmed = String(scopeId ?? "").trim();
+	return trimmed.length > 0 ? trimmed : DEFAULT_SYNC_SCOPE_ID;
+}
+
+function shouldReturnScopeId(scopeId: string | null | undefined): boolean {
+	return scopeId !== undefined;
+}
+
+function resetBoundaryFromRow(
+	row: {
+		generation: number | null;
+		snapshot_id: string | null;
+		baseline_cursor: string | null;
+		retained_floor_cursor: string | null;
+	},
+	scopeId: string,
+	includeScopeId: boolean,
+): SyncResetBoundary {
+	const boundary: SyncResetBoundary = {
+		generation: Number(row.generation ?? 1),
+		snapshot_id: String(row.snapshot_id),
+		baseline_cursor: normalizeCursor(row.baseline_cursor),
+		retained_floor_cursor: normalizeCursor(row.retained_floor_cursor),
+	};
+	if (includeScopeId) boundary.scope_id = scopeId;
+	return boundary;
+}
+
 function parseSnapshotPageToken(
 	token: string | null | undefined,
 ): { importKey: string; id: number } | null {
@@ -261,48 +294,99 @@ function ensureSyncResetStateTable(db: Database): void {
 			updated_at TEXT NOT NULL
 		)
 	`);
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS sync_reset_state_v2 (
+			scope_id TEXT PRIMARY KEY NOT NULL,
+			generation INTEGER NOT NULL,
+			snapshot_id TEXT NOT NULL,
+			baseline_cursor TEXT,
+			retained_floor_cursor TEXT,
+			updated_at TEXT NOT NULL
+		)
+	`);
 }
 
-export function getSyncResetState(db: Database): SyncResetBoundary {
+function seedDefaultSyncResetStateFromLegacy(db: Database): void {
+	db.exec(`
+		INSERT OR IGNORE INTO sync_reset_state_v2
+			(scope_id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+		SELECT '${DEFAULT_SYNC_SCOPE_ID}', generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at
+		FROM sync_reset_state
+		WHERE id = 1
+	`);
+}
+
+function mirrorDefaultSyncResetStateToLegacy(
+	db: Database,
+	boundary: SyncResetBoundary,
+	updatedAt: string,
+): void {
+	const d = drizzle(db, { schema });
+	d.insert(schema.syncResetState)
+		.values({
+			id: 1,
+			generation: boundary.generation,
+			snapshot_id: boundary.snapshot_id,
+			baseline_cursor: boundary.baseline_cursor,
+			retained_floor_cursor: boundary.retained_floor_cursor,
+			updated_at: updatedAt,
+		})
+		.onConflictDoUpdate({
+			target: schema.syncResetState.id,
+			set: {
+				generation: boundary.generation,
+				snapshot_id: boundary.snapshot_id,
+				baseline_cursor: boundary.baseline_cursor,
+				retained_floor_cursor: boundary.retained_floor_cursor,
+				updated_at: updatedAt,
+			},
+		})
+		.run();
+}
+
+export function getSyncResetState(db: Database, scopeId?: string | null): SyncResetBoundary {
 	ensureSyncResetStateTable(db);
+	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
+	const includeScopeId = shouldReturnScopeId(scopeId);
+	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		seedDefaultSyncResetStateFromLegacy(db);
+	}
 	const d = drizzle(db, { schema });
 	const existing = d
 		.select()
-		.from(schema.syncResetState)
-		.where(eq(schema.syncResetState.id, 1))
+		.from(schema.syncResetStateV2)
+		.where(eq(schema.syncResetStateV2.scope_id, effectiveScopeId))
 		.get();
 	if (existing) {
-		return {
-			generation: Number(existing.generation ?? 1),
-			snapshot_id: String(existing.snapshot_id),
-			baseline_cursor: normalizeCursor(existing.baseline_cursor),
-			retained_floor_cursor: normalizeCursor(existing.retained_floor_cursor),
-		};
+		return resetBoundaryFromRow(existing, effectiveScopeId, includeScopeId);
 	}
 
 	const now = new Date().toISOString();
 	const created = {
-		id: 1,
+		scope_id: effectiveScopeId,
 		generation: 1,
 		snapshot_id: randomUUID(),
 		baseline_cursor: null,
 		retained_floor_cursor: null,
 		updated_at: now,
 	};
-	d.insert(schema.syncResetState).values(created).run();
-	return {
-		generation: created.generation,
-		snapshot_id: created.snapshot_id,
-		baseline_cursor: created.baseline_cursor,
-		retained_floor_cursor: created.retained_floor_cursor,
-	};
+	d.insert(schema.syncResetStateV2).values(created).run();
+	const boundary = resetBoundaryFromRow(created, effectiveScopeId, includeScopeId);
+	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		mirrorDefaultSyncResetStateToLegacy(db, boundary, now);
+	}
+	return boundary;
 }
 
 export function setSyncResetState(
 	db: Database,
 	updates: Partial<SyncResetBoundary> & { generation?: number },
+	scopeId?: string | null,
 ): SyncResetBoundary {
-	const current = getSyncResetState(db);
+	const requestedScopeId = scopeId !== undefined ? scopeId : updates.scope_id;
+	const effectiveScopeId = normalizeSyncStateScopeId(requestedScopeId);
+	const includeScopeId = scopeId !== undefined || updates.scope_id !== undefined;
+	const current = getSyncResetState(db, includeScopeId ? effectiveScopeId : undefined);
 	const now = new Date().toISOString();
 	const next: SyncResetBoundary = {
 		generation: updates.generation ?? current.generation,
@@ -316,11 +400,19 @@ export function setSyncResetState(
 				? current.retained_floor_cursor
 				: normalizeCursor(updates.retained_floor_cursor),
 	};
+	if (includeScopeId) next.scope_id = effectiveScopeId;
 	const d = drizzle(db, { schema });
-	d.insert(schema.syncResetState)
-		.values({ id: 1, ...next, updated_at: now })
+	d.insert(schema.syncResetStateV2)
+		.values({
+			scope_id: effectiveScopeId,
+			generation: next.generation,
+			snapshot_id: next.snapshot_id,
+			baseline_cursor: next.baseline_cursor,
+			retained_floor_cursor: next.retained_floor_cursor,
+			updated_at: now,
+		})
 		.onConflictDoUpdate({
-			target: schema.syncResetState.id,
+			target: schema.syncResetStateV2.scope_id,
 			set: {
 				generation: next.generation,
 				snapshot_id: next.snapshot_id,
@@ -330,6 +422,9 @@ export function setSyncResetState(
 			},
 		})
 		.run();
+	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		mirrorDefaultSyncResetStateToLegacy(db, next, now);
+	}
 	return next;
 }
 
@@ -407,6 +502,65 @@ export function chunkOpsBySize(ops: ReplicationOp[], maxBytes: number): Replicat
 
 // Cursor read/write
 
+function ensureReplicationCursorTables(db: Database): void {
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS replication_cursors (
+			peer_device_id TEXT PRIMARY KEY,
+			last_applied_cursor TEXT,
+			last_acked_cursor TEXT,
+			updated_at TEXT NOT NULL
+		)
+	`);
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS replication_cursors_v2 (
+			peer_device_id TEXT NOT NULL,
+			scope_id TEXT NOT NULL,
+			last_applied_cursor TEXT,
+			last_acked_cursor TEXT,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (peer_device_id, scope_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_replication_cursors_v2_scope
+			ON replication_cursors_v2(scope_id)
+	`);
+}
+
+function seedDefaultReplicationCursorFromLegacy(db: Database): void {
+	db.exec(`
+		INSERT OR IGNORE INTO replication_cursors_v2
+			(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
+		SELECT peer_device_id, '${DEFAULT_SYNC_SCOPE_ID}', last_applied_cursor, last_acked_cursor, updated_at
+		FROM replication_cursors
+	`);
+}
+
+function mirrorDefaultReplicationCursorToLegacy(
+	db: Database,
+	peerDeviceId: string,
+	options: { lastApplied?: string | null; lastAcked?: string | null },
+	updatedAt: string,
+): void {
+	const lastApplied = options.lastApplied ?? null;
+	const lastAcked = options.lastAcked ?? null;
+	const d = drizzle(db, { schema });
+	d.insert(schema.replicationCursors)
+		.values({
+			peer_device_id: peerDeviceId,
+			last_applied_cursor: lastApplied,
+			last_acked_cursor: lastAcked,
+			updated_at: updatedAt,
+		})
+		.onConflictDoUpdate({
+			target: schema.replicationCursors.peer_device_id,
+			set: {
+				last_applied_cursor: sql`COALESCE(excluded.last_applied_cursor, ${schema.replicationCursors.last_applied_cursor})`,
+				last_acked_cursor: sql`COALESCE(excluded.last_acked_cursor, ${schema.replicationCursors.last_acked_cursor})`,
+				updated_at: sql`excluded.updated_at`,
+			},
+		})
+		.run();
+}
+
 /**
  * Read the replication cursor for a peer device.
  *
@@ -415,15 +569,26 @@ export function chunkOpsBySize(ops: ReplicationOp[], maxBytes: number): Replicat
 export function getReplicationCursor(
 	db: Database,
 	peerDeviceId: string,
+	scopeId?: string | null,
 ): [lastApplied: string | null, lastAcked: string | null] {
+	ensureReplicationCursorTables(db);
+	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
+	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		seedDefaultReplicationCursorFromLegacy(db);
+	}
 	const d = drizzle(db, { schema });
 	const row = d
 		.select({
-			last_applied_cursor: schema.replicationCursors.last_applied_cursor,
-			last_acked_cursor: schema.replicationCursors.last_acked_cursor,
+			last_applied_cursor: schema.replicationCursorsV2.last_applied_cursor,
+			last_acked_cursor: schema.replicationCursorsV2.last_acked_cursor,
 		})
-		.from(schema.replicationCursors)
-		.where(eq(schema.replicationCursors.peer_device_id, peerDeviceId))
+		.from(schema.replicationCursorsV2)
+		.where(
+			and(
+				eq(schema.replicationCursorsV2.peer_device_id, peerDeviceId),
+				eq(schema.replicationCursorsV2.scope_id, effectiveScopeId),
+			),
+		)
 		.get();
 
 	if (!row) return [null, null];
@@ -440,8 +605,14 @@ export function setReplicationCursor(
 	db: Database,
 	peerDeviceId: string,
 	options: { lastApplied?: string | null; lastAcked?: string | null } = {},
+	scopeId?: string | null,
 ): void {
+	ensureReplicationCursorTables(db);
 	const now = new Date().toISOString();
+	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
+	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		seedDefaultReplicationCursorFromLegacy(db);
+	}
 	const lastApplied = options.lastApplied ?? null;
 	const lastAcked = options.lastAcked ?? null;
 
@@ -449,22 +620,26 @@ export function setReplicationCursor(
 	// Atomic UPSERT — avoids TOCTOU race with concurrent sync workers.
 	// Drizzle's onConflictDoUpdate doesn't support COALESCE(excluded.col, col)
 	// natively, so we use raw SQL for the SET expressions.
-	d.insert(schema.replicationCursors)
+	d.insert(schema.replicationCursorsV2)
 		.values({
 			peer_device_id: peerDeviceId,
+			scope_id: effectiveScopeId,
 			last_applied_cursor: lastApplied,
 			last_acked_cursor: lastAcked,
 			updated_at: now,
 		})
 		.onConflictDoUpdate({
-			target: schema.replicationCursors.peer_device_id,
+			target: [schema.replicationCursorsV2.peer_device_id, schema.replicationCursorsV2.scope_id],
 			set: {
-				last_applied_cursor: sql`COALESCE(excluded.last_applied_cursor, ${schema.replicationCursors.last_applied_cursor})`,
-				last_acked_cursor: sql`COALESCE(excluded.last_acked_cursor, ${schema.replicationCursors.last_acked_cursor})`,
+				last_applied_cursor: sql`COALESCE(excluded.last_applied_cursor, ${schema.replicationCursorsV2.last_applied_cursor})`,
+				last_acked_cursor: sql`COALESCE(excluded.last_acked_cursor, ${schema.replicationCursorsV2.last_acked_cursor})`,
 				updated_at: sql`excluded.updated_at`,
 			},
 		})
 		.run();
+	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
+		mirrorDefaultReplicationCursorToLegacy(db, peerDeviceId, options, now);
+	}
 }
 
 // Payload extraction
@@ -700,10 +875,13 @@ export function loadReplicationOpsSince(
 	cursor: string | null,
 	limit = 100,
 	deviceId?: string,
+	scopeId?: string | null,
 ): [ReplicationOp[], string | null] {
 	const d = drizzle(db, { schema });
 	const t = schema.replicationOps;
 	const conditions = [];
+	const scopeFilterRequested = scopeId !== undefined;
+	const effectiveScopeId = normalizeSyncStateScopeId(scopeId);
 
 	if (cursor) {
 		const parsed = parseCursor(cursor);
@@ -717,6 +895,14 @@ export function loadReplicationOpsSince(
 
 	if (deviceId) {
 		conditions.push(or(eq(t.device_id, deviceId), eq(t.device_id, "local")));
+	}
+
+	if (scopeFilterRequested) {
+		conditions.push(
+			effectiveScopeId === DEFAULT_SYNC_SCOPE_ID
+				? or(isNull(t.scope_id), eq(t.scope_id, DEFAULT_SYNC_SCOPE_ID))
+				: eq(t.scope_id, effectiveScopeId),
+		);
 	}
 
 	const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -758,7 +944,9 @@ export function loadReplicationOpsForPeer(
 	db: Database,
 	options: LoadReplicationOpsForPeerOptions,
 ): LoadReplicationOpsForPeerResult {
-	const boundary = getSyncResetState(db);
+	const scopeFilterRequested = options.scopeId !== undefined;
+	const effectiveScopeId = normalizeSyncStateScopeId(options.scopeId);
+	const boundary = getSyncResetState(db, scopeFilterRequested ? options.scopeId : undefined);
 	const since = normalizeCursor(options.since);
 	const requestedGeneration = options.generation ?? null;
 	const requestedSnapshotId = normalizeCursor(options.snapshotId);
@@ -794,7 +982,13 @@ export function loadReplicationOpsForPeer(
 		return resetRequired(boundary, "stale_cursor");
 	}
 
-	const [ops, nextCursor] = loadReplicationOpsSince(db, since, options.limit, options.deviceId);
+	const [ops, nextCursor] = loadReplicationOpsSince(
+		db,
+		since,
+		options.limit,
+		options.deviceId,
+		effectiveScopeId,
+	);
 	return {
 		reset_required: false,
 		boundary,
@@ -807,7 +1001,9 @@ export function loadMemorySnapshotPageForPeer(
 	db: Database,
 	options: LoadMemorySnapshotPageForPeerOptions,
 ): LoadMemorySnapshotPageForPeerResult {
-	const boundary = getSyncResetState(db);
+	const scopeFilterRequested = options.scopeId !== undefined;
+	const effectiveScopeId = normalizeSyncStateScopeId(options.scopeId);
+	const boundary = getSyncResetState(db, scopeFilterRequested ? options.scopeId : undefined);
 	if (options.generation !== boundary.generation) {
 		throw new Error("generation_mismatch");
 	}
@@ -836,6 +1032,12 @@ export function loadMemorySnapshotPageForPeer(
 			.where(
 				and(
 					isNotNull(schema.memoryItems.import_key),
+					effectiveScopeId === DEFAULT_SYNC_SCOPE_ID
+						? or(
+								isNull(schema.memoryItems.scope_id),
+								eq(schema.memoryItems.scope_id, DEFAULT_SYNC_SCOPE_ID),
+							)
+						: eq(schema.memoryItems.scope_id, effectiveScopeId),
 					token
 						? or(
 								gt(schema.memoryItems.import_key, token.importKey),
@@ -961,21 +1163,48 @@ export function pruneReplicationOps(
 		maxSizeBytes?: number;
 		maxDeleteOps?: number;
 		maxRuntimeMs?: number;
+		scopeId?: string | null;
 	},
 ): ReplicationOpsPruneResult {
 	const maxAgeDays = Math.max(1, Math.floor(options?.maxAgeDays ?? 30));
 	const maxSizeBytes = Math.max(1, Math.floor(options?.maxSizeBytes ?? 512 * 1024 * 1024));
 	const maxDeleteOps = Math.max(1, Math.floor(options?.maxDeleteOps ?? Number.MAX_SAFE_INTEGER));
 	const maxRuntimeMs = Math.max(1, Math.floor(options?.maxRuntimeMs ?? Number.MAX_SAFE_INTEGER));
+	const scopeId = normalizeSyncStateScopeId(options?.scopeId);
 	const d = drizzle(db, { schema });
 	const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
 	const startedAt = Date.now();
 	let deleted = 0;
 	let lastDeletedCursor: string | null = null;
-	const bulkDeleteBeforeStmt = db.prepare(
-		"DELETE FROM replication_ops WHERE created_at < ? OR (created_at = ? AND op_id <= ?)",
-	);
-	const estimatedBytesBefore = estimateReplicationOpsStorageBytes(db);
+	const deleteThroughCursor = (createdAt: string, opId: string): number => {
+		const floorCursor = computeCursor(createdAt, opId);
+		return db
+			.transaction(() => {
+				const result =
+					scopeId === DEFAULT_SYNC_SCOPE_ID
+						? (db
+								.prepare(
+									`DELETE FROM replication_ops
+									 WHERE (scope_id IS NULL OR scope_id = ?)
+									   AND (created_at < ? OR (created_at = ? AND op_id <= ?))`,
+								)
+								.run(scopeId, createdAt, createdAt, opId) as { changes?: number })
+						: (db
+								.prepare(
+									`DELETE FROM replication_ops
+									 WHERE scope_id = ?
+									   AND (created_at < ? OR (created_at = ? AND op_id <= ?))`,
+								)
+								.run(scopeId, createdAt, createdAt, opId) as { changes?: number });
+				const changes = result.changes ?? 0;
+				if (changes > 0) {
+					setSyncResetState(db, { retained_floor_cursor: floorCursor }, scopeId);
+				}
+				return changes;
+			})
+			.immediate();
+	};
+	const estimatedBytesBefore = estimateReplicationOpsScopeBytes(db, scopeId);
 	if (estimatedBytesBefore == null) {
 		throw new Error("replication_ops_size_unavailable");
 	}
@@ -995,7 +1224,17 @@ export function pruneReplicationOps(
 				created_at: schema.replicationOps.created_at,
 			})
 			.from(schema.replicationOps)
-			.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
+			.where(
+				and(
+					sql`${schema.replicationOps.created_at} < ${cutoff}`,
+					scopeId === DEFAULT_SYNC_SCOPE_ID
+						? or(
+								isNull(schema.replicationOps.scope_id),
+								eq(schema.replicationOps.scope_id, scopeId),
+							)
+						: eq(schema.replicationOps.scope_id, scopeId),
+				),
+			)
 			.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
 			.limit(ageBatchSize)
 			.all();
@@ -1003,12 +1242,7 @@ export function pruneReplicationOps(
 		const boundary = ageCandidates[ageCandidates.length - 1];
 		if (!boundary) break;
 		lastDeletedCursor = computeCursor(String(boundary.created_at), String(boundary.op_id));
-		deleted +=
-			(
-				bulkDeleteBeforeStmt.run(boundary.created_at, boundary.created_at, boundary.op_id) as {
-					changes?: number;
-				}
-			).changes ?? 0;
+		deleted += deleteThroughCursor(String(boundary.created_at), String(boundary.op_id));
 		if (budgetExceeded()) {
 			stoppedByBudget = true;
 			break;
@@ -1030,29 +1264,28 @@ export function pruneReplicationOps(
 				created_at: schema.replicationOps.created_at,
 			})
 			.from(schema.replicationOps)
+			.where(
+				scopeId === DEFAULT_SYNC_SCOPE_ID
+					? or(isNull(schema.replicationOps.scope_id), eq(schema.replicationOps.scope_id, scopeId))
+					: eq(schema.replicationOps.scope_id, scopeId),
+			)
 			.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
 			.limit(sizeBatchSize)
 			.all();
 		const boundary = oldestChunk[oldestChunk.length - 1];
 		if (!boundary) break;
 		lastDeletedCursor = computeCursor(String(boundary.created_at), String(boundary.op_id));
-		deleted +=
-			(
-				bulkDeleteBeforeStmt.run(boundary.created_at, boundary.created_at, boundary.op_id) as {
-					changes?: number;
-				}
-			).changes ?? 0;
-		const nextEstimatedSize = estimateReplicationOpsStorageBytes(db);
+		deleted += deleteThroughCursor(String(boundary.created_at), String(boundary.op_id));
+		const nextEstimatedSize = estimateReplicationOpsScopeBytes(db, scopeId);
 		if (nextEstimatedSize == null) {
 			throw new Error("replication_ops_size_unavailable");
 		}
 		estimatedSizeBytes = nextEstimatedSize;
 	}
 
-	const currentBoundary = getSyncResetState(db);
+	const currentBoundary = getSyncResetState(db, scopeId);
 	const retainedFloorCursor =
 		deleted > 0 ? lastDeletedCursor : currentBoundary.retained_floor_cursor;
-	setSyncResetState(db, { retained_floor_cursor: retainedFloorCursor });
 	return {
 		deleted,
 		retained_floor_cursor: retainedFloorCursor,
@@ -1077,6 +1310,7 @@ export function pruneReplicationOpsUntilCaughtUp(
 		maxSizeBytes: number;
 		maxDeleteOps: number;
 		maxRuntimeMs: number;
+		scopeId?: string | null;
 		maxPasses?: number;
 		signal?: AbortSignal;
 		onPass?: (pass: {
@@ -1127,25 +1361,34 @@ export function bulkPruneReplicationOpsByAgeCutoff(
 	db: Database,
 	maxAgeDays: number,
 	maxDeleteOps = Number.MAX_SAFE_INTEGER,
+	scopeIdInput?: string | null,
 ): ReplicationOpsPruneResult {
 	const d = drizzle(db, { schema });
+	const scopeId = normalizeSyncStateScopeId(scopeIdInput);
 	const cutoff = new Date(
 		Date.now() - Math.max(1, Math.floor(maxAgeDays)) * 24 * 60 * 60 * 1000,
 	).toISOString();
-	const estimatedBytesBefore = estimateReplicationOpsStorageBytes(db);
+	const estimatedBytesBefore = estimateReplicationOpsScopeBytes(db, scopeId);
 	if (estimatedBytesBefore == null) {
 		throw new Error("replication_ops_size_unavailable");
 	}
 	const oldestEligible = d
 		.select({ op_id: schema.replicationOps.op_id, created_at: schema.replicationOps.created_at })
 		.from(schema.replicationOps)
-		.where(sql`${schema.replicationOps.created_at} < ${cutoff}`)
+		.where(
+			and(
+				sql`${schema.replicationOps.created_at} < ${cutoff}`,
+				scopeId === DEFAULT_SYNC_SCOPE_ID
+					? or(isNull(schema.replicationOps.scope_id), eq(schema.replicationOps.scope_id, scopeId))
+					: eq(schema.replicationOps.scope_id, scopeId),
+			),
+		)
 		.orderBy(schema.replicationOps.created_at, schema.replicationOps.op_id)
 		.limit(Math.max(1, maxDeleteOps))
 		.all();
 	const boundary = oldestEligible[oldestEligible.length - 1];
 	if (!boundary) {
-		const currentBoundary = getSyncResetState(db);
+		const currentBoundary = getSyncResetState(db, scopeId);
 		return {
 			deleted: 0,
 			retained_floor_cursor: currentBoundary.retained_floor_cursor,
@@ -1154,18 +1397,37 @@ export function bulkPruneReplicationOpsByAgeCutoff(
 			stopped_by_budget: false,
 		};
 	}
-	const deleteStmt = db.prepare(
-		"DELETE FROM replication_ops WHERE created_at < ? OR (created_at = ? AND op_id <= ?)",
-	);
-	const deleted =
-		(
-			deleteStmt.run(boundary.created_at, boundary.created_at, boundary.op_id) as {
-				changes?: number;
-			}
-		).changes ?? 0;
 	const retainedFloorCursor = computeCursor(String(boundary.created_at), String(boundary.op_id));
-	setSyncResetState(db, { retained_floor_cursor: retainedFloorCursor });
-	const estimatedBytesAfter = estimateReplicationOpsStorageBytes(db);
+	const deleted = db
+		.transaction(() => {
+			const result =
+				scopeId === DEFAULT_SYNC_SCOPE_ID
+					? (db
+							.prepare(
+								`DELETE FROM replication_ops
+								 WHERE (scope_id IS NULL OR scope_id = ?)
+								   AND (created_at < ? OR (created_at = ? AND op_id <= ?))`,
+							)
+							.run(scopeId, boundary.created_at, boundary.created_at, boundary.op_id) as {
+							changes?: number;
+						})
+					: (db
+							.prepare(
+								`DELETE FROM replication_ops
+								 WHERE scope_id = ?
+								   AND (created_at < ? OR (created_at = ? AND op_id <= ?))`,
+							)
+							.run(scopeId, boundary.created_at, boundary.created_at, boundary.op_id) as {
+							changes?: number;
+						});
+			const changes = result.changes ?? 0;
+			if (changes > 0) {
+				setSyncResetState(db, { retained_floor_cursor: retainedFloorCursor }, scopeId);
+			}
+			return changes;
+		})
+		.immediate();
+	const estimatedBytesAfter = estimateReplicationOpsScopeBytes(db, scopeId);
 	if (estimatedBytesAfter == null) {
 		throw new Error("replication_ops_size_unavailable");
 	}
@@ -1229,6 +1491,33 @@ function estimateReplicationOpsStorageBytes(db: Database): number | null {
 				    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
 			)
 			.get() as { total_bytes?: number | string | null } | undefined;
+		const total = Number(row?.total_bytes ?? 0);
+		return Number.isFinite(total) && total >= 0 ? total : null;
+	} catch {
+		return null;
+	}
+}
+
+export function estimateReplicationOpsScopeBytes(db: Database, scopeId: string): number | null {
+	const estimateSql = `SELECT COALESCE(SUM(
+		LENGTH(COALESCE(op_id, '')) +
+		LENGTH(COALESCE(entity_type, '')) +
+		LENGTH(COALESCE(entity_id, '')) +
+		LENGTH(COALESCE(op_type, '')) +
+		LENGTH(COALESCE(payload_json, '')) +
+		LENGTH(COALESCE(clock_updated_at, '')) +
+		LENGTH(COALESCE(clock_device_id, '')) +
+		LENGTH(COALESCE(device_id, '')) +
+		LENGTH(COALESCE(created_at, '')) +
+		LENGTH(COALESCE(scope_id, '')) +
+		96
+	), 0) AS total_bytes
+	FROM replication_ops
+	WHERE ${scopeId === DEFAULT_SYNC_SCOPE_ID ? "scope_id IS NULL OR scope_id = ?" : "scope_id = ?"}`;
+	try {
+		const row = db.prepare(estimateSql).get(scopeId) as
+			| { total_bytes?: number | string | null }
+			| undefined;
 		const total = Number(row?.total_bytes ?? 0);
 		return Number.isFinite(total) && total >= 0 ? total : null;
 	} catch {

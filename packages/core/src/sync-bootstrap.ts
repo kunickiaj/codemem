@@ -328,17 +328,26 @@ export function applyBootstrapSnapshot(
 
 		// 3. Update replication cursor to baseline_cursor.
 		if (resetInfo.baseline_cursor) {
-			setReplicationCursor(db, peerDeviceId, {
-				lastApplied: resetInfo.baseline_cursor,
-			});
+			setReplicationCursor(
+				db,
+				peerDeviceId,
+				{
+					lastApplied: resetInfo.baseline_cursor,
+				},
+				resetInfo.scope_id,
+			);
 		}
 
 		// 4. Bump local generation + snapshot_id to match the peer.
-		setSyncResetState(db, {
-			generation: resetInfo.generation,
-			snapshot_id: resetInfo.snapshot_id,
-			baseline_cursor: resetInfo.baseline_cursor,
-		});
+		setSyncResetState(
+			db,
+			{
+				generation: resetInfo.generation,
+				snapshot_id: resetInfo.snapshot_id,
+				baseline_cursor: resetInfo.baseline_cursor,
+			},
+			resetInfo.scope_id,
+		);
 
 		queueVectorBackfillForSyncBootstrap(db, { embeddableTotal: embeddableApplied });
 

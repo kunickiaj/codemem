@@ -4,7 +4,11 @@ import { readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import { connect, resolveDbPath } from "./db.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
-import { pruneReplicationOpsUntilCaughtUp } from "./sync-replication.js";
+import {
+	DEFAULT_SYNC_SCOPE_ID,
+	estimateReplicationOpsScopeBytes,
+	pruneReplicationOpsUntilCaughtUp,
+} from "./sync-replication.js";
 
 export interface SyncRetentionRunnerOptions {
 	dbPath?: string;
@@ -17,15 +21,17 @@ export interface SyncRetentionPassConfig {
 	syncRetentionMaxSizeMb: number;
 	syncRetentionMaxOpsPerPass: number;
 	syncRetentionMaxRuntimeMs: number;
+	scopeId?: string | null;
 	maxCatchUpPasses?: number;
 	signal?: AbortSignal;
 }
 
-export async function runSyncRetentionPass(
-	db: Database,
-	config: SyncRetentionPassConfig,
-): Promise<void> {
-	if (!config.syncRetentionEnabled) return;
+function normalizeRetentionScopeId(scopeId: string | null | undefined): string {
+	const trimmed = String(scopeId ?? "").trim();
+	return trimmed.length > 0 ? trimmed : DEFAULT_SYNC_SCOPE_ID;
+}
+
+function ensureSyncRetentionStateTables(db: Database): void {
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS sync_retention_state (
 			id INTEGER PRIMARY KEY,
@@ -37,58 +43,127 @@ export async function runSyncRetentionPass(
 			retained_floor_cursor TEXT,
 			last_error TEXT,
 			last_error_at TEXT
+		);
+		CREATE TABLE IF NOT EXISTS sync_retention_state_v2 (
+			scope_id TEXT PRIMARY KEY NOT NULL,
+			last_run_at TEXT,
+			last_duration_ms INTEGER,
+			last_deleted_ops INTEGER NOT NULL DEFAULT 0,
+			last_estimated_bytes_before INTEGER,
+			last_estimated_bytes_after INTEGER,
+			retained_floor_cursor TEXT,
+			last_error TEXT,
+			last_error_at TEXT
 		)
 	`);
-	const d = drizzle(db, { schema });
-	const startedAt = new Date().toISOString();
-	try {
-		const estimatedBytesBefore = db
-			.prepare(
-				`SELECT COALESCE(SUM(pgsize), 0) AS total_bytes
-				 FROM dbstat
-				 WHERE name = 'replication_ops'
-				    OR name LIKE 'idx_replication_ops_%'
-				    OR name LIKE 'sqlite_autoindex_replication_ops_%'`,
+}
+
+function listRetentionScopeIds(db: Database): string[] {
+	const rows = db
+		.prepare(
+			`SELECT scope_id FROM (
+				SELECT COALESCE(NULLIF(TRIM(scope_id), ''), ?) AS scope_id FROM replication_ops
+				UNION
+				SELECT COALESCE(NULLIF(TRIM(scope_id), ''), ?) AS scope_id FROM sync_reset_state_v2
+				UNION
+				SELECT COALESCE(NULLIF(TRIM(scope_id), ''), ?) AS scope_id FROM sync_retention_state_v2
 			)
-			.get() as { total_bytes?: number } | undefined;
+			ORDER BY CASE WHEN scope_id = ? THEN 0 ELSE 1 END, scope_id`,
+		)
+		.all(
+			DEFAULT_SYNC_SCOPE_ID,
+			DEFAULT_SYNC_SCOPE_ID,
+			DEFAULT_SYNC_SCOPE_ID,
+			DEFAULT_SYNC_SCOPE_ID,
+		) as Array<{ scope_id: string | null }>;
+	const scopeIds = new Set<string>([DEFAULT_SYNC_SCOPE_ID]);
+	for (const row of rows) {
+		const scopeId = normalizeRetentionScopeId(row.scope_id);
+		scopeIds.add(scopeId);
+	}
+	return Array.from(scopeIds);
+}
+
+interface RetentionStateValues {
+	last_run_at: string;
+	last_duration_ms: number;
+	last_deleted_ops: number;
+	last_estimated_bytes_before: number | null;
+	last_estimated_bytes_after: number | null;
+	retained_floor_cursor: string | null;
+	last_error: string | null;
+	last_error_at: string | null;
+}
+
+function persistRetentionState(
+	d: ReturnType<typeof drizzle>,
+	scopeId: string,
+	values: RetentionStateValues,
+	mirrorLegacy: boolean,
+): void {
+	d.insert(schema.syncRetentionStateV2)
+		.values({
+			scope_id: scopeId,
+			...values,
+		})
+		.onConflictDoUpdate({
+			target: schema.syncRetentionStateV2.scope_id,
+			set: values,
+		})
+		.run();
+	if (mirrorLegacy) {
+		d.insert(schema.syncRetentionState)
+			.values({
+				id: 1,
+				...values,
+			})
+			.onConflictDoUpdate({
+				target: schema.syncRetentionState.id,
+				set: values,
+			})
+			.run();
+	}
+}
+
+function runSyncRetentionScopePass(
+	db: Database,
+	d: ReturnType<typeof drizzle>,
+	config: SyncRetentionPassConfig,
+	startedAt: string,
+	scopeId: string,
+): void {
+	const shouldMirrorLegacy = scopeId === DEFAULT_SYNC_SCOPE_ID;
+	try {
+		const estimatedBytesBefore = estimateReplicationOpsScopeBytes(db, scopeId);
 		const result = pruneReplicationOpsUntilCaughtUp(db, {
 			maxAgeDays: config.syncRetentionMaxAgeDays,
 			maxSizeBytes: config.syncRetentionMaxSizeMb * 1024 * 1024,
 			maxDeleteOps: config.syncRetentionMaxOpsPerPass,
 			maxRuntimeMs: config.syncRetentionMaxRuntimeMs,
+			scopeId,
 			maxPasses: config.maxCatchUpPasses,
 			signal: config.signal,
 		});
-		d.insert(schema.syncRetentionState)
-			.values({
-				id: 1,
+		persistRetentionState(
+			d,
+			scopeId,
+			{
 				last_run_at: startedAt,
 				last_duration_ms: Date.now() - Date.parse(startedAt),
 				last_deleted_ops: result.totalDeleted,
-				last_estimated_bytes_before: estimatedBytesBefore?.total_bytes ?? null,
+				last_estimated_bytes_before: estimatedBytesBefore,
 				last_estimated_bytes_after: result.afterBytes,
 				retained_floor_cursor: result.lastFloor,
 				last_error: null,
 				last_error_at: null,
-			})
-			.onConflictDoUpdate({
-				target: schema.syncRetentionState.id,
-				set: {
-					last_run_at: startedAt,
-					last_duration_ms: Date.now() - Date.parse(startedAt),
-					last_deleted_ops: result.totalDeleted,
-					last_estimated_bytes_before: estimatedBytesBefore?.total_bytes ?? null,
-					last_estimated_bytes_after: result.afterBytes,
-					retained_floor_cursor: result.lastFloor,
-					last_error: null,
-					last_error_at: null,
-				},
-			})
-			.run();
+			},
+			shouldMirrorLegacy,
+		);
 	} catch (err) {
-		d.insert(schema.syncRetentionState)
-			.values({
-				id: 1,
+		persistRetentionState(
+			d,
+			scopeId,
+			{
 				last_run_at: startedAt,
 				last_duration_ms: Date.now() - Date.parse(startedAt),
 				last_deleted_ops: 0,
@@ -97,21 +172,26 @@ export async function runSyncRetentionPass(
 				retained_floor_cursor: null,
 				last_error: err instanceof Error ? err.message : String(err),
 				last_error_at: new Date().toISOString(),
-			})
-			.onConflictDoUpdate({
-				target: schema.syncRetentionState.id,
-				set: {
-					last_run_at: startedAt,
-					last_duration_ms: Date.now() - Date.parse(startedAt),
-					last_deleted_ops: 0,
-					last_estimated_bytes_before: null,
-					last_estimated_bytes_after: null,
-					retained_floor_cursor: null,
-					last_error: err instanceof Error ? err.message : String(err),
-					last_error_at: new Date().toISOString(),
-				},
-			})
-			.run();
+			},
+			shouldMirrorLegacy,
+		);
+	}
+}
+
+export async function runSyncRetentionPass(
+	db: Database,
+	config: SyncRetentionPassConfig,
+): Promise<void> {
+	if (!config.syncRetentionEnabled) return;
+	ensureSyncRetentionStateTables(db);
+	const d = drizzle(db, { schema });
+	const startedAt = new Date().toISOString();
+	const scopeIds =
+		config.scopeId === undefined
+			? listRetentionScopeIds(db)
+			: [normalizeRetentionScopeId(config.scopeId)];
+	for (const scopeId of scopeIds) {
+		runSyncRetentionScopePass(db, d, config, startedAt, scopeId);
 	}
 }
 
