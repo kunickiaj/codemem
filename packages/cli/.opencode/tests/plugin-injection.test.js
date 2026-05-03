@@ -109,17 +109,18 @@ describe("buildPackArgs", () => {
 });
 
 describe("applyInjectedContextToOutput", () => {
-  test("injects context into output.system, caches by query, and toasts once", async () => {
-    const injectedSessions = new Map();
+  test("recomputes pack on every call and toasts once per session", async () => {
     const injectionToastShown = new Set();
-    const buildInjectedContext = vi.fn().mockResolvedValue({
-      text: "[codemem context]\n## Summary\n[1] (decision) Auth fix",
-      metrics: {
-        items: 1,
-        pack_tokens: 42,
-        pack_delta_available: false,
-      },
-    });
+    const buildInjectedContext = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: "[codemem context]\nfirst turn",
+        metrics: { items: 1, pack_tokens: 42, pack_delta_available: false },
+      })
+      .mockResolvedValueOnce({
+        text: "[codemem context]\nsecond turn",
+        metrics: { items: 2, pack_tokens: 88, pack_delta_available: false },
+      });
     const showToast = vi.fn().mockResolvedValue(undefined);
     const resolveInjectQuery = vi.fn().mockReturnValue("auth fix codemem");
 
@@ -128,7 +129,6 @@ describe("applyInjectedContextToOutput", () => {
       injectEnabled: true,
       input: { sessionID: "sess-1" },
       output: firstOutput,
-      injectedSessions,
       injectionToastShown,
       showToast,
       resolveInjectQuery,
@@ -140,7 +140,6 @@ describe("applyInjectedContextToOutput", () => {
       injectEnabled: true,
       input: { sessionID: "sess-1" },
       output: secondOutput,
-      injectedSessions,
       injectionToastShown,
       showToast,
       resolveInjectQuery,
@@ -148,28 +147,14 @@ describe("applyInjectedContextToOutput", () => {
     });
 
     expect(firstApplied).toBe(true);
-    expect(firstOutput.system).toEqual([
-      "[codemem context]\n## Summary\n[1] (decision) Auth fix",
-    ]);
     expect(secondApplied).toBe(true);
-    expect(secondOutput.system).toEqual([
-      "[codemem context]\n## Summary\n[1] (decision) Auth fix",
-    ]);
-    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+    expect(firstOutput.system).toEqual(["[codemem context]\nfirst turn"]);
+    expect(secondOutput.system).toEqual(["[codemem context]\nsecond turn"]);
+    expect(buildInjectedContext).toHaveBeenCalledTimes(2);
     expect(showToast).toHaveBeenCalledTimes(1);
-    expect(injectedSessions.get("sess-1")).toEqual({
-      query: "auth fix codemem",
-      text: "[codemem context]\n## Summary\n[1] (decision) Auth fix",
-      metrics: {
-        items: 1,
-        pack_tokens: 42,
-        pack_delta_available: false,
-      },
-    });
   });
 
-  test("rebuilds injected context when query changes", async () => {
-    const injectedSessions = new Map();
+  test("rebuilds injected context when query changes across turns", async () => {
     const injectionToastShown = new Set();
     const buildInjectedContext = vi
       .fn()
@@ -185,7 +170,6 @@ describe("applyInjectedContextToOutput", () => {
       injectEnabled: true,
       input: { sessionID: "sess-2" },
       output: firstOutput,
-      injectedSessions,
       injectionToastShown,
       showToast: null,
       resolveInjectQuery,
@@ -197,7 +181,6 @@ describe("applyInjectedContextToOutput", () => {
       injectEnabled: true,
       input: { sessionID: "sess-2" },
       output: secondOutput,
-      injectedSessions,
       injectionToastShown,
       showToast: null,
       resolveInjectQuery,
@@ -216,7 +199,6 @@ describe("applyInjectedContextToOutput", () => {
       injectEnabled: true,
       input: { sessionID: "sess-3" },
       output,
-      injectedSessions: new Map(),
       injectionToastShown: new Set(),
       showToast: vi.fn(),
       resolveInjectQuery: () => "recent work",
@@ -227,34 +209,6 @@ describe("applyInjectedContextToOutput", () => {
     expect(output.system).toEqual(["existing"]);
   });
 
-	test("does not inject stale cached context when query changes and rebuild is empty", async () => {
-		const injectedSessions = new Map([
-			[
-				"sess-5",
-				{
-					query: "old query",
-					text: "[codemem context]\nold",
-					metrics: null,
-				},
-			],
-		]);
-		const output = { system: ["existing"] };
-
-		const applied = await __testUtils.applyInjectedContextToOutput({
-			injectEnabled: true,
-			input: { sessionID: "sess-5" },
-			output,
-			injectedSessions,
-			injectionToastShown: new Set(),
-			showToast: vi.fn(),
-			resolveInjectQuery: () => "new query",
-			buildInjectedContext: vi.fn().mockResolvedValue(""),
-		});
-
-		expect(applied).toBe(false);
-		expect(output.system).toEqual(["existing"]);
-	});
-
   test("returns false immediately when injection is disabled", async () => {
     const buildInjectedContext = vi.fn();
 
@@ -262,7 +216,6 @@ describe("applyInjectedContextToOutput", () => {
       injectEnabled: false,
       input: { sessionID: "sess-4" },
       output: {},
-      injectedSessions: new Map(),
       injectionToastShown: new Set(),
       showToast: null,
       resolveInjectQuery: () => "ignored",

@@ -245,7 +245,6 @@ const applyInjectedContextToOutput = async ({
   injectEnabled,
   input,
   output,
-  injectedSessions,
   injectionToastShown,
   showToast,
   resolveInjectQuery,
@@ -255,39 +254,27 @@ const applyInjectedContextToOutput = async ({
     return false;
   }
 
+  // Recompute the pack against the live query on every transform call so
+  // a single session never gets stuck with the first turn's pack.
   const query = resolveInjectQuery();
-  const cached = injectedSessions.get(input.sessionID);
-  const queryMatchesCache = cached?.query === query;
-  let contextText = queryMatchesCache ? cached?.text || "" : "";
+  const injected = await buildInjectedContext(query);
+  if (!injected?.text) {
+    return false;
+  }
 
-  if (!contextText || cached?.query !== query) {
-    const injected = await buildInjectedContext(query);
-    if (injected?.text) {
-      injectedSessions.set(input.sessionID, {
-        query,
-        text: injected.text,
-        metrics: injected.metrics || null,
-      });
-      contextText = injected.text;
-
-      if (!injectionToastShown.has(input.sessionID) && showToast) {
-        injectionToastShown.add(input.sessionID);
-        try {
-          await showToast(buildInjectionToastMessage(injected.metrics));
-        } catch {
-          // best-effort only
-        }
-      }
+  if (!injectionToastShown.has(input.sessionID) && showToast) {
+    injectionToastShown.add(input.sessionID);
+    try {
+      await showToast(buildInjectionToastMessage(injected.metrics));
+    } catch {
+      // best-effort only
     }
   }
 
-  if (!contextText) {
-    return false;
-  }
   if (!Array.isArray(output.system)) {
     output.system = [];
   }
-  output.system.push(contextText);
+  output.system.push(injected.text);
   return true;
 };
 
@@ -749,7 +736,6 @@ export const OpencodeMemPlugin = async ({
   const injectLimit = injectLimitEnv ? parseNumber(injectLimitEnv, null) : null;
   const injectTokenBudgetEnv = process.env.CODEMEM_INJECT_TOKEN_BUDGET;
   const injectTokenBudget = injectTokenBudgetEnv ? parseNumber(injectTokenBudgetEnv, null) : null;
-  const injectedSessions = new Map();
   const injectionToastShown = new Set();
   let sessionStartedAt = null;
   let activeSessionID = null;
@@ -1800,7 +1786,6 @@ export const OpencodeMemPlugin = async ({
         injectEnabled,
         input,
         output,
-        injectedSessions,
         injectionToastShown,
         showToast: client.tui?.showToast
           ? async (message) => {
