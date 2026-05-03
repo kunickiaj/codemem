@@ -36,7 +36,7 @@ import {
 	spoolPayload,
 	withClaudeHookIngestLock,
 } from "./claude-hook-ingest-spool.js";
-import { logHookFailure } from "./claude-hook-plugin-log.js";
+import { logHookEvent } from "./claude-hook-plugin-log.js";
 import { trackHookSessionState } from "./claude-hook-session-state.js";
 
 type IngestVia = "http" | "direct" | "spool" | "spool_lock_busy";
@@ -97,16 +97,16 @@ async function tryHttpIngest(
 		try {
 			body = await res.json();
 		} catch {
-			logHookFailure("codemem claude-hook-ingest HTTP accepted with invalid response body");
+			logHookEvent("codemem claude-hook-ingest HTTP accepted with invalid response body");
 			return { ok: false, inserted: 0, skipped: 0 };
 		}
 		if (body == null || typeof body !== "object" || Array.isArray(body)) {
-			logHookFailure("codemem claude-hook-ingest HTTP accepted with invalid response type");
+			logHookEvent("codemem claude-hook-ingest HTTP accepted with invalid response type");
 			return { ok: false, inserted: 0, skipped: 0 };
 		}
 		const obj = body as Record<string, unknown>;
 		if (typeof obj.inserted !== "number" || typeof obj.skipped !== "number") {
-			logHookFailure("codemem claude-hook-ingest HTTP accepted with unexpected response body");
+			logHookEvent("codemem claude-hook-ingest HTTP accepted with unexpected response body");
 			return { ok: false, inserted: 0, skipped: 0 };
 		}
 		return { ok: true, inserted: obj.inserted, skipped: obj.skipped };
@@ -226,7 +226,7 @@ async function flushBoundaryRawEvents(
 	try {
 		observer = new ObserverClient();
 	} catch (err) {
-		logHookFailure(
+		logHookEvent(
 			`codemem claude-hook-ingest boundary flush observer init failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
 		return;
@@ -236,7 +236,7 @@ async function flushBoundaryRawEvents(
 	try {
 		store = new MemoryStore(dbPath);
 	} catch (err) {
-		logHookFailure(
+		logHookEvent(
 			`codemem claude-hook-ingest boundary flush store init failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
 		return;
@@ -256,7 +256,7 @@ async function flushBoundaryRawEvents(
 			},
 		);
 	} catch (err) {
-		logHookFailure(
+		logHookEvent(
 			`codemem claude-hook-ingest boundary flush raw events failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	} finally {
@@ -304,7 +304,7 @@ export async function ingestClaudeHookPayload(
 		try {
 			return { ok: true, result: directIngest(queued, getDbPath()) };
 		} catch (err) {
-			logHookFailure(
+			logHookEvent(
 				`codemem claude-hook-ingest direct fallback failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 			return { ok: false };
@@ -321,14 +321,14 @@ export async function ingestClaudeHookPayload(
 		try {
 			directIngest(payload, getDbPath());
 		} catch (err) {
-			logHookFailure(
+			logHookEvent(
 				`codemem claude-hook-ingest boundary flush direct write failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
 		try {
 			await boundaryFlush(payload, getDbPath());
 		} catch (err) {
-			logHookFailure(
+			logHookEvent(
 				`codemem claude-hook-ingest boundary flush failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
@@ -357,7 +357,7 @@ export async function ingestClaudeHookPayload(
 				// Another invocation is already draining; nothing to do.
 				return;
 			}
-			logHookFailure(
+			logHookEvent(
 				`codemem claude-hook-ingest backlog drain failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
@@ -404,13 +404,13 @@ export async function ingestClaudeHookPayload(
 				return { inserted: 0, skipped: 0, via: "spool" as const };
 			}
 
-			logHookFailure("codemem claude-hook-ingest failed: fallback and spool failed");
+			logHookEvent("codemem claude-hook-ingest failed: fallback and spool failed");
 			throw new Error("claude-hook-ingest: fallback and spool both failed");
 		});
 	} catch (err) {
 		if (!(err instanceof LockBusyError)) throw err;
 
-		logHookFailure("codemem claude-hook-ingest lock busy; trying unlocked fallback");
+		logHookEvent("codemem claude-hook-ingest lock busy; trying unlocked fallback");
 		const direct = tryDirectFallback(payload);
 		if (direct.ok) {
 			return { ...direct.result, via: "direct" };
@@ -418,7 +418,7 @@ export async function ingestClaudeHookPayload(
 		if (spoolPayload(payload)) {
 			return { inserted: 0, skipped: 0, via: "spool_lock_busy" };
 		}
-		logHookFailure("codemem claude-hook-ingest failed: unlocked fallback and spool failed");
+		logHookEvent("codemem claude-hook-ingest failed: unlocked fallback and spool failed");
 		throw err;
 	}
 }

@@ -18,7 +18,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { logHookFailure } from "./claude-hook-plugin-log.js";
+import { logHookEvent } from "./claude-hook-plugin-log.js";
 
 const DEFAULT_LOCK_TTL_S = 300;
 const DEFAULT_LOCK_GRACE_S = 2;
@@ -268,7 +268,7 @@ export function spoolPayload(payload: Record<string, unknown>): boolean {
 	try {
 		mkdirSync(dir, { recursive: true });
 	} catch {
-		logHookFailure("codemem claude-hook-ingest failed to create spool dir");
+		logHookEvent("codemem claude-hook-ingest failed to create spool dir");
 		return false;
 	}
 
@@ -278,7 +278,7 @@ export function spoolPayload(payload: Record<string, unknown>): boolean {
 	try {
 		writeFileSync(tmpPath, payloadText, { encoding: "utf8" });
 	} catch {
-		logHookFailure("codemem claude-hook-ingest failed to allocate spool temp file");
+		logHookEvent("codemem claude-hook-ingest failed to allocate spool temp file");
 		return false;
 	}
 
@@ -292,10 +292,10 @@ export function spoolPayload(payload: Record<string, unknown>): boolean {
 		} catch {
 			// best-effort
 		}
-		logHookFailure("codemem claude-hook-ingest failed to spool payload");
+		logHookEvent("codemem claude-hook-ingest failed to spool payload");
 		return false;
 	}
-	logHookFailure(`codemem claude-hook-ingest spooled payload: ${finalPath}`);
+	logHookEvent(`codemem claude-hook-ingest spooled payload: ${finalPath}`);
 	return true;
 }
 
@@ -337,7 +337,7 @@ export function recoverStaleTmpSpool(ttlSeconds: number): void {
 		const recoveredPath = join(dir, recoveredName);
 		try {
 			renameSync(tmpPath, recoveredPath);
-			logHookFailure(
+			logHookEvent(
 				`codemem claude-hook-ingest recovered stale temp spool payload: ${recoveredPath}`,
 			);
 		} catch {
@@ -357,7 +357,7 @@ function quarantineSpoolEntry(dir: string, name: string, reason: string): void {
 	const quarantineName = `.bad-${reason}-${Date.now()}-${randomInt(1000, 10000)}-${name}`;
 	try {
 		renameSync(sourcePath, join(dir, quarantineName));
-		logHookFailure(
+		logHookEvent(
 			`codemem claude-hook-ingest quarantined corrupt spool payload (${reason}): ${quarantineName}`,
 		);
 	} catch {
@@ -365,9 +365,7 @@ function quarantineSpoolEntry(dir: string, name: string, reason: string): void {
 		// entry must not stay in the active queue.
 		try {
 			unlinkSync(sourcePath);
-			logHookFailure(
-				`codemem claude-hook-ingest dropped corrupt spool payload (${reason}): ${name}`,
-			);
+			logHookEvent(`codemem claude-hook-ingest dropped corrupt spool payload (${reason}): ${name}`);
 		} catch {
 			// best-effort
 		}
@@ -420,7 +418,7 @@ export async function drainSpool(handler: SpoolHandler): Promise<SpoolDrainResul
 		} catch {
 			// Genuine I/O failure — leave the file alone so the next drain
 			// can retry, and surface the failure to the plugin log.
-			logHookFailure(`codemem claude-hook-ingest failed to read spooled payload: ${path}`);
+			logHookEvent(`codemem claude-hook-ingest failed to read spooled payload: ${path}`);
 			result.failed++;
 			continue;
 		}
@@ -456,7 +454,7 @@ export async function drainSpool(handler: SpoolHandler): Promise<SpoolDrainResul
 				// best-effort
 			}
 		} else {
-			logHookFailure(`codemem claude-hook-ingest failed processing spooled payload: ${path}`);
+			logHookEvent(`codemem claude-hook-ingest failed processing spooled payload: ${path}`);
 			result.failed++;
 		}
 	}
