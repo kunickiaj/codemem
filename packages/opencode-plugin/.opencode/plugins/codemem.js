@@ -245,7 +245,6 @@ const applyInjectedContextToOutput = async ({
   injectEnabled,
   input,
   output,
-  injectedSessions,
   injectionToastShown,
   showToast,
   resolveInjectQuery,
@@ -255,39 +254,33 @@ const applyInjectedContextToOutput = async ({
     return false;
   }
 
+  // The previous incarnation cached by sessionID-only, so a follow-up
+  // turn whose query happened to match the cache key (e.g. because
+  // lastPromptText hadn't yet been captured by the time
+  // experimental.chat.system.transform fired) would silently re-serve
+  // the first turn's pack. Recompute on every call instead — the chat
+  // path tolerates the runCli round trip, and correctness beats the
+  // O(1) hit when the cache key isn't tied to the prompt that produced
+  // the pack.
   const query = resolveInjectQuery();
-  const cached = injectedSessions.get(input.sessionID);
-  const queryMatchesCache = cached?.query === query;
-  let contextText = queryMatchesCache ? cached?.text || "" : "";
+  const injected = await buildInjectedContext(query);
+  if (!injected?.text) {
+    return false;
+  }
 
-  if (!contextText || cached?.query !== query) {
-    const injected = await buildInjectedContext(query);
-    if (injected?.text) {
-      injectedSessions.set(input.sessionID, {
-        query,
-        text: injected.text,
-        metrics: injected.metrics || null,
-      });
-      contextText = injected.text;
-
-      if (!injectionToastShown.has(input.sessionID) && showToast) {
-        injectionToastShown.add(input.sessionID);
-        try {
-          await showToast(buildInjectionToastMessage(injected.metrics));
-        } catch {
-          // best-effort only
-        }
-      }
+  if (!injectionToastShown.has(input.sessionID) && showToast) {
+    injectionToastShown.add(input.sessionID);
+    try {
+      await showToast(buildInjectionToastMessage(injected.metrics));
+    } catch {
+      // best-effort only
     }
   }
 
-  if (!contextText) {
-    return false;
-  }
   if (!Array.isArray(output.system)) {
     output.system = [];
   }
-  output.system.push(contextText);
+  output.system.push(injected.text);
   return true;
 };
 
@@ -749,7 +742,6 @@ export const OpencodeMemPlugin = async ({
   const injectLimit = injectLimitEnv ? parseNumber(injectLimitEnv, null) : null;
   const injectTokenBudgetEnv = process.env.CODEMEM_INJECT_TOKEN_BUDGET;
   const injectTokenBudget = injectTokenBudgetEnv ? parseNumber(injectTokenBudgetEnv, null) : null;
-  const injectedSessions = new Map();
   const injectionToastShown = new Set();
   let sessionStartedAt = null;
   let activeSessionID = null;
@@ -1796,25 +1788,35 @@ export const OpencodeMemPlugin = async ({
           } inject_enabled=${injectEnabled} tui_toast=${Boolean(client.tui?.showToast)} query=${JSON.stringify(safeQuery)} first_prompt_len=${firstPromptLen} last_prompt_len=${lastPromptLen} project=${JSON.stringify(projectName)} files_modified=${filesModifiedCount}`
         );
       }
-      const applied = await applyInjectedContextToOutput({
-        injectEnabled,
-        input,
-        output,
-        injectedSessions,
-        injectionToastShown,
-        showToast: client.tui?.showToast
-          ? async (message) => {
-            await client.tui.showToast({
-              body: {
-                message,
-                variant: "info",
-              },
-            });
-          }
-          : null,
-        resolveInjectQuery,
-        buildInjectedContext,
-      });
+      // Without the old per-session cache, every transform call shells out
+      // through `runCli`. Swallow rejections here so a single failed pack
+      // build (CLI crash, sqlite locked, network blip on HTTP fallback)
+      // can't take down the chat path.
+      let applied = false;
+      try {
+        applied = await applyInjectedContextToOutput({
+          injectEnabled,
+          input,
+          output,
+          injectionToastShown,
+          showToast: client.tui?.showToast
+            ? async (message) => {
+              await client.tui.showToast({
+                body: {
+                  message,
+                  variant: "info",
+                },
+              });
+            }
+            : null,
+          resolveInjectQuery,
+          buildInjectedContext,
+        });
+      } catch (err) {
+        await logLine(
+          `inject.transform.error sessionID=${input.sessionID} message=${JSON.stringify(err instanceof Error ? err.message : String(err))}`
+        );
+      }
       if (debug) {
         await logLine(
           `inject.transform.result sessionID=${input.sessionID} applied=${Boolean(applied)} system_entries=${Array.isArray(output.system) ? output.system.length : 0}`
@@ -2000,6 +2002,9 @@ export const OpencodeMemPlugin = async ({
       }
       if (eventType === "session.deleted") {
         activeSessionID = null;
+        if (sessionID) {
+          injectionToastShown.delete(sessionID);
+        }
         await stopViewer();
       }
     },
