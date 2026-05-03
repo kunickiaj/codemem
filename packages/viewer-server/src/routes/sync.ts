@@ -57,8 +57,11 @@ import {
 	lookupCoordinatorPeers,
 	mergeAddresses,
 	parseSyncScopeRequest,
+	peerCanSyncPrivateOpByPersonalScopeGrant,
+	personalScopeGrantStatusForPeer,
 	readCoordinatorSyncConfig,
 	recordNonce,
+	replicationOpRequiresPersonalScopeAuthorization,
 	requestJson,
 	runSyncPass,
 	SYNC_SCOPE_QUERY_PARAM,
@@ -719,13 +722,6 @@ function claimLegacyDeviceAsSelf(store: MemoryStore, originDeviceId: string): nu
 	return Number(result.changes ?? 0);
 }
 
-function peerClaimedLocalActor(store: MemoryStore, peerDeviceId: string): boolean {
-	const row = store.db
-		.prepare("SELECT claimed_local_actor FROM sync_peers WHERE peer_device_id = ? LIMIT 1")
-		.get(peerDeviceId) as { claimed_local_actor: number | null } | undefined;
-	return Boolean(row?.claimed_local_actor);
-}
-
 function parseOpPayload(op: { payload_json: string | null }): Record<string, unknown> | null {
 	if (!op.payload_json || !String(op.payload_json).trim()) return null;
 	try {
@@ -1000,7 +996,6 @@ function filterOpsForPeer(
 	ops: ReplicationOp[],
 ): { allowed: ReplicationOp[]; skipped: number } {
 	const filters = readPeerProjectFilters(store, peerDeviceId);
-	const allowPrivate = peerClaimedLocalActor(store, peerDeviceId);
 	const allowed: ReplicationOp[] = [];
 	let skipped = 0;
 	for (const op of ops) {
@@ -1009,7 +1004,15 @@ function filterOpsForPeer(
 			continue;
 		}
 		const payload = parseOpPayload(op);
-		if (!allowPrivate && !syncVisibilityAllowed(payload)) {
+		const requiresPersonalScope = replicationOpRequiresPersonalScopeAuthorization(op, payload);
+		if (op.op_type === "delete" && payload == null && !requiresPersonalScope) {
+			allowed.push(op);
+			continue;
+		}
+		if (
+			(requiresPersonalScope || !syncVisibilityAllowed(payload)) &&
+			!peerCanSyncPrivateOpByPersonalScopeGrant(store.db, op, payload, peerDeviceId)
+		) {
 			skipped++;
 			continue;
 		}
@@ -1026,6 +1029,22 @@ function filterOpsForPeer(
 // ---------------------------------------------------------------------------
 // Peer row mapping — deduplicated helper (fix #4)
 // ---------------------------------------------------------------------------
+
+function claimedLocalActorScopeStatus(
+	store: MemoryStore,
+	row: Record<string, unknown>,
+): Record<string, unknown> | null {
+	if (!row.claimed_local_actor) return null;
+	const peerDeviceId = String(row.peer_device_id ?? "").trim();
+	const actorId = String(row.actor_id ?? store.actorId).trim() || store.actorId;
+	const grant = personalScopeGrantStatusForPeer(store.db, { peerDeviceId, actorId });
+	return {
+		scope_id: grant.scope_id,
+		authorized: grant.authorized,
+		state: grant.state,
+		action_required: !grant.authorized,
+	};
+}
 
 /**
  * Map a raw sync_peers DB row to the API response shape.
@@ -1051,6 +1070,7 @@ function mapPeerRow(
 		last_error: showDiag ? row.last_error : null,
 		has_error: Boolean(row.last_error),
 		claimed_local_actor: Boolean(row.claimed_local_actor),
+		claimed_local_actor_scope: showDiag ? claimedLocalActorScopeStatus(store, row) : null,
 		actor_id: row.actor_id ?? null,
 		actor_display_name: row.actor_display_name ?? null,
 		project_scope: {

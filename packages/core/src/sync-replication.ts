@@ -17,6 +17,7 @@ import { readCodememConfigFile } from "./observer-config.js";
 import { projectBasename } from "./project.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
+import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { ensureMemoryScopeId } from "./scope-stamping.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { deriveTags } from "./tags.js";
@@ -869,8 +870,17 @@ export function loadMemorySnapshotPageForPeer(
 
 			const payload = buildPayloadFromMemoryRow(row.memory);
 			if (
-				!syncVisibilityAllowed(payload as unknown as Record<string, unknown>) &&
-				!peerClaimedLocalActor(db, options.peerDeviceId ?? null)
+				(replicationOpRequiresPersonalScopeAuthorization(
+					{ scope_id: row.memory.scope_id },
+					payload as unknown as Record<string, unknown>,
+				) ||
+					!syncVisibilityAllowed(payload as unknown as Record<string, unknown>)) &&
+				!peerCanSyncPrivateOpByPersonalScopeGrant(
+					db,
+					{ scope_id: row.memory.scope_id },
+					payload as unknown as Record<string, unknown>,
+					options.peerDeviceId ?? null,
+				)
 			) {
 				continue;
 			}
@@ -1364,16 +1374,83 @@ export function syncVisibilityAllowed(payload: Record<string, unknown> | null): 
 	return visibility === "shared";
 }
 
-function peerClaimedLocalActor(db: Database, peerDeviceId: string | null): boolean {
-	if (!peerDeviceId) return false;
-	const d = drizzle(db, { schema });
-	const row = d
-		.select({ claimed_local_actor: schema.syncPeers.claimed_local_actor })
-		.from(schema.syncPeers)
-		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-		.limit(1)
-		.get();
-	return Boolean(row?.claimed_local_actor);
+function cleanText(value: unknown): string | null {
+	const trimmed = typeof value === "string" ? value.trim() : "";
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+export interface PersonalScopeGrantStatus {
+	scope_id: string | null;
+	authorized: boolean;
+	state: string;
+}
+
+export function personalScopeGrantStatusForPeer(
+	db: Database,
+	input: { peerDeviceId: string | null; actorId: string | null },
+): PersonalScopeGrantStatus {
+	const peerDeviceId = cleanText(input.peerDeviceId);
+	const actorId = cleanText(input.actorId);
+	if (!peerDeviceId || !actorId) {
+		return { scope_id: null, authorized: false, state: "missing_peer_or_actor" };
+	}
+	const scopeId = `personal:${actorId}`;
+	const auth = getCachedScopeAuthorization(db, { deviceId: peerDeviceId, scopeId });
+	return { scope_id: scopeId, authorized: auth.authorized, state: auth.state };
+}
+
+function personalScopeAuthorizationRequirement(
+	op: Pick<ReplicationOp, "scope_id">,
+	payload: Record<string, unknown> | null,
+): { required: boolean; scopeId: string | null } {
+	const metadata =
+		payload?.metadata_json &&
+		typeof payload.metadata_json === "object" &&
+		!Array.isArray(payload.metadata_json)
+			? (payload.metadata_json as Record<string, unknown>)
+			: {};
+	const opScopeId = cleanText(op.scope_id);
+	const payloadScopeId = cleanText(payload?.scope_id);
+	const visibility = cleanText(payload?.visibility ?? metadata.visibility)?.toLowerCase() ?? null;
+	const workspaceId = cleanText(payload?.workspace_id ?? metadata.workspace_id);
+	const workspaceKind =
+		cleanText(payload?.workspace_kind ?? metadata.workspace_kind)?.toLowerCase() ?? null;
+	const actorId = cleanText(payload?.actor_id ?? metadata.actor_id);
+	const personalWorkspaceId = workspaceId?.startsWith("personal:") ? workspaceId : null;
+	const hasPersonalSignal =
+		visibility === "private" ||
+		visibility === "personal" ||
+		workspaceKind === "personal" ||
+		Boolean(personalWorkspaceId);
+	const actorScopeId = actorId && hasPersonalSignal ? `personal:${actorId}` : null;
+	const candidates = [opScopeId, payloadScopeId, personalWorkspaceId, actorScopeId].filter(
+		(candidate): candidate is string => Boolean(candidate?.startsWith("personal:")),
+	);
+	const scopeId = candidates[0] ?? null;
+	if (!scopeId) return { required: hasPersonalSignal, scopeId: null };
+	if (candidates.some((candidate) => candidate !== scopeId)) {
+		return { required: true, scopeId: null };
+	}
+	return { required: true, scopeId };
+}
+
+export function replicationOpRequiresPersonalScopeAuthorization(
+	op: Pick<ReplicationOp, "scope_id">,
+	payload: Record<string, unknown> | null,
+): boolean {
+	return personalScopeAuthorizationRequirement(op, payload).required;
+}
+
+export function peerCanSyncPrivateOpByPersonalScopeGrant(
+	db: Database,
+	op: Pick<ReplicationOp, "scope_id">,
+	payload: Record<string, unknown> | null,
+	peerDeviceId: string | null,
+): boolean {
+	const { scopeId } = personalScopeAuthorizationRequirement(op, payload);
+	if (!scopeId) return false;
+	const actorId = scopeId.slice("personal:".length);
+	return personalScopeGrantStatusForPeer(db, { peerDeviceId, actorId }).authorized;
 }
 
 function parsePayload(payloadJson: string | null): Record<string, unknown> | null {
@@ -1418,11 +1495,33 @@ export function filterReplicationOpsForSyncWithStatus(
 		if (op.entity_type === "memory_item") {
 			const payload = parsePayload(op.payload_json);
 			if (op.op_type === "delete" && payload == null) {
+				if (
+					replicationOpRequiresPersonalScopeAuthorization(op, payload) &&
+					!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, payload, peerDeviceId)
+				) {
+					skippedCount += 1;
+					if (!firstSkipped) {
+						firstSkipped = {
+							reason: "visibility_filter",
+							op_id: op.op_id,
+							created_at: op.created_at,
+							entity_type: op.entity_type,
+							entity_id: op.entity_id,
+							skipped_count: 0,
+						};
+					}
+					nextCursor = computeCursor(op.created_at, op.op_id);
+					continue;
+				}
 				allowed.push(op);
 				nextCursor = computeCursor(op.created_at, op.op_id);
 				continue;
 			}
-			if (!syncVisibilityAllowed(payload) && !peerClaimedLocalActor(db, peerDeviceId)) {
+			if (
+				(replicationOpRequiresPersonalScopeAuthorization(op, payload) ||
+					!syncVisibilityAllowed(payload)) &&
+				!peerCanSyncPrivateOpByPersonalScopeGrant(db, op, payload, peerDeviceId)
+			) {
 				skippedCount += 1;
 				if (!firstSkipped) {
 					firstSkipped = {

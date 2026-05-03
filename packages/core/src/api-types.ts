@@ -407,6 +407,14 @@ export interface ApiPeerStatus {
 	last_ping_at: string | null;
 }
 
+/** Diagnostic for legacy same-actor private sync migration. */
+export interface ApiClaimedLocalActorScopeStatus {
+	scope_id: string | null;
+	authorized: boolean;
+	state: string;
+	action_required: boolean;
+}
+
 /** Peer item in sync status/peers responses. */
 export interface ApiSyncPeerItem {
 	peer_device_id: string;
@@ -419,6 +427,7 @@ export interface ApiSyncPeerItem {
 	last_error: string | null;
 	has_error: boolean;
 	claimed_local_actor: boolean;
+	claimed_local_actor_scope: ApiClaimedLocalActorScopeStatus | null;
 	actor_id: string | null;
 	actor_display_name: string | null;
 	project_scope: ApiProjectScope;
