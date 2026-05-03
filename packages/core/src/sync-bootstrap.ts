@@ -6,11 +6,12 @@
  * The bootstrap protocol:
  * 1. Fetch paginated snapshot pages from GET /v1/snapshot
  * 2. Collect all canonical shared memory items (including tombstones)
- * 3. In a single transaction: wipe local shared memories, apply snapshot,
- *    update replication cursor to baseline_cursor, bump generation
+ * 3. In a single transaction: wipe local synced memories for the requested
+ *    scope, apply snapshot, update replication cursor to baseline_cursor,
+ *    bump generation
  */
 
-import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
 import type { Database } from "./db.js";
@@ -20,7 +21,11 @@ import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
 import { requestJson } from "./sync-http-client.js";
-import { setReplicationCursor, setSyncResetState } from "./sync-replication.js";
+import {
+	DEFAULT_SYNC_SCOPE_ID,
+	setReplicationCursor,
+	setSyncResetState,
+} from "./sync-replication.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForSyncBootstrap } from "./vector-migration.js";
 
@@ -169,6 +174,20 @@ function isEmbeddableSnapshotPayload(payload: Record<string, unknown>): boolean 
 	return `${title}\n${bodyText}`.trim().length > 0;
 }
 
+function normalizeBootstrapScopeId(scopeId: unknown): string | null {
+	if (typeof scopeId !== "string") return null;
+	const trimmed = scopeId.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function snapshotPayloadScopeId(
+	payload: Record<string, unknown>,
+	bootstrapScopeId: string | null,
+): string | null {
+	if (bootstrapScopeId) return bootstrapScopeId;
+	return normalizeBootstrapScopeId(payload.scope_id);
+}
+
 const bootstrapSessionCache = new Map<string, number>();
 
 function ensureSessionForBootstrap(
@@ -210,10 +229,11 @@ function ensureSessionForBootstrap(
 
 /**
  * Apply a bootstrap snapshot to the local database, atomically replacing
- * all shared memories with the snapshot contents.
+ * synced memories in the requested scope with the snapshot contents.
  *
  * This runs in a single IMMEDIATE transaction:
- * 1. Delete all local shared-visibility memory_items (preserving private)
+ * 1. Delete local shared-visibility memory_items in the requested scope
+ *    (preserving private and other-scope rows)
  * 2. Insert all snapshot items (upsert handles tombstones via active/deleted_at)
  * 3. Update the replication cursor to baseline_cursor
  * 4. Bump the local generation + snapshot_id to match the peer
@@ -231,13 +251,21 @@ export function applyBootstrapSnapshot(
 	// from a misbehaving peer could re-populate the local store with secrets
 	// the peer emitted before they ran scanner-aware versions.
 	const activeScanner = scanner ?? new SecretScanner();
+	const bootstrapScopeId = normalizeBootstrapScopeId(resetInfo.scope_id);
+	const deleteScopePredicate = bootstrapScopeId
+		? eq(schema.memoryItems.scope_id, bootstrapScopeId)
+		: or(
+				isNull(schema.memoryItems.scope_id),
+				eq(schema.memoryItems.scope_id, DEFAULT_SYNC_SCOPE_ID),
+			);
 
 	db.transaction(() => {
 		const d = drizzle(db, { schema });
 		let embeddableApplied = 0;
 
-		// 1. Delete all local sync-eligible memories that have been synced.
+		// 1. Delete local sync-eligible memories for this bootstrap scope.
 		// - Only memories with import_key (i.e. previously synced) are deleted.
+		// - Bootstrap for one Sharing domain must not wipe rows from another.
 		// - Only explicitly private memories are preserved; NULL visibility is
 		//   treated as sync-eligible (matching syncVisibilityAllowed semantics)
 		//   to avoid leaving stale rows that could create duplicate import_keys.
@@ -248,6 +276,7 @@ export function applyBootstrapSnapshot(
 			.where(
 				and(
 					isNotNull(schema.memoryItems.import_key),
+					deleteScopePredicate,
 					ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
 				),
 			)
@@ -261,6 +290,7 @@ export function applyBootstrapSnapshot(
 			const payload = parseSnapshotPayload(item);
 			if (!payload) continue;
 			redactMemoryFields(payload, activeScanner);
+			const scopeId = snapshotPayloadScopeId(payload, bootstrapScopeId);
 			const project =
 				typeof payload.project === "string" && payload.project.trim()
 					? payload.project.trim()
@@ -320,7 +350,7 @@ export function applyBootstrapSnapshot(
 					user_prompt_id:
 						typeof payload.user_prompt_id === "number" ? payload.user_prompt_id : null,
 					prompt_number: typeof payload.prompt_number === "number" ? payload.prompt_number : null,
-					scope_id: typeof payload.scope_id === "string" ? payload.scope_id : null,
+					scope_id: scopeId,
 				})
 				.run();
 			result.applied++;
