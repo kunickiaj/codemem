@@ -86,6 +86,17 @@ type ScopeBackfillMetadata = {
 	// memory_items past this id catches that scenario without joining
 	// replication_ops × memory_items.
 	max_stamped_memory_id_at_completion?: number;
+	// Two-tick confirmation flag. The runner cannot atomically observe
+	// "no stampable ops left" *and* persist the completion watermark in
+	// the same instant — concurrent writers (sync daemon, raw-event
+	// sweeper, local writes) can insert a new stampable op between the
+	// batch-selection query returning empty and the watermark capture,
+	// after which the watermark would already include the new row and
+	// the cheap startup probe would treat it as accounted for. Require
+	// the runner to observe an empty selection on TWO consecutive ticks
+	// before declaring complete; any concurrent writer in the ~5s gap
+	// resets this flag back to false on the next pass.
+	exhausted_in_previous_pass?: boolean;
 };
 
 interface MemoryScopeCandidateRow {
@@ -219,33 +230,6 @@ function countAllUnstampedReplicationOps(db: SqliteDatabase): number {
 		)
 		.get() as { n: number } | undefined;
 	return Number(row?.n ?? 0);
-}
-
-function countPendingReplicationOpScopes(db: SqliteDatabase): number {
-	const row = db
-		.prepare(
-			`SELECT COUNT(*) AS n
-			 FROM replication_ops ro
-			 WHERE ro.entity_type = 'memory_item'
-			   AND (ro.scope_id IS NULL OR TRIM(ro.scope_id) = '')
-			   AND EXISTS (
-				SELECT 1
-				FROM memory_items mi
-				WHERE (mi.import_key = ro.entity_id OR CAST(mi.id AS TEXT) = ro.entity_id)
-				  AND mi.scope_id IS NOT NULL
-				  AND TRIM(mi.scope_id) != ''
-			   )`,
-		)
-		.get() as { n: number } | undefined;
-	return Number(row?.n ?? 0);
-}
-
-function pendingWorkCount(db: SqliteDatabase): number {
-	return (
-		countMissingRequiredScopes(db) +
-		countPendingMemoryScopes(db) +
-		countPendingReplicationOpScopes(db)
-	);
 }
 
 /**
@@ -449,7 +433,14 @@ export function backfillScopeIds(
 		updatedReplicationOps: applied.updatedReplicationOps,
 		skippedReplicationOps: applied.skippedReplicationOps,
 		remainingMemoryItems: countPendingMemoryScopes(db),
-		remainingReplicationOps: countPendingReplicationOpScopes(db),
+		// Cheap, index-aided proxy. The earlier "stampable-only" count via
+		// a correlated EXISTS join over memory_items was the slow query
+		// that pegged Pi/M4 hardware on every batch tick. The runner uses
+		// result.checkedReplicationOps === 0 (precise via the
+		// EXISTS-with-LIMIT batch query) for completion; this number just
+		// drives the progress bar, where slight over-counting (orphans
+		// included) is acceptable.
+		remainingReplicationOps: countAllUnstampedReplicationOps(db),
 	};
 }
 
@@ -466,22 +457,58 @@ export async function runScopeBackfillPass(
 	const existingMetadata = getExistingMetadata(db);
 	const startingFresh =
 		!existingJob || existingJob.status === "completed" || existingJob.status === "failed";
-	const totalBefore = pendingWorkCount(db);
+
+	// Cheap, index-friendly proxy for "is there work to potentially do?".
+	// pendingWorkCount(db) (the legacy correlated-EXISTS COUNT(*) path)
+	// freezes the libuv event loop on Pi-class hardware when
+	// replication_ops is large; the runner cannot afford to call it
+	// twice per tick. The actual batch-selection query in
+	// backfillScopeIds (selectReplicationOpScopeCandidates) still runs
+	// the precise EXISTS-with-LIMIT — that is bounded by batchSize so
+	// it scans only as far as it needs to fill or exhaust the batch. A
+	// pass that selects zero memory candidates AND zero op candidates
+	// is the runner's completion signal.
+	const initialMemoryPending = countPendingMemoryScopes(db);
+	const initialOpPending = countAllUnstampedReplicationOps(db);
+	const initialMissingScopes = countMissingRequiredScopes(db);
+	const totalBefore = initialMemoryPending + initialOpPending + initialMissingScopes;
 
 	if (totalBefore <= 0) {
+		// "Nothing to do at startup" still has to honor the two-tick
+		// confirmation guard — a concurrent writer between the count
+		// above and a subsequent completion would otherwise be lost.
+		// On the first such pass, arm the candidate-complete flag and
+		// schedule another tick; on the second consecutive empty pass,
+		// commit the watermarks and finish.
+		const previouslyExhausted = Boolean(existingMetadata.exhausted_in_previous_pass);
 		if (existingJob && existingJob.status !== "completed") {
-			completeMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
-				message: "Scope backfill complete",
+			if (previouslyExhausted) {
+				completeMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
+					message: "Scope backfill complete",
+					progressCurrent: Number(existingMetadata.processed_memories ?? 0),
+					progressTotal: Number(existingMetadata.processed_memories ?? 0),
+					metadata: {
+						...existingMetadata,
+						remaining_memories: 0,
+						remaining_replication_ops: 0,
+						unstamped_replication_ops_at_completion: countAllUnstampedReplicationOps(db),
+						max_stamped_memory_id_at_completion: maxStampedMemoryId(db),
+					},
+				});
+				return false;
+			}
+			updateMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
+				message: "Scope backfill quiescent — confirming on next tick",
 				progressCurrent: Number(existingMetadata.processed_memories ?? 0),
 				progressTotal: Number(existingMetadata.processed_memories ?? 0),
 				metadata: {
 					...existingMetadata,
 					remaining_memories: 0,
 					remaining_replication_ops: 0,
-					unstamped_replication_ops_at_completion: countAllUnstampedReplicationOps(db),
-					max_stamped_memory_id_at_completion: maxStampedMemoryId(db),
+					exhausted_in_previous_pass: true,
 				},
 			});
+			return true;
 		}
 		return false;
 	}
@@ -499,8 +526,8 @@ export async function runScopeBackfillPass(
 				processed_replication_ops: 0,
 				updated_replication_ops: 0,
 				skipped_replication_ops: 0,
-				remaining_memories: countPendingMemoryScopes(db),
-				remaining_replication_ops: countPendingReplicationOpScopes(db),
+				remaining_memories: initialMemoryPending,
+				remaining_replication_ops: initialOpPending,
 			},
 		});
 	}
@@ -520,8 +547,34 @@ export async function runScopeBackfillPass(
 		Number(latestMetadata.updated_replication_ops ?? 0) + result.updatedReplicationOps;
 	const skippedReplicationOps =
 		Number(latestMetadata.skipped_replication_ops ?? 0) + result.skippedReplicationOps;
-	const remaining = pendingWorkCount(db);
-	const progressCurrent = Math.max(totalBefore - remaining, 0);
+
+	// Completion signal: no pending memory items, no missing required
+	// scopes, and the precise batch-selection query
+	// (selectReplicationOpScopeCandidates) returned zero stampable ops.
+	// That last condition is what was previously inferred from
+	// pendingWorkCount(db) <= 0; result.checkedReplicationOps === 0
+	// captures the same fact without paying for the slow COUNT(*).
+	//
+	// Concurrency guard: a single empty selection is not enough to
+	// declare complete because a concurrent writer (sync daemon, raw
+	// event sweeper, local memory writes) can insert a new stampable
+	// op between the batch-selection query and the runner persisting
+	// the completion watermark. Require TWO consecutive empty passes,
+	// separated by the runner's ~5s gap, before completing — any
+	// concurrent writer in that gap will surface as
+	// `result.checkedReplicationOps > 0` on the next pass and clears
+	// the candidate-complete flag.
+	const remainingMemory = result.remainingMemoryItems;
+	const stampableOpsExhausted = result.checkedReplicationOps === 0;
+	const remainingMissingScopes = countMissingRequiredScopes(db);
+	const passLooksDone =
+		remainingMemory === 0 && stampableOpsExhausted && remainingMissingScopes === 0;
+	const previouslyExhausted = Boolean(latestMetadata.exhausted_in_previous_pass);
+	const isComplete = passLooksDone && previouslyExhausted;
+	const progressCurrent = Math.max(
+		totalBefore - (remainingMemory + remainingMissingScopes + (stampableOpsExhausted ? 0 : 1)),
+		0,
+	);
 	const metadata: ScopeBackfillMetadata = {
 		seeded_scopes: seededScopes,
 		processed_memories: processedMemories,
@@ -529,11 +582,12 @@ export async function runScopeBackfillPass(
 		processed_replication_ops: processedReplicationOps,
 		updated_replication_ops: updatedReplicationOps,
 		skipped_replication_ops: skippedReplicationOps,
-		remaining_memories: result.remainingMemoryItems,
+		remaining_memories: remainingMemory,
 		remaining_replication_ops: result.remainingReplicationOps,
+		exhausted_in_previous_pass: passLooksDone,
 	};
 
-	if (remaining <= 0) {
+	if (isComplete) {
 		completeMaintenanceJob(db, SCOPE_BACKFILL_JOB, {
 			message: "Scope backfill complete",
 			progressCurrent: totalBefore,

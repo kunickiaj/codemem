@@ -280,6 +280,13 @@ describe("scope backfill", () => {
 		});
 		insertReplicationOp(db, "op-missing", "key:missing");
 
+		// Two-tick confirmation: the first pass stamps the memory and
+		// observes zero stampable ops, but flags the run as a candidate
+		// for completion rather than committing immediately. A second
+		// pass with the same observation completes the job — the gap
+		// between ticks is what protects against the concurrent-writer
+		// race surfaced in the #1025 review.
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
 		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
 
 		const memory = db.prepare("SELECT scope_id FROM memory_items").get() as { scope_id: string };
@@ -352,8 +359,11 @@ describe("scope backfill", () => {
 		// One orphan op pointing at a memory that doesn't exist yet.
 		insertReplicationOp(db, "op-pending", "key:future-memory");
 
-		// Run a complete pass — the orphan stays unstamped, but the
-		// runner records both watermarks at completion.
+		// Run two passes — the first observes "no stampable ops" and
+		// flags the run as a candidate for completion; the second
+		// confirms (no concurrent writers in the gap) and commits the
+		// completion watermark.
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
 		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
 		expect(hasPendingScopeBackfill(db)).toBe(false);
 
@@ -371,5 +381,56 @@ describe("scope backfill", () => {
 		});
 
 		expect(hasPendingScopeBackfill(db)).toBe(true);
+	});
+
+	it("two-tick confirmation: a writer inserting between passes prevents premature completion", async () => {
+		// Reviewer-flagged race: if a concurrent writer inserts a stampable
+		// replication_ops row after the runner's batch query returns empty
+		// but before the watermark is captured, a single-pass completion
+		// would persist a watermark that already accounts for the new row,
+		// causing the cheap startup probe to skip it forever. The runner
+		// must require TWO consecutive empty passes — any new op in the
+		// gap resets the candidate-complete flag.
+		const sessionId = insertSession(db, { project: "p", cwd: "/x" });
+		insertMemory(db, {
+			sessionId,
+			title: "stamped",
+			workspaceId: "personal:actor-1",
+			workspaceKind: "personal",
+			importKey: "key:stamped",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+
+		// First pass: nothing to do, runner flags candidate-complete.
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
+
+		// Concurrent writer arrives in the gap, inserting a memory whose
+		// scope is already stamped plus a matching replication op. The
+		// op IS stampable but a single-pass completion would have just
+		// captured the watermark and skipped it.
+		const sneakyId = insertMemory(db, {
+			sessionId,
+			title: "sneaky",
+			workspaceId: "personal:actor-1",
+			workspaceKind: "personal",
+			importKey: "key:sneaky",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		insertReplicationOp(db, "op-sneaky", `${sneakyId}`);
+
+		// Second pass: the new op is selected and stamped; passLooksDone
+		// becomes false, candidate flag is cleared, runner reports more
+		// work to do.
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
+		const sneakyOp = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get("op-sneaky") as { scope_id: string | null };
+		expect(sneakyOp.scope_id).toBe(LOCAL_DEFAULT_SCOPE_ID);
+
+		// Third pass: candidate-complete again, fourth confirms — the
+		// runner's two-tick guard works on the new op too.
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(true);
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
+		expect(hasPendingScopeBackfill(db)).toBe(false);
 	});
 });
