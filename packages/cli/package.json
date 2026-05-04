@@ -21,7 +21,7 @@
 		"typecheck": "pnpm exec tsc --noEmit"
 	},
 	"dependencies": {
-		"@clack/prompts": "^1.1.0",
+		"@clack/prompts": "^1.3.0",
 		"@codemem/core": "workspace:^",
 		"@codemem/mcp": "workspace:^",
 		"@codemem/server": "workspace:^",
@@ -31,7 +31,7 @@
 		"omelette": "^0.4.17"
 	},
 	"devDependencies": {
-		"@types/node": "^25.5.0",
+		"@types/node": "^25.6.0",
 		"@types/omelette": "^0.4.5",
 		"tsx": "catalog:",
 		"typescript": "catalog:",
