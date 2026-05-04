@@ -6,11 +6,19 @@
  */
 
 import { projectClause } from "./project.js";
+import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 import type { MemoryFilters } from "./types.js";
 
 export interface OwnershipFilterContext {
 	actorId: string;
 	deviceId: string;
+	/**
+	 * Apply the local read boundary for replication scopes. This is opt-in so
+	 * low-level filter unit tests and non-memory callers can keep using the pure
+	 * filter builder, while store/search paths can make scope visibility a hard
+	 * invariant.
+	 */
+	enforceScopeVisibility?: boolean;
 }
 
 export interface FilterResult {
@@ -84,6 +92,46 @@ function addMultiValueFilter(
 	}
 }
 
+const LEGACY_SHARED_REVIEW_SCOPE_ID = "legacy-shared-review";
+
+function addScopeVisibilityFilter(
+	clauses: string[],
+	params: unknown[],
+	context: OwnershipFilterContext | undefined,
+): void {
+	if (!context?.enforceScopeVisibility) return;
+	const deviceId = context.deviceId.trim();
+	if (!deviceId) {
+		clauses.push("0 = 1");
+		return;
+	}
+	// Blank/NULL scope_id is treated as local-default for read visibility.
+	// Migration backfill promotes legacy rows to explicit scopes asynchronously,
+	// but until that completes those rows must remain visible to their owning
+	// device exactly the way local-default rows are.
+	clauses.push(`(
+		COALESCE(TRIM(memory_items.scope_id), '') IN ('', ?, ?)
+		OR EXISTS (
+			SELECT 1
+			FROM replication_scopes rs
+			WHERE rs.scope_id = memory_items.scope_id
+			  AND rs.status = 'active'
+			  AND rs.authority_type = 'local'
+		)
+		OR EXISTS (
+			SELECT 1
+			FROM scope_memberships sm
+			JOIN replication_scopes rs ON rs.scope_id = sm.scope_id
+			WHERE sm.scope_id = memory_items.scope_id
+			  AND sm.device_id = ?
+			  AND sm.status = 'active'
+			  AND rs.status = 'active'
+			  AND sm.membership_epoch >= rs.membership_epoch
+		)
+	)`);
+	params.push(LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID, deviceId);
+}
+
 /**
  * Build WHERE clause fragments from a MemoryFilters object.
  *
@@ -100,9 +148,9 @@ export function buildFilterClausesWithContext(
 	ownership?: OwnershipFilterContext,
 ): FilterResult {
 	const result: FilterResult = { clauses: [], params: [], joinSessions: false };
-	if (!filters) return result;
-
 	const { clauses, params } = result;
+	addScopeVisibilityFilter(clauses, params, ownership);
+	if (!filters) return result;
 
 	// Single kind filter
 	if (filters.kind) {
@@ -151,6 +199,17 @@ export function buildFilterClausesWithContext(
 		"memory_items.visibility",
 		normalizeVisibilityValues(filters.include_visibility ?? filters.visibility),
 		normalizeVisibilityValues(filters.exclude_visibility),
+	);
+
+	// Replication scope filters. These are an explicit narrowing layer and are
+	// always intersected with the central scope-visibility gate above when the
+	// caller enables it.
+	addMultiValueFilter(
+		clauses,
+		params,
+		"memory_items.scope_id",
+		normalizeFilterStrings(filters.include_scope_ids ?? filters.scope_id),
+		normalizeFilterStrings(filters.exclude_scope_ids),
 	);
 
 	// Workspace IDs

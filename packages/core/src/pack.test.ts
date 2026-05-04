@@ -339,8 +339,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Session recap", "Wrap-up of recent work", now, now);
 
@@ -409,8 +409,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key
-				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key, scope_id
+				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL, 'local-default')`,
 			)
 			.run(sessionId, "Tracing duplicate title", "Tracing duplicate body", 0.8, now, now);
 		const duplicateId = Number(info.lastInsertRowid);
@@ -453,8 +453,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key
-				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+					created_at, updated_at, metadata_json, rev, visibility, workspace_id, dedup_key, scope_id
+				) VALUES (?, 'decision', ?, ?, ?, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -573,8 +573,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.9, '', 1, ?, ?, '{}', 1)`,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.9, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Budget summary", "Short summary body", now, now);
 		for (let i = 0; i < 10; i += 1) {
@@ -599,8 +599,8 @@ describe("buildMemoryPack", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -708,8 +708,8 @@ describe("buildMemoryPack", () => {
 			store.db
 				.prepare(
 					`INSERT INTO memory_items(
-						session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-					) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+						session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+					) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 				)
 				.run(targetSessionId, title, body, now, now);
 		};
@@ -738,8 +738,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Recent summary", "Catch-up recap for current work", now, now);
 		const decisionId = store.remember(
@@ -762,8 +762,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -793,8 +793,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'change', ?, ?, 0.3, '', 1, ?, ?, ?, 1, 'local-default')`,
 			)
 			.run(
 				sessionId,
@@ -816,8 +816,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Older summary", "Still the latest available summary", older, older);
 
@@ -836,8 +836,8 @@ describe("buildMemoryPack", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(
-					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					session_id, kind, title, body_text, confidence, tags_text, active, created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Recent summary", "Generic recap text", now, now);
 

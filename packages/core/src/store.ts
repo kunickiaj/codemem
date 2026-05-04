@@ -28,7 +28,7 @@ import {
 	toJson,
 	toJsonNullable,
 } from "./db.js";
-import { buildFilterClauses } from "./filters.js";
+import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
 import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import {
@@ -414,6 +414,14 @@ export class MemoryStore {
 		await Promise.allSettled([...this.pendingVectorWrites]);
 	}
 
+	private scopeVisibleFilterContext(): OwnershipFilterContext {
+		return {
+			actorId: this.actorId,
+			deviceId: this.deviceId,
+			enforceScopeVisibility: true,
+		};
+	}
+
 	// get
 
 	/**
@@ -421,11 +429,14 @@ export class MemoryStore {
 	 * Returns null if not found (does not filter by active status).
 	 */
 	get(memoryId: number): MemoryItemResponse | null {
-		const row = this.d
-			.select()
-			.from(schema.memoryItems)
-			.where(eq(schema.memoryItems.id, memoryId))
-			.get() as MemoryItem | undefined;
+		const filterResult = buildFilterClausesWithContext(null, this.scopeVisibleFilterContext());
+		const whereSql = buildWhereSql(
+			["memory_items.id = ?", ...filterResult.clauses],
+			[memoryId, ...filterResult.params],
+		);
+		const row = this.d.get<MemoryItem>(
+			sql`SELECT memory_items.* FROM memory_items WHERE ${whereSql}`,
+		);
 		if (!row) return null;
 		return parseMetadata(row);
 	}
@@ -935,7 +946,7 @@ export class MemoryStore {
 	 */
 	recent(limit = 10, filters?: MemoryFilters | null, offset = 0): MemoryItemResponse[] {
 		const baseClauses = ["memory_items.active = 1"];
-		const filterResult = buildFilterClauses(filters);
+		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
 		const allClauses = [...baseClauses, ...filterResult.clauses];
 		const whereSql = buildWhereSql(allClauses, filterResult.params);
 
@@ -971,7 +982,7 @@ export class MemoryStore {
 
 		const kindPlaceholders = kindsList.map(() => "?").join(", ");
 		const baseClauses = ["memory_items.active = 1", `memory_items.kind IN (${kindPlaceholders})`];
-		const filterResult = buildFilterClauses(filters);
+		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
 		const allClauses = [...baseClauses, ...filterResult.clauses];
 		const params = [...kindsList, ...filterResult.params];
 		const whereSql = buildWhereSql(allClauses, params);
