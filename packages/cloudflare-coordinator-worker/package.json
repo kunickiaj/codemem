@@ -14,9 +14,9 @@
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "catalog:",
-		"@cloudflare/workers-types": "^4.20260317.1",
+		"@cloudflare/workers-types": "^4.20260503.1",
 		"@cloudflare/vitest-pool-workers": "^0.13.5",
-		"better-sqlite3": "^12.8.0",
+		"better-sqlite3": "12.8.0",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:",
