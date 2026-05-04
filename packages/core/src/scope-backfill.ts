@@ -330,20 +330,46 @@ function selectReplicationOpScopeCandidates(
 	db: SqliteDatabase,
 	limit: number,
 ): ReplicationOpScopeCandidateRow[] {
+	// Split the original `(import_key = entity_id OR CAST(id AS TEXT) = entity_id)`
+	// EXISTS into a UNION of two index-friendly INNER JOIN probes. The
+	// import_key branch hits idx_memory_items_import_key directly; the
+	// id branch hits the memory_items primary key after CAST. Without
+	// this split the planner sees the OR clause and degrades to a full
+	// scan of memory_items per replication_ops row, which is exactly
+	// what pegged Pi-class hardware on real-shape databases.
+	//
+	// Subtlety on the id branch: `mi.id = CAST(entity_id AS INTEGER)` is
+	// index-friendly but SQLite's INTEGER cast is lenient — strings like
+	// "123abc" or "  42 " cast to 123 / 42 and would produce false-
+	// positive matches that the old text-compare path filtered out.
+	// We pair the integer compare (for index access) with a strict
+	// text-equality check (`CAST(mi.id AS TEXT) = ro.entity_id`) that
+	// the planner only evaluates on the small post-join candidate set,
+	// preserving exact-match semantics. False positives would otherwise
+	// occupy the batch slot, then fail to stamp via lookupMemoryScopeForOp
+	// (which uses the original strict text-compare), starving real work.
 	return db
 		.prepare(
-			`SELECT ro.op_id, ro.entity_id
-			 FROM replication_ops ro
-			 WHERE ro.entity_type = 'memory_item'
-			   AND (ro.scope_id IS NULL OR TRIM(ro.scope_id) = '')
-			   AND EXISTS (
-				SELECT 1
-				FROM memory_items mi
-				WHERE (mi.import_key = ro.entity_id OR CAST(mi.id AS TEXT) = ro.entity_id)
+			`SELECT op_id, entity_id, created_at
+			 FROM (
+				SELECT ro.op_id, ro.entity_id, ro.created_at
+				FROM replication_ops ro
+				INNER JOIN memory_items mi ON mi.import_key = ro.entity_id
+				WHERE ro.entity_type = 'memory_item'
+				  AND (ro.scope_id IS NULL OR TRIM(ro.scope_id) = '')
 				  AND mi.scope_id IS NOT NULL
 				  AND TRIM(mi.scope_id) != ''
-			   )
-			 ORDER BY ro.created_at ASC, ro.op_id ASC
+				UNION
+				SELECT ro.op_id, ro.entity_id, ro.created_at
+				FROM replication_ops ro
+				INNER JOIN memory_items mi ON mi.id = CAST(ro.entity_id AS INTEGER)
+				WHERE ro.entity_type = 'memory_item'
+				  AND (ro.scope_id IS NULL OR TRIM(ro.scope_id) = '')
+				  AND mi.scope_id IS NOT NULL
+				  AND TRIM(mi.scope_id) != ''
+				  AND CAST(mi.id AS TEXT) = ro.entity_id
+			 )
+			 ORDER BY created_at ASC, op_id ASC
 			 LIMIT ?`,
 		)
 		.all(limit) as ReplicationOpScopeCandidateRow[];

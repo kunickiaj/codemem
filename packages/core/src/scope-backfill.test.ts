@@ -433,4 +433,46 @@ describe("scope backfill", () => {
 		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
 		expect(hasPendingScopeBackfill(db)).toBe(false);
 	});
+
+	it("selectReplicationOpScopeCandidates rejects malformed entity_id integer false-positives", async () => {
+		// Reviewer-flagged regression for #1026: SQLite's CAST AS INTEGER
+		// is lenient — "123abc" casts to 123. Without a strict text-equality
+		// guard the index-friendly id-branch JOIN would treat such a row
+		// as a match for memory_items.id = 123, occupying batch slots that
+		// genuinely stampable ops need. Codemem doesn't write malformed
+		// entity_ids in normal operation, but a buggy peer could send one.
+		const sessionId = insertSession(db, { project: "p", cwd: "/x" });
+		const stampedId = insertMemory(db, {
+			sessionId,
+			title: "stamped",
+			workspaceId: "personal:actor-1",
+			workspaceKind: "personal",
+			importKey: "key:stamped",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+
+		// Simulate a malformed entity_id whose lenient INTEGER cast
+		// happens to match a real memory's id: "<id>garbage" → <id>.
+		insertReplicationOp(db, "op-malformed", `${stampedId}garbage`);
+		// Real stampable op for the same memory via id form.
+		insertReplicationOp(db, "op-real", String(stampedId));
+
+		const result = backfillScopeIds(db, { memoryLimit: 10, replicationOpLimit: 10 });
+
+		// Only the real op should be selected and stamped; the malformed
+		// one stays unstamped (its scope_id remains NULL) so it never
+		// claims a batch slot in steady-state runs either.
+		expect(result.checkedReplicationOps).toBe(1);
+		expect(result.updatedReplicationOps).toBe(1);
+
+		const realOp = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get("op-real") as { scope_id: string | null };
+		expect(realOp.scope_id).toBe(LOCAL_DEFAULT_SCOPE_ID);
+
+		const malformedOp = db
+			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
+			.get("op-malformed") as { scope_id: string | null };
+		expect(malformedOp.scope_id).toBeNull();
+	});
 });
