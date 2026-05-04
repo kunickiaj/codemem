@@ -73,6 +73,19 @@ type ScopeBackfillMetadata = {
 	skipped_replication_ops?: number;
 	remaining_memories?: number;
 	remaining_replication_ops?: number;
+	// Live count of unstamped replication_ops captured the last time the
+	// runner reached a quiescent state (pendingWorkCount == 0). The cheap
+	// startup probe uses this to distinguish "all remaining ops are
+	// already-known-unstampable" (no work) from "new ops have arrived
+	// since the runner last finished" (there is work).
+	unstamped_replication_ops_at_completion?: number;
+	// Highest memory_items.id with a non-empty scope_id at completion.
+	// Orphan replication_ops can become stampable later when a matching
+	// memory_items row finally gets stamped — the unstamped op count
+	// won't grow in that case, but new work has appeared. Probing for
+	// memory_items past this id catches that scenario without joining
+	// replication_ops × memory_items.
+	max_stamped_memory_id_at_completion?: number;
 };
 
 interface MemoryScopeCandidateRow {
@@ -177,6 +190,37 @@ function countPendingMemoryScopes(db: SqliteDatabase): number {
 	return Number(row?.n ?? 0);
 }
 
+function maxStampedMemoryId(db: SqliteDatabase): number {
+	// Highest id of memory_items with a non-empty scope_id. Used as the
+	// other half of the cheap startup probe — when a new stamped memory
+	// row appears past this id, an existing orphan op might become
+	// stampable, even if the unstamped op count itself hasn't moved.
+	const row = db
+		.prepare(
+			`SELECT MAX(id) AS max_id
+			 FROM memory_items
+			 WHERE scope_id IS NOT NULL AND TRIM(scope_id) <> ''`,
+		)
+		.get() as { max_id: number | null } | undefined;
+	return Number(row?.max_id ?? 0);
+}
+
+function countAllUnstampedReplicationOps(db: SqliteDatabase): number {
+	// Index-aided via idx_replication_ops_scope_created. Counts every
+	// unstamped op (stampable or not) — used to set the
+	// "unstamped_replication_ops_at_completion" watermark and to read it
+	// back from the cheap startup probe.
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) AS n
+			 FROM replication_ops
+			 WHERE entity_type = 'memory_item'
+			   AND (scope_id IS NULL OR TRIM(scope_id) = '')`,
+		)
+		.get() as { n: number } | undefined;
+	return Number(row?.n ?? 0);
+}
+
 function countPendingReplicationOpScopes(db: SqliteDatabase): number {
 	const row = db
 		.prepare(
@@ -204,8 +248,78 @@ function pendingWorkCount(db: SqliteDatabase): number {
 	);
 }
 
+/**
+ * Cheap existence probe used by the viewer's backfill coordinator at
+ * startup. Must avoid the full COUNT(*) + correlated-EXISTS scan in
+ * pendingWorkCount; on databases with even moderate replication_ops
+ * volume that scan blocks the main thread for tens of seconds, freezing
+ * the HTTP server before the backfill runner can even log itself.
+ *
+ * The runner still calls pendingWorkCount inside its paced ticks for
+ * progress accounting; this helper only answers "is there any work to
+ * do at all?" with index-friendly probes.
+ */
 export function hasPendingScopeBackfill(db: SqliteDatabase): boolean {
-	return pendingWorkCount(db) > 0;
+	const missingRequired = db
+		.prepare(
+			`SELECT 1
+			 FROM (SELECT ? AS scope_id UNION ALL SELECT ? AS scope_id) required
+			 WHERE NOT EXISTS (
+				SELECT 1 FROM replication_scopes rs WHERE rs.scope_id = required.scope_id
+			 )
+			 LIMIT 1`,
+		)
+		.get(LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID);
+	if (missingRequired) return true;
+
+	const pendingMemory = db
+		.prepare(
+			`SELECT 1
+			 FROM memory_items
+			 WHERE scope_id IS NULL OR TRIM(scope_id) = ''
+			 LIMIT 1`,
+		)
+		.get();
+	if (pendingMemory) return true;
+
+	// For replication ops we can't cheaply distinguish "stampable" from
+	// "already known unstampable" with a join — the correlated EXISTS over
+	// memory_items.import_key OR CAST(id AS TEXT) is exactly the scan that
+	// freezes the event loop on Pi-class hardware. Instead: a watermark.
+	// When the runner reaches a quiescent state (pendingWorkCount == 0) it
+	// snapshots the live count of unstamped replication_ops in
+	// metadata.unstamped_replication_ops_at_completion. The startup probe
+	// then asks "is the live unstamped count still equal to the watermark?"
+	// — if so, no new work; if it grew, new ops have arrived and the
+	// runner should sweep again. Both queries hit
+	// idx_replication_ops_scope_created.
+	const unstampedCount = countAllUnstampedReplicationOps(db);
+	if (unstampedCount === 0) return false;
+
+	const job = getMaintenanceJob(db, SCOPE_BACKFILL_JOB);
+	if (!job || job.status !== "completed") return true;
+	const metadata = (job.metadata ?? {}) as ScopeBackfillMetadata;
+	const opWatermark = metadata.unstamped_replication_ops_at_completion;
+	if (typeof opWatermark !== "number") return true;
+	if (unstampedCount > opWatermark) return true;
+
+	// Even when the unstamped op count is unchanged, a previously orphan op
+	// can become stampable later if a matching memory_items row arrives
+	// with a scope. Watch the stamped-memory id watermark for growth: any
+	// new memory_items row stamped beyond it might match an orphan op, so
+	// the runner needs another sweep to reclassify.
+	const memoryWatermark = metadata.max_stamped_memory_id_at_completion;
+	if (typeof memoryWatermark !== "number") return true;
+	const newStamped = db
+		.prepare(
+			`SELECT 1
+			 FROM memory_items
+			 WHERE id > ?
+			   AND scope_id IS NOT NULL AND TRIM(scope_id) <> ''
+			 LIMIT 1`,
+		)
+		.get(memoryWatermark);
+	return Boolean(newStamped);
 }
 
 function selectMemoryScopeCandidates(db: SqliteDatabase, limit: number): MemoryScopeCandidateRow[] {
@@ -360,7 +474,13 @@ export async function runScopeBackfillPass(
 				message: "Scope backfill complete",
 				progressCurrent: Number(existingMetadata.processed_memories ?? 0),
 				progressTotal: Number(existingMetadata.processed_memories ?? 0),
-				metadata: { ...existingMetadata, remaining_memories: 0, remaining_replication_ops: 0 },
+				metadata: {
+					...existingMetadata,
+					remaining_memories: 0,
+					remaining_replication_ops: 0,
+					unstamped_replication_ops_at_completion: countAllUnstampedReplicationOps(db),
+					max_stamped_memory_id_at_completion: maxStampedMemoryId(db),
+				},
 			});
 		}
 		return false;
@@ -418,7 +538,11 @@ export async function runScopeBackfillPass(
 			message: "Scope backfill complete",
 			progressCurrent: totalBefore,
 			progressTotal: totalBefore,
-			metadata,
+			metadata: {
+				...metadata,
+				unstamped_replication_ops_at_completion: countAllUnstampedReplicationOps(db),
+				max_stamped_memory_id_at_completion: maxStampedMemoryId(db),
+			},
 		});
 		return false;
 	}

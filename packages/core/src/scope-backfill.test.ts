@@ -231,7 +231,6 @@ describe("scope backfill", () => {
 			{ op_id: "op-numeric", scope_id: LOCAL_DEFAULT_SCOPE_ID },
 			{ op_id: "op-private", scope_id: LOCAL_DEFAULT_SCOPE_ID },
 		]);
-		expect(hasPendingScopeBackfill(db)).toBe(false);
 
 		const second = backfillScopeIds(db, { now: "2026-05-01T00:00:00Z" });
 		expect(second.seededScopes).toBe(0);
@@ -267,7 +266,6 @@ describe("scope backfill", () => {
 				}
 			).scope_id,
 		).toBe(LOCAL_DEFAULT_SCOPE_ID);
-		expect(hasPendingScopeBackfill(db)).toBe(false);
 	});
 
 	it("runs as a maintenance pass and completes when no matching op work remains", async () => {
@@ -287,5 +285,91 @@ describe("scope backfill", () => {
 		const memory = db.prepare("SELECT scope_id FROM memory_items").get() as { scope_id: string };
 		expect(memory.scope_id).toBe(LOCAL_DEFAULT_SCOPE_ID);
 		expect(hasPendingScopeBackfill(db)).toBe(false);
+	});
+
+	it("hasPendingScopeBackfill returns quickly without joining replication_ops to memory_items", () => {
+		// Reproduces the slow-startup case: a database where the legacy
+		// pendingWorkCount path's correlated EXISTS join (replication_ops
+		// vs memory_items with TRIM and OR-on-keys) blocked the main
+		// thread on Pi 4 and even on M4 Max desktops. The fast existence
+		// probes must answer "yes, there is pending work" without doing
+		// that join. A vitest spy on the bound prepare statement caches
+		// the SQL string, but the cleanest assertion is that the query
+		// finishes well under a soft deadline even when there are many
+		// replication_ops with no matching memory_items.
+
+		// Seed a few memory_items already stamped + many replication_ops
+		// pointing at non-existent entity_ids. Under the old correlated
+		// EXISTS path each replication_op would scan memory_items twice
+		// (once per OR branch); under the cheap probe path the first
+		// missing scope_id alone short-circuits.
+		const sessionId = insertSession(db, { project: "p", cwd: "/x" });
+		insertMemory(db, {
+			sessionId,
+			title: "stamped",
+			workspaceId: "personal:actor-1",
+			workspaceKind: "personal",
+			importKey: "key:stamped",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		const insertOp = db.prepare(
+			`INSERT INTO replication_ops(op_id, entity_type, entity_id, op_type, payload_json,
+				clock_rev, clock_updated_at, clock_device_id, device_id, created_at, scope_id)
+			 VALUES (?, 'memory_item', ?, 'upsert', NULL, 1, ?, 'dev', 'dev', ?, NULL)`,
+		);
+		const ts = "2026-05-04T00:00:00Z";
+		for (let index = 0; index < 500; index += 1) {
+			insertOp.run(`op-orphan-${index}`, `key:does-not-exist-${index}`, ts, ts);
+		}
+
+		const start = Date.now();
+		const pending = hasPendingScopeBackfill(db);
+		const elapsedMs = Date.now() - start;
+
+		expect(pending).toBe(true);
+		// Soft cap. The intent is "must not depend on the orphan-op
+		// volume above" — under the old COUNT(*) join, this assertion
+		// would fail on slow disks even at this size.
+		expect(elapsedMs).toBeLessThan(50);
+	});
+
+	it("hasPendingScopeBackfill rewakes when an orphan op becomes stampable later", async () => {
+		// Reviewer-flagged regression: after a complete pass leaves orphan
+		// ops behind (no matching memory_items row), a later insert of the
+		// matching memory turns those orphans into actual work. The
+		// unstamped op count is unchanged, so a count-only probe would
+		// say "no work" forever. The probe must also catch the case where
+		// new stamped memory_items appear past the recorded watermark.
+		const sessionId = insertSession(db, { project: "p", cwd: "/x" });
+		insertMemory(db, {
+			sessionId,
+			title: "already stamped",
+			workspaceId: "personal:actor-1",
+			workspaceKind: "personal",
+			importKey: "key:already-stamped",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+		// One orphan op pointing at a memory that doesn't exist yet.
+		insertReplicationOp(db, "op-pending", "key:future-memory");
+
+		// Run a complete pass — the orphan stays unstamped, but the
+		// runner records both watermarks at completion.
+		await expect(runScopeBackfillPass(db, { batchSize: 10 })).resolves.toBe(false);
+		expect(hasPendingScopeBackfill(db)).toBe(false);
+
+		// The matching memory arrives later (e.g., from a peer sync
+		// applying after backfill ran). Its scope_id is already stamped
+		// at insert time, so the orphan is now stampable, even though
+		// the unstamped op count didn't grow.
+		insertMemory(db, {
+			sessionId,
+			title: "future memory arrives",
+			workspaceId: "personal:actor-1",
+			workspaceKind: "personal",
+			importKey: "key:future-memory",
+			scopeId: LOCAL_DEFAULT_SCOPE_ID,
+		});
+
+		expect(hasPendingScopeBackfill(db)).toBe(true);
 	});
 });
