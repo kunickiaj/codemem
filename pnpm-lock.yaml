@@ -164,8 +164,8 @@ importers:
         specifier: 'catalog:'
         version: 3.0.0
       sqlite-vec:
-        specifier: 0.1.7-alpha.2
-        version: 0.1.7-alpha.2
+        specifier: 0.1.9
+        version: 0.1.9
     devDependencies:
       '@types/better-sqlite3':
         specifier: 'catalog:'
@@ -297,8 +297,8 @@ importers:
         specifier: ^12.8.0
         version: 12.8.0
       sqlite-vec:
-        specifier: 0.1.7-alpha.2
-        version: 0.1.7-alpha.2
+        specifier: 0.1.9
+        version: 0.1.9
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -3516,33 +3516,33 @@ packages:
     resolution: {integrity: sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ==}
     engines: {node: '>= 12'}
 
-  sqlite-vec-darwin-arm64@0.1.7-alpha.2:
-    resolution: {integrity: sha512-raIATOqFYkeCHhb/t3r7W7Cf2lVYdf4J3ogJ6GFc8PQEgHCPEsi+bYnm2JT84MzLfTlSTIdxr4/NKv+zF7oLPw==}
+  sqlite-vec-darwin-arm64@0.1.9:
+    resolution: {integrity: sha512-jSsZpE42OfBkGL/ItyJTVCUwl6o6Ka3U5rc4j+UBDIQzC1ulSSKMEhQLthsOnF/MdAf1MuAkYhkdKmmcjaIZQg==}
     cpu: [arm64]
     os: [darwin]
 
-  sqlite-vec-darwin-x64@0.1.7-alpha.2:
-    resolution: {integrity: sha512-jeZEELsQjjRsVojsvU5iKxOvkaVuE+JYC8Y4Ma8U45aAERrDYmqZoHvgSG7cg1PXL3bMlumFTAmHynf1y4pOzA==}
+  sqlite-vec-darwin-x64@0.1.9:
+    resolution: {integrity: sha512-KDlVyqQT7pnOhU1ymB9gs7dMbSoVmKHitT+k1/xkjarcX8bBqPxWrGlK/R+C5WmWkfvWwyq5FfXfiBYCBs6PlA==}
     cpu: [x64]
     os: [darwin]
 
-  sqlite-vec-linux-arm64@0.1.7-alpha.2:
-    resolution: {integrity: sha512-6Spj4Nfi7tG13jsUG+W7jnT0bCTWbyPImu2M8nWp20fNrd1SZ4g3CSlDAK8GBdavX7wRlbBHCZ+BDa++rbDewA==}
+  sqlite-vec-linux-arm64@0.1.9:
+    resolution: {integrity: sha512-5wXVJ9c9kR4CHm/wVqXb/R+XUHTdpZ4nWbPHlS+gc9qQFVHs92Km4bPnCKX4rtcPMzvNis+SIzMJR1SCEwpuUw==}
     cpu: [arm64]
     os: [linux]
 
-  sqlite-vec-linux-x64@0.1.7-alpha.2:
-    resolution: {integrity: sha512-IcgrbHaDccTVhXDf8Orwdc2+hgDLAFORl6OBUhcvlmwswwBP1hqBTSEhovClG4NItwTOBNgpwOoQ7Qp3VDPWLg==}
+  sqlite-vec-linux-x64@0.1.9:
+    resolution: {integrity: sha512-w3tCH8xK2finW8fQJ/m8uqKodXUZ9KAuAar2UIhz4BHILfpE0WM/MTGCRfa7RjYbrYim5Luk3guvMOGI7T7JQA==}
     cpu: [x64]
     os: [linux]
 
-  sqlite-vec-windows-x64@0.1.7-alpha.2:
-    resolution: {integrity: sha512-TRP6hTjAcwvQ6xpCZvjP00pdlda8J38ArFy1lMYhtQWXiIBmWnhMaMbq4kaeCYwvTTddfidatRS+TJrwIKB/oQ==}
+  sqlite-vec-windows-x64@0.1.9:
+    resolution: {integrity: sha512-y3gEIyy/17bq2QFPQOWLE68TYWcRZkBQVA2XLrTPHNTOp55xJi/BBBmOm40tVMDMjtP+Elpk6UBUXdaq+46b0Q==}
     cpu: [x64]
     os: [win32]
 
-  sqlite-vec@0.1.7-alpha.2:
-    resolution: {integrity: sha512-rNgRCv+4V4Ed3yc33Qr+nNmjhtrMnnHzXfLVPeGb28Dx5mmDL3Ngw/Wk8vhCGjj76+oC6gnkmMG8y73BZWGBwQ==}
+  sqlite-vec@0.1.9:
+    resolution: {integrity: sha512-L7XJWRIBNvR9O5+vh1FQ+IGkh/3D2AzVksW5gdtk28m78Hy8skFD0pqReKH1Yp0/BUKRGcffgKvyO/EON5JXpA==}
 
   stack-trace@1.0.0-pre2:
     resolution: {integrity: sha512-2ztBJRek8IVofG9DBJqdy2N5kulaacX30Nz7xmkYF6ale9WBVmIy6mFBchvGX7Vx/MyjBhx+Rcxqrj+dbOnQ6A==}
@@ -6711,28 +6711,28 @@ snapshots:
 
   source-map@0.7.6: {}
 
-  sqlite-vec-darwin-arm64@0.1.7-alpha.2:
+  sqlite-vec-darwin-arm64@0.1.9:
     optional: true
 
-  sqlite-vec-darwin-x64@0.1.7-alpha.2:
+  sqlite-vec-darwin-x64@0.1.9:
     optional: true
 
-  sqlite-vec-linux-arm64@0.1.7-alpha.2:
+  sqlite-vec-linux-arm64@0.1.9:
     optional: true
 
-  sqlite-vec-linux-x64@0.1.7-alpha.2:
+  sqlite-vec-linux-x64@0.1.9:
     optional: true
 
-  sqlite-vec-windows-x64@0.1.7-alpha.2:
+  sqlite-vec-windows-x64@0.1.9:
     optional: true
 
-  sqlite-vec@0.1.7-alpha.2:
+  sqlite-vec@0.1.9:
     optionalDependencies:
-      sqlite-vec-darwin-arm64: 0.1.7-alpha.2
-      sqlite-vec-darwin-x64: 0.1.7-alpha.2
-      sqlite-vec-linux-arm64: 0.1.7-alpha.2
-      sqlite-vec-linux-x64: 0.1.7-alpha.2
-      sqlite-vec-windows-x64: 0.1.7-alpha.2
+      sqlite-vec-darwin-arm64: 0.1.9
+      sqlite-vec-darwin-x64: 0.1.9
+      sqlite-vec-linux-arm64: 0.1.9
+      sqlite-vec-linux-x64: 0.1.9
+      sqlite-vec-windows-x64: 0.1.9
 
   stack-trace@1.0.0-pre2: {}
 

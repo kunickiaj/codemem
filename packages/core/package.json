@@ -37,7 +37,7 @@
 		"drizzle-orm": "catalog:",
 		"hono": "catalog:",
 		"limiter": "catalog:",
-		"sqlite-vec": "0.1.7-alpha.2"
+		"sqlite-vec": "0.1.9"
 	},
 	"repository": {
 		"type": "git",
