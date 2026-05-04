@@ -188,6 +188,49 @@ Optional (recommended for coworker sync): set a per-peer project filter at accep
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
 
+### sqlite-vec / `no such module: vec0`
+
+**Symptom:** API errors with `SqliteError: no such module: vec0`, or the viewer logs `sqlite-vec failed to load; retrying viewer startup with embeddings disabled` at startup.
+
+`memory_vectors` is a sqlite-vec virtual table backed by the `vec0` extension module. The module is shipped as a per-platform npm sub-package (`sqlite-vec-darwin-arm64`, `sqlite-vec-linux-arm64`, `sqlite-vec-linux-x64`, `sqlite-vec-windows-x64`, `sqlite-vec-darwin-x64`) and selected automatically by npm's `optionalDependencies` resolution. It usually just works, but a few install layouts can leave the right binary missing.
+
+Diagnose first:
+
+```fish
+# Confirm the architecture and the codemem install path
+uname -m
+which codemem
+ls (npm root -g)/codemem/node_modules/ | grep -i sqlite-vec
+```
+
+You should see both `sqlite-vec/` (the wrapper) and `sqlite-vec-<platform>/` (the prebuilt binary). If the platform-specific package is missing, that's the bug.
+
+Fixes, in order of preference:
+
+1. **Reinstall codemem with optional deps explicitly included.** npm sometimes drops `optionalDependencies` for global installs:
+   ```fish
+   npm install -g --include=optional codemem@latest
+   ```
+
+2. **Force-install the platform package alongside.** If reinstalling didn't help (sometimes happens with global installs across major Node upgrades), install the matching platform sub-package separately and link it into codemem's tree:
+   ```fish
+   # 64-bit Pi OS / generic Linux ARM64
+   npm install -g sqlite-vec-linux-arm64
+   ln -sfn (npm root -g)/sqlite-vec-linux-arm64 \
+           (npm root -g)/codemem/node_modules/sqlite-vec-linux-arm64
+   # then restart the viewer
+   ```
+   Substitute the right platform: `sqlite-vec-linux-arm` for 32-bit Pi OS (`uname -m` reports `armv7l`), `sqlite-vec-linux-x64` for x86_64 Linux.
+
+3. **Run with embeddings disabled.** Codemem degrades gracefully: keyword search via FTS5 keeps working, the viewer keeps loading, and the only feature you lose is semantic recall via vector similarity:
+   ```fish
+   set -Ux CODEMEM_EMBEDDING_DISABLED 1
+   # then restart the viewer
+   ```
+   Reverse with `set -e CODEMEM_EMBEDDING_DISABLED`.
+
+The viewer's startup retries automatically with embeddings disabled if the initial load fails (`sqlite-vec failed to load; retrying viewer startup with embeddings disabled` in the banner). If you see API errors with `no such module: vec0` AFTER that retry message, please file an issue — `getSemanticIndexDiagnostics` and other vec-touching code paths should be self-healing on a connection without `vec0`.
+
 ### Bootstrap grant failures
 
 **Symptom:** worker bootstrap fails with HTTP 401 / `bootstrap_grant_invalid`.
