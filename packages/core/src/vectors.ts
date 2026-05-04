@@ -36,9 +36,7 @@ export interface SemanticSearchScopeContext {
 	deviceId: string;
 }
 
-function scopeVisibleFilterContext(
-	context: SemanticSearchScopeContext | null | undefined,
-): OwnershipFilterContext {
+function scopeVisibleFilterContext(context: SemanticSearchScopeContext): OwnershipFilterContext {
 	return {
 		actorId: context?.actorId ?? "",
 		deviceId: context?.deviceId ?? "",
@@ -685,7 +683,7 @@ export interface SemanticSearchResult {
 }
 
 /**
- * Search for memories by vector similarity (KNN via sqlite-vec MATCH).
+ * Search for memories by vector similarity using exact sqlite-vec distance.
  * Returns an empty array when embeddings are disabled or unavailable.
  *
  * Matches Python's `_semantic_search()` in store/search.py.
@@ -693,13 +691,16 @@ export interface SemanticSearchResult {
 export async function semanticSearch(
 	db: Database,
 	query: string,
-	limit = 10,
-	filters?: MemoryFilters | null,
-	context?: SemanticSearchScopeContext | null,
+	limit: number,
+	filters: MemoryFilters | null,
+	context: SemanticSearchScopeContext,
 ): Promise<SemanticSearchResult[]> {
 	if (query.trim().length < 3) return [];
 	const searchModel = resolveSemanticSearchModel(db, resolveEmbeddingModel());
 	if (!searchModel) return [];
+	if (!context?.deviceId?.trim()) {
+		throw new Error("semantic_search_scope_context_required");
+	}
 
 	const embeddings = await embedTexts([query]);
 	if (embeddings.length === 0) return [];
@@ -708,7 +709,6 @@ export async function semanticSearch(
 	if (!firstEmbedding) return [];
 	const queryEmbedding = serializeFloat32(firstEmbedding);
 	const effectiveLimit = clampSemanticLimit(limit);
-	let knnLimit = Math.min(Math.max(effectiveLimit * 4, effectiveLimit + 8), 200);
 	const whereClauses: string[] = ["memory_items.active = 1"];
 	const filterResult = buildFilterClausesWithContext(filters, scopeVisibleFilterContext(context));
 	whereClauses.push(...filterResult.clauses);
@@ -718,29 +718,37 @@ export async function semanticSearch(
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
 		: "";
 
+	// Scope predicates must apply before vector ranking. sqlite-vec's MATCH/k
+	// query ranks inside the virtual table before joined memory_items filters can
+	// reliably constrain the candidate set, so use an exact distance scan over the
+	// already-authorized memory rows instead of widening post-KNN candidates.
 	const sql = `
-		SELECT memory_items.*, memory_vectors.distance
-		FROM memory_vectors
-		JOIN memory_items ON memory_items.id = memory_vectors.memory_id
-		${joinClause}
-		WHERE memory_vectors.embedding MATCH ?
-		  AND k = ?
-		  AND memory_vectors.model = ?
-		  AND ${where}
-		ORDER BY memory_vectors.distance ASC
+		WITH scoped_vectors AS (
+			SELECT
+				memory_vectors.memory_id,
+				MIN(vec_distance_l2(memory_vectors.embedding, ?)) AS distance
+			FROM memory_vectors
+			JOIN memory_items ON memory_items.id = memory_vectors.memory_id
+			${joinClause}
+			WHERE memory_vectors.model = ?
+			  AND ${where}
+			GROUP BY memory_vectors.memory_id
+			ORDER BY distance ASC
+			LIMIT ?
+		)
+		SELECT memory_items.*, scoped_vectors.distance
+		FROM scoped_vectors
+		JOIN memory_items ON memory_items.id = scoped_vectors.memory_id
+		ORDER BY scoped_vectors.distance ASC
 	`;
 
 	const statement = db.prepare(sql);
-	let rows: Array<Record<string, unknown>> = [];
-	while (true) {
-		rows = statement.all(queryEmbedding, knnLimit, searchModel, ...filterResult.params) as Array<
-			Record<string, unknown>
-		>;
-		if (rows.length >= effectiveLimit || knnLimit >= 200) break;
-		const nextLimit = Math.min(knnLimit * 2, 200);
-		if (nextLimit === knnLimit) break;
-		knnLimit = nextLimit;
-	}
+	const rows = statement.all(
+		queryEmbedding,
+		searchModel,
+		...filterResult.params,
+		effectiveLimit,
+	) as Array<Record<string, unknown>>;
 
 	return rows
 		.map((row) => ({
