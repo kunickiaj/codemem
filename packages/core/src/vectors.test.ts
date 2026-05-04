@@ -442,6 +442,56 @@ describe("vectors", () => {
 			freshDb.close();
 		}
 	});
+
+	it("getSemanticIndexDiagnostics survives a missing vec0 module without throwing", () => {
+		// Reproduces the Pi 4 / Linux ARM scenario: the memory_vectors
+		// virtual table is referenced from the diagnostics counter but
+		// the vec0 module is unavailable on the active connection.
+		// A JOIN against memory_vectors then crashes with `SQLITE_ERROR:
+		// no such module: vec0`. The diagnostics endpoint must treat
+		// that as "0 indexed" rather than 500 the route handler that
+		// called it.
+		//
+		// Simulate by constructing a connection where memory_vectors
+		// exists in the schema as a non-virtual table (so tableExists
+		// returns true) but no vec0 module is registered. The fast-path
+		// JOIN will throw "no such module" because better-sqlite3 plans
+		// the query against any matching table name.
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-vectors-vec-missing-"));
+		const dbPath = join(tmpDir, "test.sqlite");
+		try {
+			const stubDb = new Database(dbPath);
+			try {
+				initTestSchema(stubDb);
+				stubDb.exec(`
+					CREATE TABLE IF NOT EXISTS memory_vectors (
+						memory_id INTEGER PRIMARY KEY,
+						embedding BLOB,
+						model TEXT
+					);
+				`);
+				const originalPrepare = stubDb.prepare.bind(stubDb);
+				const prepareSpy = vi.spyOn(stubDb, "prepare").mockImplementation((sql: string) => {
+					if (sql.includes("memory_vectors")) {
+						throw new Error("SQLITE_ERROR: no such module: vec0");
+					}
+					return originalPrepare(sql);
+				});
+
+				try {
+					expect(() => getSemanticIndexDiagnostics(stubDb)).not.toThrow();
+					const diagnostics = getSemanticIndexDiagnostics(stubDb);
+					expect(diagnostics.indexed_memory_count).toBe(0);
+				} finally {
+					prepareSpy.mockRestore();
+				}
+			} finally {
+				stubDb.close();
+			}
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
