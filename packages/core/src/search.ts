@@ -52,6 +52,9 @@ export interface StoreHandle {
 	readonly deviceId: string;
 	get(memoryId: number): MemoryItemResponse | null;
 	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean;
+	buildOwnershipPredicate?(): (
+		item: MemoryItem | MemoryResult | Record<string, unknown>,
+	) => boolean;
 	recent(limit?: number, filters?: MemoryFilters | null, offset?: number): MemoryItemResponse[];
 	recentByKinds(
 		kinds: string[],
@@ -345,12 +348,12 @@ function markWideningMetadata(items: MemoryResult[]): MemoryResult[] {
 }
 
 function personalBias(
-	store: StoreHandle,
+	ownedByOwner: (item: MemoryResult) => boolean,
 	item: MemoryResult,
 	filters: MemoryFilters | undefined,
 ): number {
 	if (!personalFirstEnabled(filters)) return 0.0;
-	return store.memoryOwnedBySelf(item) ? PERSONAL_FIRST_BONUS : 0.0;
+	return ownedByOwner(item) ? PERSONAL_FIRST_BONUS : 0.0;
 }
 
 function searchQueryLooksTaskLike(query: string): boolean {
@@ -488,12 +491,12 @@ function itemLooksTaskLikeForSearch(item: MemoryResult): boolean {
 }
 
 function sharedTrustPenalty(
-	store: StoreHandle,
+	ownedByOwner: (item: MemoryResult) => boolean,
 	item: MemoryResult,
 	filters: MemoryFilters | undefined,
 ): number {
 	if (trustBiasMode(filters) !== "soft") return 0.0;
-	if (store.memoryOwnedBySelf(item)) return 0.0;
+	if (ownedByOwner(item)) return 0.0;
 	const metadata = item.metadata ?? {};
 	const visibility = String(metadata.visibility ?? "")
 		.trim()
@@ -749,13 +752,36 @@ function workingSetOverlapBoost(item: MemoryResult, workingSetPaths: string[]): 
 	return Math.min(0.32, boost);
 }
 
+/**
+ * Build an ownership predicate from `store`, falling back to a closure over
+ * `memoryOwnedBySelf` when the optional `buildOwnershipPredicate` method is
+ * not implemented. The fallback path preserves correctness for older
+ * `StoreHandle` implementers (e.g. external JS callers compiled against a
+ * prior version of this interface) at the cost of re-querying sync_peers
+ * per item.
+ */
+function ownershipPredicateFor(
+	store: StoreHandle,
+): (item: MemoryItem | MemoryResult | Record<string, unknown>) => boolean {
+	if (typeof store.buildOwnershipPredicate === "function") {
+		return store.buildOwnershipPredicate();
+	}
+	return (item) => store.memoryOwnedBySelf(item);
+}
+
 export function scoreResult(
 	store: StoreHandle,
 	item: MemoryResult,
 	filters?: MemoryFilters,
 	query = "",
 	referenceNow = new Date(),
+	ownedByOwner?: (item: MemoryResult) => boolean,
 ): PackTraceCandidateScores {
+	// Per-item rankers (personalBias / sharedTrustPenalty) check whether
+	// the result is owned by this device's actor. Building a fresh
+	// predicate here would re-query sync_peers per item; callers that
+	// already snapshotted the predicate (rerankResults) pass theirs in.
+	const ownership = ownedByOwner ?? ownershipPredicateFor(store);
 	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
 	const preferSummary = queryPrefersRecap(query);
 	const taskLikeQuery = searchQueryLooksTaskLike(query);
@@ -765,8 +791,8 @@ export function scoreResult(
 	const roleAdjustment = roleAdjustmentForSearch(item, preferSummary, taskLikeQuery);
 	const workingSetOverlap = workingSetOverlapBoost(item, workingSetPaths);
 	const queryPathOverlap = queryPathOverlapBoost(item, query);
-	const personalBiasValue = personalBias(store, item, filters);
-	const sharedTrustPenaltyValue = sharedTrustPenalty(store, item, filters);
+	const personalBiasValue = personalBias(ownership, item, filters);
+	const sharedTrustPenaltyValue = sharedTrustPenalty(ownership, item, filters);
 	const recapPenalty = recapPenaltyForSearch(item, preferSummary);
 	const tasklikePenalty =
 		!taskLikeQuery && itemLooksTaskLikeForSearch(item) ? NON_TASK_TASKLIKE_PENALTY : 0.0;
@@ -816,11 +842,14 @@ export function rerankResults(
 	query = "",
 ): MemoryResult[] {
 	const referenceNow = new Date();
+	// Snapshot ownership once per rerank pass so per-item scoring does not
+	// re-query sync_peers for every candidate.
+	const ownedByOwner = ownershipPredicateFor(store);
 
 	const scored = results.map((item) => ({
 		item,
 		combinedScore:
-			scoreResult(store, item, filters, query, referenceNow).combined_score ??
+			scoreResult(store, item, filters, query, referenceNow, ownedByOwner).combined_score ??
 			Number.NEGATIVE_INFINITY,
 	}));
 
@@ -863,7 +892,10 @@ function applySharedWidening(
 		return primary;
 	}
 
-	const personalResults = primary.filter((item) => store.memoryOwnedBySelf(item));
+	// Snapshot ownership once for the two filter passes below; the predicate
+	// captures the current sync_peers state so per-result checks stay O(1).
+	const ownedByOwner = ownershipPredicateFor(store);
+	const personalResults = primary.filter((item) => ownedByOwner(item));
 	const strongestPersonalScore = personalResults[0]?.score ?? -Infinity;
 	const personalStrongEnough =
 		personalResults.length >= widenSharedMinPersonalResults(filters) &&
@@ -876,7 +908,7 @@ function applySharedWidening(
 			effectiveQuery,
 			WIDEN_SHARED_MAX_SHARED_RESULTS,
 			sharedWideningFilters(filters),
-		).filter((item) => !store.memoryOwnedBySelf(item)),
+		).filter((item) => !ownedByOwner(item)),
 	);
 	const seen = new Set(primary.map((item) => item.id));
 	const combined = [...primary];
