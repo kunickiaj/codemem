@@ -211,33 +211,65 @@ function countEmbeddableActiveMemories(db: Database): number {
 	return Number(row?.c ?? 0);
 }
 
+/**
+ * `memory_vectors` is a sqlite-vec virtual table. Querying it requires the
+ * `vec0` module to be loaded into the active connection — a different
+ * concern from the table merely existing in the schema. On platforms where
+ * sqlite-vec failed to load (e.g. Linux ARM64 without the matching
+ * platform package), the table can persist from a previous run while the
+ * module is gone, so a JOIN crashes with `SQLITE_ERROR: no such module:
+ * vec0`. Diagnostic counters must treat that case as "0 indexed", same as
+ * the explicit `CODEMEM_EMBEDDING_DISABLED` path, instead of throwing.
+ */
+function isVecModuleMissingError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const message = error.message ?? "";
+	return /no such module:\s*vec0/i.test(message);
+}
+
 function countIndexedActiveMemories(db: Database, model: string): number {
-	if (!tableExists(db, "memory_vectors")) return 0;
-	const rows = db
-		.prepare(
-			`SELECT id, title, body_text
-			 FROM memory_items
-			 WHERE active = 1
-			   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''
-			 ORDER BY id ASC`,
-		)
-		.all() as MemoryTextRow[];
-	return rows.filter((row) => memoryHasCompleteVectorCoverage(db, row, model)).length;
+	if (isEmbeddingDisabled() || !tableExists(db, "memory_vectors")) return 0;
+	let rows: MemoryTextRow[];
+	try {
+		rows = db
+			.prepare(
+				`SELECT id, title, body_text
+				 FROM memory_items
+				 WHERE active = 1
+				   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''
+				 ORDER BY id ASC`,
+			)
+			.all() as MemoryTextRow[];
+	} catch (error) {
+		if (isVecModuleMissingError(error)) return 0;
+		throw error;
+	}
+	try {
+		return rows.filter((row) => memoryHasCompleteVectorCoverage(db, row, model)).length;
+	} catch (error) {
+		if (isVecModuleMissingError(error)) return 0;
+		throw error;
+	}
 }
 
 function countIndexedActiveMemoriesFast(db: Database, model: string): number {
-	if (!tableExists(db, "memory_vectors")) return 0;
-	const row = db
-		.prepare(
-			`SELECT COUNT(DISTINCT mi.id) AS c
-			 FROM memory_items mi
-			 JOIN memory_vectors mv ON mv.memory_id = mi.id
-			 WHERE mi.active = 1
-			   AND mv.model = ?
-			   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''`,
-		)
-		.get(model) as { c?: number } | undefined;
-	return Number(row?.c ?? 0);
+	if (isEmbeddingDisabled() || !tableExists(db, "memory_vectors")) return 0;
+	try {
+		const row = db
+			.prepare(
+				`SELECT COUNT(DISTINCT mi.id) AS c
+				 FROM memory_items mi
+				 JOIN memory_vectors mv ON mv.memory_id = mi.id
+				 WHERE mi.active = 1
+				   AND mv.model = ?
+				   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''`,
+			)
+			.get(model) as { c?: number } | undefined;
+		return Number(row?.c ?? 0);
+	} catch (error) {
+		if (isVecModuleMissingError(error)) return 0;
+		throw error;
+	}
 }
 
 function resolvePendingMemoryCount(
