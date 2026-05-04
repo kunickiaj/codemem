@@ -58,6 +58,16 @@ CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_peer_created
 CREATE INDEX IF NOT EXISTS idx_sync_scope_rejections_scope_created
 	ON sync_scope_rejections(scope_id, created_at);
 
+-- import_key is the primary lookup key from replication_ops.entity_id back to
+-- the source memory. The scope-backfill runner's selectReplicationOpScopeCandidates
+-- query joins on it for every unstamped op; without this index a Pi 4 with
+-- ~17k memories and ~35k ops scans the full memory_items table on every batch
+-- tick. The partial WHERE clause keeps the index small (most rows have
+-- import_key set; the few that don't aren't searchable anyway).
+CREATE INDEX IF NOT EXISTS idx_memory_items_import_key
+	ON memory_items(import_key)
+	WHERE import_key IS NOT NULL;
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 	title, body_text, tags_text,
 	content='memory_items',
