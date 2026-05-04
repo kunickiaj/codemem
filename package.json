@@ -54,6 +54,9 @@
       "esbuild",
       "sharp",
       "workerd"
-    ]
+    ],
+    "overrides": {
+      "better-sqlite3": "12.8.0"
+    }
   }
 }
