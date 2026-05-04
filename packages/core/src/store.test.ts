@@ -764,31 +764,54 @@ describe("MemoryStore", () => {
 			).toBe(true);
 		});
 
-		it("does not re-query sync_peers on every call when invoked in a hot loop", () => {
+		it("memoryOwnedBySelf reflects sync_peers changes immediately (no caching)", () => {
+			// Authorization-critical callers (forgetMemory, setMemoryVisibility,
+			// etc.) call memoryOwnedBySelf to decide whether a write is
+			// allowed. The result must reflect the latest sync_peers state
+			// on every call — caching here would mean an unclaimed peer's
+			// writes could still be authorized inside a stale window.
+			expect(
+				store.memoryOwnedBySelf({
+					origin_device_id: "peer-fresh",
+					metadata: {},
+				}),
+			).toBe(false);
+
 			store.db
 				.prepare(
 					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
 				)
-				.run("peer-cache-1", store.actorId, 1, "2026-01-01T00:00:00Z");
+				.run("peer-fresh", store.actorId, 1, "2026-01-01T00:00:00Z");
 
-			// First call seeds the cache. Subsequent calls hit the cache and
-			// must not re-issue SELECTs against sync_peers — the previous
-			// implementation issued two per call which blocked the libuv
-			// event loop on large stores.
 			expect(
 				store.memoryOwnedBySelf({
-					origin_device_id: "peer-cache-1",
+					origin_device_id: "peer-fresh",
 					metadata: {},
 				}),
 			).toBe(true);
 
+			store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run("peer-fresh");
+
+			expect(
+				store.memoryOwnedBySelf({
+					origin_device_id: "peer-fresh",
+					metadata: {},
+				}),
+			).toBe(false);
+		});
+
+		it("buildOwnershipPredicate snapshots sync_peers once for hot-loop callers", () => {
+			store.db
+				.prepare(
+					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
+				)
+				.run("peer-snapshot", store.actorId, 1, "2026-01-01T00:00:00Z");
+
+			const predicate = store.buildOwnershipPredicate();
 			const spy = vi.spyOn(store, "sameActorPeerIds");
 			try {
 				for (let index = 0; index < 50; index += 1) {
-					store.memoryOwnedBySelf({
-						origin_device_id: "peer-cache-1",
-						metadata: {},
-					});
+					predicate({ origin_device_id: "peer-snapshot", metadata: {} });
 				}
 				expect(spy).not.toHaveBeenCalled();
 			} finally {
@@ -796,32 +819,21 @@ describe("MemoryStore", () => {
 			}
 		});
 
-		it("invalidateOwnershipCache forces the next call to re-query sync_peers", () => {
-			// Prime the cache without any peers configured so isolated callers
-			// see "not owned" first.
-			expect(
-				store.memoryOwnedBySelf({
-					origin_device_id: "peer-cache-2",
-					metadata: {},
-				}),
-			).toBe(false);
+		it("buildOwnershipPredicate snapshot does not observe later peer changes", () => {
+			const predicate = store.buildOwnershipPredicate();
 
-			// Add a claimed peer after the cache was seeded; without
-			// invalidation the cached negative result would survive its TTL.
 			store.db
 				.prepare(
 					"INSERT INTO sync_peers(peer_device_id, actor_id, claimed_local_actor, created_at) VALUES (?, ?, ?, ?)",
 				)
-				.run("peer-cache-2", store.actorId, 1, "2026-01-01T00:00:00Z");
+				.run("peer-late", store.actorId, 1, "2026-01-01T00:00:00Z");
 
-			store.invalidateOwnershipCache();
-
-			expect(
-				store.memoryOwnedBySelf({
-					origin_device_id: "peer-cache-2",
-					metadata: {},
-				}),
-			).toBe(true);
+			// Frozen-snapshot semantics: each request rebuilds the predicate,
+			// so callers that hold one across requests intentionally trade
+			// freshness for the per-loop perf win. memoryOwnedBySelf remains
+			// the always-fresh path for write-side authorization.
+			expect(predicate({ origin_device_id: "peer-late", metadata: {} })).toBe(false);
+			expect(store.memoryOwnedBySelf({ origin_device_id: "peer-late", metadata: {} })).toBe(true);
 		});
 	});
 

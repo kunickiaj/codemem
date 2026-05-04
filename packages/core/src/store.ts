@@ -218,19 +218,6 @@ export class MemoryStore {
 	 */
 	scanner: SecretScanner;
 	private readonly pendingVectorWrites = new Set<Promise<void>>();
-	// Ownership predicate cache for memoryOwnedBySelf. Recomputed once per
-	// OWNERSHIP_CACHE_TTL_MS instead of issuing two fresh sqlite SELECTs on
-	// every call. Hot search paths (search.ts:866, 879 + per-item rankers
-	// at 353, 496) can fan a single search out to thousands of ownership
-	// checks; without the cache that fan-out blocks the libuv event loop.
-	// Mutations to sync_peers happen via low-frequency UI/admin flows, so
-	// a short TTL keeps perceived staleness below interaction thresholds.
-	private _ownershipCache: {
-		actorIds: Set<string>;
-		deviceIds: Set<string>;
-		expiresAt: number;
-	} | null = null;
-	private static readonly OWNERSHIP_CACHE_TTL_MS = 5000;
 
 	/** Lazy Drizzle ORM wrapper — shares the same better-sqlite3 connection. */
 	private _drizzle: ReturnType<typeof drizzle> | null = null;
@@ -827,61 +814,47 @@ export class MemoryStore {
 	 * 3. actor_id in legacy sync actor ids → owned
 	 */
 	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean {
-		const rec = item as Record<string, unknown>;
-		// Check top-level columns first (MemoryItem / DB row),
-		// then metadata dict (MemoryResult from search populates provenance there).
-		// For raw DB rows, metadata_json is a string — parse it so legacy rows
-		// whose actor_id/origin_device_id live inside metadata_json still pass
-		// ownership checks.
-		let meta = (rec.metadata ?? {}) as Record<string, unknown>;
-		if (!rec.metadata && typeof rec.metadata_json === "string") {
-			meta = fromJson(rec.metadata_json);
-		}
-
-		const actorId = cleanStr(rec.actor_id) ?? cleanStr(meta.actor_id);
-		if (actorId === this.actorId) return true;
-
-		const deviceId = cleanStr(rec.origin_device_id) ?? cleanStr(meta.origin_device_id);
-		if (deviceId === this.deviceId) return true;
-
-		const sets = this.ownershipSets();
-		if (deviceId && sets.deviceIds.has(deviceId)) return true;
-		if (actorId && sets.actorIds.has(actorId)) return true;
-
-		return false;
+		// Always re-reads sync_peers via sameActorPeerIds(). This method
+		// authorizes mutating APIs (forgetMemory / setMemoryVisibility /
+		// reassignMemoryScope etc.) so it must reflect peer claim changes
+		// the moment they land — no caching here. Callers that legitimately
+		// loop over many memories (search ranking, widening filters) should
+		// snapshot once via buildOwnershipPredicate() and reuse the closure.
+		return this.buildOwnershipPredicate()(item);
 	}
 
 	/**
-	 * Return the (cached) sets of peer device ids and legacy actor ids this
-	 * store treats as "owned by self" for memory ranking. Recomputed every
-	 * OWNERSHIP_CACHE_TTL_MS to bound staleness on peer rename/identity
-	 * changes without forcing every UI mutation site to plumb invalidation
-	 * hooks.
+	 * Snapshot the current ownership state into a fast inline predicate.
+	 *
+	 * Used to amortize the sync_peers SELECTs across hot loops in the
+	 * search ranker. The closure captures the actor + device + claimed-peer
+	 * sets at construction time and returns synchronous boolean checks
+	 * without touching sqlite. Because the snapshot is frozen, callers
+	 * should rebuild the predicate once per request — never share one
+	 * across requests where peer claims could change in between.
 	 */
-	private ownershipSets(): { actorIds: Set<string>; deviceIds: Set<string> } {
-		const now = Date.now();
-		if (this._ownershipCache && this._ownershipCache.expiresAt > now) {
-			return this._ownershipCache;
-		}
+	buildOwnershipPredicate(): (
+		item: MemoryItem | MemoryResult | Record<string, unknown>,
+	) => boolean {
 		const peerIds = this.sameActorPeerIds();
-		const deviceIds = new Set(peerIds);
-		const actorIds = new Set(peerIds.map((peerId) => `legacy-sync:${peerId}`));
-		this._ownershipCache = {
-			actorIds,
-			deviceIds,
-			expiresAt: now + MemoryStore.OWNERSHIP_CACHE_TTL_MS,
+		const claimedDeviceIds = new Set(peerIds);
+		const legacyActorIds = new Set(peerIds.map((peerId) => `legacy-sync:${peerId}`));
+		const ownerActorId = this.actorId;
+		const ownerDeviceId = this.deviceId;
+		return (item) => {
+			const rec = item as Record<string, unknown>;
+			let meta = (rec.metadata ?? {}) as Record<string, unknown>;
+			if (!rec.metadata && typeof rec.metadata_json === "string") {
+				meta = fromJson(rec.metadata_json);
+			}
+			const actorId = cleanStr(rec.actor_id) ?? cleanStr(meta.actor_id);
+			if (actorId === ownerActorId) return true;
+			const deviceId = cleanStr(rec.origin_device_id) ?? cleanStr(meta.origin_device_id);
+			if (deviceId === ownerDeviceId) return true;
+			if (deviceId && claimedDeviceIds.has(deviceId)) return true;
+			if (actorId && legacyActorIds.has(actorId)) return true;
+			return false;
 		};
-		return this._ownershipCache;
-	}
-
-	/**
-	 * Drop the ownership cache. Callers that just mutated sync_peers in a
-	 * way that affects ownership (claim, identity change, rename, delete)
-	 * can call this to force the next memoryOwnedBySelf check to refresh.
-	 * Optional — the cache also expires on its own TTL.
-	 */
-	invalidateOwnershipCache(): void {
-		this._ownershipCache = null;
 	}
 
 	// forget
