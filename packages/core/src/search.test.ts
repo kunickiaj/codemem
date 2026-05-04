@@ -200,6 +200,10 @@ describe("kindBonus", () => {
 // ---------------------------------------------------------------------------
 
 describe("rerankResults", () => {
+	const isOwnedByMockStore = (item: MemoryResult | Record<string, unknown>) => {
+		const metadata = (item as MemoryResult).metadata as Record<string, unknown> | undefined;
+		return metadata?.actor_id === "local:test-device";
+	};
 	const mockStore = {
 		db: {} as never,
 		actorId: "local:test-device",
@@ -207,10 +211,8 @@ describe("rerankResults", () => {
 		get: () => null,
 		recent: () => [],
 		recentByKinds: () => [],
-		memoryOwnedBySelf: (item: MemoryResult | Record<string, unknown>) => {
-			const metadata = (item as MemoryResult).metadata as Record<string, unknown> | undefined;
-			return metadata?.actor_id === "local:test-device";
-		},
+		memoryOwnedBySelf: isOwnedByMockStore,
+		buildOwnershipPredicate: () => isOwnedByMockStore,
 	};
 
 	function makeResult(overrides: Partial<MemoryResult>): MemoryResult {
@@ -575,6 +577,39 @@ describe("rerankResults", () => {
 			undefined,
 			"summarize memory retrieval issues",
 		);
+		expect(reranked[0]?.id).toBe(1);
+	});
+
+	it("falls back to memoryOwnedBySelf when buildOwnershipPredicate is not implemented", () => {
+		// Older `StoreHandle` implementers (e.g. external JS callers compiled
+		// against a prior interface) only ship `memoryOwnedBySelf`. Reranking
+		// must not crash with `TypeError: store.buildOwnershipPredicate is not
+		// a function` in that case.
+		const legacyStore = {
+			db: {} as never,
+			actorId: "local:test-device",
+			deviceId: "test-device",
+			get: () => null,
+			recent: () => [],
+			recentByKinds: () => [],
+			memoryOwnedBySelf: isOwnedByMockStore,
+			// buildOwnershipPredicate intentionally omitted.
+		};
+		const results = [
+			makeResult({ id: 1, score: 1.0, metadata: { actor_id: "local:test-device" } }),
+			makeResult({
+				id: 2,
+				score: 1.0,
+				metadata: { visibility: "shared", workspace_kind: "shared", trust_state: "unreviewed" },
+			}),
+		];
+		expect(() =>
+			rerankResults(legacyStore, results, 10, { personal_first: true, trust_bias: "soft" }),
+		).not.toThrow();
+		const reranked = rerankResults(legacyStore, results, 10, {
+			personal_first: true,
+			trust_bias: "soft",
+		});
 		expect(reranked[0]?.id).toBe(1);
 	});
 });
