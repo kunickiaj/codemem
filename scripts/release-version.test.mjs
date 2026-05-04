@@ -150,6 +150,22 @@ describe("release-version script", () => {
 		assert.throws(() => setVersion(root, "v1.0.1"), /Expected format: X.Y.Z/);
 	});
 
+	it("accepts alpha/beta/rc prerelease tags routed by the Release workflow", () => {
+		const root = makeRepo("1.0.0");
+		setVersion(root, "1.0.1-alpha.0");
+		assert.deepEqual(new Set(Object.values(readVersions(root))), new Set(["1.0.1-alpha.0"]));
+		setVersion(root, "1.0.1-beta.2");
+		assert.deepEqual(new Set(Object.values(readVersions(root))), new Set(["1.0.1-beta.2"]));
+		setVersion(root, "1.0.1-rc.1");
+		assert.deepEqual(new Set(Object.values(readVersions(root))), new Set(["1.0.1-rc.1"]));
+	});
+
+	it("rejects unknown prerelease identifiers", () => {
+		const root = makeRepo("1.0.0");
+		assert.throws(() => setVersion(root, "1.0.1-canary.0"), /Expected format: X.Y.Z/);
+		assert.throws(() => setVersion(root, "1.0.1-alpha"), /Expected format: X.Y.Z/);
+	});
+
 	it("does not write partial changes before validation failure", () => {
 		const root = makeRepo("1.0.0");
 		writeFileSync(join(root, ".claude-plugin/marketplace.json"), '{"metadata": {"version": "1.0.0"}, "plugins": []}\n');
