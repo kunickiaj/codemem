@@ -30,7 +30,7 @@
 		"@types/better-sqlite3": "catalog:",
 		"@types/node": "^22.15.21",
 		"better-sqlite3": "^12.8.0",
-		"sqlite-vec": "0.1.7-alpha.2",
+		"sqlite-vec": "0.1.9",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
