@@ -14,7 +14,7 @@
  * tracking, discovery-token work estimation.
  */
 
-import type { Database } from "./db.js";
+import { type Database, fromJson } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { inferMemoryRole } from "./memory-quality.js";
 import { projectBasename } from "./project.js";
@@ -68,6 +68,7 @@ const TASK_HINT_QUERY =
 
 const RECALL_HINT_QUERY = "session summary recap remember last time previous work";
 
+const MAX_SEMANTIC_REVALIDATION_IDS = 200;
 const TRACE_CANDIDATE_LIMIT = 20;
 const TRACE_PREVIEW_LIMIT = 160;
 
@@ -895,6 +896,7 @@ function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): Mem
 	const filterResult = buildFilterClausesWithContext(filters ?? null, {
 		actorId: store.actorId,
 		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
 	});
 	const whereParts = [
 		"memory_items.active = 1",
@@ -1065,14 +1067,76 @@ function mergeResults(
 		const existing = seen.get(r.id);
 		if (!existing || r.score > existing.score) seen.set(r.id, r);
 	}
+	const scopedSemanticResults = scopeSemanticResults(store, semanticResults, filters);
 	let semanticCount = 0;
-	for (const r of semanticResults) {
+	for (const r of scopedSemanticResults) {
 		if (!seen.has(r.id)) semanticCount++;
 		const existing = seen.get(r.id);
 		if (!existing || r.score > existing.score) seen.set(r.id, r);
 	}
 	const merged = rerankResults(store, [...seen.values()], limit, filters, query);
 	return { merged, ftsCount: ftsResults.length, semanticCount };
+}
+
+function scopeSemanticResults(
+	store: StoreHandle,
+	semanticResults: MemoryResult[],
+	filters?: MemoryFilters,
+): MemoryResult[] {
+	if (semanticResults.length === 0) return [];
+	const originalById = new Map<number, MemoryResult>();
+	for (const item of semanticResults) {
+		if (!Number.isSafeInteger(item.id) || item.id <= 0) continue;
+		if (!originalById.has(item.id)) originalById.set(item.id, item);
+	}
+	const ids = [...originalById.keys()];
+	if (ids.length === 0) return [];
+
+	const filterResult = buildFilterClausesWithContext(filters ?? null, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
+	});
+	const joinClause = filterResult.joinSessions
+		? "JOIN sessions ON sessions.id = memory_items.session_id"
+		: "";
+	const scopedById = new Map<number, MemoryResult>();
+	for (let offset = 0; offset < ids.length; offset += MAX_SEMANTIC_REVALIDATION_IDS) {
+		const chunkIds = ids.slice(offset, offset + MAX_SEMANTIC_REVALIDATION_IDS);
+		const placeholders = chunkIds.map(() => "?").join(", ");
+		const rows = store.db
+			.prepare(
+				`SELECT memory_items.*
+				 FROM memory_items
+				 ${joinClause}
+				 WHERE ${["memory_items.active = 1", `memory_items.id IN (${placeholders})`, ...filterResult.clauses].join(" AND ")}`,
+			)
+			.all(...chunkIds, ...filterResult.params) as Array<Record<string, unknown>>;
+
+		for (const row of rows) {
+			const id = Number(row.id);
+			const original = originalById.get(id);
+			if (!original) continue;
+			const metadataJson = row.metadata_json == null ? null : String(row.metadata_json);
+			scopedById.set(id, {
+				id,
+				kind: canonicalMemoryKind(String(row.kind ?? "observation"), metadataJson),
+				title: String(row.title ?? ""),
+				body_text: String(row.body_text ?? ""),
+				confidence: Number(row.confidence ?? 0),
+				created_at: String(row.created_at ?? ""),
+				updated_at: String(row.updated_at ?? ""),
+				tags_text: String(row.tags_text ?? ""),
+				score: original.score,
+				session_id: Number(row.session_id),
+				metadata: fromJson(metadataJson),
+				narrative: row.narrative == null ? null : String(row.narrative),
+				facts: row.facts == null ? null : String(row.facts),
+			});
+		}
+	}
+
+	return ids.map((id) => scopedById.get(id)).filter((item): item is MemoryResult => !!item);
 }
 
 /**
@@ -1821,8 +1885,9 @@ export async function buildMemoryPackAsync(
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, semanticQuery, limit, {
-			project: filters?.project,
+		const raw = await semanticSearch(store.db, semanticQuery, limit, filters, {
+			actorId: store.actorId,
+			deviceId: store.deviceId,
 		});
 		semResults = semanticMemoryResults(raw);
 	} catch {
@@ -1847,8 +1912,9 @@ export async function buildMemoryPackTraceAsync(
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, semanticQuery, limit, {
-			project: filters?.project,
+		const raw = await semanticSearch(store.db, semanticQuery, limit, filters, {
+			actorId: store.actorId,
+			deviceId: store.deviceId,
 		});
 		semResults = semanticMemoryResults(raw);
 	} catch {
