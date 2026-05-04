@@ -698,6 +698,11 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 						host: syncConfig.syncHost,
 						port: syncConfig.syncPort,
 						signal: syncAbort.signal,
+						// Foreground mode: hand the daemon the same workspace-aware
+						// scanner the local writes use, so workspace `secret_scanner`
+						// rules apply to inbound peer payloads instead of the daemon
+						// silently falling back to the built-in default ruleset.
+						scanner: store.scanner,
 						onPhaseChange: (phase) => {
 							if (phase === "running") {
 								syncRuntimeStatus.phase = null;

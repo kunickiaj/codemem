@@ -36,6 +36,17 @@ export interface SyncDaemonOptions {
 	keysDir?: string;
 	signal?: AbortSignal;
 	onPhaseChange?: (phase: "starting" | "running" | "stopping") => void;
+	/**
+	 * Workspace-aware secret scanner. When provided, the daemon's inbound
+	 * peer apply path uses this scanner so any rules from the workspace
+	 * `secret_scanner` config block are applied to received payloads.
+	 * Without it, the apply path falls back to the built-in default
+	 * ruleset and emits a single "sync apply running without explicit
+	 * scanner" warning per process. Pass `store.scanner` from the viewer
+	 * (`packages/cli/src/commands/serve.ts`) so foreground deployments
+	 * stay in lockstep with local writes.
+	 */
+	scanner?: SecretScanner;
 }
 
 export interface SyncTickResult {
@@ -221,6 +232,7 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 	const keysDir = options?.keysDir;
 	const signal = options?.signal;
 	const onPhaseChange = options?.onPhaseChange;
+	const scanner = options?.scanner;
 	onPhaseChange?.("starting");
 
 	// Ensure device identity
@@ -252,7 +264,7 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 		const runTick = () => {
 			if (tickRunning) return; // Skip if previous tick still running
 			tickRunning = true;
-			runTickOnce(dbPath, keysDir).finally(() => {
+			runTickOnce(dbPath, keysDir, scanner).finally(() => {
 				tickRunning = false;
 				if (!firstTickCompleted) {
 					firstTickCompleted = true;
@@ -286,7 +298,11 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
  *
  * Errors are caught and recorded in sync_daemon_state.
  */
-export async function runTickOnce(dbPath: string, keysDir?: string): Promise<void> {
+export async function runTickOnce(
+	dbPath: string,
+	keysDir?: string,
+	scanner?: SecretScanner,
+): Promise<void> {
 	const db = connectDb(dbPath);
 	try {
 		ensureAdditiveSchemaCompatibility(db);
@@ -299,7 +315,7 @@ export async function runTickOnce(dbPath: string, keysDir?: string): Promise<voi
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
 		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, keysDir);
-		const results = await syncDaemonTick(db, keysDir, stalePeers);
+		const results = await syncDaemonTick(db, keysDir, stalePeers, scanner);
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {
 			setSyncDaemonPhase(db, "needs_attention");
