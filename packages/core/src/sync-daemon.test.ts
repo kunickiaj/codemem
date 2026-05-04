@@ -156,6 +156,30 @@ describe("syncDaemonTick", () => {
 			expect.objectContaining({ limit: 750, keysDir: "/tmp/keys" }),
 		);
 	});
+
+	it("forwards the workspace scanner to runSyncPass so inbound peer apply uses workspace rules", async () => {
+		// Wiring regression: without this, the daemon path falls back to the
+		// built-in default scanner and the foreground viewer's workspace
+		// `secret_scanner` config block is silently skipped on inbound
+		// peer payloads. sync-pass.ts:syncOnce emits a one-shot warning
+		// "[codemem] sync apply running without explicit scanner" when no
+		// scanner is supplied; serve.ts now passes store.scanner through
+		// runSyncDaemon → runTickOnce → syncDaemonTick → runSyncPass.
+		const { runSyncPass } = await import("./sync-pass.js");
+		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-1", "fp1", now);
+
+		const fakeScanner = { scan: vi.fn() } as unknown as Parameters<typeof syncDaemonTick>[3];
+		await syncDaemonTick(db, "/tmp/keys", new Set(), fakeScanner);
+
+		expect(runSyncPass).toHaveBeenCalledWith(
+			db,
+			"peer-1",
+			expect.objectContaining({ scanner: fakeScanner }),
+		);
+	});
 });
 
 describe("refreshCoordinatorPresenceForDaemon", () => {
