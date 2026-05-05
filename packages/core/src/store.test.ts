@@ -1396,6 +1396,18 @@ describe("MemoryStore", () => {
 			expect(result.database.active_memory_items).toBe(1);
 		});
 
+		it("excludes memories outside locally authorized scopes from memory stats", () => {
+			grantScopeToLocalDevice("authorized-team");
+			insertCoordinatorScope("unauthorized-team");
+			insertScopedMemory("authorized-team", "Authorized stats memory");
+			insertScopedMemory("unauthorized-team", "Unauthorized stats memory");
+
+			const result = store.stats();
+			expect(result.database.sessions).toBe(1);
+			expect(result.database.memory_items).toBe(1);
+			expect(result.database.active_memory_items).toBe(1);
+		});
+
 		it("handles memory_vectors count failures without crashing", () => {
 			const sessionId = insertTestSession(store.db);
 			store.remember(sessionId, "discovery", "Vector test", "Body");

@@ -2,7 +2,7 @@
  * Memory routes — observations, summaries, sessions, projects, pack, artifacts.
  */
 
-import type { MemoryStore } from "@codemem/core";
+import type { MemoryFilters, MemoryStore } from "@codemem/core";
 import {
 	buildFilterClausesWithContext,
 	canonicalMemoryKind,
@@ -11,7 +11,7 @@ import {
 	parseStrictInteger,
 	schema,
 } from "@codemem/core";
-import { desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
 import { queryInt } from "../helpers.js";
@@ -138,6 +138,84 @@ function normalizeScope(raw: string | undefined): "mine" | "theirs" | undefined 
 	return undefined;
 }
 
+function buildViewerMemoryFilters(store: MemoryStore, filters?: MemoryFilters | null) {
+	return buildFilterClausesWithContext(filters, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
+	});
+}
+
+function countVisibleMemoryRows(store: MemoryStore, filters?: MemoryFilters | null): number {
+	const filterResult = buildViewerMemoryFilters(store, filters);
+	const clauses = ["memory_items.active = 1", ...filterResult.clauses];
+	const from = filterResult.joinSessions
+		? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
+		: "memory_items";
+	const row = store.db
+		.prepare(`SELECT COUNT(*) AS total FROM ${from} WHERE ${clauses.join(" AND ")}`)
+		.get(...filterResult.params) as Record<string, unknown> | undefined;
+	return Number(row?.total ?? 0);
+}
+
+function sessionAllowsArtifactAccess(store: MemoryStore, sessionId: number): boolean {
+	const visibleCount = countVisibleMemoryRows(store, { session_id: sessionId });
+	if (visibleCount === 0) return false;
+	const row = store.db
+		.prepare(
+			`SELECT COUNT(*) AS total FROM memory_items
+			 WHERE session_id = ? AND active = 1`,
+		)
+		.get(sessionId) as Record<string, unknown> | undefined;
+	return visibleCount === Number(row?.total ?? 0);
+}
+
+function countVisiblePromptRows(store: MemoryStore, project?: string | null): number {
+	const filterResult = buildViewerMemoryFilters(store, null);
+	const clauses = [
+		"user_prompts.session_id IS NOT NULL",
+		`EXISTS (
+			SELECT 1 FROM memory_items
+			WHERE memory_items.session_id = user_prompts.session_id
+			  AND memory_items.active = 1
+			  AND ${filterResult.clauses.join(" AND ")}
+		)`,
+	];
+	const params: unknown[] = [...filterResult.params];
+	if (project) {
+		clauses.unshift("user_prompts.project = ?");
+		params.unshift(project);
+	}
+	const row = store.db
+		.prepare(`SELECT COUNT(*) AS total FROM user_prompts WHERE ${clauses.join(" AND ")}`)
+		.get(...params) as Record<string, unknown> | undefined;
+	return Number(row?.total ?? 0);
+}
+
+function countVisibleArtifactRows(store: MemoryStore, project?: string | null): number {
+	const filterResult = buildViewerMemoryFilters(store, null);
+	const clauses = [
+		`EXISTS (
+			SELECT 1 FROM memory_items
+			WHERE memory_items.session_id = artifacts.session_id
+			  AND memory_items.active = 1
+			  AND ${filterResult.clauses.join(" AND ")}
+		)`,
+	];
+	const params: unknown[] = [...filterResult.params];
+	const from = project
+		? "artifacts JOIN sessions ON sessions.id = artifacts.session_id"
+		: "artifacts";
+	if (project) {
+		clauses.unshift("sessions.project = ?");
+		params.unshift(project);
+	}
+	const row = store.db
+		.prepare(`SELECT COUNT(*) AS total FROM ${from} WHERE ${clauses.join(" AND ")}`)
+		.get(...params) as Record<string, unknown> | undefined;
+	return Number(row?.total ?? 0);
+}
+
 function queryMemoryPage(
 	store: MemoryStore,
 	options: {
@@ -147,14 +225,11 @@ function queryMemoryPage(
 		scope?: "mine" | "theirs";
 	},
 ): Record<string, unknown>[] {
-	const filters: Record<string, unknown> = {};
+	const filters: MemoryFilters = {};
 	if (options.project) filters.project = options.project;
 	if (options.scope) filters.ownership_scope = options.scope;
 
-	const filterResult = buildFilterClausesWithContext(filters, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-	});
+	const filterResult = buildViewerMemoryFilters(store, filters);
 	const clauses = ["memory_items.active = 1", ...filterResult.clauses];
 	const where = clauses.join(" AND ");
 	const from = filterResult.joinSessions
@@ -219,16 +294,23 @@ export function memoryRoutes(getStore: StoreFactory) {
 		const store = getStore();
 		{
 			const limit = queryInt(c.req.query("limit"), 20);
-			const d = drizzle(store.db, { schema });
-			const rows = d
-				.select()
-				.from(schema.sessions)
-				.orderBy(desc(schema.sessions.started_at))
-				.limit(limit)
-				.all();
+			const filterResult = buildViewerMemoryFilters(store, null);
+			const clauses = [
+				"memory_items.session_id = sessions.id",
+				"memory_items.active = 1",
+				...filterResult.clauses,
+			];
+			const rows = store.db
+				.prepare(
+					`SELECT sessions.* FROM sessions
+					 WHERE EXISTS (SELECT 1 FROM memory_items WHERE ${clauses.join(" AND ")})
+					 ORDER BY sessions.started_at DESC
+					 LIMIT ?`,
+				)
+				.all(...filterResult.params, limit) as Record<string, unknown>[];
 			const items = rows.map((row) => ({
 				...row,
-				metadata_json: fromJson(row.metadata_json),
+				metadata_json: fromJson((row.metadata_json as string | null | undefined) ?? null),
 			}));
 			return c.json({ items });
 		}
@@ -238,12 +320,20 @@ export function memoryRoutes(getStore: StoreFactory) {
 	app.get("/api/projects", (c) => {
 		const store = getStore();
 		{
-			const d = drizzle(store.db, { schema });
-			const rows = d
-				.selectDistinct({ project: schema.sessions.project })
-				.from(schema.sessions)
-				.where(isNotNull(schema.sessions.project))
-				.all();
+			const filterResult = buildViewerMemoryFilters(store, null);
+			const clauses = [
+				"memory_items.session_id = sessions.id",
+				"memory_items.active = 1",
+				"sessions.project IS NOT NULL",
+				...filterResult.clauses,
+			];
+			const rows = store.db
+				.prepare(
+					`SELECT DISTINCT sessions.project AS project FROM sessions
+					 JOIN memory_items ON memory_items.session_id = sessions.id
+					 WHERE ${clauses.join(" AND ")}`,
+				)
+				.all(...filterResult.params) as Record<string, unknown>[];
 			const projects = [
 				...new Set(
 					rows
@@ -329,11 +419,6 @@ export function memoryRoutes(getStore: StoreFactory) {
 		const store = getStore();
 		{
 			const project = c.req.query("project") || null;
-			const count = (sql: string, ...params: unknown[]): number => {
-				const row = store.db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
-				return Number(row?.total ?? 0);
-			};
-
 			let prompts: number;
 			let artifacts: number;
 			let memories: number;
@@ -355,24 +440,14 @@ export function memoryRoutes(getStore: StoreFactory) {
 				return total;
 			};
 			if (project) {
-				prompts = count("SELECT COUNT(*) AS total FROM user_prompts WHERE project = ?", project);
-				artifacts = count(
-					`SELECT COUNT(*) AS total FROM artifacts
-					 JOIN sessions ON sessions.id = artifacts.session_id
-					 WHERE sessions.project = ?`,
-					project,
-				);
-				memories = count(
-					`SELECT COUNT(*) AS total FROM memory_items
-					 JOIN sessions ON sessions.id = memory_items.session_id
-					 WHERE sessions.project = ?`,
-					project,
-				);
+				prompts = countVisiblePromptRows(store, project);
+				artifacts = countVisibleArtifactRows(store, project);
+				memories = countVisibleMemoryRows(store, { project });
 				observations = countObservations(project);
 			} else {
-				prompts = count("SELECT COUNT(*) AS total FROM user_prompts");
-				artifacts = count("SELECT COUNT(*) AS total FROM artifacts");
-				memories = count("SELECT COUNT(*) AS total FROM memory_items");
+				prompts = countVisiblePromptRows(store);
+				artifacts = countVisibleArtifactRows(store);
+				memories = countVisibleMemoryRows(store);
 				observations = countObservations();
 			}
 			const total = prompts + artifacts + memories;
@@ -467,7 +542,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const limit = queryInt(c.req.query("limit"), 20);
 			const kind = c.req.query("kind") || undefined;
 			const project = c.req.query("project") || undefined;
-			const filters: Record<string, unknown> = {};
+			const filters: MemoryFilters = {};
 			if (kind) filters.kind = kind;
 			if (project) filters.project = project;
 			const items = store.recent(limit, filters);
@@ -488,6 +563,9 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const sessionId = parseStrictInteger(sessionIdStr);
 			if (sessionId == null) {
 				return c.json({ error: "session_id must be int" }, 400);
+			}
+			if (!sessionAllowsArtifactAccess(store, sessionId)) {
+				return c.json({ error: "session not found" }, 404);
 			}
 			const d = drizzle(store.db, { schema });
 			const rows = d
@@ -513,6 +591,9 @@ export function memoryRoutes(getStore: StoreFactory) {
 		);
 		if (memoryId == null || memoryId <= 0) {
 			return c.json({ error: "memory_id must be int" }, 400);
+		}
+		if (!store.get(memoryId)) {
+			return c.json({ error: "memory not found" }, 404);
 		}
 		const visibility = String(body.visibility ?? "").trim();
 		if (visibility !== "private" && visibility !== "shared") {
@@ -548,6 +629,9 @@ export function memoryRoutes(getStore: StoreFactory) {
 		if (!project) {
 			return c.json({ error: "project must be a non-empty string" }, 400);
 		}
+		if (!store.get(memoryId)) {
+			return c.json({ error: "memory not found" }, 404);
+		}
 		try {
 			const result = store.moveMemoryProject(memoryId, project);
 			return c.json(result);
@@ -573,6 +657,9 @@ export function memoryRoutes(getStore: StoreFactory) {
 		);
 		if (memoryId == null || memoryId <= 0) {
 			return c.json({ error: "memory_id must be int" }, 400);
+		}
+		if (!store.get(memoryId)) {
+			return c.json({ error: "memory not found" }, 404);
 		}
 
 		const row = drizzle(store.db, { schema })
