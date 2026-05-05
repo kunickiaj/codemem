@@ -110,7 +110,7 @@ function addScopeVisibilityFilter(
 	// but until that completes those rows must remain visible to their owning
 	// device exactly the way local-default rows are.
 	clauses.push(`(
-		COALESCE(TRIM(memory_items.scope_id), '') IN ('', ?, ?)
+		COALESCE(TRIM(memory_items.scope_id), '') IN (?, ?, ?)
 		OR EXISTS (
 			SELECT 1
 			FROM replication_scopes rs
@@ -129,7 +129,7 @@ function addScopeVisibilityFilter(
 			  AND sm.membership_epoch >= rs.membership_epoch
 		)
 	)`);
-	params.push(LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID, deviceId);
+	params.push("", LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID, deviceId);
 }
 
 /**

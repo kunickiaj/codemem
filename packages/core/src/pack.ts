@@ -68,6 +68,8 @@ const TASK_HINT_QUERY =
 
 const RECALL_HINT_QUERY = "session summary recap remember last time previous work";
 
+const PACK_BASELINE_BATCH_SIZE = 25;
+const MAX_PACK_BASELINE_SCAN_ROWS = 250;
 const MAX_SEMANTIC_REVALIDATION_IDS = 200;
 const TRACE_CANDIDATE_LIMIT = 20;
 const TRACE_PREVIEW_LIMIT = 160;
@@ -534,6 +536,8 @@ type PackArtifacts = {
 	trace: PackTrace;
 };
 
+type PackUsageBaselineRow = { metadata_json: string | null; tokens_read: number | null };
+
 type RawSemanticResult = Awaited<ReturnType<typeof semanticSearch>>[number];
 
 function semanticMemoryResults(results: RawSemanticResult[]): MemoryResult[] {
@@ -888,6 +892,34 @@ function parseMetadataObject(value: unknown): Record<string, unknown> {
 	return getSummaryMetadata(value);
 }
 
+function validatePackDeltaBaselineIds(
+	store: StoreHandle,
+	ids: number[],
+	filters: MemoryFilters | null,
+): number[] | null {
+	if (ids.length === 0) return null;
+	const filterResult = buildFilterClausesWithContext(filters, {
+		actorId: store.actorId,
+		deviceId: store.deviceId,
+		enforceScopeVisibility: true,
+	});
+	const placeholders = ids.map(() => "?").join(", ");
+	const joinClause = filterResult.joinSessions
+		? "JOIN sessions ON sessions.id = memory_items.session_id"
+		: "";
+	const rows = store.db
+		.prepare(
+			`SELECT memory_items.id
+			 FROM memory_items
+			 ${joinClause}
+			 WHERE ${["memory_items.active = 1", `memory_items.id IN (${placeholders})`, ...filterResult.clauses].join(" AND ")}`,
+		)
+		.all(...ids, ...filterResult.params) as Array<{ id: number }>;
+	const visibleIds = new Set(rows.map((row) => row.id));
+	if (visibleIds.size !== ids.length) return null;
+	return ids.filter((id) => visibleIds.has(id));
+}
+
 function isSummaryLike(item: Pick<MemoryResult, "kind" | "metadata">): boolean {
 	return isSummaryLikeMemory(item);
 }
@@ -921,51 +953,58 @@ function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): Mem
 
 function getPackDeltaBaseline(
 	store: StoreHandle,
-	project: string | null,
+	filters: MemoryFilters | null,
 ): { previousPackIds: number[] | null; previousPackTokens: number | null } {
+	const project = filters?.project ?? null;
 	const projectBase = project ? projectBasename(project) : null;
 	const metaProjectExpr =
 		"CASE WHEN json_valid(metadata_json) = 1 THEN json_extract(metadata_json, '$.project') ELSE NULL END";
-	const rows = project
-		? (store.db
-				.prepare(
-					`SELECT metadata_json, tokens_read
-					 FROM usage_events
-					 WHERE event = 'pack'
-					   AND (${metaProjectExpr} = ? OR ${metaProjectExpr} = ?)
-					 ORDER BY created_at DESC
-					 LIMIT 25`,
-				)
-				.all(project, projectBase ?? project) as Array<{
-				metadata_json: string | null;
-				tokens_read: number | null;
-			}>)
-		: (store.db
-				.prepare(
-					`SELECT metadata_json, tokens_read
-					 FROM usage_events
-					 WHERE event = 'pack'
-					 ORDER BY created_at DESC
-					 LIMIT 25`,
-				)
-				.all() as Array<{ metadata_json: string | null; tokens_read: number | null }>);
+	let offset = 0;
+	while (offset < MAX_PACK_BASELINE_SCAN_ROWS) {
+		const batchLimit = Math.min(PACK_BASELINE_BATCH_SIZE, MAX_PACK_BASELINE_SCAN_ROWS - offset);
+		const rows = project
+			? (store.db
+					.prepare(
+						`SELECT metadata_json, tokens_read
+						 FROM usage_events
+						 WHERE event = 'pack'
+						   AND (${metaProjectExpr} = ? OR ${metaProjectExpr} = ?)
+						 ORDER BY created_at DESC
+						 LIMIT ? OFFSET ?`,
+					)
+					.all(project, projectBase ?? project, batchLimit, offset) as PackUsageBaselineRow[])
+			: (store.db
+					.prepare(
+						`SELECT metadata_json, tokens_read
+						 FROM usage_events
+						 WHERE event = 'pack'
+						 ORDER BY created_at DESC
+						 LIMIT ? OFFSET ?`,
+					)
+					.all(batchLimit, offset) as PackUsageBaselineRow[]);
+		if (rows.length === 0) break;
 
-	for (const row of rows) {
-		const metadata = parseMetadataObject(row.metadata_json);
-		if (project != null) {
-			const rowProject = typeof metadata.project === "string" ? metadata.project : null;
-			if (rowProject !== project && rowProject !== projectBase) continue;
+		for (const row of rows) {
+			const metadata = parseMetadataObject(row.metadata_json);
+			if (project != null) {
+				const rowProject = typeof metadata.project === "string" ? metadata.project : null;
+				if (rowProject !== project && rowProject !== projectBase) continue;
+			}
+			if (!("pack_item_ids" in metadata)) continue;
+
+			const { ids, valid } = coercePackItemIds(metadata.pack_item_ids);
+			if (!valid) continue;
+			const scopedIds = validatePackDeltaBaselineIds(store, ids, filters);
+			if (scopedIds == null) continue;
+
+			const previousTokens =
+				parseNonNegativeInt(metadata.pack_tokens) ?? parseNonNegativeInt(row.tokens_read);
+			if (previousTokens == null) continue;
+
+			return { previousPackIds: scopedIds, previousPackTokens: previousTokens };
 		}
-		if (!("pack_item_ids" in metadata)) continue;
 
-		const { ids, valid } = coercePackItemIds(metadata.pack_item_ids);
-		if (!valid) continue;
-
-		const previousTokens =
-			parseNonNegativeInt(metadata.pack_tokens) ?? parseNonNegativeInt(row.tokens_read);
-		if (previousTokens == null) continue;
-
-		return { previousPackIds: ids, previousPackTokens: previousTokens };
+		offset += rows.length;
 	}
 
 	return { previousPackIds: null, previousPackTokens: null };
@@ -1067,7 +1106,7 @@ function mergeResults(
 		const existing = seen.get(r.id);
 		if (!existing || r.score > existing.score) seen.set(r.id, r);
 	}
-	const scopedSemanticResults = scopeSemanticResults(store, semanticResults, filters);
+	const scopedSemanticResults = rehydrateScopedCandidateResults(store, semanticResults, filters);
 	let semanticCount = 0;
 	for (const r of scopedSemanticResults) {
 		if (!seen.has(r.id)) semanticCount++;
@@ -1078,14 +1117,14 @@ function mergeResults(
 	return { merged, ftsCount: ftsResults.length, semanticCount };
 }
 
-function scopeSemanticResults(
+function rehydrateScopedCandidateResults(
 	store: StoreHandle,
-	semanticResults: MemoryResult[],
+	candidates: MemoryResult[],
 	filters?: MemoryFilters,
 ): MemoryResult[] {
-	if (semanticResults.length === 0) return [];
+	if (candidates.length === 0) return [];
 	const originalById = new Map<number, MemoryResult>();
-	for (const item of semanticResults) {
+	for (const item of candidates) {
 		if (!Number.isSafeInteger(item.id) || item.id <= 0) continue;
 		if (!originalById.has(item.id)) originalById.set(item.id, item);
 	}
@@ -1168,10 +1207,25 @@ function mergeFileRefCandidates(
 	);
 	const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
 	if (newIds.length === 0) return results;
-	const refMemories = newIds
-		.map((id) => store.get(id))
-		.filter((m): m is NonNullable<typeof m> => m != null)
-		.map(toMemoryResult);
+	const refMemories = rehydrateScopedCandidateResults(
+		store,
+		newIds.map((id) => ({
+			id,
+			kind: "discovery",
+			title: "",
+			body_text: "",
+			confidence: 0,
+			created_at: "",
+			updated_at: "",
+			tags_text: "",
+			score: 0,
+			session_id: 0,
+			metadata: {},
+			narrative: null,
+			facts: null,
+		})),
+		filters,
+	);
 	return [...results, ...refMemories];
 }
 
@@ -1625,10 +1679,7 @@ function buildPackArtifacts(
 		}
 	}
 
-	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(
-		store,
-		filters?.project ?? null,
-	);
+	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(store, filters ?? null);
 	const packDeltaAvailable = previousPackIds != null && previousPackTokens != null;
 	const previousSet = new Set(previousPackIds ?? []);
 	const currentSet = new Set(allItemIds);
@@ -1885,7 +1936,7 @@ export async function buildMemoryPackAsync(
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, semanticQuery, limit, filters, {
+		const raw = await semanticSearch(store.db, semanticQuery, limit, filters ?? null, {
 			actorId: store.actorId,
 			deviceId: store.deviceId,
 		});
@@ -1912,7 +1963,7 @@ export async function buildMemoryPackTraceAsync(
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(store.db, semanticQuery, limit, filters, {
+		const raw = await semanticSearch(store.db, semanticQuery, limit, filters ?? null, {
 			actorId: store.actorId,
 			deviceId: store.deviceId,
 		});

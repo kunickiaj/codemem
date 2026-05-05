@@ -217,6 +217,152 @@ describe("buildMemoryPack", () => {
 		expect(typeof second.metrics.pack_token_delta).toBe("number");
 	});
 
+	it("does not use out-of-scope pack delta baselines", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden delta memory",
+			"delta scope body",
+		);
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible delta memory",
+			"delta scope body",
+		);
+		store.db
+			.prepare(
+				`INSERT INTO usage_events(
+					session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+				) VALUES (NULL, 'pack', 999, 0, 0, ?, ?)`,
+			)
+			.run(
+				"2026-01-01T00:00:00.000Z",
+				JSON.stringify({ pack_item_ids: [hiddenId], pack_tokens: 999 }),
+			);
+
+		const pack = buildMemoryPack(store, "delta", 10);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.item_ids).not.toContain(hiddenId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
+		expect(pack.metrics.removed_ids).not.toContain(hiddenId);
+		expect(pack.metrics.retained_ids).not.toContain(hiddenId);
+		expect(pack.metrics.added_ids).not.toContain(hiddenId);
+	});
+
+	it("does not use itemless pack delta token baselines", () => {
+		grantScopeToLocalDevice("authorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible empty-baseline memory",
+			"empty baseline body",
+		);
+		store.db
+			.prepare(
+				`INSERT INTO usage_events(
+					session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+				) VALUES (NULL, 'pack', 999, 0, 0, ?, ?)`,
+			)
+			.run("2026-01-01T00:00:00.000Z", JSON.stringify({ pack_item_ids: [], pack_tokens: 999 }));
+
+		const pack = buildMemoryPack(store, "empty baseline", 10);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
+		expect(pack.metrics.pack_token_delta).toBe(0);
+	});
+
+	it("does not use pack delta baselines outside current scope filters", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B delta memory", "delta filter body");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A delta memory", "delta filter body");
+		store.db
+			.prepare(
+				`INSERT INTO usage_events(
+					session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+				) VALUES (NULL, 'pack', 999, 0, 0, ?, ?)`,
+			)
+			.run(
+				"2026-01-01T00:00:00.000Z",
+				JSON.stringify({ pack_item_ids: [scopeBId], pack_tokens: 999 }),
+			);
+
+		const pack = buildMemoryPack(store, "delta filter", 10, null, { scope_id: "scope-a" });
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.item_ids).not.toContain(scopeBId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
+		expect(pack.metrics.removed_ids).not.toContain(scopeBId);
+		expect(pack.metrics.retained_ids).not.toContain(scopeBId);
+	});
+
+	it("finds current-scope pack delta baselines beyond out-of-scope history", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A retained memory", "retained body");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B noisy memory", "retained body");
+		const insertUsage = (ids: number[], createdAt: string, packTokens: number) => {
+			store.db
+				.prepare(
+					`INSERT INTO usage_events(
+						session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+					) VALUES (NULL, 'pack', ?, 0, 0, ?, ?)`,
+				)
+				.run(
+					packTokens,
+					createdAt,
+					JSON.stringify({ pack_item_ids: ids, pack_tokens: packTokens }),
+				);
+		};
+		insertUsage([scopeAId], "2026-01-01T00:00:00.000Z", 10);
+		for (let i = 0; i < 26; i += 1) {
+			insertUsage([scopeBId], `2026-01-02T00:${String(i).padStart(2, "0")}:00.000Z`, 999);
+		}
+
+		const pack = buildMemoryPack(store, "retained", 10, null, { scope_id: "scope-a" });
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.item_ids).not.toContain(scopeBId);
+		expect(pack.metrics.pack_delta_available).toBe(true);
+		expect(pack.metrics.retained_ids).toContain(scopeAId);
+		expect(pack.metrics.removed_ids).not.toContain(scopeBId);
+	});
+
+	it("bounds pack delta baseline scans when no current-scope baseline is recent", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A old retained memory", "retained body");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B noisy old memory", "retained body");
+		const insertUsage = (ids: number[], createdAt: string, packTokens: number) => {
+			store.db
+				.prepare(
+					`INSERT INTO usage_events(
+						session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json
+					) VALUES (NULL, 'pack', ?, 0, 0, ?, ?)`,
+				)
+				.run(
+					packTokens,
+					createdAt,
+					JSON.stringify({ pack_item_ids: ids, pack_tokens: packTokens }),
+				);
+		};
+		insertUsage([scopeAId], "2026-01-01T00:00:00.000Z", 10);
+		for (let i = 0; i < 260; i += 1) {
+			insertUsage(
+				[scopeBId],
+				`2026-01-02T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+				999,
+			);
+		}
+
+		const pack = buildMemoryPack(store, "retained", 10, null, { scope_id: "scope-a" });
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.metrics.pack_delta_available).toBe(false);
+	});
+
 	it("keeps project delta baseline after many packs in other projects", () => {
 		store.remember(sessionId, "feature", "Project A item", "Body A", 0.7);
 
@@ -848,6 +994,154 @@ describe("buildMemoryPack", () => {
 
 		expect(pack.item_ids).toContain(visibleId);
 		expect(pack.metrics.sources.semantic).toBe(1);
+	});
+
+	it("uses database content when revalidating semantic pack candidates", () => {
+		grantScopeToLocalDevice("authorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Database semantic pack note",
+			"database semantic body",
+		);
+		const semanticResults = [
+			semanticCandidate(visibleId, "Forged semantic pack note", "forged semantic body", 0.9),
+		];
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, undefined, semanticResults);
+
+		expect(pack.pack_text).toContain("Database semantic pack note");
+		expect(pack.pack_text).not.toContain("Forged semantic pack note");
+	});
+
+	it("uses database content when revalidating semantic trace candidates", () => {
+		grantScopeToLocalDevice("authorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Database semantic trace note",
+			"database semantic trace body",
+		);
+		const semanticResults = [
+			semanticCandidate(visibleId, "Forged semantic trace note", "forged semantic trace body", 0.9),
+		];
+
+		const trace = buildMemoryPackTrace(
+			store,
+			"zzz_nomatch_zzz",
+			10,
+			null,
+			undefined,
+			semanticResults,
+		);
+		const candidate = trace.retrieval.candidates.find((item) => item.id === visibleId);
+
+		expect(trace.output.pack_text).toContain("Database semantic trace note");
+		expect(trace.output.pack_text).not.toContain("Forged semantic trace note");
+		expect(candidate?.title).toBe("Database semantic trace note");
+		expect(candidate?.preview).toContain("database semantic trace body");
+		expect(candidate?.preview).not.toContain("forged semantic trace body");
+	});
+
+	it("excludes hidden semantic candidates from pack trace output", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic trace note",
+			"visible semantic trace body",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden semantic trace note",
+			"hidden semantic trace body",
+		);
+		const semanticResults = [
+			semanticCandidate(hiddenId, "Hidden semantic trace note", "hidden semantic trace body", 0.99),
+			semanticCandidate(
+				visibleId,
+				"Visible semantic trace note",
+				"visible semantic trace body",
+				0.5,
+			),
+		];
+
+		const trace = buildMemoryPackTrace(
+			store,
+			"zzz_nomatch_zzz",
+			10,
+			null,
+			undefined,
+			semanticResults,
+		);
+		const selectedIds = Object.values(trace.assembly.sections).flat();
+
+		expect(selectedIds).toContain(visibleId);
+		expect(selectedIds).not.toContain(hiddenId);
+		expect(trace.output.pack_text).toContain("Visible semantic trace note");
+		expect(trace.output.pack_text).not.toContain("Hidden semantic trace note");
+		expect(trace.retrieval.candidates.map((candidate) => candidate.id)).not.toContain(hiddenId);
+	});
+
+	it("keeps token-budget trimming behind the pack scope gate", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible budget semantic note",
+			"visible budget semantic body",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden budget semantic note",
+			"hidden budget semantic body ".repeat(20),
+		);
+		const semanticResults = [
+			semanticCandidate(
+				hiddenId,
+				"Hidden budget semantic note",
+				"hidden budget semantic body",
+				0.99,
+			),
+			semanticCandidate(
+				visibleId,
+				"Visible budget semantic note",
+				"visible budget semantic body",
+				0.5,
+			),
+		];
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, 20, undefined, semanticResults);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.item_ids).not.toContain(hiddenId);
+		expect(pack.pack_text).toContain("Visible budget semantic note");
+		expect(pack.pack_text).not.toContain("Hidden budget semantic note");
+	});
+
+	it("applies scope filters to working-set file-ref candidates", () => {
+		grantScopeToLocalDevice("scope-a");
+		grantScopeToLocalDevice("scope-b");
+		const scopeAId = insertScopedMemory("scope-a", "Scope A working-set note", "working set body");
+		const scopeBId = insertScopedMemory("scope-b", "Scope B working-set note", "working set body");
+		for (const id of [scopeAId, scopeBId]) {
+			store.db
+				.prepare(
+					"INSERT OR IGNORE INTO memory_file_refs(memory_id, file_path, relation) VALUES (?, ?, 'modified')",
+				)
+				.run(id, "src/shared.ts");
+		}
+
+		const filters = { scope_id: "scope-a", working_set_paths: ["src/shared.ts"] };
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, filters);
+		const trace = buildMemoryPackTrace(store, "zzz_nomatch_zzz", 10, null, filters);
+		const traceIds = Object.values(trace.assembly.sections).flat();
+
+		expect(pack.item_ids).toContain(scopeAId);
+		expect(pack.item_ids).not.toContain(scopeBId);
+		expect(pack.pack_text).toContain("Scope A working-set note");
+		expect(pack.pack_text).not.toContain("Scope B working-set note");
+		expect(traceIds).toContain(scopeAId);
+		expect(traceIds).not.toContain(scopeBId);
+		expect(trace.retrieval.candidates.map((candidate) => candidate.id)).not.toContain(scopeBId);
 	});
 
 	it("scopes latest summary fallback during pack assembly", () => {

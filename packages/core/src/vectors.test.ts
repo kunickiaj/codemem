@@ -520,11 +520,11 @@ describe("vectors", () => {
 		).toContain(visibleId);
 	});
 
-	it("widens KNN candidates before scope filtering", async () => {
+	it("ranks only authorized semantic candidates even when unauthorized candidates dominate", async () => {
 		const deviceId = "device-authorized";
 		grantScopeToDevice("authorized-team", deviceId);
 		insertCoordinatorScope("unauthorized-team");
-		for (let i = 0; i < 12; i += 1) {
+		for (let i = 0; i < 220; i += 1) {
 			const hiddenId = insertScopedMemory(
 				"unauthorized-team",
 				`Closest hidden semantic note ${i}`,
@@ -548,6 +548,26 @@ describe("vectors", () => {
 		expect(results.map((item) => item.id)).toEqual([visibleId]);
 	});
 
+	it("requires explicit scope context when vector search has candidates", async () => {
+		const memoryId = insertScopedMemory(
+			"local-default",
+			"Legacy local semantic note",
+			"semantic scope detail",
+		);
+		insertTestVector(memoryId, 0, "legacy-local-hash");
+
+		await expect(
+			semanticSearch(
+				db,
+				"semantic scope",
+				10,
+				null,
+				undefined as unknown as Parameters<typeof semanticSearch>[4],
+			),
+		).rejects.toThrow("semantic_search_scope_context_required");
+		expect(embeddings.embedTexts).not.toHaveBeenCalled();
+	});
+
 	it("skips query embedding when vector search is disabled during migration", async () => {
 		startMaintenanceJob(db, {
 			kind: "vector_model_migration",
@@ -555,7 +575,10 @@ describe("vectors", () => {
 			metadata: { source_model: "old-model", target_model: "test-model" },
 		});
 
-		const results = await semanticSearch(db, "query text");
+		const results = await semanticSearch(db, "query text", 10, null, {
+			actorId: "local:disabled-device",
+			deviceId: "disabled-device",
+		});
 
 		expect(results).toEqual([]);
 		expect(embeddings.embedTexts).not.toHaveBeenCalled();
@@ -566,7 +589,10 @@ describe("vectors", () => {
 		try {
 			initTestSchema(freshDb);
 
-			const results = await semanticSearch(freshDb, "query text");
+			const results = await semanticSearch(freshDb, "query text", 10, null, {
+				actorId: "local:fresh-device",
+				deviceId: "fresh-device",
+			});
 
 			expect(results).toEqual([]);
 			expect(embeddings.embedTexts).not.toHaveBeenCalled();

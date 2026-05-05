@@ -379,16 +379,16 @@ describe("maintenance", { timeout: 15_000 }, () => {
 		try {
 			initTestSchema(db);
 			db.exec(`
-				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
-				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
-				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
-				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
-				INSERT INTO memory_items(
-					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
-				) VALUES
-				  (1, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
-				  (2, 1, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:10:01Z', '2026-03-01T10:10:01Z', '{}', 'k2');
-			`);
+					INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+					  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+					INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+					  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
+					INSERT INTO memory_items(
+						id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key, scope_id
+					) VALUES
+					  (1, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1', 'local-default'),
+					  (2, 1, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:10:01Z', '2026-03-01T10:10:01Z', '{}', 'k2', 'local-default');
+				`);
 		} finally {
 			db.close();
 		}
@@ -493,18 +493,18 @@ describe("maintenance", { timeout: 15_000 }, () => {
 		const baselineDb = new Database(baselinePath);
 		try {
 			baselineDb.exec(`
-				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
-				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test'),
-				  (2, '2026-03-01T10:20:00Z', '2026-03-01T10:20:20Z', '/tmp/repo', 'codemem', 'adam', 'test');
-				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
-				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
-				INSERT INTO memory_items(
-					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
-				) VALUES
-				  (1, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1'),
-				  (2, 2, 'change', 'Legacy recap', '## Request\nfoo\n\n## Completed\nbar', 1, '2026-03-01T10:20:20Z', '2026-03-01T10:20:20Z', '{"is_summary":true}', 'k2'),
-				  (3, 2, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k3');
-			`);
+					INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+					  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test'),
+					  (2, '2026-03-01T10:20:00Z', '2026-03-01T10:20:20Z', '/tmp/repo', 'codemem', 'adam', 'test');
+					INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+					  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
+					INSERT INTO memory_items(
+						id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key, scope_id
+					) VALUES
+					  (1, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1', 'local-default'),
+					  (2, 2, 'change', 'Legacy recap', '## Request\nfoo\n\n## Completed\nbar', 1, '2026-03-01T10:20:20Z', '2026-03-01T10:20:20Z', '{"is_summary":true}', 'k2', 'local-default'),
+					  (3, 2, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k3', 'local-default');
+				`);
 		} finally {
 			baselineDb.close();
 		}
@@ -512,16 +512,16 @@ describe("maintenance", { timeout: 15_000 }, () => {
 		const candidateDb = new Database(candidatePath);
 		try {
 			candidateDb.exec(`
-				INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
-				  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
-				INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
-				  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
-				INSERT INTO memory_items(
-					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key
-				) VALUES
-				  (20, 1, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k3'),
-				  (21, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1');
-			`);
+					INSERT INTO sessions(id, started_at, ended_at, cwd, project, user, tool_version) VALUES
+					  (1, '2026-03-01T10:00:00Z', '2026-03-01T10:10:00Z', '/tmp/repo', 'codemem', 'adam', 'test');
+					INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES
+					  ('opencode', 'ses-1', 'ses-1', 1, '2026-03-01T10:00:00Z');
+					INSERT INTO memory_items(
+						id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key, scope_id
+					) VALUES
+					  (20, 1, 'decision', 'OAuth callback fix', 'Patched callback validation', 1, '2026-03-01T10:20:21Z', '2026-03-01T10:20:21Z', '{}', 'k3', 'local-default'),
+					  (21, 1, 'session_summary', 'Session recap', 'Summary body', 1, '2026-03-01T10:10:00Z', '2026-03-01T10:10:00Z', '{}', 'k1', 'local-default');
+				`);
 		} finally {
 			candidateDb.close();
 		}
