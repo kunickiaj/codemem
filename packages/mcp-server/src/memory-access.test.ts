@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { MemoryStore } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "../../core/src/db.js";
-import { initTestSchema } from "../../core/src/test-utils.js";
+import { initTestSchema, seedMixedScopeFixture } from "../../core/src/test-utils.js";
 import {
 	forgetMemoryForMcp,
 	getManyForMcp,
@@ -60,6 +60,19 @@ describe("MCP memory access scope guards", () => {
 			authorizedId,
 		]);
 		expect(getMemoryForMcp(store, authorizedId, { scope_id: "scope-b" })).toBe(null);
+	});
+
+	it("keeps mixed-domain unauthorized scope rows out of MCP direct reads", () => {
+		const fixture = seedMixedScopeFixture(store.db, store.deviceId);
+
+		expect(getMemoryForMcp(store, fixture.personalId)?.title).toBe(fixture.visibleTitles[0]);
+		expect(getMemoryForMcp(store, fixture.authorizedId)?.title).toBe(fixture.visibleTitles[1]);
+		expect(getMemoryForMcp(store, fixture.unauthorizedId)).toBe(null);
+		expect(
+			getManyForMcp(store, fixture.allIds)
+				.map((item) => item.id)
+				.sort((a, b) => a - b),
+		).toEqual([...fixture.visibleIds].sort((a, b) => a - b));
 	});
 
 	it("refuses to forget unauthorized or explicitly filtered-out memories", () => {

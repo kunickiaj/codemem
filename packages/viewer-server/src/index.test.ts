@@ -17,6 +17,7 @@ import {
 	insertTestSession,
 	loadPublicKey,
 	MemoryStore,
+	seedMixedScopeFixture,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 	VERSION,
@@ -624,6 +625,47 @@ describe("viewer-server", () => {
 					"Visible observation",
 					"Visible summary",
 				]);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("keeps mixed-domain unauthorized scope rows out of viewer direct surfaces", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const fixture = seedMixedScopeFixture(store.db, store.deviceId);
+
+				const memoryRes = await app.request("/api/memory?limit=10");
+				expect(memoryRes.status).toBe(200);
+				const memory = (await memoryRes.json()) as {
+					items: Array<{ id: number; title: string }>;
+				};
+				expect(memory.items.map((item) => item.id)).toEqual(
+					expect.arrayContaining(fixture.visibleIds),
+				);
+				expect(memory.items.map((item) => item.id)).not.toContain(fixture.unauthorizedId);
+
+				const observationsRes = await app.request("/api/observations?limit=10");
+				expect(observationsRes.status).toBe(200);
+				const observations = (await observationsRes.json()) as {
+					items: Array<{ id: number; title: string }>;
+				};
+				expect(observations.items.map((item) => item.id)).toEqual(
+					expect.arrayContaining(fixture.visibleIds),
+				);
+				expect(observations.items.map((item) => item.title)).not.toContain(
+					fixture.unauthorizedTitle,
+				);
+
+				const packRes = await app.request(`/api/pack?context=${fixture.query}&limit=10`);
+				expect(packRes.status).toBe(200);
+				const pack = (await packRes.json()) as { item_ids: number[]; pack_text: string };
+				expect(pack.item_ids.some((id) => fixture.visibleIds.includes(id))).toBe(true);
+				expect(pack.item_ids).not.toContain(fixture.unauthorizedId);
+				expect(pack.pack_text).not.toContain(fixture.unauthorizedTitle);
 			} finally {
 				cleanup();
 			}
