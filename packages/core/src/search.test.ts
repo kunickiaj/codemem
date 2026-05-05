@@ -9,6 +9,64 @@ import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
 
+function insertCoordinatorScope(store: MemoryStore, scopeId: string): void {
+	const now = new Date().toISOString();
+	store.db
+		.prepare(
+			`INSERT OR REPLACE INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
+		)
+		.run(scopeId, scopeId, now, now);
+}
+
+function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): void {
+	insertCoordinatorScope(store, scopeId);
+	store.db
+		.prepare(
+			`INSERT OR REPLACE INTO scope_memberships(
+				scope_id, device_id, role, status, membership_epoch,
+				coordinator_id, group_id, updated_at
+			 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
+		)
+		.run(scopeId, store.deviceId, new Date().toISOString());
+}
+
+function insertScopedMemory(
+	store: MemoryStore,
+	input: {
+		scopeId: string;
+		sessionId?: number;
+		title: string;
+		body: string;
+		kind?: string;
+		createdAt?: string;
+		visibility?: string;
+	},
+): number {
+	const sessionId = input.sessionId ?? insertTestSession(store.db);
+	const timestamp = input.createdAt ?? new Date().toISOString();
+	const info = store.db
+		.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, confidence, tags_text, active,
+				created_at, updated_at, metadata_json, rev, visibility, scope_id
+			 ) VALUES (?, ?, ?, ?, 0.5, '', 1, ?, ?, '{}', 1, ?, ?)`,
+		)
+		.run(
+			sessionId,
+			input.kind ?? "discovery",
+			input.title,
+			input.body,
+			timestamp,
+			timestamp,
+			input.visibility ?? "shared",
+			input.scopeId,
+		);
+	return Number(info.lastInsertRowid);
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests: expandQuery
 // ---------------------------------------------------------------------------
@@ -709,6 +767,32 @@ describe("MemoryStore.search", () => {
 		}
 	});
 
+	it("filters by local scope authorization before ranking", () => {
+		grantScopeToLocalDevice(store, "authorized-team");
+		insertCoordinatorScope(store, "unauthorized-team");
+		const visibleId = insertScopedMemory(store, {
+			scopeId: "authorized-team",
+			title: "Database scoped note",
+			body: "database detail",
+		});
+		const hiddenId = insertScopedMemory(store, {
+			scopeId: "unauthorized-team",
+			title: "Database forbidden note",
+			body: "database database database secret",
+		});
+
+		const results = store.search("database", 10);
+		const resultIds = results.map((item) => item.id);
+		expect(resultIds).toContain(visibleId);
+		expect(resultIds).not.toContain(hiddenId);
+
+		expect(store.search("database", 10, { include_scope_ids: ["unauthorized-team"] })).toEqual([]);
+		expect(store.search("database", 10, { scope_id: "unauthorized-team" })).toEqual([]);
+		expect(
+			store.search("database", 10, { scope_id: "authorized-team" }).map((item) => item.id),
+		).toContain(visibleId);
+	});
+
 	it("preserves explicit raw kind filters in emitted search results", () => {
 		const sessionId = insertTestSession(store.db);
 		const legacySummaryId = store.remember(
@@ -858,22 +942,22 @@ describe("MemoryStore.search", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
-				 VALUES (?, 'bugfix', 'Database bugfix shared', 'Shared fix for DB', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'bugfix', 'Database bugfix shared', 'Shared fix for DB', 0.5, '', 1, ?, ?, '{}', 1, 'shared', 'local-default')`,
 			)
 			.run(sessionId, ts, ts);
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
-				 VALUES (?, 'bugfix', 'Database bugfix private', 'Private fix for DB', 0.5, '', 1, ?, ?, '{}', 1, 'private')`,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'bugfix', 'Database bugfix private', 'Private fix for DB', 0.5, '', 1, ?, ?, '{}', 1, 'private', 'local-default')`,
 			)
 			.run(sessionId, ts, ts);
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
-				 VALUES (?, 'feature', 'Database feature shared', 'Shared feature for DB', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'feature', 'Database feature shared', 'Shared feature for DB', 0.5, '', 1, ?, ?, '{}', 1, 'shared', 'local-default')`,
 			)
 			.run(sessionId, ts, ts);
 
@@ -1081,15 +1165,15 @@ describe("MemoryStore.search cross-project widening", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
-				 VALUES (?, 'decision', 'Other private auth', 'private authentication decision', 0.9, '', 1, ?, ?, '{}', 1, 'private')`,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'decision', 'Other private auth', 'private authentication decision', 0.9, '', 1, ?, ?, '{}', 1, 'private', 'local-default')`,
 			)
 			.run(otherSessionId, ts, ts);
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
-				 VALUES (?, 'decision', 'Other shared auth', 'shared authentication decision', 0.9, '', 1, ?, ?, '{}', 1, 'shared')`,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'decision', 'Other shared auth', 'shared authentication decision', 0.9, '', 1, ?, ?, '{}', 1, 'shared', 'local-default')`,
 			)
 			.run(otherSessionId, ts, ts);
 
@@ -1189,8 +1273,8 @@ describe("MemoryStore.timeline", () => {
 			const info = store.db
 				.prepare(
 					`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-					 tags_text, active, created_at, updated_at, metadata_json, rev)
-					 VALUES (?, 'feature', ?, 'body text', 0.5, '', 1, ?, ?, '{}', 1)`,
+					 tags_text, active, created_at, updated_at, metadata_json, rev, scope_id)
+					 VALUES (?, 'feature', ?, 'body text', 0.5, '', 1, ?, ?, '{}', 1, 'local-default')`,
 				)
 				.run(sessionId, titles[i], ts, ts);
 			ids.push(Number(info.lastInsertRowid));
@@ -1218,6 +1302,67 @@ describe("MemoryStore.timeline", () => {
 		expect(resultIds).toContain(anchorId);
 		// With depth 2 before + anchor + depth 2 after = up to 5
 		expect(results.length).toBeLessThanOrEqual(5);
+	});
+
+	it("excludes unauthorized scoped neighbors from memoryId timelines", () => {
+		grantScopeToLocalDevice(store, "authorized-team");
+		insertCoordinatorScope(store, "unauthorized-team");
+		const sessionId = insertTestSession(store.db);
+		const hiddenBeforeId = insertScopedMemory(store, {
+			sessionId,
+			scopeId: "unauthorized-team",
+			title: "Hidden before",
+			body: "timeline scope body",
+			createdAt: "2025-01-01T00:00:00.000Z",
+		});
+		const anchorId = insertScopedMemory(store, {
+			sessionId,
+			scopeId: "authorized-team",
+			title: "Visible anchor",
+			body: "timeline scope body",
+			createdAt: "2025-01-01T01:00:00.000Z",
+		});
+		const visibleAfterId = insertScopedMemory(store, {
+			sessionId,
+			scopeId: "authorized-team",
+			title: "Visible after",
+			body: "timeline scope body",
+			createdAt: "2025-01-01T02:00:00.000Z",
+		});
+		const hiddenAfterId = insertScopedMemory(store, {
+			sessionId,
+			scopeId: "unauthorized-team",
+			title: "Hidden after",
+			body: "timeline scope body",
+			createdAt: "2025-01-01T03:00:00.000Z",
+		});
+
+		const resultIds = store.timeline(null, anchorId, 3, 3).map((item) => item.id);
+		expect(resultIds).toContain(anchorId);
+		expect(resultIds).toContain(visibleAfterId);
+		expect(resultIds).not.toContain(hiddenBeforeId);
+		expect(resultIds).not.toContain(hiddenAfterId);
+	});
+
+	it("returns empty when an explicit memoryId anchor fails caller scope filters", () => {
+		grantScopeToLocalDevice(store, "authorized-team");
+		const sessionId = insertTestSession(store.db);
+		const anchorId = insertScopedMemory(store, {
+			sessionId,
+			scopeId: "local-default",
+			title: "Local anchor",
+			body: "timeline scope body",
+			createdAt: "2025-01-01T01:00:00.000Z",
+		});
+		insertScopedMemory(store, {
+			sessionId,
+			scopeId: "authorized-team",
+			title: "Filtered neighbor",
+			body: "timeline scope body",
+			createdAt: "2025-01-01T02:00:00.000Z",
+		});
+
+		expect(store.timeline(null, anchorId, 1, 1, { scope_id: "authorized-team" })).toEqual([]);
 	});
 
 	it("returns empty for no match", () => {
@@ -1249,8 +1394,8 @@ describe("MemoryStore.timeline", () => {
 			const info = store.db
 				.prepare(
 					`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-					 tags_text, active, created_at, updated_at, metadata_json, rev)
-					 VALUES (?, 'feature', ?, 'body text', 0.5, '', 1, ?, ?, '{}', 1)`,
+					 tags_text, active, created_at, updated_at, metadata_json, rev, scope_id)
+					 VALUES (?, 'feature', ?, 'body text', 0.5, '', 1, ?, ?, '{}', 1, 'local-default')`,
 				)
 				.run(sessionId, title, ts, ts);
 			ids.push(Number(info.lastInsertRowid));
@@ -1398,8 +1543,8 @@ describe("MemoryStore.explain", () => {
 			.prepare(
 				`INSERT INTO memory_items(
 					session_id, kind, title, body_text, confidence, tags_text, active,
-					created_at, updated_at, metadata_json, rev
-				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1)`,
+					created_at, updated_at, metadata_json, rev, scope_id
+				) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'local-default')`,
 			)
 			.run(sessionId, "Session recap", "Wrap-up of recent auth work", now, now);
 
@@ -1427,6 +1572,41 @@ describe("MemoryStore.explain", () => {
 			expect(item.score.total).toBeNull();
 			expect(item.score.components.base).toBeNull();
 		}
+	});
+
+	it("excludes unauthorized scoped memories from query and id explain results", () => {
+		grantScopeToLocalDevice(store, "authorized-team");
+		insertCoordinatorScope(store, "unauthorized-team");
+		const visibleId = insertScopedMemory(store, {
+			scopeId: "authorized-team",
+			title: "Scope visible auth note",
+			body: "scopeleak authorization detail",
+		});
+		const hiddenId = insertScopedMemory(store, {
+			scopeId: "unauthorized-team",
+			title: "Scope hidden auth note",
+			body: "scopeleak forbidden detail",
+		});
+
+		const queryResultIds = store.explain("scopeleak").items.map((item) => item.id);
+		expect(queryResultIds).toContain(visibleId);
+		expect(queryResultIds).not.toContain(hiddenId);
+
+		const missingId = 999_999;
+		const idResult = store.explain(null, [visibleId, hiddenId, missingId]);
+		const idResultIds = idResult.items.map((item) => item.id);
+		expect(idResultIds).toEqual([visibleId]);
+		expect(idResult.missing_ids).toContain(hiddenId);
+		expect(idResult.missing_ids).toContain(missingId);
+		expect(idResult.errors.find((e) => e.code === "NOT_FOUND")?.ids ?? []).toEqual(
+			expect.arrayContaining([hiddenId, missingId]),
+		);
+		expect(idResult.errors.find((e) => e.code === "PROJECT_MISMATCH")?.ids ?? []).not.toContain(
+			hiddenId,
+		);
+		expect(idResult.errors.find((e) => e.code === "FILTER_MISMATCH")?.ids ?? []).not.toContain(
+			hiddenId,
+		);
 	});
 
 	it("merges query and id results", () => {
@@ -1541,8 +1721,8 @@ describe("MemoryStore.explain", () => {
 		store.db
 			.prepare(
 				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, workspace_id)
-				 VALUES (?, 'discovery', 'WS memory', 'workspace body', 0.5, '', 1, ?, ?, '{}', 1, 'ws:team-alpha')`,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, workspace_id, scope_id)
+				 VALUES (?, 'discovery', 'WS memory', 'workspace body', 0.5, '', 1, ?, ?, '{}', 1, 'ws:team-alpha', 'local-default')`,
 			)
 			.run(sessionId, ts, ts);
 		const memId = Number(

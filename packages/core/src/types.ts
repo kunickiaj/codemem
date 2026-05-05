@@ -688,6 +688,10 @@ export interface MemoryFilters {
 	working_set_paths?: string[];
 	/** Project scope — matches sessions.project. Triggers session JOIN. */
 	project?: string;
+	/** Replication scope / Sharing domain filters. These narrow authorization; they never widen it. */
+	scope_id?: string | string[];
+	include_scope_ids?: string[];
+	exclude_scope_ids?: string[];
 	visibility?: string | string[];
 	include_visibility?: string[];
 	exclude_visibility?: string[];

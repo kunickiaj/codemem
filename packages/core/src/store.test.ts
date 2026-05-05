@@ -66,6 +66,44 @@ describe("MemoryStore", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	function insertCoordinatorScope(scopeId: string): void {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO replication_scopes(
+					scope_id, label, kind, authority_type, coordinator_id, group_id,
+					membership_epoch, status, created_at, updated_at
+				 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
+			)
+			.run(scopeId, scopeId, now, now);
+	}
+
+	function grantScopeToLocalDevice(scopeId: string): void {
+		insertCoordinatorScope(scopeId);
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch,
+					coordinator_id, group_id, updated_at
+				 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
+			)
+			.run(scopeId, store.deviceId, new Date().toISOString());
+	}
+
+	function insertScopedMemory(scopeId: string, title: string): number {
+		const sessionId = insertTestSession(store.db);
+		const now = new Date().toISOString();
+		const info = store.db
+			.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, confidence, tags_text, active,
+					created_at, updated_at, metadata_json, rev, scope_id
+				 ) VALUES (?, 'discovery', ?, 'scope body', 0.5, '', 1, ?, ?, '{}', 1, ?)`,
+			)
+			.run(sessionId, title, now, now, scopeId);
+		return Number(info.lastInsertRowid);
+	}
+
 	// -- get ----------------------------------------------------------------
 
 	describe("get", () => {
@@ -85,6 +123,16 @@ describe("MemoryStore", () => {
 			expect(result?.body_text).toBe("Test body");
 			// metadata_json should be parsed into an object
 			expect(typeof result?.metadata_json).toBe("object");
+		});
+
+		it("hides direct ID reads outside locally authorized scopes", () => {
+			grantScopeToLocalDevice("authorized-team");
+			insertCoordinatorScope("unauthorized-team");
+			const visibleId = insertScopedMemory("authorized-team", "Authorized memory");
+			const hiddenId = insertScopedMemory("unauthorized-team", "Unauthorized memory");
+
+			expect(store.get(visibleId)?.title).toBe("Authorized memory");
+			expect(store.get(hiddenId)).toBeNull();
 		});
 	});
 
@@ -1178,8 +1226,8 @@ describe("MemoryStore", () => {
 				store.db
 					.prepare(
 						`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-					tags_text, active, created_at, updated_at, metadata_json, rev)
-					VALUES (?, ?, ?, ?, 0.5, '', 1, ?, ?, '{}', 1)`,
+					tags_text, active, created_at, updated_at, metadata_json, rev, scope_id)
+					VALUES (?, ?, ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'local-default')`,
 					)
 					.run(sessionId, kind, `Item ${i}`, `Body ${i}`, `${base}${i}Z`, `${base}${i}Z`);
 			}
@@ -1227,6 +1275,55 @@ describe("MemoryStore", () => {
 				expect(r.kind).toBe("discovery");
 			}
 		});
+
+		it("intersects explicit scope filters with local authorization", () => {
+			grantScopeToLocalDevice("authorized-team");
+			insertCoordinatorScope("unauthorized-team");
+			const visibleId = insertScopedMemory("authorized-team", "Authorized recent");
+			const hiddenId = insertScopedMemory("unauthorized-team", "Unauthorized recent");
+
+			const defaultRecentIds = store.recent(10).map((item) => item.id);
+			expect(defaultRecentIds).toContain(visibleId);
+			expect(defaultRecentIds).not.toContain(hiddenId);
+
+			expect(store.recent(10, { include_scope_ids: ["unauthorized-team"] })).toEqual([]);
+			expect(store.recent(10, { scope_id: "unauthorized-team" })).toEqual([]);
+			expect(
+				store.recent(10, { include_scope_ids: ["authorized-team"] }).map((item) => item.id),
+			).toContain(visibleId);
+			expect(store.recent(10, { scope_id: "authorized-team" }).map((item) => item.id)).toContain(
+				visibleId,
+			);
+		});
+
+		it("treats legacy null/blank scope rows as locally visible", () => {
+			const sessionId = insertTestSession(store.db);
+			const now = "2026-01-01T00:00:00Z";
+			const insertWithScope = (title: string, scopeValue: string | null): number => {
+				const info = store.db
+					.prepare(
+						`INSERT INTO memory_items(
+							session_id, kind, title, body_text, confidence, tags_text, active,
+							created_at, updated_at, metadata_json, rev, scope_id
+						 ) VALUES (?, 'discovery', ?, 'legacy body', 0.5, '', 1, ?, ?, '{}', 1, ?)`,
+					)
+					.run(sessionId, title, now, now, scopeValue);
+				return Number(info.lastInsertRowid);
+			};
+			const nullScopeId = insertWithScope("Legacy null scope", null);
+			const blankScopeId = insertWithScope("Legacy blank scope", "");
+
+			const recentIds = store.recent(10).map((item) => item.id);
+			expect(recentIds).toContain(nullScopeId);
+			expect(recentIds).toContain(blankScopeId);
+
+			const searchIds = store.search("legacy", 10).map((item) => item.id);
+			expect(searchIds).toContain(nullScopeId);
+			expect(searchIds).toContain(blankScopeId);
+
+			expect(store.get(nullScopeId)?.title).toBe("Legacy null scope");
+			expect(store.get(blankScopeId)?.title).toBe("Legacy blank scope");
+		});
 	});
 
 	// -- recentByKinds -------------------------------------------------------
@@ -1249,6 +1346,24 @@ describe("MemoryStore", () => {
 		it("returns empty array for empty kinds list", () => {
 			const results = store.recentByKinds([]);
 			expect(results).toEqual([]);
+		});
+
+		it("intersects scope filters with local authorization", () => {
+			grantScopeToLocalDevice("authorized-team");
+			insertCoordinatorScope("unauthorized-team");
+			const visibleId = insertScopedMemory("authorized-team", "Authorized by-kind");
+			const hiddenId = insertScopedMemory("unauthorized-team", "Unauthorized by-kind");
+
+			const defaultIds = store.recentByKinds(["discovery"], 10).map((item) => item.id);
+			expect(defaultIds).toContain(visibleId);
+			expect(defaultIds).not.toContain(hiddenId);
+
+			expect(store.recentByKinds(["discovery"], 10, { scope_id: "unauthorized-team" })).toEqual([]);
+			expect(
+				store
+					.recentByKinds(["discovery"], 10, { include_scope_ids: ["authorized-team"] })
+					.map((item) => item.id),
+			).toContain(visibleId);
 		});
 	});
 
@@ -1374,8 +1489,8 @@ describe("MemoryStore", () => {
 				.prepare(
 					`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
 					tags_text, active, created_at, updated_at, metadata_json,
-					origin_device_id, rev)
-					VALUES (?, 'discovery', 'Foreign', 'Body', 0.5, '', 1, ?, ?, '{}', 'other-device', 1)`,
+					origin_device_id, rev, scope_id)
+					VALUES (?, 'discovery', 'Foreign', 'Body', 0.5, '', 1, ?, ?, '{}', 'other-device', 1, 'local-default')`,
 				)
 				.run(sessionId, new Date().toISOString(), new Date().toISOString());
 			const foreignId = Number(
