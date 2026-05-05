@@ -48,6 +48,65 @@ describe("buildMemoryPack", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	function insertCoordinatorScope(scopeId: string): void {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO replication_scopes(
+					scope_id, label, kind, authority_type, coordinator_id, group_id,
+					membership_epoch, status, created_at, updated_at
+				 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
+			)
+			.run(scopeId, scopeId, now, now);
+	}
+
+	function grantScopeToLocalDevice(scopeId: string): void {
+		insertCoordinatorScope(scopeId);
+		store.db
+			.prepare(
+				`INSERT OR REPLACE INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch,
+					coordinator_id, group_id, updated_at
+				 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
+			)
+			.run(scopeId, store.deviceId, new Date().toISOString());
+	}
+
+	function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
+		const now = new Date().toISOString();
+		const info = store.db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'discovery', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+			)
+			.run(sessionId, title, bodyText, now, now, scopeId);
+		return Number(info.lastInsertRowid);
+	}
+
+	function semanticCandidate(
+		id: number,
+		title: string,
+		bodyText: string,
+		score: number,
+	): MemoryResult {
+		return {
+			id,
+			kind: "discovery",
+			title,
+			body_text: bodyText,
+			confidence: 0.9,
+			created_at: "2026-01-01T00:00:00.000Z",
+			updated_at: "2026-01-01T00:00:00.000Z",
+			tags_text: "",
+			score,
+			session_id: sessionId,
+			metadata: {},
+			narrative: null,
+			facts: null,
+		};
+	}
+
 	it("returns items and pack_text for matching context", () => {
 		store.remember(sessionId, "discovery", "Found database issue", "The DB was slow", 0.8);
 		store.remember(sessionId, "bugfix", "Fixed database query", "Optimized the join", 0.9);
@@ -634,9 +693,27 @@ describe("buildMemoryPack", () => {
 	});
 
 	it("keeps working-set overlaps prioritized when semantic candidates are merged", () => {
+		const overlappingId = store.remember(
+			sessionId,
+			"feature",
+			"Overlapping file",
+			"Directly related to current file",
+			0.9,
+			undefined,
+			{ files_modified: ["src/important.ts"] },
+		);
+		const nonOverlappingId = store.remember(
+			sessionId,
+			"feature",
+			"Non-overlapping file",
+			"Not tied to working set",
+			0.9,
+			undefined,
+			{ files_modified: ["src/other.ts"] },
+		);
 		const semanticResults: MemoryResult[] = [
 			{
-				id: 1,
+				id: overlappingId,
 				kind: "feature",
 				title: "Overlapping file",
 				body_text: "Directly related to current file",
@@ -651,7 +728,7 @@ describe("buildMemoryPack", () => {
 				facts: null,
 			},
 			{
-				id: 2,
+				id: nonOverlappingId,
 				kind: "feature",
 				title: "Non-overlapping file",
 				body_text: "Not tied to working set",
@@ -676,7 +753,129 @@ describe("buildMemoryPack", () => {
 			semanticResults,
 		);
 
-		expect(pack.item_ids[0]).toBe(1);
+		expect(pack.item_ids[0]).toBe(overlappingId);
+	});
+
+	it("scopes caller-provided semantic candidates before pack merge", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic pack note",
+			"visible semantic pack body",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden semantic pack note",
+			"hidden semantic pack body",
+		);
+		const semanticResults: MemoryResult[] = [
+			{
+				id: hiddenId,
+				kind: "discovery",
+				title: "Hidden semantic pack note",
+				body_text: "hidden semantic pack body",
+				confidence: 0.9,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+				tags_text: "",
+				score: 0.99,
+				session_id: sessionId,
+				metadata: {},
+				narrative: null,
+				facts: null,
+			},
+			{
+				id: visibleId,
+				kind: "discovery",
+				title: "Visible semantic pack note",
+				body_text: "visible semantic pack body",
+				confidence: 0.9,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+				tags_text: "",
+				score: 0.5,
+				session_id: sessionId,
+				metadata: {},
+				narrative: null,
+				facts: null,
+			},
+		];
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, undefined, semanticResults);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.item_ids).not.toContain(hiddenId);
+		expect(pack.pack_text).toContain("Visible semantic pack note");
+		expect(pack.pack_text).not.toContain("Hidden semantic pack note");
+		expect(pack.metrics.sources.semantic).toBe(1);
+	});
+
+	it("keeps revalidating semantic candidates after hidden candidates fill the first chunk", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const semanticResults: MemoryResult[] = [];
+		for (let i = 0; i < 205; i += 1) {
+			const hiddenId = insertScopedMemory(
+				"unauthorized-team",
+				`Hidden semantic pack note ${i}`,
+				"hidden semantic pack body",
+			);
+			semanticResults.push(
+				semanticCandidate(
+					hiddenId,
+					`Hidden semantic pack note ${i}`,
+					"hidden semantic pack body",
+					1,
+				),
+			);
+		}
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic pack note after hidden chunk",
+			"visible semantic pack body",
+		);
+		semanticResults.push(
+			semanticCandidate(
+				visibleId,
+				"Visible semantic pack note after hidden chunk",
+				"visible semantic pack body",
+				0.5,
+			),
+		);
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, null, undefined, semanticResults);
+
+		expect(pack.item_ids).toContain(visibleId);
+		expect(pack.metrics.sources.semantic).toBe(1);
+	});
+
+	it("scopes latest summary fallback during pack assembly", () => {
+		grantScopeToLocalDevice("authorized-team");
+		insertCoordinatorScope("unauthorized-team");
+		const insertSummary = (scopeId: string, title: string, createdAt: string): number => {
+			const info = store.db
+				.prepare(
+					`INSERT INTO memory_items(
+						session_id, kind, title, body_text, confidence, tags_text, active,
+						created_at, updated_at, metadata_json, rev, visibility, scope_id
+					) VALUES (?, 'session_summary', ?, ?, 0.8, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+				)
+				.run(sessionId, title, `${title} body`, createdAt, createdAt, scopeId);
+			return Number(info.lastInsertRowid);
+		};
+		insertSummary("authorized-team", "Authorized fallback summary", "2026-01-01T00:00:00.000Z");
+		insertSummary("unauthorized-team", "Hidden fallback summary", "2026-01-03T00:00:00.000Z");
+		insertScopedMemory(
+			"authorized-team",
+			"Newest visible non-summary",
+			"visible fallback anchor body",
+		);
+
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 1);
+
+		expect(pack.pack_text).toContain("Authorized fallback summary");
+		expect(pack.pack_text).not.toContain("Hidden fallback summary");
 	});
 
 	it("keeps topical terms when using task mode", () => {

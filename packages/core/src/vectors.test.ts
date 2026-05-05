@@ -48,6 +48,53 @@ describe("vectors", () => {
 		db.close();
 	});
 
+	function insertCoordinatorScope(scopeId: string): void {
+		const now = new Date().toISOString();
+		db.prepare(
+			`INSERT OR REPLACE INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
+		).run(scopeId, scopeId, now, now);
+	}
+
+	function grantScopeToDevice(scopeId: string, deviceId: string): void {
+		insertCoordinatorScope(scopeId);
+		db.prepare(
+			`INSERT OR REPLACE INTO scope_memberships(
+				scope_id, device_id, role, status, membership_epoch,
+				coordinator_id, group_id, updated_at
+			 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
+		).run(scopeId, deviceId, new Date().toISOString());
+	}
+
+	function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
+		const sessionId = insertTestSession(db);
+		const now = new Date().toISOString();
+		const info = db
+			.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
+				 VALUES (?, 'discovery', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
+			)
+			.run(sessionId, title, bodyText, now, now, scopeId);
+		return Number(info.lastInsertRowid);
+	}
+
+	function insertTestVector(memoryId: number, value: number, contentHash: string): void {
+		const vector = new Float32Array(384).fill(value);
+		db.exec(`
+			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
+			VALUES (
+				vec_f32('${JSON.stringify(Array.from(vector))}'),
+				${memoryId},
+				0,
+				'${contentHash}',
+				'test-model'
+			)
+		`);
+	}
+
 	it("stores vectors with integer metadata columns via sqlite-vec workaround", async () => {
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
 
@@ -414,6 +461,91 @@ describe("vectors", () => {
 			{ model: "old-model", c: 1 },
 			{ model: "test-model", c: 1 },
 		]);
+	});
+
+	it("filters semantic search candidates by local scope authorization", async () => {
+		const deviceId = "device-authorized";
+		grantScopeToDevice("authorized-team", deviceId);
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic note",
+			"semantic scope detail",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden semantic note",
+			"semantic scope secret",
+		);
+		insertTestVector(visibleId, 0, "visible-hash");
+		insertTestVector(hiddenId, 0, "hidden-hash");
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+
+		const results = await semanticSearch(db, "semantic scope", 10, null, {
+			actorId: "local:device-authorized",
+			deviceId,
+		});
+
+		const resultIds = results.map((item) => item.id);
+		expect(resultIds).toContain(visibleId);
+		expect(resultIds).not.toContain(hiddenId);
+	});
+
+	it("intersects semantic search scope filters with local authorization", async () => {
+		const deviceId = "device-authorized";
+		grantScopeToDevice("authorized-team", deviceId);
+		insertCoordinatorScope("unauthorized-team");
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic note",
+			"semantic scope detail",
+		);
+		const hiddenId = insertScopedMemory(
+			"unauthorized-team",
+			"Hidden semantic note",
+			"semantic scope secret",
+		);
+		insertTestVector(visibleId, 0, "visible-hash");
+		insertTestVector(hiddenId, 0, "hidden-hash");
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		const context = { actorId: "local:device-authorized", deviceId };
+
+		expect(
+			await semanticSearch(db, "semantic scope", 10, { scope_id: "unauthorized-team" }, context),
+		).toEqual([]);
+		expect(
+			(
+				await semanticSearch(db, "semantic scope", 10, { scope_id: "authorized-team" }, context)
+			).map((item) => item.id),
+		).toContain(visibleId);
+	});
+
+	it("widens KNN candidates before scope filtering", async () => {
+		const deviceId = "device-authorized";
+		grantScopeToDevice("authorized-team", deviceId);
+		insertCoordinatorScope("unauthorized-team");
+		for (let i = 0; i < 12; i += 1) {
+			const hiddenId = insertScopedMemory(
+				"unauthorized-team",
+				`Closest hidden semantic note ${i}`,
+				"semantic scope secret",
+			);
+			insertTestVector(hiddenId, 0, `hidden-hash-${i}`);
+		}
+		const visibleId = insertScopedMemory(
+			"authorized-team",
+			"Visible semantic fallback note",
+			"semantic scope detail",
+		);
+		insertTestVector(visibleId, 0.5, "visible-hash");
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+
+		const results = await semanticSearch(db, "semantic scope", 1, null, {
+			actorId: "local:device-authorized",
+			deviceId,
+		});
+
+		expect(results.map((item) => item.id)).toEqual([visibleId]);
 	});
 
 	it("skips query embedding when vector search is disabled during migration", async () => {
