@@ -607,7 +607,8 @@ export {
 } from "./sync-scope-protocol.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 // Test utilities (exported for consumer packages like viewer-server)
-export { initTestSchema, insertTestSession } from "./test-utils.js";
+export type { MixedScopeFixture } from "./test-utils.js";
+export { initTestSchema, insertTestSession, seedMixedScopeFixture } from "./test-utils.js";
 export type {
 	Actor,
 	Artifact,
