@@ -34,7 +34,17 @@ export interface SyncRunItem {
 	address?: string;
 	opsIn: number;
 	opsOut: number;
+	opsSkipped?: number;
+	skipped_out?: SyncSkippedOutDetail | null;
 	addressErrors: Array<{ address: string; error: string }>;
+}
+
+export interface SyncSkippedOutDetail {
+	reason?: "scope_filter" | "visibility_filter" | "project_filter" | string;
+	skipped_count?: number;
+	project?: string | null;
+	scope_id?: string | null;
+	visibility?: string | null;
 }
 
 export interface SyncRunResponse {

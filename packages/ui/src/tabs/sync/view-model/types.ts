@@ -41,7 +41,19 @@ export interface UiSyncRunItem {
 	address?: string;
 	opsIn: number;
 	opsOut: number;
+	opsSkipped?: number;
+	skipped_out?: UiSyncSkippedOutDetail | null;
 	addressErrors: Array<{ address: string; error: string }>;
+}
+
+export type UiSyncSkippedOutReason = "scope_filter" | "visibility_filter" | "project_filter";
+
+export interface UiSyncSkippedOutDetail {
+	reason?: UiSyncSkippedOutReason | string;
+	skipped_count?: number;
+	project?: string | null;
+	scope_id?: string | null;
+	visibility?: string | null;
 }
 
 export interface UiSyncRunResponse {
@@ -105,7 +117,9 @@ export type PeerScopeRejectionReason =
 	| "sender_not_member"
 	| "receiver_not_member"
 	| "stale_epoch"
-	| "scope_mismatch";
+	| "scope_mismatch"
+	| "visibility_filter"
+	| "project_filter";
 
 export interface PeerScopeRejectionsSummary {
 	total?: number;

@@ -553,6 +553,7 @@ export {
 export type {
 	ApplyReplicationOpsOptions,
 	ApplyResult,
+	FilterReplicationSkipped,
 	InboundScopeRejection,
 	InboundScopeRejectionPeerSummary,
 	InboundScopeRejectionReason,
