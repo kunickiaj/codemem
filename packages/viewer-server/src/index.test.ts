@@ -62,6 +62,7 @@ function insertTestMemory(
 		originDeviceId?: string | null;
 		createdAt?: string;
 		active?: boolean;
+		scopeId?: string | null;
 	},
 ): number {
 	const now = options.createdAt ?? new Date().toISOString();
@@ -71,8 +72,9 @@ function insertTestMemory(
 				session_id, kind, title, subtitle, body_text, confidence, tags_text, active,
 				created_at, updated_at, metadata_json, actor_id, actor_display_name, visibility,
 				workspace_id, workspace_kind, origin_device_id, origin_source, trust_state,
-				facts, narrative, concepts, files_read, files_modified, prompt_number, rev, import_key
-			) VALUES (?, ?, ?, NULL, ?, 0.5, '', ?, ?, ?, ?, ?, ?, 'shared', 'shared:default', 'shared', ?, ?, 'trusted', NULL, NULL, NULL, NULL, NULL, NULL, 1, ?)`,
+				facts, narrative, concepts, files_read, files_modified, prompt_number, rev, import_key,
+				scope_id
+			) VALUES (?, ?, ?, NULL, ?, 0.5, '', ?, ?, ?, ?, ?, ?, 'shared', 'shared:default', 'shared', ?, ?, 'trusted', NULL, NULL, NULL, NULL, NULL, NULL, 1, ?, ?)`,
 		)
 		.run(
 			options.sessionId,
@@ -90,6 +92,7 @@ function insertTestMemory(
 			options.originDeviceId === undefined ? "test-device-001" : options.originDeviceId,
 			String(options.metadata?.source ?? "test"),
 			`${options.kind}-${options.title}-${now}`,
+			options.scopeId ?? null,
 		);
 	return Number(result.lastInsertRowid);
 }
@@ -278,6 +281,38 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("counts only visible memory scopes in memory stats", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible stats memory",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden stats memory",
+					scopeId: "unauthorized-team",
+				});
+
+				const res = await app.request("/api/stats");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { database: Record<string, number> };
+				expect(body.database.memory_items).toBe(1);
+				expect(body.database.active_memory_items).toBe(1);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("keeps active maintenance jobs in stable started order", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -337,6 +372,11 @@ describe("viewer-server", () => {
 				if (!store) throw new Error("store not initialized");
 				const sessionId = insertTestSession(store.db);
 				store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("codemem", sessionId);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Usage-visible memory",
+				});
 				store.db
 					.prepare(
 						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
@@ -366,6 +406,79 @@ describe("viewer-server", () => {
 				cleanup();
 			}
 		});
+
+		it("removes hidden memory ids from recent pack metadata", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				const visibleId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible pack item",
+					scopeId: "authorized-team",
+				});
+				const hiddenId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden pack item",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 123, 0, 456, ?, ?)`,
+					)
+					.run(
+						sessionId,
+						"2026-03-26T23:30:00Z",
+						JSON.stringify({
+							pack_item_ids: [visibleId, hiddenId],
+							added_ids: [visibleId, hiddenId],
+							removed_ids: [hiddenId],
+							retained_ids: [String(visibleId), String(hiddenId)],
+						}),
+					);
+				const hiddenSessionId = insertTestSession(store.db);
+				const hiddenOnlyId = insertTestMemory(store, {
+					sessionId: hiddenSessionId,
+					kind: "discovery",
+					title: "Hidden only pack item",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
+						 VALUES (?, 'pack', 999, 0, 999, ?, ?)`,
+					)
+					.run(
+						hiddenSessionId,
+						"2026-03-27T23:30:00Z",
+						JSON.stringify({ pack_item_ids: [hiddenOnlyId], project: "secret-project" }),
+					);
+
+				const res = await app.request("/api/usage");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					recent_packs: Array<{ metadata_json: unknown }>;
+					totals: { count: number; tokens_read: number; tokens_saved: number };
+				};
+				expect(body.recent_packs).toHaveLength(1);
+				expect(body.totals).toMatchObject({ count: 1, tokens_read: 123, tokens_saved: 456 });
+				expect(body.recent_packs[0]?.metadata_json).toMatchObject({
+					pack_item_ids: [visibleId],
+					added_ids: [visibleId],
+					removed_ids: [],
+					retained_ids: [visibleId],
+				});
+			} finally {
+				cleanup();
+			}
+		});
 	});
 
 	describe("GET /api/sessions", () => {
@@ -376,7 +489,12 @@ describe("viewer-server", () => {
 				const _warmup = await app.request("/api/stats");
 				const store = getStore();
 				if (store) {
-					insertTestSession(store.db);
+					const sessionId = insertTestSession(store.db);
+					insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title: "Visible session memory",
+					});
 				}
 				const res = await app.request("/api/sessions");
 				expect(res.status).toBe(200);
@@ -402,9 +520,115 @@ describe("viewer-server", () => {
 				cleanup();
 			}
 		});
+
+		it("only lists projects backed by visible memory scopes", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+
+				const visibleSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("visible-project", visibleSessionId);
+				insertTestMemory(store, {
+					sessionId: visibleSessionId,
+					kind: "discovery",
+					title: "Visible scoped memory",
+					scopeId: "authorized-team",
+				});
+
+				const hiddenSessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("secret-project", hiddenSessionId);
+				insertTestMemory(store, {
+					sessionId: hiddenSessionId,
+					kind: "discovery",
+					title: "Hidden scoped memory",
+					scopeId: "unauthorized-team",
+				});
+
+				const projectsRes = await app.request("/api/projects");
+				expect(projectsRes.status).toBe(200);
+				const projectsBody = (await projectsRes.json()) as { projects: string[] };
+				expect(projectsBody.projects).toEqual(["visible-project"]);
+
+				const sessionsRes = await app.request("/api/sessions");
+				expect(sessionsRes.status).toBe(200);
+				const sessionsBody = (await sessionsRes.json()) as {
+					items: Array<{ id: number; project: string }>;
+				};
+				expect(sessionsBody.items.map((item) => item.id)).toEqual([visibleSessionId]);
+			} finally {
+				cleanup();
+			}
+		});
 	});
 
 	describe("memory feed routes", () => {
+		it("applies sharing-domain visibility to memory list endpoints", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible observation",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden observation",
+					scopeId: "unauthorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Visible summary",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "session_summary",
+					title: "Hidden summary",
+					scopeId: "unauthorized-team",
+				});
+
+				const observationsRes = await app.request("/api/observations");
+				expect(observationsRes.status).toBe(200);
+				const observations = (await observationsRes.json()) as {
+					items: Array<{ title: string }>;
+				};
+				expect(observations.items.map((item) => item.title)).toEqual(["Visible observation"]);
+
+				const summariesRes = await app.request("/api/summaries");
+				expect(summariesRes.status).toBe(200);
+				const summaries = (await summariesRes.json()) as { items: Array<{ title: string }> };
+				expect(summaries.items.map((item) => item.title)).toEqual(["Visible summary"]);
+
+				const memoryRes = await app.request("/api/memory?limit=10");
+				expect(memoryRes.status).toBe(200);
+				const memory = (await memoryRes.json()) as { items: Array<{ title: string }> };
+				expect(memory.items.map((item) => item.title).sort()).toEqual([
+					"Visible observation",
+					"Visible summary",
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("applies mine/theirs scope filters to observations", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -522,6 +746,54 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(400);
 				const body = (await res.json()) as { error?: string };
 				expect(body.error).toContain("project");
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("does not mutate memories outside visible sharing domains", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+					.run("secret-project", sessionId);
+				const memoryId = insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden local-owned memory",
+					scopeId: "unauthorized-team",
+				});
+
+				for (const [path, body] of [
+					["/api/memories/project", { memory_id: memoryId, project: "new-project" }],
+					["/api/memories/visibility", { memory_id: memoryId, visibility: "private" }],
+					["/api/memories/forget", { memory_id: memoryId }],
+				] as const) {
+					const res = await app.request(path, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Origin: "http://127.0.0.1:38888",
+						},
+						body: JSON.stringify(body),
+					});
+					expect(res.status).toBe(404);
+					expect(await res.json()).toEqual({ error: "memory not found" });
+				}
+
+				const row = store.db
+					.prepare(
+						`SELECT memory_items.active, memory_items.visibility, sessions.project
+						 FROM memory_items JOIN sessions ON sessions.id = memory_items.session_id
+						 WHERE memory_items.id = ?`,
+					)
+					.get(memoryId) as { active: number; visibility: string; project: string };
+				expect(row).toMatchObject({ active: 1, visibility: "shared", project: "secret-project" });
 			} finally {
 				cleanup();
 			}
@@ -849,6 +1121,97 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("excludes hidden sharing domains from session memory counts", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+				const sessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Visible count memory",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId,
+					kind: "discovery",
+					title: "Hidden count memory",
+					scopeId: "unauthorized-team",
+				});
+
+				const res = await app.request("/api/session");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { memories: number; observations: number };
+				expect(body.memories).toBe(1);
+				expect(body.observations).toBe(1);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("gates prompt and artifact aggregate counts by visible memory sessions", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+
+				const seedProjectSession = (project: string, scopeId: string) => {
+					const sessionId = insertTestSession(store.db);
+					store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run(project, sessionId);
+					insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title: `${project} memory`,
+						scopeId,
+					});
+					store.db
+						.prepare(
+							`INSERT INTO user_prompts(session_id, project, prompt_text, created_at, created_at_epoch, metadata_json)
+							 VALUES (?, ?, 'prompt', ?, 0, '{}')`,
+						)
+						.run(sessionId, project, "2026-01-01T00:00:00Z");
+					store.db
+						.prepare(
+							`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+							 VALUES (?, 'note', ?, 'artifact', 'hash', ?, '{}')`,
+						)
+						.run(sessionId, `${project}.txt`, "2026-01-01T00:00:00Z");
+				};
+
+				seedProjectSession("visible-project", "authorized-team");
+				seedProjectSession("secret-project", "unauthorized-team");
+
+				const hiddenRes = await app.request("/api/session?project=secret-project");
+				expect(hiddenRes.status).toBe(200);
+				expect(await hiddenRes.json()).toMatchObject({
+					artifacts: 0,
+					memories: 0,
+					observations: 0,
+					prompts: 0,
+					total: 0,
+				});
+
+				const visibleRes = await app.request("/api/session?project=visible-project");
+				expect(visibleRes.status).toBe(200);
+				expect(await visibleRes.json()).toMatchObject({
+					artifacts: 1,
+					memories: 1,
+					observations: 1,
+					prompts: 1,
+					total: 3,
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("tolerates malformed metadata when classifying summaries", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -874,6 +1237,82 @@ describe("viewer-server", () => {
 
 				const summariesRes = await app.request("/api/summaries");
 				expect(summariesRes.status).toBe(200);
+			} finally {
+				cleanup();
+			}
+		});
+	});
+
+	describe("GET /api/artifacts", () => {
+		it("requires a visible memory in the session before returning local artifacts", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				grantSyncScopeToDevices(store, "unauthorized-team", []);
+
+				const visibleSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: visibleSessionId,
+					kind: "discovery",
+					title: "Visible artifact session memory",
+					scopeId: "authorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+						 VALUES (?, 'note', 'visible.txt', 'visible artifact', 'visible-hash', ?, '{}')`,
+					)
+					.run(visibleSessionId, "2026-01-01T00:00:00Z");
+
+				const hiddenSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: hiddenSessionId,
+					kind: "discovery",
+					title: "Hidden artifact session memory",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+						 VALUES (?, 'note', 'hidden.txt', 'hidden artifact', 'hidden-hash', ?, '{}')`,
+					)
+					.run(hiddenSessionId, "2026-01-01T00:00:00Z");
+
+				const mixedSessionId = insertTestSession(store.db);
+				insertTestMemory(store, {
+					sessionId: mixedSessionId,
+					kind: "discovery",
+					title: "Mixed visible artifact memory",
+					scopeId: "authorized-team",
+				});
+				insertTestMemory(store, {
+					sessionId: mixedSessionId,
+					kind: "discovery",
+					title: "Mixed hidden artifact memory",
+					scopeId: "unauthorized-team",
+				});
+				store.db
+					.prepare(
+						`INSERT INTO artifacts(session_id, kind, path, content_text, content_hash, created_at, metadata_json)
+						 VALUES (?, 'note', 'mixed.txt', 'mixed artifact', 'mixed-hash', ?, '{}')`,
+					)
+					.run(mixedSessionId, "2026-01-01T00:00:00Z");
+
+				const visibleRes = await app.request(`/api/artifacts?session_id=${visibleSessionId}`);
+				expect(visibleRes.status).toBe(200);
+				const visibleBody = (await visibleRes.json()) as { items: Array<{ path: string }> };
+				expect(visibleBody.items.map((item) => item.path)).toEqual(["visible.txt"]);
+
+				const hiddenRes = await app.request(`/api/artifacts?session_id=${hiddenSessionId}`);
+				expect(hiddenRes.status).toBe(404);
+				expect(await hiddenRes.json()).toEqual({ error: "session not found" });
+
+				const mixedRes = await app.request(`/api/artifacts?session_id=${mixedSessionId}`);
+				expect(mixedRes.status).toBe(404);
+				expect(await mixedRes.json()).toEqual({ error: "session not found" });
 			} finally {
 				cleanup();
 			}
