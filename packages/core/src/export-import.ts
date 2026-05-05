@@ -9,13 +9,20 @@ import {
 	toJson,
 	toJsonNullable,
 } from "./db.js";
+import { buildFilterClausesWithContext } from "./filters.js";
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
 import * as schema from "./schema.js";
+import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
 
 type JsonObject = Record<string, unknown>;
 type MemoryInsert = typeof schema.memoryItems.$inferInsert;
+
+interface ScopeFilter {
+	clauses: string[];
+	params: unknown[];
+}
 
 export interface ExportOptions {
 	dbPath?: string;
@@ -78,6 +85,58 @@ function nowIso(): string {
 
 function nowEpochMs(): number {
 	return Date.now();
+}
+
+function cleanString(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed ? trimmed : null;
+}
+
+function resolveLocalDeviceId(db: Database): string {
+	const envDeviceId = cleanString(process.env.CODEMEM_DEVICE_ID);
+	if (envDeviceId) return envDeviceId;
+	try {
+		const row = db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
+			| { device_id: string | null }
+			| undefined;
+		return cleanString(row?.device_id) ?? "local";
+	} catch {
+		return "local";
+	}
+}
+
+function buildScopeFilter(db: Database): ScopeFilter {
+	return buildFilterClausesWithContext(null, {
+		actorId: "export",
+		deviceId: resolveLocalDeviceId(db),
+		enforceScopeVisibility: true,
+	});
+}
+
+function scopeCanBeImported(db: Database, scopeId: string, deviceId: string): boolean {
+	if (scopeId === LOCAL_DEFAULT_SCOPE_ID) return true;
+	const row = db
+		.prepare(
+			`SELECT 1 AS ok
+			 FROM replication_scopes rs
+			 WHERE rs.scope_id = ?
+			   AND rs.status = 'active'
+			   AND (
+				 rs.authority_type = 'local'
+				 OR EXISTS (
+					SELECT 1
+					FROM scope_memberships sm
+					WHERE sm.scope_id = rs.scope_id
+					  AND sm.device_id = ?
+					  AND sm.status = 'active'
+					  AND sm.membership_epoch >= rs.membership_epoch
+				 )
+			   )
+			 LIMIT 1`,
+		)
+		.get(scopeId, deviceId) as { ok: number } | undefined;
+	return row != null;
 }
 
 function parseDbObject(raw: unknown): unknown {
@@ -169,7 +228,13 @@ function resolveExportProject(opts: ExportOptions): string | null {
 	return resolveProjectName(opts.cwd ?? process.cwd(), opts.project ?? null);
 }
 
-function querySessions(db: Database, project: string | null, since: string | null): JsonObject[] {
+function querySessions(
+	db: Database,
+	project: string | null,
+	since: string | null,
+	scopeFilter: ScopeFilter,
+	includeInactive: boolean,
+): JsonObject[] {
 	let sql = "SELECT * FROM sessions";
 	const params: unknown[] = [];
 	const clauses: string[] = [];
@@ -184,6 +249,10 @@ function querySessions(db: Database, project: string | null, since: string | nul
 		clauses.push("started_at >= ?");
 		params.push(since);
 	}
+	const memoryClauses = ["memory_items.session_id = sessions.id", ...scopeFilter.clauses];
+	if (!includeInactive) memoryClauses.splice(1, 0, "memory_items.active = 1");
+	clauses.push(`EXISTS (SELECT 1 FROM memory_items WHERE ${memoryClauses.join(" AND ")})`);
+	params.push(...scopeFilter.params);
 	if (clauses.length > 0) sql += ` WHERE ${clauses.join(" AND ")}`;
 	sql += " ORDER BY started_at ASC";
 	const rows = db.prepare(sql).all(...params) as JsonObject[];
@@ -203,6 +272,40 @@ function fetchBySessionIds(
 	return db.prepare(sql).all(...sessionIds) as JsonObject[];
 }
 
+function exportedMemoryScopeId(row: JsonObject): string {
+	const existing = cleanString(row.scope_id);
+	return existing ?? LOCAL_DEFAULT_SCOPE_ID;
+}
+
+function parseMemoryExportRow(row: JsonObject): JsonObject {
+	return {
+		...parseRowJsonFields(row, [
+			"metadata_json",
+			"facts",
+			"concepts",
+			"files_read",
+			"files_modified",
+		]),
+		scope_id: exportedMemoryScopeId(row),
+	};
+}
+
+function fetchMemoryRows(
+	db: Database,
+	sessionIds: number[],
+	scopeFilter: ScopeFilter,
+	includeInactive: boolean,
+): JsonObject[] {
+	if (sessionIds.length === 0) return [];
+	const placeholders = sessionIds.map(() => "?").join(",");
+	const clauses = [`session_id IN (${placeholders})`, ...scopeFilter.clauses];
+	const params: unknown[] = [...sessionIds, ...scopeFilter.params];
+	if (!includeInactive) clauses.push("active = 1");
+	return db
+		.prepare(`SELECT * FROM memory_items WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC`)
+		.all(...params) as JsonObject[];
+}
+
 export function exportMemories(opts: ExportOptions = {}): ExportPayload {
 	const db = connect(resolveDbPath(opts.dbPath));
 	try {
@@ -211,25 +314,23 @@ export function exportMemories(opts: ExportOptions = {}): ExportPayload {
 		const filters: JsonObject = {};
 		if (resolvedProject) filters.project = resolvedProject;
 		if (opts.since) filters.since = opts.since;
+		const scopeFilter = buildScopeFilter(db);
 
-		const sessions = querySessions(db, resolvedProject, opts.since ?? null);
+		const sessions = querySessions(
+			db,
+			resolvedProject,
+			opts.since ?? null,
+			scopeFilter,
+			Boolean(opts.includeInactive),
+		);
 		const sessionIds = sessions.map((row) => Number(row.id)).filter(Number.isFinite);
 
-		const memories = fetchBySessionIds(
+		const memories = fetchMemoryRows(
 			db,
-			"memory_items",
 			sessionIds,
-			"created_at ASC",
-			opts.includeInactive ? "" : " AND active = 1",
-		).map((row) =>
-			parseRowJsonFields(row, [
-				"metadata_json",
-				"facts",
-				"concepts",
-				"files_read",
-				"files_modified",
-			]),
-		);
+			scopeFilter,
+			Boolean(opts.includeInactive),
+		).map((row) => parseMemoryExportRow(row));
 
 		const summaries = fetchBySessionIds(
 			db,
@@ -347,18 +448,58 @@ function insertPrompt(d: DrizzleDb, row: JsonObject): number {
 	return id;
 }
 
-function insertMemory(db: Database, d: DrizzleDb, row: JsonObject): number {
+function importedMemoryScopeId(db: Database, row: JsonObject, deviceId: string): string {
+	const sourceScopeId = cleanString(row.scope_id);
+	if (sourceScopeId) {
+		if (!scopeCanBeImported(db, sourceScopeId, deviceId)) {
+			throw new Error(`unauthorized_scope: ${sourceScopeId}`);
+		}
+		return sourceScopeId;
+	}
+	return resolveSessionScopeId(db, {
+		sessionId: Number(row.session_id),
+		workspaceId: cleanString(row.workspace_id),
+	});
+}
+
+function validateImportScopes(
+	db: Database,
+	memories: JsonObject[],
+	deviceId: string,
+	remapProject: string | null,
+): void {
+	const unauthorized = new Set<string>();
+	for (const memory of memories) {
+		const sourceScopeId = cleanString(memory.scope_id);
+		if (!sourceScopeId) continue;
+		// Skip rows that would dedupe — they don't trigger an insert, so they
+		// should not block re-imports after authorization is revoked.
+		const project = remapProject ?? normalizeImportedProject(memory.project);
+		const memoryImportKey =
+			typeof memory.import_key === "string" && memory.import_key.trim()
+				? memory.import_key.trim()
+				: buildImportKey("export", "memory", memory.id, {
+						project,
+						createdAt: typeof memory.created_at === "string" ? memory.created_at : null,
+					});
+		if (findImportedId(db, "memory_items", memoryImportKey) != null) continue;
+		if (!scopeCanBeImported(db, sourceScopeId, deviceId)) {
+			unauthorized.add(sourceScopeId);
+		}
+	}
+	if (unauthorized.size > 0) {
+		throw new Error(`unauthorized_scope: ${[...unauthorized].sort().join(", ")}`);
+	}
+}
+
+function insertMemory(db: Database, d: DrizzleDb, row: JsonObject, deviceId: string): number {
 	const now = nowIso();
 	const parsedActive = row.active == null ? 1 : Number(row.active);
 	const active = Number.isFinite(parsedActive) ? parsedActive : 1;
 	const deletedAt =
 		typeof row.deleted_at === "string" && row.deleted_at.trim().length > 0 ? row.deleted_at : null;
 	const workspaceId = row.workspace_id == null ? null : String(row.workspace_id);
-	// Imports are local writes: resolve against destination policy instead of preserving source scope.
-	const scopeId = resolveSessionScopeId(db, {
-		sessionId: Number(row.session_id),
-		workspaceId,
-	});
+	const scopeId = importedMemoryScopeId(db, row, deviceId);
 	const values: MemoryInsert = {
 		session_id: Number(row.session_id),
 		kind: String(row.kind ?? "observation"),
@@ -435,19 +576,20 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 	const summariesData = Array.isArray(payload.session_summaries) ? payload.session_summaries : [];
 	const promptsData = Array.isArray(payload.user_prompts) ? payload.user_prompts : [];
 
-	if (opts.dryRun) {
-		return {
-			sessions: sessionsData.length,
-			user_prompts: promptsData.length,
-			memory_items: memoriesData.length,
-			session_summaries: summariesData.length,
-			dryRun: true,
-		};
-	}
-
 	const db = connect(resolveDbPath(opts.dbPath));
 	try {
 		assertSchemaReady(db);
+		const deviceId = resolveLocalDeviceId(db);
+		validateImportScopes(db, memoriesData, deviceId, opts.remapProject ?? null);
+		if (opts.dryRun) {
+			return {
+				sessions: sessionsData.length,
+				user_prompts: promptsData.length,
+				memory_items: memoriesData.length,
+				session_summaries: summariesData.length,
+				dryRun: true,
+			};
+		}
 		const d = drizzle(db, { schema });
 		return db.transaction(() => {
 			const sessionMapping = new Map<number, number>();
@@ -569,14 +711,19 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 						? mergeSummaryMetadata(baseMetadata, memory.metadata_json ?? null)
 						: baseMetadata;
 
-				insertMemory(db, d, {
-					...memory,
-					session_id: newSessionId,
-					project,
-					user_prompt_id: linkedPromptId,
-					metadata_json: metadata,
-					import_key: memoryImportKey,
-				});
+				insertMemory(
+					db,
+					d,
+					{
+						...memory,
+						session_id: newSessionId,
+						project,
+						user_prompt_id: linkedPromptId,
+						metadata_json: metadata,
+						import_key: memoryImportKey,
+					},
+					deviceId,
+				);
 				importedMemories += 1;
 			}
 

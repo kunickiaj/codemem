@@ -57,6 +57,62 @@ function seedSourceDb(dbPath: string): void {
 	}
 }
 
+function grantScope(db: Database.Database, scopeId: string, deviceId = "local"): void {
+	const now = "2026-01-01T00:00:00Z";
+	db.prepare(
+		`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+		 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`,
+	).run(scopeId, scopeId, now, now);
+	db.prepare(
+		`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+		 VALUES (?, ?, 'member', 'active', 1, ?)`,
+	).run(scopeId, deviceId, now);
+}
+
+function minimalPayload(scopeId: string): ReturnType<typeof exportMemories> {
+	return {
+		version: "1.0",
+		exported_at: "2026-03-01T00:00:00Z",
+		export_metadata: {
+			tool_version: "codemem",
+			projects: ["codemem"],
+			total_memories: 1,
+			total_sessions: 1,
+			include_inactive: false,
+			filters: {},
+		},
+		sessions: [
+			{
+				id: 1,
+				started_at: "2026-03-01T00:00:00Z",
+				cwd: "/tmp/codemem",
+				project: "codemem",
+				user: "test",
+				tool_version: "test",
+				metadata_json: {},
+				import_key: "session-1",
+			},
+		],
+		memory_items: [
+			{
+				id: 100,
+				session_id: 1,
+				kind: "discovery",
+				title: "Scoped import",
+				body_text: "Scoped body",
+				created_at: "2026-03-01T00:00:01Z",
+				updated_at: "2026-03-01T00:00:01Z",
+				metadata_json: {},
+				import_key: "memory-100",
+				scope_id: scopeId,
+			},
+		],
+		session_summaries: [],
+		user_prompts: [],
+	};
+}
+
 describe("export/import", () => {
 	it("exports parsed JSON fields and prompt import key links", () => {
 		const dbPath = createDbPath("source");
@@ -71,7 +127,72 @@ describe("export/import", () => {
 		expect(payload.user_prompts).toHaveLength(1);
 		expect(payload.sessions[0]?.metadata_json).toEqual({ k: 1 });
 		expect(payload.memory_items[0]?.facts).toEqual(["fact"]);
+		expect(payload.memory_items[0]?.scope_id).toBe("local-default");
 		expect(payload.memory_items[0]?.user_prompt_import_key).toBe("prompt-1");
+	});
+
+	it("exports only locally authorized scopes and tags source scope ids", () => {
+		const dbPath = createDbPath("scoped-export");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			grantScope(db, "authorized-team");
+			db.prepare(
+				`INSERT INTO replication_scopes(
+					scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+				 ) VALUES ('unauthorized-team', 'unauthorized-team', 'team', 'coordinator', 1, 'active', ?, ?)`,
+			).run("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+			db.prepare(
+				`INSERT INTO sessions(id, started_at, cwd, project, user, tool_version, metadata_json, import_key)
+				 VALUES (1, '2026-03-01T00:00:00Z', '/tmp/visible', 'visible', 'test', 'test', '{}', 'session-visible'),
+						(2, '2026-03-01T00:00:00Z', '/tmp/hidden', 'hidden', 'test', 'test', '{}', 'session-hidden')`,
+			).run();
+			db.prepare(
+				`INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key, scope_id
+				 ) VALUES
+					(100, 1, 'discovery', 'Visible scoped export', 'visible', 1, '2026-03-01T00:00:01Z', '2026-03-01T00:00:01Z', '{}', 'memory-visible', 'authorized-team'),
+					(101, 2, 'discovery', 'Hidden scoped export', 'hidden', 1, '2026-03-01T00:00:02Z', '2026-03-01T00:00:02Z', '{}', 'memory-hidden', 'unauthorized-team')`,
+			).run();
+		} finally {
+			db.close();
+		}
+
+		const payload = exportMemories({ dbPath, allProjects: true });
+
+		expect(payload.sessions.map((session) => session.import_key)).toEqual(["session-visible"]);
+		expect(payload.memory_items.map((memory) => memory.title)).toEqual(["Visible scoped export"]);
+		expect(payload.memory_items[0]?.scope_id).toBe("authorized-team");
+	});
+
+	it("exports null-scope legacy rows as local-default even when project mappings exist", () => {
+		const dbPath = createDbPath("mapped-null-scope-export");
+		const db = new Database(dbPath);
+		try {
+			initTestSchema(db);
+			grantScope(db, "authorized-team");
+			db.prepare(
+				`INSERT INTO project_scope_mappings(
+					workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+				 ) VALUES ('/tmp/mapped', '/tmp/mapped', 'authorized-team', 10, 'user', ?, ?)`,
+			).run("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+			db.prepare(
+				`INSERT INTO sessions(id, started_at, cwd, project, user, tool_version, metadata_json, import_key)
+				 VALUES (1, '2026-03-01T00:00:00Z', '/tmp/mapped', 'mapped', 'test', 'test', '{}', 'session-mapped')`,
+			).run();
+			db.prepare(
+				`INSERT INTO memory_items(
+					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key, scope_id
+				 ) VALUES (100, 1, 'discovery', 'Legacy null scope', 'legacy', 1, '2026-03-01T00:00:01Z', '2026-03-01T00:00:01Z', '{}', 'memory-legacy', NULL)`,
+			).run();
+		} finally {
+			db.close();
+		}
+
+		const payload = exportMemories({ dbPath, allProjects: true });
+
+		expect(payload.memory_items).toHaveLength(1);
+		expect(payload.memory_items[0]?.scope_id).toBe("local-default");
 	});
 
 	it("includes inactive memories when requested", () => {
@@ -155,6 +276,78 @@ describe("export/import", () => {
 		} finally {
 			checkDb.close();
 		}
+	});
+
+	it("preserves imported source scopes only when locally authorized", () => {
+		const authorizedDestPath = createDbPath("authorized-import-scope");
+		const authorizedDb = new Database(authorizedDestPath);
+		try {
+			initTestSchema(authorizedDb);
+			grantScope(authorizedDb, "authorized-team");
+		} finally {
+			authorizedDb.close();
+		}
+
+		const result = importMemories(minimalPayload("authorized-team"), {
+			dbPath: authorizedDestPath,
+		});
+		expect(result.memory_items).toBe(1);
+		const checkDb = new Database(authorizedDestPath, { readonly: true });
+		try {
+			const row = checkDb.prepare("SELECT scope_id FROM memory_items LIMIT 1").get() as {
+				scope_id: string;
+			};
+			expect(row.scope_id).toBe("authorized-team");
+		} finally {
+			checkDb.close();
+		}
+
+		const unauthorizedDestPath = createDbPath("unauthorized-import-scope");
+		const unauthorizedDb = new Database(unauthorizedDestPath);
+		try {
+			initTestSchema(unauthorizedDb);
+		} finally {
+			unauthorizedDb.close();
+		}
+		expect(() =>
+			importMemories(minimalPayload("authorized-team"), { dbPath: unauthorizedDestPath }),
+		).toThrow(/unauthorized_scope: authorized-team/);
+		expect(() =>
+			importMemories(minimalPayload("legacy-shared-review"), { dbPath: unauthorizedDestPath }),
+		).toThrow(/unauthorized_scope: legacy-shared-review/);
+	});
+
+	it("re-imports idempotently after a previously-authorized scope loses authorization", () => {
+		// Initial import: destination has authority for the source scope.
+		const destPath = createDbPath("revoked-scope-reimport");
+		const grantedDb = new Database(destPath);
+		try {
+			initTestSchema(grantedDb);
+			grantScope(grantedDb, "previously-authorized-team");
+		} finally {
+			grantedDb.close();
+		}
+
+		const payload = minimalPayload("previously-authorized-team");
+		const initial = importMemories(payload, { dbPath: destPath });
+		expect(initial.memory_items).toBe(1);
+
+		// Revoke the scope membership/authority.
+		const revokeDb = new Database(destPath);
+		try {
+			revokeDb
+				.prepare("UPDATE replication_scopes SET status = 'archived' WHERE scope_id = ?")
+				.run("previously-authorized-team");
+			revokeDb
+				.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = ?")
+				.run("previously-authorized-team");
+		} finally {
+			revokeDb.close();
+		}
+
+		// Re-importing the exact same payload must be a no-op, not a hard reject.
+		const second = importMemories(payload, { dbPath: destPath });
+		expect(second.memory_items).toBe(0);
 	});
 
 	it("reads import payload from file", () => {
