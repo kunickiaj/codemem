@@ -76,6 +76,7 @@ export interface CoordinatorAdminScopePayload {
 	kind?: string | null;
 	authority_type?: string | null;
 	coordinator_id?: string | null;
+	group_id?: string | null;
 	manifest_issuer_device_id?: string | null;
 	membership_epoch?: number | null;
 	manifest_hash?: string | null;
@@ -83,10 +84,13 @@ export interface CoordinatorAdminScopePayload {
 }
 
 export interface CoordinatorAdminScopeMemberPayload {
+	scope_id?: string;
 	device_id?: string;
 	role?: string | null;
+	status?: string | null;
 	membership_epoch?: number | null;
 	coordinator_id?: string | null;
+	group_id?: string | null;
 	manifest_issuer_device_id?: string | null;
 	manifest_hash?: string | null;
 	signed_manifest_json?: string | null;

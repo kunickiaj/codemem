@@ -3,12 +3,19 @@
  * exported object so the panels/actions/lifecycle slices can all read
  * and write it without hitting ES-module `export let` limitations. */
 
+import type { CachedCoordinatorAdminDevice } from "../../../lib/state";
+import type {
+	CoordinatorAdminScopeMemberView,
+	CoordinatorAdminScopeView,
+} from "./scope-management";
+
 export type AdminSection = "groups" | "invites" | "join-requests" | "devices";
 
 export type GroupActionKind = "create" | "rename" | "archive" | "unarchive" | "";
 export type JoinReviewAction = "approve" | "deny" | "";
 export type DeviceActionKind = "rename" | "disable" | "enable" | "remove" | "";
 export type InvitePolicy = "auto_admit" | "approval_required";
+export type ScopeManagementActionKind = "load" | "create" | "grant" | "revoke" | "";
 
 export interface GroupPreferencesDraft {
 	projects_include: string[];
@@ -17,6 +24,21 @@ export interface GroupPreferencesDraft {
 	loaded: boolean;
 	saving: boolean;
 	error: string;
+}
+
+export interface GroupScopeManagementDraft {
+	loaded: boolean;
+	loading: boolean;
+	error: string;
+	includeInactive: boolean;
+	scopes: CoordinatorAdminScopeView[];
+	membersByScope: Map<string, CoordinatorAdminScopeMemberView[]>;
+	devices: CachedCoordinatorAdminDevice[];
+	createScopeId: string;
+	createLabel: string;
+	createKind: string;
+	actionPendingKey: string;
+	actionPendingKind: ScopeManagementActionKind;
 }
 
 export interface CoordinatorAdminState {
@@ -38,6 +60,8 @@ export interface CoordinatorAdminState {
 	deviceRenameDrafts: Map<string, string>;
 	groupPreferencesOpen: Set<string>;
 	groupPreferencesDrafts: Map<string, GroupPreferencesDraft>;
+	groupScopeManagementOpen: Set<string>;
+	groupScopeManagementDrafts: Map<string, GroupScopeManagementDraft>;
 	/**
 	 * Cached list of project names from /api/projects so the scope-defaults
 	 * ProjectScopePicker can render them as clickable chips without
@@ -67,5 +91,7 @@ export const coordinatorAdminState: CoordinatorAdminState = {
 	deviceRenameDrafts: new Map<string, string>(),
 	groupPreferencesOpen: new Set<string>(),
 	groupPreferencesDrafts: new Map<string, GroupPreferencesDraft>(),
+	groupScopeManagementOpen: new Set<string>(),
+	groupScopeManagementDrafts: new Map<string, GroupScopeManagementDraft>(),
 	availableProjects: [],
 };

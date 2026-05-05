@@ -801,6 +801,59 @@
         gap: var(--sp-3);
       }
 
+      .coordinator-admin-domain-management {
+        gap: var(--sp-4);
+      }
+
+      .coordinator-admin-scope-card-list {
+        display: grid;
+        gap: var(--sp-3);
+      }
+
+      .coordinator-admin-scope-card {
+        background: color-mix(in srgb, var(--surface-1) 72%, var(--surface-0));
+      }
+
+      .coordinator-admin-scope-member-list {
+        display: grid;
+        gap: var(--sp-2);
+        padding-top: var(--sp-2);
+      }
+
+      .coordinator-admin-scope-member-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+        border-radius: var(--radius-md);
+        padding: var(--sp-2) var(--sp-3);
+        background: var(--surface-0);
+      }
+
+      .coordinator-admin-scope-member-copy {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+
+      .coordinator-admin-scope-member-copy strong {
+        font-size: 13px;
+      }
+
+      .coordinator-admin-scope-member-copy span {
+        color: var(--text-tertiary);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      @media (max-width: 720px) {
+        .coordinator-admin-scope-member-row {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+
       .coordinator-admin-empty-state {
         padding: var(--sp-3) 0 var(--sp-1);
       }
