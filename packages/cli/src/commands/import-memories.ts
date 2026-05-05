@@ -59,11 +59,23 @@ cmd.action(
 			);
 		}
 
-		const result = importMemories(payload, {
-			dbPath: resolveDbPath(resolveDbOpt(opts)),
-			remapProject: opts.remapProject,
-			dryRun: opts.dryRun,
-		});
+		let result: ReturnType<typeof importMemories>;
+		try {
+			result = importMemories(payload, {
+				dbPath: resolveDbPath(resolveDbOpt(opts)),
+				remapProject: opts.remapProject,
+				dryRun: opts.dryRun,
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Import failed";
+			if (opts.json) {
+				emitJsonError("import_failed", message);
+			} else {
+				p.log.error(message);
+				process.exitCode = 1;
+			}
+			return;
+		}
 
 		if (opts.json) {
 			console.log(
