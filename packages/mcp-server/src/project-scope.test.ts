@@ -54,6 +54,32 @@ describe("project-scope helpers", () => {
 		});
 	});
 
+	it("passes through scope filters while preserving default project narrowing", async () => {
+		const { buildFilters } = await import("./project-scope.js");
+		expect(
+			buildFilters(
+				{
+					scope_id: "scope-a",
+					include_scope_ids: ["scope-a", "scope-b"],
+					exclude_scope_ids: ["scope-c"],
+				},
+				"repo-name",
+			),
+		).toEqual({
+			project: "repo-name",
+			scope_id: "scope-a",
+			include_scope_ids: ["scope-a", "scope-b"],
+			exclude_scope_ids: ["scope-c"],
+		});
+	});
+
+	it("supports scope-only filters for direct ID tools without default project widening", async () => {
+		const { buildFilters } = await import("./project-scope.js");
+		expect(buildFilters({ scope_id: "scope-a" }, null)).toEqual({
+			scope_id: "scope-a",
+		});
+	});
+
 	it("falls back to default project when env or request project is blank", async () => {
 		process.env.CODEMEM_PROJECT = "   ";
 		const { buildFilters, resolveDefaultProject } = await import("./project-scope.js");
