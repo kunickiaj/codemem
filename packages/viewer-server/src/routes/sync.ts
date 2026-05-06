@@ -715,6 +715,50 @@ function currentProjectScope(
 	};
 }
 
+function cleanPeerScopeText(value: unknown): string | null {
+	const text = String(value ?? "").trim();
+	return text || null;
+}
+
+function peerAuthorizedScopes(store: MemoryStore, peerDeviceId: string): Record<string, unknown>[] {
+	const deviceId = peerDeviceId.trim();
+	if (!deviceId) return [];
+	const rows = store.db
+		.prepare(
+			`SELECT
+				rs.scope_id,
+				rs.label,
+				rs.kind,
+				rs.authority_type,
+				rs.coordinator_id,
+				rs.group_id,
+				sm.role,
+				sm.membership_epoch,
+				sm.updated_at
+			 FROM scope_memberships sm
+			 JOIN replication_scopes rs ON rs.scope_id = sm.scope_id
+			 WHERE sm.device_id = ?
+			   AND sm.status = 'active'
+			   AND rs.status = 'active'
+			   AND sm.membership_epoch >= rs.membership_epoch
+			 ORDER BY CASE WHEN rs.authority_type = 'local' THEN 1 ELSE 0 END,
+			          rs.label COLLATE NOCASE,
+			          rs.scope_id`,
+		)
+		.all(deviceId) as Array<Record<string, unknown>>;
+	return rows.map((row) => ({
+		scope_id: String(row.scope_id ?? ""),
+		label: String(row.label ?? row.scope_id ?? ""),
+		kind: String(row.kind ?? "user"),
+		authority_type: String(row.authority_type ?? "local"),
+		coordinator_id: cleanPeerScopeText(row.coordinator_id),
+		group_id: cleanPeerScopeText(row.group_id),
+		role: String(row.role ?? "member"),
+		membership_epoch: Number(row.membership_epoch ?? 0),
+		updated_at: cleanPeerScopeText(row.updated_at),
+	}));
+}
+
 function ensureLocalActorRecord(store: MemoryStore): void {
 	const d = drizzle(store.db, { schema });
 	const existing = d
@@ -1115,9 +1159,10 @@ function mapPeerRow(
 		last_error: showDiag ? row.last_error : null,
 		has_error: Boolean(row.last_error),
 		claimed_local_actor: Boolean(row.claimed_local_actor),
-		claimed_local_actor_scope: showDiag ? claimedLocalActorScopeStatus(store, row) : null,
+		claimed_local_actor_scope: claimedLocalActorScopeStatus(store, row),
 		actor_id: row.actor_id ?? null,
 		actor_display_name: row.actor_display_name ?? null,
+		authorized_scopes: peerAuthorizedScopes(store, peerId),
 		project_scope: {
 			...currentProjectScope(row, readPeerProjectFilters(store, String(row.peer_device_id ?? ""))),
 		},

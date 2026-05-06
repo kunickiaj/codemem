@@ -2168,6 +2168,185 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("surfaces authorized Sharing domains separately from project narrowing", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				const _warmup = await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = new Date().toISOString();
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers (
+							peer_device_id, name, claimed_local_actor, projects_include_json,
+							projects_exclude_json, created_at
+						) VALUES (?, ?, 0, ?, ?, ?)`,
+					)
+					.run("peer-scope", "Peer Scope", JSON.stringify(["*"]), JSON.stringify(["private"]), now);
+				const insertScope = store.db.prepare(
+					`INSERT INTO replication_scopes(
+						scope_id, label, kind, authority_type, coordinator_id, group_id,
+						membership_epoch, status, created_at, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				);
+				insertScope.run(
+					"acme-work",
+					"Acme Work",
+					"team",
+					"coordinator",
+					"coord",
+					"team-a",
+					2,
+					"active",
+					now,
+					now,
+				);
+				insertScope.run(
+					"personal-devices",
+					"Personal Devices",
+					"personal",
+					"local",
+					null,
+					null,
+					1,
+					"active",
+					now,
+					now,
+				);
+				insertScope.run(
+					"stale-team",
+					"Stale Team",
+					"team",
+					"coordinator",
+					"coord",
+					"team-a",
+					5,
+					"active",
+					now,
+					now,
+				);
+				insertScope.run(
+					"archived-team",
+					"Archived Team",
+					"team",
+					"coordinator",
+					"coord",
+					"team-a",
+					1,
+					"archived",
+					now,
+					now,
+				);
+				const insertMembership = store.db.prepare(
+					`INSERT INTO scope_memberships(
+						scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				);
+				insertMembership.run(
+					"acme-work",
+					"peer-scope",
+					"member",
+					"active",
+					2,
+					"coord",
+					"team-a",
+					now,
+				);
+				insertMembership.run(
+					"personal-devices",
+					"peer-scope",
+					"member",
+					"active",
+					1,
+					null,
+					null,
+					now,
+				);
+				insertMembership.run(
+					"stale-team",
+					"peer-scope",
+					"member",
+					"active",
+					4,
+					"coord",
+					"team-a",
+					now,
+				);
+				insertMembership.run(
+					"archived-team",
+					"peer-scope",
+					"member",
+					"active",
+					1,
+					"coord",
+					"team-a",
+					now,
+				);
+				insertMembership.run(
+					"acme-work",
+					"peer-revoked",
+					"member",
+					"active",
+					2,
+					"coord",
+					"team-a",
+					now,
+				);
+
+				const res = await app.request("/api/sync/peers");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as {
+					items: Array<{
+						authorized_scopes: Array<Record<string, unknown>>;
+						peer_device_id: string;
+						project_scope: Record<string, unknown>;
+					}>;
+				};
+				const peer = body.items.find((item) => item.peer_device_id === "peer-scope");
+				expect(peer?.project_scope).toMatchObject({
+					effective_exclude: ["private"],
+					effective_include: ["*"],
+					exclude: ["private"],
+					include: ["*"],
+					inherits_global: false,
+				});
+				expect(peer?.authorized_scopes.map((scope) => scope.scope_id)).toEqual([
+					"acme-work",
+					"personal-devices",
+				]);
+				expect(peer?.authorized_scopes[0]).toMatchObject({
+					authority_type: "coordinator",
+					coordinator_id: "coord",
+					group_id: "team-a",
+					kind: "team",
+					label: "Acme Work",
+					membership_epoch: 2,
+					role: "member",
+				});
+
+				const statusRes = await app.request("/api/sync/status");
+				expect(statusRes.status).toBe(200);
+				const statusBody = (await statusRes.json()) as {
+					peers: Array<{
+						authorized_scopes: Array<Record<string, unknown>>;
+						peer_device_id: string;
+						project_scope: Record<string, unknown>;
+					}>;
+				};
+				const statusPeer = statusBody.peers.find((item) => item.peer_device_id === "peer-scope");
+				expect(statusPeer?.authorized_scopes.map((scope) => scope.scope_id)).toEqual([
+					"acme-work",
+					"personal-devices",
+				]);
+				expect(statusPeer?.project_scope).toMatchObject({
+					effective_exclude: ["private"],
+					effective_include: ["*"],
+				});
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("surfaces inbound scope-rejection summary per peer", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
@@ -5901,10 +6080,58 @@ describe("viewer-server", () => {
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
-						`INSERT INTO sync_peers(peer_device_id, name, actor_id, claimed_local_actor, created_at)
-						 VALUES (?, ?, ?, 1, ?)`,
+						`INSERT INTO sync_peers(
+							peer_device_id, name, actor_id, claimed_local_actor, pinned_fingerprint,
+							addresses_json, last_error, created_at
+						) VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
 					)
-					.run("peer-claim", "Peer Claim", store.actorId, now);
+					.run(
+						"peer-claim",
+						"Peer Claim",
+						store.actorId,
+						"fp-claim",
+						JSON.stringify(["10.0.0.5:38899"]),
+						"raw sync error",
+						now,
+					);
+
+				const redactedRes = await app.request("/api/sync/peers");
+				expect(redactedRes.status).toBe(200);
+				const redactedBody = (await redactedRes.json()) as {
+					items: Array<{
+						addresses: unknown[];
+						claimed_local_actor_scope: Record<string, unknown> | null;
+						fingerprint: unknown;
+						last_error: unknown;
+					}>;
+					redacted: boolean;
+				};
+				expect(redactedBody.redacted).toBe(true);
+				expect(redactedBody.items[0]?.fingerprint).toBeNull();
+				expect(redactedBody.items[0]?.addresses).toEqual([]);
+				expect(redactedBody.items[0]?.last_error).toBeNull();
+				expect(redactedBody.items[0]?.claimed_local_actor_scope).toMatchObject({
+					action_required: true,
+					authorized: false,
+					scope_id: `personal:${store.actorId}`,
+					state: "not_authorized",
+				});
+
+				const statusRes = await app.request("/api/sync/status");
+				expect(statusRes.status).toBe(200);
+				const statusBody = (await statusRes.json()) as {
+					peers: Array<{
+						claimed_local_actor_scope: Record<string, unknown> | null;
+						peer_device_id: string;
+					}>;
+				};
+				const statusPeer = statusBody.peers.find((item) => item.peer_device_id === "peer-claim");
+				expect(statusPeer?.claimed_local_actor_scope).toMatchObject({
+					action_required: true,
+					authorized: false,
+					scope_id: `personal:${store.actorId}`,
+					state: "not_authorized",
+				});
 
 				const missingRes = await app.request("/api/sync/peers?includeDiagnostics=1");
 				expect(missingRes.status).toBe(200);
