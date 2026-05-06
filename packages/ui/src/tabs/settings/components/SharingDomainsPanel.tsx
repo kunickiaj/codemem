@@ -3,12 +3,19 @@ import { RadixSelect } from "../../../components/primitives/radix-select";
 import * as api from "../../../lib/api";
 import type {
 	ProjectScopeCandidate,
+	ProjectScopeGuardrailWarning,
 	SharingDomainScope,
 	SharingDomainSettings,
 } from "../../../lib/api/sync";
 import { showGlobalNotice } from "../../../lib/notice";
 
 type Drafts = Record<string, string>;
+
+interface PendingGuardrailConfirmation {
+	workspaceIdentity: string;
+	requiredGuardrailTokens: string[];
+	warnings: ProjectScopeGuardrailWarning[];
+}
 
 function domainLabel(scope: SharingDomainScope): string {
 	const qualifier = scope.authority_type === "local" ? "local" : scope.authority_type;
@@ -48,12 +55,46 @@ function canAssignProject(project: ProjectScopeCandidate): boolean {
 	return project.identity_source !== "unmapped";
 }
 
+function warningKey(warning: ProjectScopeGuardrailWarning, index: number): string {
+	return [warning.code, warning.workspace_identity, warning.project_pattern, index].join(":");
+}
+
+function visibleProjectWarnings(project: ProjectScopeCandidate): ProjectScopeGuardrailWarning[] {
+	return (project.guardrail_warnings ?? []).filter(
+		(warning) => warning.severity === "warning" || warning.code === "unknown_project_local_only",
+	);
+}
+
+function settingsMappingWarnings(settings: SharingDomainSettings): ProjectScopeGuardrailWarning[] {
+	return settings.mappings.flatMap((mapping) => mapping.guardrail_warnings ?? []);
+}
+
+function GuardrailMessages({
+	label = "Sharing domain guardrail",
+	warnings,
+}: {
+	label?: string;
+	warnings: ProjectScopeGuardrailWarning[];
+}) {
+	if (warnings.length === 0) return null;
+	return (
+		<div aria-label={label} className="settings-note" role="status">
+			<ul>
+				{warnings.map((warning, index) => (
+					<li key={warningKey(warning, index)}>{warning.message}</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
 export function SharingDomainsPanel() {
 	const [settings, setSettings] = useState<SharingDomainSettings | null>(null);
 	const [drafts, setDrafts] = useState<Drafts>({});
 	const [loading, setLoading] = useState(false);
 	const [savingKey, setSavingKey] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [confirmation, setConfirmation] = useState<PendingGuardrailConfirmation | null>(null);
 
 	const reload = async () => {
 		setLoading(true);
@@ -83,6 +124,13 @@ export function SharingDomainsPanel() {
 	);
 
 	const saveProject = async (project: ProjectScopeCandidate) => {
+		await saveProjectWithGuardrails(project);
+	};
+
+	const saveProjectWithGuardrails = async (
+		project: ProjectScopeCandidate,
+		confirmedGuardrailTokens: string[] = [],
+	) => {
 		if (!canAssignProject(project)) {
 			setError(
 				"Unmapped projects need a stable path, git remote, or workspace id before assignment.",
@@ -94,13 +142,28 @@ export function SharingDomainsPanel() {
 		setError(null);
 		try {
 			await api.saveSharingDomainProjectMapping({
+				...(project.mapping_id && project.resolution_reason === "exact_mapping"
+					? { id: project.mapping_id }
+					: {}),
+				...(confirmedGuardrailTokens.length > 0
+					? { confirmed_guardrail_tokens: confirmedGuardrailTokens }
+					: {}),
 				workspace_identity: project.workspace_identity,
 				project_pattern: project.display_project,
 				scope_id: scopeId,
 			});
+			setConfirmation(null);
 			showGlobalNotice("Project Sharing domain updated. Device access grants are unchanged.");
 			await reload();
 		} catch (err) {
+			if (err instanceof api.SharingDomainGuardrailConfirmationError) {
+				setConfirmation({
+					workspaceIdentity: project.workspace_identity,
+					requiredGuardrailTokens: err.requiredGuardrailTokens,
+					warnings: err.guardrailWarnings,
+				});
+				return;
+			}
 			setError(err instanceof Error ? err.message : "Unable to save Sharing domain mapping");
 		} finally {
 			setSavingKey(null);
@@ -113,6 +176,7 @@ export function SharingDomainsPanel() {
 		setError(null);
 		try {
 			await api.deleteSharingDomainProjectMapping(project.mapping_id);
+			setConfirmation(null);
 			showGlobalNotice("Project Sharing domain mapping removed. The next fallback now applies.");
 			await reload();
 		} catch (err) {
@@ -132,8 +196,18 @@ export function SharingDomainsPanel() {
 			<div className="small">
 				Unmapped and unknown projects stay on Local only until you assign a domain.
 			</div>
+			{settings ? (
+				<GuardrailMessages
+					label="Sharing domain mapping warnings"
+					warnings={settingsMappingWarnings(settings)}
+				/>
+			) : null}
 			{loading && !settings ? <div className="small">Loading Sharing domains…</div> : null}
-			{error ? <div className="settings-note">{error}</div> : null}
+			{error ? (
+				<div className="settings-note" role="alert">
+					{error}
+				</div>
+			) : null}
 			{settings && settings.projects.length === 0 ? (
 				<div className="small">No projects with memories are available yet.</div>
 			) : null}
@@ -144,6 +218,8 @@ export function SharingDomainsPanel() {
 				const unchanged = currentValue === project.resolved_scope_id;
 				const assignable = canAssignProject(project);
 				const currentScopeName = scopeName(settings.scopes, project.resolved_scope_id);
+				const pendingConfirmation =
+					confirmation?.workspaceIdentity === project.workspace_identity ? confirmation : null;
 				const canRemoveProjectMapping =
 					assignable && project.mapping_id != null && project.resolution_reason === "exact_mapping";
 				return (
@@ -156,9 +232,12 @@ export function SharingDomainsPanel() {
 							disabled={!assignable || saving || scopeOptions.length === 0}
 							id={fieldId}
 							itemClassName="settings-select-item"
-							onValueChange={(value) =>
-								setDrafts((prev) => ({ ...prev, [project.workspace_identity]: value }))
-							}
+							onValueChange={(value) => {
+								setDrafts((prev) => ({ ...prev, [project.workspace_identity]: value }));
+								if (confirmation?.workspaceIdentity === project.workspace_identity) {
+									setConfirmation(null);
+								}
+							}}
 							options={scopeOptions}
 							placeholder="Choose Sharing domain"
 							triggerClassName="settings-select-trigger"
@@ -168,10 +247,44 @@ export function SharingDomainsPanel() {
 						<div className="small">
 							Current default: {currentScopeName} · {resolutionLabel(project.resolution_reason)}
 						</div>
+						<GuardrailMessages warnings={visibleProjectWarnings(project)} />
 						{!assignable ? (
 							<div className="settings-note">
 								This project is missing a stable identity, so Sharing domain assignment is disabled.
 								Add a path, git remote, or workspace id first; until then it remains Local only.
+							</div>
+						) : null}
+						{pendingConfirmation ? (
+							<div className="settings-note" role="alert">
+								<strong>Review before saving this Sharing domain.</strong>
+								<ul>
+									{pendingConfirmation.warnings.map((warning, warningIndex) => (
+										<li key={warningKey(warning, warningIndex)}>{warning.message}</li>
+									))}
+								</ul>
+								<div className="section-actions">
+									<button
+										className="settings-button"
+										disabled={saving}
+										onClick={() =>
+											void saveProjectWithGuardrails(
+												project,
+												pendingConfirmation.requiredGuardrailTokens,
+											)
+										}
+										type="button"
+									>
+										Confirm and save
+									</button>
+									<button
+										className="settings-button"
+										disabled={saving}
+										onClick={() => setConfirmation(null)}
+										type="button"
+									>
+										Cancel
+									</button>
+								</div>
 							</div>
 						) : null}
 						<div className="section-actions">
